@@ -127,7 +127,7 @@ struct LearnedTokens[
     N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool, INIT_STD: Float64 = 0.0
 ](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.N_IN * Self.D)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.N_IN * Self.D)
     comptime OUT_DIM = (Self.N_IN + Self.N_NEW) * Self.D
     comptime NEW_N: Int = Self.N_NEW * Self.D
     comptime IN_N: Int = Self.N_IN * Self.D

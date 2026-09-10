@@ -403,9 +403,9 @@ def gz_init_root_kernel[
         offset=0,
     )
     # Inline buffer for the Gumbel noise + scores; ACT is comptime small.
-    var noises = InlineArray[Scalar[dtype], ACT](uninitialized=True)
-    var scores = InlineArray[Scalar[dtype], ACT](uninitialized=True)
-    var taken = InlineArray[Bool, ACT](uninitialized=True)
+    var noises = Array[Scalar[dtype], ACT](uninitialized=True)
+    var scores = Array[Scalar[dtype], ACT](uninitialized=True)
+    var taken = Array[Bool, ACT](uninitialized=True)
     for a in range(ACT):
         var u = philox.step_uniform()
         # Clamp to (1e-9, 1-1e-9) to keep -log(-log(.)) finite.
@@ -669,7 +669,7 @@ def gz_select_kernel[
 
         # Compute z[a] = node_logits[a] + σ(completed_Q[a]).
         # Stable softmax → π_improved.
-        var z = InlineArray[Scalar[dtype], ACT](uninitialized=True)
+        var z = Array[Scalar[dtype], ACT](uninitialized=True)
         var max_z = Scalar[dtype](-1e18)
         for a in range(ACT):
             var nva = rebind[Scalar[dtype]](visit_count[na_base + a])
@@ -695,7 +695,7 @@ def gz_select_kernel[
             if z[a] > max_z:
                 max_z = z[a]
         var sum_e = Scalar[dtype](0.0)
-        var probs = InlineArray[Scalar[dtype], ACT](uninitialized=True)
+        var probs = Array[Scalar[dtype], ACT](uninitialized=True)
         for a in range(ACT):
             var ev = exp(z[a] - max_z)
             probs[a] = ev
@@ -1153,8 +1153,8 @@ def gz_halve_active_kernel[
         keep_n = old_n
 
     # Score the active candidates.
-    var scores = InlineArray[Scalar[dtype], MAX_K](uninitialized=True)
-    var active_idx = InlineArray[Int, MAX_K](uninitialized=True)
+    var scores = Array[Scalar[dtype], MAX_K](uninitialized=True)
+    var active_idx = Array[Int, MAX_K](uninitialized=True)
     for i in range(MAX_K):
         scores[i] = Scalar[dtype](-1e18)
         active_idx[i] = -1
@@ -1312,7 +1312,7 @@ def gz_extract_policy_kernel[
         qlo = rebind[Scalar[dtype]](min_q[e])
         q_range = rebind[Scalar[dtype]](max_q[e]) - qlo
 
-    var z = InlineArray[Scalar[dtype], ACT](uninitialized=True)
+    var z = Array[Scalar[dtype], ACT](uninitialized=True)
     var max_z = Scalar[dtype](-1e18)
     for a in range(ACT):
         var is_legal = True

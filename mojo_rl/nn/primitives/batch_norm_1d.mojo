@@ -210,7 +210,7 @@ struct BatchNorm1D[
     ADT: DType = DT,
 ](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
     # Activation-flow dtype (AMP §3 fp32-INTERNAL): BN accepts/emits ACT_DT but
     # computes stats/normalize in fp32 internally. ACT_DT == DT (default) →

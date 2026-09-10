@@ -36,11 +36,11 @@ def main() raises:
     var y: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
 
     # Per-sample (reward, termination, bootstrap-entering-y).
-    var rew = InlineArray[Scalar[DT], N](fill=0)
+    var rew = Array[Scalar[DT], N](fill=0)
     rew[0] = 1.0; rew[1] = 2.0; rew[2] = -1.0; rew[3] = 0.5
-    var tm = InlineArray[Scalar[DT], N](fill=0)
+    var tm = Array[Scalar[DT], N](fill=0)
     tm[0] = 1.0; tm[1] = 0.0; tm[2] = 1.0; tm[3] = 0.0  # term, non, term, non
-    var boot = InlineArray[Scalar[DT], N](fill=0)
+    var boot = Array[Scalar[DT], N](fill=0)
     boot[0] = 10.0; boot[1] = -5.0; boot[2] = 3.0; boot[3] = 7.0
 
     for i in range(N):

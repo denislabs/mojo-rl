@@ -63,7 +63,7 @@ def _rms_norm_forward_kernel[
     var my_sumsq = Scalar[RMS_ACC](0)
 
     comptime if REG_CACHE:
-        var slice = InlineArray[Scalar[RMS_ACC], ELEMS](fill=Scalar[RMS_ACC](0))
+        var slice = Array[Scalar[RMS_ACC], ELEMS](fill=Scalar[RMS_ACC](0))
 
         comptime for e in range(ELEMS):
             var col = t + e * RMS_TPB
@@ -136,8 +136,8 @@ def _rms_norm_backward_dx_kernel[
 
     comptime if REG_CACHE:
         # Cache gg=go·γ and n once; the write pass reads no global memory.
-        var gg_s = InlineArray[Scalar[RMS_ACC], ELEMS](fill=Scalar[RMS_ACC](0))
-        var n_s = InlineArray[Scalar[RMS_ACC], ELEMS](fill=Scalar[RMS_ACC](0))
+        var gg_s = Array[Scalar[RMS_ACC], ELEMS](fill=Scalar[RMS_ACC](0))
+        var n_s = Array[Scalar[RMS_ACC], ELEMS](fill=Scalar[RMS_ACC](0))
 
         comptime for e in range(ELEMS):
             var col = t + e * RMS_TPB
@@ -203,7 +203,7 @@ def _rms_norm_backward_dgamma_kernel[
 
 struct RMSNorm[DIM_: Int, EPS: Scalar[DT] = RMS_EPS](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
 
     var gamma: Param["gamma", False, Self.DIM_]

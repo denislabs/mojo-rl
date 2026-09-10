@@ -226,7 +226,7 @@ def _convex_pair_single[
     ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
     ccd_iter: Int = MJ_CCD_ITERATIONS,
     ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
-) -> InlineArray[Scalar[DTYPE], 7]:
+) -> Array[Scalar[DTYPE], 7]:
     """One contact for a `multi_ccd_pair_supported` pair — `(dist, pos, normal)`.
 
     ⚠ THE NORMAL IS `gi -> gj`, matching the inline dispatch in
@@ -246,7 +246,7 @@ def _convex_pair_single[
     only the perturbed POSITIONS carried it. Passing within tolerance is not the
     same as consistent: when a branch here changes, this file changes with it.
     """
-    var out = InlineArray[Scalar[DTYPE], 7](uninitialized=True)
+    var out = Array[Scalar[DTYPE], 7](uninitialized=True)
     for k in range(7):
         out[k] = Scalar[DTYPE](0)
     out[0] = Scalar[DTYPE](1e30)  # no contact
@@ -322,7 +322,7 @@ def _make_frame_axes[
     DTYPE: DType
 ](
     nx: Scalar[DTYPE], ny: Scalar[DTYPE], nz: Scalar[DTYPE]
-) -> InlineArray[Scalar[DTYPE], 6]:
+) -> Array[Scalar[DTYPE], 6]:
     """`mju_makeFrame`'s y and z axes, for a normal already used as x.
 
     Port of `engine_util_spatial.c:508`. The seed axis is (0,1,0) unless the
@@ -363,7 +363,7 @@ def _make_frame_axes[
         yy = yy / yn
         yz = yz / yn
 
-    var out = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
+    var out = Array[Scalar[DTYPE], 6](uninitialized=True)
     out[0] = yx
     out[1] = yy
     out[2] = yz
@@ -384,7 +384,7 @@ def _rotate_pose_about[
     px: Scalar[DTYPE], py: Scalar[DTYPE], pz: Scalar[DTYPE],
     gqx: Scalar[DTYPE], gqy: Scalar[DTYPE], gqz: Scalar[DTYPE],
     gqw: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 7]:
+) -> Array[Scalar[DTYPE], 7]:
     """`mju_rotateFrame` — rotate a geom pose about `o`, returning pos + quat.
 
         xmat = rot * xmat
@@ -408,7 +408,7 @@ def _rotate_pose_about[
     var vecy = rr[1] - rely
     var vecz = rr[2] - relz
 
-    var out = InlineArray[Scalar[DTYPE], 7](uninitialized=True)
+    var out = Array[Scalar[DTYPE], 7](uninitialized=True)
     out[0] = px - vecx
     out[1] = py - vecy
     out[2] = pz - vecz

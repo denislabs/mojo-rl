@@ -53,7 +53,7 @@ def _copy_kernel[
 # ── Add (binary) ───────────────────────────────────────────────────────
 struct Add[DIM_: Int, ADT: DType = DT](Module):
     comptime ARITY = 2
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 2](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
     # Activation-flow dtype (AMP). Add is dtype-TRANSPARENT (elementwise sum,
     # grad = copy to both inputs) → carries ACT_DT through unchanged. ACT_DT ==

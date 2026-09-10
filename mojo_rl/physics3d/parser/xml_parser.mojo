@@ -22,7 +22,7 @@ by searching for four explicit suffix patterns: `<foo `, `<foo>`, `<foo/`,
 `<worldbody` would NOT match a search for `<body `).
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 
 from .flat_model import ACT_KIND_MOTOR, ACT_KIND_POSITION, ACT_KIND_VELOCITY
 from ..gpu.constants import MJ_CCD_TOLERANCE, MJ_CCD_ITERATIONS
@@ -1628,8 +1628,8 @@ def _class_parent(xml: String, cls: String) -> String:
         return String("")
     var n = xml.byte_length()
     # Spans of the currently-open `<default ...>` tags, outermost first.
-    var open_start = InlineArray[Int, 32](fill=-1)
-    var open_end = InlineArray[Int, 32](fill=-1)
+    var open_start = Array[Int, 32](fill=-1)
+    var open_end = Array[Int, 32](fill=-1)
     var depth = 0
     var i = 0
     while i < n:
@@ -3204,7 +3204,7 @@ explicitly."""
 
 # ═══ `ComptimeActData` / `parse_xml_model_data` DELETED (phase 1a.4e) ═══════
 #
-# 1269 lines: a struct of ~20 `InlineArray`s and the ~800-line scan that
+# 1269 lines: a struct of ~20 `Array`s and the ~800-line scan that
 # filled it, both INTERPRETED AT COMPTIME for every model that named a
 # `ModelDefFromXML`. It was the actuator tables, the reference pose, the
 # keyframes and the joint limit tables — everything `SpecFields` now holds,

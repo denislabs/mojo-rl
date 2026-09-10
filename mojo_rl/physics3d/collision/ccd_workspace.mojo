@@ -151,7 +151,7 @@ comptime CCD_WS_CTR: Int = CCD_WS_HSTK + EPA_F_CAP * 3
 # is that GJK indexes this array BY A RUNTIME VALUE in eleven places
 # (`simplex[i * 9 + c]`, the `lambda`-compaction that overwrites
 # `simplex[keep * 9 + c]`, `gjkIntersect`'s permutation, `polytope3`'s
-# rotation). A per-thread `InlineArray` indexed by a runtime value is the
+# rotation). A per-thread `Array` indexed by a runtime value is the
 # defect recorded in `feedback_metal_wide_per_thread_inlinearray_miscompute` —
 # it reads back the WRONG VALUE with no crash, and it has now cost this engine
 # three separate hunts. THREE elements was enough the second time; this one is

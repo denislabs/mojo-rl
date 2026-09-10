@@ -246,8 +246,8 @@ def measure[
                 continue
             n_here += 1
             if n_here % 2 == 1:  # odd -> fit, even -> score
-                var xa = InlineArray[Scalar[DT_T], 2](fill=0)
-                var ya = InlineArray[Scalar[DT_T], 2](fill=0)
+                var xa = Array[Scalar[DT_T], 2](fill=0)
+                var ya = Array[Scalar[DT_T], 2](fill=0)
                 for i in range(2):
                     xa[i] = Scalar[DT_T](xs[t * 2 + i])
                     ya[i] = Scalar[DT_T](ys[t * 2 + i])

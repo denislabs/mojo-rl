@@ -24,7 +24,7 @@ Run with:
 from std.testing import assert_true, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs
-from std.collections import InlineArray
+from std.collections import Array
 
 from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
@@ -64,7 +64,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 
 def compare_fk(
     test_name: String,
-    qpos_values: InlineArray[Float64, NQ],
+    qpos_values: Array[Float64, NQ],
 ) raises:
     """Run FK in both engines with identical qpos, compare results."""
     print("--- Test:", test_name, "---")
@@ -230,7 +230,7 @@ def test_fk_default_qpos() raises:
     """FK at default standing pose (qpos = qpos0).
     Torso at z=1.4, identity quaternion, all joint angles zero.
     This is the initial pose MuJoCo initializes to."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     # Free joint: identity quaternion at standing height
     qpos[2] = 1.4  # z = 1.4m (torso height)
     qpos[3] = 1.0  # qw = 1 (identity quaternion)
@@ -241,7 +241,7 @@ def test_fk_bent_knees() raises:
     """FK with both knees bent — tests hip multi-joint chains.
     right_hip_y and left_hip_y rotate the thighs; right_knee and
     left_knee bend the shins."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[2] = 1.4
     qpos[3] = 1.0  # identity quat
     qpos[12] = -0.5  # right_hip_y: thigh forward
@@ -254,7 +254,7 @@ def test_fk_bent_knees() raises:
 def test_fk_arms_extended() raises:
     """FK with arms extended — tests shoulder + elbow chains branching off torso.
     The arm branches are independent of the leg branches."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[2] = 1.4
     qpos[3] = 1.0  # identity quat
     qpos[18] = 0.5  # right_shoulder1
@@ -270,7 +270,7 @@ def test_fk_rotated_torso() raises:
     """FK with torso rotated ~30 deg about z-axis.
     Tests quaternion propagation through the dense body tree:
     all 13 child bodies must accumulate the root rotation correctly."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 1.0  # x translation
     qpos[2] = 1.4  # z = standing height
     # ~30 deg rotation about z-axis: qw=cos(15°)=0.966, qz=sin(15°)=0.259
@@ -284,7 +284,7 @@ def test_fk_rotated_torso() raises:
 def test_fk_full_body_pose() raises:
     """FK at a realistic walking pose: bent knees, abdomen lean, arms moving.
     Exercises all body branches simultaneously."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[2] = 1.4
     qpos[3] = 1.0  # identity quat
     qpos[7] = 0.1  # abdomen_z

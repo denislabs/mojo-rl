@@ -142,7 +142,7 @@ comptime TEST_PATH = "tests/dm_control"
 def _touch_sites() -> List[Int]:
     """The four `<touch>` sites, in `_touch_sum`'s order.
 
-    A runtime `List`, not a `comptime InlineArray` — the loop below indexes it
+    A runtime `List`, not a `comptime Array` — the loop below indexes it
     with a runtime `k`, and a comptime aggregate subscripted that way is one of
     this codebase's recurring compile failures.
     """

@@ -172,7 +172,7 @@ struct PairwiseDot[D_: Int, BATCH: Int](Module):
     """`out[i, j] = sum_k A[i, k] · C[j, k]`, both inputs differentiable."""
 
     comptime ARITY = 2
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.D_)
+    comptime IN_DIMS = Array[Int, 2](fill=Self.D_)
     comptime OUT_DIM = Self.BATCH
 
     def __init__(out self):
@@ -366,7 +366,7 @@ struct RowDot[D_: Int](Module):
     computed without the other BATCH²-BATCH entries."""
 
     comptime ARITY = 2
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.D_)
+    comptime IN_DIMS = Array[Int, 2](fill=Self.D_)
     comptime OUT_DIM = 1
 
     def __init__(out self):

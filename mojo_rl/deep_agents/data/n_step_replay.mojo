@@ -10,7 +10,7 @@ SAC variants that benefit from longer-horizon targets.
 
 Mirrors `mojo_rl/deep_agents/core/replay/nstep_buffer.mojo` but
 extended for continuous-action support: actions are `[ACT]` vectors
-(not scalars), tracked as `InlineArray[Scalar[DT], ACT]` on CPU and
+(not scalars), tracked as `Array[Scalar[DT], ACT]` on CPU and
 as `[N_ENVS * N * ACT]` device buffer rings on GPU.
 
 Two surfaces:
@@ -61,8 +61,8 @@ struct NStepTransition[OBS: Int, ACT: Int](Movable & Deinitable):
     push this transition into the base replay via the standard
     `add(obs, action, reward, next_obs, done)` API.
 
-    Storage is heap `List`s, NOT `InlineArray` (compile-memory critical):
-    with pixel obs (OBS=28224) a by-value InlineArray makes this a ~225 KB
+    Storage is heap `List`s, NOT `Array` (compile-memory critical):
+    with pixel obs (OBS=28224) a by-value Array makes this a ~225 KB
     stack aggregate returned through every `NStepBuffer.add` — the -O2/-O3
     scalarization passes explode superlinearly in OBS on those copies
     (>30 GB compiler footprint on the Rainbow Atari pixel example; -O0 was

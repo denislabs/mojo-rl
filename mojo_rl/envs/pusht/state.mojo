@@ -16,14 +16,14 @@ struct PushTState[DTYPE: DType](
 ):
     """Flattened keypoints + agent_pos observation."""
 
-    var keypoints: InlineArray[Scalar[Self.DTYPE], PConstants.KEYPOINTS_DIM]
-    var agent_pos: InlineArray[Scalar[Self.DTYPE], PConstants.AGENT_POS_DIM]
+    var keypoints: Array[Scalar[Self.DTYPE], PConstants.KEYPOINTS_DIM]
+    var agent_pos: Array[Scalar[Self.DTYPE], PConstants.AGENT_POS_DIM]
 
     def __init__(out self):
-        self.keypoints = InlineArray[
+        self.keypoints = Array[
             Scalar[Self.DTYPE], PConstants.KEYPOINTS_DIM
         ](fill=Scalar[Self.DTYPE](0.0))
-        self.agent_pos = InlineArray[
+        self.agent_pos = Array[
             Scalar[Self.DTYPE], PConstants.AGENT_POS_DIM
         ](fill=Scalar[Self.DTYPE](0.0))
 

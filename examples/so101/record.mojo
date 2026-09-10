@@ -245,9 +245,9 @@ def main() raises:
     for i in range(n_cam):
         frames.append(List[UInt8](unsafe_uninit_length = cams[i].frame_bytes()))
 
-    var present = InlineArray[Int32, SO101_N](fill=0)
-    var lead_raw = InlineArray[Int32, SO101_N](fill=0)
-    var goals = InlineArray[Int32, SO101_N](fill=0)
+    var present = Array[Int32, SO101_N](fill=0)
+    var lead_raw = Array[Int32, SO101_N](fill=0)
+    var goals = Array[Int32, SO101_N](fill=0)
 
     var stdin = StdinReader()
     var kept = 0

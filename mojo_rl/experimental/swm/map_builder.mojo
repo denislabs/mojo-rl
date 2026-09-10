@@ -353,8 +353,8 @@ def clone_graph(
         if a < 0:
             continue
         var slot = labels[t] * n_actions + a
-        var x = InlineArray[Scalar[DType.float64], 2](fill=0)
-        var y = InlineArray[Scalar[DType.float64], 2](fill=0)
+        var x = Array[Scalar[DType.float64], 2](fill=0)
+        var y = Array[Scalar[DType.float64], 2](fill=0)
         for i in range(2):
             x[i] = Scalar[DType.float64](rec.u[t * 2 + i])
             y[i] = Scalar[DType.float64](rec.u[(t + 1) * 2 + i])
@@ -441,8 +441,8 @@ def fit_transport_mixture[
     # one-component reference
     var one = PairBatch[D, dtype]()
     for t in range(n):
-        var xa = InlineArray[Scalar[dtype], D](fill=0)
-        var ya = InlineArray[Scalar[dtype], D](fill=0)
+        var xa = Array[Scalar[dtype], D](fill=0)
+        var ya = Array[Scalar[dtype], D](fill=0)
         for i in range(D):
             xa[i] = Scalar[dtype](xs[t * D + i])
             ya[i] = Scalar[dtype](ys[t * D + i])
@@ -472,8 +472,8 @@ def fit_transport_mixture[
                 for t in range(n):
                     if assign[t] != c:
                         continue
-                    var xa = InlineArray[Scalar[dtype], D](fill=0)
-                    var ya = InlineArray[Scalar[dtype], D](fill=0)
+                    var xa = Array[Scalar[dtype], D](fill=0)
+                    var ya = Array[Scalar[dtype], D](fill=0)
                     for i in range(D):
                         xa[i] = Scalar[dtype](xs[t * D + i])
                         ya[i] = Scalar[dtype](ys[t * D + i])

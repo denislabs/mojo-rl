@@ -12,7 +12,7 @@ Run with:
 from std.testing import assert_true, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs
-from std.collections import InlineArray
+from std.collections import Array
 
 from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
@@ -64,7 +64,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 
 def compare_fk(
     test_name: String,
-    qpos_values: InlineArray[Float64, NQ],
+    qpos_values: Array[Float64, NQ],
 ) raises:
     """Run FK in both engines with identical qpos, compare results."""
     print("--- Test:", test_name, "---")
@@ -202,20 +202,20 @@ def compare_fk(
 
 def test_fk_default_qpos() raises:
     """Test FK at default qpos (all zeros — torso at body_pos height 1.25)."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     compare_fk("Default qpos (torso at 1.25)", qpos)
 
 
 def test_fk_nonzero_rootz() raises:
     """Test FK with nonzero rootz (jumping)."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[1] = 0.5  # rootz offset => torso at 1.75
     compare_fk("Nonzero rootz (jumping)", qpos)
 
 
 def test_fk_nonzero_joints() raises:
     """Test FK with non-zero joint angles."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 1.0  # rootx = 1m forward
     qpos[1] = 0.0  # rootz at default
     qpos[2] = 0.3  # rooty pitch
@@ -227,7 +227,7 @@ def test_fk_nonzero_joints() raises:
 
 def test_fk_extreme_joints() raises:
     """Test FK at or near joint limits."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[2] = -0.3  # rooty negative pitch
     qpos[3] = -2.0  # thigh_joint (large backward bend)
     qpos[4] = -0.005  # leg_joint near lower limit
@@ -237,7 +237,7 @@ def test_fk_extreme_joints() raises:
 
 def test_fk_large_rootx() raises:
     """Test FK with large horizontal displacement."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 100.0  # rootx far forward
     qpos[3] = 0.5  # thigh_joint
     qpos[5] = -0.3  # foot_joint

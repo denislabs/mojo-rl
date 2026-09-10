@@ -32,7 +32,7 @@ from mojo_rl.io.fileio import write_file_atomic
 
 comptime _N_CASES = 130
 
-comptime _REF: InlineArray[StaticString, _N_CASES] = [
+comptime _REF: Array[StaticString, _N_CASES] = [
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5",
     "323b730f87b4e7cc0948351a1c11b757b3026cda6784282576757bca21f12483", "6ab0dba1f4f1dfbb37b4f9eeb092c09fca4900ad32bdcd147d8dde35d6c87c35",
     "42a146d9caf95c0d29b3ea8e3574f3c47758bec2cdcb99e6f10381de77ab6d54", "c0a7188b4e87d64b5ff6dbedc69629b41ded38b08f0f79b85c5b63ed4a6b4646",

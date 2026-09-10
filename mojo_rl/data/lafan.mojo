@@ -128,7 +128,7 @@ def _m(a: Float32, b: Float32) -> Float32:
     return a * b
 
 
-def aa_to_quat_wxyz(ax: Float32, ay: Float32, az: Float32) -> InlineArray[Float32, 4]:
+def aa_to_quat_wxyz(ax: Float32, ay: Float32, az: Float32) -> Array[Float32, 4]:
     """pytorch3d `axis_angle_to_quaternion` in float32: (cos(θ/2), axis·sin(θ/2)/θ),
     with the small-angle series below 1e-6."""
     var angle = sqrt((_m(ax, ax) + _m(ay, ay)) + _m(az, az))
@@ -138,7 +138,7 @@ def aa_to_quat_wxyz(ax: Float32, ay: Float32, az: Float32) -> InlineArray[Float3
         s = Float32(0.5) - _m(angle, angle) / Float32(48.0)
     else:
         s = sin(half) / angle
-    var out = InlineArray[Float32, 4](fill=Float32(0))
+    var out = Array[Float32, 4](fill=Float32(0))
     out[0] = cos(half)
     out[1] = ax * s
     out[2] = ay * s
@@ -146,10 +146,10 @@ def aa_to_quat_wxyz(ax: Float32, ay: Float32, az: Float32) -> InlineArray[Float3
     return out^
 
 
-def quat_to_matrix_wxyz(r: Float32, i: Float32, j: Float32, k: Float32) -> InlineArray[Float32, 9]:
+def quat_to_matrix_wxyz(r: Float32, i: Float32, j: Float32, k: Float32) -> Array[Float32, 9]:
     """pytorch3d `quaternion_to_matrix` (row-major 3×3)."""
     var two_s = Float32(2.0) / (((_m(r, r) + _m(i, i)) + _m(j, j)) + _m(k, k))
-    var m = InlineArray[Float32, 9](fill=Float32(0))
+    var m = Array[Float32, 9](fill=Float32(0))
     m[0] = Float32(1) - _m(two_s, _m(j, j) + _m(k, k))
     m[1] = _m(two_s, _m(i, j) - _m(k, r))
     m[2] = _m(two_s, _m(i, k) + _m(j, r))
@@ -168,7 +168,7 @@ def _sqrt_pos(x: Float32) -> Float32:
     return Float32(0)
 
 
-def matrix_to_quat_wxyz(m: InlineArray[Float32, 9]) -> InlineArray[Float32, 4]:
+def matrix_to_quat_wxyz(m: Array[Float32, 9]) -> Array[Float32, 4]:
     """pytorch3d `matrix_to_quaternion`: four candidates, the one whose
     diagonal magnitude is largest, divided by `2·max(q_abs, 0.1)`."""
     var m00 = m[0]
@@ -180,7 +180,7 @@ def matrix_to_quat_wxyz(m: InlineArray[Float32, 9]) -> InlineArray[Float32, 4]:
     var m20 = m[6]
     var m21 = m[7]
     var m22 = m[8]
-    var qa = InlineArray[Float32, 4](fill=Float32(0))
+    var qa = Array[Float32, 4](fill=Float32(0))
     qa[0] = _sqrt_pos(Float32(1) + m00 + m11 + m22)
     qa[1] = _sqrt_pos(Float32(1) + m00 - m11 - m22)
     qa[2] = _sqrt_pos(Float32(1) - m00 + m11 - m22)
@@ -189,7 +189,7 @@ def matrix_to_quat_wxyz(m: InlineArray[Float32, 9]) -> InlineArray[Float32, 4]:
     for c in range(1, 4):
         if qa[c] > qa[best]:
             best = c
-    var cand = InlineArray[Float32, 4](fill=Float32(0))
+    var cand = Array[Float32, 4](fill=Float32(0))
     if best == 0:
         cand[0] = qa[0] * qa[0]
         cand[1] = m21 - m12
@@ -214,13 +214,13 @@ def matrix_to_quat_wxyz(m: InlineArray[Float32, 9]) -> InlineArray[Float32, 4]:
     if den < Float32(0.1):
         den = Float32(0.1)
     den = Float32(2.0) * den
-    var out = InlineArray[Float32, 4](fill=Float32(0))
+    var out = Array[Float32, 4](fill=Float32(0))
     for c in range(4):
         out[c] = cand[c] / den
     return out^
 
 
-def ref_quat_mul(a: InlineArray[Float32, 4], b: InlineArray[Float32, 4]) -> InlineArray[Float32, 4]:
+def ref_quat_mul(a: Array[Float32, 4], b: Array[Float32, 4]) -> Array[Float32, 4]:
     """The reference's `quat_mul` (w last), its own arrangement of the product."""
     var x1 = a[0]
     var y1 = a[1]
@@ -235,7 +235,7 @@ def ref_quat_mul(a: InlineArray[Float32, 4], b: InlineArray[Float32, 4]) -> Inli
     var zz = _m(w1 + y1, w2 - z2)
     var xx = (ww + yy) + zz
     var qq = _m(Float32(0.5), xx + _m(z1 - x1, x2 - y2))
-    var out = InlineArray[Float32, 4](fill=Float32(0))
+    var out = Array[Float32, 4](fill=Float32(0))
     out[3] = (qq - ww) + _m(z1 - y1, y2 - z2)
     out[0] = (qq - xx) + _m(x1 + w1, x2 + w2)
     out[1] = (qq - yy) + _m(w1 - x1, y2 + z2)
@@ -243,18 +243,18 @@ def ref_quat_mul(a: InlineArray[Float32, 4], b: InlineArray[Float32, 4]) -> Inli
     return out^
 
 
-def ref_normalize4(q: InlineArray[Float32, 4]) -> InlineArray[Float32, 4]:
+def ref_normalize4(q: Array[Float32, 4]) -> Array[Float32, 4]:
     """`normalize(x, eps=1e-9)`: x / max(‖x‖, 1e-9)."""
     var n = sqrt(((_m(q[0], q[0]) + _m(q[1], q[1])) + _m(q[2], q[2])) + _m(q[3], q[3]))
     if n < Float32(1e-9):
         n = Float32(1e-9)
-    var out = InlineArray[Float32, 4](fill=Float32(0))
+    var out = Array[Float32, 4](fill=Float32(0))
     for c in range(4):
         out[c] = q[c] / n
     return out^
 
 
-def ref_quat_rotate(q: InlineArray[Float32, 4], vx: Float32, vy: Float32, vz: Float32) -> InlineArray[Float32, 3]:
+def ref_quat_rotate(q: Array[Float32, 4], vx: Float32, vy: Float32, vz: Float32) -> Array[Float32, 3]:
     """`my_quat_rotate` / `quat_rotate`: a + b + c with a = v(2w² − 1),
     b = 2w (q_v × v), c = 2 q_v (q_v · v)."""
     var w = q[3]
@@ -263,14 +263,14 @@ def ref_quat_rotate(q: InlineArray[Float32, 4], vx: Float32, vy: Float32, vz: Fl
     var cy = _m(_m(_m(q[2], vx) - _m(q[0], vz), w), Float32(2.0))
     var cz = _m(_m(_m(q[0], vy) - _m(q[1], vx), w), Float32(2.0))
     var d = _m((_m(q[0], vx) + _m(q[1], vy)) + _m(q[2], vz), Float32(2.0))
-    var out = InlineArray[Float32, 3](fill=Float32(0))
+    var out = Array[Float32, 3](fill=Float32(0))
     out[0] = (_m(vx, s) + cx) + _m(q[0], d)
     out[1] = (_m(vy, s) + cy) + _m(q[1], d)
     out[2] = (_m(vz, s) + cz) + _m(q[2], d)
     return out^
 
 
-def ref_quat_rotate_inverse(q: InlineArray[Float32, 4], vx: Float32, vy: Float32, vz: Float32) -> InlineArray[Float32, 3]:
+def ref_quat_rotate_inverse(q: Array[Float32, 4], vx: Float32, vy: Float32, vz: Float32) -> Array[Float32, 3]:
     """`quat_rotate_inverse`: a − b + c."""
     var w = q[3]
     var s = _m(_m(Float32(2.0), w), w) - Float32(1.0)
@@ -278,30 +278,30 @@ def ref_quat_rotate_inverse(q: InlineArray[Float32, 4], vx: Float32, vy: Float32
     var cy = _m(_m(_m(q[2], vx) - _m(q[0], vz), w), Float32(2.0))
     var cz = _m(_m(_m(q[0], vy) - _m(q[1], vx), w), Float32(2.0))
     var d = _m((_m(q[0], vx) + _m(q[1], vy)) + _m(q[2], vz), Float32(2.0))
-    var out = InlineArray[Float32, 3](fill=Float32(0))
+    var out = Array[Float32, 3](fill=Float32(0))
     out[0] = (_m(vx, s) - cx) + _m(q[0], d)
     out[1] = (_m(vy, s) - cy) + _m(q[1], d)
     out[2] = (_m(vz, s) - cz) + _m(q[2], d)
     return out^
 
 
-def ref_heading_inv(q: InlineArray[Float32, 4]) -> InlineArray[Float32, 4]:
+def ref_heading_inv(q: Array[Float32, 4]) -> Array[Float32, 4]:
     """`calc_heading_quat_inv`: heading = atan2 of the rotated x axis;
     `quat_from_angle_axis(−heading, z)` then `quat_unit`."""
     var d = ref_quat_rotate(q, Float32(1), Float32(0), Float32(0))
     var heading = atan2(d[1], d[0])
     var theta = (-heading) / Float32(2.0)
-    var out = InlineArray[Float32, 4](fill=Float32(0))
+    var out = Array[Float32, 4](fill=Float32(0))
     out[2] = sin(theta)   # normalize(z) · sin(θ/2) — the axis is unit already
     out[3] = cos(theta)
     return ref_normalize4(out)
 
 
-def ref_slerp(q0: InlineArray[Float32, 4], q1: InlineArray[Float32, 4], t: Float32) -> InlineArray[Float32, 4]:
+def ref_slerp(q0: Array[Float32, 4], q1: Array[Float32, 4], t: Float32) -> Array[Float32, 4]:
     """`torch_utils.slerp`, quirks included: the unnormalised midpoint below
     sin(half-angle) < 1e-3, `q0` when |cos| >= 1."""
     var c = ((_m(q0[0], q1[0]) + _m(q0[1], q1[1])) + _m(q0[2], q1[2])) + _m(q0[3], q1[3])
-    var q1s = InlineArray[Float32, 4](fill=Float32(0))
+    var q1s = Array[Float32, 4](fill=Float32(0))
     for k in range(4):
         q1s[k] = q1[k]
     if c < Float32(0):
@@ -312,7 +312,7 @@ def ref_slerp(q0: InlineArray[Float32, 4], q1: InlineArray[Float32, 4], t: Float
     var sin_half = sqrt(Float32(1.0) - _m(c, c))
     var ra = sin(_m(Float32(1.0) - t, half_theta)) / sin_half
     var rb = sin(_m(t, half_theta)) / sin_half
-    var out = InlineArray[Float32, 4](fill=Float32(0))
+    var out = Array[Float32, 4](fill=Float32(0))
     for k in range(4):
         out[k] = _m(ra, q0[k]) + _m(rb, q1s[k])
     if sin_half < SLERP_MIDPOINT_TOL:
@@ -401,9 +401,9 @@ struct LafanRows(Movable):
         self.body_ang_vel = move.body_ang_vel^
 
 
-def _gaussian_weights() -> InlineArray[Float64, 2 * GAUSS_RADIUS + 1]:
+def _gaussian_weights() -> Array[Float64, 2 * GAUSS_RADIUS + 1]:
     """scipy's `_gaussian_kernel1d(sigma, 0, radius)`: exp(−x²/2σ²) normalised, float64."""
-    var w = InlineArray[Float64, 2 * GAUSS_RADIUS + 1](fill=0.0)
+    var w = Array[Float64, 2 * GAUSS_RADIUS + 1](fill=0.0)
     var s = 0.0
     for k in range(-GAUSS_RADIUS, GAUSS_RADIUS + 1):
         var v = exp(-Float64(k * k) / (2.0 * GAUSS_SIGMA * GAUSS_SIGMA))
@@ -460,8 +460,8 @@ def _filter_only(x: List[Float32], n: Int, width: Int) -> List[Float32]:
     return out^
 
 
-def _q4(xs: List[Float32], base: Int) -> InlineArray[Float32, 4]:
-    var q = InlineArray[Float32, 4](fill=Float32(0))
+def _q4(xs: List[Float32], base: Int) -> Array[Float32, 4]:
+    var q = Array[Float32, 4](fill=Float32(0))
     for k in range(4):
         q[k] = xs[base + k]
     return q^
@@ -505,7 +505,7 @@ def convert_clip(clip: LafanClip, mut env: UnitreeG1[DType.float64], motion_id: 
             # quaternion unnormalised, and the engine normalises the free joint's
             # quaternion in float64 — one ulp apart, which is enough to move the
             # slerp's branch on 18 rows of clip 0 (measured). Bit-exact with it.
-            var m: InlineArray[Float32, 9]
+            var m: Array[Float32, 9]
             if s == 0:
                 m = quat_to_matrix_wxyz(rq[0], rq[1], rq[2], rq[3])
             else:
@@ -520,7 +520,7 @@ def convert_clip(clip: LafanClip, mut env: UnitreeG1[DType.float64], motion_id: 
             frot[(f * NB + s) * 4 + 3] = qw[0]
         # the head: torso pos + R_torso (0, 0, 0.35), torso's rotation
         var tb = TORSO_BODY_IDX
-        var tq = InlineArray[Float32, 4](fill=Float32(0))
+        var tq = Array[Float32, 4](fill=Float32(0))
         for k in range(4):
             tq[k] = frot[(f * NB + 15) * 4 + k]   # skeleton index 15 = torso_link
         var off = ref_quat_rotate(tq, Float32(0), Float32(0), Float32(G1_HEAD_OFFSET_Z))
@@ -536,7 +536,7 @@ def convert_clip(clip: LafanClip, mut env: UnitreeG1[DType.float64], motion_id: 
         for b in range(NB):
             var q0 = _q4(frot, (f * NB + b) * 4)
             var q1 = _q4(frot, ((f + 1) * NB + b) * 4)
-            var q0c = InlineArray[Float32, 4](fill=Float32(0))
+            var q0c = Array[Float32, 4](fill=Float32(0))
             q0c[0] = -q0[0]
             q0c[1] = -q0[1]
             q0c[2] = -q0[2]
@@ -570,7 +570,7 @@ def convert_clip(clip: LafanClip, mut env: UnitreeG1[DType.float64], motion_id: 
     var length32 = Float32(length64)
     var n_rows = Int(ceil_div_rows(Float64(length32), LAFAN_ENV_DT))
     var rows = LafanRows(n_rows)
-    var default = InlineArray[Float32, G1_N_DOF](fill=Float32(0))
+    var default = Array[Float32, G1_N_DOF](fill=Float32(0))
     for j in range(G1_N_DOF):
         default[j] = Float32(g1_default_pos(j))
     for r in range(n_rows):
@@ -591,10 +591,10 @@ def convert_clip(clip: LafanClip, mut env: UnitreeG1[DType.float64], motion_id: 
             blend = Float32(1)
         var omb = Float32(1.0) - blend
         # bodies
-        var bp = InlineArray[Float32, NB * 3](fill=Float32(0))
-        var bq = InlineArray[Float32, NB * 4](fill=Float32(0))
-        var bv = InlineArray[Float32, NB * 3](fill=Float32(0))
-        var bw = InlineArray[Float32, NB * 3](fill=Float32(0))
+        var bp = Array[Float32, NB * 3](fill=Float32(0))
+        var bq = Array[Float32, NB * 4](fill=Float32(0))
+        var bv = Array[Float32, NB * 3](fill=Float32(0))
+        var bw = Array[Float32, NB * 3](fill=Float32(0))
         for b in range(NB):
             for c in range(3):
                 var i0 = (idx0 * NB + b) * 3 + c
@@ -605,8 +605,8 @@ def convert_clip(clip: LafanClip, mut env: UnitreeG1[DType.float64], motion_id: 
             var q = ref_slerp(_q4(frot, (idx0 * NB + b) * 4), _q4(frot, (idx1 * NB + b) * 4), blend)
             for k in range(4):
                 bq[b * 4 + k] = q[k]
-        var dof = InlineArray[Float32, G1_N_DOF](fill=Float32(0))
-        var dvel = InlineArray[Float32, G1_N_DOF](fill=Float32(0))
+        var dof = Array[Float32, G1_N_DOF](fill=Float32(0))
+        var dvel = Array[Float32, G1_N_DOF](fill=Float32(0))
         for j in range(G1_N_DOF):
             dof[j] = _m(omb, fdof[idx0 * G1_N_DOF + j]) + _m(blend, fdof[idx1 * G1_N_DOF + j])
             dvel[j] = _m(omb, fdvel[idx0 * G1_N_DOF + j]) + _m(blend, fdvel[idx1 * G1_N_DOF + j])
@@ -637,7 +637,7 @@ def convert_clip(clip: LafanClip, mut env: UnitreeG1[DType.float64], motion_id: 
                 rows.body_quat[(r * NB + b) * 4 + k] = bq[b * 4 + k]
         # state 64
         var sb = r * LAFAN_STATE_DIM
-        var rootq = InlineArray[Float32, 4](fill=Float32(0))
+        var rootq = Array[Float32, 4](fill=Float32(0))
         for k in range(4):
             rootq[k] = bq[k]
         var g = ref_quat_rotate_inverse(rootq, Float32(0), Float32(0), Float32(-1))
@@ -656,7 +656,7 @@ def convert_clip(clip: LafanClip, mut env: UnitreeG1[DType.float64], motion_id: 
             for c in range(3):
                 rows.privileged[pb + 1 + (b - 1) * 3 + c] = lp[c]
         for b in range(NB):
-            var q = InlineArray[Float32, 4](fill=Float32(0))
+            var q = Array[Float32, 4](fill=Float32(0))
             for k in range(4):
                 q[k] = bq[b * 4 + k]
             var lr = ref_quat_mul(h, q)

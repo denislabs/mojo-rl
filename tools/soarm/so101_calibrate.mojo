@@ -110,9 +110,9 @@ def _lj(s: String, w: Int) -> String:
 
 
 def _rows(
-    ref lo: InlineArray[Int32, SO101_N],
-    ref pos: InlineArray[Int32, SO101_N],
-    ref hi: InlineArray[Int32, SO101_N],
+    ref lo: Array[Int32, SO101_N],
+    ref pos: Array[Int32, SO101_N],
+    ref hi: Array[Int32, SO101_N],
     ref skip: List[Int],
     live: Bool,
 ) raises -> List[String]:
@@ -135,9 +135,9 @@ def _rows(
 
 
 def _sweep_table(
-    ref lo: InlineArray[Int32, SO101_N],
-    ref pos: InlineArray[Int32, SO101_N],
-    ref hi: InlineArray[Int32, SO101_N],
+    ref lo: Array[Int32, SO101_N],
+    ref pos: Array[Int32, SO101_N],
+    ref hi: Array[Int32, SO101_N],
     ref skip: List[Int],
     redraw_lines: Int,
     plain: Bool,
@@ -426,7 +426,7 @@ def _calibrate(
     values back. Returning True on a decline is how the arm gets left
     uncalibrated by a tool that reported success.
     """
-    var raw = InlineArray[Int32, SO101_N](fill=0)
+    var raw = Array[Int32, SO101_N](fill=0)
 
     # ── step 1: zero the offsets so positions read absolute ──────────
     print("── 1. middle pose ─────────────────────────────────────────")
@@ -479,8 +479,8 @@ def _calibrate(
     stdin.discard_pending()
     print("")
 
-    var lo = InlineArray[Int32, SO101_N](fill=0)
-    var hi = InlineArray[Int32, SO101_N](fill=0)
+    var lo = Array[Int32, SO101_N](fill=0)
+    var hi = Array[Int32, SO101_N](fill=0)
     # ⚠ SEED BEFORE THE LOOP. Left at zero, a sweep that ends immediately
     # renders MIN and MAX as 0 beside a real POS — a table that looks like the
     # arm is at one end of a range it never had.

@@ -181,7 +181,7 @@ def run_ezv2_gumbel_selfplay_gpu_vp[
 
         # ── sample from the improved policy, tempered π^(1/T) ──
         var temp = visit_temperature(it, temperature_decay_steps)
-        var w = InlineArray[Float64, ACT](fill=0.0)
+        var w = Array[Float64, ACT](fill=0.0)
         var wsum = 0.0
         for a in range(ACT):
             var p = Float64(h_pol[a])

@@ -151,4 +151,4 @@ def _null_ptr[T: AnyType, O: Origin]() -> Pointer[T, O]:
 
 comptime ArrayHelper[
     type: ImplicitlyCopyable, size: Int, origin: Origin
-] = Ptr[InlineArray[type, size], origin]
+] = Ptr[Array[type, size], origin]

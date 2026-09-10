@@ -12,8 +12,8 @@ Example usage:
     # ... fill advantages ...
     normalize(advantages)
 
-    # For InlineArray-based code
-    var advantages = InlineArray[Scalar[DType.float32], 2048](fill=0)
+    # For Array-based code
+    var advantages = Array[Scalar[DType.float32], 2048](fill=0)
     normalize_inline(buffer_len, advantages)
 """
 
@@ -61,8 +61,8 @@ def normalize(mut values: List[Float64], eps: Float64 = 1e-8):
 
 def normalize_inline[
     dtype: DType, N: Int
-](n: Int, mut values: InlineArray[Scalar[dtype], N], eps: Float64 = 1e-8):
-    """Normalize values in an InlineArray to have zero mean and unit variance.
+](n: Int, mut values: Array[Scalar[dtype], N], eps: Float64 = 1e-8):
+    """Normalize values in an Array to have zero mean and unit variance.
 
     Computes: values[i] = (values[i] - mean) / (std + eps) for i in [0, n)
 
@@ -73,10 +73,10 @@ def normalize_inline[
 
     Parameters:
         dtype: Data type of the values.
-        N: Maximum capacity of the InlineArray.
+        N: Maximum capacity of the Array.
 
     Example:
-        var advantages = InlineArray[Scalar[DType.float32], 2048](fill=0)
+        var advantages = Array[Scalar[DType.float32], 2048](fill=0)
         # ... fill advantages ...
         normalize_inline(buffer_len, advantages)
     """

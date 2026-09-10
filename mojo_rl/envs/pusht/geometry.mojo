@@ -9,7 +9,7 @@ Provides:
 - Shape-buffer initialization helpers
 
 All routines are written in a CPU/GPU-friendly style (no heap allocation,
-small fixed-size InlineArray scratchpads, no recursion).
+small fixed-size Array scratchpads, no recursion).
 """
 
 from std.math import cos, sin, sqrt
@@ -96,8 +96,8 @@ def t_rect_stem_vertex(
 def init_pusht_shape_buffer[
     NUM_SHAPES: Int
 ](
-    mut shapes: InlineArray[
-        InlineArray[Scalar[dtype], SHAPE_MAX_SIZE], NUM_SHAPES
+    mut shapes: Array[
+        Array[Scalar[dtype], SHAPE_MAX_SIZE], NUM_SHAPES
     ],
 ):
     """Populate the 5 shape slots used by PushT (see PushTShapeBuf)."""
@@ -184,7 +184,7 @@ def get_t_keypoints_world(
     cx: Scalar[dtype],
     cy: Scalar[dtype],
     angle: Scalar[dtype],
-    mut out: InlineArray[Scalar[dtype], PConstants.KEYPOINTS_DIM],
+    mut out: Array[Scalar[dtype], PConstants.KEYPOINTS_DIM],
 ):
     """Write 8 (x,y) keypoints into `out` (16 floats total)."""
     var cos_a = cos(angle)
@@ -249,22 +249,22 @@ def _line_intersect(
 
 @always_inline
 def clip_convex_polygon(
-    subj_x: InlineArray[Scalar[dtype], MAX_CLIP_VERTS],
-    subj_y: InlineArray[Scalar[dtype], MAX_CLIP_VERTS],
+    subj_x: Array[Scalar[dtype], MAX_CLIP_VERTS],
+    subj_y: Array[Scalar[dtype], MAX_CLIP_VERTS],
     n_subj: Int,
-    clip_x: InlineArray[Scalar[dtype], MAX_CLIP_VERTS],
-    clip_y: InlineArray[Scalar[dtype], MAX_CLIP_VERTS],
+    clip_x: Array[Scalar[dtype], MAX_CLIP_VERTS],
+    clip_y: Array[Scalar[dtype], MAX_CLIP_VERTS],
     n_clip: Int,
-    mut out_x: InlineArray[Scalar[dtype], MAX_CLIP_VERTS],
-    mut out_y: InlineArray[Scalar[dtype], MAX_CLIP_VERTS],
+    mut out_x: Array[Scalar[dtype], MAX_CLIP_VERTS],
+    mut out_y: Array[Scalar[dtype], MAX_CLIP_VERTS],
 ) -> Int:
     """Clip convex subject polygon against convex (CCW) clipper polygon.
     Returns the number of vertices written into out_x/out_y."""
     # Work buffers (we ping-pong between two scratchpads).
-    var cur_x = InlineArray[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
-    var cur_y = InlineArray[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
-    var nxt_x = InlineArray[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
-    var nxt_y = InlineArray[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
+    var cur_x = Array[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
+    var cur_y = Array[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
+    var nxt_x = Array[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
+    var nxt_y = Array[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
     for i in range(n_subj):
         cur_x[i] = subj_x[i]
         cur_y[i] = subj_y[i]
@@ -321,8 +321,8 @@ def clip_convex_polygon(
 
 @always_inline
 def polygon_area(
-    xs: InlineArray[Scalar[dtype], MAX_CLIP_VERTS],
-    ys: InlineArray[Scalar[dtype], MAX_CLIP_VERTS],
+    xs: Array[Scalar[dtype], MAX_CLIP_VERTS],
+    ys: Array[Scalar[dtype], MAX_CLIP_VERTS],
     n: Int,
 ) -> Scalar[dtype]:
     """Shoelace area of CCW polygon (absolute value taken at end)."""
@@ -349,8 +349,8 @@ def _fill_t_rect_world(
     cx: Scalar[dtype],
     cy: Scalar[dtype],
     angle: Scalar[dtype],
-    mut out_x: InlineArray[Scalar[dtype], MAX_CLIP_VERTS],
-    mut out_y: InlineArray[Scalar[dtype], MAX_CLIP_VERTS],
+    mut out_x: Array[Scalar[dtype], MAX_CLIP_VERTS],
+    mut out_y: Array[Scalar[dtype], MAX_CLIP_VERTS],
 ) -> Int:
     var cos_a = cos(angle)
     var sin_a = sin(angle)
@@ -375,12 +375,12 @@ def compute_coverage(
     var inter_area = Scalar[dtype](0.0)
     var goal_area = Scalar[dtype](0.0)
 
-    var b_x = InlineArray[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
-    var b_y = InlineArray[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
-    var g_x = InlineArray[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
-    var g_y = InlineArray[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
-    var c_x = InlineArray[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
-    var c_y = InlineArray[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
+    var b_x = Array[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
+    var b_y = Array[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
+    var g_x = Array[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
+    var g_y = Array[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
+    var c_x = Array[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
+    var c_y = Array[Scalar[dtype], MAX_CLIP_VERTS](fill=Scalar[dtype](0.0))
 
     for bi in range(2):
         var nb = _fill_t_rect_world(bi, block_cx, block_cy, block_angle, b_x, b_y)

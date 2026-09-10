@@ -20,7 +20,7 @@ from mojo_rl.nn.core.ptr import mptr
 
 def cpu_test() raises:
     # Render with block at goal pose, agent at (256, 400).
-    var data = InlineArray[Scalar[dtype], IMG_H * IMG_W * IMG_C](
+    var data = Array[Scalar[dtype], IMG_H * IMG_W * IMG_C](
         fill=Scalar[dtype](0.0)
     )
     var out_t = LayoutTensor[

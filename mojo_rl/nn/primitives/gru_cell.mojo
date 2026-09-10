@@ -217,8 +217,8 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
     comptime OUT_DIM = Self.HIDDEN
 
     @staticmethod
-    def _build_in_dims() -> InlineArray[Int, 2]:
-        var d = InlineArray[Int, 2](fill=0)
+    def _build_in_dims() -> Array[Int, 2]:
+        var d = Array[Int, 2](fill=0)
         d[0] = Self.IN_
         d[1] = Self.HIDDEN
         return d^

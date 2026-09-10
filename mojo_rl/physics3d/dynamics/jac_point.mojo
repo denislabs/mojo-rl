@@ -44,7 +44,7 @@ as nv x 3 transposes silently and still has the right norm, so a gate that only
 checks magnitudes will not see it.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from layout import Layout, LayoutTensor
 from ..fields.scratch import Scratch
 

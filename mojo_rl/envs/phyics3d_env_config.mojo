@@ -57,7 +57,7 @@ trait Phyics3dEnvConfig:
     # (`contype=0 conaffinity=0`); the rest of the suite has no meshes at all.
     # A nonzero value compiles the whole GJK/EPA mesh branch into that model's
     # collision kernel, which costs compile time and registers and risks the
-    # Metal wide-InlineArray cliff — so pay it only where a mesh can collide.
+    # Metal wide-Array cliff — so pay it only where a mesh can collide.
     #
     # It cannot be derived from the XML at comptime (mesh assets need file I/O
     # and the comptime parser cannot read an STL), so it is hand-supplied like

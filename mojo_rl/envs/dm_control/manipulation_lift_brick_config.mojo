@@ -75,7 +75,7 @@ single draw, so what remains is the placement and the settle — and here the
 settle is doing real work, because the draw puts the brick through the floor.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt, inf
 from std.random import random_float64
 
@@ -275,10 +275,10 @@ struct LiftBrickConfig(Phyics3dEnvConfig):
     ):
         """`set_grasp` — ONE draw broadcast to all three fingers, exactly as
         `reach.py` and `lift.py` both do."""
-        var qadr = InlineArray[Int, N_HAND](fill=0)
-        var rmin = InlineArray[Float64, N_HAND](fill=0.0)
-        var rmax = InlineArray[Float64, N_HAND](fill=0.0)
-        var factors = InlineArray[Float64, N_HAND](fill=0.0)
+        var qadr = Array[Int, N_HAND](fill=0)
+        var rmin = Array[Float64, N_HAND](fill=0.0)
+        var rmax = Array[Float64, N_HAND](fill=0.0)
+        var factors = Array[Float64, N_HAND](fill=0.0)
         var close = random_float64()
         for i in range(N_HAND):
             var jb = (N_ARM + i) * MODEL_JOINT_SIZE
@@ -304,15 +304,15 @@ struct LiftBrickConfig(Phyics3dEnvConfig):
         comptime MAX_SAMP: Int = 10
 
         # ── 1. place the prop ───────────────────────────────────────────
-        var lo_p = InlineArray[Float64, 3](fill=0.0)
+        var lo_p = Array[Float64, 3](fill=0.0)
         lo_p[0] = PROP_BBOX_LOWER_X
         lo_p[1] = PROP_BBOX_LOWER_Y
         lo_p[2] = PROP_BBOX_LOWER_Z
-        var hi_p = InlineArray[Float64, 3](fill=0.0)
+        var hi_p = Array[Float64, 3](fill=0.0)
         hi_p[0] = PROP_BBOX_UPPER_X
         hi_p[1] = PROP_BBOX_UPPER_Y
         hi_p[2] = PROP_BBOX_UPPER_Z
-        var draws = InlineArray[Float64, 3](fill=0.0)
+        var draws = Array[Float64, 3](fill=0.0)
         for k in range(3):
             draws[k] = random_float64()
         var ppos = sample_bbox_uniform[DTYPE](lo_p, hi_p, draws)
@@ -325,10 +325,10 @@ struct LiftBrickConfig(Phyics3dEnvConfig):
         _ = settle_free_prop[DTYPE, LiftBrickModel.CONE_TYPE, LiftBrickModel.MAX_CONDIM, LiftBrickModel.NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER](d, mf, PROP_DOF_ADR, Self.get_timestep(), String("lift_brick"))
 
         # ── 3. the TCP initializer ──────────────────────────────────────
-        var dof_idx = InlineArray[Int, N_ARM](fill=0)
-        var qpos_adr = InlineArray[Int, N_ARM](fill=0)
-        var lower = InlineArray[Float64, N_ARM](fill=0.0)
-        var upper = InlineArray[Float64, N_ARM](fill=0.0)
+        var dof_idx = Array[Int, N_ARM](fill=0)
+        var qpos_adr = Array[Int, N_ARM](fill=0)
+        var lower = Array[Float64, N_ARM](fill=0.0)
+        var upper = Array[Float64, N_ARM](fill=0.0)
         for a in range(N_ARM):
             var jb = a * MODEL_JOINT_SIZE
             dof_idx[a] = a
@@ -345,16 +345,16 @@ struct LiftBrickConfig(Phyics3dEnvConfig):
             upper[a] = hi
 
         var targets = List[Scalar[DTYPE]]()
-        var lo_t = InlineArray[Float64, 3](fill=0.0)
+        var lo_t = Array[Float64, 3](fill=0.0)
         lo_t[0] = TCP_BBOX_LOWER_X
         lo_t[1] = TCP_BBOX_LOWER_Y
         lo_t[2] = TCP_BBOX_LOWER_Z
-        var hi_t = InlineArray[Float64, 3](fill=0.0)
+        var hi_t = Array[Float64, 3](fill=0.0)
         hi_t[0] = TCP_BBOX_UPPER_X
         hi_t[1] = TCP_BBOX_UPPER_Y
         hi_t[2] = TCP_BBOX_UPPER_Z
         for _ in range(MAX_SAMP):
-            var td = InlineArray[Float64, 3](fill=0.0)
+            var td = Array[Float64, 3](fill=0.0)
             for k in range(3):
                 td[k] = random_float64()
             var p = sample_bbox_uniform[DTYPE](lo_t, hi_t, td)
@@ -370,7 +370,7 @@ struct LiftBrickConfig(Phyics3dEnvConfig):
                     )
                 )
 
-        var down = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        var down = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
         down[0] = Scalar[DTYPE](DOWN_QUAT_XY)
         down[1] = Scalar[DTYPE](DOWN_QUAT_XY)
 
@@ -379,7 +379,7 @@ struct LiftBrickConfig(Phyics3dEnvConfig):
         # pushed aside, so resting against one is not a bad initial pose.
         # Labelling it FIXED would reject every arm pose near the box, which
         # is most of the reachable workspace for a LIFTING task.
-        var body_class = InlineArray[Int, D.NBODY](fill=BODY_FIXED)
+        var body_class = Array[Int, D.NBODY](fill=BODY_FIXED)
         for b in range(D.NBODY):
             if b >= 2 and b <= 8:
                 body_class[b] = BODY_ARM

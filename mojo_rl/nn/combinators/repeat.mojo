@@ -23,7 +23,7 @@ from ..core.amp import AMPPolicy, NoAMP
 
 struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.Inner.IN_DIMS[0])
+    comptime IN_DIMS = Array[Int, 1](fill=Self.Inner.IN_DIMS[0])
     comptime OUT_DIM = Self.Inner.OUT_DIM
     # The chain's activation dtype IS the repeated child's (all N copies share
     # one dtype). Inter-stage buffers are stored here.

@@ -288,10 +288,10 @@ def return_and_release(
         )
         var hold = arm.max_step_ticks
         arm.max_step_ticks = RETURN_STEP_TICKS
-        var goals = InlineArray[Int32, SO101_N](fill=0)
+        var goals = Array[Int32, SO101_N](fill=0)
         for i in range(SO101_N):
             goals[i] = start[i]
-        var present = InlineArray[Int32, SO101_N](fill=0)
+        var present = Array[Int32, SO101_N](fill=0)
         var period = 1_000_000_000 // 30
         var t_end = perf_counter_ns() + RETURN_TIMEOUT_S * 1_000_000_000
         var arrived = False
@@ -743,7 +743,7 @@ def main() raises:
     var follower = SO101Arm(String(FOLLOWER_PORT), max_step_ticks=step_ticks)
     follower.bus.timeout_ms = 20
 
-    var raw = InlineArray[Int32, SO101_N](fill=0)
+    var raw = Array[Int32, SO101_N](fill=0)
     if follower.read_positions(Span(raw)) != SO101_N:
         raise Error(
             "act deploy: the follower did not report " + String(SO101_N)
@@ -831,7 +831,7 @@ def main() raises:
             List[UInt8](unsafe_uninit_length = cams[i].frame_bytes())
         )
         chw.append(List[UInt8](length=CAM_ELEMS, fill=0))
-    var goals = InlineArray[Int32, SO101_N](fill=0)
+    var goals = Array[Int32, SO101_N](fill=0)
     var cmd = List[Float64](length=ADIM, fill=0.0)
     for i in range(ADIM):
         cmd[i] = follower.cal.degrees(i, raw[i])

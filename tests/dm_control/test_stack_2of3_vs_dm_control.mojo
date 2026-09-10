@@ -63,7 +63,7 @@ Run with:
     pixi run mojo run -I . tests/dm_control/test_stack_2of3_vs_dm_control.mojo
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt, sin, cos
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
@@ -150,10 +150,10 @@ def _pylist(vals: List[Float64]) raises -> PythonObject:
     return out^
 
 
-def _perm_of(k: Int, out order: InlineArray[Int, N_BRICKS]):
+def _perm_of(k: Int, out order: Array[Int, N_BRICKS]):
     """The k-th of the six permutations of {0, 1, 2}, k in 0..5."""
-    order = InlineArray[Int, N_BRICKS](fill=0)
-    var tbl = InlineArray[Int, 18](fill=0)
+    order = Array[Int, N_BRICKS](fill=0)
+    var tbl = Array[Int, 18](fill=0)
     var vals = [0, 1, 2, 0, 2, 1, 1, 0, 2, 1, 2, 0, 2, 0, 1, 2, 1, 0]
     for i in range(18):
         tbl[i] = vals[i]
@@ -224,8 +224,8 @@ def _brickvel_of(r: Int, out v: List[Float64]):
 
 def _set_scene(
     mut env: ENV,
-    order: InlineArray[Int, N_BRICKS],
-    level_of_ref: InlineArray[Int, N_BRICKS],
+    order: Array[Int, N_BRICKS],
+    level_of_ref: Array[Int, N_BRICKS],
     stacked: Bool,
     arm: List[Float64],
     armvel: List[Float64],
@@ -282,8 +282,8 @@ def _set_scene(
 
 
 def _ref_scene(
-    order: InlineArray[Int, N_BRICKS],
-    level_of_ref: InlineArray[Int, N_BRICKS],
+    order: Array[Int, N_BRICKS],
+    level_of_ref: Array[Int, N_BRICKS],
     stacked: Bool,
 ) raises -> Tuple[PythonObject, PythonObject]:
     """`(brick_poses, brick_qvel)` for `stack_random_state`, by REFERENCE
@@ -304,7 +304,7 @@ def _ref_scene(
     return (poses^, vels^)
 
 
-def _pyorder(order: InlineArray[Int, N_BRICKS]) raises -> PythonObject:
+def _pyorder(order: Array[Int, N_BRICKS]) raises -> PythonObject:
     """The reference's `desired_order` — only the first `TARGET_HEIGHT`.
 
     ⚠ TWO ENTRIES, NOT THREE. `choice(3, size=2, replace=False)` is a subset;
@@ -407,7 +407,7 @@ def test_stack_2of3_indices_and_sigma() raises:
     for k in range(6):
         var order = _perm_of(k)
         var sigma = sigma_of(order)
-        var seen = InlineArray[Int, N_BRICKS](fill=0)
+        var seen = Array[Int, N_BRICKS](fill=0)
         for r in range(N_BRICKS):
             assert_true(
                 sigma[r] >= 0 and sigma[r] < N_BRICKS,
@@ -453,7 +453,7 @@ def test_stack_2of3_observation_over_all_orders() raises:
         var order = _perm_of(k)
         # Reference brick r sits at level r — a different pose each, so a
         # mis-permuted block cannot pass.
-        var level = InlineArray[Int, N_BRICKS](fill=0)
+        var level = Array[Int, N_BRICKS](fill=0)
         for r in range(N_BRICKS):
             level[r] = r
         var arm = _arm_of(k % 4)
@@ -515,7 +515,7 @@ def test_stack_2of3_joints_torque_matches_dm_control() raises:
     var largest = 0.0
     for k in range(2):
         var order = _perm_of(k * 3)  # [0,1,2] and [1,2,0]
-        var level = InlineArray[Int, N_BRICKS](fill=0)
+        var level = Array[Int, N_BRICKS](fill=0)
         for r in range(N_BRICKS):
             level[r] = r
         var arm = _arm_of(k)
@@ -559,7 +559,7 @@ def test_stack_2of3_reward_follows_the_order() raises:
         # stack is built IN the desired order, so the reward should be 1. ⚠ The
         # LEFTOVER brick (order[2], in no pair) goes on level 2, where it
         # cannot affect a reward that only reads the (order[0], order[1]) pair.
-        var level = InlineArray[Int, N_BRICKS](fill=0)
+        var level = Array[Int, N_BRICKS](fill=0)
         for i in range(N_BRICKS):
             level[order[i]] = i
         var arm = _arm_of(0)
@@ -604,7 +604,7 @@ def test_stack_2of3_reward_follows_the_order() raises:
     # if the reward ignored `desired_order` these would agree.
     var o_a = _perm_of(0)  # [0, 1, 2]
     var o_b = _perm_of(5)  # [2, 1, 0]
-    var level_a = InlineArray[Int, N_BRICKS](fill=0)
+    var level_a = Array[Int, N_BRICKS](fill=0)
     for i in range(N_BRICKS):
         level_a[o_a[i]] = i
     var arm0 = _arm_of(0)
@@ -642,7 +642,7 @@ def test_stack_2of3_reset_matches_dm_control() raises:
     var out_of_box = 0
     var bad_order = 0
     var tcp_out_of_box = 0
-    var seen = InlineArray[Int, 6](fill=0)
+    var seen = Array[Int, 6](fill=0)
 
     for r in range(N_RESETS):
         _ = env.reset()
@@ -650,7 +650,7 @@ def test_stack_2of3_reset_matches_dm_control() raises:
         var sigma = sigma_of(order)
 
         # The drawn order must be a permutation.
-        var seen_r = InlineArray[Int, N_BRICKS](fill=0)
+        var seen_r = Array[Int, N_BRICKS](fill=0)
         for i in range(N_BRICKS):
             if order[i] < 0 or order[i] >= N_BRICKS:
                 bad_order += 1

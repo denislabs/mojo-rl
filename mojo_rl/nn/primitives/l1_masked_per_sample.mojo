@@ -232,9 +232,9 @@ struct L1MaskedPerSample[K: Int, D: Int](Module):
             )
 
 
-def _l1m_in_dims[K: Int, D: Int]() -> InlineArray[Int, 3]:
-    """`InlineArray` has no variadic-element literal in Mojo 1.0; mirrors
+def _l1m_in_dims[K: Int, D: Int]() -> Array[Int, 3]:
+    """`Array` has no variadic-element literal in Mojo 1.0; mirrors
     `concat.mojo`'s comptime helpers."""
-    var a = InlineArray[Int, 3](fill=K * D)
+    var a = Array[Int, 3](fill=K * D)
     a[2] = K
     return a^

@@ -41,7 +41,7 @@ def _flatten_copy_kernel[
 
 struct Flatten[DIM_: Int, ADT: DType = DT](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
     # Activation-flow dtype (AMP). Flatten is dtype-TRANSPARENT — a pure
     # identity copy with no math/cast — so it carries ACT_DT through unchanged.

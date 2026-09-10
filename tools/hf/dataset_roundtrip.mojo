@@ -39,7 +39,7 @@ from mojo_rl.io.hf_push import HubPush, hf_whoami
 comptime H = 48
 comptime W = 64
 comptime FPS = 30
-comptime EP_LENS: InlineArray[Int, 3] = [5, 3, 6]
+comptime EP_LENS: Array[Int, 3] = [5, 3, 6]
 comptime N_ROWS = 14
 
 

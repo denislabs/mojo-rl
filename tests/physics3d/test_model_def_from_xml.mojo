@@ -385,7 +385,7 @@ def test_root_default_survives_nested_classes() raises:
     ]
 
     # ⚠ THE `comptime` BINDING IS GONE AND SO IS ITS REASON: a comptime
-    # `InlineArray` could not be subscripted inside a runtime expression
+    # `Array` could not be subscripted inside a runtime expression
     # without materializing the whole array. These are tensor reads now.
     var sfn = XmlModel.make_spec_fields[DType.float64]()
     var GEAR0 = Float64(

@@ -49,7 +49,7 @@ renderer and nothing else. They still occupy bodies 18 and 20 and 82 of the
 185 geoms, which is why the real bricks are 17 and 19 rather than 17 and 18.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt
 from std.random import random_float64
 
@@ -296,10 +296,10 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
         m_sites: List[Scalar[DTYPE]],
     ):
         """`set_grasp` — ONE draw broadcast to all three fingers."""
-        var qadr = InlineArray[Int, N_HAND](fill=0)
-        var rmin = InlineArray[Float64, N_HAND](fill=0.0)
-        var rmax = InlineArray[Float64, N_HAND](fill=0.0)
-        var factors = InlineArray[Float64, N_HAND](fill=0.0)
+        var qadr = Array[Int, N_HAND](fill=0)
+        var rmin = Array[Float64, N_HAND](fill=0.0)
+        var rmax = Array[Float64, N_HAND](fill=0.0)
+        var factors = Array[Float64, N_HAND](fill=0.0)
         var close = random_float64()
         for i in range(N_HAND):
             var jb = (N_ARM + i) * MODEL_JOINT_SIZE
@@ -324,11 +324,11 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
         comptime MAX_ATT: Int = 10
         comptime MAX_SAMP: Int = 10
 
-        var lo_p = InlineArray[Float64, 3](fill=0.0)
+        var lo_p = Array[Float64, 3](fill=0.0)
         lo_p[0] = PROP_BBOX_LOWER_X
         lo_p[1] = PROP_BBOX_LOWER_Y
         lo_p[2] = PROP_BBOX_LOWER_Z
-        var hi_p = InlineArray[Float64, 3](fill=0.0)
+        var hi_p = Array[Float64, 3](fill=0.0)
         hi_p[0] = PROP_BBOX_UPPER_X
         hi_p[1] = PROP_BBOX_UPPER_Y
         hi_p[2] = PROP_BBOX_UPPER_Z
@@ -337,7 +337,7 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
         # switched off because it has not been placed yet.
         var poses0 = List[Scalar[DTYPE]]()
         for _ in range(MAX_PROP_ATTEMPTS):
-            var dr = InlineArray[Float64, 3](fill=0.0)
+            var dr = Array[Float64, 3](fill=0.0)
             for k in range(3):
                 dr[k] = random_float64()
             var pp = sample_bbox_uniform[DTYPE](lo_p, hi_p, dr)
@@ -359,7 +359,7 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
         # ── 2. the FREE brick, with every prop's contacts live again.
         var poses1 = List[Scalar[DTYPE]]()
         for _ in range(MAX_PROP_ATTEMPTS):
-            var dr = InlineArray[Float64, 3](fill=0.0)
+            var dr = Array[Float64, 3](fill=0.0)
             for k in range(3):
                 dr[k] = random_float64()
             var pp = sample_bbox_uniform[DTYPE](lo_p, hi_p, dr)
@@ -385,10 +385,10 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
         _ = settle_free_prop[DTYPE, Stack2BricksModel.CONE_TYPE, Stack2BricksModel.MAX_CONDIM, Stack2BricksModel.NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER](d, mf, BRICK1_DOF_ADR, Self.get_timestep(), String("stack_2_bricks"))
 
         # ── 4. the TCP initializer ──────────────────────────────────────
-        var dof_idx = InlineArray[Int, N_ARM](fill=0)
-        var qpos_adr = InlineArray[Int, N_ARM](fill=0)
-        var lower = InlineArray[Float64, N_ARM](fill=0.0)
-        var upper = InlineArray[Float64, N_ARM](fill=0.0)
+        var dof_idx = Array[Int, N_ARM](fill=0)
+        var qpos_adr = Array[Int, N_ARM](fill=0)
+        var lower = Array[Float64, N_ARM](fill=0.0)
+        var upper = Array[Float64, N_ARM](fill=0.0)
         for a in range(N_ARM):
             var jb = a * MODEL_JOINT_SIZE
             dof_idx[a] = a
@@ -402,16 +402,16 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
             upper[a] = hi
 
         var targets = List[Scalar[DTYPE]]()
-        var lo_t = InlineArray[Float64, 3](fill=0.0)
+        var lo_t = Array[Float64, 3](fill=0.0)
         lo_t[0] = TCP_BBOX_LOWER_X
         lo_t[1] = TCP_BBOX_LOWER_Y
         lo_t[2] = TCP_BBOX_LOWER_Z
-        var hi_t = InlineArray[Float64, 3](fill=0.0)
+        var hi_t = Array[Float64, 3](fill=0.0)
         hi_t[0] = TCP_BBOX_UPPER_X
         hi_t[1] = TCP_BBOX_UPPER_Y
         hi_t[2] = TCP_BBOX_UPPER_Z
         for _ in range(MAX_SAMP):
-            var td = InlineArray[Float64, 3](fill=0.0)
+            var td = Array[Float64, 3](fill=0.0)
             for k in range(3):
                 td[k] = random_float64()
             var p = sample_bbox_uniform[DTYPE](lo_t, hi_t, td)
@@ -427,7 +427,7 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
                     )
                 )
 
-        var down = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        var down = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
         down[0] = Scalar[DTYPE](DOWN_QUAT_XY)
         down[1] = Scalar[DTYPE](DOWN_QUAT_XY)
 
@@ -440,7 +440,7 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
         #
         # ⚠ THE HINT BRICKS (18, 20) STAY `BODY_FIXED`, which is harmless only
         # because they are contactless and so can never appear in a contact.
-        var body_class = InlineArray[Int, D.NBODY](fill=BODY_FIXED)
+        var body_class = Array[Int, D.NBODY](fill=BODY_FIXED)
         for b in range(D.NBODY):
             if b >= 2 and b <= 8:
                 body_class[b] = BODY_ARM

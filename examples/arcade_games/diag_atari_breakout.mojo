@@ -128,7 +128,7 @@ def main() raises:
 
     comptime COLS = 18
     comptime ROWS = 6
-    var prev = InlineArray[Bool, COLS * ROWS](fill=False)
+    var prev = Array[Bool, COLS * ROWS](fill=False)
     var have_prev = False
 
     var phantom_count = 0
@@ -263,7 +263,7 @@ def main() raises:
         prev_score = cur_score
 
         # Build current brick grid.
-        var cur = InlineArray[Bool, COLS * ROWS](fill=False)
+        var cur = Array[Bool, COLS * ROWS](fill=False)
         for r in range(ROWS):
             for c in range(COLS):
                 cur[r * COLS + c] = brick_cell(buf, c, r)

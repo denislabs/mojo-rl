@@ -377,7 +377,7 @@ def execute_one[
     ONE shared copy and the frame runners shrink ~an order of magnitude.
     (Historical note: the Rainbow Atari pixel example's -O3 compile blowup
     that motivated this was ultimately root-caused to `NStepTransition`'s
-    by-value InlineArray obs — see deep_agents/data/n_step_replay.mojo —
+    by-value Array obs — see deep_agents/data/n_step_replay.mojo —
     not the emulator; this boundary is kept as cheap IR hygiene.)
     Runtime cost is one real call per emulated instruction, noise against
     the 9–21 TIA color-clock ticks each instruction drives (measured: no
@@ -1045,7 +1045,7 @@ def run_frame(
     - Game-specific reward/lives/terminal should be extracted from RAM
     """
     # Dummy buffer: never written (RENDER=False skips all pixel writes).
-    var dummy = InlineArray[UInt8, 4](fill=0)
+    var dummy = Array[UInt8, 4](fill=0)
     # Materialize the opcode table once per frame and pass its pointer down (the
     # frame runner can no longer read the comptime global directly — see
     # _fetch_opcode_entry). Once per ~20k instructions, so negligible on CPU.
@@ -1246,7 +1246,7 @@ def _cycle_pixel[
     pixel: Int,
     lit: UInt8,
     buf: Pointer[UInt8, o],
-    palette: InlineArray[UInt32, 256],
+    palette: Array[UInt32, 256],
 ):
     """Latch per-clock collisions and render one pixel from the counter lit-mask
     plus the live playfield."""
@@ -1445,7 +1445,7 @@ def run_frame_cycle_accurate[
     copies into one ~440K-line function. `execute_one` is now `@no_inline`
     too (one shared dispatch copy), shrinking each instantiation ~10×; both
     boundaries stay. (The Rainbow-Atari -O3 compile OOM once blamed on this
-    was root-caused to NStepTransition's by-value InlineArray obs in
+    was root-caused to NStepTransition's by-value Array obs in
     deep_agents — the emulator was a red herring; most of its residual IR
     bulk was live debug_assert bounds checks, see `-D ASSERT=none`.)
     Called once per emulated frame: a non-inlined call is
@@ -1533,8 +1533,8 @@ def run_frame_cycle_accurate[
     var clocks = 0
     # Fixed drain buffers for matured DelayQueue writes — no per-frame heap
     # (kernel-safe). At most DQ_CAP writes can fire in a single color clock.
-    var due_reg = InlineArray[UInt8, DQ_CAP](fill=0)
-    var due_val = InlineArray[UInt8, DQ_CAP](fill=0)
+    var due_reg = Array[UInt8, DQ_CAP](fill=0)
+    var due_val = Array[UInt8, DQ_CAP](fill=0)
     # Bulk fast-path throttle: after a blocked attempt (an object's render
     # window is ahead), run this many per-clock iterations before retrying.
     var skip_bulk = 0

@@ -181,7 +181,7 @@ def _act_gate_kernel[
 
 struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IN_)
     comptime OUT_DIM = Self.OUT_
     comptime W_SIZE = Self.IN_ * Self.OUT_
 

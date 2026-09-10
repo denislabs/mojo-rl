@@ -164,7 +164,7 @@ def run_muzero_selfplay_cpu[
         # ── sample action ∝ visits^(1/T) ──
         # The *stored* policy target stays the untempered visit distribution.
         var temp = visit_temperature(it, temperature_decay_steps)
-        var w = InlineArray[Float64, ACT](fill=0.0)
+        var w = Array[Float64, ACT](fill=0.0)
         var wsum = 0.0
         for a in range(ACT):
             var p = policy[a]

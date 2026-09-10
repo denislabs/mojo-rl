@@ -14,7 +14,7 @@ and (in DreamerV3's symlog form) `symexp(v)` recovers the real scale.
 
 Storage-surface port of the legacy nn helpers
 (`mojo_rl/nn/loss/two_hot.mojo`):
-  * scalar helpers stay InlineArray-based (compile-time-sized inline use)
+  * scalar helpers stay Array-based (compile-time-sized inline use)
   * batched helpers operate on `Tensor` storages (CPU `.data` loops) instead
     of the legacy raw `Pointer` form; they keep the `_ptr` suffix off
     their names since they no longer take pointers.
@@ -37,15 +37,15 @@ from mojo_rl.nn.primitives.ops.symlog_math import symlog, symexp
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Bin construction (compile-time-sized InlineArray).
+# Bin construction (compile-time-sized Array).
 # ──────────────────────────────────────────────────────────────────────
 
 
 def compute_bins[
     NUM_BINS: Int,
-](v_min: Scalar[DT], v_max: Scalar[DT]) -> InlineArray[Scalar[DT], NUM_BINS]:
+](v_min: Scalar[DT], v_max: Scalar[DT]) -> Array[Scalar[DT], NUM_BINS]:
     """Evenly-spaced bins in [v_min, v_max]."""
-    var bins = InlineArray[Scalar[DT], NUM_BINS](fill=0)
+    var bins = Array[Scalar[DT], NUM_BINS](fill=0)
     if NUM_BINS == 1:
         bins[0] = (v_min + v_max) * Scalar[DT](0.5)
         return bins^
@@ -57,9 +57,9 @@ def compute_bins[
 
 def compute_symlog_bins[
     NUM_BINS: Int,
-]() -> InlineArray[Scalar[DT], NUM_BINS]:
+]() -> Array[Scalar[DT], NUM_BINS]:
     """DreamerV3 default: bins evenly spaced in symlog space, range [-20, 20]."""
-    var bins = InlineArray[Scalar[DT], NUM_BINS](fill=0)
+    var bins = Array[Scalar[DT], NUM_BINS](fill=0)
     if NUM_BINS == 1:
         bins[0] = Scalar[DT](0.0)
         return bins^
@@ -108,8 +108,8 @@ def two_hot_encode[
     NUM_BINS: Int,
 ](
     x: Scalar[DT],
-    bins: InlineArray[Scalar[DT], NUM_BINS],
-    mut target: InlineArray[Scalar[DT], NUM_BINS],
+    bins: Array[Scalar[DT], NUM_BINS],
+    mut target: Array[Scalar[DT], NUM_BINS],
 ):
     """Encode scalar `x` into a two-hot distribution over `bins`."""
     for i in range(NUM_BINS):
@@ -252,8 +252,8 @@ def two_hot_encode_symlog_batch[
 def decode_value[
     NUM_BINS: Int,
 ](
-    logits: InlineArray[Scalar[DT], NUM_BINS],
-    bins: InlineArray[Scalar[DT], NUM_BINS],
+    logits: Array[Scalar[DT], NUM_BINS],
+    bins: Array[Scalar[DT], NUM_BINS],
 ) -> Scalar[DT]:
     """Decode distributional value with symexp: returns
     `symexp(sum_i softmax(logits)_i * bins_i)` — bins live in symlog

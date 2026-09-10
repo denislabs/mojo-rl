@@ -105,7 +105,7 @@ def _ln_fwd_single[
     var my_sumsq = Scalar[ACC](0)
 
     comptime if REG_CACHE:
-        var slice = InlineArray[Scalar[ACC], ELEMS](fill=Scalar[ACC](0))
+        var slice = Array[Scalar[ACC], ELEMS](fill=Scalar[ACC](0))
 
         comptime for e in range(ELEMS):
             var col = t + e * TPB
@@ -229,8 +229,8 @@ def _ln_bwd_single[
     var my_g_xhat = Scalar[ACC](0)
 
     comptime if REG_CACHE:
-        var g_s = InlineArray[Scalar[ACC], ELEMS](fill=Scalar[ACC](0))
-        var xh_s = InlineArray[Scalar[ACC], ELEMS](fill=Scalar[ACC](0))
+        var g_s = Array[Scalar[ACC], ELEMS](fill=Scalar[ACC](0))
+        var xh_s = Array[Scalar[ACC], ELEMS](fill=Scalar[ACC](0))
 
         comptime for e in range(ELEMS):
             var col = t + e * TPB
@@ -450,7 +450,7 @@ def _mmn_fwd_single[
     comptime ELEMS = (DIM + TPB - 1) // TPB
     var my_min = Scalar[DT](1e30)
     var my_max = Scalar[DT](-1e30)
-    var slice = InlineArray[Scalar[DT], ELEMS](fill=Scalar[DT](0))
+    var slice = Array[Scalar[DT], ELEMS](fill=Scalar[DT](0))
 
     comptime for e in range(ELEMS):
         var col = t + e * TPB

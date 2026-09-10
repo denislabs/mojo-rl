@@ -60,7 +60,7 @@ comptime CifarBackbone[H: Int, W: Int] = Sequential[
 # and the sequential checkpoint reader can't skip a tail of unwanted params.)
 struct CifarFeatureClassifier[NC: Int, H: Int = 32, W: Int = 32](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=3 * Self.H * Self.W)
+    comptime IN_DIMS = Array[Int, 1](fill=3 * Self.H * Self.W)
     comptime OUT_DIM = Self.NC
     comptime FEAT = 64 * (Self.H // 4) * (Self.W // 4)
 

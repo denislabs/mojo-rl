@@ -97,7 +97,7 @@ def _reduce_broadcast_kernel[
 
 struct Reduce[DIM_: Int, OP: ReduceOp](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = 1
 
     def __init__(out self):

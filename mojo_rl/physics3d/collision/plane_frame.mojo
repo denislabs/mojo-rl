@@ -37,7 +37,7 @@ distance, which is what the solver actually uses, is unchanged.
 Quaternions here are `(x, y, z, w)`, the order the geom records use.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 
 from ..kinematics.quat_math import gpu_quat_rotate
 
@@ -50,7 +50,7 @@ def plane_world_normal[
     qy: Scalar[DTYPE],
     qz: Scalar[DTYPE],
     qw: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """The plane's world normal — its local +z axis, per MuJoCo's convention.
 
     Unit in, unit out, so no renormalisation.
@@ -74,7 +74,7 @@ def to_plane_frame[
     wx: Scalar[DTYPE],
     wy: Scalar[DTYPE],
     wz: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """World POINT -> the plane's frame. `[2]` is then its height above the
     plane, which is exactly what `ground_z = 0` makes the primitives expect."""
     return gpu_quat_rotate[DTYPE](-qx, -qy, -qz, qw, wx - px, wy - py, wz - pz)
@@ -91,7 +91,7 @@ def dir_to_plane_frame[
     vx: Scalar[DTYPE],
     vy: Scalar[DTYPE],
     vz: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """World DIRECTION -> the plane's frame (rotation only, no translation).
 
     For a geom's orientation quaternion use `quat_to_plane_frame` instead —
@@ -114,10 +114,10 @@ def from_plane_frame[
     lx: Scalar[DTYPE],
     ly: Scalar[DTYPE],
     lz: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """Plane-frame POINT -> world. Inverse of `to_plane_frame`."""
     var r = gpu_quat_rotate[DTYPE](qx, qy, qz, qw, lx, ly, lz)
-    var out = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+    var out = Array[Scalar[DTYPE], 3](uninitialized=True)
     out[0] = px + r[0]
     out[1] = py + r[1]
     out[2] = pz + r[2]
@@ -136,7 +136,7 @@ def quat_to_plane_frame[
     gqy: Scalar[DTYPE],
     gqz: Scalar[DTYPE],
     gqw: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 4]:
+) -> Array[Scalar[DTYPE], 4]:
     """A geom's world ORIENTATION expressed in the plane's frame:
     `conj(q_plane) * q_geom`, as (x, y, z, w).
 
@@ -149,7 +149,7 @@ def quat_to_plane_frame[
     var ay = -pqy
     var az = -pqz
     var aw = pqw
-    var out = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
+    var out = Array[Scalar[DTYPE], 4](uninitialized=True)
     out[0] = aw * gqx + ax * gqw + ay * gqz - az * gqy
     out[1] = aw * gqy - ax * gqz + ay * gqw + az * gqx
     out[2] = aw * gqz + ax * gqy - ay * gqx + az * gqw

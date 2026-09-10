@@ -99,7 +99,7 @@ def _ew_bwd_kernel[
 
 struct Elementwise[DIM_: Int, OP: ElementOp, ADT: DType = DT](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
     # Activation-flow dtype. `Elementwise[DIM, OP]` = fp32 (ACT_DT == DT, the
     # legacy NoAMP path, byte-identical); `Elementwise[DIM, OP, bfloat16]` flows

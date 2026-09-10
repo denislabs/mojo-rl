@@ -55,7 +55,7 @@ from ..core.amp import AMPPolicy, NoAMP
 
 struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ_LEN * Self.DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.SEQ_LEN * Self.DIM)
     comptime OUT_DIM = 1
 
     # cache_z [BATCH, T*P] — leaf-owned, reused by backward.
@@ -213,7 +213,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             var seed = self._forward_seed(
                 UInt64(Int(self.cache_z.data.unsafe_ptr()))
             )
-            var a = InlineArray[Scalar[DT], D * P](uninitialized=True)
+            var a = Array[Scalar[DT], D * P](uninitialized=True)
             Self._generate_a_cpu(
                 seed,
                 rebind[Pointer[Scalar[DT], MutAnyOrigin]](
@@ -230,8 +230,8 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
                         cache[b, t * P + p] = z
 
             comptime NTPK = T * P * K
-            var cm = InlineArray[Scalar[DT], NTPK](uninitialized=True)
-            var sm = InlineArray[Scalar[DT], NTPK](uninitialized=True)
+            var cm = Array[Scalar[DT], NTPK](uninitialized=True)
+            var sm = Array[Scalar[DT], NTPK](uninitialized=True)
             for i in range(NTPK):
                 cm[i] = Scalar[DT](0)
                 sm[i] = Scalar[DT](0)
@@ -346,7 +346,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             var seed = self._backward_seed(
                 UInt64(Int(self.cache_z.data.unsafe_ptr()))
             )
-            var a = InlineArray[Scalar[DT], D * P](uninitialized=True)
+            var a = Array[Scalar[DT], D * P](uninitialized=True)
             Self._generate_a_cpu(
                 seed,
                 rebind[Pointer[Scalar[DT], MutAnyOrigin]](
@@ -355,8 +355,8 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             )
 
             comptime NTPK = T * P * K
-            var cm = InlineArray[Scalar[DT], NTPK](uninitialized=True)
-            var sm = InlineArray[Scalar[DT], NTPK](uninitialized=True)
+            var cm = Array[Scalar[DT], NTPK](uninitialized=True)
+            var sm = Array[Scalar[DT], NTPK](uninitialized=True)
             for i in range(NTPK):
                 cm[i] = Scalar[DT](0)
                 sm[i] = Scalar[DT](0)
@@ -379,7 +379,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
 
             for b in range(B):
                 for t in range(T):
-                    var dLdz = InlineArray[Scalar[DT], P](uninitialized=True)
+                    var dLdz = Array[Scalar[DT], P](uninitialized=True)
                     for p in range(P):
                         var z = cache[b, t * P + p]
                         var acc = Scalar[DT](0)

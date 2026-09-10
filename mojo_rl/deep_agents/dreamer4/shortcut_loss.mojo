@@ -78,7 +78,7 @@ trait ShortcutDynamics(Defaultable & Movable & Deinitable):
     default.
 
     NOTE (Mojo 1.0): this trait deliberately does NOT inherit `Module`. A trait
-    that refines `Module` (whose `IN_DIMS` is `InlineArray[Int, Self.ARITY]`)
+    that refines `Module` (whose `IN_DIMS` is `Array[Int, Self.ARITY]`)
     crashes the compiler with "trait composition has conflicting types for
     IN_DIMS" when used as a generic bound (`[M: ShortcutDynamics]`). Instead it
     re-declares the slice of the `Module` surface the dynamics loops actually

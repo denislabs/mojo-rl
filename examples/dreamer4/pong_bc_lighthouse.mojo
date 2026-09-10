@@ -308,7 +308,7 @@ def main() raises:
     comptime EVAL_BATCHES = 20
     var n_correct = 0
     var n_total = 0
-    var class_count = InlineArray[Int, ACT](fill=0)
+    var class_count = Array[Int, ACT](fill=0)
     for _ in range(EVAL_BATCHES):
         src.next_batch()
         _window_to_patches[B, T, IMG, IMG_DIM, TGT, PATCH](

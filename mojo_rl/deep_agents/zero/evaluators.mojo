@@ -181,7 +181,7 @@ struct RandomOpponent(GPUEvaluator & CPUEvaluator):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _ttt_winner(board: InlineArray[Int, 9]) -> Int:
+def _ttt_winner(board: Array[Int, 9]) -> Int:
     """0=none, else winning mark (1 or 2)."""
     for r in range(3):
         var i = r * 3
@@ -205,16 +205,16 @@ def _ttt_winner(board: InlineArray[Int, 9]) -> Int:
     return 0
 
 
-def _ttt_minimax_iter(mut board: InlineArray[Int, 9], my_mark: Int) -> Int:
+def _ttt_minimax_iter(mut board: Array[Int, 9], my_mark: Int) -> Int:
     """Iterative minimax (explicit stack, max depth 9) from a position where
     it is the opponent's turn after our root move. Returns +1/0/-1 from `my`
     perspective."""
     comptime MAX_DEPTH = 10
-    var stk_action = InlineArray[Int, MAX_DEPTH](fill=0)
-    var stk_best = InlineArray[Int, MAX_DEPTH](fill=0)
-    var stk_is_max = InlineArray[Int, MAX_DEPTH](fill=0)
-    var stk_mark = InlineArray[Int, MAX_DEPTH](fill=0)
-    var stk_placed = InlineArray[Int, MAX_DEPTH](fill=-1)
+    var stk_action = Array[Int, MAX_DEPTH](fill=0)
+    var stk_best = Array[Int, MAX_DEPTH](fill=0)
+    var stk_is_max = Array[Int, MAX_DEPTH](fill=0)
+    var stk_mark = Array[Int, MAX_DEPTH](fill=0)
+    var stk_placed = Array[Int, MAX_DEPTH](fill=-1)
 
     var opp_mark = 3 - my_mark
     var depth = 0
@@ -308,7 +308,7 @@ def _ttt_minimax_kernel[
     if e >= N_ENVS:
         return
     var s_off = e * STATE_SIZE
-    var board = InlineArray[Int, 9](fill=0)
+    var board = Array[Int, 9](fill=0)
     for i in range(9):
         board[i] = Int(rebind[Scalar[DT]](game_states[s_off + i]))
     var player = Int(rebind[Scalar[DT]](game_states[s_off + 9]))
@@ -342,7 +342,7 @@ struct GPUMinimaxTicTacToe(GPUEvaluator & CPUEvaluator):
         _ = rng_seed
         var buf = List[Scalar[DT]](length=E.SAVE_SIZE, fill=0)
         env.save_env_state(buf)
-        var board = InlineArray[Int, 9](fill=0)
+        var board = Array[Int, 9](fill=0)
         for i in range(9):
             board[i] = Int(buf[i])
         var player = Int(buf[9])
@@ -397,7 +397,7 @@ struct GPUMinimaxTicTacToe(GPUEvaluator & CPUEvaluator):
 
 
 def _c4_count_dir(
-    board: InlineArray[Int, 42], col: Int, row: Int, mark: Int, dc: Int, dr: Int
+    board: Array[Int, 42], col: Int, row: Int, mark: Int, dc: Int, dr: Int
 ) -> Int:
     comptime ROWS = 6
     comptime COLS = 7
@@ -418,7 +418,7 @@ def _c4_count_dir(
 
 
 def _c4_check_win(
-    board: InlineArray[Int, 42], col: Int, row: Int, mark: Int
+    board: Array[Int, 42], col: Int, row: Int, mark: Int
 ) -> Bool:
     return (
         _c4_count_dir(board, col, row, mark, 1, 0)
@@ -436,7 +436,7 @@ def _c4_check_win(
     )
 
 
-def _c4_find_row(board: InlineArray[Int, 42], col: Int) -> Int:
+def _c4_find_row(board: Array[Int, 42], col: Int) -> Int:
     comptime ROWS = 6
     for r in range(ROWS):
         if board[col * ROWS + r] == 0:
@@ -445,7 +445,7 @@ def _c4_find_row(board: InlineArray[Int, 42], col: Int) -> Int:
 
 
 def _c4_minimax_ab(
-    mut board: InlineArray[Int, 42],
+    mut board: Array[Int, 42],
     depth: Int,
     alpha_in: Int,
     beta_in: Int,
@@ -525,7 +525,7 @@ def _c4_minimax_kernel[
     if e >= N_ENVS:
         return
     var s_off = e * STATE_SIZE
-    var board = InlineArray[Int, 42](fill=0)
+    var board = Array[Int, 42](fill=0)
     for i in range(42):
         board[i] = Int(rebind[Scalar[DT]](game_states[s_off + i]))
     var player = Int(rebind[Scalar[DT]](game_states[s_off + 42]))
@@ -569,7 +569,7 @@ struct GPUMinimaxConnectFour[DEPTH: Int = 5](GPUEvaluator & CPUEvaluator):
         comptime COLS = 7
         var buf = List[Scalar[DT]](length=E.SAVE_SIZE, fill=0)
         env.save_env_state(buf)
-        var board = InlineArray[Int, 42](fill=0)
+        var board = Array[Int, 42](fill=0)
         for i in range(42):
             board[i] = Int(buf[i])
         var player = Int(buf[42])

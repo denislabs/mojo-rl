@@ -28,7 +28,7 @@ Two adapters:
 
   - `BatchedCpuEnv[E, N_ENVS, OBS_DIM, ACT_DIM]` wraps any
     `BoxContinuousActionEnv & Copyable & Movable` env. Holds
-    `InlineArray[E, N_ENVS]` of independent env instances.
+    `Array[E, N_ENVS]` of independent env instances.
   - `BatchedGpuEnv[E, N_ENVS, OBS_DIM, ACT_DIM, STATE_SIZE]` wraps any
     `GPUContinuousEnv`. Holds internal `DeviceBuffer` fields for
     state/obs/action/reward/done/terminated; dispatches the env's
@@ -154,7 +154,7 @@ struct BatchedCpuEnv[
     ACT_DIM_: Int,
 ](BatchedEnv):
     """Wraps N independent instances of a CPU env via
-    `InlineArray[E, N_ENVS]` and owns the obs/action/reward/done host
+    `Array[E, N_ENVS]` and owns the obs/action/reward/done host
     buffers. Per-env state independence is verified by the Tier-2
     viability spike.
 
@@ -172,7 +172,7 @@ struct BatchedCpuEnv[
     comptime OBS_DIM: Int = Self.OBS_DIM_
     comptime ACT_DIM: Int = Self.ACT_DIM_
 
-    var envs: InlineArray[Self.E, Self.N_ENVS]
+    var envs: Array[Self.E, Self.N_ENVS]
 
     # Internally-owned host buffers — driver reads/writes via accessors.
     var _obs: List[Scalar[DT]]
@@ -187,7 +187,7 @@ struct BatchedCpuEnv[
     var _action_scratch: List[Scalar[Self.E.dtype]]
 
     def __init__(out self, template: Self.E):
-        self.envs = InlineArray[Self.E, Self.N_ENVS](fill=template)
+        self.envs = Array[Self.E, Self.N_ENVS](fill=template)
         self._obs = List[Scalar[DT]](
             length=Self.N_ENVS * Self.OBS_DIM,
             fill=Scalar[DT](0.0),

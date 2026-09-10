@@ -50,7 +50,7 @@ bin's representative velocity), `theta`, `theta_dot` and `place_id` are
 ORACLES, for the gates. The encoder sees only `observation()`.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, cos, sin, sqrt, pi
 
 from ..so_d import SqMat

@@ -121,7 +121,7 @@ def _cast_f2b_kernel[
 
 struct BiasAdd[DIM_: Int, ADT: DType = DT](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
     # Activation-flow dtype. `BiasAdd[DIM]` = fp32 (ACT_DT == DT, the legacy
     # path); `BiasAdd[DIM, bfloat16]` flows activations at bf16.

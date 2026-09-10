@@ -9,7 +9,7 @@ Implements the MuJoCo compiler's inertiafromgeom="true" functionality:
 Reference: mujoco-3.3.6/src/user/user_objects.cc (mjCBody::InertiaFromGeom)
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import sqrt, abs as math_abs
 from ..constants import (
     GEOM_PLANE,
@@ -207,7 +207,7 @@ def quat_to_mat[
     qy: Scalar[DTYPE],
     qz: Scalar[DTYPE],
     qw: Scalar[DTYPE],
-    mut mat: InlineArray[Scalar[DTYPE], 9],
+    mut mat: Array[Scalar[DTYPE], 9],
 ):
     """Convert quaternion (x,y,z,w) to 3x3 rotation matrix (row-major).
 
@@ -252,14 +252,14 @@ def globalinertia[
     qy: Scalar[DTYPE],
     qz: Scalar[DTYPE],
     qw: Scalar[DTYPE],
-    mut result: InlineArray[Scalar[DTYPE], 6],
+    mut result: Array[Scalar[DTYPE], 6],
 ):
     """Rotate diagonal inertia tensor by quaternion to full symmetric tensor.
 
     result = [Ixx, Iyy, Izz, Ixy, Ixz, Iyz]
     Matches mjuu_globalinertia: R * diag(I) * R^T
     """
-    var mat = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var mat = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     quat_to_mat(qx, qy, qz, qw, mat)
 
     # tmp[col][row] = R[row][col] * local[col]
@@ -305,7 +305,7 @@ def offcenter[
     dx: Scalar[DTYPE],
     dy: Scalar[DTYPE],
     dz: Scalar[DTYPE],
-    mut result: InlineArray[Scalar[DTYPE], 6],
+    mut result: Array[Scalar[DTYPE], 6],
 ):
     """Parallel axis theorem correction for offset CoM.
 
@@ -328,7 +328,7 @@ def offcenter[
 def mat3_to_quat[
     DTYPE: DType
 ](
-    mat: InlineArray[Scalar[DTYPE], 9],
+    mat: Array[Scalar[DTYPE], 9],
 ) -> Tuple[
     Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
 ]:
@@ -389,9 +389,9 @@ def _mulquat[
 ](
     ax: Scalar[DTYPE], ay: Scalar[DTYPE], az: Scalar[DTYPE], aw: Scalar[DTYPE],
     bx: Scalar[DTYPE], by: Scalar[DTYPE], bz: Scalar[DTYPE], bw: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 4]:
+) -> Array[Scalar[DTYPE], 4]:
     """`mjuu_mulquat` in OUR (x, y, z, w) storage order."""
-    var r = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var r = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     r[3] = aw * bw - ax * bx - ay * by - az * bz
     r[0] = aw * bx + ax * bw + ay * bz - az * by
     r[1] = aw * by - ax * bz + ay * bw + az * bx
@@ -402,7 +402,7 @@ def _mulquat[
 def eig3_symmetric[
     DTYPE: DType
 ](
-    mut full_inertia: InlineArray[Scalar[DTYPE], 6],
+    mut full_inertia: Array[Scalar[DTYPE], 6],
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -450,7 +450,7 @@ def eig3_symmetric[
     """
     comptime EPS = Scalar[DTYPE](1e-12)  # kEigEPS
 
-    var mat = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var mat = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     mat[0] = full_inertia[0]
     mat[1] = full_inertia[3]
     mat[2] = full_inertia[4]
@@ -466,13 +466,13 @@ def eig3_symmetric[
     var qz = Scalar[DTYPE](0)
     var qw = Scalar[DTYPE](1)
 
-    var eigvals = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var eigvals = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
 
     for _ in range(500):
         # D = V^T * mat * V, with V = quat2mat(quat)
-        var V = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+        var V = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
         quat_to_mat[DTYPE](qx, qy, qz, qw, V)
-        var D = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+        var D = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
         for i in range(3):
             for j in range(3):
                 var acc = Scalar[DTYPE](0)

@@ -45,7 +45,7 @@ All three conform to BOTH `Module` (so `ComputeGraph` calls forward/vjp/walkers
 on the concrete `children[i]`) and the standalone `GraphDecl` bound (graph
 identity + length-erased `IN_DIMS_L`/`IN_NAMES_L`). `GraphDecl` no longer
 inherits `Module` — under Mojo 1.0 a `*DECLS: GraphDecl` pack with heterogeneous
-arities cannot merge `Module`'s `InlineArray[Int, Self.ARITY]` `IN_DIMS`
+arities cannot merge `Module`'s `Array[Int, Self.ARITY]` `IN_DIMS`
 ("conflicting types"); the `_L` `List` members are length-erased so the pack
 unifies. The graph branches on `KIND` to skip inputs / route externals.
 """
@@ -81,11 +81,11 @@ trait IsExternal:
 
 def names_to_inline_array[
     N: Int, *ITEMS: StaticString
-]() -> InlineArray[StaticString, N]:
-    """Build an `InlineArray[StaticString, N]` from a comptime variadic of
+]() -> Array[StaticString, N]:
+    """Build an `Array[StaticString, N]` from a comptime variadic of
     `StaticString` — the predecessor-name list for `Node`/`ExternalNode`. N=0
     (InputSlot) yields an empty array. Uncapped."""
-    var d = InlineArray[StaticString, N](fill=StaticString(""))
+    var d = Array[StaticString, N](fill=StaticString(""))
     comptime for k in range(N):
         d[k] = ITEMS[k]
     return d^
@@ -95,7 +95,7 @@ def names_to_list[N: Int, *ITEMS: StaticString]() -> List[StaticString]:
     """`*ITEMS` → `List[StaticString]`. The uniform-typed `IN_NAMES_L` the
     `GraphDecl` bound exposes (a `List`'s type does NOT encode its length, so
     a heterogeneous-arity `*DECLS: GraphDecl` pack unifies cleanly — unlike an
-    `InlineArray[..., Self.ARITY]`, which Mojo 1.0 refuses to merge across the
+    `Array[..., Self.ARITY]`, which Mojo 1.0 refuses to merge across the
     pack with "conflicting types")."""
     var d = List[StaticString]()
     comptime for k in range(N):
@@ -103,8 +103,8 @@ def names_to_list[N: Int, *ITEMS: StaticString]() -> List[StaticString]:
     return d^
 
 
-def in_dims_to_list[ARITY: Int](arr: InlineArray[Int, ARITY]) -> List[Int]:
-    """`InlineArray[Int, ARITY]` (an op's `Module.IN_DIMS`) → `List[Int]` — the
+def in_dims_to_list[ARITY: Int](arr: Array[Int, ARITY]) -> List[Int]:
+    """`Array[Int, ARITY]` (an op's `Module.IN_DIMS`) → `List[Int]` — the
     uniform-typed `IN_DIMS_L` the `GraphDecl` bound exposes (see
     `names_to_list`)."""
     var d = List[Int]()
@@ -121,7 +121,7 @@ trait GraphDecl(Defaultable & Movable & Deinitable):
 
     NOTE (Mojo 1.0): this trait deliberately does NOT inherit `Module`, and it
     exposes the per-input metadata as length-erased `List`s (`IN_DIMS_L`,
-    `IN_NAMES_L`) rather than `InlineArray[..., Self.ARITY]`. A variadic
+    `IN_NAMES_L`) rather than `Array[..., Self.ARITY]`. A variadic
     `*DECLS: GraphDecl` pack with heterogeneous arities would otherwise fail to
     merge the `Self.ARITY`-typed associated constants ("trait composition has
     conflicting types for IN_DIMS"). The concrete decls still conform to
@@ -150,7 +150,7 @@ trait GraphDecl(Defaultable & Movable & Deinitable):
     # breaks heterogeneous-arity pack merging — see the trait docstring), but
     # `ComputeGraph` still calls these on the concrete `children[i]` through the
     # `*DECLS: GraphDecl` bound. They mirror `Module`'s signatures exactly (none
-    # reference the conflicting `InlineArray[Int, Self.ARITY]` — only `Self.ARITY`
+    # reference the conflicting `Array[Int, Self.ARITY]` — only `Self.ARITY`
     # as a plain `Int` and `Self.ACT_DT`); the concrete decls satisfy them via
     # their independent `Module` conformance.
     def forward[
@@ -243,8 +243,8 @@ struct InputSlot[slot_name: StaticString, DIM_: Int, ADT: DType = DT](
     comptime NAME = Self.slot_name
     comptime KIND = 0
     comptime ARITY = 0
-    comptime IN_DIMS: InlineArray[Int, 0] = []
-    comptime IN_NAMES: InlineArray[StaticString, 0] = []
+    comptime IN_DIMS: Array[Int, 0] = []
+    comptime IN_NAMES: Array[StaticString, 0] = []
     comptime IN_DIMS_L = List[Int]()
     comptime IN_NAMES_L = List[StaticString]()
     comptime OUT_DIM = Self.DIM_

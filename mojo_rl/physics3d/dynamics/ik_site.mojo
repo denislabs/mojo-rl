@@ -60,7 +60,7 @@ only the position pipeline it does read — forward kinematics, `subtree_com`,
 """
 
 from std.math import sqrt
-from std.collections import InlineArray
+from std.collections import Array
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl
@@ -158,9 +158,9 @@ struct IKResult(Copyable, Movable):
 def _solve_spd[
     DTYPE: DType, N: Int
 ](
-    a: InlineArray[Scalar[DTYPE], N * N],
-    b: InlineArray[Scalar[DTYPE], N],
-    mut x: InlineArray[Scalar[DTYPE], N],
+    a: Array[Scalar[DTYPE], N * N],
+    b: Array[Scalar[DTYPE], N],
+    mut x: Array[Scalar[DTYPE], N],
 ) -> Bool:
     """Cholesky solve of a symmetric positive-definite `N x N` system.
 
@@ -169,7 +169,7 @@ def _solve_spd[
     the point: see the module docstring on why this port must not quietly
     substitute a pseudoinverse.
     """
-    var l = InlineArray[Scalar[DTYPE], N * N](fill=Scalar[DTYPE](0))
+    var l = Array[Scalar[DTYPE], N * N](fill=Scalar[DTYPE](0))
     for i in range(N):
         for j in range(i + 1):
             var s = a[i * N + j]
@@ -183,7 +183,7 @@ def _solve_spd[
                 l[i * N + j] = s / l[j * N + j]
 
     # forward substitution: L y = b
-    var y = InlineArray[Scalar[DTYPE], N](fill=Scalar[DTYPE](0))
+    var y = Array[Scalar[DTYPE], N](fill=Scalar[DTYPE](0))
     for i in range(N):
         var s = b[i]
         for k in range(i):
@@ -218,9 +218,9 @@ def qpos_from_site_pose[
     mut d: Data[DTYPE, D, 1],
     mut mf: Model[DTYPE, D],
     site: Int,
-    target_pos: InlineArray[Scalar[DTYPE], 3],
-    target_quat: InlineArray[Scalar[DTYPE], 4],
-    dof_idx: InlineArray[Int, NDOF],
+    target_pos: Array[Scalar[DTYPE], 3],
+    target_quat: Array[Scalar[DTYPE], 4],
+    dof_idx: Array[Int, NDOF],
     use_pos: Bool = True,
     use_quat: Bool = True,
     tol: Float64 = default_ik_tol[DTYPE](),
@@ -268,7 +268,7 @@ def qpos_from_site_pose[
 
     var site_body = Int(rebind[Scalar[DTYPE]](sites_v[site, SITE_IDX_BODY]))
 
-    var err = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    var err = Array[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     # ⚠ THE CAP STAYS COMPTIME, THE LENGTH DOES NOT. `cap[D.NV]()` picks the
     # CONTAINER (stack on a static provider, heap on a dynamic one) and is 0
     # exactly when there is no comptime dimension; `3 * nv` is the LIVE
@@ -283,9 +283,9 @@ def qpos_from_site_pose[
     var jr = Scratch[Scalar[DTYPE], 3 * cap[D.NV]()](
         3 * nv, fill=Scalar[DTYPE](0)
     )
-    var hess = InlineArray[Scalar[DTYPE], NDOF * NDOF](fill=Scalar[DTYPE](0))
-    var grad = InlineArray[Scalar[DTYPE], NDOF](fill=Scalar[DTYPE](0))
-    var upd = InlineArray[Scalar[DTYPE], NDOF](fill=Scalar[DTYPE](0))
+    var hess = Array[Scalar[DTYPE], NDOF * NDOF](fill=Scalar[DTYPE](0))
+    var grad = Array[Scalar[DTYPE], NDOF](fill=Scalar[DTYPE](0))
+    var upd = Array[Scalar[DTYPE], NDOF](fill=Scalar[DTYPE](0))
 
     var err_norm = 0.0
     var steps = 0
@@ -430,9 +430,9 @@ def canonicalize_arm_joints[
     DTYPE: DType, NQ: Int, NDOF: Int
 ](
     mut qpos: List[Scalar[DTYPE]],
-    qpos_adr: InlineArray[Int, NDOF],
-    lower: InlineArray[Float64, NDOF],
-    upper: InlineArray[Float64, NDOF],
+    qpos_adr: Array[Int, NDOF],
+    lower: Array[Float64, NDOF],
+    upper: Array[Float64, NDOF],
 ) -> Bool:
     """`set_site_to_xpos`'s "canonicalise the angle to [0, 2*pi]" block.
 
@@ -485,12 +485,12 @@ def set_site_to_xpos[
     mut d: Data[DTYPE, D, 1],
     mut mf: Model[DTYPE, D],
     site: Int,
-    target_pos: InlineArray[Scalar[DTYPE], 3],
-    target_quat: InlineArray[Scalar[DTYPE], 4],
-    dof_idx: InlineArray[Int, NDOF],
-    qpos_adr: InlineArray[Int, NDOF],
-    lower: InlineArray[Float64, NDOF],
-    upper: InlineArray[Float64, NDOF],
+    target_pos: Array[Scalar[DTYPE], 3],
+    target_quat: Array[Scalar[DTYPE], 4],
+    dof_idx: Array[Int, NDOF],
+    qpos_adr: Array[Int, NDOF],
+    lower: Array[Float64, NDOF],
+    upper: Array[Float64, NDOF],
     retry_poses: List[Scalar[DTYPE]],
     max_ik_attempts: Int = 10,
     retry_offset: Int = 0,

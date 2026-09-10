@@ -68,7 +68,7 @@ def _bt_bwd_kernel[
 struct BroadcastTokens[N_: Int, DIM_: Int, ADT: DType = DT](Module):
     comptime ARITY: Int = 1
     comptime ACT_DT = Self.ADT
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.N_ * Self.DIM_
 
     def __init__(out self):

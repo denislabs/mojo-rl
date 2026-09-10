@@ -17,7 +17,7 @@ Run with:
 from std.testing import assert_true, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs
-from std.collections import InlineArray
+from std.collections import Array
 
 from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
@@ -53,7 +53,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 
 def compare_fk(
     test_name: String,
-    qpos_values: InlineArray[Float64, NQ],
+    qpos_values: Array[Float64, NQ],
 ) raises:
     """Run FK in both engines with identical qpos, compare results."""
     print("--- Test:", test_name, "---")
@@ -205,7 +205,7 @@ def test_fk_default_qpos() raises:
     is the gate for that); it stays here as a bent-ankle FK case, set
     explicitly on both sides."""
     # <numeric data="0.0 0.0 0.55 1.0 0.0 0.0 0.0 0.0 1.0 0.0 -1.0 0.0 -1.0 0.0 1.0" name="init_qpos"/>
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     # Free joint: x=0, y=0, z=0.55, qw=1, qx=0, qy=0, qz=0 (identity quaternion)
     qpos[0] = 0.0  # x
     qpos[1] = 0.0  # y
@@ -228,7 +228,7 @@ def test_fk_default_qpos() raises:
 
 def test_fk_zero_joints() raises:
     """FK with all hinge joints at 0, torso at default height."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[2] = 0.55  # z
     qpos[3] = 1.0  # qw (identity quaternion)
     compare_fk("All-zero joints, z=0.55", qpos)
@@ -236,7 +236,7 @@ def test_fk_zero_joints() raises:
 
 def test_fk_bent_legs() raises:
     """FK with legs bent symmetrically — exercises multi-level hinge chains."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[2] = 0.55  # z
     qpos[3] = 1.0  # qw
     # Hip joints at +15 deg (0.26 rad), ankle joints at +45 deg (0.79 rad)
@@ -254,7 +254,7 @@ def test_fk_bent_legs() raises:
 def test_fk_rotated_torso() raises:
     """FK with torso rotated 45 degrees around the z-axis.
     This exercises the full 3D quaternion propagation through the body tree."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[2] = 0.55  # z height
     # 45 deg rotation about z-axis: qw=cos(22.5°)=0.924, qz=sin(22.5°)=0.383
     qpos[3] = 0.9239  # qw
@@ -266,7 +266,7 @@ def test_fk_rotated_torso() raises:
 
 def test_fk_elevated_and_tilted() raises:
     """FK with elevated torso and small tilt — simulates mid-jump or landing."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 2.0  # x displacement
     qpos[1] = 1.0  # y displacement
     qpos[2] = 1.5  # elevated z

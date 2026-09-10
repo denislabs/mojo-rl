@@ -133,7 +133,7 @@ struct AvgPool2D[
     comptime OW: Int = (Self.W + 2 * Self.P - Self.K) // Self.S + 1
     comptime IN_FLAT: Int = Self.C * Self.H * Self.W
     comptime OUT_FLAT: Int = Self.C * Self.OH * Self.OW
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_FLAT)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IN_FLAT)
     comptime OUT_DIM = Self.OUT_FLAT
     # Activation-flow dtype (AMP §3 fp32-INTERNAL): AvgPool accepts/emits ACT_DT
     # but accumulates the pooling sum in fp32. ACT_DT == DT (default) →

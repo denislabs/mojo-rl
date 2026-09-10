@@ -7,7 +7,7 @@ struct via setup_model().
 """
 
 from ..types import ConeType, SolverType, IntegratorType
-from std.collections import InlineArray
+from std.collections import Array
 from mojo_rl.physics3d.joint_types import (
     JNT_HINGE,
     JNT_SLIDE,
@@ -590,7 +590,7 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     # pass (off the `<tendon>` SECTION TEXT, which does exist by then) so the
     # second pass needs no re-scan of the actuator tags.
     # ⚠ THE WRAP ARRAYS LIVE ON `FlatModelDef`, NOT HERE. `ActuatorData` is
-    # `ImplicitlyCopyable` and `InlineArray` is not, so inline wrap arrays
+    # `ImplicitlyCopyable` and `Array` is not, so inline wrap arrays
     # cannot synthesize a copy constructor. Flat `motor_trn_*` lists on the
     # parent, indexed `ai * TENDON_MAX_WRAPS + k`, also match the comptime
     # twin's own layout (`motor_trn_qadr[act_count * WRAPS + k]`) exactly.
@@ -1073,8 +1073,8 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
 
     # fixed
     var num_joints: Int
-    var joint_ids: InlineArray[Int, TENDON_MAX_WRAPS]
-    var coefs: InlineArray[Float64, TENDON_MAX_WRAPS]
+    var joint_ids: Array[Int, TENDON_MAX_WRAPS]
+    var coefs: Array[Float64, TENDON_MAX_WRAPS]
     var length_ref: Float64
     # `<fixed stiffness=>` and `<fixed springlength=>`. Mirrors
     # `ComptimeActData.tendon_stiffness` / `_spring_lo` / `_spring_hi`
@@ -1091,11 +1091,11 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
     # spatial — the routing sequence, MuJoCo's wrap_type/wrap_objid/wrap_prm
     var num_wraps: Int
     # site id when `wrap_types[k] == WRAP_SITE`, geom id for a wrap object.
-    var wrap_objs: InlineArray[Int, TENDON_MAX_SPATIAL_WRAPS]
+    var wrap_objs: Array[Int, TENDON_MAX_SPATIAL_WRAPS]
     # `wrap.WRAP_SITE` / `WRAP_SPHERE` / `WRAP_CYLINDER`.
-    var wrap_types: InlineArray[Int, TENDON_MAX_SPATIAL_WRAPS]
+    var wrap_types: Array[Int, TENDON_MAX_SPATIAL_WRAPS]
     # sidesite id for a wrap geom, -1 when there is none.
-    var wrap_sides: InlineArray[Int, TENDON_MAX_SPATIAL_WRAPS]
+    var wrap_sides: Array[Int, TENDON_MAX_SPATIAL_WRAPS]
     # `<spatial width= rgba=>` — RENDER ONLY, and here because the viewer's
     # `render_spatial_tendons` read them off the comptime `ComptimeRenderData`
     # (phase 1a.5). MuJoCo's defaults: width 0.003, rgba .5 .5 .5 1.
@@ -1182,8 +1182,8 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
         self.kind = _TENDON_KIND_FIXED
         self.is_equality = 0
         self.num_joints = 0
-        self.joint_ids = InlineArray[Int, TENDON_MAX_WRAPS](fill=-1)
-        self.coefs = InlineArray[Float64, TENDON_MAX_WRAPS](fill=0.0)
+        self.joint_ids = Array[Int, TENDON_MAX_WRAPS](fill=-1)
+        self.coefs = Array[Float64, TENDON_MAX_WRAPS](fill=0.0)
         self.length_ref = 0.0
         self.stiffness = 0.0
         self.spring_lo = 0.0
@@ -1194,9 +1194,9 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
         self.rgba_g = 0.5
         self.rgba_b = 0.5
         self.rgba_a = 1.0
-        self.wrap_objs = InlineArray[Int, TENDON_MAX_SPATIAL_WRAPS](fill=-1)
-        self.wrap_types = InlineArray[Int, TENDON_MAX_SPATIAL_WRAPS](fill=0)
-        self.wrap_sides = InlineArray[Int, TENDON_MAX_SPATIAL_WRAPS](fill=-1)
+        self.wrap_objs = Array[Int, TENDON_MAX_SPATIAL_WRAPS](fill=-1)
+        self.wrap_types = Array[Int, TENDON_MAX_SPATIAL_WRAPS](fill=0)
+        self.wrap_sides = Array[Int, TENDON_MAX_SPATIAL_WRAPS](fill=-1)
         self.wrap_overflow = 0
         self.limited = 0
         self.range_min = 0.0
@@ -1748,7 +1748,7 @@ struct NamedDefaultsList(Copyable, ImplicitlyCopyable, Movable):
 
     # ⚠ HEAP-BACKED, AND THE REASON IS COMPILE TIME, NOT MEMORY.
     #
-    # This was `InlineArray[NamedDefault, MAX_NAMED_DEFAULTS]`. A `NamedDefault`
+    # This was `Array[NamedDefault, MAX_NAMED_DEFAULTS]`. A `NamedDefault`
     # is a `String` plus `DefaultsData`'s 59 fields (20 of them `String`), so at
     # MAX_NAMED_DEFAULTS=128 the struct carried ~7,700 fields INLINE — and
     # `parse_xml_full` holds it live across ~14 raising calls, each of which
@@ -1781,7 +1781,7 @@ struct NamedDefaultsList(Copyable, ImplicitlyCopyable, Movable):
     def add(mut self, class_name: String, defaults: DefaultsData) raises:
         """Add a named default class.
 
-        No cap: a `List` grows. The previous `InlineArray` version raised once
+        No cap: a `List` grows. The previous `Array` version raised once
         it hit `MAX_NAMED_DEFAULTS`, and before that it dropped the class
         SILENTLY — every element naming it then took MuJoCo's global defaults
         instead, with no diagnostic anywhere.
@@ -1875,7 +1875,7 @@ struct FlatModelDef(Movable):
 
     ⚠ NON-GENERIC BY DESIGN, as of 2026-08-05. This struct used to carry the
     fourteen dimension parameters (`NBODY`, `NJOINT`, `NGEOM`, …) and store its
-    contents in `InlineArray`s sized by them, which forced `parse_xml_full` and
+    contents in `Array`s sized by them, which forced `parse_xml_full` and
     its eleven helpers to be generic too.
 
     THAT GENERICITY WAS INCIDENTAL AND IT WAS THE SINGLE LARGEST BUILD COST IN
@@ -1946,7 +1946,7 @@ struct FlatModelDef(Movable):
     # held in `List`s and copied freely through the parser's hot path. Adding
     # a `String` makes them non-trivial — implicit deep copies everywhere, and
     # this tree has a measured compile cliff for non-trivial structs in
-    # `InlineArray` (282 s -> 5 s for removing ONE such field). `RenderFields`
+    # `Array` (282 s -> 5 s for removing ONE such field). `RenderFields`
     # already stores `mesh_names` / `tex_names` this way, so this is the local
     # convention as well as the cheap option.
     #

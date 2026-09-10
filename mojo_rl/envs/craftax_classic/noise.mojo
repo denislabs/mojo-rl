@@ -50,7 +50,7 @@ def generate_perlin_noise_2d[
     comptime STRIDE: Int = RES_W + 1
 
     # Stack-allocate gradient angles, drawn from `rng`.
-    var angles = InlineArray[Float32, NUM_ANGLES](fill=Float32(0.0))
+    var angles = Array[Float32, NUM_ANGLES](fill=Float32(0.0))
     var i = 0
     while i < NUM_ANGLES:
         var u = rng.step_uniform()

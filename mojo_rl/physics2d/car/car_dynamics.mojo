@@ -523,7 +523,7 @@ struct CarDynamics:
         # Step 2: Use default road friction for all wheels (no tile lookup)
         # friction_limits = [fl, fr, rl, rr] all set to FRICTION_LIMIT * ROAD_FRICTION
         var default_friction = Scalar[dtype](FRICTION_LIMIT * ROAD_FRICTION)
-        var friction_limits = InlineArray[Scalar[dtype], NUM_WHEELS](
+        var friction_limits = Array[Scalar[dtype], NUM_WHEELS](
             fill=[
                 default_friction,
                 default_friction,
@@ -640,7 +640,7 @@ struct CarDynamics:
         hull_y: Scalar[dtype],
         hull_angle: Scalar[dtype],
         num_active_tiles: Int,
-    ) -> InlineArray[Scalar[dtype], NUM_WHEELS]:
+    ) -> Array[Scalar[dtype], NUM_WHEELS]:
         """Get friction limits for all 4 wheels using embedded track data.
 
         Args:
@@ -690,7 +690,7 @@ struct CarDynamics:
             BATCH, STATE_SIZE, TRACK_OFFSET, MAX_TILES
         ](env, rr_x, rr_y, state, num_active_tiles)
 
-        return InlineArray[Scalar[dtype], NUM_WHEELS](
+        return Array[Scalar[dtype], NUM_WHEELS](
             fill=[fl_limit, fr_limit, rl_limit, rr_limit]
         )
 

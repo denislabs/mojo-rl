@@ -759,7 +759,7 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
     #     column 8 (DIST) CPU -0.004999961704015732     GPU -0.0035994164645671844
     # ✅ DEFECT 27 — FIXED 2026-08-12. It was a METAL PER-THREAD ARRAY
     # MISCOMPUTE, not a collision-algorithm bug. `_capsule_box_second_pos`
-    # held `s`/`hax`/`pos`/`axis` as `InlineArray[Scalar, 3]` and indexed them
+    # held `s`/`hax`/`pos`/`axis` as `Array[Scalar, 3]` and indexed them
     # by a runtime axis; on Metal the value arrived correctly and read back
     # WRONG. Measured from the live GPU run with the parameter and the array
     # element smuggled out side by side through this very record:

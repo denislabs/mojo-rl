@@ -262,7 +262,7 @@ struct UnitreeG1Config(Phyics3dEnvConfig):
 
         # ── privileged `max_local_self` (463): the simulator's 30 bodies
         # + the virtual head, in the heading frame (G3.0) ────────────────
-        var priv = InlineArray[Scalar[DTYPE], G1_PRIV_DIM](fill=Scalar[DTYPE](0))
+        var priv = Array[Scalar[DTYPE], G1_PRIV_DIM](fill=Scalar[DTYPE](0))
         var rb = g1_skeleton_body(0)
         var rootx = d.xpos.data[rb * 3 + 0]
         var rooty = d.xpos.data[rb * 3 + 1]
@@ -272,7 +272,7 @@ struct UnitreeG1Config(Phyics3dEnvConfig):
             d.xquat.data[rb * 4 + 2], d.xquat.data[rb * 4 + 3],
         )
         priv[G1_PRIV_OFF_HEIGHT] = rootz
-        var tp = InlineArray[Scalar[DTYPE], 13](fill=Scalar[DTYPE](0))  # torso origin pose + vel
+        var tp = Array[Scalar[DTYPE], 13](fill=Scalar[DTYPE](0))  # torso origin pose + vel
         for s in range(G1_N_SKELETON):
             var b = g1_skeleton_body(s)
             var vo = g1_origin_velocity[DTYPE](
@@ -538,7 +538,7 @@ struct UnitreeG1Config(Phyics3dEnvConfig):
 
         # ── privileged `max_local_self` (463), the CPU hook's arithmetic on
         # the lane's field tensors (G3.0) ──────────────────────────────────
-        var priv = InlineArray[Scalar[DTYPE], G1_PRIV_DIM](fill=Scalar[DTYPE](0))
+        var priv = Array[Scalar[DTYPE], G1_PRIV_DIM](fill=Scalar[DTYPE](0))
         var rb = g1_skeleton_body(0)
         var rootx = rebind[Scalar[DTYPE]](xpos[env, rb * 3 + 0])
         var rooty = rebind[Scalar[DTYPE]](xpos[env, rb * 3 + 1])
@@ -550,7 +550,7 @@ struct UnitreeG1Config(Phyics3dEnvConfig):
             rebind[Scalar[DTYPE]](xquat[env, rb * 4 + 3]),
         )
         priv[G1_PRIV_OFF_HEIGHT] = rootz
-        var tp = InlineArray[Scalar[DTYPE], 13](fill=Scalar[DTYPE](0))
+        var tp = Array[Scalar[DTYPE], 13](fill=Scalar[DTYPE](0))
         for s in range(G1_N_SKELETON):
             var bb = g1_skeleton_body(s)
             var px = rebind[Scalar[DTYPE]](xpos[env, bb * 3 + 0])

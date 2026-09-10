@@ -182,8 +182,8 @@ struct CarRacingDiscrete[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
         var two_pi = Scalar[dtype](2.0 * pi)
         comptime NC = 12
 
-        var cx = InlineArray[Scalar[dtype], NC](fill=Scalar[dtype](0))
-        var cy = InlineArray[Scalar[dtype], NC](fill=Scalar[dtype](0))
+        var cx = Array[Scalar[dtype], NC](fill=Scalar[dtype](0))
+        var cy = Array[Scalar[dtype], NC](fill=Scalar[dtype](0))
         for c in range(NC):
             var rv = rng.step_uniform()
             var noise = (rv[0] - Scalar[dtype](0.5)) * two_pi / Scalar[dtype](
@@ -358,7 +358,7 @@ struct CarRacingDiscrete[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
         states[env, Self.CONTROLS_OFFSET + CTRL_BRAKE] = dec[2]
 
         # Per-wheel friction from each wheel body position (embedded track)
-        var fr = InlineArray[Scalar[dtype], 4](fill=Scalar[dtype](0))
+        var fr = Array[Scalar[dtype], 4](fill=Scalar[dtype](0))
         for w in range(Self.NW):
             var wp = CarDynamicsMB.wheel_world_pos[
                 BATCH, STATE_SIZE, Self.BODIES_OFFSET

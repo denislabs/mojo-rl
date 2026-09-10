@@ -79,7 +79,7 @@ from .gjk import gjk_epa, _support, EPA_DBG
 # ⚠⚠ IT IS NOT A BUFFER SIZE HERE, AND IT MUST NOT BECOME ONE. This routine
 # writes each contact into the model's record tensor AS IT FINDS IT rather
 # than collecting a manifold first, the way `_capsule_capsule_contacts` and
-# `_capsule_box_contacts` do. Buffering fifty contacts as three `InlineArray`s
+# `_capsule_box_contacts` do. Buffering fifty contacts as three `Array`s
 # is 350 float64 of PER-THREAD STACK, and the Metal collision kernel does not
 # have it: `test_plane_mesh_fields` died with "Compute function exceeds
 # available stack space" the moment this file was written that way. Every
@@ -99,7 +99,7 @@ def _hf_push[
     DTYPE: DType,
     L_HF_DATA: Layout,
 ](
-    mut prism: InlineArray[Scalar[DTYPE], 18],
+    mut prism: Array[Scalar[DTYPE], 18],
     r: Int,
     c: Int,
     i: Int,
@@ -235,8 +235,8 @@ def hfield_convex_contacts[
     # Six support queries, which is what MuJoCo does rather than inflating a
     # sphere: a long capsule lying flat has an rbound many times its real
     # extent in z, and the sub-grid derived from it would be most of the map.
-    var prism = InlineArray[Scalar[DTYPE], 18](fill=Scalar[DTYPE](0))
-    var ext = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    var prism = Array[Scalar[DTYPE], 18](fill=Scalar[DTYPE](0))
+    var ext = Array[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     for axis in range(3):
         for side in range(2):
             var dx0 = Scalar[DTYPE](0)

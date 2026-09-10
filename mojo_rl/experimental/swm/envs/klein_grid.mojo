@@ -154,7 +154,7 @@ struct KleinGrid[W: Int, H: Int](Copyable, Movable):
 
         for _ in range(episodes):
             var a = rng.uniform_range(0.0, 6.283185307179586)
-            var u = InlineArray[Scalar[DType.float64], 2](fill=0)
+            var u = Array[Scalar[DType.float64], 2](fill=0)
             u[0] = Scalar[DType.float64](cos(a))
             u[1] = Scalar[DType.float64](sin(a))
             var x = 0
@@ -164,7 +164,7 @@ struct KleinGrid[W: Int, H: Int](Copyable, Movable):
                 var go_x = rng.uniform() < 0.5
                 var r = self.x_edge[p] if go_x else self.y_edge[p]
                 var edge_idx = 2 * p if go_x else 2 * p + 1
-                var v = InlineArray[Scalar[DType.float64], 2](fill=0)
+                var v = Array[Scalar[DType.float64], 2](fill=0)
                 for i in range(2):
                     var s = Scalar[DType.float64](0)
                     for j in range(2):

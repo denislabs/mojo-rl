@@ -345,7 +345,7 @@ struct WheelFriction:
             Layout.row_major(BATCH, STATE_SIZE),
             MutAnyOrigin,
         ],
-        friction_limits: InlineArray[Scalar[dtype], NUM_WHEELS],
+        friction_limits: Array[Scalar[dtype], NUM_WHEELS],
         dt: Scalar[dtype],
     ) -> Tuple[Scalar[dtype], Scalar[dtype], Scalar[dtype]]:
         """Compute total force and torque from all 4 wheels.
@@ -480,7 +480,7 @@ struct WheelFriction:
         """
         for env in range(BATCH):
             # Build friction limits array for this env
-            var limits = InlineArray[Scalar[dtype], NUM_WHEELS](
+            var limits = Array[Scalar[dtype], NUM_WHEELS](
                 fill=Scalar[dtype](0)
             )
             limits[0] = rebind[Scalar[dtype]](friction_limits[env, 0])

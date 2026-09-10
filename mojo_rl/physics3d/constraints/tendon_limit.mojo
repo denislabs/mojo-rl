@@ -38,7 +38,7 @@ paths that omit the joint-limit/friction rows for the same structural reason
 (see constraints/scalar_rows.mojo), and nothing gated or trained selects them.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import pow
 from layout import Layout, LayoutTensor
 from ..fields.scratch import Scratch

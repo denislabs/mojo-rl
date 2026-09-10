@@ -95,7 +95,7 @@ def dump(var path: String, label: String) raises:
     # Calibrated units beside the raw ticks: a sign-magnitude or a 4096-vs-4095
     # slip is invisible in ticks and obvious in degrees.
     print("")
-    var raw = InlineArray[Int32, SO101_N](fill=0)
+    var raw = Array[Int32, SO101_N](fill=0)
     var got = arm.read_positions(Span(raw))
     var units = pad_right(String("in lerobot units:"), 20)
     for i in range(SO101_N):

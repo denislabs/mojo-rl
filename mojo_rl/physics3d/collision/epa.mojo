@@ -252,7 +252,7 @@ def project_origin_plane[DTYPE: DType](
     v1x: Scalar[DTYPE], v1y: Scalar[DTYPE], v1z: Scalar[DTYPE],
     v2x: Scalar[DTYPE], v2y: Scalar[DTYPE], v2z: Scalar[DTYPE],
     v3x: Scalar[DTYPE], v3y: Scalar[DTYPE], v3z: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 4]:
+) -> Array[Scalar[DTYPE], 4]:
     """`projectOriginPlane` — the origin projected onto the plane v1 v2 v3.
 
     Returns `(ok, x, y, z)` with `ok == 0` on the reference's failure return.
@@ -275,7 +275,7 @@ def project_origin_plane[DTYPE: DType](
     var d32y = v3y - v2y
     var d32z = v3z - v2z
 
-    var out = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
 
     # n = (v3 - v2) x (v2 - v1)
     var nx = d32y * d21z - d32z * d21y
@@ -329,7 +329,7 @@ def tri_affine_coord[DTYPE: DType](
     v2x: Scalar[DTYPE], v2y: Scalar[DTYPE], v2z: Scalar[DTYPE],
     v3x: Scalar[DTYPE], v3y: Scalar[DTYPE], v3z: Scalar[DTYPE],
     px: Scalar[DTYPE], py: Scalar[DTYPE], pz: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """`triAffineCoord` — barycentric coordinates of `p` on triangle v1 v2 v3.
 
     ⚠ NOT A GRAM SOLVE. The reference drops the axis with the SMALLEST minor
@@ -389,7 +389,7 @@ def tri_affine_coord[DTYPE: DType](
     var c32 = pa * v3b + pb * v1a + v3a * v1b - pa * v1b - pb * v3a - v1a * v3b
     var c33 = pa * v1b + pb * v2a + v1a * v2b - pa * v2b - pb * v1a - v2a * v1b
 
-    var out = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+    var out = Array[Scalar[DTYPE], 3](uninitialized=True)
     out[0] = c31 / m_max
     out[1] = c32 / m_max
     out[2] = c33 / m_max
@@ -465,7 +465,7 @@ def test_tetra[DTYPE: DType](
 @always_inline
 def rotmat120[DTYPE: DType](
     ax: Scalar[DTYPE], ay: Scalar[DTYPE], az: Scalar[DTYPE]
-) -> InlineArray[Scalar[DTYPE], 9]:
+) -> Array[Scalar[DTYPE], 9]:
     """`rotmat` — 120 degrees about `axis`.
 
     ⚠ TRANSCRIBED INCLUDING ITS TYPO. `R[6]` in the reference is
@@ -482,7 +482,7 @@ def rotmat120[DTYPE: DType](
     var s = Scalar[DTYPE](0.86602540378)
     var c = Scalar[DTYPE](-0.5)
     var omc = Scalar[DTYPE](1) - c
-    var out = InlineArray[Scalar[DTYPE], 9](uninitialized=True)
+    var out = Array[Scalar[DTYPE], 9](uninitialized=True)
     out[0] = c + u1 * u1 * omc
     out[1] = u1 * u2 * omc - u3 * s
     out[2] = u1 * u3 * omc + u2 * s
@@ -845,7 +845,7 @@ def horizon[DTYPE: DType, L_WS: Layout](
 @always_inline
 def epa_witness[DTYPE: DType, L_WS: Layout](
     ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin], wrow: Int, f: Int
-) -> InlineArray[Scalar[DTYPE], 6]:
+) -> Array[Scalar[DTYPE], 6]:
     """`epaWitness` — the witness points on each geom for face `f`.
 
     ⚠ THE CONTACT NORMAL THE REFERENCE STORES IS `normalize(x1 - x2)`, from
@@ -870,7 +870,7 @@ def epa_witness[DTYPE: DType, L_WS: Layout](
         efv[DTYPE, L_WS](ws, wrow, f, 1),
         efv[DTYPE, L_WS](ws, wrow, f, 2),
     )
-    var out = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
+    var out = Array[Scalar[DTYPE], 6](uninitialized=True)
     for c in range(3):
         out[c] = (
             l[0] * ev[DTYPE, L_WS](ws, wrow, i0, 3 + c)

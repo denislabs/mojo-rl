@@ -62,7 +62,7 @@ def _mps_backward_kernel[BATCH: Int, DIM: Int](
 
 struct MSEPerSample[DIM_: Int](Module):
     comptime ARITY = 2
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 2](fill=Self.DIM_)
     comptime OUT_DIM = 1
 
     var cache_diff: Tensor  # [BATCH, DIM]

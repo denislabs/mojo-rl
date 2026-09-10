@@ -45,7 +45,7 @@ from std.math import abs, sin, sqrt
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
-from std.collections import InlineArray
+from std.collections import Array
 from layout import Layout, LayoutTensor
 
 from mojo_rl.envs.dm_control.ball_in_cup import (
@@ -297,7 +297,7 @@ def test_ball_in_cup_model_matches_mujoco() raises:
     print("  max |d(site_xpos)| =", worst_site)
     assert_true(worst_site <= 1e-14, "site_xpos differs from MuJoCo")
 
-    # ⚠ `Scratch`, not `InlineArray` — this call site had been stale since
+    # ⚠ `Scratch`, not `Array` — this call site had been stale since
     # `spatial_tendon_length_jac` took `Scratch` (the test tree is only
     # partially swept, `project_rc2_test_tree_compile_sweep`). Unrelated to
     # the wrap work; fixed here because it is one line and the file could not

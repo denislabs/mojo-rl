@@ -39,7 +39,7 @@ Run with:
     pixi run mojo run -I . tests/dm_control/test_stack_2_bricks_moveable_base_vs_dm_control.mojo
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt, sin, cos
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite

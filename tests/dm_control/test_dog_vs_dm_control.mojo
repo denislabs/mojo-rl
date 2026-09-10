@@ -52,7 +52,7 @@ Run with:
 """
 
 from std.math import abs, min
-from std.collections import InlineArray
+from std.collections import Array
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
@@ -836,8 +836,8 @@ def test_dog_priority_and_condim_reach_our_model() raises:
     # ORDER differs" — and a three-body control model gets condim, priority
     # AND invweight exactly right, so the failure is specific to this model
     # and the shape of it is the whole question.
-    var hist_ours = InlineArray[Int, 8](fill=0)
-    var hist_ref = InlineArray[Int, 8](fill=0)
+    var hist_ours = Array[Int, 8](fill=0)
+    var hist_ref = Array[Int, 8](fill=0)
     for g in range(NGEOM):
         var oc = Int(mf.geoms.data[g * MODEL_GEOM_SIZE + GEOM_IDX_CONDIM])
         var rc = Int(py=m.geom_condim[g])

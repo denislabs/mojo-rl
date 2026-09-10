@@ -291,9 +291,9 @@ def mj_qcqp2[
 ](
     mut res0: Scalar[DTYPE],
     mut res1: Scalar[DTYPE],
-    A: InlineArray[Scalar[DTYPE], 4],  # 2x2 row-major
-    b: InlineArray[Scalar[DTYPE], 2],
-    d: InlineArray[Scalar[DTYPE], 2],  # scaling (mu per direction)
+    A: Array[Scalar[DTYPE], 4],  # 2x2 row-major
+    b: Array[Scalar[DTYPE], 2],
+    d: Array[Scalar[DTYPE], 2],  # scaling (mu per direction)
     r: Scalar[DTYPE],  # constraint radius (normal force)
 ) -> Bool:
     """Solve 2D QCQP matching MuJoCo's mju_QCQP2.
@@ -363,9 +363,9 @@ def mj_qcqp3[
     mut res0: Scalar[DTYPE],
     mut res1: Scalar[DTYPE],
     mut res2: Scalar[DTYPE],
-    A: InlineArray[Scalar[DTYPE], 9],  # 3x3 row-major
-    b: InlineArray[Scalar[DTYPE], 3],
-    d: InlineArray[Scalar[DTYPE], 3],
+    A: Array[Scalar[DTYPE], 9],  # 3x3 row-major
+    b: Array[Scalar[DTYPE], 3],
+    d: Array[Scalar[DTYPE], 3],
     r: Scalar[DTYPE],
 ) -> Bool:
     """Solve 3D QCQP matching MuJoCo's mju_QCQP3.
@@ -443,10 +443,10 @@ def mj_qcqp3[
 def mj_qcqp5[
     DTYPE: DType
 ](
-    mut res: InlineArray[Scalar[DTYPE], 5],
-    A: InlineArray[Scalar[DTYPE], 25],  # 5x5 row-major
-    b: InlineArray[Scalar[DTYPE], 5],
-    d: InlineArray[Scalar[DTYPE], 5],
+    mut res: Array[Scalar[DTYPE], 5],
+    A: Array[Scalar[DTYPE], 25],  # 5x5 row-major
+    b: Array[Scalar[DTYPE], 5],
+    d: Array[Scalar[DTYPE], 5],
     r: Scalar[DTYPE],
 ) -> Bool:
     """Solve 5D QCQP matching MuJoCo's mju_QCQP (n=5) via Cholesky.
@@ -454,8 +454,8 @@ def mj_qcqp5[
     Returns True if constrained (lambda > 0).
     """
     # Scale A, b
-    var As = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
-    var bs = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+    var As = Array[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
+    var bs = Array[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
     for i in range(5):
         bs[i] = b[i] * d[i]
         for j in range(5):
@@ -465,14 +465,14 @@ def mj_qcqp5[
 
     for _ in range(20):
         # Make Ala = As + la*I
-        var Ala = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
+        var Ala = Array[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
         for i in range(5):
             for j in range(5):
                 Ala[i * 5 + j] = As[i * 5 + j]
             Ala[i * 5 + i] += la
 
         # Cholesky factorize (in-place, lower triangular)
-        var L = InlineArray[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
+        var L = Array[Scalar[DTYPE], 25](fill=Scalar[DTYPE](0))
         var rank_ok = True
         for i in range(5):
             for j in range(i + 1):
@@ -496,7 +496,7 @@ def mj_qcqp5[
             return False
 
         # Solve L*y = -bs (forward substitution)
-        var y = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+        var y = Array[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
         for i in range(5):
             var s: Scalar[DTYPE] = 0
             for j in range(i):
@@ -521,13 +521,13 @@ def mj_qcqp5[
             break
 
         # Solve L*L'*tmp = res for deriv
-        var tmp_y = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+        var tmp_y = Array[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
         for i in range(5):
             var s: Scalar[DTYPE] = 0
             for j in range(i):
                 s += L[i * 5 + j] * tmp_y[j]
             tmp_y[i] = (res[i] - s) / L[i * 5 + i]
-        var tmp = InlineArray[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
+        var tmp = Array[Scalar[DTYPE], 5](fill=Scalar[DTYPE](0))
         for i_rev in range(5):
             var i = 4 - i_rev
             var s: Scalar[DTYPE] = 0
@@ -555,10 +555,10 @@ def mj_qcqp5[
 def cost_change[
     DTYPE: DType, MAX_DIM: Int, AR_SIZE: Int
 ](
-    force: InlineArray[Scalar[DTYPE], MAX_DIM],
-    oldforce: InlineArray[Scalar[DTYPE], MAX_DIM],
-    AR: InlineArray[Scalar[DTYPE], AR_SIZE],
-    res: InlineArray[Scalar[DTYPE], MAX_DIM],
+    force: Array[Scalar[DTYPE], MAX_DIM],
+    oldforce: Array[Scalar[DTYPE], MAX_DIM],
+    AR: Array[Scalar[DTYPE], AR_SIZE],
+    res: Array[Scalar[DTYPE], MAX_DIM],
     dim: Int,
 ) -> Scalar[DTYPE]:
     """Compute cost change from MuJoCo's costChange function.

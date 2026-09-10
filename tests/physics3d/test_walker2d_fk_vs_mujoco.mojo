@@ -24,7 +24,7 @@ Run with:
 from std.testing import assert_true, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs
-from std.collections import InlineArray
+from std.collections import Array
 
 from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
@@ -60,7 +60,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 
 def compare_fk(
     test_name: String,
-    qpos_values: InlineArray[Float64, NQ],
+    qpos_values: Array[Float64, NQ],
 ) raises:
     """Run FK in both engines with identical qpos, compare results."""
     print("--- Test:", test_name, "---")
@@ -199,7 +199,7 @@ def test_fk_default_qpos() raises:
     """FK at default standing pose (qpos = qpos0).
     rootz=1.25 places torso at z=1.25m — the natural standing height.
     All joint angles are zero (straight legs)."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[1] = 1.25  # rootz = qpos0 → torso at z=1.25
     compare_fk("Default standing pose (rootz=1.25)", qpos)
 
@@ -207,7 +207,7 @@ def test_fk_default_qpos() raises:
 def test_fk_large_rootx() raises:
     """FK with large horizontal displacement — torso moved 5m forward.
     Validates that translation doesn't accumulate floating-point errors."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 5.0  # rootx: 5m forward
     qpos[1] = 1.25  # rootz: standing height
     compare_fk("Large rootx (5m)", qpos)
@@ -218,7 +218,7 @@ def test_fk_bent_right_leg() raises:
     Tests off-center jnt_pos for leg_joint (pos='0 0 0.25') and
     foot_joint (pos='-0.2 0 0.1') — the same structure that exposed
     the cdof anchor bug in Hopper."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[1] = 1.25  # rootz
     qpos[3] = -0.5  # thigh_joint (backward bend, axis=-y)
     qpos[4] = 0.5  # leg_joint (forward flex)
@@ -229,7 +229,7 @@ def test_fk_bent_right_leg() raises:
 def test_fk_symmetric_gait() raises:
     """FK with both legs bent symmetrically — typical walking pose.
     Tests the full body tree with all joints active."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 1.0  # rootx: 1m forward
     qpos[1] = 1.25  # rootz: standing height
     qpos[2] = 0.1  # rooty: slight forward lean
@@ -245,7 +245,7 @@ def test_fk_symmetric_gait() raises:
 def test_fk_extreme_joints() raises:
     """FK near joint limits: thighs at max backward bend, feet angled.
     Tests large rotations in the multi-level hinge chain."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[1] = 1.25  # rootz
     qpos[2] = -0.3  # rooty: lean back
     qpos[

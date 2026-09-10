@@ -40,7 +40,7 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
-from std.collections import InlineArray
+from std.collections import Array
 from layout import Layout
 
 from mojo_rl.envs.dm_control.dog import (
@@ -182,7 +182,7 @@ def test_dog_contact_jacobian_matches_mujoco() raises:
                 )
 
         # Ours, built by the same helper the solver uses.
-        var jn_ours = InlineArray[Scalar[DTYPE], NV](fill=Scalar[DTYPE](0))
+        var jn_ours = Array[Scalar[DTYPE], NV](fill=Scalar[DTYPE](0))
         _contact_jacobian_row[DTYPE, NV](
             0,
             subtree_v,

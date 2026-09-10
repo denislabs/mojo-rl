@@ -78,7 +78,7 @@ yet placed is invisible to collision, and "not yet placed" is defined by the
 reference's order, not ours.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt
 from std.random import random_float64
 
@@ -234,7 +234,7 @@ def free_slot_of(phys: Int) -> Int:
     return phys if phys < FIXED_BRICK else phys - 1
 
 
-def sigma_of(order: InlineArray[Int, N_BRICKS]) -> InlineArray[Int, N_BRICKS]:
+def sigma_of(order: Array[Int, N_BRICKS]) -> Array[Int, N_BRICKS]:
     """`sigma`: reference brick index -> our physical brick index.
 
     `sigma(order[0]) = FIXED_BRICK`, because the reference fixes `order[0]` and
@@ -248,7 +248,7 @@ def sigma_of(order: InlineArray[Int, N_BRICKS]) -> InlineArray[Int, N_BRICKS]:
     depends on which brick the bake fixed; `free_slot_of` is what turns a
     physical brick into an address.
     """
-    var sigma = InlineArray[Int, N_BRICKS](fill=-1)
+    var sigma = Array[Int, N_BRICKS](fill=-1)
     sigma[order[0]] = FIXED_BRICK
     var nxt = 0
     for r in range(N_BRICKS):
@@ -264,13 +264,13 @@ def sigma_of(order: InlineArray[Int, N_BRICKS]) -> InlineArray[Int, N_BRICKS]:
 @always_inline
 def read_order[DTYPE: DType, D: DimsLike](
     d: Data[DTYPE, D, 1]
-) -> InlineArray[Int, N_BRICKS]:
+) -> Array[Int, N_BRICKS]:
     """`desired_order`, as written at reset into `META_IDX_TASK_PARAM_0..2`.
 
     ⚠ `Data.meta` is where per-episode task state lives (see `gpu/constants`);
     `prev_x` is rewritten every step and is the wrong home.
     """
-    var order = InlineArray[Int, N_BRICKS](fill=0)
+    var order = Array[Int, N_BRICKS](fill=0)
     for i in range(N_BRICKS):
         order[i] = Int(Float64(d.meta.data[META_IDX_TASK_PARAM_0 + i]))
     return order^
@@ -355,10 +355,10 @@ def stack_random_set_grasp_and_order[DTYPE: DType, D: DimsLike](
     meaningful — `sigma` needs every reference index mapped, not just the
     ordered ones — so the full array is written to `meta`.
     """
-    var qadr = InlineArray[Int, N_HAND](fill=0)
-    var rmin = InlineArray[Float64, N_HAND](fill=0.0)
-    var rmax = InlineArray[Float64, N_HAND](fill=0.0)
-    var factors = InlineArray[Float64, N_HAND](fill=0.0)
+    var qadr = Array[Int, N_HAND](fill=0)
+    var rmin = Array[Float64, N_HAND](fill=0.0)
+    var rmax = Array[Float64, N_HAND](fill=0.0)
+    var factors = Array[Float64, N_HAND](fill=0.0)
     var close = random_float64()
     for i in range(N_HAND):
         var jb = (N_ARM + i) * MODEL_JOINT_SIZE
@@ -368,7 +368,7 @@ def stack_random_set_grasp_and_order[DTYPE: DType, D: DimsLike](
         factors[i] = close
     set_grasp[DTYPE, N_HAND](d.qpos.data, qadr, rmin, rmax, factors)
 
-    var order = InlineArray[Int, N_BRICKS](fill=0)
+    var order = Array[Int, N_BRICKS](fill=0)
     for i in range(N_BRICKS):
         order[i] = i
     for i in range(N_BRICKS - 1, 0, -1):
@@ -411,11 +411,11 @@ def stack_random_reset_full[
     var order = read_order[DTYPE](d)
     var sigma = sigma_of(order)
 
-    var lo_p = InlineArray[Float64, 3](fill=0.0)
+    var lo_p = Array[Float64, 3](fill=0.0)
     lo_p[0] = PROP_BBOX_LOWER_X
     lo_p[1] = PROP_BBOX_LOWER_Y
     lo_p[2] = PROP_BBOX_LOWER_Z
-    var hi_p = InlineArray[Float64, 3](fill=0.0)
+    var hi_p = Array[Float64, 3](fill=0.0)
     hi_p[0] = PROP_BBOX_UPPER_X
     hi_p[1] = PROP_BBOX_UPPER_Y
     hi_p[2] = PROP_BBOX_UPPER_Z
@@ -428,7 +428,7 @@ def stack_random_reset_full[
 
         var poses = List[Scalar[DTYPE]]()
         for _ in range(MAX_PROP_ATTEMPTS):
-            var dr = InlineArray[Float64, 3](fill=0.0)
+            var dr = Array[Float64, 3](fill=0.0)
             for k in range(3):
                 dr[k] = random_float64()
             var pp = sample_bbox_uniform[DTYPE](lo_p, hi_p, dr)
@@ -474,10 +474,10 @@ def stack_random_reset_full[
         DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, N_ARM + N_HAND, SETTLE_SOLVER
     ](d, mf, dofs, timestep, String("stack_random"))
 
-    var dof_idx = InlineArray[Int, N_ARM](fill=0)
-    var qpos_adr = InlineArray[Int, N_ARM](fill=0)
-    var lower = InlineArray[Float64, N_ARM](fill=0.0)
-    var upper = InlineArray[Float64, N_ARM](fill=0.0)
+    var dof_idx = Array[Int, N_ARM](fill=0)
+    var qpos_adr = Array[Int, N_ARM](fill=0)
+    var lower = Array[Float64, N_ARM](fill=0.0)
+    var upper = Array[Float64, N_ARM](fill=0.0)
     for a in range(N_ARM):
         var jb = a * MODEL_JOINT_SIZE
         dof_idx[a] = a
@@ -491,16 +491,16 @@ def stack_random_reset_full[
         upper[a] = hi
 
     var targets = List[Scalar[DTYPE]]()
-    var lo_t = InlineArray[Float64, 3](fill=0.0)
+    var lo_t = Array[Float64, 3](fill=0.0)
     lo_t[0] = TCP_BBOX_LOWER_X
     lo_t[1] = TCP_BBOX_LOWER_Y
     lo_t[2] = TCP_BBOX_LOWER_Z
-    var hi_t = InlineArray[Float64, 3](fill=0.0)
+    var hi_t = Array[Float64, 3](fill=0.0)
     hi_t[0] = TCP_BBOX_UPPER_X
     hi_t[1] = TCP_BBOX_UPPER_Y
     hi_t[2] = TCP_BBOX_UPPER_Z
     for _ in range(MAX_SAMP):
-        var td = InlineArray[Float64, 3](fill=0.0)
+        var td = Array[Float64, 3](fill=0.0)
         for k in range(3):
             td[k] = random_float64()
         var p = sample_bbox_uniform[DTYPE](lo_t, hi_t, td)
@@ -516,7 +516,7 @@ def stack_random_reset_full[
                 )
             )
 
-    var down = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var down = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     down[0] = Scalar[DTYPE](DOWN_QUAT_XY)
     down[1] = Scalar[DTYPE](DOWN_QUAT_XY)
 
@@ -524,7 +524,7 @@ def stack_random_reset_full[
     # body's top-level body carries a freejoint, and in OUR model that is a
     # fixed fact: `FIXED_BRICK` never has one. The relabeling moves which
     # LOGICAL brick sits there, not which physical one is welded.
-    var body_class = InlineArray[Int, D.NBODY](fill=BODY_FIXED)
+    var body_class = Array[Int, D.NBODY](fill=BODY_FIXED)
     for b in range(D.NBODY):
         if b >= 2 and b <= 8:
             body_class[b] = BODY_ARM

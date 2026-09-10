@@ -60,7 +60,7 @@ def _lnna_forward_kernel[
     var my_sumsq = Scalar[LNNA_ACC](0)
 
     comptime if REG_CACHE:
-        var slice = InlineArray[Scalar[LNNA_ACC], ELEMS](
+        var slice = Array[Scalar[LNNA_ACC], ELEMS](
             fill=Scalar[LNNA_ACC](0)
         )
 
@@ -144,8 +144,8 @@ def _lnna_backward_kernel[
     var my_g_xhat = Scalar[LNNA_ACC](0)
 
     comptime if REG_CACHE:
-        var g_s = InlineArray[Scalar[LNNA_ACC], ELEMS](fill=Scalar[LNNA_ACC](0))
-        var xh_s = InlineArray[Scalar[LNNA_ACC], ELEMS](
+        var g_s = Array[Scalar[LNNA_ACC], ELEMS](fill=Scalar[LNNA_ACC](0))
+        var xh_s = Array[Scalar[LNNA_ACC], ELEMS](
             fill=Scalar[LNNA_ACC](0)
         )
 
@@ -199,7 +199,7 @@ def _lnna_backward_kernel[
 
 struct LayerNormNoAffine[DIM_: Int](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
 
     var cache_xhat: Tensor  # [BATCH, DIM]

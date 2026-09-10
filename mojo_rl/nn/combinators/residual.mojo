@@ -39,7 +39,7 @@ def _resid_add_kernel[
 
 struct Residual[Inner: Module](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.Inner.IN_DIMS[0])
+    comptime IN_DIMS = Array[Int, 1](fill=Self.Inner.IN_DIMS[0])
     comptime OUT_DIM = Self.Inner.OUT_DIM
     comptime DIM = Self.Inner.OUT_DIM
     # The skip path is element-wise — no dtype change — so the residual's

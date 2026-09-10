@@ -68,7 +68,7 @@ comptime QD_TPB: Int = 32
 @always_inline
 def _mjd_crossMotion_vel[
     DTYPE: DType,
-](mut D: InlineArray[Scalar[DTYPE], 36], v: InlineArray[Scalar[DTYPE], 6],):
+](mut D: Array[Scalar[DTYPE], 36], v: Array[Scalar[DTYPE], 6],):
     """d(crossMotion(vel, v))/d(vel), 6x6 row-major."""
     for i in range(36):
         D[i] = Scalar[DTYPE](0)
@@ -95,7 +95,7 @@ def _mjd_crossMotion_vel[
 @always_inline
 def _mjd_crossForce_vel[
     DTYPE: DType,
-](mut D: InlineArray[Scalar[DTYPE], 36], f: InlineArray[Scalar[DTYPE], 6],):
+](mut D: Array[Scalar[DTYPE], 36], f: Array[Scalar[DTYPE], 6],):
     """d(crossForce(vel, f))/d(vel), 6x6 row-major."""
     for i in range(36):
         D[i] = Scalar[DTYPE](0)
@@ -122,7 +122,7 @@ def _mjd_crossForce_vel[
 @always_inline
 def _mjd_crossForce_frc[
     DTYPE: DType,
-](mut D: InlineArray[Scalar[DTYPE], 36], vel: InlineArray[Scalar[DTYPE], 6],):
+](mut D: Array[Scalar[DTYPE], 36], vel: Array[Scalar[DTYPE], 6],):
     """d(crossForce(vel, f))/d(f), 6x6 row-major."""
     for i in range(36):
         D[i] = Scalar[DTYPE](0)
@@ -150,8 +150,8 @@ def _mjd_crossForce_frc[
 def _mjd_mulInertVec_vel[
     DTYPE: DType,
 ](
-    mut D: InlineArray[Scalar[DTYPE], 36],
-    cinert: InlineArray[Scalar[DTYPE], 10],
+    mut D: Array[Scalar[DTYPE], 36],
+    cinert: Array[Scalar[DTYPE], 10],
 ):
     """d(mulInertVec(cinert, v))/d(v), 6x6 row-major."""
     for i in range(36):
@@ -186,9 +186,9 @@ def _mjd_mulInertVec_vel[
 def _mulInertVec[
     DTYPE: DType,
 ](
-    mut res: InlineArray[Scalar[DTYPE], 6],
-    cinert: InlineArray[Scalar[DTYPE], 10],
-    v: InlineArray[Scalar[DTYPE], 6],
+    mut res: Array[Scalar[DTYPE], 6],
+    cinert: Array[Scalar[DTYPE], 10],
+    v: Array[Scalar[DTYPE], 6],
 ):
     """res = cinert * v (spatial inertia × spatial vector)."""
     res[0] = (
@@ -221,9 +221,9 @@ def _mulInertVec[
 def _matmul_6x6_x_6x6[
     DTYPE: DType,
 ](
-    mut result: InlineArray[Scalar[DTYPE], 36],
-    A: InlineArray[Scalar[DTYPE], 36],
-    B: InlineArray[Scalar[DTYPE], 36],
+    mut result: Array[Scalar[DTYPE], 36],
+    A: Array[Scalar[DTYPE], 36],
+    B: Array[Scalar[DTYPE], 36],
 ):
     """result = A @ B, both 6x6 row-major."""
     for i in range(6):
@@ -620,14 +620,14 @@ def _rne_vel_derivative_env[
                         ](cdof_sc[env, dof * 6 + kk])
                 for d in range(3):
                     var dof = dof_adr + 3 + d
-                    var cdof_v = InlineArray[Scalar[DTYPE], 6](
+                    var cdof_v = Array[Scalar[DTYPE], 6](
                         uninitialized=True
                     )
                     for kk in range(6):
                         cdof_v[kk] = rebind[Scalar[DTYPE]](
                             cdof_sc[env, dof * 6 + kk]
                         )
-                    var mat = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
+                    var mat = Array[Scalar[DTYPE], 36](uninitialized=True)
                     _mjd_crossMotion_vel(mat, cdof_v)
                     for ii in range(6):
                         for kk in range(nv):
@@ -645,14 +645,14 @@ def _rne_vel_derivative_env[
             elif jtype == JNT_BALL:
                 for d in range(3):
                     var dof = dof_adr + d
-                    var cdof_v = InlineArray[Scalar[DTYPE], 6](
+                    var cdof_v = Array[Scalar[DTYPE], 6](
                         uninitialized=True
                     )
                     for kk in range(6):
                         cdof_v[kk] = rebind[Scalar[DTYPE]](
                             cdof_sc[env, dof * 6 + kk]
                         )
-                    var mat = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
+                    var mat = Array[Scalar[DTYPE], 36](uninitialized=True)
                     _mjd_crossMotion_vel(mat, cdof_v)
                     for ii in range(6):
                         for kk in range(nv):
@@ -669,12 +669,12 @@ def _rne_vel_derivative_env[
 
             else:
                 var dof = dof_adr
-                var cdof_v = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
+                var cdof_v = Array[Scalar[DTYPE], 6](uninitialized=True)
                 for kk in range(6):
                     cdof_v[kk] = rebind[Scalar[DTYPE]](
                         cdof_sc[env, dof * 6 + kk]
                     )
-                var mat = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
+                var mat = Array[Scalar[DTYPE], 36](uninitialized=True)
                 _mjd_crossMotion_vel(mat, cdof_v)
                 for ii in range(6):
                     for kk in range(nv):
@@ -711,11 +711,11 @@ def _rne_vel_derivative_env[
                         * qvel_j
                     )
 
-        var ci = InlineArray[Scalar[DTYPE], 10](uninitialized=True)
+        var ci = Array[Scalar[DTYPE], 10](uninitialized=True)
         for k in range(10):
             ci[k] = rebind[Scalar[DTYPE]](cinert[env, b * 10 + k])
 
-        var dmul = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
+        var dmul = Array[Scalar[DTYPE], 36](uninitialized=True)
         _mjd_mulInertVec_vel(dmul, ci)
 
         for ii in range(6):
@@ -727,17 +727,17 @@ def _rne_vel_derivative_env[
                     )
                 dcfrcbody[env, b * 6 * nv + ii * nv + kk] = s
 
-        var cv = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
+        var cv = Array[Scalar[DTYPE], 6](uninitialized=True)
         for k in range(6):
             cv[k] = rebind[Scalar[DTYPE]](cvel_sc[env, b * 6 + k])
-        var tmp6 = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
+        var tmp6 = Array[Scalar[DTYPE], 6](uninitialized=True)
         _mulInertVec(tmp6, ci, cv)
 
-        var mat = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
+        var mat = Array[Scalar[DTYPE], 36](uninitialized=True)
         _mjd_crossForce_vel(mat, tmp6)
-        var mat1 = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
+        var mat1 = Array[Scalar[DTYPE], 36](uninitialized=True)
         _mjd_crossForce_frc(mat1, cv)
-        var mat2 = InlineArray[Scalar[DTYPE], 36](uninitialized=True)
+        var mat2 = Array[Scalar[DTYPE], 36](uninitialized=True)
         _matmul_6x6_x_6x6(mat2, mat1, dmul)
         for k in range(36):
             mat[k] += mat2[k]

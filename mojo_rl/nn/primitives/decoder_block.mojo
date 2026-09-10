@@ -58,7 +58,7 @@ from .add import Add
 struct DecoderBlock[N: Int, HID: Int, FF: Int](Module):
     comptime ARITY: Int = 2
     comptime SEQ_DIM = Self.N * Self.HID
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.SEQ_DIM)
+    comptime IN_DIMS = Array[Int, 2](fill=Self.SEQ_DIM)
     comptime OUT_DIM = Self.SEQ_DIM
 
     comptime Graph = ComputeGraph[

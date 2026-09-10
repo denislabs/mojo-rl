@@ -193,8 +193,8 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
     comptime OUT_DIM = 2 * Self.HIDDEN  # packed [h ; c]
 
     @staticmethod
-    def _build_in_dims() -> InlineArray[Int, 2]:
-        var d = InlineArray[Int, 2](fill=0)
+    def _build_in_dims() -> Array[Int, 2]:
+        var d = Array[Int, 2](fill=0)
         d[0] = Self.IN_
         d[1] = 2 * Self.HIDDEN
         return d^
@@ -467,7 +467,7 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             max_matmul[target="cpu"](ix_tt, xv, Wih_tt, None)
             max_matmul[target="cpu"](hx_tt, hp, Whh_tt, None)
             for bi in range(BATCH):
-                var gates = InlineArray[Scalar[DT], 4 * Self.HIDDEN](fill=0.0)
+                var gates = Array[Scalar[DT], 4 * Self.HIDDEN](fill=0.0)
                 for k in range(FOURH):
                     var pre: Scalar[DT] = (
                         ix_list[bi * FOURH + k] + hx_list[bi * FOURH + k] + b_p[unsafe_offset=k]

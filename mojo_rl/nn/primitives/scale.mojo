@@ -61,7 +61,7 @@ def _scale_dev_kernel[
 
 struct Scale[DIM_: Int](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
 
     @staticmethod

@@ -379,7 +379,7 @@ struct SoArmReachConfig[
     def _home(i: Int) -> Float64:
         """The reset pose, by qpos address.
 
-        ⚠ A CHAIN, NOT AN `InlineArray`. `InlineArray[Float64, 6](a, b, ...)`
+        ⚠ A CHAIN, NOT AN `Array`. `Array[Float64, 6](a, b, ...)`
         does not construct under Mojo 1.0 (the variadic ctor wants
         `__list_literal__`), and the `fill=` + subscript-assign form runs into
         `feedback_mojo_inlinearray_subscript_is_a_copy`. Six branches read

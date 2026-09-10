@@ -245,7 +245,7 @@ struct StdinReader(Movable):
         bytes, laid out here as two `Int32`s with `events` in the low half of
         the second.
         """
-        var pfd = InlineArray[Int32, 2](fill=0)
+        var pfd = Array[Int32, 2](fill=0)
         pfd[0] = Int32(0)  # fd 0
         pfd[1] = Int32(0x0001)  # events = POLLIN
         var rc = external_call["poll", Int32](

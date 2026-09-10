@@ -68,7 +68,7 @@ def _token_mean_bwd_kernel[
 
 struct TokenMean[SEQ_LEN_: Int, DIM_: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ_LEN_ * Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.SEQ_LEN_ * Self.DIM_)
     comptime OUT_DIM = Self.DIM_
 
     def __init__(out self):

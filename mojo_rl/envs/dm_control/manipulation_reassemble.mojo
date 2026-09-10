@@ -48,7 +48,7 @@ moved exactly once — but the precondition is invisible in the code, so
 different stack.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt, sin, cos, pi
 from std.random import random_float64
 
@@ -125,8 +125,8 @@ place. See the header: the reference's own formula is only correct at 0."""
 def quat_mul[
     DTYPE: DType
 ](
-    a: InlineArray[Scalar[DTYPE], 4], b: InlineArray[Scalar[DTYPE], 4]
-) -> InlineArray[Scalar[DTYPE], 4]:
+    a: Array[Scalar[DTYPE], 4], b: Array[Scalar[DTYPE], 4]
+) -> Array[Scalar[DTYPE], 4]:
     """`mju_mulQuat` — the Hamilton product, in our (x, y, z, w) order."""
     var ax = Float64(a[0])
     var ay = Float64(a[1])
@@ -136,7 +136,7 @@ def quat_mul[
     var by = Float64(b[1])
     var bz = Float64(b[2])
     var bw = Float64(b[3])
-    var out = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     out[0] = Scalar[DTYPE](aw * bx + ax * bw + ay * bz - az * by)
     out[1] = Scalar[DTYPE](aw * by - ax * bz + ay * bw + az * bx)
     out[2] = Scalar[DTYPE](aw * bz + ax * by - ay * bx + az * bw)
@@ -147,7 +147,7 @@ def quat_mul[
 @always_inline
 def quat_normalize[
     DTYPE: DType
-](q: InlineArray[Scalar[DTYPE], 4]) -> InlineArray[Scalar[DTYPE], 4]:
+](q: Array[Scalar[DTYPE], 4]) -> Array[Scalar[DTYPE], 4]:
     """`mju_normalize4`, with MuJoCo's fallback to the identity at zero norm."""
     var n = sqrt(
         Float64(q[0]) * Float64(q[0])
@@ -155,7 +155,7 @@ def quat_normalize[
         + Float64(q[2]) * Float64(q[2])
         + Float64(q[3]) * Float64(q[3])
     )
-    var out = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     if n < 1.0e-15:
         out[3] = Scalar[DTYPE](1)
         return out^
@@ -167,7 +167,7 @@ def quat_normalize[
 @always_inline
 def quat_integrate_z_pi[
     DTYPE: DType
-](q: InlineArray[Scalar[DTYPE], 4]) -> InlineArray[Scalar[DTYPE], 4]:
+](q: Array[Scalar[DTYPE], 4]) -> Array[Scalar[DTYPE], 4]:
     """`mju_quatIntegrate(quat, [0, 0, 1], pi)` — `_build_stack`'s coin flip.
 
     ⚠⚠ IT IS A RIGHT MULTIPLICATION, SO THE ROTATION IS IN THE BODY FRAME.
@@ -183,7 +183,7 @@ def quat_integrate_z_pi[
     `qpos`, so this only matters if the result is read back before that.
     """
     # `mji_axisAngle2Quat([0,0,1], pi)` = (w, x, y, z) = (0, 0, 0, 1).
-    var qrot = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var qrot = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     qrot[2] = Scalar[DTYPE](1)  # z
     return quat_mul[DTYPE](quat_normalize[DTYPE](q), qrot)
 
@@ -202,9 +202,9 @@ def read_brick_pos[DTYPE: DType, D: DimsLike](
     mf: Model[DTYPE, D],
     body: Int,
     qpos_adr: Int,
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """`qpos_adr < 0` means the brick has no freejoint — read the model."""
-    var out = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     if qpos_adr < 0:
         var fb = body * MODEL_BODY_SIZE
         out[0] = mf.bodies.data[fb + BODY_IDX_POS_X]
@@ -222,9 +222,9 @@ def read_brick_quat[DTYPE: DType, D: DimsLike](
     mf: Model[DTYPE, D],
     body: Int,
     qpos_adr: Int,
-) -> InlineArray[Scalar[DTYPE], 4]:
+) -> Array[Scalar[DTYPE], 4]:
     """`Entity.get_pose`'s quaternion, in OUR (x, y, z, w) order."""
-    var out = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     if qpos_adr < 0:
         var fb = body * MODEL_BODY_SIZE
         out[0] = mf.bodies.data[fb + BODY_IDX_QUAT_X]
@@ -245,7 +245,7 @@ def write_brick_pos[DTYPE: DType, D: DimsLike](
     mut mf: Model[DTYPE, D],
     body: Int,
     qpos_adr: Int,
-    pos: InlineArray[Scalar[DTYPE], 3],
+    pos: Array[Scalar[DTYPE], 3],
 ):
     """`set_pose(position=...)`, POSITION ONLY.
 
@@ -271,7 +271,7 @@ def write_brick_quat[DTYPE: DType, D: DimsLike](
     mut mf: Model[DTYPE, D],
     body: Int,
     qpos_adr: Int,
-    quat: InlineArray[Scalar[DTYPE], 4],
+    quat: Array[Scalar[DTYPE], 4],
 ):
     """`set_pose(quaternion=...)` — which NORMALISES. See `Entity.set_pose`."""
     var q = quat_normalize[DTYPE](quat)
@@ -296,8 +296,8 @@ def build_stack[DTYPE: DType, D: DimsLike](
     mut mf: Model[DTYPE, D],
     order: List[Int],
     fixed_brick: Int,
-    base_pos: InlineArray[Scalar[DTYPE], 3],
-    base_quat: InlineArray[Scalar[DTYPE], 4],
+    base_pos: Array[Scalar[DTYPE], 3],
+    base_quat: Array[Scalar[DTYPE], 4],
     flips: List[Bool],
 ) raises:
     """`bricks.py::_build_stack` — an assembled stack, bottom to top.
@@ -389,7 +389,7 @@ def build_stack[DTYPE: DType, D: DimsLike](
                     + " see this module's header"
                 )
 
-        var top_pos = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        var top_pos = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
         top_pos[0] = Scalar[DTYPE](
             stud_x - Float64(d.site_xpos.data[hole * 3 + 0])
         )
@@ -502,10 +502,10 @@ def reassemble_set_grasp[DTYPE: DType, D: DimsLike](
     m_joints: List[Scalar[DTYPE]],
 ) raises:
     """`set_grasp` — ONE draw broadcast to all three fingers."""
-    var qadr = InlineArray[Int, N_HAND](fill=0)
-    var rmin = InlineArray[Float64, N_HAND](fill=0.0)
-    var rmax = InlineArray[Float64, N_HAND](fill=0.0)
-    var factors = InlineArray[Float64, N_HAND](fill=0.0)
+    var qadr = Array[Int, N_HAND](fill=0)
+    var rmin = Array[Float64, N_HAND](fill=0.0)
+    var rmax = Array[Float64, N_HAND](fill=0.0)
+    var factors = Array[Float64, N_HAND](fill=0.0)
     var close = random_float64()
     for i in range(N_HAND):
         var jb = (N_ARM + i) * MODEL_JOINT_SIZE
@@ -550,16 +550,16 @@ def reassemble_reset_full[DTYPE: DType, D: DimsLike](
     geometry puts it. Adding either would be importing `Stack`'s reset into a
     task that does not have one.
     """
-    var lo_p = InlineArray[Float64, 3](fill=0.0)
+    var lo_p = Array[Float64, 3](fill=0.0)
     lo_p[0] = PROP_BBOX_LOWER_X
     lo_p[1] = PROP_BBOX_LOWER_Y
     lo_p[2] = PROP_BBOX_LOWER_Z
-    var hi_p = InlineArray[Float64, 3](fill=0.0)
+    var hi_p = Array[Float64, 3](fill=0.0)
     hi_p[0] = PROP_BBOX_UPPER_X
     hi_p[1] = PROP_BBOX_UPPER_Y
     hi_p[2] = PROP_BBOX_UPPER_Z
 
-    var dr = InlineArray[Float64, 3](fill=0.0)
+    var dr = Array[Float64, 3](fill=0.0)
     for k in range(3):
         dr[k] = random_float64()
     var base_pos = sample_bbox_uniform[DTYPE](lo_p, hi_p, dr)
@@ -691,10 +691,10 @@ def reassemble_random_draw_orders[DTYPE: DType, D: DimsLike](
     hook could leave a stale order behind. `manipulation_stack_random` does the
     same and for the same reasons.
     """
-    var qadr = InlineArray[Int, N_HAND](fill=0)
-    var rmin = InlineArray[Float64, N_HAND](fill=0.0)
-    var rmax = InlineArray[Float64, N_HAND](fill=0.0)
-    var factors = InlineArray[Float64, N_HAND](fill=0.0)
+    var qadr = Array[Int, N_HAND](fill=0)
+    var rmin = Array[Float64, N_HAND](fill=0.0)
+    var rmax = Array[Float64, N_HAND](fill=0.0)
+    var factors = Array[Float64, N_HAND](fill=0.0)
     var close = random_float64()
     for i in range(N_HAND):
         var jb = (N_ARM + i) * MODEL_JOINT_SIZE

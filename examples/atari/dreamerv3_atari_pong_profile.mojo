@@ -157,7 +157,7 @@ def main() raises:
         print("warmup:", WARMUP_TRAIN, "eager train steps...")
         for _w in range(WARMUP_TRAIN):
             _ = agent.train_step(want_diag=False)
-        var acc = InlineArray[Float64, 5](fill=0.0)
+        var acc = Array[Float64, 5](fill=0.0)
         print("profiling", PROF_TRAIN, "train steps (synced sections)...")
         for _p in range(PROF_TRAIN):
             var s = agent.trainer.profile_sections()

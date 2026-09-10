@@ -1,10 +1,10 @@
 """Generic continuous action for GC environments.
 
-ContAction[N] wraps an InlineArray[Float64, N] and implements the Action trait.
+ContAction[N] wraps an Array[Float64, N] and implements the Action trait.
 Replaces per-environment action structs like HalfCheetahAction.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 
 from .action import Action
 
@@ -16,14 +16,14 @@ struct ContAction[N: Int](Action, Copyable, Movable):
     signal that gets scaled by the joint's TAU_LIMIT (gear ratio).
     """
 
-    var data: InlineArray[Float64, Self.N]
+    var data: Array[Float64, Self.N]
 
     def __init__(out self):
         """Initialize with zeros."""
-        self.data = InlineArray[Float64, Self.N](fill=0.0)
+        self.data = Array[Float64, Self.N](fill=0.0)
 
-    def __init__(out self, data: InlineArray[Float64, Self.N]):
-        """Initialize from an existing InlineArray."""
+    def __init__(out self, data: Array[Float64, Self.N]):
+        """Initialize from an existing Array."""
         self.data = data.copy()
 
     def __init__(out self, *, copy: Self):

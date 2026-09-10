@@ -129,12 +129,12 @@ struct PushTEnv[DTYPE: DType](
     comptime NUM_SHAPES: Int = PushTShapeBuf.NUM_SHAPES
 
     # Owned storage (inline; pointers stay valid for the env's lifetime)
-    var state_data: InlineArray[Scalar[dtype], PushTLayout.STATE_SIZE]
-    var shapes_data: InlineArray[
-        InlineArray[Scalar[dtype], SHAPE_MAX_SIZE],
+    var state_data: Array[Scalar[dtype], PushTLayout.STATE_SIZE]
+    var shapes_data: Array[
+        Array[Scalar[dtype], SHAPE_MAX_SIZE],
         PushTShapeBuf.NUM_SHAPES,
     ]
-    var contacts_data: InlineArray[
+    var contacts_data: Array[
         Scalar[dtype], PushTLayout.MAX_CONTACTS * CONTACT_DATA_SIZE
     ]
 
@@ -155,18 +155,18 @@ struct PushTEnv[DTYPE: DType](
     # =========================================================================
 
     def __init__(out self, seed: UInt64 = 0):
-        self.state_data = InlineArray[Scalar[dtype], PushTLayout.STATE_SIZE](
+        self.state_data = Array[Scalar[dtype], PushTLayout.STATE_SIZE](
             fill=Scalar[dtype](0.0)
         )
         # Construct shapes_data by filling each inner array.
-        var row = InlineArray[Scalar[dtype], SHAPE_MAX_SIZE](
+        var row = Array[Scalar[dtype], SHAPE_MAX_SIZE](
             fill=Scalar[dtype](0.0)
         )
-        self.shapes_data = InlineArray[
-            InlineArray[Scalar[dtype], SHAPE_MAX_SIZE],
+        self.shapes_data = Array[
+            Array[Scalar[dtype], SHAPE_MAX_SIZE],
             PushTShapeBuf.NUM_SHAPES,
         ](fill=row)
-        self.contacts_data = InlineArray[
+        self.contacts_data = Array[
             Scalar[dtype], PushTLayout.MAX_CONTACTS * CONTACT_DATA_SIZE
         ](fill=Scalar[dtype](0.0))
         init_pusht_shape_buffer[PushTShapeBuf.NUM_SHAPES](self.shapes_data)
@@ -227,7 +227,7 @@ struct PushTEnv[DTYPE: DType](
         Layout.row_major(PushTShapeBuf.NUM_SHAPES, SHAPE_MAX_SIZE),
         MutAnyOrigin,
     ]:
-        # InlineArray of InlineArrays is contiguous in Mojo, so we can treat
+        # Array of InlineArrays is contiguous in Mojo, so we can treat
         # the outer storage's pointer as a flat NUM_SHAPES * SHAPE_MAX_SIZE
         # buffer.
         return LayoutTensor[
@@ -337,7 +337,7 @@ struct PushTEnv[DTYPE: DType](
         var bx = rebind[Scalar[dtype]](s[0, to_ + IDX_X])
         var by = rebind[Scalar[dtype]](s[0, to_ + IDX_Y])
         var ba = rebind[Scalar[dtype]](s[0, to_ + IDX_ANGLE])
-        var kp = InlineArray[Scalar[dtype], PConstants.KEYPOINTS_DIM](
+        var kp = Array[Scalar[dtype], PConstants.KEYPOINTS_DIM](
             fill=Scalar[dtype](0.0)
         )
         get_t_keypoints_world(bx, by, ba, kp)

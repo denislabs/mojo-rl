@@ -151,7 +151,7 @@ struct RoPE[
     comptime H: Int = Self.HEAD_DIM // 2
     comptime WIDTH: Int = Self.N_HEADS * Self.HEAD_DIM
     comptime N: Int = Self.SEQ * Self.WIDTH
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.N)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.N)
     comptime OUT_DIM: Int = Self.N
     comptime TABLE: Int = Self.SEQ * Self.H
 

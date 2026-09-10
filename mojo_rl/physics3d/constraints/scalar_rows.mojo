@@ -153,7 +153,7 @@ def max_scalar_rows_cap[NV: Int, NJOINT: Int]() -> Int:
 
     Deliberately UNCLAMPED, unlike the runtime form above. `Scratch` reads 0
     as "use the heap"; the old `n if n > 0 else 1` clamp existed to keep
-    `InlineArray` legal at size zero, and `_slot[]` now does that job inside
+    `Array` legal at size zero, and `_slot[]` now does that job inside
     the container. Clamping here would hand the dynamic leg a ONE-element
     stack array instead — see `fields/scratch.mojo` on why caps poison to 0.
     """

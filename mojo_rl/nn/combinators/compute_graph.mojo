@@ -319,7 +319,7 @@ struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph & ParamWalkable):
                     comptime ei = Self._ext_before[i]()
                     comptime AE = EXT[ei].ARITY
                     comptime cei = EXT[ei].ACT_DT
-                    var inrefs = InlineArray[
+                    var inrefs = Array[
                         Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], AE
                     ](uninitialized=True)
                     comptime for k in range(AE):
@@ -337,7 +337,7 @@ struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph & ParamWalkable):
                 else:
                     comptime A = Self.DECLS[i].ARITY
                     comptime ci = Self.DECLS[i].ACT_DT
-                    var inrefs = InlineArray[
+                    var inrefs = Array[
                         Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], A
                     ](uninitialized=True)
                     comptime for k in range(A):
@@ -422,10 +422,10 @@ struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph & ParamWalkable):
                     comptime ei = Self._ext_before[i]()
                     comptime AE = EXT[ei].ARITY
                     comptime cei = EXT[ei].ACT_DT
-                    var firefs = InlineArray[
+                    var firefs = Array[
                         Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], AE
                     ](uninitialized=True)
-                    var girefs = InlineArray[
+                    var girefs = Array[
                         Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], AE
                     ](uninitialized=True)
                     comptime for k in range(AE):
@@ -453,10 +453,10 @@ struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph & ParamWalkable):
                 else:
                     comptime A = Self.DECLS[i].ARITY
                     comptime ci = Self.DECLS[i].ACT_DT
-                    var firefs = InlineArray[
+                    var firefs = Array[
                         Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], A
                     ](uninitialized=True)
-                    var girefs = InlineArray[
+                    var girefs = Array[
                         Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], A
                     ](uninitialized=True)
                     comptime for k in range(A):

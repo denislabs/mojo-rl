@@ -70,7 +70,7 @@ def test_termios_size_and_speed_offsets_agree_with_libc() raises:
     assert_true(fd >= 0, "openpty gave a slave fd")
 
     # 16 canary bytes past the struct: tcgetattr must not touch them.
-    var buf = InlineArray[UInt8, TERMIOS_SIZE + 16](fill=CANARY)
+    var buf = Array[UInt8, TERMIOS_SIZE + 16](fill=CANARY)
     var p = buf.unsafe_ptr()
     assert_equal(
         Int(external_call["tcgetattr", Int32](fd, p)), 0, "tcgetattr on pty"
@@ -128,7 +128,7 @@ def test_c_cc_offset_round_trips_through_the_driver() raises:
     var master = Int32(-1)
     var fd = Int32(-1)
     assert_equal(Int(_open_pty(master, fd)), 0, "openpty")
-    var buf = InlineArray[UInt8, TERMIOS_SIZE](fill=0)
+    var buf = Array[UInt8, TERMIOS_SIZE](fill=0)
     var p = buf.unsafe_ptr()
     _ = external_call["tcgetattr", Int32](fd, p)
 
@@ -138,7 +138,7 @@ def test_c_cc_offset_round_trips_through_the_driver() raises:
         Int(external_call["tcsetattr", Int32](fd, Int32(TCSANOW), p)), 0
     )
 
-    var back = InlineArray[UInt8, TERMIOS_SIZE](fill=0)
+    var back = Array[UInt8, TERMIOS_SIZE](fill=0)
     var q = back.unsafe_ptr()
     _ = external_call["tcgetattr", Int32](fd, q)
     assert_equal(Int(q[unsafe_offset = OFF_CC + VMIN]), 7, "c_cc[VMIN]")

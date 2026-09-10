@@ -102,7 +102,7 @@ def _check(name: String, path: String) raises:
     )
 
     # Pack into the tensors `_support_mesh` reads.
-    # ⚠ HEAP, NOT `InlineArray`. NV*3 float64 is ~200 KB and the edge buffer
+    # ⚠ HEAP, NOT `Array`. NV*3 float64 is ~200 KB and the edge buffer
     # more; on the stack that is an overflow, not a slow test.
     # ⚠⚠ THE LISTS MUST OUTLIVE THE TENSORS — Mojo destroys at LAST USE, so the
     # `_ = ...` at the end of this function is load-bearing, not tidy-up.
@@ -466,7 +466,7 @@ def test_below_hillclimb_min_uses_the_scan() raises:
     """Under `_HILLCLIMB_MIN = 10` vertices MuJoCo keeps the scan, and so do
     we. Pins that the threshold branch does not change the answer — a mesh in
     that range must give the same point either way."""
-    # ⚠ HEAP, NOT `InlineArray`. NV*3 float64 is ~200 KB and the edge buffer
+    # ⚠ HEAP, NOT `Array`. NV*3 float64 is ~200 KB and the edge buffer
     # more; on the stack that is an overflow, not a slow test.
     # ⚠⚠ THE LISTS MUST OUTLIVE THE TENSORS — Mojo destroys at LAST USE, so the
     # `_ = ...` at the end of this function is load-bearing, not tidy-up.

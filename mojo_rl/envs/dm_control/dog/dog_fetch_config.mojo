@@ -141,7 +141,7 @@ def _ball_to_mouth_distance[DTYPE: DType, D: DimsLike](
         d, m_geoms
     )
     var total = Float64(0)
-    # Written out rather than iterating a temporary InlineArray, which does
+    # Written out rather than iterating a temporary Array, which does
     # not construct here. Two sites is not worth a container.
     for s in range(2):
         var site = FETCH_SITE_UPPER_BITE if s == 0 else FETCH_SITE_LOWER_BITE

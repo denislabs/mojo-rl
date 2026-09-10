@@ -264,7 +264,7 @@ struct AtariEnvironment(Movable):
 
         return sig.reward
 
-    def get_ram(self) -> InlineArray[UInt8, RAM_SIZE]:
+    def get_ram(self) -> Array[UInt8, RAM_SIZE]:
         """Get a copy of the 128-byte RAM (for RAM observations)."""
         return self.state.ram.copy()
 
@@ -290,19 +290,19 @@ trait GameDef:
     comptime NUM_ACTIONS: Int
 
     @staticmethod
-    def get_score(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
+    def get_score(ram: Array[UInt8, RAM_SIZE]) -> Int:
         ...
 
     @staticmethod
-    def get_reward(ram: InlineArray[UInt8, RAM_SIZE], prev_score: Int) -> Int:
+    def get_reward(ram: Array[UInt8, RAM_SIZE], prev_score: Int) -> Int:
         ...
 
     @staticmethod
-    def get_lives(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
+    def get_lives(ram: Array[UInt8, RAM_SIZE]) -> Int:
         ...
 
     @staticmethod
-    def is_terminal(ram: InlineArray[UInt8, RAM_SIZE]) -> Bool:
+    def is_terminal(ram: Array[UInt8, RAM_SIZE]) -> Bool:
         ...
 
     @staticmethod

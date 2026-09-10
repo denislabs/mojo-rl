@@ -420,8 +420,8 @@ def eval_mcts_vs_opponent[
     )
     ctx.synchronize()
 
-    var eval_done = InlineArray[Bool, N_GAMES](fill=False)
-    var eval_result = InlineArray[Int, N_GAMES](fill=0)  # 1=win 2=loss 3=draw
+    var eval_done = Array[Bool, N_GAMES](fill=False)
+    var eval_result = Array[Int, N_GAMES](fill=0)  # 1=win 2=loss 3=draw
     var all_done = False
     var move = 0
 

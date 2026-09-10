@@ -108,10 +108,10 @@ def sync_gym_to_native(
 
 def read_gym_raw(
     gym_env: PythonObject,
-) raises -> InlineArray[Float64, 6]:
+) raises -> Array[Float64, 6]:
     """Read raw (x, y, vx, vy, angle, omega) from Gymnasium Box2D body."""
     var lander = gym_env.unwrapped.lander
-    var out = InlineArray[Float64, 6](fill=0.0)
+    var out = Array[Float64, 6](fill=0.0)
     out[0] = Float64(py=lander.position[0])
     out[1] = Float64(py=lander.position[1])
     out[2] = Float64(py=lander.linearVelocity[0])
@@ -123,9 +123,9 @@ def read_gym_raw(
 
 def read_native_raw(
     mut env: LunarLander[dtype],
-) -> InlineArray[Float64, 6]:
+) -> Array[Float64, 6]:
     """Read raw (x, y, vx, vy, angle, omega) from native physics."""
-    var out = InlineArray[Float64, 6](fill=0.0)
+    var out = Array[Float64, 6](fill=0.0)
     out[0] = Float64(env.physics.get_body_x(0, 0))
     out[1] = Float64(env.physics.get_body_y(0, 0))
     out[2] = Float64(env.physics.get_body_vx(0, 0))

@@ -285,8 +285,8 @@ def mz_arena_match[
     )
     ctx.synchronize()
 
-    var eval_done = InlineArray[Bool, N_GAMES](fill=False)
-    var eval_result = InlineArray[Int, N_GAMES](fill=0)  # 1=A win 2=A loss 3=draw
+    var eval_done = Array[Bool, N_GAMES](fill=False)
+    var eval_result = Array[Int, N_GAMES](fill=0)  # 1=A win 2=A loss 3=draw
     var all_done = False
     var move = 0
     var rng = seed | 1
@@ -473,8 +473,8 @@ def _mz_eval_one_color[
     )
     ctx.synchronize()
 
-    var eval_done = InlineArray[Bool, N_GAMES](fill=False)
-    var eval_result = InlineArray[Int, N_GAMES](fill=0)
+    var eval_done = Array[Bool, N_GAMES](fill=False)
+    var eval_result = Array[Int, N_GAMES](fill=0)
     var all_done = False
     var move = 0
     var rng = seed | 1

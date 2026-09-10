@@ -76,8 +76,8 @@ def compare_scalar(
 
 
 def compare_observation(
-    cpu_obs: InlineArray[Scalar[dtype], 8],
-    gpu_obs: InlineArray[Scalar[dtype], 8],
+    cpu_obs: Array[Scalar[dtype], 8],
+    gpu_obs: Array[Scalar[dtype], 8],
     tolerance: Float64 = 1e-4,
 ) -> Bool:
     """Compare CPU and GPU observations."""
@@ -113,12 +113,12 @@ def extract_gpu_observation[
     states_buf: DeviceBuffer[dtype],
     ctx: DeviceContext,
     env_idx: Int,
-) raises -> InlineArray[Scalar[dtype], 8]:
+) raises -> Array[Scalar[dtype], 8]:
     """Extract observation from std.gpu state buffer."""
-    var obs = InlineArray[Scalar[dtype], 8](fill=Scalar[dtype](0))
+    var obs = Array[Scalar[dtype], 8](fill=Scalar[dtype](0))
 
     # Copy state to host
-    var state_host = InlineArray[Scalar[dtype], LLConstants.STATE_SIZE_VAL](
+    var state_host = Array[Scalar[dtype], LLConstants.STATE_SIZE_VAL](
         fill=Scalar[dtype](0)
     )
     var src_offset = env_idx * STATE_SIZE
@@ -168,9 +168,9 @@ def extract_gpu_body_state[
     ctx: DeviceContext,
     env_idx: Int,
     body_idx: Int,
-) raises -> InlineArray[Scalar[dtype], 6]:
+) raises -> Array[Scalar[dtype], 6]:
     """Extract body state (x, y, angle, vx, vy, omega) from std.gpu buffer."""
-    var state = InlineArray[Scalar[dtype], 6](fill=Scalar[dtype](0))
+    var state = Array[Scalar[dtype], 6](fill=Scalar[dtype](0))
 
     var state_host = ctx.enqueue_create_host_buffer[dtype](6)
     var state_buf = ctx.enqueue_create_buffer[dtype](6)
@@ -226,10 +226,10 @@ def extract_gpu_metadata[
     states_buf: DeviceBuffer[dtype],
     ctx: DeviceContext,
     env_idx: Int,
-) raises -> InlineArray[Scalar[dtype], 4]:
+) raises -> Array[Scalar[dtype], 4]:
     """Extract metadata (step_count, total_reward, prev_shaping, done) from std.gpu.
     """
-    var meta = InlineArray[Scalar[dtype], 4](fill=Scalar[dtype](0))
+    var meta = Array[Scalar[dtype], 4](fill=Scalar[dtype](0))
 
     var meta_host = ctx.enqueue_create_host_buffer[dtype](4)
     var meta_buf = ctx.enqueue_create_buffer[dtype](4)
@@ -478,7 +478,7 @@ def test_step_comparison(ctx: DeviceContext) raises -> Bool:
 
         # Compare observations
         print("\n  [Observation]")
-        var cpu_obs = InlineArray[Scalar[dtype], 8](fill=Scalar[dtype](0))
+        var cpu_obs = Array[Scalar[dtype], 8](fill=Scalar[dtype](0))
         for i in range(8):
             cpu_obs[i] = Scalar[dtype](cpu_obs_list[i])
         var gpu_obs_arr = extract_gpu_observation[N_ENVS, STATE_SIZE](
@@ -1321,7 +1321,7 @@ def test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
     var tolerance: Float64 = 1e-3  # Tight tolerance for physics consistency
 
     # Test sequence: noop, main, noop, left, noop, right, main, noop, main, noop
-    var action_types = InlineArray[Int, 10](0, 1, 0, 2, 0, 3, 1, 0, 1, 0)
+    var action_types = Array[Int, 10](0, 1, 0, 2, 0, 3, 1, 0, 1, 0)
 
     for step in range(10):
         var action_type = action_types[step]
@@ -1795,7 +1795,7 @@ def test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     # Shaping formula from helpers.mojo:
     # shaping = -100*sqrt(x^2 + y^2) - 100*sqrt(vx^2 + vy^2) - 100*abs(angle) + 10*left + 10*right
 
-    def compute_shaping_manual(obs: InlineArray[Scalar[dtype], 8]) -> Float64:
+    def compute_shaping_manual(obs: Array[Scalar[dtype], 8]) -> Float64:
         var x = Float64(obs[0])
         var y = Float64(obs[1])
         var vx = Float64(obs[2])
@@ -2029,7 +2029,7 @@ def test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     )
 
     # Compute shaping for post-step observations
-    var cpu_obs_arr = InlineArray[Scalar[dtype], 8](fill=Scalar[dtype](0))
+    var cpu_obs_arr = Array[Scalar[dtype], 8](fill=Scalar[dtype](0))
     for i in range(8):
         cpu_obs_arr[i] = Scalar[dtype](cpu_obs_after[i])
 

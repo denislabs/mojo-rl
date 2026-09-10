@@ -221,7 +221,7 @@ def main() raises:
         var leader = SO101Arm(String(LEADER_PORT), max_step_ticks=0)
         leader.bus.timeout_ms = 20
         leader.set_torque(False)
-        var pos = InlineArray[Int32, SO101_N](fill=0)
+        var pos = Array[Int32, SO101_N](fill=0)
         var dropped = 0
         for _ in range(ticks):
             var t0 = perf_counter_ns()
@@ -274,7 +274,7 @@ def main() raises:
     var d_leader = SO101Arm(String(LEADER_PORT), max_step_ticks=0)
     d_leader.bus.timeout_ms = 20
     d_leader.set_torque(False)
-    var dpos = InlineArray[Int32, SO101_N](fill=0)
+    var dpos = Array[Int32, SO101_N](fill=0)
 
     for _ in range(ticks):
         var t0 = perf_counter_ns()
@@ -335,7 +335,7 @@ def main() raises:
     var e_leader = SO101Arm(String(LEADER_PORT), max_step_ticks=0)
     e_leader.bus.timeout_ms = 20
     e_leader.set_torque(False)
-    var epos = InlineArray[Int32, SO101_N](fill=0)
+    var epos = Array[Int32, SO101_N](fill=0)
 
     for _ in range(ticks):
         var t0 = perf_counter_ns()

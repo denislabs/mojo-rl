@@ -296,7 +296,7 @@ def _font_pixel(label: String, char_row: Int, char_col: Int, cell_width: Int) ->
         return False
 
     # 3x5 bitmaps for digits 0-9, packed as 5 rows of 3 bits each (MSB left)
-    var glyphs: InlineArray[UInt16, 10] = [
+    var glyphs: Array[UInt16, 10] = [
         UInt16(0b111_101_101_101_111),  # 0
         UInt16(0b010_110_010_010_111),  # 1
         UInt16(0b111_001_111_100_111),  # 2

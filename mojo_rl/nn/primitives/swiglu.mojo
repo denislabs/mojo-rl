@@ -87,7 +87,7 @@ def _swiglu_backward_kernel[
 
 struct SwiGLU[HIDDEN: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=2 * Self.HIDDEN)
+    comptime IN_DIMS = Array[Int, 1](fill=2 * Self.HIDDEN)
     # `Array` is not `ImplicitlyCopyable` (Mojo 1.0): indexing the comptime
     # `IN_DIMS` from a runtime context would materialize the whole array.
     comptime IN_DIM0 = 2 * Self.HIDDEN

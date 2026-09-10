@@ -39,7 +39,7 @@ would make the reward depend on how far it still has to drop.
 
 from std.math import sqrt, inf, cos, sin, log, pi
 from std.random import random_float64
-from std.collections import InlineArray
+from std.collections import Array
 
 from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.xmat import xmat_elem, XMAT_ZZ
@@ -81,7 +81,7 @@ comptime FETCH_SPAWN_RADIUS: Float64 = 0.9 * FETCH_FLOOR_HALF
 
 
 @always_inline
-def _randn_pair() -> InlineArray[Float64, 2]:
+def _randn_pair() -> Array[Float64, 2]:
     """Two independent standard normals (Box-Muller).
 
     `Fetch` kicks the ball with `5*self.random.randn(2)`. A uniform draw would
@@ -94,7 +94,7 @@ def _randn_pair() -> InlineArray[Float64, 2]:
         u1 = 1e-300
     var u2 = random_float64()
     var r = sqrt(-2.0 * log(u1))
-    var out = InlineArray[Float64, 2](fill=0.0)
+    var out = Array[Float64, 2](fill=0.0)
     out[0] = r * cos(2.0 * pi * u2)
     out[1] = r * sin(2.0 * pi * u2)
     return out^
@@ -106,7 +106,7 @@ def _world_to_torso[DTYPE: DType, D: DimsLike](
     vx: Float64,
     vy: Float64,
     vz: Float64,
-) -> InlineArray[Float64, 3]:
+) -> Array[Float64, 3]:
     """`v.dot(xmat['torso'].reshape(3,3))` — numpy row-vector convention.
 
     That contracts v with the matrix's ROWS' first index, i.e. it computes
@@ -115,7 +115,7 @@ def _world_to_torso[DTYPE: DType, D: DimsLike](
 
         out[k] = sum_i v[i] * R[i][k]
     """
-    var out = InlineArray[Float64, 3](fill=0.0)
+    var out = Array[Float64, 3](fill=0.0)
     for k in range(3):
         out[k] = (
             vx * xmat_elem(d, TORSO_BODY_IDX, 0 * 3 + k)

@@ -1,19 +1,19 @@
 """`Scratch` — function-local scratch that serves BOTH legs from one spelling.
 
-This is phase 2b.2. Every dimension-sized `InlineArray` in the engine is a
+This is phase 2b.2. Every dimension-sized `Array` in the engine is a
 stack buffer whose size is a compile-time dimension; on the dynamic leg there
 is no such constant, so the buffer has to come from somewhere else.
 
 ## Why this is a container and not a cap
 
 §4.2 proposed keeping the stack allocation with a *fixed cap*
-(`InlineArray[T, MAX_NV]`, bound at runtime) and predicted the dynamic CPU leg
+(`Array[T, MAX_NV]`, bound at runtime) and predicted the dynamic CPU leg
 at ~1.09x. §10.7 BUILT that (variant G) and refuted it:
 
 | vs shipped | walker2d | ant | humanoid |
 |---|---|---|---|
 | runtime dims + heap `List` (B)          | 1.30 | 1.24 | 1.12 |
-| runtime dims + fixed-cap `InlineArray` (G) | 1.47 | 1.47 | 1.41 |
+| runtime dims + fixed-cap `Array` (G) | 1.47 | 1.47 | 1.41 |
 
 **The fixed cap is 1.13-1.18x WORSE than the heap it was meant to beat**, and
 variant G2 localised the cause: the cap SIZE is free (0.87-0.99), the entire
@@ -22,11 +22,11 @@ A comptime bound buys unrolling and register promotion with constant offsets;
 without it the array is forced to memory anyway, and a stack slot is then
 strictly worse than a heap pointer the optimiser already models as memory.
 
-⇒ **`InlineArray` is only fast while its bound is COMPTIME. Capping it does
+⇒ **`Array` is only fast while its bound is COMPTIME. Capping it does
 not preserve that.** So the two legs genuinely want different containers, and
 `Scratch` is the one spelling that picks the right one:
 
-    CAP > 0   ->  InlineArray[T, CAP]   comptime bound   (the static leg)
+    CAP > 0   ->  Array[T, CAP]   comptime bound   (the static leg)
     CAP == 0  ->  a pooled block        runtime bound    (the dynamic leg)
 
 ## The dynamic leg is a pooled block, not a `List` (PERFORMANCE.md §13.36)
@@ -90,7 +90,7 @@ def cap[n: Int]() -> Int:
 
 @always_inline
 def _slot[n: Int]() -> Int:
-    """Element count of the inline slot. 1 on the heap leg — `InlineArray`
+    """Element count of the inline slot. 1 on the heap leg — `Array`
     has no zero-size form, and one element of padding is not worth a
     conditional field type (which nightly does not resolve anyway)."""
     return n if n > 0 else 1
@@ -103,7 +103,7 @@ struct Scratch[T: ImplicitlyCopyable & Deinitable, CAP: Int](Movable):
     one-element array, or an empty `List` that never allocates — and the
     `comptime if` in every accessor means only one is ever addressed.
 
-    Indexing is FLAT, matching the `InlineArray` sites it replaces
+    Indexing is FLAT, matching the `Array` sites it replaces
     (`L[i * nv + k]`). There is deliberately no `len()`: the length lives in
     the dims provider, and a container that answered it would let a body read
     a bound that disagrees with `dims.get_nv()`.
@@ -125,7 +125,7 @@ struct Scratch[T: ImplicitlyCopyable & Deinitable, CAP: Int](Movable):
     either way (its bound is the comptime cap, as before)."""
 
     comptime STATIC = Self.CAP > 0
-    var _fixed: InlineArray[Self.T, _slot[Self.CAP]()]
+    var _fixed: Array[Self.T, _slot[Self.CAP]()]
     # The heap leg: a block from the process's `ScratchPool` (see that
     # module), returned in `__deinit__`. `_bytes` is what was asked of the
     # pool and is handed back with the block; `_pool` is the handle looked
@@ -139,7 +139,7 @@ struct Scratch[T: ImplicitlyCopyable & Deinitable, CAP: Int](Movable):
     def __init__(out self, n: Int, fill: Self.T):
         """`n` is the LIVE length — `dims.get_nv()`, not the cap."""
         comptime if Self.STATIC:
-            self._fixed = InlineArray[Self.T, _slot[Self.CAP]()](fill=fill)
+            self._fixed = Array[Self.T, _slot[Self.CAP]()](fill=fill)
             self._heap = Pointer[Self.T, MutUntrackedOrigin](
                 unsafe_from_address=Int(0)
             )
@@ -154,7 +154,7 @@ struct Scratch[T: ImplicitlyCopyable & Deinitable, CAP: Int](Movable):
 
     @always_inline
     def __init__(out self, n: Int, *, uninitialized: Self.T):
-        """The `InlineArray[..., N](uninitialized=True)` sites.
+        """The `Array[..., N](uninitialized=True)` sites.
 
         Neither leg fills. The heap leg used to (a `List` needs a length
         before it can be indexed, so it filled with `uninitialized`), which
@@ -164,7 +164,7 @@ struct Scratch[T: ImplicitlyCopyable & Deinitable, CAP: Int](Movable):
         sites keep naming the type's zero — the value nothing reads.
         """
         comptime if Self.STATIC:
-            self._fixed = InlineArray[Self.T, _slot[Self.CAP]()](
+            self._fixed = Array[Self.T, _slot[Self.CAP]()](
                 uninitialized=True
             )
             self._heap = Pointer[Self.T, MutUntrackedOrigin](
@@ -175,7 +175,7 @@ struct Scratch[T: ImplicitlyCopyable & Deinitable, CAP: Int](Movable):
                 unsafe_from_address=Int(0)
             )
         else:
-            self._fixed = InlineArray[Self.T, _slot[Self.CAP]()](
+            self._fixed = Array[Self.T, _slot[Self.CAP]()](
                 uninitialized=True
             )
             self._pool = scratch_pool()
@@ -187,7 +187,7 @@ struct Scratch[T: ImplicitlyCopyable & Deinitable, CAP: Int](Movable):
         comptime if not Self.STATIC:
             self._pool[].give(self._heap.unsafe_bitcast[Byte](), self._bytes)
 
-    # ⚠ `unsafe_get`, NOT `[i]`. `InlineArray.__getitem__` and
+    # ⚠ `unsafe_get`, NOT `[i]`. `Array.__getitem__` and
     # `List.__getitem__` normalise a negative index and carry a bounds
     # `debug_assert`; measured in `noslip_elliptic`'s cache build
     # (PERFORMANCE.md §13.21), the indexed form cost ~4× a raw pointer access

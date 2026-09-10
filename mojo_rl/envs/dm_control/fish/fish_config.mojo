@@ -40,7 +40,7 @@ from std.random import random_float64
 from std.math import sqrt, log, cos, sin, pi
 
 from layout import Layout, LayoutTensor
-from std.collections import InlineArray
+from std.collections import Array
 from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.physics3d.fields import Data, Dims, DimsLike
@@ -197,7 +197,7 @@ def _mouth_to_target_gpu[
         DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
     ],
     env: Int,
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """`_mouth_to_target` against the batched field tensors.
 
     ⚠ THE MOUTH'S FRAME IS NOT ITS BODY'S. It is a `fromto` capsule, so the
@@ -221,7 +221,7 @@ def _mouth_to_target_gpu[
         target[1] - mouth[1],
         target[2] - mouth[2],
     )
-    var out = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     out[0] = loc[0]
     out[1] = loc[1]
     out[2] = loc[2]
@@ -252,7 +252,7 @@ def _reset_pose_gpu[
     var b0 = rng.step_uniform()
     var b1 = rng.step_uniform()
 
-    var q = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var q = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     q[0] = standard_normal[DTYPE](Scalar[DTYPE](b0[0]), Scalar[DTYPE](b0[1]))
     q[1] = standard_normal[DTYPE](Scalar[DTYPE](b0[2]), Scalar[DTYPE](b0[3]))
     q[2] = standard_normal[DTYPE](Scalar[DTYPE](b1[0]), Scalar[DTYPE](b1[1]))

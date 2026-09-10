@@ -63,7 +63,7 @@ def _be_bwd_kernel[
 
 struct BinaryElementwise[DIM_: Int, OP: BinaryElementOp](Module):
     comptime ARITY = 2
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 2](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
 
     @staticmethod

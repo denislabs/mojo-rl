@@ -83,8 +83,8 @@ def _circle_vs_convex_polygon(
     circle_world_x: Scalar[dtype],
     circle_world_y: Scalar[dtype],
     radius: Scalar[dtype],
-    poly_world_verts_x: InlineArray[Scalar[dtype], MAX_POLYGON_VERTS],
-    poly_world_verts_y: InlineArray[Scalar[dtype], MAX_POLYGON_VERTS],
+    poly_world_verts_x: Array[Scalar[dtype], MAX_POLYGON_VERTS],
+    poly_world_verts_y: Array[Scalar[dtype], MAX_POLYGON_VERTS],
     n_verts: Int,
 ) -> Tuple[
     Bool,  # is_contact
@@ -302,7 +302,7 @@ def detect_circle_vs_body_pair[
 
     # Build list of convex sub-polygon shape indices to test
     var n_sub: Int = 0
-    var sub_indices = InlineArray[Int, MAX_COMPOUND_SUBSHAPES](fill=0)
+    var sub_indices = Array[Int, MAX_COMPOUND_SUBSHAPES](fill=0)
     if pb_shape_type == SHAPE_POLYGON:
         sub_indices[0] = pb_shape_idx
         n_sub = 1
@@ -328,10 +328,10 @@ def detect_circle_vs_body_pair[
             n_verts = MAX_POLYGON_VERTS
 
         # Transform sub-polygon vertices to world frame
-        var wx = InlineArray[Scalar[dtype], MAX_POLYGON_VERTS](
+        var wx = Array[Scalar[dtype], MAX_POLYGON_VERTS](
             fill=Scalar[dtype](0.0)
         )
-        var wy = InlineArray[Scalar[dtype], MAX_POLYGON_VERTS](
+        var wy = Array[Scalar[dtype], MAX_POLYGON_VERTS](
             fill=Scalar[dtype](0.0)
         )
         for v in range(n_verts):

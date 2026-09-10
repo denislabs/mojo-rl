@@ -32,7 +32,7 @@ Run: pixi run mojo run -I . tests/physics3d/test_constraints_vs_mujoco.mojo
 from std.testing import assert_true, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs
-from std.collections import InlineArray
+from std.collections import Array
 from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.fields import Data, Model, Dims
@@ -180,7 +180,7 @@ def _ant_limits(num_steps: Int, overshoot: Float64) raises:
     M.init_fields[DTYPE](ctx, mf)
     var d = Data[DTYPE, MD_4, 1]()
 
-    var q = InlineArray[Float64, M.NQ](fill=0.0)
+    var q = Array[Float64, M.NQ](fill=0.0)
     q[2] = 2.0  # torso high — contact-free, so limits are the ONLY rows
     q[3] = 0.9659258262890683  # tilted root: a wrong free-dof weight shows up
     q[5] = 0.25881904510252074
@@ -198,7 +198,7 @@ def _ant_limits(num_steps: Int, overshoot: Float64) raises:
     for i in range(M.NQ):
         d.qpos.data[i] = Scalar[DTYPE](q[i])
         mj_data.qpos[i] = q[i]
-    var v = InlineArray[Float64, M.NV](fill=0.0)
+    var v = Array[Float64, M.NV](fill=0.0)
     v[3] = 2.0
     v[4] = 1.0
     v[5] = 0.5
@@ -281,7 +281,7 @@ def test_contacts_vs_mujoco() raises:
 
     # z=0.95 puts the foot on the floor immediately; from the 1.25 rest height
     # it never lands inside the step budget and the case goes vacuous.
-    var q = InlineArray[Float64, M.NQ](fill=0.0)
+    var q = Array[Float64, M.NQ](fill=0.0)
     q[1] = 0.95
     for i in range(M.NQ):
         d.qpos.data[i] = Scalar[DTYPE](q[i])

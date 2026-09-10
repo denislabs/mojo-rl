@@ -249,8 +249,8 @@ def ilqr_backward_pass_kernel[
     comptime _LA = LATENT_DIM * ACTION_DIM
     comptime _RHS_W = 1 + LATENT_DIM
 
-    var V_z = InlineArray[Scalar[dtype], LATENT_DIM](fill=Scalar[dtype](0.0))
-    var V_zz = InlineArray[Scalar[dtype], _LL](fill=Scalar[dtype](0.0))
+    var V_z = Array[Scalar[dtype], LATENT_DIM](fill=Scalar[dtype](0.0))
+    var V_zz = Array[Scalar[dtype], _LL](fill=Scalar[dtype](0.0))
     for i in range(LATENT_DIM):
         V_z[i] = rebind[Scalar[dtype]](V_z_term[e * LATENT_DIM + i])
         for j in range(LATENT_DIM):
@@ -258,16 +258,16 @@ def ilqr_backward_pass_kernel[
                 V_zz_term[(e * LATENT_DIM + i) * LATENT_DIM + j]
             )
 
-    var Q_z = InlineArray[Scalar[dtype], LATENT_DIM](fill=Scalar[dtype](0.0))
-    var Q_u = InlineArray[Scalar[dtype], ACTION_DIM](fill=Scalar[dtype](0.0))
-    var Q_zz = InlineArray[Scalar[dtype], _LL](fill=Scalar[dtype](0.0))
-    var Q_uu = InlineArray[Scalar[dtype], _AA](fill=Scalar[dtype](0.0))
-    var Q_zu = InlineArray[Scalar[dtype], _LA](fill=Scalar[dtype](0.0))
-    var tmp_LL = InlineArray[Scalar[dtype], _LL](fill=Scalar[dtype](0.0))
-    var tmp_LA = InlineArray[Scalar[dtype], _LA](fill=Scalar[dtype](0.0))
-    var tmp_AL = InlineArray[Scalar[dtype], _LA](fill=Scalar[dtype](0.0))
-    var quu_solve = InlineArray[Scalar[dtype], _AA](fill=Scalar[dtype](0.0))
-    var rhs_solve = InlineArray[Scalar[dtype], ACTION_DIM * _RHS_W](
+    var Q_z = Array[Scalar[dtype], LATENT_DIM](fill=Scalar[dtype](0.0))
+    var Q_u = Array[Scalar[dtype], ACTION_DIM](fill=Scalar[dtype](0.0))
+    var Q_zz = Array[Scalar[dtype], _LL](fill=Scalar[dtype](0.0))
+    var Q_uu = Array[Scalar[dtype], _AA](fill=Scalar[dtype](0.0))
+    var Q_zu = Array[Scalar[dtype], _LA](fill=Scalar[dtype](0.0))
+    var tmp_LL = Array[Scalar[dtype], _LL](fill=Scalar[dtype](0.0))
+    var tmp_LA = Array[Scalar[dtype], _LA](fill=Scalar[dtype](0.0))
+    var tmp_AL = Array[Scalar[dtype], _LA](fill=Scalar[dtype](0.0))
+    var quu_solve = Array[Scalar[dtype], _AA](fill=Scalar[dtype](0.0))
+    var rhs_solve = Array[Scalar[dtype], ACTION_DIM * _RHS_W](
         fill=Scalar[dtype](0.0)
     )
 
@@ -442,7 +442,7 @@ def ilqr_backward_pass_kernel[
                     s += Q_uu[i * ACTION_DIM + r] * k_val
                 tmp_AL[i * LATENT_DIM + j] = s
 
-        var Quu_k = InlineArray[Scalar[dtype], ACTION_DIM](
+        var Quu_k = Array[Scalar[dtype], ACTION_DIM](
             fill=Scalar[dtype](0.0)
         )
         for i in range(ACTION_DIM):

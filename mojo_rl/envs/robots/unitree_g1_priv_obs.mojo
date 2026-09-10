@@ -189,12 +189,12 @@ def g1_priv_body[
     qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE],
     vx: Scalar[DTYPE], vy: Scalar[DTYPE], vz: Scalar[DTYPE],
     wx: Scalar[DTYPE], wy: Scalar[DTYPE], wz: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], G1_PRIV_BODY_FEATS]:
+) -> Array[Scalar[DTYPE], G1_PRIV_BODY_FEATS]:
     """One body's fifteen features under the heading inverse `h`:
     `[local pos 3 | tangent 3 | normal 3 | local vel 3 | local ang vel 3]`.
     The local position of the root itself is (0, 0, 0) and is dropped by
     the caller."""
-    var out = InlineArray[Scalar[DTYPE], G1_PRIV_BODY_FEATS](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], G1_PRIV_BODY_FEATS](fill=Scalar[DTYPE](0))
     var lp = quat_rotate[DTYPE](hx, hy, hz, hw, px - rootx, py - rooty, pz - rootz)
     out[0] = lp[0]
     out[1] = lp[1]
@@ -228,8 +228,8 @@ def g1_priv_scatter[
     DTYPE: DType
 ](
     s: Int,
-    feats: InlineArray[Scalar[DTYPE], G1_PRIV_BODY_FEATS],
-    mut priv: InlineArray[Scalar[DTYPE], G1_PRIV_DIM],
+    feats: Array[Scalar[DTYPE], G1_PRIV_BODY_FEATS],
+    mut priv: Array[Scalar[DTYPE], G1_PRIV_DIM],
 ):
     """Place body `s`'s features (0..30, head last) into the 463-slot block
     layout: positions for s >= 1, then rotations, velocities, angular
@@ -253,7 +253,7 @@ def g1_head_pose_vel[
     tqx: Scalar[DTYPE], tqy: Scalar[DTYPE], tqz: Scalar[DTYPE], tqw: Scalar[DTYPE],
     tvx: Scalar[DTYPE], tvy: Scalar[DTYPE], tvz: Scalar[DTYPE],
     twx: Scalar[DTYPE], twy: Scalar[DTYPE], twz: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 6]:
+) -> Array[Scalar[DTYPE], 6]:
     """The virtual head from the torso's ORIGIN pose and velocities:
     position `torso + R_torso (0, 0, 0.35)`; linear velocity `v_torso +
     ω_torso × (0, 0, 0.35)` with the offset UNROTATED (the reference's
@@ -261,7 +261,7 @@ def g1_head_pose_vel[
     velocity are the torso's."""
     var off = Scalar[DTYPE](G1_HEAD_OFFSET_Z)
     var r = quat_rotate[DTYPE](tqx, tqy, tqz, tqw, Scalar[DTYPE](0), Scalar[DTYPE](0), off)
-    var out = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     out[0] = tpx + r[0]
     out[1] = tpy + r[1]
     out[2] = tpz + r[2]

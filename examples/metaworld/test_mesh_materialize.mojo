@@ -1,6 +1,6 @@
-"""Test: comptime String from InlineArray → draw_mesh."""
+"""Test: comptime String from Array → draw_mesh."""
 
-from std.collections import InlineArray
+from std.collections import Array
 from mojo_rl.render import Renderer3D, Camera3D, Color
 from mojo_rl.render.light import Light
 from mojo_rl.math3d import Vec3 as V3, Quat as Q4
@@ -9,15 +9,15 @@ comptime Vec3 = V3[DType.float64]
 comptime Quat = Q4[DType.float64]
 
 
-def build_names() -> InlineArray[String, 2]:
-    var a = InlineArray[String, 2](fill=String(""))
+def build_names() -> Array[String, 2]:
+    var a = Array[String, 2](fill=String(""))
     a[0] = "tablebody"
     a[1] = "tabletop"
     return a^
 
 
-def build_files() -> InlineArray[String, 2]:
-    var a = InlineArray[String, 2](fill=String(""))
+def build_files() -> Array[String, 2]:
+    var a = Array[String, 2](fill=String(""))
     a[0] = "mojo_rl/envs/metaworld/assets/meshes/table/tablebody.stl"
     a[1] = "mojo_rl/envs/metaworld/assets/meshes/table/tabletop.stl"
     return a^
@@ -28,8 +28,8 @@ comptime mesh_files = build_files()
 
 
 def main() raises:
-    # Test 1: access comptime InlineArray[String] at runtime
-    print("Step 1: access comptime InlineArray[String]...")
+    # Test 1: access comptime Array[String] at runtime
+    print("Step 1: access comptime Array[String]...")
     comptime for i in range(2):
         comptime n: String = mesh_names[i]
         comptime f: String = mesh_files[i]
@@ -55,7 +55,7 @@ def main() raises:
         width=1280, height=720, camera=cam,
         draw_grid=True, draw_axes=True, lights=lights,
     )
-    var title = String("InlineArray Mesh Test")
+    var title = String("Array Mesh Test")
     renderer.init(title)
     print("Renderer open.")
 

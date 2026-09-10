@@ -141,7 +141,7 @@ def _resize_160x210_to_84x84[
     comptime W = 16
     comptime assert FRAME_WIDTH % W == 0, "row width must be SIMD-divisible"
 
-    var vsum = InlineArray[UInt16, FRAME_WIDTH](fill=0)
+    var vsum = Array[UInt16, FRAME_WIDTH](fill=0)
     for oy in range(OBS_HEIGHT):
         # Source y range for this output row
         var sy0 = (oy * FRAME_HEIGHT) // OBS_HEIGHT

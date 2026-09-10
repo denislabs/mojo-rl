@@ -455,7 +455,7 @@ def _dot3[
 def _sel4i(i: Int, a: Int, b: Int, c: Int, d: Int) -> Int:
     """Pick one of four `Int`s by a RUNTIME index, as an if-chain.
 
-    ⚠ THIS EXISTS INSTEAD OF AN `InlineArray[Int, 4]`. Indexing a per-thread
+    ⚠ THIS EXISTS INSTEAD OF AN `Array[Int, 4]`. Indexing a per-thread
     array by a runtime value reads back the wrong value on Metal with no crash
     — see `feedback_metal_wide_per_thread_inlinearray_miscompute`, whose second
     instance was a THREE-element array.
@@ -762,7 +762,7 @@ def _support_mesh[
     vert_adr: Int,
     num_verts: Int,
     mut warm: Int,
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """Support point on the mesh — HILL CLIMB over the hull edge graph.
 
     This is the hottest function in mesh collision: GJK and EPA call it 10-30
@@ -883,7 +883,7 @@ def _support_mesh[
         _mm[0], _mm[1], _mm[2], _mm[3], _mm[4], _mm[5], _mm[6], _mm[7], _mm[8],
         best_x, best_y, best_z, pos_x, pos_y, pos_z,
     )
-    var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var result = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     result[0] = world_pt[0]
     result[1] = world_pt[1]
     result[2] = world_pt[2]
@@ -897,7 +897,7 @@ def _support[
     L_MESH_VERT_EDGEADR: Layout,
     L_MESH_EDGES: Layout,
     # ⚠⚠ THE PRISM'S LENGTH IS A PARAMETER SO IT COSTS NOTHING WHEN UNUSED.
-    # It was a plain `InlineArray[..., 18]` with a DEFAULT value, and a
+    # It was a plain `Array[..., 18]` with a DEFAULT value, and a
     # defaulted aggregate materialises a fresh temporary at EVERY call site
     # that omits it — twelve of them, several inside the Metal collision
     # kernel. That pushed the kernel over the per-thread stack limit and
@@ -938,12 +938,12 @@ def _support[
     # tensor on purpose. `mjc_ConvexHField` rebuilds these six vertices for
     # every grid cell it walks, so they are per-CALL data — they change many
     # times within one `hfield_convex_contacts`, which nothing outside that
-    # loop ever reads. Eighteen floats in an `InlineArray` cost nothing.
+    # loop ever reads. Eighteen floats in an `Array` cost nothing.
     # (EPA's polytope went the other way, into `ws`; it is per-CALL too but
     # 7.5 KB of it. The dividing line is size, not lifetime — and `ws` is
     # race-free because it is indexed per ENV, not shared. See
     # `ccd_workspace`.) Ignored unless `geom_type == GEOM_HFIELD`.
-    prism: InlineArray[Scalar[DTYPE], NPRISM],
+    prism: Array[Scalar[DTYPE], NPRISM],
     # ⚠⚠ `mjc_ccd` SWAPS THE SUPPORT FUNCTION OUT for a sphere or a capsule
     # before it runs GJK: `obj->support = mjc_pointSupport` / `mjc_lineSupport`
     # and `obj->margin = 0`, with the radius folded into a `full_margin` that
@@ -953,7 +953,7 @@ def _support[
     # the rounded surface is a smooth Minkowski boundary EPA can only
     # approximate. See the two-phase structure in `gjk_epa_witness`.
     shrink: Bool = False,
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """Unified support function — reads mesh verts from the record tensor.
 
     `warm` is the mesh hill-climb's start vertex, in and out; every other geom
@@ -965,12 +965,12 @@ def _support[
             # A heightfield never enters GJK as a heightfield — the caller has
             # already reduced it to ONE triangular prism. See `support_prism`.
             return support_prism[DTYPE](
-                dir_x, dir_y, dir_z, rebind[InlineArray[Scalar[DTYPE], 18]](prism)
+                dir_x, dir_y, dir_z, rebind[Array[Scalar[DTYPE], 18]](prism)
             )
     if geom_type == GEOM_SPHERE:
         if shrink:
             # `mjc_pointSupport` — the geom's own position, whatever `dir` is.
-            var pt = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+            var pt = Array[Scalar[DTYPE], 3](uninitialized=True)
             pt[0] = pos_x
             pt[1] = pos_y
             pt[2] = pos_z
@@ -991,7 +991,7 @@ def _support[
         var a2 = lm[8]
         var dt = a0 * dir_x + a1 * dir_y + a2 * dir_z
         var scl = half_length if dt >= Scalar[DTYPE](0) else -half_length
-        var ln = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+        var ln = Array[Scalar[DTYPE], 3](uninitialized=True)
         ln[0] = a0 * scl + pos_x
         ln[1] = a1 * scl + pos_y
         ln[2] = a2 * scl + pos_z
@@ -1081,7 +1081,7 @@ def _support[
             mesh_num_verts,
             warm,
         )
-    var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var result = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     result[0] = pos_x
     result[1] = pos_y
     result[2] = pos_z
@@ -1141,7 +1141,7 @@ def _minkowski_support[
     mut warm1: Int,
     mut warm2: Int,
     # The heightfield prism, for geom 1 only — see `_support`.
-    prism: InlineArray[Scalar[DTYPE], NPRISM],
+    prism: Array[Scalar[DTYPE], NPRISM],
     # ⚠⚠ EACH GEOM IS INFLATED BY HALF THE PAIR'S MARGIN, AND THAT IS THE WHOLE
     # OF `mjc_Convex`. `support()` (engine_collision_gjk.c:332) adds
     # `0.5 * obj->margin * dir` to each object's support point, so the
@@ -1290,7 +1290,7 @@ def _gjk_intersect[
     va2: Int, mnv2: Int,
     mut warm1: Int, mut warm2: Int,
     # The heightfield prism, for geom 1 only — see `_support`.
-    prism: InlineArray[Scalar[DTYPE], NPRISM],
+    prism: Array[Scalar[DTYPE], NPRISM],
     # ⚠ FORWARDED, NOT RECOMPUTED — see `_minkowski_support`. This backup
     # path builds its own tetrahedron from support points and must inflate
     # them the same way, or it certifies separation on the UNINFLATED pair
@@ -1334,7 +1334,7 @@ def _gjk_intersect[
     plane, the whole Minkowski difference lies beyond it and the geoms provably
     do not overlap.
     """
-    # ⚠ THE PERMUTATION IS FOUR SCALARS, NOT AN `InlineArray[Int, 4]`.
+    # ⚠ THE PERMUTATION IS FOUR SCALARS, NOT AN `Array[Int, 4]`.
     # `sidx[index]` and the trailing swap index it by a RUNTIME value, which is
     # the per-thread-array miscompile of
     # `feedback_metal_wide_per_thread_inlinearray_miscompute` — three elements
@@ -1542,9 +1542,9 @@ def gjk_epa_witness[
     hz2: Scalar[DTYPE],
     va2: Int,
     mnv2: Int,
-    mut wf1: InlineArray[Scalar[DTYPE], 9],
-    mut wf2: InlineArray[Scalar[DTYPE], 9],
-    mut wx: InlineArray[Scalar[DTYPE], 6],
+    mut wf1: Array[Scalar[DTYPE], 9],
+    mut wf2: Array[Scalar[DTYPE], 9],
+    mut wx: Array[Scalar[DTYPE], 6],
     mut wf_ok: Int,
     # ⚠ EPA'S POLYTOPE — MuJoCo's `config->buffer`. `ws[wrow, ...]` is the
     # caller's scratch row and is written unconditionally; nothing in it is
@@ -1564,7 +1564,7 @@ def gjk_epa_witness[
     # ⚠ DEFAULTED SO THE TWELVE EXISTING CALL SITES ARE UNTOUCHED. Only
     # `hfield_convex.mojo` passes it, and only with `type1 == GEOM_HFIELD`;
     # every other caller collides two real geoms and never reads it.
-    prism: InlineArray[Scalar[DTYPE], NPRISM] = InlineArray[
+    prism: Array[Scalar[DTYPE], NPRISM] = Array[
         Scalar[DTYPE], NPRISM
     ](fill=Scalar[DTYPE](0)),
     warm_slot: Int = -1,
@@ -1700,9 +1700,9 @@ def _gjk_epa_witness_run[
     hz2: Scalar[DTYPE],
     va2: Int,
     mnv2: Int,
-    mut wf1: InlineArray[Scalar[DTYPE], 9],
-    mut wf2: InlineArray[Scalar[DTYPE], 9],
-    mut wx: InlineArray[Scalar[DTYPE], 6],
+    mut wf1: Array[Scalar[DTYPE], 9],
+    mut wf2: Array[Scalar[DTYPE], 9],
+    mut wx: Array[Scalar[DTYPE], 6],
     mut wf_ok: Int,
     # ⚠ EPA'S POLYTOPE — MuJoCo's `config->buffer`. `ws[wrow, ...]` is the
     # caller's scratch row and is written unconditionally; nothing in it is
@@ -1724,7 +1724,7 @@ def _gjk_epa_witness_run[
     # ⚠ DEFAULTED SO THE TWELVE EXISTING CALL SITES ARE UNTOUCHED. Only
     # `hfield_convex.mojo` passes it, and only with `type1 == GEOM_HFIELD`;
     # every other caller collides two real geoms and never reads it.
-    prism: InlineArray[Scalar[DTYPE], NPRISM] = InlineArray[
+    prism: Array[Scalar[DTYPE], NPRISM] = Array[
         Scalar[DTYPE], NPRISM
     ](fill=Scalar[DTYPE](0)),
 ) -> Tuple[
@@ -1860,7 +1860,7 @@ def _gjk_epa_witness_run[
     var vx = Scalar[DTYPE](0)
     var vy = Scalar[DTYPE](0)
     var vz = Scalar[DTYPE](0)
-    var lam = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var lam = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     var min_norm2 = _gjk_min_norm2[DTYPE](type1, type2, ccd_margin, ccd_tol)
     var dist_sq = Scalar[DTYPE](0)
     var dist = Scalar[DTYPE](0)
@@ -1886,7 +1886,7 @@ def _gjk_epa_witness_run[
         # `lincomb(lambda, n, ...)` over whatever the last completed iteration
         # left. `{1, 0, 0, 0}` is the reference's initial value, which is what a
         # break on the very first iteration uses.
-        lam = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        lam = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
         lam[0] = Scalar[DTYPE](1)
 
         # MuJoCo's `min_norm2` (`engine_collision_gjk.c:218`), NOT a constant — see
@@ -2121,7 +2121,7 @@ def _gjk_epa_witness_run[
                     # ⚠ NOTHING IS SAVED OR RESTORED HERE, DELIBERATELY.
                     # `_gjk_intersect` rewrites the simplex in place, so the obvious
                     # move is to snapshot it and put it back — and a 36-element
-                    # per-thread `InlineArray` to do that is exactly the shape that
+                    # per-thread `Array` to do that is exactly the shape that
                     # silently miscomputes on Metal
                     # (`feedback_metal_wide_per_thread_inlinearray_miscompute`).
                     # It was written that way first and cost CPU-vs-GPU parity:
@@ -2405,7 +2405,7 @@ def _gjk_epa_witness_run[
 
         # ⚠⚠ THE FOUR CALLS ARE WRITTEN OUT, NOT DRIVEN BY A TABLE, and that is
         # a GPU requirement rather than a style choice: a per-thread
-        # `InlineArray[Int, 24]` indexed by a RUNTIME loop variable is the
+        # `Array[Int, 24]` indexed by a RUNTIME loop variable is the
         # shape that silently miscomputes in a Metal kernel
         # (`feedback_metal_wide_per_thread_inlinearray_miscompute`). The
         # reference writes them out too.
@@ -2452,7 +2452,7 @@ def _gjk_epa_witness_run[
                 ra = 3
                 rb = 2
                 rc = 1
-            var tmp = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+            var tmp = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
             for k in range(9):
                 tmp[k] = sv(ws, wrow, SPX, rc, k)
             for k in range(9):
@@ -3086,7 +3086,7 @@ def gjk_epa[
     ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
     ccd_iter: Int = MJ_CCD_ITERATIONS,
     ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
-    prism: InlineArray[Scalar[DTYPE], NPRISM] = InlineArray[
+    prism: Array[Scalar[DTYPE], NPRISM] = Array[
         Scalar[DTYPE], NPRISM
     ](fill=Scalar[DTYPE](0)),
     # Forwarded to `gjk_epa_witness`. A caller whose ONLY use of the result
@@ -3113,9 +3113,9 @@ def gjk_epa[
     multi-contact work. The scratch arrays are dead stores everywhere the
     result is discarded.
     """
-    var wf1 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-    var wf2 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-    var wx = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    var wf1 = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var wf2 = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var wx = Array[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     var wf_ok = 0
     return gjk_epa_witness[DTYPE, NPRISM=NPRISM](
         type1,

@@ -254,7 +254,7 @@ struct DreamerDecoderStem[
     bridge convention) so child caches (RMSNorm) are consistent."""
 
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DETER + Self.SC)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DETER + Self.SC)
     comptime OUT_DIM: Int = Self.U
     comptime U2 = 2 * Self.UNITS
 

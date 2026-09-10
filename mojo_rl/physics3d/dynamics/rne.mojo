@@ -8,7 +8,7 @@ Operands (12): qvel, xquat, xipos, subtree_com (data) + bodies, joints,
 meta (model; gravity lives in the meta record) + cdof, crb, rne_cacc,
 rne_cfrc, bias (scratch). As in the legacy code, the `crb` scratch tensor
 doubles as per-body cvel storage during RNE (b*6 indexing within the
-NBODY*10 tensor); `cinert` stays a per-thread InlineArray."""
+NBODY*10 tensor); `cinert` stays a per-thread Array."""
 
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
@@ -737,7 +737,7 @@ def _rne_fields_kernel[
 
 # ── Cooperative (_mt) kernel — schedule from the legacy
 # `compute_bias_forces_rne_gpu_mt` (dynamics/bias_forces.mojo): striped
-# init; cinert flat-striped into a PER-THREAD InlineArray; forward
+# init; cinert flat-striped into a PER-THREAD Array; forward
 # cvel/cacc level-parallel (same `_rne_fwd_body` helper, barrier per
 # level); cfrc flat-striped with the SAME body->thread mapping as cinert
 # (so cinert_g[b] is thread-local); backward pass level-parallel in gather
@@ -833,7 +833,7 @@ def _rne_fields_mt_kernel[
 
     # Body tree depth (level) — from the shared parent table, identical in
     # every thread -> identical barrier count.
-    var level = InlineArray[Int, NBODY](fill=0)
+    var level = Array[Int, NBODY](fill=0)
     var max_level = 0
     for b in range(1, NBODY):
         level[b] = level[Int(topo[unsafe_offset=b])] + 1

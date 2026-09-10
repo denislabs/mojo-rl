@@ -182,7 +182,7 @@ struct MZDynNetC4Spatial[
     comptime ARITY: Int = 1
     comptime LATENT = Self.C * Self.H * Self.W
     comptime IN_DIM = Self.LATENT + Self.ACT
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IN_DIM)
     comptime OUT_DIM = Self.LATENT + Self.BINS
     comptime Graph = MZDynC4SpatialGraph[
         Self.C, Self.ACT, Self.BINS, Self.H, Self.W, Self.REDC, Self.NB

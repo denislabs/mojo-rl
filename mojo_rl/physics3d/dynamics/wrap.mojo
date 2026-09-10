@@ -40,7 +40,7 @@ switches on `|s| < radius`, so the sidesite's DISTANCE, not just its
 direction, is load-bearing.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import sqrt, acos, asin, cos, sin
 
 
@@ -236,11 +236,11 @@ def _wrap_circle[
     # exotic: a segment symmetric about the object gives two mirror tangents
     # with identical chord lengths. `>` in a running-best loop picks 0 there,
     # which is the opposite side of the pulley for a whole class of poses.
-    var ax = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
-    var ay = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
-    var bx = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
-    var by = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
-    var good = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
+    var ax = Array[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
+    var ay = Array[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
+    var bx = Array[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
+    var by = Array[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
+    var good = Array[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
 
     for i in range(2):
         var sgn = Scalar[DTYPE](1) if i == 0 else Scalar[DTYPE](-1)

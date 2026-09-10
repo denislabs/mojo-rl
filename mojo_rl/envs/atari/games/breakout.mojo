@@ -30,7 +30,7 @@ struct BreakoutDef(GameDef):
 
     @staticmethod
     @always_inline
-    def get_score(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
+    def get_score(ram: Array[UInt8, RAM_SIZE]) -> Int:
         """Decode BCD score from RAM."""
         var x = Int(ram[77])
         var y = Int(ram[76])
@@ -38,17 +38,17 @@ struct BreakoutDef(GameDef):
 
     @staticmethod
     @always_inline
-    def get_reward(ram: InlineArray[UInt8, RAM_SIZE], prev_score: Int) -> Int:
+    def get_reward(ram: Array[UInt8, RAM_SIZE], prev_score: Int) -> Int:
         return BreakoutDef.get_score(ram) - prev_score
 
     @staticmethod
     @always_inline
-    def get_lives(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
+    def get_lives(ram: Array[UInt8, RAM_SIZE]) -> Int:
         return Int(ram[57])
 
     @staticmethod
     @always_inline
-    def is_terminal(ram: InlineArray[UInt8, RAM_SIZE]) -> Bool:
+    def is_terminal(ram: Array[UInt8, RAM_SIZE]) -> Bool:
         """Terminal when lives reach 0 after game started."""
         # Game starts with 5 lives; terminal once lives drop to 0
         return Int(ram[57]) == 0

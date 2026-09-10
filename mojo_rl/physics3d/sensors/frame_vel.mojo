@@ -40,7 +40,7 @@ Used by dm_control's swimmer, whose `body_velocities()` observation is the
 `[vx, vy, wz]` slice of one velocimeter/gyro pair per link.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_rotate_inverse
@@ -182,7 +182,7 @@ def site_frame_velocity_gpu[
     env: Int,
     body: Int,
     site: Int,
-) -> InlineArray[Scalar[DTYPE], 6]:
+) -> Array[Scalar[DTYPE], 6]:
     """`site_frame_velocity` against the batched field tensors.
 
     Returns `[velocimeter(3), gyro(3)]` — linear first, matching the CPU
@@ -232,7 +232,7 @@ def site_frame_velocity_gpu[
     var vl = quat_rotate_inverse[DTYPE](sq[0], sq[1], sq[2], sq[3], vx, vy, vz)
     var wl = quat_rotate_inverse[DTYPE](sq[0], sq[1], sq[2], sq[3], wx, wy, wz)
 
-    var out = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     out[0] = vl[0]
     out[1] = vl[1]
     out[2] = vl[2]

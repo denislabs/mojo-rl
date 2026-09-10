@@ -268,8 +268,8 @@ def test_ray_hfield_vs_mujoco() raises:
     var hf_view = b.d.hfield_data.lt_dyn["cpu", DYN1](rl1(nrow * ncol))
 
     var rng = Lcg(0xC0FFEE)
-    var hits = InlineArray[Int, 4](fill=0)
-    var cases = InlineArray[Int, 4](fill=0)
+    var hits = Array[Int, 4](fill=0)
+    var cases = Array[Int, 4](fill=0)
     var split = 0
     var worst_t = 0.0
     var worst_n = 0.0

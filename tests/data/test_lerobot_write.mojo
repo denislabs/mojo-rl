@@ -56,7 +56,7 @@ comptime SDIM = 3
 comptime ADIM = 2
 comptime N_EP = 3
 
-comptime EP_LENS: InlineArray[Int, N_EP] = [4, 7, 3]
+comptime EP_LENS: Array[Int, N_EP] = [4, 7, 3]
 comptime N_ROWS = 14
 
 
@@ -195,7 +195,7 @@ def _check(root: String, h5: String, label: String) raises -> Int:
             for cam in range(2):
                 var base = cam * per_cam
                 # Mean of each channel plane.
-                var got = InlineArray[Int, 3](fill=0)
+                var got = Array[Int, 3](fill=0)
                 for ch in range(3):
                     var acc = 0
                     for p in range(H * W):

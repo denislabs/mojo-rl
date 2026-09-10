@@ -44,8 +44,8 @@ def _cum_offset[index: Int, *DIMS: Int]() -> Int:
     return s
 
 
-def _build_in_dims[*DIMS: Int]() -> InlineArray[Int, DIMS.size]:
-    var d = InlineArray[Int, DIMS.size](fill=0)
+def _build_in_dims[*DIMS: Int]() -> Array[Int, DIMS.size]:
+    var d = Array[Int, DIMS.size](fill=0)
     comptime for k in range(DIMS.size):
         d[k] = DIMS[k]
     return d^

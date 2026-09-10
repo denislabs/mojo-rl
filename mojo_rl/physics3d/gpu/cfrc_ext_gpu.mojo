@@ -13,7 +13,7 @@ cfrc_ext[b*6 + 0..5] = [torque_x, torque_y, torque_z, force_x, force_y, force_z]
 expressed in world frame at subtree CoM of the body's kinematic root.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu import thread_idx, block_idx, block_dim
@@ -127,8 +127,8 @@ def compute_cfrc_ext[
             cfrc_ext[env, i] = Scalar[DTYPE](0)
 
         # --- 2. Compute subtree_com for each body ---
-        var stmass = InlineArray[Scalar[DTYPE], D.CAP_NBODY](uninitialized=True)
-        var stcom = InlineArray[Scalar[DTYPE], D.CAP_NBODY * 3](uninitialized=True)
+        var stmass = Array[Scalar[DTYPE], D.CAP_NBODY](uninitialized=True)
+        var stcom = Array[Scalar[DTYPE], D.CAP_NBODY * 3](uninitialized=True)
 
         for i in range(D.CAP_NBODY):
             var m = rebind[Scalar[DTYPE]](bodies[i, BODY_IDX_MASS])
@@ -170,7 +170,7 @@ def compute_cfrc_ext[
                 )
 
         # --- 3. Compute body_rootid ---
-        var rootid = InlineArray[Int, D.CAP_NBODY](uninitialized=True)
+        var rootid = Array[Int, D.CAP_NBODY](uninitialized=True)
         rootid[0] = 0
         for i in range(1, D.CAP_NBODY):
             var p = Int(rebind[Scalar[DTYPE]](bodies[i, BODY_IDX_PARENT]))

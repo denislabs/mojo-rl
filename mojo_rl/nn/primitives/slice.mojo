@@ -63,7 +63,7 @@ def _slice_backward_kernel[
 
 struct Slice[IN_: Int, START_: Int, END_: Int, ADT: DType = DT](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IN_)
     comptime OUT_DIM = Self.END_ - Self.START_
     # Activation-flow dtype (AMP). Slice is dtype-TRANSPARENT — a pure copy +
     # zero-fill with no math/cast — so it carries ACT_DT through unchanged.

@@ -407,9 +407,9 @@ def gs_init_root_kernel[
     )
 
     # Compute (μ, σ) per dim — we'll need them inside the per-candidate
-    # sampling loop. Cache via InlineArray.
-    var mu = InlineArray[Scalar[dtype], ACT_DIM](uninitialized=True)
-    var sg = InlineArray[Scalar[dtype], ACT_DIM](uninitialized=True)
+    # sampling loop. Cache via Array.
+    var mu = Array[Scalar[dtype], ACT_DIM](uninitialized=True)
+    var sg = Array[Scalar[dtype], ACT_DIM](uninitialized=True)
     var inv_max = Scalar[dtype](1.0) / max_action
     var inv_soft = Scalar[dtype](1.0) / soft_clamp
     for d in range(ACT_DIM):
@@ -732,7 +732,7 @@ def gs_select_kernel[
                 node_mx = cq
         var q_range = node_mx - node_mn
 
-        var z = InlineArray[Scalar[dtype], K_PAD](uninitialized=True)
+        var z = Array[Scalar[dtype], K_PAD](uninitialized=True)
         var max_z = Scalar[dtype](-1e18)
         for i in range(K_PAD):
             z[i] = Scalar[dtype](-1e18)
@@ -763,7 +763,7 @@ def gs_select_kernel[
                 max_z = z[i]
 
         var sum_e = Scalar[dtype](0.0)
-        var probs = InlineArray[Scalar[dtype], K_PAD](uninitialized=True)
+        var probs = Array[Scalar[dtype], K_PAD](uninitialized=True)
         for i in range(K_PAD):
             probs[i] = Scalar[dtype](0.0)
         for i in range(ak_child):
@@ -1014,8 +1014,8 @@ def gs_expand_kernel[
 
     var inv_max = Scalar[dtype](1.0) / max_action
     var inv_soft = Scalar[dtype](1.0) / soft_clamp
-    var mu = InlineArray[Scalar[dtype], ACT_DIM](uninitialized=True)
-    var sg = InlineArray[Scalar[dtype], ACT_DIM](uninitialized=True)
+    var mu = Array[Scalar[dtype], ACT_DIM](uninitialized=True)
+    var sg = Array[Scalar[dtype], ACT_DIM](uninitialized=True)
     for d in range(ACT_DIM):
         var mu_raw = rebind[Scalar[dtype]](
             pred_output[pred_off + d]
@@ -1320,8 +1320,8 @@ def gs_halve_active_kernel[
     if keep_n > old_n:
         keep_n = old_n
 
-    var scores = InlineArray[Scalar[dtype], K_ROOT](uninitialized=True)
-    var active_idx = InlineArray[Int, K_ROOT](uninitialized=True)
+    var scores = Array[Scalar[dtype], K_ROOT](uninitialized=True)
+    var active_idx = Array[Int, K_ROOT](uninitialized=True)
     for i in range(K_ROOT):
         scores[i] = Scalar[dtype](-1e18)
         active_idx[i] = -1
@@ -1404,7 +1404,7 @@ def gs_extract_kernel[
     var ca_off = e * ACT_DIM
 
     # Read visit counts.
-    var visits = InlineArray[Scalar[dtype], K_ROOT](uninitialized=True)
+    var visits = Array[Scalar[dtype], K_ROOT](uninitialized=True)
     var total = Scalar[dtype](0.0)
     for i in range(K_ROOT):
         var v = rebind[Scalar[dtype]](visit_count[nk_base + i])

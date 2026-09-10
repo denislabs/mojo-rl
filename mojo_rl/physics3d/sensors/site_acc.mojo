@@ -37,7 +37,7 @@ with it. Fixing it moved NO existing gate, which is the evidence that the old
 scope really was as narrow as it claimed.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from layout import Layout, LayoutTensor
 
 from ..kinematics.site_frame import site_world_quat, site_world_quat_list
@@ -225,9 +225,9 @@ def _site_transport_gpu[
     v3: Scalar[DTYPE], v4: Scalar[DTYPE], v5: Scalar[DTYPE],
     dx: Scalar[DTYPE], dy: Scalar[DTYPE], dz: Scalar[DTYPE],
     flg_force: Bool,
-) -> InlineArray[Scalar[DTYPE], 6]:
+) -> Array[Scalar[DTYPE], 6]:
     """`_site_transport` in DTYPE. Same expressions, same association."""
-    var o = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    var o = Array[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     if flg_force:
         o[0] = v0 - (dy * v5 - dz * v4)
         o[1] = v1 - (dz * v3 - dx * v5)
@@ -263,11 +263,11 @@ def _site_com_offset_gpu[
     env: Int,
     body: Int,
     site: Int,
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """`site_xpos[site] - subtree_com[rootid[body]]` — the transport vector
     both acceleration-stage sensors need."""
     var root = Int(rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_ROOTID]))
-    var d = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var d = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     for k in range(3):
         d[k] = rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + k]) - rebind[
             Scalar[DTYPE]
@@ -309,7 +309,7 @@ def site_accelerometer_gpu[
     env: Int,
     body: Int,
     site: Int,
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """`site_accelerometer` against the batched field tensors.
 
     Pass `site_xpos_acc` / `xquat_acc`, not the live products — see the
@@ -357,7 +357,7 @@ def site_accelerometer_gpu[
         sq[0], sq[1], sq[2], sq[3], a[3], a[4], a[5]
     )
 
-    var out = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     out[0] = al[0] + (vl[1] * vv[2] - vl[2] * vv[1])
     out[1] = al[1] + (vl[2] * vv[0] - vl[0] * vv[2])
     out[2] = al[2] + (vl[0] * vv[1] - vl[1] * vv[0])
@@ -395,7 +395,7 @@ def site_force_torque_gpu[
     env: Int,
     body: Int,
     site: Int,
-) -> InlineArray[Scalar[DTYPE], 6]:
+) -> Array[Scalar[DTYPE], 6]:
     """`site_force_torque` against the batched field tensors.
 
     Returns `[force(3), torque(3)]` — force first, matching the CPU twin
@@ -425,7 +425,7 @@ def site_force_torque_gpu[
         sq[0], sq[1], sq[2], sq[3], t[3], t[4], t[5]
     )
 
-    var out = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     out[0] = frc[0]
     out[1] = frc[1]
     out[2] = frc[2]

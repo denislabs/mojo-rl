@@ -1,6 +1,6 @@
 """Flat state layout for Full Craftax.
 
-State is one big `InlineArray[Scalar[dtype], STATE_SIZE]` per env, with the
+State is one big `Array[Scalar[dtype], STATE_SIZE]` per env, with the
 sections laid out in the order below. Offsets are pure compile-time arithmetic
 so kernels specialize on them.
 

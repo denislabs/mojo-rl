@@ -499,7 +499,7 @@ def _sap_plane_narrow[
     plq_y: Scalar[DTYPE],
     plq_z: Scalar[DTYPE],
     plq_w: Scalar[DTYPE],
-    pn: InlineArray[Scalar[DTYPE], 3],
+    pn: Array[Scalar[DTYPE], 3],
     nbody: Int,
     max_contacts: Int,
     ex_sig: Scratch[Int, EX_CAP],
@@ -1957,13 +1957,13 @@ def _sap_pair_narrow[
                 and cm <= Scalar[DTYPE](0)
                 and MC_ENABLED
             )
-            var wf1 = InlineArray[Scalar[DTYPE], 9](
+            var wf1 = Array[Scalar[DTYPE], 9](
                 fill=Scalar[DTYPE](0)
             )
-            var wf2 = InlineArray[Scalar[DTYPE], 9](
+            var wf2 = Array[Scalar[DTYPE], 9](
                 fill=Scalar[DTYPE](0)
             )
-            var wxx = InlineArray[Scalar[DTYPE], 6](
+            var wxx = Array[Scalar[DTYPE], 6](
                 fill=Scalar[DTYPE](0)
             )
             var wf_ok = 0
@@ -1979,13 +1979,13 @@ def _sap_pair_narrow[
                 pr._c_t0 = Int(perf_counter_ns())
             comptime if _COLL_REPEAT_GJK > 1:
                 for _rep in range(_COLL_REPEAT_GJK - 1):
-                    var qf1 = InlineArray[Scalar[DTYPE], 9](
+                    var qf1 = Array[Scalar[DTYPE], 9](
                         fill=Scalar[DTYPE](0)
                     )
-                    var qf2 = InlineArray[Scalar[DTYPE], 9](
+                    var qf2 = Array[Scalar[DTYPE], 9](
                         fill=Scalar[DTYPE](0)
                     )
-                    var qxx = InlineArray[Scalar[DTYPE], 6](
+                    var qxx = Array[Scalar[DTYPE], 6](
                         fill=Scalar[DTYPE](0)
                     )
                     var qf_ok = 0

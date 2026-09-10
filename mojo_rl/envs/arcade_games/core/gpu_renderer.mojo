@@ -94,7 +94,7 @@ def draw_digit(
     """
     # 3×5 font bitmaps packed as 15-bit integers (MSB = top-left)
     # Row 0: top 3 bits, Row 1: next 3, etc.
-    comptime _fonts: InlineArray[UInt16, 10] = [
+    comptime _fonts: Array[UInt16, 10] = [
         0b111_101_101_101_111,  # 0
         0b010_110_010_010_111,  # 1
         0b111_001_111_100_111,  # 2

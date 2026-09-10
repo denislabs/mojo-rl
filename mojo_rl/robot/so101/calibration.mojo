@@ -47,14 +47,14 @@ other five joints came in at -10, +8, +13 and -12 ticks."""
 struct CalibrationRecord(Copyable, Movable):
     """`Homing_Offset` / `Min_Position_Limit` / `Max_Position_Limit`, per joint."""
 
-    var homing: InlineArray[Int32, SO101_N]
-    var rmin: InlineArray[Int32, SO101_N]
-    var rmax: InlineArray[Int32, SO101_N]
+    var homing: Array[Int32, SO101_N]
+    var rmin: Array[Int32, SO101_N]
+    var rmax: Array[Int32, SO101_N]
 
     def __init__(out self):
-        self.homing = InlineArray[Int32, SO101_N](fill=0)
-        self.rmin = InlineArray[Int32, SO101_N](fill=0)
-        self.rmax = InlineArray[Int32, SO101_N](fill=0)
+        self.homing = Array[Int32, SO101_N](fill=0)
+        self.rmin = Array[Int32, SO101_N](fill=0)
+        self.rmax = Array[Int32, SO101_N](fill=0)
 
     def __init__(out self, *, copy: Self):
         self.homing = copy.homing.copy()

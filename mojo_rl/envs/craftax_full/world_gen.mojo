@@ -377,10 +377,10 @@ def _generate_dungeon_floor(
 ) -> Tuple[Int, Int, Int, Int]:
     """Room-based dungeon. Returns ladder positions like smoothworld."""
     # Pre-roll room sizes (uniform in [min_room_size, max_room_size)).
-    var room_y = InlineArray[Int, NUM_ROOMS](fill=0)
-    var room_x = InlineArray[Int, NUM_ROOMS](fill=0)
-    var room_h = InlineArray[Int, NUM_ROOMS](fill=MIN_ROOM_SIZE)
-    var room_w = InlineArray[Int, NUM_ROOMS](fill=MIN_ROOM_SIZE)
+    var room_y = Array[Int, NUM_ROOMS](fill=0)
+    var room_x = Array[Int, NUM_ROOMS](fill=0)
+    var room_h = Array[Int, NUM_ROOMS](fill=MIN_ROOM_SIZE)
+    var room_w = Array[Int, NUM_ROOMS](fill=MIN_ROOM_SIZE)
     for r in range(NUM_ROOMS):
         var u = rng.step_uniform()
         var rh = MIN_ROOM_SIZE + Int(
@@ -402,7 +402,7 @@ def _generate_dungeon_floor(
         item_map_out[unsafe_offset=i] = Float32(ITEM_NONE)
 
     # Place rooms, each in a distinct chunk.
-    var occupied = InlineArray[Bool, TOTAL_CHUNKS](fill=False)
+    var occupied = Array[Bool, TOTAL_CHUNKS](fill=False)
     for r in range(NUM_ROOMS):
         # Sample a free chunk uniformly.
         var free = 0
@@ -485,7 +485,7 @@ def _generate_dungeon_floor(
             )
 
     # Connect rooms: room[i] → random of included; initially included = {last}.
-    var included = InlineArray[Bool, NUM_ROOMS](fill=False)
+    var included = Array[Bool, NUM_ROOMS](fill=False)
     included[NUM_ROOMS - 1] = True
     for i in range(NUM_ROOMS):
         var inc = 0
@@ -546,11 +546,11 @@ def _generate_dungeon_floor(
         map_out[unsafe_offset=sp_y * MAP_W + sp_x] = Float32(config.special_block)
 
     # Pre-compute c_path (non-wall) + adj_path (4-neighbor dilation).
-    var c_path = InlineArray[Bool, MAP_SIZE_PER_FLOOR](fill=False)
+    var c_path = Array[Bool, MAP_SIZE_PER_FLOOR](fill=False)
     for i in range(MAP_SIZE_PER_FLOOR):
         c_path[i] = Int(map_out[unsafe_offset=i]) != BLOCK_WALL
 
-    var adj_path = InlineArray[Bool, MAP_SIZE_PER_FLOOR](fill=False)
+    var adj_path = Array[Bool, MAP_SIZE_PER_FLOOR](fill=False)
     for y in range(MAP_H):
         for x in range(MAP_W):
             var i = y * MAP_W + x

@@ -24,7 +24,7 @@ QUATERNION ORDER: `Data.xquat` and the packed geom record are both
 [x, y, z, w], NOT MuJoCo's [w, x, y, z].
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from layout import Layout, LayoutTensor
 
 from ..fields import Data, Dims, DimsLike
@@ -97,7 +97,7 @@ def geom_xquat_gpu[
     ],
     env: Int,
     geom: Int,
-) -> InlineArray[Scalar[DTYPE], 4]:
+) -> Array[Scalar[DTYPE], 4]:
     """`geom_xquat` for one lane of the batched path, as (x, y, z, w).
 
     DERIVED, not stored — same call as the CPU form, and for the same reason
@@ -118,7 +118,7 @@ def geom_xquat_gpu[
     var gw = rebind[Scalar[DTYPE]](geoms[geom, GEOM_IDX_QUAT_W])
 
     var body = Int(rebind[Scalar[DTYPE]](geoms[geom, GEOM_IDX_BODY]))
-    var out = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     if body == 0:
         out[0] = gx
         out[1] = gy

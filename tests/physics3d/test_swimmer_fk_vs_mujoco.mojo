@@ -20,7 +20,7 @@ Run with:
 from std.testing import assert_true, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs
-from std.collections import InlineArray
+from std.collections import Array
 
 from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
@@ -57,7 +57,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 
 def compare_fk(
     test_name: String,
-    qpos_values: InlineArray[Float64, NQ],
+    qpos_values: Array[Float64, NQ],
 ) raises:
     """Run FK in both engines with identical qpos, compare results."""
     print("--- Test:", test_name, "---")
@@ -195,14 +195,14 @@ def compare_fk(
 def test_fk_all_zeros() raises:
     """FK at all-zero qpos: torso at origin, all joints at 0.
     Swimmer torso capsule extends along x-axis with body at z=0."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     compare_fk("All-zero qpos", qpos)
 
 
 def test_fk_nonzero_position() raises:
     """FK with the swimmer displaced in the x-y plane.
     Slide joints move the body; body orientations should be unchanged."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 3.0  # slider1 (x translation)
     qpos[1] = -2.0  # slider2 (y translation)
     compare_fk("Nonzero x-y position (slider1=3, slider2=-2)", qpos)
@@ -212,7 +212,7 @@ def test_fk_bent_joints() raises:
     """FK with motor joints bent — exercises the 3-body chain FK.
     motor1_rot bends mid relative to torso, motor2_rot bends back relative to mid.
     """
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[3] = 0.5  # motor1_rot (mid bent ~28.6 deg relative to torso)
     qpos[4] = -0.5  # motor2_rot (back bent ~28.6 deg relative to mid)
     compare_fk("Bent joints (motor1=0.5, motor2=-0.5 rad)", qpos)
@@ -221,7 +221,7 @@ def test_fk_bent_joints() raises:
 def test_fk_rotated_and_bent() raises:
     """FK with torso rotated + both motor joints bent.
     Tests composition of rotation through the full body chain."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 1.0  # x position
     qpos[1] = 0.5  # y position
     qpos[2] = 0.785  # free_body_rot = 45 deg = pi/4
@@ -233,7 +233,7 @@ def test_fk_rotated_and_bent() raises:
 def test_fk_large_position() raises:
     """FK with large x displacement — tests FK locality (position offset
     should not affect body orientations)."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 100.0  # slider1 far in x
     qpos[3] = 0.8  # motor1_rot
     qpos[4] = -0.8  # motor2_rot (C-curve shape)
@@ -243,7 +243,7 @@ def test_fk_large_position() raises:
 def test_fk_near_joint_limits() raises:
     """FK near the joint limits of motor1_rot and motor2_rot (±100 degrees).
     Range is ±100 deg = ±1.745 rad."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[3] = 1.5  # motor1_rot near limit (~86 deg)
     qpos[4] = -1.5  # motor2_rot near lower limit
     compare_fk("Near joint limits (±1.5 rad)", qpos)

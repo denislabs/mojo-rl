@@ -76,7 +76,7 @@ def _redq_resample_subset_kernel[
     if Int(global_idx.x) != 0:
         return
     var offset_base = rebind[UInt64](offset_buf[0])
-    var picks = InlineArray[Int, N](uninitialized=True)
+    var picks = Array[Int, N](uninitialized=True)
     for i in range(N):
         picks[i] = i
     for i in range(N_MIN):

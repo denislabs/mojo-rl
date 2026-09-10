@@ -22,7 +22,7 @@ WHAT THIS FILE GATES, AND WHY IN THIS SHAPE
 The reference is the CPU branch — `_newton_solve_env`, whose pyramidal noslip
 is separately gated against MuJoCo by `test_noslip_vs_mujoco.mojo`. Comparing
 the two BRANCHES rather than re-deriving MuJoCo here is deliberate: they are
-different code (per-thread `InlineArray`s vs a cooperative shared-memory
+different code (per-thread `Array`s vs a cooperative shared-memory
 kernel), so they cannot be wrong in the same way by construction, and the
 defect being gated is exactly a divergence between them.
 

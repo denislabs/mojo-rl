@@ -80,7 +80,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     comptime SAVE_SIZE: Int = 13  # 12 state + 1 done flag
 
     # CPU state
-    var state: InlineArray[Scalar[Self.dtype], 12]
+    var state: Array[Scalar[Self.dtype], 12]
     var done: Bool
 
     # Renderer
@@ -88,7 +88,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     var _renderer_initialized: Bool
 
     def __init__(out self):
-        self.state = InlineArray[Scalar[Self.dtype], 12](
+        self.state = Array[Scalar[Self.dtype], 12](
             fill=Scalar[Self.dtype](0.0)
         )
         self.done = False
@@ -154,7 +154,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     def _check_win_cpu(
-        state: InlineArray[Scalar[Self.DTYPE], 12], mark: Scalar[Self.DTYPE]
+        state: Array[Scalar[Self.DTYPE], 12], mark: Scalar[Self.DTYPE]
     ) -> Bool:
         """Check if the given mark has won (rows, cols, diagonals)."""
         # Rows

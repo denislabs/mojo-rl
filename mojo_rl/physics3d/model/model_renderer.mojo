@@ -6,7 +6,7 @@ to draw all visible geoms automatically. Eliminates per-environment renderer boi
 Supports all geom types: capsule, sphere, box, and plane (ground).
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from mojo_rl.render import Renderer3D, RendererHandoff, Camera3D, Color
 from mojo_rl.render.ui import UIRect, UIText
@@ -471,8 +471,8 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         DTYPE: DType, SIZE_POS: Int, SIZE_QUAT: Int
     ](
         mut self,
-        xpos: InlineArray[Scalar[DTYPE], SIZE_POS],
-        xquat: InlineArray[Scalar[DTYPE], SIZE_QUAT],
+        xpos: Array[Scalar[DTYPE], SIZE_POS],
+        xquat: Array[Scalar[DTYPE], SIZE_QUAT],
         num_bodies: Int,
         vel_x: Float64 = 0.0,
     ):

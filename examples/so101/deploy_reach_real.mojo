@@ -248,8 +248,8 @@ def main() raises:
     var sf = SoArm101Model.make_spec_fields[DType.float64]()
     var lo_col = actuator_column(sf, ACT_IDX_CTRL_MIN, SO101_N)
     var hi_col = actuator_column(sf, ACT_IDX_CTRL_MAX, SO101_N)
-    var lo = InlineArray[Float64, SO101_N](fill=0.0)
-    var hi = InlineArray[Float64, SO101_N](fill=0.0)
+    var lo = Array[Float64, SO101_N](fill=0.0)
+    var hi = Array[Float64, SO101_N](fill=0.0)
     for i in range(SO101_N):
         lo[i] = Float64(lo_col[i])
         hi[i] = Float64(hi_col[i])
@@ -262,7 +262,7 @@ def main() raises:
     print("  target          = (", TARGET_X, TARGET_Y, TARGET_Z, ")")
     print("=" * 70)
 
-    var raw = InlineArray[Int32, SO101_N](fill=0)
+    var raw = Array[Int32, SO101_N](fill=0)
     if arm.read_positions(Span(raw)) != SO101_N:
         raise Error("deploy: follower did not report 6 positions — not arming")
 
@@ -380,8 +380,8 @@ def main() raises:
         qp.append(0.0)
         qv.append(0.0)
 
-    var vraw = InlineArray[Int32, SO101_N](fill=0)
-    var goals = InlineArray[Int32, SO101_N](fill=0)
+    var vraw = Array[Int32, SO101_N](fill=0)
+    var goals = Array[Int32, SO101_N](fill=0)
     # ⚠ SEEDED FROM THE ARM'S OWN POSE, not from zero. A filter starting at
     # zero would spend its first ticks sweeping the arm from wherever it is
     # toward the folded pose — a large unwanted motion, produced by the very

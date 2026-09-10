@@ -92,8 +92,8 @@ def recovered_det_h(mobius: Bool, mut checks: Int) raises -> Float64:
             var edge = env.place_id()
             env.step(0)
             var cur = env.true_landmark()
-            var x = InlineArray[Scalar[DT], 2](fill=0)
-            var y = InlineArray[Scalar[DT], 2](fill=0)
+            var x = Array[Scalar[DT], 2](fill=0)
+            var y = Array[Scalar[DT], 2](fill=0)
             for c in range(2):
                 x[c] = prev[c] + Scalar[DT](noise.normal() * cfg.obs_noise)
                 y[c] = cur[c] + Scalar[DT](noise.normal() * cfg.obs_noise)

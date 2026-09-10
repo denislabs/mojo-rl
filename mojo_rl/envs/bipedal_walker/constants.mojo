@@ -55,7 +55,7 @@ struct BWConstants:
     # ==========================================================================
 
     # Hull dimensions (pentagon shape)
-    comptime HULL_POLY: InlineArray[Float64, 10] = [
+    comptime HULL_POLY: Array[Float64, 10] = [
         -30.0 / Self.SCALE,
         0.0 / Self.SCALE,  # bottom left
         -6.0 / Self.SCALE,

@@ -97,7 +97,7 @@ def _az_loss_bwd_kernel[B: Int, ACT: Int](
 
 struct AZLossOp[ACT: Int](Module):
     comptime ARITY: Int = 2
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.ACT + 1)
+    comptime IN_DIMS = Array[Int, 2](fill=Self.ACT + 1)
     comptime OUT_DIM = 1
 
     def __init__(out self):

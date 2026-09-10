@@ -14,7 +14,7 @@ differ in exactly two ways:
 * strides come from a `RuntimeLayout` instead of a folded constant, so LLVM
   cannot unroll or vectorise the inner loops the same way;
 * `Scratch` picks the HEAP on a dynamic provider, because `CAP_*` is 0 there.
-  §10.7 measured a fixed-cap `InlineArray` under a runtime bound at
+  §10.7 measured a fixed-cap `Array` under a runtime bound at
   1.13-1.18x WORSE than the `List`, so this is the faster of the two, not a
   compromise.
 

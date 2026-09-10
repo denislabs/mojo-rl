@@ -58,7 +58,7 @@ def _xs(s: UInt64) -> UInt64:
 @always_inline
 def _argmax_legal[
     ACT: Int
-](pol: InlineArray[Float64, ACT], legal: List[Bool]) -> Int:
+](pol: Array[Float64, ACT], legal: List[Bool]) -> Int:
     """argmax of a visit-count policy over legal actions (0 fallback)."""
     var best = -1
     var bestv = Float64(-1.0)
@@ -246,8 +246,8 @@ def arena_match_mcts[
     )
     ctx.synchronize()
 
-    var eval_done = InlineArray[Bool, N_GAMES](fill=False)
-    var eval_result = InlineArray[Int, N_GAMES](
+    var eval_done = Array[Bool, N_GAMES](fill=False)
+    var eval_result = Array[Int, N_GAMES](
         fill=0
     )  # 1=A win 2=A loss 3=draw
     var all_done = False

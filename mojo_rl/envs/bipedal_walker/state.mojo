@@ -30,7 +30,7 @@ struct BipedalWalkerState[DTYPE: DType](
     var leg2_contact: Scalar[Self.DTYPE]
 
     # Lidar (10)
-    var lidar: InlineArray[Scalar[Self.DTYPE], Self.NUM_LIDAR]
+    var lidar: Array[Scalar[Self.DTYPE], Self.NUM_LIDAR]
 
     def __init__(out self):
         self.hull_angle = 0.0
@@ -47,7 +47,7 @@ struct BipedalWalkerState[DTYPE: DType](
         self.knee2_angle = 0.0
         self.knee2_speed = 0.0
         self.leg2_contact = 0.0
-        self.lidar = InlineArray[Scalar[Self.DTYPE], Self.NUM_LIDAR](fill=1.0)
+        self.lidar = Array[Scalar[Self.DTYPE], Self.NUM_LIDAR](fill=1.0)
 
     def __init__(out self, *, copy: Self):
         self.hull_angle = copy.hull_angle
@@ -64,7 +64,7 @@ struct BipedalWalkerState[DTYPE: DType](
         self.knee2_angle = copy.knee2_angle
         self.knee2_speed = copy.knee2_speed
         self.leg2_contact = copy.leg2_contact
-        self.lidar = InlineArray[Scalar[Self.DTYPE], Self.NUM_LIDAR](
+        self.lidar = Array[Scalar[Self.DTYPE], Self.NUM_LIDAR](
             fill=Scalar[Self.DTYPE](1.0)
         )
         for i in range(Self.NUM_LIDAR):
@@ -85,7 +85,7 @@ struct BipedalWalkerState[DTYPE: DType](
         self.knee2_angle = move.knee2_angle
         self.knee2_speed = move.knee2_speed
         self.leg2_contact = move.leg2_contact
-        self.lidar = InlineArray[Scalar[Self.DTYPE], Self.NUM_LIDAR](
+        self.lidar = Array[Scalar[Self.DTYPE], Self.NUM_LIDAR](
             fill=Scalar[Self.DTYPE](1.0)
         )
         for i in range(Self.NUM_LIDAR):

@@ -31,7 +31,7 @@ Run:
     pixi run mojo run -I . tests/experimental/swm/test_holonomy_ring.mojo
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, cos, sin, pi
 from std.random import seed, random_float64
 from std.testing import assert_true

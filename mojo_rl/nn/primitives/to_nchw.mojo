@@ -71,7 +71,7 @@ struct ToNCHW[
     comptime ARITY = 1
     comptime DIM = Self.C_ * Self.H_ * Self.W_
     comptime HW = Self.H_ * Self.W_
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM)
     comptime OUT_DIM = Self.DIM
     comptime ACT_DT = Self.ADT
 

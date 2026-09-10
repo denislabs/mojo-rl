@@ -42,9 +42,9 @@ def cal_for(
     Two slots because `degrees()` branches on the GRIPPER index, so a body
     joint and the gripper cannot share one.
     """
-    var ofs = InlineArray[Int32, SO101_N](fill=0)
-    var mn = InlineArray[Int32, SO101_N](fill=0)
-    var mx = InlineArray[Int32, SO101_N](fill=4095)
+    var ofs = Array[Int32, SO101_N](fill=0)
+    var mn = Array[Int32, SO101_N](fill=0)
+    var mx = Array[Int32, SO101_N](fill=4095)
     mn[0] = Int32(lo)
     mx[0] = Int32(hi)
     mn[5] = Int32(gripper_lo)

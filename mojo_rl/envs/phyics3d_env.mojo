@@ -28,7 +28,7 @@ Scope (full parity with the legacy CPU env):
   `phyics3d_batched_env`.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.memory import alloc
 from std.random import random_float64
 from max.gpu.host import DeviceContext
@@ -783,10 +783,10 @@ struct Phyics3dEnv[
         if not self._renderer.value()[].is_open():
             return
 
-        var xpos = InlineArray[Scalar[Self.DTYPE], Self.MODEL_DEF.NBODY * 3](
+        var xpos = Array[Scalar[Self.DTYPE], Self.MODEL_DEF.NBODY * 3](
             uninitialized=True
         )
-        var xquat = InlineArray[Scalar[Self.DTYPE], Self.MODEL_DEF.NBODY * 4](
+        var xquat = Array[Scalar[Self.DTYPE], Self.MODEL_DEF.NBODY * 4](
             uninitialized=True
         )
         for i in range(Self.MODEL_DEF.NBODY * 3):

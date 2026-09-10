@@ -56,7 +56,7 @@ def atari_frames_kernel(
         # Headless runner directly (NOT run_frame, which materializes the
         # comptime OPCODE_TABLE global — unavailable in the device module). The
         # opcode table is uploaded by the host and passed in via `op_table`.
-        var dummy = InlineArray[UInt8, 4](fill=0)
+        var dummy = Array[UInt8, 4](fill=0)
         for _ in range(n_frames):
             set_action(st, act)
             run_frame_cycle_accurate[RENDER=False](

@@ -252,7 +252,7 @@ struct EZDynNetAtari[ACT: Int, BINS: Int](Module):
     comptime ARITY: Int = 1
     comptime LATENT = EZ_LATENT
     comptime IN_DIM = Self.LATENT + Self.ACT
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IN_DIM)
     comptime OUT_DIM = Self.LATENT + Self.BINS
     comptime Graph = EZDynAtariGraph[Self.ACT, Self.BINS]
 
@@ -489,7 +489,7 @@ struct EZDynZNetAtari[ACT: Int, ADT: DType = DT](Module):
     comptime ACT_DT = Self.ADT
     comptime LATENT = EZ_LATENT
     comptime IN_DIM = Self.LATENT + Self.ACT
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IN_DIM)
     comptime OUT_DIM = Self.LATENT
     comptime Graph = EZDynZGraph[Self.ACT, ADT=Self.ADT]
 
@@ -590,8 +590,8 @@ struct EZRewardLSTMAtari[BINS: Int](Module):
     comptime OUT_DIM = Self.BINS + Self.RHID    # [vp_logits | h' | c']
 
     @staticmethod
-    def _build_in_dims() -> InlineArray[Int, 2]:
-        var d = InlineArray[Int, 2](fill=0)
+    def _build_in_dims() -> Array[Int, 2]:
+        var d = Array[Int, 2](fill=0)
         d[0] = Self.LATENT
         d[1] = Self.RHID
         return d^
@@ -843,7 +843,7 @@ struct EZDynVPNetAtari[ACT: Int, BINS: Int](Module):
     comptime ARITY: Int = 1
     comptime LATENT = EZ_LATENT
     comptime IN_DIM = Self.LATENT + Self.ACT
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IN_DIM)
     comptime OUT_DIM = Self.LATENT + Self.BINS
     comptime HIDDEN = EZ_LSTM_HIDDEN
 

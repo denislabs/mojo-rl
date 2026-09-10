@@ -92,7 +92,7 @@ def _copy_kernel[
 struct SinusoidalPosAdd[T_: Int, S_: Int, D_: Int, SCALE_: Bool = False](Module):
     comptime ARITY: Int = 1
     comptime N: Int = Self.T_ * Self.S_ * Self.D_
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.N)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.N)
     comptime OUT_DIM = Self.N
 
     var bias: Tensor  # [T*S*D] (CPU data + device dev)

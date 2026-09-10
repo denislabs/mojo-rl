@@ -774,7 +774,7 @@ struct Conv2D[
     comptime OW = (Self.W_ + 2 * Self.P_ - Self.K_) // Self.S_ + 1
     comptime IN_FLAT = Self.IC_ * Self.H_ * Self.W_
     comptime OUT_FLAT = Self.OC_ * Self.OH * Self.OW
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_FLAT)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IN_FLAT)
     comptime OUT_DIM = Self.OUT_FLAT
     comptime W_SIZE = Self.OC_ * Self.IC_ * Self.K_ * Self.K_
     comptime B_SIZE = Self.OC_

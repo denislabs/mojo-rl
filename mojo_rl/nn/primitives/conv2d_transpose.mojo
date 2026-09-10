@@ -134,7 +134,7 @@ struct Conv2DTranspose[
     comptime COLT = Self.OC_ * Self.K_ * Self.K_
     comptime IN_FLAT = Self.IC_ * Self.H_ * Self.W_
     comptime OUT_FLAT = Self.OC_ * Self.OHt * Self.OWt
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_FLAT)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IN_FLAT)
     comptime OUT_DIM = Self.OUT_FLAT
     comptime W_SIZE = Self.IC_ * Self.COLT
     comptime B_SIZE = Self.OC_

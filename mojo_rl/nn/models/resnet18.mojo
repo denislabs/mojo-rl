@@ -144,7 +144,7 @@ struct ResNet18Backbone[
 ](Module):
     comptime Net = ResNet18Seq[Self.IN_CH, Self.H, Self.W, Self.LAYOUT]
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](
+    comptime IN_DIMS = Array[Int, 1](
         fill=Self.IN_CH * Self.H * Self.W
     )
     comptime OUT_DIM: Int = Self.Net.OUT_DIM

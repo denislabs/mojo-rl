@@ -20,7 +20,7 @@ degrees on the two zones that decide whether a grasp registers.
 The site record's quaternion is (x, y, z, w), matching `BODY_IDX_QUAT_*`.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from layout import Layout, LayoutTensor
 
 from ..gpu.constants import (
@@ -48,7 +48,7 @@ def site_world_quat[
     xquat: LayoutTensor[
         DTYPE, L_XQUAT, MutAnyOrigin
     ],
-) -> InlineArray[Scalar[DTYPE], 4]:
+) -> Array[Scalar[DTYPE], 4]:
     """`xquat[site_body] * site_quat` as (x, y, z, w) — MuJoCo's `site_xmat`.
 
     Both operands are unit quaternions, so the product is too; no

@@ -24,7 +24,7 @@ from .graph_visitor import DisplayStep
 
 trait Module(ParamWalkable & Defaultable):
     comptime ARITY: Int
-    comptime IN_DIMS: InlineArray[Int, Self.ARITY]
+    comptime IN_DIMS: Array[Int, Self.ARITY]
     comptime OUT_DIM: Int
     # Activation-flow dtype. DEFAULTS to `DT` (fp32) so every existing leaf —
     # which never declares it — is an fp32 module unchanged (`TensorImpl[DT]` IS

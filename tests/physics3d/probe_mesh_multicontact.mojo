@@ -217,9 +217,9 @@ def main() raises:
     var gi_type = Int(mf.geoms.data[gi * MODEL_GEOM_SIZE + GEOM_IDX_TYPE])
     var gj_type = Int(mf.geoms.data[gj * MODEL_GEOM_SIZE + GEOM_IDX_TYPE])
 
-    var wf1 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-    var wf2 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-    var wxx = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    var wf1 = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var wf2 = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var wxx = Array[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     var wf_ok = 0
     var ws = ccd_ws_alloc[DTYPE]()
     var z = Scalar[DTYPE](0)

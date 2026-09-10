@@ -103,7 +103,7 @@ struct RepeatKVHeads[SEQ: Int, N_KV: Int, REP: Int, HEAD_DIM: Int](Module):
     comptime OUT_W: Int = Self.N_KV * Self.REP * Self.HEAD_DIM
     comptime IN_N: Int = Self.SEQ * Self.IN_W
     comptime OUT_N: Int = Self.SEQ * Self.OUT_W
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_N)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IN_N)
     comptime OUT_DIM: Int = Self.OUT_N
 
     def __init__(out self):

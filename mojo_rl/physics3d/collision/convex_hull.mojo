@@ -677,7 +677,7 @@ def _convex_hull_f64(
     # tetrahedron whose fourth vertex `d` lies below face (a, b, c). Each of
     # the six edges appears once in each direction, which is the invariant the
     # horizon walk below relies on.
-    var seed: InlineArray[Int, 12] = [
+    var seed: Array[Int, 12] = [
         i0, i1, i2, i0, i2, i3, i0, i3, i1, i1, i3, i2
     ]
     for f in range(4):

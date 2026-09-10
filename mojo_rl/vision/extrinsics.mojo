@@ -119,7 +119,7 @@ struct RigidFit(Copyable, Movable, Writable):
     var n: Int
     """Correspondences used."""
 
-    var spread_mm: InlineArray[Float64, 3]
+    var spread_mm: Array[Float64, 3]
     """RMS extent of the sampled points along their three principal axes, mm,
     descending.
 
@@ -166,7 +166,7 @@ struct RigidFit(Copyable, Movable, Writable):
 
 def _principal_spread_mm(
     centred: List[Float64], n: Int
-) raises -> InlineArray[Float64, 3]:
+) raises -> Array[Float64, 3]:
     """RMS extent along the principal axes of an ALREADY CENTRED point set.
 
     The scatter matrix is symmetric positive semi-definite, so its singular
@@ -184,7 +184,7 @@ def _principal_spread_mm(
     var s3 = List[Float64]()
     var vt9 = List[Float64]()
     svd_3x3(s, u9, s3, vt9)
-    var out = InlineArray[Float64, 3](fill=0.0)
+    var out = Array[Float64, 3](fill=0.0)
     for i in range(3):
         # ⚠ CLAMP BEFORE THE ROOT. A PSD matrix can produce a singular value
         # of -1e-18 in float64, and `sqrt` of that is a NaN that then travels
@@ -231,8 +231,8 @@ def fit_rigid(
         )
 
     # ── centroids, then centre both sets ────────────────────────────────────
-    var cx = InlineArray[Float64, 3](fill=0.0)
-    var cy = InlineArray[Float64, 3](fill=0.0)
+    var cx = Array[Float64, 3](fill=0.0)
+    var cy = Array[Float64, 3](fill=0.0)
     for k in range(n):
         for i in range(3):
             cx[i] += cam_xyz[k * 3 + i]
@@ -270,7 +270,7 @@ def fit_rigid(
     svd_3x3(h, u9, s3, vt9)
 
     # `vt9` is Vᵀ row-major, so V[i][k] = vt9[k*3+i]; Uᵀ[k][j] = u9[j*3+k].
-    var w = InlineArray[Float64, 3](fill=1.0)
+    var w = Array[Float64, 3](fill=1.0)
     var r = List[Float64](length=9, fill=0.0)
     for _pass in range(2):
         for i in range(3):

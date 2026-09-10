@@ -105,13 +105,13 @@ def _tri_area_center_normal[
     ax: Scalar[DTYPE], ay: Scalar[DTYPE], az: Scalar[DTYPE],
     bx: Scalar[DTYPE], by: Scalar[DTYPE], bz: Scalar[DTYPE],
     cx: Scalar[DTYPE], cy: Scalar[DTYPE], cz: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 7]:
+) -> Array[Scalar[DTYPE], 7]:
     """MuJoCo's static `triangle()`: area, centroid, UNIT normal.
 
     Returns [area, cenx, ceny, cenz, nx, ny, nz]; area 0 (and a zero normal)
     for a degenerate face, which MuJoCo skips by contributing nothing.
     """
-    var out = InlineArray[Scalar[DTYPE], 7](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 7](fill=Scalar[DTYPE](0))
     out[1] = (ax + bx + cx) / Scalar[DTYPE](3)
     out[2] = (ay + by + cy) / Scalar[DTYPE](3)
     out[3] = (az + bz + cz) / Scalar[DTYPE](3)
@@ -298,7 +298,7 @@ def mesh_legacy_inertia[
 
     # products of inertia -> moments, in `eig3_symmetric`'s packing
     # [Ixx, Iyy, Izz, Ixy, Ixz, Iyz]
-    var full = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    var full = Array[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     full[0] = p1 + p2
     full[1] = p0 + p2
     full[2] = p0 + p1
@@ -341,7 +341,7 @@ def transform_verts_to_principal_frame[
     diagonal and what lets the hull, the polygon normals and `rbound` all be
     built in the same frame MuJoCo uses.
     """
-    var mat = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var mat = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     quat_to_mat[DTYPE](mi.qx, mi.qy, mi.qz, mi.qw, mat)
     for i in range(num_verts):
         var o = i * 3

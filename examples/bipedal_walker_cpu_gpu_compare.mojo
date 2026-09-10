@@ -77,7 +77,7 @@ def compare_scalar(
 
 def compare_observation(
     cpu_obs: List[Scalar[dtype]],
-    gpu_obs: InlineArray[Scalar[dtype], 24],
+    gpu_obs: Array[Scalar[dtype], 24],
     tolerance: Float64 = 1e-4,
 ) -> Bool:
     """Compare CPU and GPU observations."""
@@ -124,9 +124,9 @@ def extract_gpu_observation[
     states_buf: DeviceBuffer[dtype],
     ctx: DeviceContext,
     env_idx: Int,
-) raises -> InlineArray[Scalar[dtype], 24]:
+) raises -> Array[Scalar[dtype], 24]:
     """Extract observation from std.gpu state buffer."""
-    var obs = InlineArray[Scalar[dtype], 24](fill=Scalar[dtype](0))
+    var obs = Array[Scalar[dtype], 24](fill=Scalar[dtype](0))
 
     var obs_host = ctx.enqueue_create_host_buffer[dtype](24)
     var obs_buf = ctx.enqueue_create_buffer[dtype](24)
@@ -171,9 +171,9 @@ def extract_gpu_body_state[
     ctx: DeviceContext,
     env_idx: Int,
     body_idx: Int,
-) raises -> InlineArray[Scalar[dtype], 6]:
+) raises -> Array[Scalar[dtype], 6]:
     """Extract body state (x, y, angle, vx, vy, omega) from std.gpu buffer."""
-    var state = InlineArray[Scalar[dtype], 6](fill=Scalar[dtype](0))
+    var state = Array[Scalar[dtype], 6](fill=Scalar[dtype](0))
 
     var state_host = ctx.enqueue_create_host_buffer[dtype](6)
     var state_buf = ctx.enqueue_create_buffer[dtype](6)
@@ -229,9 +229,9 @@ def extract_gpu_metadata[
     states_buf: DeviceBuffer[dtype],
     ctx: DeviceContext,
     env_idx: Int,
-) raises -> InlineArray[Scalar[dtype], 8]:
+) raises -> Array[Scalar[dtype], 8]:
     """Extract metadata from std.gpu."""
-    var meta = InlineArray[Scalar[dtype], 8](fill=Scalar[dtype](0))
+    var meta = Array[Scalar[dtype], 8](fill=Scalar[dtype](0))
 
     var meta_host = ctx.enqueue_create_host_buffer[dtype](8)
     var meta_buf = ctx.enqueue_create_buffer[dtype](8)

@@ -48,8 +48,8 @@ struct FeetechBus(Movable):
     """Per-transaction reply deadline. Lower it (5 ms is ample at 1 Mbaud)
     in a control loop, where dropping a tick beats stalling one."""
     var retries: Int
-    var _tx: InlineArray[UInt8, TX_CAP]
-    var _rx: InlineArray[UInt8, RX_CAP]
+    var _tx: Array[UInt8, TX_CAP]
+    var _rx: Array[UInt8, RX_CAP]
 
     def __init__(
         out self,
@@ -61,8 +61,8 @@ struct FeetechBus(Movable):
         self.port = SerialPort(path^, baud)
         self.timeout_ms = timeout_ms
         self.retries = retries
-        self._tx = InlineArray[UInt8, TX_CAP](fill=0)
-        self._rx = InlineArray[UInt8, RX_CAP](fill=0)
+        self._tx = Array[UInt8, TX_CAP](fill=0)
+        self._rx = Array[UInt8, RX_CAP](fill=0)
 
     # ── one servo at a time ────────────────────────────────────────────────
 
@@ -238,7 +238,7 @@ struct FeetechBus(Movable):
                 + String(MAX_MOTORS)
             )
         var bit = sign_bit_for(addr)
-        var encoded = InlineArray[Int32, MAX_MOTORS](fill=0)
+        var encoded = Array[Int32, MAX_MOTORS](fill=0)
         for i in range(n):
             var v = Int(values[i])
             encoded[i] = Int32(

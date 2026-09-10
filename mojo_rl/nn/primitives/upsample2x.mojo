@@ -71,7 +71,7 @@ struct Upsample2x[C: Int, H: Int, W: Int](Module):
     comptime ARITY: Int = 1
     comptime IN_FLAT: Int = Self.C * Self.H * Self.W
     comptime OUT_FLAT: Int = Self.C * (2 * Self.H) * (2 * Self.W)
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_FLAT)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IN_FLAT)
     comptime OUT_DIM = Self.OUT_FLAT
 
     def __init__(out self):

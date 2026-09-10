@@ -599,7 +599,7 @@ struct ScaledDotProductAttention[
     # bf16 boundary (read→fp32, write→bf16). bf16-flow is GPU-only.
     comptime ACT_DT = Self.ADT
     comptime HEAD_DIM: Int = Self.DIM // Self.N_HEADS
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ_LEN * Self.DIM * 3)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.SEQ_LEN * Self.DIM * 3)
     # `Array` is not `ImplicitlyCopyable` (Mojo 1.0): indexing the comptime
     # `IN_DIMS` from a runtime context would materialize the whole array.
     comptime IN_DIM0 = Self.SEQ_LEN * Self.DIM * 3

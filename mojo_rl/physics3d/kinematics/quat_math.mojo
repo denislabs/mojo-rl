@@ -441,7 +441,7 @@ def quat2vel[
 
 
 # =============================================================================
-# GPU Quaternion Operations (InlineArray return for GPU compatibility)
+# GPU Quaternion Operations (Array return for GPU compatibility)
 # =============================================================================
 
 
@@ -457,9 +457,9 @@ def gpu_quat_mul[
     by: Scalar[DTYPE],
     bz: Scalar[DTYPE],
     bw: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 4]:
-    """Quaternion multiplication a * b (GPU version with InlineArray return)."""
-    var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
+) -> Array[Scalar[DTYPE], 4]:
+    """Quaternion multiplication a * b (GPU version with Array return)."""
+    var result = Array[Scalar[DTYPE], 4](uninitialized=True)
     result[0] = aw * bx + ax * bw + ay * bz - az * by
     result[1] = aw * by - ax * bz + ay * bw + az * bx
     result[2] = aw * bz + ax * by - ay * bx + az * bw
@@ -478,13 +478,13 @@ def gpu_quat_rotate[
     vx: Scalar[DTYPE],
     vy: Scalar[DTYPE],
     vz: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """Rotate vector v by quaternion q: q * v * q^-1 (GPU version)."""
     var t_x = Scalar[DTYPE](2) * (qy * vz - qz * vy)
     var t_y = Scalar[DTYPE](2) * (qz * vx - qx * vz)
     var t_z = Scalar[DTYPE](2) * (qx * vy - qy * vx)
 
-    var result = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+    var result = Array[Scalar[DTYPE], 3](uninitialized=True)
     result[0] = vx + qw * t_x + (qy * t_z - qz * t_y)
     result[1] = vy + qw * t_y + (qz * t_x - qx * t_z)
     result[2] = vz + qw * t_z + (qx * t_y - qy * t_x)
@@ -499,7 +499,7 @@ def gpu_axis_angle_to_quat[
     axis_y: Scalar[DTYPE],
     axis_z: Scalar[DTYPE],
     angle: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 4]:
+) -> Array[Scalar[DTYPE], 4]:
     """Convert axis-angle to quaternion (GPU version)."""
     comptime assert (
         DTYPE.is_floating_point()
@@ -513,7 +513,7 @@ def gpu_axis_angle_to_quat[
     # actually passes returns `1 - 5e-11` instead of `1` — see
     # `gpu_quat_normalize` for the full story and the measurement.
     var len_sq = axis_x * axis_x + axis_y * axis_y + axis_z * axis_z
-    var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
+    var result = Array[Scalar[DTYPE], 4](uninitialized=True)
     # Degenerate axis keeps the old formula, for the reason in
     # `gpu_quat_normalize` — this change is about the epsilon, not about what
     # a zero axis should mean. Like that one, this branch is unreached by every
@@ -539,7 +539,7 @@ def gpu_quat_normalize[
     qy: Scalar[DTYPE],
     qz: Scalar[DTYPE],
     qw: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 4]:
+) -> Array[Scalar[DTYPE], 4]:
     """Normalize quaternion (GPU version).
 
     ⚠ THE DEGENERATE GUARD IS A BRANCH, NOT AN EPSILON UNDER THE SQRT. This
@@ -567,7 +567,7 @@ def gpu_quat_normalize[
     arithmetic is exact for the input every caller actually passes.
     """
     var norm_sq = qx * qx + qy * qy + qz * qz + qw * qw
-    var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
+    var result = Array[Scalar[DTYPE], 4](uninitialized=True)
     # THE DEGENERATE BRANCH KEEPS THE OLD FORMULA ON PURPOSE, so that this
     # change is a pure precision fix and nothing else. Below 1e-6 the result is
     # bit-identical to what it always was; above it, exact.

@@ -159,7 +159,7 @@ struct SymlogMSELoss[OBS: Int, SIGMOID: Bool = False](Module):
     # right choice for unbounded vector obs). SIGMOID=True: reference pixel recon
     # — loss = (sigmoid(pred) − tgt)², tgt raw [0,1] (decode = sigmoid(pred)).
     comptime ARITY: Int = 2
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.OBS)
+    comptime IN_DIMS = Array[Int, 2](fill=Self.OBS)
     comptime OUT_DIM = 1
 
     @staticmethod
@@ -276,8 +276,8 @@ struct TwoHotLoss[BINS: Int](Module):
         return String("TwoHot")
 
     @staticmethod
-    def _mk_in_dims() -> InlineArray[Int, 2]:
-        var d = InlineArray[Int, 2](fill=1)
+    def _mk_in_dims() -> Array[Int, 2]:
+        var d = Array[Int, 2](fill=1)
         d[0] = Self.BINS
         return d^
 
@@ -404,7 +404,7 @@ def _binary_bwd_kernel[B: Int](
 
 struct BinaryLoss(Module):
     comptime ARITY: Int = 2
-    comptime IN_DIMS = InlineArray[Int, 2](fill=1)
+    comptime IN_DIMS = Array[Int, 2](fill=1)
     comptime OUT_DIM = 1
 
     @staticmethod

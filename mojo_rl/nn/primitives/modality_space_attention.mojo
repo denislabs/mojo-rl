@@ -42,7 +42,7 @@ struct ModalitySpaceAttention[
     USE_MAX: Bool = True,
 ](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.S * Self.D * 3)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.S * Self.D * 3)
     comptime OUT_DIM = Self.S * Self.D
 
     var inner: MaskedAttention[Self.D, Self.N_HEADS, Self.S, Self.USE_MAX]

@@ -535,7 +535,7 @@ struct CarRacing[DTYPE: DType](
         var hr = 27.0 * car_size  # Wheel radius
 
         # Wheel positions (local coords) - FL, FR, RL, RR
-        var wheel_pos_x = InlineArray[Float64, 4](
+        var wheel_pos_x = Array[Float64, 4](
             fill=[
                 WHEEL_POS_FL_X,
                 WHEEL_POS_FR_X,
@@ -543,7 +543,7 @@ struct CarRacing[DTYPE: DType](
                 WHEEL_POS_RR_X,
             ]
         )
-        var wheel_pos_y = InlineArray[Float64, 4](
+        var wheel_pos_y = Array[Float64, 4](
             fill=[
                 WHEEL_POS_FL_Y,
                 WHEEL_POS_FR_Y,
@@ -1590,10 +1590,10 @@ struct CarRacing[DTYPE: DType](
         var num_checkpoints = 12
 
         # Generate random checkpoints around a circle
-        var checkpoints_x = InlineArray[Scalar[dtype], 12](
+        var checkpoints_x = Array[Scalar[dtype], 12](
             fill=Scalar[dtype](0)
         )
-        var checkpoints_y = InlineArray[Scalar[dtype], 12](
+        var checkpoints_y = Array[Scalar[dtype], 12](
             fill=Scalar[dtype](0)
         )
 

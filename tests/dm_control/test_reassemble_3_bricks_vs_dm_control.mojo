@@ -41,7 +41,7 @@ Run with:
     pixi run mojo run -I . tests/dm_control/test_reassemble_3_bricks_vs_dm_control.mojo
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt, sin, cos
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
@@ -691,13 +691,13 @@ def test_reassemble_3_build_stack_matches_dm_control() raises:
     var ini = initial_order()
     var des = desired_order()
 
-    var base_pos = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var base_pos = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     base_pos[0] = Scalar[DTYPE](0.03)
     base_pos[1] = Scalar[DTYPE](-0.02)
     base_pos[2] = Scalar[DTYPE](PROP_Z)
     var yaw = 0.7853981633974483  # pi/4
     var mjq = _mj_quat(yaw)
-    var base_quat = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var base_quat = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     base_quat[0] = Scalar[DTYPE](mjq[1])  # x
     base_quat[1] = Scalar[DTYPE](mjq[2])  # y
     base_quat[2] = Scalar[DTYPE](mjq[3])  # z
@@ -805,7 +805,7 @@ def test_reassemble_3_build_stack_matches_dm_control() raises:
     # ⚠ THE FLIP MUST DO SOMETHING. `quat_integrate_z_pi` is the one piece of
     # quaternion algebra here, and a no-op version would still pass every
     # comparison above if the reference happened to be flip-insensitive.
-    var q = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var q = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     q[2] = Scalar[DTYPE](mjq[3])
     q[3] = Scalar[DTYPE](mjq[0])
     var qr = quat_integrate_z_pi[DTYPE](q)

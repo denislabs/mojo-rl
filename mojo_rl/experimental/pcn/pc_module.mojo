@@ -58,7 +58,7 @@ struct PCModule[*BLOCKS: PCBlockTrait](Module):
 
     # ── Module trait surface ─────────────────────────────────────────────
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.NET.IN_DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.NET.IN_DIM)
     comptime OUT_DIM: Int = Self.NET.OUT_DIM
 
     # The whole concatenated parameter slab (per-block W|b, same layout as

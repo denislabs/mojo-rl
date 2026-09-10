@@ -37,7 +37,7 @@ struct StochasticActor[
     *TRUNK: Module,
 ](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.OBS_DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.OBS_DIM)
     comptime OUT_DIM = 2 * Self.ACT_DIM
     comptime N_TRUNK = Self.TRUNK.length
     comptime HIDDEN = Self.TRUNK[Self.N_TRUNK - 1].OUT_DIM

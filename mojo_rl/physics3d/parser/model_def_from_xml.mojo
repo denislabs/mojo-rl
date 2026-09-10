@@ -19,7 +19,7 @@ Note: Mojo nightly requires struct parameters to be accessed as 'Self.param'
 inside the struct body. All dimension parameters follow this convention.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 
 from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu import thread_idx, block_idx, block_dim
@@ -459,7 +459,7 @@ struct ModelDefFromXML[
 
     # ⚠⚠ `_acd` (`ComptimeActData`) LIVED HERE AND IS GONE (phase 1a.4e).
     # It was the model's XML interpreted at struct-elaboration time into ~20
-    # `InlineArray`s — every actuator value the engine used, the reference
+    # `Array`s — every actuator value the engine used, the reference
     # pose, the keyframes and the joint limit tables. All of that is
     # `SpecFields` now, built at RUNTIME by `build_spec_fields` from
     # `FlatModelDef`. The `_NACT` / `_NJNT` / `_NQ0` / `_NTEN` / `_WRAPS`
@@ -781,7 +781,7 @@ struct ModelDefFromXML[
 
         # ⚠ THE DIMENSION CHECK THAT REPLACED SILENT TRUNCATION.
         #
-        # `FlatModelDef` used to be `InlineArray`-backed and sized by these
+        # `FlatModelDef` used to be `Array`-backed and sized by these
         # very parameters, so the parser wrote `if joint_count < NJOINT:` and
         # incremented the counter REGARDLESS — a model with more elements than
         # its declared dimension dropped the overflow without a word. Same
@@ -882,7 +882,7 @@ struct ModelDefFromXML[
         # ⚠ THE RENDER-GEOM AND RENDER-SITE CAPS ARE GONE (phase 1a.5c).
         # `NGEOM > MAX_COMPTIME_RENDER_GEOMS` and the matching site guard
         # existed to stop a model overflowing `ComptimeRenderData`'s fixed
-        # `InlineArray`s, which truncated silently and left the renderer
+        # `Array`s, which truncated silently and left the renderer
         # reading past the end. `RenderFields` is `List`-backed and cannot
         # truncate, so there is nothing left to bound.
 
@@ -1743,7 +1743,7 @@ struct ModelDefFromXML[
         var rng = PhiloxRandom(
             seed=UInt64(seed * 2654435761 + env * 12345), offset=0
         )
-        var rand_vals = InlineArray[Scalar[DType.float32], NUM_BATCHES * 4](
+        var rand_vals = Array[Scalar[DType.float32], NUM_BATCHES * 4](
             fill=Scalar[DType.float32](0)
         )
         for b in range(NUM_BATCHES):

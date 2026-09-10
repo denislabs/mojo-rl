@@ -64,7 +64,7 @@ def main() raises:
             )
         # Each plane is a bijection of its cells (sum of indices preserved).
         for p in range(PLANES):
-            var seen = InlineArray[Bool, ACT](fill=False)
+            var seen = Array[Bool, ACT](fill=False)
             for j in range(ACT):
                 var v = Int(Float64(aobs[p * ACT + j])) - p * 100
                 assert_true(0 <= v and v < ACT, "D4 perm out of range")

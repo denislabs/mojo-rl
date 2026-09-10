@@ -133,7 +133,7 @@ def _gauss_head_grad_ls_kernel[BATCH: Int, ACT: Int](
 
 struct GaussianHead[IN: Int, ACT: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IN)
     comptime OUT_DIM = 2 * Self.ACT
     comptime W_SIZE = Self.IN * Self.ACT
     comptime B_SIZE = Self.ACT

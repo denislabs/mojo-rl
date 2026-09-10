@@ -2374,7 +2374,7 @@ def _newton_solve_env[
                 # storage as address-space-parameterized pointers so the SAME
                 # routine can also be called from the blocked kernel, whose
                 # rows live in threadgroup (or, for `Je`, global) memory. Here
-                # everything is a per-thread `InlineArray`, so every address
+                # everything is a per-thread `Array`, so every address
                 # space is the GENERIC default.
                 Je.unsafe_ptr(),
                 bias_e.unsafe_ptr(),
@@ -3108,7 +3108,7 @@ def _newton_solve_env[
             _p_hrebuild += _p_now - _p_last
             _p_last = _p_now
             _p_iters += 1
-        # Gradient = Ma - qfrc_sm - qfrc_c (pure InlineArray reads — no workspace access)
+        # Gradient = Ma - qfrc_sm - qfrc_c (pure Array reads — no workspace access)
         var grad_norm_sq: Scalar[DTYPE] = 0
         for i in range(nv):
             grad[i] = Ma[i] - qfrc_sm[i] - qfrc_c[i]
@@ -3139,7 +3139,7 @@ def _newton_solve_env[
             var _p_now = Int(perf_counter_ns())
             _p_chol += _p_now - _p_last
             _p_last = _p_now
-        # Mv = M_local * search (InlineArray reads only — no workspace access)
+        # Mv = M_local * search (Array reads only — no workspace access)
         for i in range(nv):
             var s: Scalar[DTYPE] = 0
             for j in range(nv):
@@ -3477,7 +3477,7 @@ def _newton_solve_env[
             if ste != old_ste:
                 state_changed = True
 
-        # Recompute qfrc_c = J^T * updated forces (all InlineArray ops)
+        # Recompute qfrc_c = J^T * updated forces (all Array ops)
         for i in range(nv):
             qfrc_c[i] = Scalar[DTYPE](0)
         for c in range(nc):

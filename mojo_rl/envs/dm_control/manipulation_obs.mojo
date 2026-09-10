@@ -38,7 +38,7 @@ up as a 3.3e-07 hole in this exact term). See
 `manipulation_reach_config`'s history and `dtype_math.log1p_accurate`.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import sin, cos
 
 from mojo_rl.physics3d.fields import Data, Dims, DimsLike

@@ -9,7 +9,7 @@ once. A green build is not a runnable kernel, and a green CPU/GPU comparison
 over a pair that never enters the branch gates nothing.
 
 ⚠ THIS IS DEFECT 27'S FAMILY. `_polygon_clip` keeps its ring, its per-edge plane
-normals and its distances in RUNTIME-INDEXED PER-THREAD `InlineArray`s. A Metal
+normals and its distances in RUNTIME-INDEXED PER-THREAD `Array`s. A Metal
 miscompute of exactly that shape cost 0.275 in contact position and was
 invisible to every green build until someone compared CPU against GPU
 numerically; see `feedback_metal_wide_per_thread_inlinearray_miscompute`.

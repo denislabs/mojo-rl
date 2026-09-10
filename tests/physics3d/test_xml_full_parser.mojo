@@ -140,7 +140,7 @@ def test_xml_full_parser() raises:
     # =========================================================================
     # ⚠ NON-GENERIC since 2026-08-05. `parse_xml_full` used to take the
     # dimensions as comptime parameters solely to size `FlatModelDef`'s
-    # `InlineArray`s; it is `List`-backed now and compiles once per binary
+    # `Array`s; it is `List`-backed now and compiles once per binary
     # instead of once per model. The counts come off the Lists
     # (`len(fmd.bodies)`, ...) rather than being declared up front.
     var fmd = parse_xml_full(half_cheetah_xml)

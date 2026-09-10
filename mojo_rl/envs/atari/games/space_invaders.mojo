@@ -32,13 +32,13 @@ struct SpaceInvadersDef(GameDef):
 
     @staticmethod
     @always_inline
-    def get_score(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
+    def get_score(ram: Array[UInt8, RAM_SIZE]) -> Int:
         """Decode BCD score."""
         return get_decimal_score_2(ram, 0xE8, 0xE6)
 
     @staticmethod
     @always_inline
-    def get_reward(ram: InlineArray[UInt8, RAM_SIZE], prev_score: Int) -> Int:
+    def get_reward(ram: Array[UInt8, RAM_SIZE], prev_score: Int) -> Int:
         var score = SpaceInvadersDef.get_score(ram)
         var reward = score - prev_score
         if reward < 0:
@@ -48,13 +48,13 @@ struct SpaceInvadersDef(GameDef):
 
     @staticmethod
     @always_inline
-    def get_lives(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
+    def get_lives(ram: Array[UInt8, RAM_SIZE]) -> Int:
         # RAM is 128 bytes mirrored across 0x80-0xFF; mask to a valid index.
         return Int(ram[0xC9 & 0x7F])
 
     @staticmethod
     @always_inline
-    def is_terminal(ram: InlineArray[UInt8, RAM_SIZE]) -> Bool:
+    def is_terminal(ram: Array[UInt8, RAM_SIZE]) -> Bool:
         var some_byte = Int(ram[0x98 & 0x7F])
         return (some_byte & 0x80) != 0 or Int(ram[0xC9 & 0x7F]) == 0
 

@@ -38,7 +38,7 @@ env cannot append the activation after the fact.
 
 from std.math import log, sqrt, cos, sin, pi, inf, abs
 from std.random import random_float64
-from std.collections import InlineArray
+from std.collections import Array
 
 from layout import Layout, LayoutTensor
 from std.random.philox import Random as PhiloxRandom
@@ -128,7 +128,7 @@ def _random_root_orientation[DTYPE: DType, D: DimsLike](
     ⚠ SHARED BY `Move` AND `Escape`. Both draw the same orientation; keeping
     one copy is what stops the two drifting when one is touched.
     """
-    var q = InlineArray[Float64, 4](fill=0.0)
+    var q = Array[Float64, 4](fill=0.0)
     for pair in range(2):
         var u1 = random_float64()
         if u1 < 1e-300:
@@ -240,8 +240,8 @@ def _common_obs_cpu[DTYPE: DType, TORSO_SITE: Int, TOE_SITE_0_P: Int, D: DimsLik
 
         # --- force_torque: arcsinh(all four forces, then all four torques)
         #     — two passes over the toes, not one interleaved.
-        var fx = InlineArray[Float64, 12](fill=0.0)
-        var tx = InlineArray[Float64, 12](fill=0.0)
+        var fx = Array[Float64, 12](fill=0.0)
+        var tx = Array[Float64, 12](fill=0.0)
         for t in range(4):
             var ftt = site_force_torque[DTYPE](
                 d.cfrc_int.data, d.subtree_com.data, d.site_xpos_acc.data,
@@ -409,8 +409,8 @@ def _common_obs_gpu[
 
     # --- force_torque: arcsinh(all four forces, then all four torques) -----
     #     Two passes over the toes, not one interleaved.
-    var fx = InlineArray[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
-    var tx = InlineArray[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
+    var fx = Array[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
+    var tx = Array[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
     for t in range(4):
         var ftt = site_force_torque_gpu[
             DTYPE](
@@ -588,7 +588,7 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
         var b0 = rng.step_uniform()
         var b1 = rng.step_uniform()
 
-        var q = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        var q = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
         q[0] = standard_normal[DTYPE](
             Scalar[DTYPE](b0[0]), Scalar[DTYPE](b0[1])
         )

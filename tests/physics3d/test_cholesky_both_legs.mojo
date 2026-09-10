@@ -15,7 +15,7 @@ until now nothing but `test_dyn_dims_ldl` exercised at all.
 
 So this gate runs the SAME source lines twice:
 
-    static   M_CAP = NV*NV, V_CAP = NV   ->  Scratch picks InlineArray
+    static   M_CAP = NV*NV, V_CAP = NV   ->  Scratch picks Array
     dynamic  M_CAP = 0,     V_CAP = 0    ->  Scratch picks List
 
 and requires them to agree. A cap used as a stride collapses rows on the

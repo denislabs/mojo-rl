@@ -45,7 +45,7 @@ Run with:
     pixi run mojo run -I . tests/dm_control/test_reach_site_vs_dm_control.mojo
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
@@ -299,7 +299,7 @@ def test_reach_position_stage_observation_matches_dm_control() raises:
     var refmod = _refmod()
     var env = ENV()
 
-    var worst = InlineArray[Float64, 8](fill=0.0)
+    var worst = Array[Float64, 8](fill=0.0)
     var worst_reward = 0.0
     var n_in_contact = 0
     for ci in range(4):
@@ -345,7 +345,7 @@ def test_reach_position_stage_observation_matches_dm_control() raises:
             n_in_contact += 1
 
         # Term by term, so a failure names the observable.
-        var starts = InlineArray[Int, 8](fill=0)
+        var starts = Array[Int, 8](fill=0)
         starts[0] = OFF_TARGET
         starts[1] = OFF_ARM_POS
         starts[2] = OFF_ARM_TORQUE
@@ -354,7 +354,7 @@ def test_reach_position_stage_observation_matches_dm_control() raises:
         starts[5] = OFF_HAND_VEL
         starts[6] = OFF_PINCH_POS
         starts[7] = OFF_PINCH_RMAT
-        var lens = InlineArray[Int, 8](fill=0)
+        var lens = Array[Int, 8](fill=0)
         lens[0] = 3
         lens[1] = 12
         lens[2] = 6

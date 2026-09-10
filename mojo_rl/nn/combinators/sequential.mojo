@@ -24,7 +24,7 @@ from ..core.graph_visitor import DisplayStep
 struct Sequential[*MODULES: Module](Module):
     comptime ARITY = 1
     comptime N = Self.MODULES.length
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.MODULES[0].IN_DIMS[0])
+    comptime IN_DIMS = Array[Int, 1](fill=Self.MODULES[0].IN_DIMS[0])
     comptime OUT_DIM = Self.MODULES[Self.N - 1].OUT_DIM
     # All children share one activation dtype (asserted in __init__); the chain's
     # ACT_DT is the last child's (= the chain output dtype). Inter-module buffers

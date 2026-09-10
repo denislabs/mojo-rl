@@ -31,7 +31,7 @@ struct TensorRefs[N: Int, o: MutOrigin, ADT: DType = DT](
     bare `TensorRefs[N, o]` is unchanged. bf16-flow leaves/combinators carry the
     activation dtype here so a packed ref points at `TensorImpl[bf16]` storages."""
 
-    var ptrs: InlineArray[Pointer[TensorImpl[Self.ADT], Self.o], Self.N]
+    var ptrs: Array[Pointer[TensorImpl[Self.ADT], Self.o], Self.N]
 
     def __init__(out self, *, copy: Self):
         # Mojo 1.0: `Array` is no longer `ImplicitlyCopyable`, so the compiler
@@ -41,7 +41,7 @@ struct TensorRefs[N: Int, o: MutOrigin, ADT: DType = DT](
 
     def __init__(out self, ref[Self.o] tensor: TensorImpl[Self.ADT]) raises:
         comptime assert Self.N == 1, "of1 requires N == 1"
-        self.ptrs = InlineArray[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
+        self.ptrs = Array[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
             fill=Pointer(to=tensor)
         )
 
@@ -51,7 +51,7 @@ struct TensorRefs[N: Int, o: MutOrigin, ADT: DType = DT](
         ref[Self.o] t1: TensorImpl[Self.ADT],
     ) raises:
         comptime assert Self.N == 2, "of2 requires N == 2"
-        self.ptrs = InlineArray[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
+        self.ptrs = Array[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
             uninitialized=True
         )
         self.ptrs[0] = Pointer(to=t0)
@@ -64,7 +64,7 @@ struct TensorRefs[N: Int, o: MutOrigin, ADT: DType = DT](
         ref[Self.o] t2: TensorImpl[Self.ADT],
     ) raises:
         comptime assert Self.N == 3, "of3 requires N == 3"
-        self.ptrs = InlineArray[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
+        self.ptrs = Array[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
             uninitialized=True
         )
         self.ptrs[0] = Pointer(to=t0)
@@ -79,7 +79,7 @@ struct TensorRefs[N: Int, o: MutOrigin, ADT: DType = DT](
         ref[Self.o] t3: TensorImpl[Self.ADT],
     ) raises:
         comptime assert Self.N == 4, "of4 requires N == 4"
-        self.ptrs = InlineArray[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
+        self.ptrs = Array[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
             uninitialized=True
         )
         self.ptrs[0] = Pointer(to=t0)

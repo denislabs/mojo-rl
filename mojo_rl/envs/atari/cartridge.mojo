@@ -173,7 +173,7 @@ def init_bank(mut state: AtariState, rom_size: Int, mapper: UInt8 = ROM_AUTO):
     else:
         state.mapper = mapper
 
-    state.sc_ram = InlineArray[UInt8, 128](fill=0)
+    state.sc_ram = Array[UInt8, 128](fill=0)
     # E0 power-on slices (Stella CartE0::reset): 4, 5, 6 + fixed 7.
     state.e0_slices = [4, 5, 6, 7]
 

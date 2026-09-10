@@ -102,7 +102,7 @@ def _add_kernel[
 
 struct LSTMSeq[VOCAB: Int, HIDDEN: Int, SEQ: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ * Self.VOCAB)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.SEQ * Self.VOCAB)
     comptime OUT_DIM = Self.SEQ * Self.HIDDEN
     comptime Cell = LSTMCell[Self.VOCAB, Self.HIDDEN]
     comptime CACHE_SIZE = Self.Cell.CACHE_SIZE

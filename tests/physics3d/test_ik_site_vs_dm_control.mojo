@@ -47,7 +47,7 @@ Run with:
 from std.math import abs, sqrt
 from std.python import Python
 from std.testing import assert_true, TestSuite
-from std.collections import InlineArray
+from std.collections import Array
 from max.gpu.host import DeviceContext
 from layout import Layout
 
@@ -146,7 +146,7 @@ def test_ik_site_matches_dm_control() raises:
         + String(NDOF)
         + " joints — the DOF restriction this port assumes is wrong",
     )
-    var dof_idx = InlineArray[Int, NDOF](fill=0)
+    var dof_idx = Array[Int, NDOF](fill=0)
     for a in range(NDOF):
         var jid = Int(
             py=mujoco.mj_name2id(
@@ -159,7 +159,7 @@ def test_ik_site_matches_dm_control() raises:
           dof_idx[4], dof_idx[5])
 
     # ── site index mapping, ours <-> MuJoCo, by position after FK ────────
-    var q_probe = InlineArray[Float64, NQ](fill=0.0)
+    var q_probe = Array[Float64, NQ](fill=0.0)
     for i in range(NQ):
         q_probe[i] = 0.11 * Float64(i + 1) - 0.4
     for i in range(NQ):
@@ -243,7 +243,7 @@ def test_ik_site_matches_dm_control() raises:
     print("  TCP site: MuJoCo", mj_tcp, " ours", our_tcp)
 
     # dm_control's DOWN_QUATERNION is (w, x, y, z); ours is (x, y, z, w).
-    var down = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var down = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     down[0] = Scalar[DTYPE](0.70710678118)
     down[1] = Scalar[DTYPE](0.70710678118)
     down[2] = Scalar[DTYPE](0.0)
@@ -272,7 +272,7 @@ def test_ik_site_matches_dm_control() raises:
 
         for i in range(NQ):
             d.qpos.data[i] = Scalar[DTYPE](Float64(py=q0[i]))
-        var tp = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        var tp = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
         for k in range(3):
             tp[k] = Scalar[DTYPE](Float64(py=tgt[k]))
 
@@ -411,10 +411,10 @@ def test_set_site_to_xpos_matches_dm_control() raises:
     var arm_names = refmod.arm_joint_names()
     var bounds = refmod.arm_joint_bounds()
     var adr_py = refmod.arm_qpos_adr()
-    var dof_idx = InlineArray[Int, NDOF](fill=0)
-    var qpos_adr = InlineArray[Int, NDOF](fill=0)
-    var lower = InlineArray[Float64, NDOF](fill=0.0)
-    var upper = InlineArray[Float64, NDOF](fill=0.0)
+    var dof_idx = Array[Int, NDOF](fill=0)
+    var qpos_adr = Array[Int, NDOF](fill=0)
+    var lower = Array[Float64, NDOF](fill=0.0)
+    var upper = Array[Float64, NDOF](fill=0.0)
     for a in range(NDOF):
         var jid = Int(
             py=mujoco.mj_name2id(mm, mujoco.mjtObj.mjOBJ_JOINT, arm_names[a])
@@ -435,7 +435,7 @@ def test_set_site_to_xpos_matches_dm_control() raises:
         "the first arm joint is unlimited and should sample over [0, 2*pi]",
     )
 
-    var down = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var down = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     down[0] = Scalar[DTYPE](0.70710678118)
     down[1] = Scalar[DTYPE](0.70710678118)
 
@@ -470,7 +470,7 @@ def test_set_site_to_xpos_matches_dm_control() raises:
 
         for i in range(NQ):
             d.qpos.data[i] = Scalar[DTYPE](Float64(py=q0[i]))
-        var tp = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        var tp = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
         for k in range(3):
             tp[k] = Scalar[DTYPE](Float64(py=tgt[k]))
 
@@ -566,9 +566,9 @@ def test_set_grasp_and_target_sample_match_dm_control() raises:
         Int(py=Python.evaluate("len")(info[0])) == NHAND,
         "the reference hand does not have " + String(NHAND) + " joints",
     )
-    var hadr = InlineArray[Int, NHAND](fill=0)
-    var hlo = InlineArray[Float64, NHAND](fill=0.0)
-    var hhi = InlineArray[Float64, NHAND](fill=0.0)
+    var hadr = Array[Int, NHAND](fill=0)
+    var hlo = Array[Float64, NHAND](fill=0.0)
+    var hhi = Array[Float64, NHAND](fill=0.0)
     for i in range(NHAND):
         hadr[i] = Int(py=info[1][i])
         hlo[i] = Float64(py=info[2][i])
@@ -589,7 +589,7 @@ def test_set_grasp_and_target_sample_match_dm_control() raises:
         var f = 0.1 * Float64(t)
         var refq = refmod.set_grasp_reference(f)
         var qpos = List[Scalar[DTYPE]](length=NQ, fill=Scalar[DTYPE](0))
-        var factors = InlineArray[Float64, NHAND](fill=f)
+        var factors = Array[Float64, NHAND](fill=f)
         set_grasp[DTYPE, NHAND](qpos, hadr, hlo, hhi, factors)
         for i in range(NHAND):
             var e = abs(
@@ -603,8 +603,8 @@ def test_set_grasp_and_target_sample_match_dm_control() raises:
 
     # ── target site sampler ──────────────────────────────────────────────
     var ws = refmod.reach_workspace()
-    var lo = InlineArray[Float64, 3](fill=0.0)
-    var hi = InlineArray[Float64, 3](fill=0.0)
+    var lo = Array[Float64, 3](fill=0.0)
+    var hi = Array[Float64, 3](fill=0.0)
     for k in range(3):
         lo[k] = Float64(py=ws[1][0][k])
         hi[k] = Float64(py=ws[1][1][k])
@@ -613,7 +613,7 @@ def test_set_grasp_and_target_sample_match_dm_control() raises:
     var worst_pos = 0.0
     for sd in range(20):
         var rr = refmod.target_placer_reference(sd)
-        var u = InlineArray[Float64, 3](fill=0.0)
+        var u = Array[Float64, 3](fill=0.0)
         for k in range(3):
             u[k] = Float64(py=rr[1][k])
         var got = sample_bbox_uniform[DTYPE](lo, hi, u)

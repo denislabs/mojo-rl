@@ -204,8 +204,8 @@ struct PPODiscreteObjective[N_: Int](Module):
     comptime OUT_DIM: Int = 1                  # per-sample loss
 
     @staticmethod
-    def _build_in_dims() -> InlineArray[Int, 4]:
-        var d = InlineArray[Int, 4](fill=1)
+    def _build_in_dims() -> Array[Int, 4]:
+        var d = Array[Int, 4](fill=1)
         d[0] = Self.N_
         # d[1] = d[2] = d[3] = 1 already from fill=1
         return d^

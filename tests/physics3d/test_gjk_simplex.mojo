@@ -112,7 +112,7 @@ def _xyz(
 
 def _lincomb(
     wsv: LayoutTensor[DT, L_CCD_WS1, MutAnyOrigin],
-    lam: InlineArray[Scalar[DT], 4],
+    lam: Array[Scalar[DT], 4],
     n: Int,
 ) -> Tuple[Float64, Float64, Float64]:
     """`lincomb(lambda, n, simplex)` — the point `subdistance` describes."""
@@ -127,7 +127,7 @@ def _lincomb(
     return (x, y, z)
 
 
-def _nnz(lam: InlineArray[Scalar[DT], 4], n: Int) -> Int:
+def _nnz(lam: Array[Scalar[DT], 4], n: Int) -> Int:
     """How many coordinates survive the caller's `lambda[i] != 0` compaction."""
     var c = 0
     for i in range(n):

@@ -715,7 +715,7 @@ def _fk_env_mt[
     var njoint = dims.get_njoint()
     # Body tree depth (level): model-only reads, identical in every thread
     # -> identical max_level -> identical barrier count.
-    # ⚠ `Scratch`, NOT `InlineArray` — the length is a comptime parameter and
+    # ⚠ `Scratch`, NOT `Array` — the length is a comptime parameter and
     # `nbody` is a `var`. On a static provider `cap[D.NBODY]()` IS `NBODY`, so
     # this is the same stack array that shipped; on a dynamic one it is 0 and
     # the container is a heap `List` of `nbody`. See fields/scratch.mojo for
@@ -1453,7 +1453,7 @@ def _body_velocities_fields_mt_kernel[
     var env = Int(block_idx.x)
     var tid = Int(thread_idx.x)
 
-    var level = InlineArray[Int, NBODY](fill=0)
+    var level = Array[Int, NBODY](fill=0)
     var max_level = 0
     for b in range(1, NBODY):
         var p = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))

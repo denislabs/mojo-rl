@@ -35,16 +35,16 @@ struct CPUNetwork[obs_dim: Int, hidden_dim: Int, out_dim: Int]:
     comptime W1_SIZE = Self.obs_dim * Self.hidden_dim
     comptime W2_SIZE = Self.hidden_dim * Self.out_dim
 
-    var W1: InlineArray[Float32, Self.W1_SIZE]
-    var b1: InlineArray[Float32, Self.hidden_dim]
-    var W2: InlineArray[Float32, Self.W2_SIZE]
-    var b2: InlineArray[Float32, Self.out_dim]
+    var W1: Array[Float32, Self.W1_SIZE]
+    var b1: Array[Float32, Self.hidden_dim]
+    var W2: Array[Float32, Self.W2_SIZE]
+    var b2: Array[Float32, Self.out_dim]
 
     def __init__(out self):
-        self.W1 = InlineArray[Float32, Self.W1_SIZE](fill=0)
-        self.b1 = InlineArray[Float32, Self.hidden_dim](fill=0)
-        self.W2 = InlineArray[Float32, Self.W2_SIZE](fill=0)
-        self.b2 = InlineArray[Float32, Self.out_dim](fill=0)
+        self.W1 = Array[Float32, Self.W1_SIZE](fill=0)
+        self.b1 = Array[Float32, Self.hidden_dim](fill=0)
+        self.W2 = Array[Float32, Self.W2_SIZE](fill=0)
+        self.b2 = Array[Float32, Self.out_dim](fill=0)
 
         # Xavier init
         var std1 = sqrt(2.0 / Float64(Self.obs_dim + Self.hidden_dim))
@@ -61,11 +61,11 @@ struct CPUNetwork[obs_dim: Int, hidden_dim: Int, out_dim: Int]:
 
     def forward_single(
         self,
-        obs: InlineArray[Float32, Self.obs_dim],
-    ) -> InlineArray[Float32, Self.out_dim]:
+        obs: Array[Float32, Self.obs_dim],
+    ) -> Array[Float32, Self.out_dim]:
         """Single observation forward pass."""
         # Layer 1: ReLU(obs @ W1 + b1)
-        var h = InlineArray[Float32, Self.hidden_dim](fill=0)
+        var h = Array[Float32, Self.hidden_dim](fill=0)
         for j in range(Self.hidden_dim):
             var sum_val: Float32 = self.b1[j]
             for k in range(Self.obs_dim):
@@ -73,7 +73,7 @@ struct CPUNetwork[obs_dim: Int, hidden_dim: Int, out_dim: Int]:
             h[j] = sum_val if sum_val > 0 else 0
 
         # Layer 2: h @ W2 + b2
-        var out = InlineArray[Float32, Self.out_dim](fill=0)
+        var out = Array[Float32, Self.out_dim](fill=0)
         for j in range(Self.out_dim):
             var sum_val: Float32 = self.b2[j]
             for k in range(Self.hidden_dim):
@@ -86,13 +86,13 @@ struct CPUNetwork[obs_dim: Int, hidden_dim: Int, out_dim: Int]:
         batch_size: Int
     ](
         self,
-        obs: InlineArray[Float32, batch_size * Self.obs_dim],
-        mut output: InlineArray[Float32, batch_size * Self.out_dim],
+        obs: Array[Float32, batch_size * Self.obs_dim],
+        mut output: Array[Float32, batch_size * Self.out_dim],
     ):
         """Batched forward pass on CPU."""
         for b in range(batch_size):
             # Layer 1
-            var h = InlineArray[Float32, Self.hidden_dim](fill=0)
+            var h = Array[Float32, Self.hidden_dim](fill=0)
             for j in range(Self.hidden_dim):
                 var sum_val: Float32 = self.b1[j]
                 for k in range(Self.obs_dim):
@@ -149,7 +149,7 @@ def forward_kernel_simple[
     var j = global_idx % out_dim  # Output index
 
     # Compute hidden layer activations for this batch element
-    var h = InlineArray[Scalar[dtype], hidden_dim](fill=Scalar[dtype](0))
+    var h = Array[Scalar[dtype], hidden_dim](fill=Scalar[dtype](0))
 
     for hid in range(hidden_dim):
         var sum_val = rebind[Scalar[dtype]](b1[hid])
@@ -178,7 +178,7 @@ def benchmark_cpu_single[
     """Benchmark single-observation CPU forward pass."""
     var net = CPUNetwork[obs_dim, hidden_dim, out_dim]()
 
-    var obs = InlineArray[Float32, obs_dim](fill=0)
+    var obs = Array[Float32, obs_dim](fill=0)
     for i in range(obs_dim):
         obs[i] = Float32(random_float64())
 
@@ -202,10 +202,10 @@ def benchmark_cpu_batch[
     """Benchmark batched CPU forward pass."""
     var net = CPUNetwork[obs_dim, hidden_dim, out_dim]()
 
-    var obs = InlineArray[Float32, batch_size * obs_dim](fill=0)
+    var obs = Array[Float32, batch_size * obs_dim](fill=0)
     for i in range(batch_size * obs_dim):
         obs[i] = Float32(random_float64())
-    var output = InlineArray[Float32, batch_size * out_dim](fill=0)
+    var output = Array[Float32, batch_size * out_dim](fill=0)
 
     # Warm up
     for _ in range(100):

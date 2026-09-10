@@ -65,7 +65,7 @@ struct MCTSNode[ACTION_DIM: Int](ImplicitlyCopyable, Movable):
     """A single node in the MCTS search tree.
 
     Layout mirrors ``muzero/mcts.MCTSNode`` so behavior parity is
-    obvious in code review. Per-action arrays are ``InlineArray`` for
+    obvious in code review. Per-action arrays are ``Array`` for
     cache locality — typical ACTION_DIM is small (≤ 64) for the agents
     that use MCTS.
 
@@ -73,20 +73,20 @@ struct MCTSNode[ACTION_DIM: Int](ImplicitlyCopyable, Movable):
         ACTION_DIM: Number of discrete actions available.
     """
 
-    var visit_count: InlineArray[Int, Self.ACTION_DIM]
+    var visit_count: Array[Int, Self.ACTION_DIM]
     """N(s, a) — visit count per action."""
 
-    var total_value: InlineArray[Float64, Self.ACTION_DIM]
+    var total_value: Array[Float64, Self.ACTION_DIM]
     """W(s, a) — sum of backed-up values per action."""
 
-    var prior: InlineArray[Float64, Self.ACTION_DIM]
+    var prior: Array[Float64, Self.ACTION_DIM]
     """P(s, a) — policy prior (probabilities, sum to 1)."""
 
-    var reward: InlineArray[Float64, Self.ACTION_DIM]
+    var reward: Array[Float64, Self.ACTION_DIM]
     """R(s, a) — scalar reward observed when taking action ``a`` from
     this node. Filled in by ``Dynamics.step_cpu`` at expansion time."""
 
-    var child_idx: InlineArray[Int, Self.ACTION_DIM]
+    var child_idx: Array[Int, Self.ACTION_DIM]
     """Index into ``MCTS.nodes`` of the child reached by action ``a``,
     or ``-1`` if unexpanded."""
 
@@ -98,13 +98,13 @@ struct MCTSNode[ACTION_DIM: Int](ImplicitlyCopyable, Movable):
     Same as the node's own index in the typical case."""
 
     def __init__(out self, hidden_idx: Int):
-        self.visit_count = InlineArray[Int, Self.ACTION_DIM](uninitialized=True)
-        self.total_value = InlineArray[Float64, Self.ACTION_DIM](
+        self.visit_count = Array[Int, Self.ACTION_DIM](uninitialized=True)
+        self.total_value = Array[Float64, Self.ACTION_DIM](
             uninitialized=True
         )
-        self.prior = InlineArray[Float64, Self.ACTION_DIM](uninitialized=True)
-        self.reward = InlineArray[Float64, Self.ACTION_DIM](uninitialized=True)
-        self.child_idx = InlineArray[Int, Self.ACTION_DIM](uninitialized=True)
+        self.prior = Array[Float64, Self.ACTION_DIM](uninitialized=True)
+        self.reward = Array[Float64, Self.ACTION_DIM](uninitialized=True)
+        self.child_idx = Array[Int, Self.ACTION_DIM](uninitialized=True)
         for a in range(Self.ACTION_DIM):
             self.visit_count[a] = 0
             self.total_value[a] = Float64(0.0)
@@ -150,7 +150,7 @@ struct MCTSNode[ACTION_DIM: Int](ImplicitlyCopyable, Movable):
 @always_inline
 def _sample_dirichlet_approx[
     ACTION_DIM: Int
-]() -> InlineArray[Float64, ACTION_DIM]:
+]() -> Array[Float64, ACTION_DIM]:
     """Approximate symmetric Dirichlet by normalizing Gamma(1, 1) samples.
 
     Matches the existing ``muzero/mcts.search`` approach: ``-log(U)``
@@ -160,7 +160,7 @@ def _sample_dirichlet_approx[
     sampler is concentration; for the noise-fraction blend at the root
     it doesn't measurably affect policy. Kept for behavior parity.
     """
-    var out = InlineArray[Float64, ACTION_DIM](uninitialized=True)
+    var out = Array[Float64, ACTION_DIM](uninitialized=True)
     var s = Float64(0.0)
     for a in range(ACTION_DIM):
         var u = random_float64(0.0001, 0.9999)
@@ -180,7 +180,7 @@ def _sample_dirichlet_approx[
 @always_inline
 def _apply_legal_mask[
     ACTION_DIM: Int
-](mut prior: InlineArray[Float64, ACTION_DIM], legal_mask: List[Bool],):
+](mut prior: Array[Float64, ACTION_DIM], legal_mask: List[Bool],):
     """Zero out illegal-action prior entries and renormalize.
 
     If all legal actions had zero prior, fall back to uniform over the
@@ -311,7 +311,7 @@ struct GenericCPUMCTS[
         root_obs: List[Float64],
         add_noise: Bool = True,
         legal_mask: List[Bool] = List[Bool](),
-    ) raises -> InlineArray[Float64, Self.ACTION_DIM]:
+    ) raises -> Array[Float64, Self.ACTION_DIM]:
         """Run ``NUM_SIMULATIONS`` MCTS simulations from ``root_obs``.
 
         Phases:
@@ -482,7 +482,7 @@ struct GenericCPUMCTS[
             sims_done += batch_n
 
         # ── 7. Visit-count policy ────────────────────────────────────
-        var policy = InlineArray[Float64, Self.ACTION_DIM](uninitialized=True)
+        var policy = Array[Float64, Self.ACTION_DIM](uninitialized=True)
         var total = Float64(0.0)
         for a in range(Self.ACTION_DIM):
             policy[a] = Float64(self.nodes[0].visit_count[a])

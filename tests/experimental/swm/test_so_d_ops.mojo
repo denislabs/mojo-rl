@@ -23,7 +23,7 @@ Run:
     pixi run mojo run -I . tests/experimental/swm/test_so_d_ops.mojo
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt, cos, sin, atan
 from std.random import seed, random_float64
 from std.testing import assert_true
@@ -45,7 +45,7 @@ comptime RECOVER_TOL = 1e-10
 
 def random_skew[D: Int](scale: Float64) raises -> SqMat[D, DT]:
     comptime P = D * (D - 1) // 2
-    var v = InlineArray[Scalar[DT], P](fill=0)
+    var v = Array[Scalar[DT], P](fill=0)
     for i in range(P):
         v[i] = Scalar[DT]((random_float64() * 2.0 - 1.0) * scale)
     return skew_from_vector[D, DT](Span(v))
@@ -107,7 +107,7 @@ def check_generators[D: Int](mut checks: Int) raises:
         "expm_skew: drifted off O(D) for a large generator at D=" + String(D),
     )
 
-    var v = InlineArray[Scalar[DT], D](fill=0)
+    var v = Array[Scalar[DT], D](fill=0)
     for i in range(D):
         v[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
     v[0] = v[0] + 1.5  # keep it away from the zero vector
@@ -134,7 +134,7 @@ def check_generators[D: Int](mut checks: Int) raises:
 
 def check_polar_recovery[D: Int](mut checks: Int) raises:
     """Polar factor of `M = R S` must return `R`, in both components."""
-    var vh = InlineArray[Scalar[DT], D](fill=0)
+    var vh = Array[Scalar[DT], D](fill=0)
     vh[0] = 1
     vh[1] = Scalar[DT](0.37)
     var q = householder[D, DT](Span(vh))
@@ -207,7 +207,7 @@ def check_negative_control[D: Int](mut checks: Int) raises:
 def skew2(t: Float64) raises -> SqMat[2, DT]:
     """`[[0, -t], [t, 0]]` — the single generator of so(2)."""
     comptime P = 2 * (2 - 1) // 2
-    var v = InlineArray[Scalar[DT], P](fill=Scalar[DT](t))
+    var v = Array[Scalar[DT], P](fill=Scalar[DT](t))
     return skew_from_vector[2, DT](Span(v))
 
 

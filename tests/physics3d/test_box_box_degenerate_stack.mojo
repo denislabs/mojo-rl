@@ -605,13 +605,13 @@ def test_box_box_float32_keeps_the_face_axis_on_a_stacked_pair() raises:
     """
     print("--- float32: the stacked pair must not be given to the edge axis")
     var n = 0
-    var dist = InlineArray[Scalar[DType.float32], BB_MAX_POINTS](
+    var dist = Array[Scalar[DType.float32], BB_MAX_POINTS](
         fill=Scalar[DType.float32](0)
     )
-    var pos = InlineArray[Scalar[DType.float32], 3 * BB_MAX_POINTS](
+    var pos = Array[Scalar[DType.float32], 3 * BB_MAX_POINTS](
         fill=Scalar[DType.float32](0)
     )
-    var nrm = InlineArray[Scalar[DType.float32], 3](
+    var nrm = Array[Scalar[DType.float32], 3](
         fill=Scalar[DType.float32](0)
     )
     var code = box_box_manifold[DType.float32](

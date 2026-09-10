@@ -35,7 +35,7 @@ Run with:
 from std.math import abs
 from std.python import Python
 from std.testing import assert_true, TestSuite
-from std.collections import InlineArray
+from std.collections import Array
 
 from mojo_rl.physics3d.fields import Model, Data, Dims, DimsLike
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
@@ -92,7 +92,7 @@ struct _Fixture:
 
     var d: Data[DTYPE, MD, 1]
     var mf: Model[DTYPE, MD]
-    var body_class: InlineArray[Int, NBODY]
+    var body_class: Array[Int, NBODY]
 
     def __init__(out self) raises:
         var sys = Python.import_module("sys")
@@ -114,7 +114,7 @@ struct _Fixture:
         self.d = Data[DTYPE, MD, 1]()
 
         var cls = refmod.body_classes_reference()
-        self.body_class = InlineArray[Int, NBODY](fill=BODY_FIXED)
+        self.body_class = Array[Int, NBODY](fill=BODY_FIXED)
         for b in range(NBODY):
             self.body_class[b] = Int(py=cls[b])
 
@@ -265,10 +265,10 @@ def test_tcp_initializer_rejection_loop() raises:
     var arm_names = refmod.arm_joint_names()
     var bounds = refmod.arm_joint_bounds()
     var adr_py = refmod.arm_qpos_adr()
-    var dof_idx = InlineArray[Int, NDOF](fill=0)
-    var qpos_adr = InlineArray[Int, NDOF](fill=0)
-    var lower = InlineArray[Float64, NDOF](fill=0.0)
-    var upper = InlineArray[Float64, NDOF](fill=0.0)
+    var dof_idx = Array[Int, NDOF](fill=0)
+    var qpos_adr = Array[Int, NDOF](fill=0)
+    var lower = Array[Float64, NDOF](fill=0.0)
+    var upper = Array[Float64, NDOF](fill=0.0)
     for a in range(NDOF):
         var jid = Int(
             py=mujoco.mj_name2id(mm, mujoco.mjtObj.mjOBJ_JOINT, arm_names[a])
@@ -278,7 +278,7 @@ def test_tcp_initializer_rejection_loop() raises:
         lower[a] = Float64(py=bounds[0][a])
         upper[a] = Float64(py=bounds[1][a])
 
-    var down = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var down = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     down[0] = Scalar[DTYPE](0.70710678118)
     down[1] = Scalar[DTYPE](0.70710678118)
 
@@ -291,7 +291,7 @@ def test_tcp_initializer_rejection_loop() raises:
         retry.append(Scalar[DTYPE](Float64(py=draws[k])))
 
     # ── entry pose, which a rejected or exhausted run must restore ───────
-    var entry = InlineArray[Float64, NQ](fill=0.0)
+    var entry = Array[Float64, NQ](fill=0.0)
     for i in range(NQ):
         var v = 0.11 * Float64(i + 1) - 0.4
         entry[i] = v

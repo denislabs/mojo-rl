@@ -1360,7 +1360,7 @@ struct Event:
         `, `,
         ClipboardEvent,
         `, `,
-        InlineArray[UInt8, 128],
+        Array[UInt8, 128],
         `>`,
     ]
     var _impl: Self._mlir_type

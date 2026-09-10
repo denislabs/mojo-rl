@@ -1,7 +1,7 @@
 """Probe — is `Self.IN_DIMS[k]` comptime-foldable for comptime k?
 
 Two questions:
-  Q1. Heterogeneous InlineArray construction at comptime (per-index assign).
+  Q1. Heterogeneous Array construction at comptime (per-index assign).
   Q2. Whether IN_DIMS[k] for comptime k produces a comptime value usable
       in row_major[BATCH, dim]() construction. If yes, the variadic-Module
       approach can replace the IN/IN1/IN2/IN3_DIM ladder entirely.
@@ -19,11 +19,11 @@ from mojo_rl.nn.constants import DT
 
 struct HeteroDimsProbe[ACT_: Int](Movable & Deinitable):
     comptime ARITY = 4
-    comptime IN_DIMS: InlineArray[Int, 4] = Self._build()
+    comptime IN_DIMS: Array[Int, 4] = Self._build()
 
     @staticmethod
-    def _build() -> InlineArray[Int, 4]:
-        var d = InlineArray[Int, 4](fill=0)
+    def _build() -> Array[Int, 4]:
+        var d = Array[Int, 4](fill=0)
         d[0] = 2 * Self.ACT_
         d[1] = Self.ACT_
         d[2] = 1
@@ -68,11 +68,11 @@ struct ComptimeIndexProbe[*DIMS: Int](Movable & Deinitable):
 
 struct InlineArrayIndexProbe(Movable & Deinitable):
     """Does IN_DIMS[k] for comptime k produce a comptime value?"""
-    comptime IN_DIMS: InlineArray[Int, 3] = Self._build()
+    comptime IN_DIMS: Array[Int, 3] = Self._build()
 
     @staticmethod
-    def _build() -> InlineArray[Int, 3]:
-        var d = InlineArray[Int, 3](fill=0)
+    def _build() -> Array[Int, 3]:
+        var d = Array[Int, 3](fill=0)
         d[0] = 5
         d[1] = 7
         d[2] = 11
@@ -95,14 +95,14 @@ def test_q2_comptime_indexing() raises:
     print("Q2: comptime indexing into IN_DIMS ...")
     print(" -- baseline: comptime index into struct variadic *DIMS --")
     ComptimeIndexProbe[5, 7, 11].test_via_variadic[BATCH=8]()
-    print(" -- main test: comptime index into InlineArray IN_DIMS --")
+    print(" -- main test: comptime index into Array IN_DIMS --")
     InlineArrayIndexProbe.test_inline_array_index[BATCH=8]()
     print("  Q2: PASS (if both branches printed without error)")
 
 
 def main() raises:
     print("=" * 70)
-    print("InlineArray IN_DIMS comptime-feasibility probe")
+    print("Array IN_DIMS comptime-feasibility probe")
     print("=" * 70)
     test_q1_heterogeneous()
     print()

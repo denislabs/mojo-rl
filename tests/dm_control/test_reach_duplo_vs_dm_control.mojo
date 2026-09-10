@@ -35,7 +35,7 @@ Run with:
     pixi run mojo run -I . tests/dm_control/test_reach_duplo_vs_dm_control.mojo
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
@@ -275,7 +275,7 @@ def test_reach_duplo_position_stage_observation_matches_dm_control() raises:
     var refmod = _refmod()
     var env = ENV()
 
-    var starts = InlineArray[Int, 11](fill=0)
+    var starts = Array[Int, 11](fill=0)
     starts[0] = OFF_ARM_POS
     starts[1] = OFF_ARM_TORQUE
     starts[2] = OFF_ARM_VEL
@@ -287,7 +287,7 @@ def test_reach_duplo_position_stage_observation_matches_dm_control() raises:
     starts[8] = OFF_PROP_LINVEL
     starts[9] = OFF_PROP_QUAT
     starts[10] = OFF_PROP_POS
-    var lens = InlineArray[Int, 11](fill=0)
+    var lens = Array[Int, 11](fill=0)
     lens[0] = 12
     lens[1] = 6
     lens[2] = 6
@@ -300,7 +300,7 @@ def test_reach_duplo_position_stage_observation_matches_dm_control() raises:
     lens[9] = 4
     lens[10] = 3
 
-    var worst = InlineArray[Float64, 11](fill=0.0)
+    var worst = Array[Float64, 11](fill=0.0)
     var n_bad_contacts = 0
     var largest_linvel = 0.0
     for ci in range(4):

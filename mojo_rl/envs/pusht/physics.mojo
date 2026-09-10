@@ -197,7 +197,7 @@ def detect_wall_contacts_single_env[
 
     # Polygon / compound: collect sub-shape list
     var n_sub: Int = 0
-    var sub_indices = InlineArray[Int, MAX_COMPOUND_SUBSHAPES](fill=0)
+    var sub_indices = Array[Int, MAX_COMPOUND_SUBSHAPES](fill=0)
     if shape_type == SHAPE_POLYGON:
         sub_indices[0] = shape_idx
         n_sub = 1

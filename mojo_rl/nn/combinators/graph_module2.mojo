@@ -280,10 +280,10 @@ struct GraphModule2[
         self.graph.polyak_from[target](src.graph, tau, ctx)
 
 
-def _gm2_in_dims[IN0: Int, IN1: Int]() -> InlineArray[Int, 2]:
-    """`InlineArray` has no variadic-element literal constructor in Mojo 1.0
+def _gm2_in_dims[IN0: Int, IN1: Int]() -> Array[Int, 2]:
+    """`Array` has no variadic-element literal constructor in Mojo 1.0
     (`Array` is not `ImplicitlyCopyable`), so `IN_DIMS` is built by a comptime
     helper — the same shape as `concat.mojo`'s `_total_dim`."""
-    var a = InlineArray[Int, 2](fill=IN0)
+    var a = Array[Int, 2](fill=IN0)
     a[1] = IN1
     return a^

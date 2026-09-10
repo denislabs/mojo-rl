@@ -112,7 +112,7 @@ def _dueling_c51_grad_kernel[
 
 struct DuelingHeadC51[NA: Int, N_ATOMS: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=(1 + Self.NA) * Self.N_ATOMS)
+    comptime IN_DIMS = Array[Int, 1](fill=(1 + Self.NA) * Self.N_ATOMS)
     comptime OUT_DIM: Int = Self.NA * Self.N_ATOMS
 
     def __init__(out self):

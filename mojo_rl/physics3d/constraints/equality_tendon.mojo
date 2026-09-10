@@ -170,8 +170,8 @@ def _weld_jacobian_row[
     Each body's Jacobian uses its OWN anchor position, unlike the contact
     Jacobian which uses a single shared contact point.
 
-    ⚠⚠ `nv`, NOT `V_SIZE`, AND `Scratch`, NOT `InlineArray`. `V_SIZE` is
-    `cap[D.NV]()`, which is **0 on a dynamic provider** — an `InlineArray` of
+    ⚠⚠ `nv`, NOT `V_SIZE`, AND `Scratch`, NOT `Array`. `V_SIZE` is
+    `cap[D.NV]()`, which is **0 on a dynamic provider** — an `Array` of
     length 0 that this loop then failed to zero and the body below indexed,
     giving "index 0 is out of bounds, valid range is 0 to -1" from a runtime
     model with a weld. It survived the 3a/3b sweeps because the ONLY caller
@@ -388,8 +388,8 @@ def _angular_jacobian_row_eq[
 def _cross3[DTYPE: DType](
     ax: Scalar[DTYPE], ay: Scalar[DTYPE], az: Scalar[DTYPE],
     bx: Scalar[DTYPE], by: Scalar[DTYPE], bz: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
-    var r = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+) -> Array[Scalar[DTYPE], 3]:
+    var r = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     r[0] = ay * bz - az * by
     r[1] = az * bx - ax * bz
     r[2] = ax * by - ay * bx
@@ -523,7 +523,7 @@ def _jdotv_point[
     px: Scalar[DTYPE],
     py: Scalar[DTYPE],
     pz: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 6]:
+) -> Array[Scalar[DTYPE], 6]:
     """`mj_jacDot(point, body) * qvel` — the translational (0:3) and rotational
     (3:6) parts of the point Jacobian's time derivative applied to `qvel`.
     Port of engine_core_util.c `mj_jacDot` folded with the matvec: over the
@@ -531,7 +531,7 @@ def _jdotv_point[
     + cdof_ang x pvel_lin`, `jacr_dot[i] = cdof_dot_ang`, with `cdof_dot`
     of a quaternion dof (ball, free rotation) recomputed from the dof body's
     FULL cvel as MuJoCo does. Body 0 (world) returns zeros."""
-    var out = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     if body <= 0:
         return out^
     var root = Int(rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_ROOTID]))
@@ -612,10 +612,10 @@ def _jdotv_point[
 
 @always_inline
 def _qmul_wxyz[DTYPE: DType](
-    a: InlineArray[Scalar[DTYPE], 4], b: InlineArray[Scalar[DTYPE], 4]
-) -> InlineArray[Scalar[DTYPE], 4]:
+    a: Array[Scalar[DTYPE], 4], b: Array[Scalar[DTYPE], 4]
+) -> Array[Scalar[DTYPE], 4]:
     """`mju_mulQuat` in MuJoCo's (w,x,y,z) order."""
-    var r = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var r = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     r[0] = a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3]
     r[1] = a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2]
     r[2] = a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1]
@@ -625,11 +625,11 @@ def _qmul_wxyz[DTYPE: DType](
 
 @always_inline
 def _qaxis_wxyz[DTYPE: DType](
-    q: InlineArray[Scalar[DTYPE], 4],
+    q: Array[Scalar[DTYPE], 4],
     vx: Scalar[DTYPE], vy: Scalar[DTYPE], vz: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 4]:
+) -> Array[Scalar[DTYPE], 4]:
     """`mju_mulQuatAxis`: q * (0, v), (w,x,y,z) order."""
-    var r = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var r = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     r[0] = -q[1] * vx - q[2] * vy - q[3] * vz
     r[1] = q[0] * vx + q[2] * vz - q[3] * vy
     r[2] = q[0] * vy + q[3] * vx - q[1] * vz
@@ -639,11 +639,11 @@ def _qaxis_wxyz[DTYPE: DType](
 
 @always_inline
 def _qderiv_wxyz[DTYPE: DType](
-    q: InlineArray[Scalar[DTYPE], 4],
+    q: Array[Scalar[DTYPE], 4],
     vx: Scalar[DTYPE], vy: Scalar[DTYPE], vz: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 4]:
+) -> Array[Scalar[DTYPE], 4]:
     """`mju_derivQuat`: 0.5 * (0, v) * q, (w,x,y,z) order."""
-    var r = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var r = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     var h = Scalar[DTYPE](0.5)
     r[0] = h * (-vx * q[1] - vy * q[2] - vz * q[3])
     r[1] = h * (vx * q[0] + vy * q[3] - vz * q[2])
@@ -654,9 +654,9 @@ def _qderiv_wxyz[DTYPE: DType](
 
 @always_inline
 def _qneg_wxyz[DTYPE: DType](
-    q: InlineArray[Scalar[DTYPE], 4]
-) -> InlineArray[Scalar[DTYPE], 4]:
-    var r = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    q: Array[Scalar[DTYPE], 4]
+) -> Array[Scalar[DTYPE], 4]:
+    var r = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     r[0] = q[0]
     r[1] = -q[1]
     r[2] = -q[2]
@@ -1087,12 +1087,12 @@ def build_weld_equality_rows[
         var pos_err_z = world_az - world_bz
 
         # --- 3 position rows (connect + weld) ---
-        var dirs = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+        var dirs = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
         dirs[0] = Scalar[DTYPE](1)  # x-axis: (1,0,0)
         dirs[4] = Scalar[DTYPE](1)  # y-axis: (0,1,0)
         dirs[8] = Scalar[DTYPE](1)  # z-axis: (0,0,1)
 
-        var pos_errs = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        var pos_errs = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
         pos_errs[0] = pos_err_x
         pos_errs[1] = pos_err_y
         pos_errs[2] = pos_err_z
@@ -1112,11 +1112,11 @@ def build_weld_equality_rows[
         # the compliance of two of the six rows, on every weld in the repo.
         # Found only once the rows were diffed against `efc_D` directly;
         # `efc_J` and `efc_aref` both matched exactly with the bug present.
-        var rot_errs = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-        var rot_jdv = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        var rot_errs = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        var rot_jdv = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
         var ts = Scalar[DTYPE](1)
-        var cqb = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
-        var qrel = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        var cqb = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        var qrel = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
         cqb[3] = Scalar[DTYPE](1)
         qrel[3] = Scalar[DTYPE](1)
         if eq_type == EQ_WELD:
@@ -1498,12 +1498,12 @@ def build_weld_equality_rows[
                 # rule gives three terms and MuJoCo subtracts their sum from
                 # aref — so it ADDS to bias. Computed once, on d == 0.
                 if d == 0:
-                    var q0 = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+                    var q0 = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
                     q0[0] = rebind[Scalar[DTYPE]](xquat[env, body_a * 4 + 3])
                     q0[1] = rebind[Scalar[DTYPE]](xquat[env, body_a * 4 + 0])
                     q0[2] = rebind[Scalar[DTYPE]](xquat[env, body_a * 4 + 1])
                     q0[3] = rebind[Scalar[DTYPE]](xquat[env, body_a * 4 + 2])
-                    var q1 = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+                    var q1 = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
                     q1[0] = Scalar[DTYPE](1)
                     if body_b > 0:
                         q1[0] = rebind[Scalar[DTYPE]](xquat[env, body_b * 4 + 3])
@@ -1513,7 +1513,7 @@ def build_weld_equality_rows[
                     # ⚠ `qrel` above is ALREADY q_a * relpose; the raw relpose
                     # is `rp_*`. Using `qrel` here applied the body rotation
                     # twice — exact at identity, 0.5% off once rotated.
-                    var rp = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+                    var rp = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
                     rp[0] = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_RELPOSE_W])
                     rp[1] = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_RELPOSE_X])
                     rp[2] = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_RELPOSE_Y])
@@ -1857,7 +1857,7 @@ def _tendon_env[
         # Compute tendon length and velocity, build trivial Jacobian.
         #
         # ⚠ THE SOLVER HELD ITS OWN COPY OF THE 4-WRAP CAP: four unrolled reads
-        # into a pair of `InlineArray[..., 4]` locals. Widening the parser and
+        # into a pair of `Array[..., 4]` locals. Widening the parser and
         # the record alone would have left a tendon with more than four wraps
         # silently short HERE instead — the same defect one layer down.
         #

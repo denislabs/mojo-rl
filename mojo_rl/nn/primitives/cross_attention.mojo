@@ -931,14 +931,14 @@ struct CrossAttention[
 
 
 # ── comptime helper ──────────────────────────────────────────────────────
-# `IN_DIMS` is `InlineArray[Int, ARITY]` and ARITY varies with MASKED, so the
+# `IN_DIMS` is `Array[Int, ARITY]` and ARITY varies with MASKED, so the
 # array cannot be written as one literal. Mirrors `concat.mojo`'s `_total_dim`.
 
 
 def _xattn_in_dims[
     ARITY: Int, Q_DIM: Int, KV_DIM: Int, KV_LEN: Int
-]() -> InlineArray[Int, ARITY]:
-    var a = InlineArray[Int, ARITY](fill=KV_DIM)
+]() -> Array[Int, ARITY]:
+    var a = Array[Int, ARITY](fill=KV_DIM)
     a[0] = Q_DIM
     comptime if ARITY == 4:
         a[3] = KV_LEN

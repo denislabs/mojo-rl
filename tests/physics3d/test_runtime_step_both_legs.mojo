@@ -253,7 +253,7 @@ def main() raises:
     )
     # ⚠⚠ THE EQUALITY ARM, AND IT EXISTS BECAUSE THE RUNTIME LEG CRASHED
     # HERE. `may_exist` opened `build_weld_equality_rows` to dynamic
-    # providers and it turned out to hold three `InlineArray[…, V_SIZE]` —
+    # providers and it turned out to hold three `Array[…, V_SIZE]` —
     # length 0 on a dynamic provider — that had never been swept, because the
     # ONLY caller sat behind `comptime if D.CAP_NEQUALITY > 0` and was
     # unreachable. Opening a gate can expose a latent zero-size container

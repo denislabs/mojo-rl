@@ -78,7 +78,7 @@ def _qkv_to_major_bwd_kernel[
 
 struct QKVToMajor[SEQ: Int, DIM: Int, ADT: DType = DT](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=3 * Self.SEQ * Self.DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=3 * Self.SEQ * Self.DIM)
     # `Array` is not `ImplicitlyCopyable` (Mojo 1.0): indexing the comptime
     # `IN_DIMS` from a runtime context would materialize the whole array.
     comptime IN_DIM0 = 3 * Self.SEQ * Self.DIM

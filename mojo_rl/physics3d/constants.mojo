@@ -73,7 +73,7 @@ def mj_geom_type_rank(t: Int) -> Int:
     against it, so running a pair in the other order returns the same
     PENETRATION DEPTH and different WITNESS POSITIONS.
 
-    ⚠ AN IF-CHAIN, NOT A TABLE. A per-thread `InlineArray` indexed by a RUNTIME
+    ⚠ AN IF-CHAIN, NOT A TABLE. A per-thread `Array` indexed by a RUNTIME
     value reads back the wrong value on Metal, with no crash — four instances
     in this engine already (`87960e10`, `836a65ff`). This is called from inside
     the collision kernels with a runtime type.

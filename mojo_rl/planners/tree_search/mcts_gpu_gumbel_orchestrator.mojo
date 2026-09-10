@@ -282,7 +282,7 @@ def gz_extract_actions_temp_kernel[
     var move_count = Int(rebind[Scalar[dtype]](ep_steps[e]))
 
     # ── 1. Apply legal mask to a local probability buffer ───────────────
-    var probs = InlineArray[Scalar[dtype], ACT](uninitialized=True)
+    var probs = Array[Scalar[dtype], ACT](uninitialized=True)
     var total = Scalar[dtype](0.0)
     var best_action = -1
     var best_p = Scalar[dtype](-1.0)

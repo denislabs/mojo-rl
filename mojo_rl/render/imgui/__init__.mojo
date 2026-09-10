@@ -849,10 +849,10 @@ struct TextBuffer(Copyable, Movable):
 
     comptime CAP = 128
 
-    var data: InlineArray[UInt8, Self.CAP]
+    var data: Array[UInt8, Self.CAP]
 
     def __init__(out self):
-        self.data = InlineArray[UInt8, Self.CAP](fill=0)
+        self.data = Array[UInt8, Self.CAP](fill=0)
 
     def value(self) -> String:
         """The buffer up to its NUL terminator, as a Mojo String."""
@@ -882,7 +882,7 @@ def ig_input_text(
     `hint` is greyed placeholder text shown while the field is empty; ImGui
     has no native placeholder, and a filter box without one reads as broken.
     """
-    # ⚠ VIA `Ptr(to=...)`, NOT `InlineArray.unsafe_ptr()`. The latter yields a
+    # ⚠ VIA `Ptr(to=...)`, NOT `Array.unsafe_ptr()`. The latter yields a
     # *safe* Pointer, whose `bitcast` is constrained away ("violated
     # constraint: not _safe"); pointing at the array itself gives the
     # Pointer the C ABI needs.

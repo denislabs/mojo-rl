@@ -47,7 +47,7 @@ skip — this one is faithful.
 
 from std.random import random_float64
 from std.math import pi, sqrt
-from std.collections import InlineArray
+from std.collections import Array
 
 from layout import Layout, LayoutTensor
 from std.random.philox import Random as PhiloxRandom
@@ -171,7 +171,7 @@ def _nose_to_target_gpu[
         DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
     ],
     env: Int,
-) -> InlineArray[Scalar[DTYPE], 2]:
+) -> Array[Scalar[DTYPE], 2]:
     """`_nose_to_target` against the batched field tensors.
 
     ⚠ THE ARITHMETIC IS THE CPU FUNCTION'S, transcribed — same rotation, same
@@ -203,7 +203,7 @@ def _nose_to_target_gpu[
     var dz = rebind[Scalar[DTYPE]](xpos[env, TGT * 3 + 2]) - nose_z
 
     var loc = quat_rotate_inverse[DTYPE](hqx, hqy, hqz, hqw, dx, dy, dz)
-    var out = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
     out[0] = loc[0]
     out[1] = loc[1]
     return out^

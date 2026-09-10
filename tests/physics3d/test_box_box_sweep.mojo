@@ -393,13 +393,13 @@ def test_box_box_manifold_vs_mujoco() raises:
         var mjn = Int(py=dat.ncon)
 
         var n_bb = 0
-        var bb_dist = InlineArray[Scalar[DTYPE], BB_MAX_POINTS](
+        var bb_dist = Array[Scalar[DTYPE], BB_MAX_POINTS](
             fill=Scalar[DTYPE](0)
         )
-        var bb_pos = InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS](
+        var bb_pos = Array[Scalar[DTYPE], 3 * BB_MAX_POINTS](
             fill=Scalar[DTYPE](0)
         )
-        var bb_n = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        var bb_n = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
         var code = box_box_manifold[DTYPE](
             Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
             Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),

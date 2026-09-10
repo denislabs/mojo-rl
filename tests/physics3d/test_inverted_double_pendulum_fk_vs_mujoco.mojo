@@ -20,7 +20,7 @@ Run with:
 from std.testing import assert_true, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs
-from std.collections import InlineArray
+from std.collections import Array
 
 from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
@@ -58,7 +58,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 
 def compare_fk(
     test_name: String,
-    qpos_values: InlineArray[Float64, NQ],
+    qpos_values: Array[Float64, NQ],
 ) raises:
     """Run FK in both engines with identical qpos, compare results."""
     print("--- Test:", test_name, "---")
@@ -191,13 +191,13 @@ def compare_fk(
 
 def test_fk_default_qpos() raises:
     """FK at default qpos (all zeros): cart at origin, pendulums upright."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     compare_fk("Default qpos (cart at origin, pendulums upright)", qpos)
 
 
 def test_fk_displaced_cart() raises:
     """FK with cart displaced to x=0.5 — tests slide joint translation."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 0.5  # slider displacement
     compare_fk("Displaced cart (x=0.5)", qpos)
 
@@ -205,7 +205,7 @@ def test_fk_displaced_cart() raises:
 def test_fk_first_hinge_only() raises:
     """FK with only the first hinge bent — pole tilted ~17 deg, pole2 follows.
     """
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[1] = 0.3  # hinge: ~17 degrees tilt
     compare_fk("First hinge only (hinge=0.3 rad)", qpos)
 
@@ -213,7 +213,7 @@ def test_fk_first_hinge_only() raises:
 def test_fk_both_hinges_bent() raises:
     """FK with both hinges bent in opposite directions.
     Tests quaternion accumulation for a two-link chain."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 0.2  # cart displaced
     qpos[1] = 0.4  # first hinge: pole bent ~23 deg
     qpos[2] = -0.3  # second hinge: pole2 bent back ~17 deg
@@ -223,7 +223,7 @@ def test_fk_both_hinges_bent() raises:
 def test_fk_large_tilt() raises:
     """FK with large first hinge tilt near the observation limit.
     Tests nonlinear rotation accumulation in the double pendulum chain."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = -0.5  # cart left
     qpos[1] = 1.0  # ~57 deg tilt (large but not at limit)
     qpos[2] = -0.6  # pole2 bent back

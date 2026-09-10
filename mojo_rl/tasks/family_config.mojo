@@ -1193,10 +1193,10 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         # this hook writes only `qpos`/`qvel` — never `meta`. A hook that
         # zeroed `meta` here would blank every lane's goal at the first reset
         # and every reward would read 0: a flat curve, not a crash.
-        var placed_x = InlineArray[Scalar[DTYPE], Self.N_FREE_SLOTS](
+        var placed_x = Array[Scalar[DTYPE], Self.N_FREE_SLOTS](
             fill=Scalar[DTYPE](0)
         )
-        var placed_y = InlineArray[Scalar[DTYPE], Self.N_FREE_SLOTS](
+        var placed_y = Array[Scalar[DTYPE], Self.N_FREE_SLOTS](
             fill=Scalar[DTYPE](0)
         )
         var n_placed = 0

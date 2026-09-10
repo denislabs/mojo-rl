@@ -270,14 +270,14 @@ def _ray_hits_box(
     )
     var lv = gpu_quat_rotate[DType.float64](-qx, -qy, -qz, qw, dx, dy, dz)
 
-    var size = InlineArray[Float64, 3](fill=0.0)
+    var size = Array[Float64, 3](fill=0.0)
     size[0] = hx
     size[1] = hy
     size[2] = hz
     # `iface[i]` = the two axes spanning the face normal to axis i:
     # {1,2}, {0,2}, {0,1}.
-    var iface0 = InlineArray[Int, 3](fill=0)
-    var iface1 = InlineArray[Int, 3](fill=0)
+    var iface0 = Array[Int, 3](fill=0)
+    var iface1 = Array[Int, 3](fill=0)
     iface0[0] = 1
     iface1[0] = 2
     iface0[1] = 0
@@ -375,13 +375,13 @@ def _ray_hits_box_gpu[
     )
     var lv = gpu_quat_rotate[DTYPE](-qx, -qy, -qz, qw, dx, dy, dz)
 
-    var size = InlineArray[Scalar[DTYPE], 3](fill=ZERO)
+    var size = Array[Scalar[DTYPE], 3](fill=ZERO)
     size[0] = hx
     size[1] = hy
     size[2] = hz
     # `iface[i]` = the two axes spanning the face normal to axis i.
-    var iface0 = InlineArray[Int, 3](fill=0)
-    var iface1 = InlineArray[Int, 3](fill=0)
+    var iface0 = Array[Int, 3](fill=0)
+    var iface1 = Array[Int, 3](fill=0)
     iface0[0] = 1
     iface1[0] = 2
     iface0[1] = 0

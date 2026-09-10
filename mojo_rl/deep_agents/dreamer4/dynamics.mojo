@@ -334,7 +334,7 @@ struct Dreamer4Dynamics[
     comptime SPAT_OFF: Int = 3 * Self.D                 # spatial token col start
     comptime REG_OFF: Int = (3 + Self.NSP) * Self.D     # register col start
     comptime AGENT_OFF: Int = (3 + Self.NSP + Self.NREG) * Self.D  # agent col start
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.NSP * Self.DSP)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.NSP * Self.DSP)
     comptime OUT_DIM = Self.NSP * Self.DSP
     # `Module` and `ShortcutDynamics` both default ACT_DT=DT → resolve manually.
     comptime ACT_DT = DT

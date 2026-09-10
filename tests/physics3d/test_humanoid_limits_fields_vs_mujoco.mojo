@@ -51,7 +51,7 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_humanoid_limits_fields
 from std.testing import assert_true, TestSuite
 from std.python import Python
 from std.math import abs
-from std.collections import InlineArray
+from std.collections import Array
 from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.fields import Data, Model, Dims
@@ -216,11 +216,11 @@ def _find_elbow_joint(
     return (elbow_j, elbow_dof)
 
 
-def _pose_qpos() -> InlineArray[Float64, NQ]:
+def _pose_qpos() -> Array[Float64, NQ]:
     """Floating (z=3, identity quat), knees at -0.15 (inside their
     [-160, -2] deg range; 0 would violate it), right elbow past its lower
     limit; every other joint at 0 sits strictly inside its range."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[2] = 3.0  # torso z — contact-free
     qpos[3] = 1.0  # identity quaternion (w first)
     qpos[13] = -0.15  # right knee
@@ -229,8 +229,8 @@ def _pose_qpos() -> InlineArray[Float64, NQ]:
     return qpos^
 
 
-def _pose_qvel() -> InlineArray[Float64, NV]:
-    var qvel = InlineArray[Float64, NV](fill=0.0)
+def _pose_qvel() -> Array[Float64, NV]:
+    var qvel = Array[Float64, NV](fill=0.0)
     qvel[19] = ELBOW_QVEL  # right elbow dof, closing into the limit
     return qvel^
 

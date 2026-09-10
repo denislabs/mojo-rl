@@ -96,7 +96,7 @@ def _mse_bwd_kernel[B: Int, DIM: Int](
 
 struct MSELossPlain[DIM: Int](Module):
     comptime ARITY = 2
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.DIM)
+    comptime IN_DIMS = Array[Int, 2](fill=Self.DIM)
     comptime OUT_DIM = 1
 
     def __init__(out self):
@@ -226,7 +226,7 @@ def _bce_bwd_kernel[B: Int](
 
 struct BCEWithLogitsLoss(Module):
     comptime ARITY = 2
-    comptime IN_DIMS = InlineArray[Int, 2](fill=1)
+    comptime IN_DIMS = Array[Int, 2](fill=1)
     comptime OUT_DIM = 1
 
     def __init__(out self):
@@ -313,8 +313,8 @@ struct TDMPC2TwoHotLoss[BINS: Int, VMIN: Int, VMAX: Int](Module):
     comptime OUT_DIM = 1
 
     @staticmethod
-    def _mk_in_dims() -> InlineArray[Int, 2]:
-        var d = InlineArray[Int, 2](fill=1)
+    def _mk_in_dims() -> Array[Int, 2]:
+        var d = Array[Int, 2](fill=1)
         d[0] = Self.BINS
         return d^
 
@@ -402,7 +402,7 @@ struct TDMPC2TwoHotLoss[BINS: Int, VMIN: Int, VMAX: Int](Module):
 
 struct TwoHotDecode[BINS: Int, VMIN: Int, VMAX: Int](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.BINS)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.BINS)
     comptime OUT_DIM = 1
 
     var bins: Tensor  # [BINS] linspace(VMIN, VMAX); host + device

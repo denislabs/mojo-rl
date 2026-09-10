@@ -39,7 +39,7 @@ from std.random import random_float64
 from std.math import sqrt, log, cos, pi, abs
 
 from layout import Layout, LayoutTensor
-from std.collections import InlineArray
+from std.collections import Array
 from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.physics3d.fields import Data, Dims, DimsLike

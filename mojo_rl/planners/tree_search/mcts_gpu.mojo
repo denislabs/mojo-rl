@@ -1194,11 +1194,11 @@ def gpu_mcts_extract_actions_temp_kernel[
 
     if temp > Scalar[dtype](0.01) and total > Scalar[dtype](0.5):
         # Sample from temperature-adjusted N^(1/τ) over legal actions.
-        # Weights are kept in a local InlineArray so we never mutate
+        # Weights are kept in a local Array so we never mutate
         # the stored soft policy target.
         var inv_temp = Scalar[dtype](1.0) / temp
         var weighted_total = Scalar[dtype](0.0)
-        var w_arr = InlineArray[Scalar[dtype], ACT](fill=Scalar[dtype](0.0))
+        var w_arr = Array[Scalar[dtype], ACT](fill=Scalar[dtype](0.0))
         for a in range(ACT):
             var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
             if legal > Scalar[dtype](0.5):

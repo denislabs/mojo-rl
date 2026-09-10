@@ -60,7 +60,7 @@ def _reduce_max_zero_grad_kernel[
 
 struct ReduceMax[NA_: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.NA_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.NA_)
     comptime OUT_DIM: Int = 1
 
     def __init__(out self):

@@ -17,7 +17,7 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_euler_fields_vs_mujoco
 from std.testing import assert_true, TestSuite
 from std.python import Python
 from std.math import abs
-from std.collections import InlineArray
+from std.collections import Array
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
@@ -77,9 +77,9 @@ comptime GOLD_LIM_QPOS = 12.238441724124275
 comptime GOLD_LIM_QVEL = 17.46150375918525
 
 
-def _tumbling_qpos() -> InlineArray[Float64, NQ]:
+def _tumbling_qpos() -> Array[Float64, NQ]:
     """Contact-free AND limit-free: torso high up, legs mid-range."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[2] = 2.0  # z — contact-free
     qpos[3] = 0.9659258262890683  # qw (30 deg tilt about y)
     qpos[5] = 0.25881904510252074  # qy
@@ -90,8 +90,8 @@ def _tumbling_qpos() -> InlineArray[Float64, NQ]:
     return qpos^
 
 
-def _tumbling_qvel() -> InlineArray[Float64, NV]:
-    var qvel = InlineArray[Float64, NV](fill=0.0)
+def _tumbling_qvel() -> Array[Float64, NV]:
+    var qvel = Array[Float64, NV](fill=0.0)
     qvel[3] = 2.0
     qvel[4] = 1.0
     qvel[5] = 0.5

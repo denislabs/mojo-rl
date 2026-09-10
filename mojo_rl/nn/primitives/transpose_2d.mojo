@@ -86,7 +86,7 @@ def _transpose2d_kernel[
 
 struct Transpose2D[A_: Int, B_: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.A_ * Self.B_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.A_ * Self.B_)
     comptime OUT_DIM = Self.A_ * Self.B_
 
     def __init__(out self):

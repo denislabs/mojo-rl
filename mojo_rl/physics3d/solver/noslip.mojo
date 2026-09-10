@@ -131,7 +131,7 @@ SCOPE, STATED RATHER THAN IMPLIED
     ⚠ THAT WIRING IS WHY THE ROW ARRAYS BELOW ARE POINTERS. The blocked kernel
     keeps `Je`/`bias_e`/`force`/... in THREADGROUP memory (and spills `Je` to
     global on models where it does not fit), while `_newton_solve_env` holds
-    per-thread `InlineArray`s. A signature naming either storage excludes the
+    per-thread `Array`s. A signature naming either storage excludes the
     other caller, and copying into locals is exactly what that kernel exists
     to avoid. An address-space-parameterized pointer is what they share — see
     the note above `_minv_jt`. Do not "simplify" it back to one storage kind
@@ -185,7 +185,7 @@ dog should expect iteration-count divergence, which is the same regime
 
 from std.math import sqrt
 from std.sys import simd_width_of
-from std.collections import InlineArray
+from std.collections import Array
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 from ..fields.scratch import Scratch
@@ -213,10 +213,10 @@ comptime _DIAG_FLOOR: Float64 = 1e-10
 comptime _COST_REJECT: Float64 = 1e-10
 
 
-# ⚠⚠ THE ROW ARRAYS ARE POINTERS, NOT `InlineArray`s, AND THAT IS THE WHOLE
+# ⚠⚠ THE ROW ARRAYS ARE POINTERS, NOT `Array`s, AND THAT IS THE WHOLE
 # REASON ONE COPY OF THIS ROUTINE CAN SERVE BOTH SOLVERS.
 #
-# `_newton_solve_env` holds `Je`/`bias_e`/... as per-thread `InlineArray`s;
+# `_newton_solve_env` holds `Je`/`bias_e`/... as per-thread `Array`s;
 # `_newton_blocked_fields_kernel` holds the same rows in THREADGROUP memory
 # (`Je_sh`, `bias_e_sh`, ... — and `Je` itself spills to GLOBAL on models where
 # it does not fit, so its address space is not even fixed across builds). A
@@ -226,7 +226,7 @@ comptime _COST_REJECT: Float64 = 1e-10
 # small (see the `je_spills` note in `newton_solve`).
 #
 # A pointer with the address space as a PARAMETER is what both storages have in
-# common: `InlineArray.unsafe_ptr()` is GENERIC, `LayoutTensor.ptr` is SHARED or
+# common: `Array.unsafe_ptr()` is GENERIC, `LayoutTensor.ptr` is SHARED or
 # GENERIC, and everything downstream is identical. Verified on Metal for both
 # address spaces including WRITE-THROUGH, since a per-thread buffer is exactly
 # the shape that miscomputes there
@@ -642,7 +642,7 @@ def noslip_pyramidal[
     L_CONTACTS: Layout,
     L_M_INV: Layout,
     L_D: Layout,
-    # GENERIC/GENERIC is the per-env caller (per-thread `InlineArray`s); the
+    # GENERIC/GENERIC is the per-env caller (per-thread `Array`s); the
     # blocked kernel passes SHARED rows and a `Je` that is SHARED or GLOBAL
     # depending on whether it fit. See the note above `_minv_jt`.
     JE_AS: AddressSpace = AddressSpace.GENERIC,
@@ -1239,11 +1239,11 @@ def _solve_contact_qcqp[
 ](
     nt: Int,
     cb: Int,
-    Ac: InlineArray[Scalar[DTYPE], NT * NT],
-    bc: InlineArray[Scalar[DTYPE], NT],
+    Ac: Array[Scalar[DTYPE], NT * NT],
+    bc: Array[Scalar[DTYPE], NT],
     fr_c: Scratch[Scalar[DTYPE], T_CAP],
     fn_v: Scalar[DTYPE],
-    mut vf: InlineArray[Scalar[DTYPE], NT],
+    mut vf: Array[Scalar[DTYPE], NT],
 ) -> Bool:
     """MuJoCo's QCQP dispatch by contact dimension. Returns `flg_active`.
 
@@ -1266,15 +1266,15 @@ def _solve_contact_qcqp[
     """
     comptime ZERO = Scalar[DTYPE](0)
     if nt == 2:
-        var A2 = InlineArray[Scalar[DTYPE], 4](fill=ZERO)
+        var A2 = Array[Scalar[DTYPE], 4](fill=ZERO)
         A2[0] = Ac[0]
         A2[1] = Ac[1]
         A2[2] = Ac[NT]
         A2[3] = Ac[NT + 1]
-        var b2 = InlineArray[Scalar[DTYPE], 2](fill=ZERO)
+        var b2 = Array[Scalar[DTYPE], 2](fill=ZERO)
         b2[0] = bc[0]
         b2[1] = bc[1]
-        var d2 = InlineArray[Scalar[DTYPE], 2](fill=ZERO)
+        var d2 = Array[Scalar[DTYPE], 2](fill=ZERO)
         d2[0] = fr_c[cb]
         d2[1] = fr_c[cb + 1]
         var f0 = ZERO
@@ -1286,12 +1286,12 @@ def _solve_contact_qcqp[
 
     comptime if NT >= 3:
         if nt == 3:
-            var A3 = InlineArray[Scalar[DTYPE], 9](fill=ZERO)
+            var A3 = Array[Scalar[DTYPE], 9](fill=ZERO)
             for t in range(3):
                 for u in range(3):
                     A3[t * 3 + u] = Ac[t * NT + u]
-            var b3 = InlineArray[Scalar[DTYPE], 3](fill=ZERO)
-            var d3 = InlineArray[Scalar[DTYPE], 3](fill=ZERO)
+            var b3 = Array[Scalar[DTYPE], 3](fill=ZERO)
+            var d3 = Array[Scalar[DTYPE], 3](fill=ZERO)
             for t in range(3):
                 b3[t] = bc[t]
                 d3[t] = fr_c[cb + t]
@@ -1305,16 +1305,16 @@ def _solve_contact_qcqp[
             return act
 
     comptime if NT >= 4:
-        var A5 = InlineArray[Scalar[DTYPE], 25](fill=ZERO)
+        var A5 = Array[Scalar[DTYPE], 25](fill=ZERO)
         for t in range(nt):
             for u in range(nt):
                 A5[t * 5 + u] = Ac[t * NT + u]
-        var b5 = InlineArray[Scalar[DTYPE], 5](fill=ZERO)
-        var d5 = InlineArray[Scalar[DTYPE], 5](fill=ZERO)
+        var b5 = Array[Scalar[DTYPE], 5](fill=ZERO)
+        var d5 = Array[Scalar[DTYPE], 5](fill=ZERO)
         for t in range(nt):
             b5[t] = bc[t]
             d5[t] = fr_c[cb + t]
-        var v5 = InlineArray[Scalar[DTYPE], 5](fill=ZERO)
+        var v5 = Array[Scalar[DTYPE], 5](fill=ZERO)
         var act = mj_qcqp5[DTYPE](v5, A5, b5, d5, fn_v)
         for t in range(nt):
             vf[t] = v5[t]
@@ -1616,12 +1616,12 @@ def noslip_elliptic[
             col_rows, col_cache, col_work,
         )
     # The `nt x nt` AR block, its rhs, the solved force and the old one.
-    var Ac = InlineArray[Scalar[DTYPE], NT * NT](fill=ZERO)
-    var bc = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
-    var vf = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
-    var oldf = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
+    var Ac = Array[Scalar[DTYPE], NT * NT](fill=ZERO)
+    var bc = Array[Scalar[DTYPE], NT](fill=ZERO)
+    var vf = Array[Scalar[DTYPE], NT](fill=ZERO)
+    var oldf = Array[Scalar[DTYPE], NT](fill=ZERO)
     # This contact's tangential residuals, recomputed at the point of use.
-    var jt_cur = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
+    var jt_cur = Array[Scalar[DTYPE], NT](fill=ZERO)
 
     for it in range(max_iter):
         var improvement = ZERO

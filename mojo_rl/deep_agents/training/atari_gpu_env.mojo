@@ -88,7 +88,7 @@ def _atari_reset_kernel[
     var st = s0[unsafe_offset=0].copy()
     comptime if NOOP_MAX > 0:
         var k = Int(_splitmix(seed ^ UInt64(i)) % UInt64(NOOP_MAX + 1))
-        var dummy = InlineArray[UInt8, 4](fill=0)
+        var dummy = Array[UInt8, 4](fill=0)
         for _ in range(k):
             set_action(st, ACTION_NOOP)
             run_frame_cycle_accurate[RENDER=False](
@@ -130,7 +130,7 @@ def _atari_step_kernel[
     var st = states[unsafe_offset=i].copy()
     var ale = GAME.map_action(Int(actions[unsafe_offset=i]))
     var prev_score = Int(st.score)
-    var dummy = InlineArray[UInt8, 4](fill=0)
+    var dummy = Array[UInt8, 4](fill=0)
     for _ in range(FRAME_SKIP):
         set_action(st, ale)
         run_frame_cycle_accurate[RENDER=False](

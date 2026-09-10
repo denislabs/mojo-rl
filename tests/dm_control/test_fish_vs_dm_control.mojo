@@ -189,7 +189,7 @@ def test_fish_actuators_are_position_servos() raises:
     `gainprm = [kp, 0, 0]` and `biasprm = [0, -kp, -kv]`, which is what makes
     `force = kp*(ctrl - length) - kv*velocity` the right law.
 
-    ⚠ `M._acd` is a COMPTIME struct, and indexing its `InlineArray` fields with
+    ⚠ `M._acd` is a COMPTIME struct, and indexing its `Array` fields with
     a RUNTIME loop variable materializes garbage here (an `assert` on
     `Float64(sf.actuators.data[(i) * MODEL_ACTUATOR_SIZE + ACT_IDX_KP])` read 6.4e-314 while a `print` of the same expression
     read 0.0005). Every field is copied out through a `comptime for` — a

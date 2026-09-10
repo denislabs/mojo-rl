@@ -237,7 +237,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
     comptime STEP_WS_SHARED: Int = 0
     comptime STEP_WS_PER_ENV: Int = 0
 
-    var state: InlineArray[Scalar[Self.dtype], STATE_SIZE]
+    var state: Array[Scalar[Self.dtype], STATE_SIZE]
     var done: Bool
     var _rng_counter: UInt64
 
@@ -248,7 +248,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
     var _has_sprites: Bool
 
     def __init__(out self):
-        self.state = InlineArray[Scalar[Self.dtype], STATE_SIZE](
+        self.state = Array[Scalar[Self.dtype], STATE_SIZE](
             fill=Scalar[Self.dtype](0.0)
         )
         self.done = False
@@ -378,7 +378,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
 
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Build the 8268-D Craftax-Full symbolic observation."""
-        var obs_arr = InlineArray[Float32, OBS_DIM](fill=Float32(0.0))
+        var obs_arr = Array[Float32, OBS_DIM](fill=Float32(0.0))
         var obs_ptr = rebind[Pointer[Float32, MutAnyOrigin]](
             obs_arr.unsafe_ptr().unsafe_bitcast[Float32]()
         )

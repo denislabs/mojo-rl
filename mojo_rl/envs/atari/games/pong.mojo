@@ -31,24 +31,24 @@ struct PongDef(GameDef):
 
     @staticmethod
     @always_inline
-    def get_score(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
+    def get_score(ram: Array[UInt8, RAM_SIZE]) -> Int:
         """Get current score (player score - CPU score)."""
         return Int(ram[14]) - Int(ram[13])
 
     @staticmethod
     @always_inline
-    def get_reward(ram: InlineArray[UInt8, RAM_SIZE], prev_score: Int) -> Int:
+    def get_reward(ram: Array[UInt8, RAM_SIZE], prev_score: Int) -> Int:
         """Get reward as score delta."""
         return PongDef.get_score(ram) - prev_score
 
     @staticmethod
     @always_inline
-    def get_lives(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
+    def get_lives(ram: Array[UInt8, RAM_SIZE]) -> Int:
         return 0  # Pong doesn't have lives
 
     @staticmethod
     @always_inline
-    def is_terminal(ram: InlineArray[UInt8, RAM_SIZE]) -> Bool:
+    def is_terminal(ram: Array[UInt8, RAM_SIZE]) -> Bool:
         """Game over when either player reaches 21."""
         return Int(ram[13]) == 21 or Int(ram[14]) == 21
 

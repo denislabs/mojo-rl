@@ -211,9 +211,9 @@ def test_the_manifold_primitive_directly() raises:
     own value there is -4.163e-17 and ours is +0.0. The two points and their
     positions are not in doubt, and those are what this checks.
     """
-    var d1 = InlineArray[Scalar[DT], CC_MAX_POINTS](fill=Scalar[DT](0))
-    var p1 = InlineArray[Scalar[DT], 3 * CC_MAX_POINTS](fill=Scalar[DT](0))
-    var n1 = InlineArray[Scalar[DT], 3 * CC_MAX_POINTS](fill=Scalar[DT](0))
+    var d1 = Array[Scalar[DT], CC_MAX_POINTS](fill=Scalar[DT](0))
+    var p1 = Array[Scalar[DT], 3 * CC_MAX_POINTS](fill=Scalar[DT](0))
+    var n1 = Array[Scalar[DT], 3 * CC_MAX_POINTS](fill=Scalar[DT](0))
     # yam's z axis (-0.7241379..., 0, 0.6896551...) as a rotation about -y.
     var c = Float64(0.689655172413793)
     var qw = sqrt((1.0 + c) * 0.5)

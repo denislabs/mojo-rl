@@ -358,7 +358,7 @@ def compute_invweight0[
         var ti_y = d.xipos.data[i * 3 + 1]
         var ti_z = d.xipos.data[i * 3 + 2]
 
-        var A_diag = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+        var A_diag = Array[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
         for k in range(6):
             var J_row = List[Scalar[DTYPE]](length=nv, fill=Scalar[DTYPE](0))
             for dd in range(nv):

@@ -148,7 +148,7 @@ def _write_obs_to_state_only[
     var ba = rebind[Scalar[dtype]](state[env, to_ + IDX_ANGLE])
     var ax = rebind[Scalar[dtype]](state[env, ao + IDX_X])
     var ay = rebind[Scalar[dtype]](state[env, ao + IDX_Y])
-    var kp = InlineArray[Scalar[dtype], PConstants.KEYPOINTS_DIM](
+    var kp = Array[Scalar[dtype], PConstants.KEYPOINTS_DIM](
         fill=Scalar[dtype](0.0)
     )
     get_t_keypoints_world(bx, by, ba, kp)
@@ -180,7 +180,7 @@ def _write_obs_single_env[
     var ba = rebind[Scalar[dtype]](state[env, to_ + IDX_ANGLE])
     var ax = rebind[Scalar[dtype]](state[env, ao + IDX_X])
     var ay = rebind[Scalar[dtype]](state[env, ao + IDX_Y])
-    var kp = InlineArray[Scalar[dtype], PConstants.KEYPOINTS_DIM](
+    var kp = Array[Scalar[dtype], PConstants.KEYPOINTS_DIM](
         fill=Scalar[dtype](0.0)
     )
     get_t_keypoints_world(bx, by, ba, kp)
@@ -230,12 +230,12 @@ struct PushTV2[DTYPE: DType](
     # CPU instance fields (for single-env mode)
     # =========================================================================
 
-    var state_data: InlineArray[Scalar[dtype], PushTLayout.STATE_SIZE]
-    var shapes_data: InlineArray[
-        InlineArray[Scalar[dtype], SHAPE_MAX_SIZE],
+    var state_data: Array[Scalar[dtype], PushTLayout.STATE_SIZE]
+    var shapes_data: Array[
+        Array[Scalar[dtype], SHAPE_MAX_SIZE],
         PushTShapeBuf.NUM_SHAPES,
     ]
-    var contacts_data: InlineArray[
+    var contacts_data: Array[
         Scalar[dtype], PushTLayout.MAX_CONTACTS * CONTACT_DATA_SIZE
     ]
     var done: Bool
@@ -247,17 +247,17 @@ struct PushTV2[DTYPE: DType](
     # =========================================================================
 
     def __init__(out self, seed: UInt64 = 0):
-        self.state_data = InlineArray[
+        self.state_data = Array[
             Scalar[dtype], PushTLayout.STATE_SIZE
         ](fill=Scalar[dtype](0.0))
-        var row = InlineArray[Scalar[dtype], SHAPE_MAX_SIZE](
+        var row = Array[Scalar[dtype], SHAPE_MAX_SIZE](
             fill=Scalar[dtype](0.0)
         )
-        self.shapes_data = InlineArray[
-            InlineArray[Scalar[dtype], SHAPE_MAX_SIZE],
+        self.shapes_data = Array[
+            Array[Scalar[dtype], SHAPE_MAX_SIZE],
             PushTShapeBuf.NUM_SHAPES,
         ](fill=row)
-        self.contacts_data = InlineArray[
+        self.contacts_data = Array[
             Scalar[dtype], PushTLayout.MAX_CONTACTS * CONTACT_DATA_SIZE
         ](fill=Scalar[dtype](0.0))
         init_pusht_shape_buffer[PushTShapeBuf.NUM_SHAPES](self.shapes_data)
@@ -674,11 +674,11 @@ struct PushTV2[DTYPE: DType](
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype]) raises:
         """Fill the shared workspace with the shape buffer."""
         # Build shapes on host then upload.
-        var row = InlineArray[Scalar[dtype], SHAPE_MAX_SIZE](
+        var row = Array[Scalar[dtype], SHAPE_MAX_SIZE](
             fill=Scalar[dtype](0.0)
         )
-        var shapes_host = InlineArray[
-            InlineArray[Scalar[dtype], SHAPE_MAX_SIZE],
+        var shapes_host = Array[
+            Array[Scalar[dtype], SHAPE_MAX_SIZE],
             PushTShapeBuf.NUM_SHAPES,
         ](fill=row)
         init_pusht_shape_buffer[PushTShapeBuf.NUM_SHAPES](shapes_host)
@@ -896,7 +896,7 @@ struct PushTV2[DTYPE: DType](
         # floats, while the contacts tensor expects stride
         # MAX_CONTACTS*CONTACT_DATA_SIZE between envs. We CANNOT alias.
         # Instead, allocate per-thread local contacts on the stack.
-        var contacts_local = InlineArray[
+        var contacts_local = Array[
             Scalar[dtype], PushTLayout.MAX_CONTACTS * CONTACT_DATA_SIZE
         ](fill=Scalar[dtype](0.0))
         var contacts_view = LayoutTensor[

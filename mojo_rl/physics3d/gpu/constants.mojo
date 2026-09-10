@@ -942,7 +942,7 @@ comptime EQ_IDX_OBJTYPE: Int = 21  # EQ_OBJ_BODY=0 or EQ_OBJ_SITE=1
 
 # ⚠ THE WRAP CAP IS ONE CONSTANT AND EVERY OFFSET BELOW IS DERIVED FROM IT.
 # It was 4, hardcoded in five places that had to agree: this layout, the loop
-# bounds in `full_parser._fill_tendons`, `TendonData`'s three `InlineArray`s,
+# bounds in `full_parser._fill_tendons`, `TendonData`'s three `Array`s,
 # the explicit `JOINT_0..3` writes in `fields_build`, and `TENDON_MAX_JOINTS`
 # in `constraints/tendon_limit.mojo`. dog's `caudal_extend` wraps ELEVEN
 # joints, so it was silently truncated to four on this path exactly as it was
@@ -1495,7 +1495,7 @@ comptime MAX_GPU_MESHES: Int = 256
 
 ⚠ IT SIZES ONE TABLE AND NOTHING ELSE. `mesh_meta` is `[MAX_GPU_MESHES, 4]` —
 8 KB at 256 and float64, against 512 bytes at 16 — and every other use is a
-`Layout` over that table. No `InlineArray` is keyed on it, so raising it costs
+`Layout` over that table. No `Array` is keyed on it, so raising it costs
 memory and nothing else. 16 was never a hardware limit; it was a guess that
 predates mesh-heavy models.
 

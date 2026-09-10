@@ -99,7 +99,7 @@ def test_opcode_table():
 
 def test_pong_game():
     print("Test: Pong game definition...")
-    var ram = InlineArray[UInt8, RAM_SIZE](fill=0)
+    var ram = Array[UInt8, RAM_SIZE](fill=0)
 
     # Player score = 5, CPU score = 3
     ram[14] = 5
@@ -115,7 +115,7 @@ def test_pong_game():
 
 def test_breakout_game():
     print("Test: Breakout game definition...")
-    var ram = InlineArray[UInt8, RAM_SIZE](fill=0)
+    var ram = Array[UInt8, RAM_SIZE](fill=0)
 
     # Score = 123: RAM[77] = 0x23 (tens=2, ones=3), RAM[76] = 0x01 (hundreds=1)
     ram[77] = 0x23
@@ -134,7 +134,7 @@ def test_breakout_game():
 
 def test_bcd_helpers():
     print("Test: BCD score helpers...")
-    var ram = InlineArray[UInt8, RAM_SIZE](fill=0)
+    var ram = Array[UInt8, RAM_SIZE](fill=0)
 
     # Single byte: 0x42 = 42
     ram[0] = 0x42

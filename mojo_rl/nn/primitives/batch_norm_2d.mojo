@@ -848,7 +848,7 @@ struct BatchNorm2D[
 ](Module):
     comptime ARITY = 1
     comptime FLAT_DIM = Self.C_ * Self.H_ * Self.W_
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.FLAT_DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.FLAT_DIM)
     comptime OUT_DIM = Self.FLAT_DIM
     comptime SPATIAL = Self.H_ * Self.W_
     # NHWC-2D occupancy path is on iff NVIDIA + channels-last + C divides the 2D

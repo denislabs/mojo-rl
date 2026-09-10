@@ -72,7 +72,7 @@ struct ConditionalTransformerBlock[
 ](Module):
     comptime ARITY: Int = 2
     comptime SEQ_DIM = Self.H * Self.EMB
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.SEQ_DIM)
+    comptime IN_DIMS = Array[Int, 2](fill=Self.SEQ_DIM)
     comptime OUT_DIM = Self.SEQ_DIM
     # head_dim 0 ⇒ standard EMB/HEADS (inner == EMB); >0 ⇒ expanded ("XL")
     # attention with inner = HEADS·HEAD_DIM (the paper predictor's 16×64=1024).

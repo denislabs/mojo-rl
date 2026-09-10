@@ -117,7 +117,7 @@ struct Dropout[
     DIM_: Int, p: Float64 = 0.5, SEED: UInt64 = 1, ADT: DType = DT
 ](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
     # Activation-flow dtype. `Dropout[DIM]` = fp32 (ACT_DT == DT, the legacy
     # path); `Dropout[DIM, p, SEED, bfloat16]` flows activations at bf16.

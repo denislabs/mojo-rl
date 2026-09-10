@@ -284,7 +284,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
         # Per-wheel friction from each wheel body's world position.
         var tiles = self._tiles()
         var n = self.track.track_length
-        var fr = InlineArray[Scalar[dtype], 4](fill=Scalar[dtype](0))
+        var fr = Array[Scalar[dtype], 4](fill=Scalar[dtype](0))
         for w in range(Self.NW):
             var wp = CarDynamicsMB.wheel_world_pos[
                 1, Self.STATE_SIZE, Self.BODIES_OFFSET

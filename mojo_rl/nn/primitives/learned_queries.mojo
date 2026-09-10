@@ -88,7 +88,7 @@ def _lq_grad_param_kernel[
 
 struct LearnedQueries[IGNORE_DIM: Int, N: Int, D: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IGNORE_DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IGNORE_DIM)
     comptime OUT_DIM = Self.N * Self.D
     comptime Q_SIZE = Self.N * Self.D
 

@@ -199,7 +199,7 @@ def track_mean_project_kernel[Dz: Int, N: Int, T: Int, S: Int](
     var m = S
     if T - t < S:
         m = T - t
-    var acc = InlineArray[Scalar[DT], Dz](fill=Scalar[DT](0))
+    var acc = Array[Scalar[DT], Dz](fill=Scalar[DT](0))
     for j in range(m):
         var base = ((n * T) + t + j) * Dz
         for k in range(Dz):

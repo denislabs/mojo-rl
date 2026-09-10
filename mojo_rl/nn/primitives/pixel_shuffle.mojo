@@ -100,7 +100,7 @@ struct PixelShuffle[GRID: Int, EMBED: Int, SCALE: Int](Module):
     comptime OUT_TOKENS: Int = Self.OG * Self.OG
     comptime OUT_CHAN: Int = Self.EMBED * Self.SCALE * Self.SCALE
     comptime N: Int = Self.GRID * Self.GRID * Self.EMBED
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.N)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.N)
     comptime OUT_DIM: Int = Self.N
 
     def __init__(out self):

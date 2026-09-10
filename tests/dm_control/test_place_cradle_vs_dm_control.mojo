@@ -42,7 +42,7 @@ Run with:
     pixi run mojo run -I . tests/dm_control/test_place_cradle_vs_dm_control.mojo
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
@@ -287,7 +287,7 @@ def test_place_cradle_position_stage_observation_matches_dm_control() raises:
     var env = ENV()
     _set_pedestal(env, PED_X, PED_Y, PED_Z)
 
-    var starts = InlineArray[Int, 12](fill=0)
+    var starts = Array[Int, 12](fill=0)
     starts[0] = OFF_ARM_POS
     starts[1] = OFF_ARM_TORQUE
     starts[2] = OFF_ARM_VEL
@@ -300,7 +300,7 @@ def test_place_cradle_position_stage_observation_matches_dm_control() raises:
     starts[9] = OFF_PROP_QUAT
     starts[10] = OFF_PROP_POS
     starts[11] = OFF_PEDESTAL_POS
-    var lens = InlineArray[Int, 12](fill=0)
+    var lens = Array[Int, 12](fill=0)
     lens[0] = 12
     lens[1] = 6
     lens[2] = 6
@@ -314,7 +314,7 @@ def test_place_cradle_position_stage_observation_matches_dm_control() raises:
     lens[10] = 3
     lens[11] = 3
 
-    var worst = InlineArray[Float64, 12](fill=0.0)
+    var worst = Array[Float64, 12](fill=0.0)
     var n_bad_contacts = 0
     for ci in range(4):
         var qpos = _qpos_of(ci)

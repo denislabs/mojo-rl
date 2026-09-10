@@ -104,7 +104,7 @@ def run_trial(world: Int, mut rng: Rng) raises -> TrialResult:
         batches.append(PairBatch[2, DT]())
     for _ in range(40):
         var a = rng.uniform_range(0.0, 6.283185307179586)
-        var x = InlineArray[Scalar[DT], 2](fill=0)
+        var x = Array[Scalar[DT], 2](fill=0)
         x[0] = Scalar[DT](cos(a))
         x[1] = Scalar[DT](sin(a))
         for step in range(4 * N):
@@ -112,7 +112,7 @@ def run_trial(world: Int, mut rng: Rng) raises -> TrialResult:
             var s = NOISE
             if world == WORLD_NOISY and e == BAD_EDGE:
                 s = 0.6
-            var y = InlineArray[Scalar[DT], 2](fill=0)
+            var y = Array[Scalar[DT], 2](fill=0)
             for i in range(2):
                 var v = Scalar[DT](0)
                 for j in range(2):

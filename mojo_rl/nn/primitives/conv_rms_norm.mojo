@@ -144,7 +144,7 @@ struct ConvRMSNorm[C_: Int, HW_: Int](Module):
     """Channel-wise RMSNorm over an NCHW conv map `[B, C_*HW_]` (γ size C_)."""
 
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.C_ * Self.HW_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.C_ * Self.HW_)
     comptime OUT_DIM = Self.C_ * Self.HW_
 
     var gamma: Param["gamma", False, Self.C_]

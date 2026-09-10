@@ -151,7 +151,7 @@ def _rsample_bwd_kernel[
 
 struct RSample[ACT_: Int](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=2 * Self.ACT_)
+    comptime IN_DIMS = Array[Int, 1](fill=2 * Self.ACT_)
     comptime OUT_DIM = Self.ACT_ + 1  # packed [action | log_prob]
 
     @staticmethod

@@ -11,8 +11,8 @@ Example usage:
     var indices = List[Int]()
     shuffle_indices(100, indices)  # Shuffles indices 0..99
 
-    # For InlineArray-based code
-    var indices = InlineArray[Int, 100](fill=0)
+    # For Array-based code
+    var indices = Array[Int, 100](fill=0)
     shuffle_indices_inline(100, indices)
 """
 
@@ -48,21 +48,21 @@ def shuffle_indices(n: Int, mut indices: List[Int]):
         indices[j] = temp
 
 
-def shuffle_indices_inline[N: Int](n: Int, mut indices: InlineArray[Int, N]):
-    """Generate shuffled indices [0, n) into an InlineArray using Fisher-Yates.
+def shuffle_indices_inline[N: Int](n: Int, mut indices: Array[Int, N]):
+    """Generate shuffled indices [0, n) into an Array using Fisher-Yates.
 
     Fills the first `n` elements with a random permutation of [0, n).
-    The InlineArray must have capacity >= n.
+    The Array must have capacity >= n.
 
     Args:
         n: Number of indices to generate (must be <= N).
         indices: Output array (first n elements will be shuffled).
 
     Parameters:
-        N: Maximum capacity of the InlineArray.
+        N: Maximum capacity of the Array.
 
     Example:
-        var indices = InlineArray[Int, 2048](fill=0)
+        var indices = Array[Int, 2048](fill=0)
         shuffle_indices_inline(buffer_len, indices)
     """
     # Initialize with sequential indices

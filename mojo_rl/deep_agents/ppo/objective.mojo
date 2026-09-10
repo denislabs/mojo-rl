@@ -189,8 +189,8 @@ struct PPOObjective[ACT_: Int](Module):
     comptime OUT_DIM: Int = 1
 
     @staticmethod
-    def _build_in_dims() -> InlineArray[Int, 4]:
-        var d = InlineArray[Int, 4](fill=1)
+    def _build_in_dims() -> Array[Int, 4]:
+        var d = Array[Int, 4](fill=1)
         d[0] = 2 * Self.ACT_
         d[1] = Self.ACT_
         return d^

@@ -337,7 +337,7 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & Deinitable):
 struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime ARITY: Int = 2
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.SC)
+    comptime IN_DIMS = Array[Int, 2](fill=Self.SC)
     comptime OUT_DIM = 2
 
     @staticmethod

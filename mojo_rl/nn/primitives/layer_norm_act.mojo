@@ -108,7 +108,7 @@ def _ln_act_forward_kernel[
     var my_sumsq = Scalar[LN_ACC](0)
 
     comptime if REG_CACHE:
-        var slice = InlineArray[Scalar[LN_ACC], ELEMS](fill=Scalar[LN_ACC](0))
+        var slice = Array[Scalar[LN_ACC], ELEMS](fill=Scalar[LN_ACC](0))
 
         comptime for e in range(ELEMS):
             var col = t + e * LN_TPB
@@ -197,8 +197,8 @@ def _ln_act_backward_dx_kernel[
     var my_g_xhat = Scalar[LN_ACC](0)
 
     comptime if REG_CACHE:
-        var g_s = InlineArray[Scalar[LN_ACC], ELEMS](fill=Scalar[LN_ACC](0))
-        var xh_s = InlineArray[Scalar[LN_ACC], ELEMS](fill=Scalar[LN_ACC](0))
+        var g_s = Array[Scalar[LN_ACC], ELEMS](fill=Scalar[LN_ACC](0))
+        var xh_s = Array[Scalar[LN_ACC], ELEMS](fill=Scalar[LN_ACC](0))
 
         comptime for e in range(ELEMS):
             var col = t + e * LN_TPB
@@ -305,7 +305,7 @@ def _ln_act_backward_dparams_kernel[
 
 struct LayerNormAct[DIM_: Int, OP: ElementOp, ADT: DType = DT](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
     comptime ACT_DT = Self.ADT
 

@@ -22,7 +22,7 @@ to a single whole-`nv` block, not to zero work."""
 
 from std.sys import simd_width_of
 from std.gpu import thread_idx, block_idx, block_dim
-from std.collections import InlineArray
+from std.collections import Array
 from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
@@ -163,7 +163,7 @@ def _ldl_solve_env[
 
     ⚠ THE SCRATCH CONTAINER IS CHOSEN BY THE LEG, THE LOOPS ARE ALWAYS THE
     RUNTIME DIM. `cap[DIMS.NV]()` is `NV` on a static provider — so `Scratch`
-    is the `InlineArray[.., NV]` that ships today, to the byte — and 0 on a
+    is the `Array[.., NV]` that ships today, to the byte — and 0 on a
     dynamic one, which selects the heap `List`. §10.7 measured that a
     fixed-cap stack array indexed by a runtime bound is 1.13-1.18x WORSE than
     the heap, so there is deliberately no third option here."""
@@ -637,8 +637,8 @@ def _ldl_solve_fields_mt_kernel[
     var tid = Int(thread_idx.x)
     if env >= BATCH:
         return
-    var y = InlineArray[L.element_type, NV](uninitialized=True)
-    var z = InlineArray[L.element_type, NV](uninitialized=True)
+    var y = Array[L.element_type, NV](uninitialized=True)
+    var z = Array[L.element_type, NV](uninitialized=True)
     # ⚠ THE TREE TABLE BY INDEX, NOT BY `_dof_block`. The first version
     # walked `_dof_block(trees, NV, sp)` at every boundary — that helper scans
     # the table from the top, so a thread paid `ntree^2` global loads before

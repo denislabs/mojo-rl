@@ -251,7 +251,7 @@ struct LineColorEntry(Copyable, Movable):
     var b: Float32
     var a: Float32
 
-    def __init__(out self, color: InlineArray[Float32, 4]):
+    def __init__(out self, color: Array[Float32, 4]):
         self.r = color[0]
         self.g = color[1]
         self.b = color[2]
@@ -269,8 +269,8 @@ struct LineColorEntry(Copyable, Movable):
         self.b = move.b
         self.a = move.a
 
-    def to_inline_array(self) -> InlineArray[Float32, 4]:
-        var out = InlineArray[Float32, 4](fill=Float32(0))
+    def to_inline_array(self) -> Array[Float32, 4]:
+        var out = Array[Float32, 4](fill=Float32(0))
         out[0] = self.r
         out[1] = self.g
         out[2] = self.b
@@ -3119,9 +3119,9 @@ struct Renderer3D(Movable):
         var u = uv[0]
         var v = uv[1]
 
-        # ⚠ InlineArray has no positional-variadic ctor; fill then assign.
-        var xs = InlineArray[Float32, 4](fill=Float32(0))
-        var ys = InlineArray[Float32, 4](fill=Float32(0))
+        # ⚠ Array has no positional-variadic ctor; fill then assign.
+        var xs = Array[Float32, 4](fill=Float32(0))
+        var ys = Array[Float32, 4](fill=Float32(0))
         xs[0] = x
         ys[0] = y
         xs[1] = x + w
@@ -4247,7 +4247,7 @@ struct Renderer3D(Movable):
         mut self,
         start: Vec3,
         end: Vec3,
-        color: InlineArray[Float32, 4],
+        color: Array[Float32, 4],
     ):
         """Add a line segment to the line accumulator."""
         if len(self.line_vertex_data) + 6 > MAX_LINE_VERTICES * 3:

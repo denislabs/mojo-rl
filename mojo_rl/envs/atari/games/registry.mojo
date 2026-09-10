@@ -66,13 +66,13 @@ def _bit(a: UInt8) -> UInt32:
 
 
 @always_inline
-def _rb(ram: InlineArray[UInt8, RAM_SIZE], addr: Int) -> Int:
+def _rb(ram: Array[UInt8, RAM_SIZE], addr: Int) -> Int:
     """Read a RAM byte by ALE address (mirrors masked to the 128-byte RAM)."""
     return Int(ram[addr & 0x7F])
 
 
 @always_inline
-def _sb(ram: InlineArray[UInt8, RAM_SIZE], addr: Int) -> Int:
+def _sb(ram: Array[UInt8, RAM_SIZE], addr: Int) -> Int:
     """Read a RAM byte as a SIGNED value (-128..127), like a C++
     signed-char cast (Backgammon piece counts, WordZapper rounds)."""
     var v = Int(ram[addr & 0x7F])

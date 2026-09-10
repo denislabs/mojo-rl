@@ -35,7 +35,7 @@ struct Dreamer4Tokenizer[
     USE_MAX: Bool = True,
 ](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.NP * Self.DP)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.NP * Self.DP)
     comptime OUT_DIM = Self.NP * Self.DP
     comptime ZN: Int = Self.L * Self.D_BOT
 

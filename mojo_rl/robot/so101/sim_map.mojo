@@ -57,15 +57,15 @@ struct SimJointMap(Copyable, Movable):
     second copy of a limit is a second thing to drift.
     """
 
-    var sign: InlineArray[Float64, SO101_N]
-    var offset_rad: InlineArray[Float64, SO101_N]
-    var sim_lo: InlineArray[Float64, SO101_N]
-    var sim_hi: InlineArray[Float64, SO101_N]
+    var sign: Array[Float64, SO101_N]
+    var offset_rad: Array[Float64, SO101_N]
+    var sim_lo: Array[Float64, SO101_N]
+    var sim_hi: Array[Float64, SO101_N]
 
     @staticmethod
     def identity(
-        var sim_lo: InlineArray[Float64, SO101_N],
-        var sim_hi: InlineArray[Float64, SO101_N],
+        var sim_lo: Array[Float64, SO101_N],
+        var sim_hi: Array[Float64, SO101_N],
     ) -> Self:
         """The SO-101 mapping: every sign +1, every offset 0.
 
@@ -73,8 +73,8 @@ struct SimJointMap(Copyable, Movable):
         `drive_mode=0`, which lerobot hard-codes for this arm. See the module
         docstring.
         """
-        var s = InlineArray[Float64, SO101_N](fill=1.0)
-        var o = InlineArray[Float64, SO101_N](fill=0.0)
+        var s = Array[Float64, SO101_N](fill=1.0)
+        var o = Array[Float64, SO101_N](fill=0.0)
         return Self(s^, o^, sim_lo^, sim_hi^)
 
     def differs_from_lerobot(self) -> Bool:

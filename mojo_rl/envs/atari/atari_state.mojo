@@ -111,7 +111,7 @@ struct AtariState(Copyable, Movable):
     # ========================================================================
     # RAM (128 bytes)
     # ========================================================================
-    var ram: InlineArray[UInt8, RAM_SIZE]
+    var ram: Array[UInt8, RAM_SIZE]
 
     # ========================================================================
     # ROM bank state (for bank-switched cartridges)
@@ -121,10 +121,10 @@ struct AtariState(Copyable, Movable):
     # E0 (Parker Bros): the 4K window is four 1K segments; segments 0-2 are
     # switchable among the eight 1K slices of the 8K image, segment 3 is
     # fixed to slice 7 (it holds the hotspots + vectors).
-    var e0_slices: InlineArray[UInt8, 4]
+    var e0_slices: Array[UInt8, 4]
     # Superchip (F8SC/F6SC) 128-byte RAM: write port $1000-$107F, read port
     # $1080-$10FF.
-    var sc_ram: InlineArray[UInt8, 128]
+    var sc_ram: Array[UInt8, 128]
 
     # ========================================================================
     # Mid-scanline PF snapshot (captured at cycle ~36 for left/right PF split)
@@ -167,9 +167,9 @@ struct AtariState(Copyable, Movable):
     # DelayQueue.
     var pending_tia_write_clock: Int
     var tia_log_count: Int
-    var tia_log_clock: InlineArray[Int, TIA_WRITE_LOG_CAP]
-    var tia_log_reg: InlineArray[UInt8, TIA_WRITE_LOG_CAP]
-    var tia_log_value: InlineArray[UInt8, TIA_WRITE_LOG_CAP]
+    var tia_log_clock: Array[Int, TIA_WRITE_LOG_CAP]
+    var tia_log_reg: Array[UInt8, TIA_WRITE_LOG_CAP]
+    var tia_log_value: Array[UInt8, TIA_WRITE_LOG_CAP]
 
     # Cycle-accurate TIA object counters (persist across frames). Used by
     # run_frame_cycle_accurate (the single rendering path).
@@ -259,13 +259,13 @@ struct AtariState(Copyable, Movable):
         self.game_aux = 0
 
         # RAM
-        self.ram = InlineArray[UInt8, RAM_SIZE](fill=0)
+        self.ram = Array[UInt8, RAM_SIZE](fill=0)
 
         # Bank
         self.current_bank = 0
         self.mapper = ROM_AUTO
         self.e0_slices = [4, 5, 6, 7]
-        self.sc_ram = InlineArray[UInt8, 128](fill=0)
+        self.sc_ram = Array[UInt8, 128](fill=0)
 
         # PF midpoint snapshot
         self.pf0_mid = 0
@@ -282,9 +282,9 @@ struct AtariState(Copyable, Movable):
         # Cycle-accurate TIA write log
         self.pending_tia_write_clock = 0
         self.tia_log_count = 0
-        self.tia_log_clock = InlineArray[Int, TIA_WRITE_LOG_CAP](fill=0)
-        self.tia_log_reg = InlineArray[UInt8, TIA_WRITE_LOG_CAP](fill=0)
-        self.tia_log_value = InlineArray[UInt8, TIA_WRITE_LOG_CAP](fill=0)
+        self.tia_log_clock = Array[Int, TIA_WRITE_LOG_CAP](fill=0)
+        self.tia_log_reg = Array[UInt8, TIA_WRITE_LOG_CAP](fill=0)
+        self.tia_log_value = Array[UInt8, TIA_WRITE_LOG_CAP](fill=0)
         self.ctia = CycleTIA()
         self.dbg_frame_lines = 0
         self.dbg_ystart = 0

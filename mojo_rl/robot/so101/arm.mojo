@@ -108,9 +108,9 @@ def joint_short(i: Int) -> String:
 struct SO101Calibration(Copyable, Movable):
     """What `lerobot-calibrate` left in the servos' EEPROM."""
 
-    var homing_offset: InlineArray[Int32, SO101_N]
-    var range_min: InlineArray[Int32, SO101_N]
-    var range_max: InlineArray[Int32, SO101_N]
+    var homing_offset: Array[Int32, SO101_N]
+    var range_min: Array[Int32, SO101_N]
+    var range_max: Array[Int32, SO101_N]
 
     def mid(self, i: Int) -> Float64:
         return 0.5 * (Float64(self.range_min[i]) + Float64(self.range_max[i]))
@@ -200,7 +200,7 @@ struct SO101Calibration(Copyable, Movable):
 struct SO101Arm(Movable):
     var bus: FeetechBus
     var cal: SO101Calibration
-    var ids: InlineArray[UInt8, SO101_N]
+    var ids: Array[UInt8, SO101_N]
     var max_step_ticks: Int
     """Largest change from the CURRENT position a single `write_goals` may
     command, per joint.
@@ -219,13 +219,13 @@ struct SO101Arm(Movable):
     ) raises:
         self.bus = FeetechBus(path^, baud)
         self.max_step_ticks = max_step_ticks
-        self.ids = InlineArray[UInt8, SO101_N](fill=0)
+        self.ids = Array[UInt8, SO101_N](fill=0)
         for i in range(SO101_N):
             self.ids[i] = UInt8(i + 1)
         self.cal = SO101Calibration(
-            InlineArray[Int32, SO101_N](fill=0),
-            InlineArray[Int32, SO101_N](fill=0),
-            InlineArray[Int32, SO101_N](fill=0),
+            Array[Int32, SO101_N](fill=0),
+            Array[Int32, SO101_N](fill=0),
+            Array[Int32, SO101_N](fill=0),
         )
 
         # Ping every servo before reading anything: a missing motor otherwise
@@ -335,14 +335,14 @@ struct SO101Arm(Movable):
                 + String(len(goals))
             )
 
-        var safe = InlineArray[Int32, SO101_N](fill=0)
+        var safe = Array[Int32, SO101_N](fill=0)
         for i in range(SO101_N):
             var lo = Int(self.cal.range_min[i])
             var hi = Int(self.cal.range_max[i])
             safe[i] = Int32(min(hi, max(lo, Int(goals[i]))))
 
         if self.max_step_ticks > 0:
-            var present = InlineArray[Int32, SO101_N](fill=0)
+            var present = Array[Int32, SO101_N](fill=0)
             var got = self.read_positions(Span(present))
             if got != SO101_N:
                 raise Error(

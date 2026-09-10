@@ -9,7 +9,7 @@ Each entry maps an opcode byte to:
 Ported from CuLE (BSD-3): cule/atari/opcodes.hpp, opcodes.cpp
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 
 # ============================================================================
 # Addressing Modes
@@ -190,8 +190,8 @@ def addr_mode_size(mode: UInt8) -> UInt8:
 # ============================================================================
 
 
-def _build_opcode_table() -> InlineArray[OpcodeEntry, 256]:
-    var t = InlineArray[OpcodeEntry, 256](uninitialized=True)
+def _build_opcode_table() -> Array[OpcodeEntry, 256]:
+    var t = Array[OpcodeEntry, 256](uninitialized=True)
 
     # Initialize all as KIL (illegal halt) — catches unimplemented opcodes
     for i in range(256):

@@ -43,7 +43,7 @@ FIXED tendons are not handled here — they are `length = sum coef_i * qpos_i`
 with a trivial Jacobian, and live in `constraints/equality_tendon.mojo`.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import sqrt
 from layout import Layout, LayoutTensor
 from ..fields.scratch import Scratch
@@ -412,10 +412,10 @@ def spatial_tendon_length_jac[
         # both belong to the WRAP GEOM's body, which is what makes a tendon
         # sliding over a fixed pulley contribute no moment there.
         var nseg = 1
-        var ax = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
-        var ay = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
-        var az = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
-        var ab = InlineArray[Int, 4](fill=0)
+        var ax = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        var ay = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        var az = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        var ab = Array[Int, 4](fill=0)
 
         ax[0] = p0[0]
         ay[0] = p0[1]

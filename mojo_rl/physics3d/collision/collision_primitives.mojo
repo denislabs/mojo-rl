@@ -904,9 +904,9 @@ def _cc_sphere_sphere[
     r2: Scalar[DTYPE],
     a2x: Scalar[DTYPE], a2y: Scalar[DTYPE], a2z: Scalar[DTYPE],
     slot: Int,
-    mut dist_out: InlineArray[Scalar[DTYPE], CC_MAX_POINTS],
-    mut pos_out: InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS],
-    mut normal_out: InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS],
+    mut dist_out: Array[Scalar[DTYPE], CC_MAX_POINTS],
+    mut pos_out: Array[Scalar[DTYPE], 3 * CC_MAX_POINTS],
+    mut normal_out: Array[Scalar[DTYPE], 3 * CC_MAX_POINTS],
 ) -> Int:
     """`mjraw_SphereSphere` writing into `slot`. Returns 0 or 1.
 
@@ -984,9 +984,9 @@ def capsule_capsule_manifold[
     b_qw: Scalar[DTYPE],
     b_half_len: Scalar[DTYPE], b_radius: Scalar[DTYPE],
     margin: Scalar[DTYPE],
-    mut dist_out: InlineArray[Scalar[DTYPE], CC_MAX_POINTS],
-    mut pos_out: InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS],
-    mut normal_out: InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS],
+    mut dist_out: Array[Scalar[DTYPE], CC_MAX_POINTS],
+    mut pos_out: Array[Scalar[DTYPE], 3 * CC_MAX_POINTS],
+    mut normal_out: Array[Scalar[DTYPE], 3 * CC_MAX_POINTS],
 ) -> Int:
     """Full contact MANIFOLD for a capsule/capsule pair — up to TWO points.
 
@@ -2096,7 +2096,7 @@ def _sel3[
 
     ⚠⚠ THIS EXISTS BECAUSE A PER-THREAD ARRAY MISCOMPUTES ON METAL — defect
     27. `_capsule_box_second_pos` held `s`/`hax`/`pos`/`axis` as
-    `InlineArray[Scalar, 3]` and indexed them by a runtime axis. Measured from
+    `Array[Scalar, 3]` and indexed them by a runtime axis. Measured from
     the LIVE GPU detection run, with the parameter and the array element
     smuggled out side by side through the contact record:
 
@@ -2483,9 +2483,9 @@ def box_capsule_manifold[
     cap_half_len: Scalar[DTYPE],
     cap_radius: Scalar[DTYPE],
     margin: Scalar[DTYPE],
-    mut dist_out: InlineArray[Scalar[DTYPE], CB_MAX_POINTS],
-    mut pos_out: InlineArray[Scalar[DTYPE], 3 * CB_MAX_POINTS],
-    mut normal_out: InlineArray[Scalar[DTYPE], 3 * CB_MAX_POINTS],
+    mut dist_out: Array[Scalar[DTYPE], CB_MAX_POINTS],
+    mut pos_out: Array[Scalar[DTYPE], 3 * CB_MAX_POINTS],
+    mut normal_out: Array[Scalar[DTYPE], 3 * CB_MAX_POINTS],
 ) -> Int:
     """Full contact MANIFOLD for a box/capsule pair — up to TWO points.
 
@@ -3497,7 +3497,7 @@ def _bb_quat_mat[
     DTYPE: DType
 ](
     qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE]
-) -> InlineArray[Scalar[DTYPE], 9]:
+) -> Array[Scalar[DTYPE], 9]:
     """Rotation matrix, ROW-MAJOR (`m[3 * row + col]`), matching MuJoCo's
     `geom_xmat` layout so the transcribed index arithmetic carries over."""
     var c0 = rotate_vector_by_quat(
@@ -3509,7 +3509,7 @@ def _bb_quat_mat[
     var c2 = rotate_vector_by_quat(
         Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1), qx, qy, qz, qw
     )
-    var m = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var m = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     m[0] = c0[0]
     m[1] = c1[0]
     m[2] = c2[0]
@@ -3532,7 +3532,7 @@ def _bb_outside_box[
     bx: Scalar[DTYPE],
     by: Scalar[DTYPE],
     bz: Scalar[DTYPE],
-    mat: InlineArray[Scalar[DTYPE], 9],
+    mat: Array[Scalar[DTYPE], 9],
     sx: Scalar[DTYPE],
     sy: Scalar[DTYPE],
     sz: Scalar[DTYPE],
@@ -3567,19 +3567,19 @@ def _bb_post_filter[
     DTYPE: DType
 ](
     n: Int,
-    mut dist_out: InlineArray[Scalar[DTYPE], BB_MAX_POINTS],
-    mut pos_out: InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS],
+    mut dist_out: Array[Scalar[DTYPE], BB_MAX_POINTS],
+    mut pos_out: Array[Scalar[DTYPE], 3 * BB_MAX_POINTS],
     a_x: Scalar[DTYPE],
     a_y: Scalar[DTYPE],
     a_z: Scalar[DTYPE],
-    mat1: InlineArray[Scalar[DTYPE], 9],
+    mat1: Array[Scalar[DTYPE], 9],
     a_hx: Scalar[DTYPE],
     a_hy: Scalar[DTYPE],
     a_hz: Scalar[DTYPE],
     b_x: Scalar[DTYPE],
     b_y: Scalar[DTYPE],
     b_z: Scalar[DTYPE],
-    mat2: InlineArray[Scalar[DTYPE], 9],
+    mat2: Array[Scalar[DTYPE], 9],
     b_hx: Scalar[DTYPE],
     b_hy: Scalar[DTYPE],
     b_hz: Scalar[DTYPE],
@@ -3589,7 +3589,7 @@ def _bb_post_filter[
     points that sit outside one box without being inside the other, then drop
     exact duplicates. Without it either path emits points that are
     geometrically off both boxes."""
-    var bad = InlineArray[Bool, BB_MAX_POINTS](fill=False)
+    var bad = Array[Bool, BB_MAX_POINTS](fill=False)
     var ratio = Scalar[DTYPE](1.01)
     for i in range(n):
         var o1 = _bb_outside_box[DTYPE](
@@ -3666,19 +3666,19 @@ def _bb_edge_manifold[
     a_x: Scalar[DTYPE],
     a_y: Scalar[DTYPE],
     a_z: Scalar[DTYPE],
-    mat1: InlineArray[Scalar[DTYPE], 9],
-    size1: InlineArray[Scalar[DTYPE], 3],
-    size2: InlineArray[Scalar[DTYPE], 3],
-    pos21: InlineArray[Scalar[DTYPE], 3],
-    rot: InlineArray[Scalar[DTYPE], 9],
-    rotabs: InlineArray[Scalar[DTYPE], 9],
+    mat1: Array[Scalar[DTYPE], 9],
+    size1: Array[Scalar[DTYPE], 3],
+    size2: Array[Scalar[DTYPE], 3],
+    pos21: Array[Scalar[DTYPE], 3],
+    rot: Array[Scalar[DTYPE], 9],
+    rotabs: Array[Scalar[DTYPE], 9],
     cle1: Int,
     cle2: Int,
-    clnorm: InlineArray[Scalar[DTYPE], 3],
+    clnorm: Array[Scalar[DTYPE], 3],
     inflag: Int,
-    mut dist_out: InlineArray[Scalar[DTYPE], BB_MAX_POINTS],
-    mut pos_out: InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS],
-    mut normal_out: InlineArray[Scalar[DTYPE], 3],
+    mut dist_out: Array[Scalar[DTYPE], BB_MAX_POINTS],
+    mut pos_out: Array[Scalar[DTYPE], 3 * BB_MAX_POINTS],
+    mut normal_out: Array[Scalar[DTYPE], 3],
 ) -> Int:
     """The `code >= 12` half of `_boxbox` — the EDGE-EDGE manifold.
 
@@ -3759,21 +3759,21 @@ def _bb_edge_manifold[
         f0 = Scalar[DTYPE](-1)
         f2 = Scalar[DTYPE](-1)
 
-    var p = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var p = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     p[0] = pos21[i0] * f0
     p[1] = pos21[i1] * f1
     p[2] = pos21[i2] * f2
-    var rnorm = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var rnorm = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     rnorm[0] = clnorm[i0] * f0
     rnorm[1] = clnorm[i1] * f1
     rnorm[2] = clnorm[i2] * f2
 
-    var r = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var r = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     for c in range(3):
         r[0 * 3 + c] = rot[i0 * 3 + c] * f0
         r[1 * 3 + c] = rot[i1 * 3 + c] * f1
         r[2 * 3 + c] = rot[i2 * 3 + c] * f2
-    var rt = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var rt = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     for i in range(3):
         for j in range(3):
             rt[3 * i + j] = r[3 * j + i]
@@ -3781,7 +3781,7 @@ def _bb_edge_manifold[
     # ⚠ MuJoCo applies rotmore^T here where the face path applies rotmore.
     # Every entry in the table is an involution as a permutation, so abs()
     # makes the two agree — transcribed in the transposed form anyway.
-    var s = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var s = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     s[i0] = abs(size1[0])
     s[i1] = abs(size1[1])
     s[i2] = abs(size1[2])
@@ -3793,7 +3793,7 @@ def _bb_edge_manifold[
 
     # The two box-2 edges that straddle the winning axis: four corners, two per
     # edge, differing only in the sign along `ax1`.
-    var crn = InlineArray[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
+    var crn = Array[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
     var s_ax1 = Scalar[DTYPE](1) if (cle2 & (1 << ax1)) != 0 else Scalar[DTYPE](
         -1
     )
@@ -3813,7 +3813,7 @@ def _bb_edge_manifold[
         crn[2 * 3 + c] = base + rt[3 * q2 + c] * size2[q2]
         crn[3 * 3 + c] = base - rt[3 * q2 + c] * size2[q2]
 
-    var axi = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var axi = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     for c in range(3):
         axi[0 * 3 + c] = crn[0 * 3 + c]
         axi[1 * 3 + c] = crn[1 * 3 + c] - crn[0 * 3 + c]
@@ -3827,14 +3827,14 @@ def _bb_edge_manifold[
 
     # Project the four corners onto the reference plane ALONG the contact
     # normal (not along z) — `pu` keeps the unprojected originals.
-    var pu = InlineArray[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
+    var pu = Array[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
     for i in range(4):
         var c1 = -crn[3 * i + 2] * (Scalar[DTYPE](1) / rnorm[2])
         for c in range(3):
             pu[3 * i + c] = crn[3 * i + c]
             crn[3 * i + c] = crn[3 * i + c] + rnorm[c] * c1
 
-    var pts = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var pts = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     for c in range(3):
         pts[0 * 3 + c] = crn[0 * 3 + c]
         pts[1 * 3 + c] = crn[1 * 3 + c] - crn[0 * 3 + c]
@@ -3842,8 +3842,8 @@ def _bb_edge_manifold[
 
     # Four edges of the projected quad, in both the projected (`lines`) and
     # unprojected (`linesu`) frames. `m == 3` unconditionally on this path.
-    var lines = InlineArray[Scalar[DTYPE], 24](fill=Scalar[DTYPE](0))
-    var linesu = InlineArray[Scalar[DTYPE], 24](fill=Scalar[DTYPE](0))
+    var lines = Array[Scalar[DTYPE], 24](fill=Scalar[DTYPE](0))
+    var linesu = Array[Scalar[DTYPE], 24](fill=Scalar[DTYPE](0))
     for c in range(3):
         lines[0 * 6 + c] = pts[0 + c]
         lines[0 * 6 + 3 + c] = pts[3 + c]
@@ -3865,10 +3865,10 @@ def _bb_edge_manifold[
         linesu[3 * 6 + c] = axi[0 + c] + axi[6 + c]
         linesu[3 * 6 + 3 + c] = axi[3 + c]
 
-    var pnt = InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS](
+    var pnt = Array[Scalar[DTYPE], 3 * BB_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
-    var depth = InlineArray[Scalar[DTYPE], BB_MAX_POINTS](
+    var depth = Array[Scalar[DTYPE], BB_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
     var n = 0
@@ -4016,7 +4016,7 @@ def _bb_edge_manifold[
 
     # Back to world. The reference box is always box 1 here, and the normal is
     # `clnorm` rotated out of the reference frame, not the frame's +z.
-    var rw = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var rw = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     for row in range(3):
         rw[3 * row + 0] = mat1[3 * row + i0] * f0
         rw[3 * row + 1] = mat1[3 * row + i1] * f1
@@ -4070,9 +4070,9 @@ def box_box_manifold[
     b_hz: Scalar[DTYPE],
     margin: Scalar[DTYPE],
     mut n_out: Int,
-    mut dist_out: InlineArray[Scalar[DTYPE], BB_MAX_POINTS],
-    mut pos_out: InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS],
-    mut normal_out: InlineArray[Scalar[DTYPE], 3],
+    mut dist_out: Array[Scalar[DTYPE], BB_MAX_POINTS],
+    mut pos_out: Array[Scalar[DTYPE], 3 * BB_MAX_POINTS],
+    mut normal_out: Array[Scalar[DTYPE], 3],
 ) -> Int:
     """Full contact MANIFOLD for a colliding box pair.
 
@@ -4109,11 +4109,11 @@ def box_box_manifold[
     var mat1 = _bb_quat_mat[DTYPE](a_qx, a_qy, a_qz, a_qw)
     var mat2 = _bb_quat_mat[DTYPE](b_qx, b_qy, b_qz, b_qw)
 
-    var size1 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var size1 = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     size1[0] = a_hx
     size1[1] = a_hy
     size1[2] = a_hz
-    var size2 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var size2 = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     size2[0] = b_hx
     size2[1] = b_hy
     size2[2] = b_hz
@@ -4122,29 +4122,29 @@ def box_box_manifold[
     var dx = b_x - a_x
     var dy = b_y - a_y
     var dz = b_z - a_z
-    var pos21 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    var pos12 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var pos21 = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var pos12 = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     for i in range(3):
         pos21[i] = mat1[i] * dx + mat1[3 + i] * dy + mat1[6 + i] * dz
         pos12[i] = -(mat2[i] * dx + mat2[3 + i] * dy + mat2[6 + i] * dz)
 
     # rot = mat1^T mat2, row-major; rott = rot^T
-    var rot = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var rot = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     for i in range(3):
         for j in range(3):
             var acc = Scalar[DTYPE](0)
             for k in range(3):
                 acc += mat1[3 * k + i] * mat2[3 * k + j]
             rot[3 * i + j] = acc
-    var rott = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-    var rotabs = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var rott = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var rotabs = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     for i in range(3):
         for j in range(3):
             rott[3 * i + j] = rot[3 * j + i]
             rotabs[3 * i + j] = abs(rot[3 * i + j])
 
-    var plen1 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    var plen2 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var plen1 = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var plen2 = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     for i in range(3):
         var s2 = Scalar[DTYPE](0)
         var s1 = Scalar[DTYPE](0)
@@ -4227,7 +4227,7 @@ def box_box_manifold[
     # itself (`clnorm`), and which side of it box 2's centre sits on (`inflag`).
     var cle1 = 0
     var cle2 = 0
-    var clnorm = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var clnorm = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     var inflag = 0
     for i in range(3):
         for j in range(3):
@@ -4346,10 +4346,10 @@ def box_box_manifold[
         f2 = Scalar[DTYPE](-1)
 
     # r = rotmore * (q2 ? rot^T : rot); p, tmp1 = rotmore * (vector)
-    var src = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-    var pv = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    var sv = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    var s = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var src = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var pv = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var sv = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var s = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     if q2 != 0:
         for i in range(9):
             src[i] = rott[i]
@@ -4365,28 +4365,28 @@ def box_box_manifold[
             sv[i] = size1[i]
             s[i] = size2[i]
 
-    var r = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var r = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     for c in range(3):
         r[0 * 3 + c] = src[i0 * 3 + c] * f0
         r[1 * 3 + c] = src[i1 * 3 + c] * f1
         r[2 * 3 + c] = src[i2 * 3 + c] * f2
 
-    var p = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var p = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     p[0] = pv[i0] * f0
     p[1] = pv[i1] * f1
     p[2] = pv[i2] * f2
-    var tmp1 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var tmp1 = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     tmp1[0] = sv[i0] * f0
     tmp1[1] = sv[i1] * f1
     tmp1[2] = sv[i2] * f2
 
     # `rt` row i is the world direction of the incident box's local axis i.
-    var rt = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var rt = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     for i in range(3):
         for j in range(3):
             rt[3 * i + j] = r[3 * j + i]
 
-    var ss = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var ss = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     for i in range(3):
         ss[i] = abs(tmp1[i])
     var lx = ss[0]
@@ -4400,7 +4400,7 @@ def box_box_manifold[
         if r[6 + i] < Scalar[DTYPE](0):
             clcorner += 1 << i
 
-    var pts = InlineArray[Scalar[DTYPE], 18](fill=Scalar[DTYPE](0))
+    var pts = Array[Scalar[DTYPE], 18](fill=Scalar[DTYPE](0))
     for c in range(3):
         var acc = p[c]
         for i in range(3):
@@ -4426,7 +4426,7 @@ def box_box_manifold[
         pts[3 * 5 + c] = pts[3 * 3 + c] + pts[6 + c]
 
     # Four (origin, direction) edges of the incident face.
-    var lines = InlineArray[Scalar[DTYPE], 24](fill=Scalar[DTYPE](0))
+    var lines = Array[Scalar[DTYPE], 24](fill=Scalar[DTYPE](0))
     var k = 0
     if m > 1:
         for c in range(3):
@@ -4447,7 +4447,7 @@ def box_box_manifold[
             lines[6 * k + 3 + c] = pts[3 + c]
         k += 1
 
-    var pnt = InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS](
+    var pnt = Array[Scalar[DTYPE], 3 * BB_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
     var n = 0
@@ -4539,7 +4539,7 @@ def box_box_manifold[
 
     # Drop points above the reference face, then halve z to put the contact
     # POINT midway through the overlap. `dist` keeps the full depth.
-    var depth = InlineArray[Scalar[DTYPE], BB_MAX_POINTS](
+    var depth = Array[Scalar[DTYPE], BB_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
     var kept = 0
@@ -4554,7 +4554,7 @@ def box_box_manifold[
     n = kept
 
     # Back to world: rw = (q2 ? mat2 : mat1) * rotmore^T.
-    var rw = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var rw = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     var mref = mat2.copy() if q2 != 0 else mat1.copy()
     # rotmore^T has a single non-zero per column: column a is e_{idx[a]} * f_a.
     for row in range(3):

@@ -79,7 +79,7 @@ def _modulate_backward_kernel[
 
 struct Modulate[DIM_: Int](Module):
     comptime ARITY = 3
-    comptime IN_DIMS = InlineArray[Int, 3](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 3](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
 
     var cache_x: Tensor  # [BATCH, DIM]

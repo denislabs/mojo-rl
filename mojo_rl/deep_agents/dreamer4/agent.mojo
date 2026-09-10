@@ -91,7 +91,7 @@ struct Dreamer4Agent[
                                       #  imagination compute); heads stay CPU
 ](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=1)
+    comptime IN_DIMS = Array[Int, 1](fill=1)
     comptime OUT_DIM = 1
 
     comptime AGD: Int = Self.NAGENT * Self.D          # agent-token width = h_t dim

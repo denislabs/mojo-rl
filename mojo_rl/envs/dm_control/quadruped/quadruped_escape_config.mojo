@@ -590,7 +590,7 @@ struct DMQuadrupedEscapeConfig(Phyics3dEnvConfig):
         draws `bump_res^2` values in order from host `random_float64`; here bump
         `k` is `Random(seed=key, offset=k).step_uniform()[0]`, so a lane can
         evaluate any bump without holding the grid. That matters twice over:
-        a 900-entry per-thread `InlineArray` would be 3.6 KB of stack per lane,
+        a 900-entry per-thread `Array` would be 3.6 KB of stack per lane,
         AND indexing one by a runtime value is the Metal miscompute class this
         engine has now hit four times. No array, no index, no exposure.
 

@@ -60,7 +60,7 @@ comptime GOLD_OBS = 0.10425555426627398  # checksum of the final obs across both
 
 
 @always_inline
-def _controller(obs: InlineArray[Float64, OBS_DIM]) -> Float64:
+def _controller(obs: Array[Float64, OBS_DIM]) -> Float64:
     """Deterministic PD balancing controller on [x, theta, xd, thd]."""
     var u = 0.3 * obs[0] + 0.8 * obs[2] + 6.0 * obs[1] + 1.5 * obs[3]
     if u > CTRL_MAX:
@@ -100,7 +100,7 @@ def main() raises:
         extract_obs_qpos_qvel["gpu", DTYPE, OBS_QPOS_SKIP=0, BATCH=BATCH](d, obs_t, ctx)
         obs_t.download(ctx)
         for e in range(BATCH):
-            var obs_arr = InlineArray[Float64, OBS_DIM](uninitialized=True)
+            var obs_arr = Array[Float64, OBS_DIM](uninitialized=True)
             for i in range(OBS_DIM):
                 obs_arr[i] = Float64(obs_t.data[e * OBS_DIM + i])
             var u = _controller(obs_arr)
@@ -159,7 +159,7 @@ def main() raises:
     for _ in range(N_CTRL_STEPS):
         extract_obs_qpos_qvel["cpu", DTYPE, OBS_QPOS_SKIP=0, BATCH=BATCH](dc, obs_c)
         for e in range(BATCH):
-            var obs_arr = InlineArray[Float64, OBS_DIM](uninitialized=True)
+            var obs_arr = Array[Float64, OBS_DIM](uninitialized=True)
             for i in range(OBS_DIM):
                 obs_arr[i] = Float64(obs_c.data[e * OBS_DIM + i])
             var u = _controller(obs_arr)

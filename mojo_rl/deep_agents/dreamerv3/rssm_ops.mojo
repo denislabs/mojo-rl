@@ -294,7 +294,7 @@ def _st_bwd_kernel[NG: Int, C: Int](
 
 struct ActionSquash[ACT: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.ACT)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.ACT)
     comptime OUT_DIM = Self.ACT
 
     @staticmethod
@@ -392,8 +392,8 @@ struct BlockGroupAssemble[DETER: Int, H: Int, BLOCKS: Int](Module):
         return String("BlockGroupAssemble")
 
     @staticmethod
-    def _mk_in_dims() -> InlineArray[Int, 4]:
-        var d = InlineArray[Int, 4](fill=Self.H)
+    def _mk_in_dims() -> Array[Int, 4]:
+        var d = Array[Int, 4](fill=Self.H)
         d[0] = Self.DETER
         return d^
 
@@ -547,8 +547,8 @@ struct GRUGate[DETER: Int, BLOCKS: Int](Module):
         return String("GRUGate")
 
     @staticmethod
-    def _mk_in_dims() -> InlineArray[Int, 2]:
-        var d = InlineArray[Int, 2](fill=Self.DETER)
+    def _mk_in_dims() -> Array[Int, 2]:
+        var d = Array[Int, 2](fill=Self.DETER)
         d[0] = Self.GRU_DIM
         return d^
 
@@ -688,7 +688,7 @@ struct GRUGate[DETER: Int, BLOCKS: Int](Module):
 struct StraightThroughSample[STOCH: Int, CLASSES: Int](Module):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SC)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.SC)
     comptime OUT_DIM = Self.SC
 
     @staticmethod

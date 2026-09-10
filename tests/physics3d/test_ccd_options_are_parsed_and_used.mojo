@@ -322,7 +322,7 @@ def test_epa_actually_consumes_the_tolerance() raises:
     var _ng = _no_graph_epa()
     var _ne = _no_edges_epa()
     var ws = ccd_ws_alloc[DTYPE]()
-    var out = InlineArray[Float64, 8](fill=0.0)
+    var out = Array[Float64, 8](fill=0.0)
     for i in range(2):
         var tol = 1e-6 if i == 0 else 2e-2
         # ⚠⚠ CYLINDER FIRST, AND THE MESH OPERAND MOVES WITH IT. `gjk_epa`

@@ -143,7 +143,7 @@ struct Parallel[*BRANCHES: Module](Module):
     comptime ARITY = 1
     comptime N = Self.BRANCHES.length
     comptime IN = Self.BRANCHES[0].IN_DIMS[0]
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.BRANCHES[0].IN_DIMS[0])
+    comptime IN_DIMS = Array[Int, 1](fill=Self.BRANCHES[0].IN_DIMS[0])
     comptime OUT_DIM = _total_out_dim[*Self.BRANCHES]()
     # All branches share one activation dtype (asserted in __init__); concat
     # changes OUT_DIM but not the dtype, so this is the slab/out/grad dtype.

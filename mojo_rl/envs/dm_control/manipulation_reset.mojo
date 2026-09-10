@@ -32,7 +32,7 @@ predicate is task policy of the purest kind (it asks which ENTITY owns a
 geom), so it lives here too.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 
 from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.dynamics.ik_site import set_site_to_xpos
@@ -67,7 +67,7 @@ comptime BODY_FIXED: Int = 3  # external without one — INCLUDING the world
 
 def has_relevant_collisions[DTYPE: DType, D: DimsLike](
     d: Data[DTYPE, D, 1],
-    body_class: InlineArray[Int, D.NBODY],
+    body_class: Array[Int, D.NBODY],
 ) -> Bool:
     """`tcp_initializer.py::ToolCenterPointInitializer._has_relevant_collisions`.
 
@@ -141,10 +141,10 @@ def set_grasp[
     DTYPE: DType, NHAND: Int
 ](
     mut qpos: List[Scalar[DTYPE]],
-    qpos_adr: InlineArray[Int, NHAND],
-    range_min: InlineArray[Float64, NHAND],
-    range_max: InlineArray[Float64, NHAND],
-    close_factors: InlineArray[Float64, NHAND],
+    qpos_adr: Array[Int, NHAND],
+    range_min: Array[Float64, NHAND],
+    range_max: Array[Float64, NHAND],
+    close_factors: Array[Float64, NHAND],
 ):
     """`kinova/jaco_hand.py::JacoHand.set_grasp`.
 
@@ -175,10 +175,10 @@ def set_grasp[
 def sample_bbox_uniform[
     DTYPE: DType
 ](
-    lower: InlineArray[Float64, 3],
-    upper: InlineArray[Float64, 3],
-    draws: InlineArray[Float64, 3],
-) -> InlineArray[Scalar[DTYPE], 3]:
+    lower: Array[Float64, 3],
+    upper: Array[Float64, 3],
+    draws: Array[Float64, 3],
+) -> Array[Scalar[DTYPE], 3]:
     """`distributions.Uniform(*bbox)` — one point in an axis-aligned box.
 
     `draws` are three independent uniforms on [0, 1); the reference obtains
@@ -191,7 +191,7 @@ def sample_bbox_uniform[
     `(-0.2, -0.2, 0.02) .. (0.2, 0.2, 0.4)`, so a test on that task alone
     CANNOT tell them apart — `reach_duplo` is where they differ.
     """
-    var out = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     for k in range(3):
         out[k] = Scalar[DTYPE](
             lower[k] + (upper[k] - lower[k]) * draws[k]
@@ -231,13 +231,13 @@ def tool_center_point_initializer[
     mut mf: Model[DTYPE, D],
     site: Int,
     target_positions: List[Scalar[DTYPE]],
-    target_quat: InlineArray[Scalar[DTYPE], 4],
-    dof_idx: InlineArray[Int, NDOF],
-    qpos_adr: InlineArray[Int, NDOF],
-    lower: InlineArray[Float64, NDOF],
-    upper: InlineArray[Float64, NDOF],
+    target_quat: Array[Scalar[DTYPE], 4],
+    dof_idx: Array[Int, NDOF],
+    qpos_adr: Array[Int, NDOF],
+    lower: Array[Float64, NDOF],
+    upper: Array[Float64, NDOF],
     retry_poses: List[Scalar[DTYPE]],
-    body_class: InlineArray[Int, D.NBODY],
+    body_class: Array[Int, D.NBODY],
     ignore_collisions: Bool = False,
     max_ik_attempts: Int = 10,
     max_rejection_samples: Int = 10,
@@ -272,7 +272,7 @@ def tool_center_point_initializer[
     solve. Testing contacts without re-running FK would test the pre-wrap
     pose.
     """
-    var initial = InlineArray[Scalar[DTYPE], NDOF](fill=Scalar[DTYPE](0))
+    var initial = Array[Scalar[DTYPE], NDOF](fill=Scalar[DTYPE](0))
     for a in range(NDOF):
         initial[a] = d.qpos.data[qpos_adr[a]]
 
@@ -288,7 +288,7 @@ def tool_center_point_initializer[
             # which would burn the remaining budget on a pose already known
             # to fail and report it as a genuine exhaustion.
             break
-        var target_pos = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        var target_pos = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
         for k in range(3):
             target_pos[k] = target_positions[s * 3 + k]
 

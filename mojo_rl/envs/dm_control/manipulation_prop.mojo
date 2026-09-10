@@ -41,7 +41,7 @@ whose bit stream cannot be reproduced in Mojo, so a gate drives both sides
 from the same numbers instead of comparing distributions.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt, sin, cos, pi
 
 from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
@@ -94,14 +94,14 @@ solver must pass its own value rather than this."""
 @always_inline
 def uniform_z_rotation[
     DTYPE: DType
-](draw: Float64) -> InlineArray[Scalar[DTYPE], 4]:
+](draw: Float64) -> Array[Scalar[DTYPE], 4]:
     """`workspaces.uniform_z_rotation` — a yaw drawn from U(-pi, pi).
 
     Returns (x, y, z, w), OUR quaternion order. The reference builds
     `[cos(a/2), 0, 0, sin(a/2)]` in MuJoCo's (w, x, y, z).
     """
     var angle = -pi + 2.0 * pi * draw
-    var out = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     out[2] = Scalar[DTYPE](sin(0.5 * angle))
     out[3] = Scalar[DTYPE](cos(0.5 * angle))
     return out^
@@ -111,8 +111,8 @@ def set_free_prop_pose[DTYPE: DType, D: DimsLike](
     mut d: Data[DTYPE, D, 1],
     qpos_adr: Int,
     dof_adr: Int,
-    pos: InlineArray[Scalar[DTYPE], 3],
-    quat: InlineArray[Scalar[DTYPE], 4],
+    pos: Array[Scalar[DTYPE], 3],
+    quat: Array[Scalar[DTYPE], 4],
 ):
     """`prop.set_pose` for a prop on a free joint — 7 qpos, and zero its qvel.
 
@@ -243,8 +243,8 @@ def place_free_prop[DTYPE: DType, D: DimsLike](
     if n > max_attempts:
         n = max_attempts
     for a in range(n):
-        var pos = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-        var quat = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        var pos = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        var quat = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
         for k in range(3):
             pos[k] = poses[a * 7 + k]
         for k in range(4):
@@ -437,8 +437,8 @@ def settle_free_props[
     settle moves it by 5.2e-06. A Duplo dropped from `_PROP_Z_OFFSET` = 1 mm
     does real work. One loop, both cases.
     """
-    var hold_qpos = InlineArray[Float64, NHOLD](fill=0.0)
-    var hold_qvel = InlineArray[Float64, NHOLD](fill=0.0)
+    var hold_qpos = Array[Float64, NHOLD](fill=0.0)
+    var hold_qvel = Array[Float64, NHOLD](fill=0.0)
     for i in range(NHOLD):
         hold_qpos[i] = Float64(d.qpos.data[i])
         hold_qvel[i] = Float64(d.qvel.data[i])

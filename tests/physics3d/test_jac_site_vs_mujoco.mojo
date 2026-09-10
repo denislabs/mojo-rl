@@ -53,7 +53,7 @@ Run with:
 from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
-from std.collections import InlineArray
+from std.collections import Array
 from max.gpu.host import DeviceContext
 from layout import Layout
 

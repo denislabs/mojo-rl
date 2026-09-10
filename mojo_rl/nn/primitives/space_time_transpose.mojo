@@ -98,7 +98,7 @@ def _stt_vec_kernel[
 
 struct SpaceTimeTranspose[T: Int, S: Int, D: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.T * Self.S * Self.D)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.T * Self.S * Self.D)
     # `Array` is not `ImplicitlyCopyable` (Mojo 1.0): indexing the comptime
     # `IN_DIMS` from a runtime context would materialize the whole array.
     comptime IN_DIM0 = Self.T * Self.S * Self.D

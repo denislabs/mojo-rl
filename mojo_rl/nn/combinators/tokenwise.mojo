@@ -25,7 +25,7 @@ from ..core.amp import AMPPolicy, NoAMP
 
 struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](
+    comptime IN_DIMS = Array[Int, 1](
         fill=Self.SEQ_LEN * Self.Inner.IN_DIMS[0]
     )
     comptime OUT_DIM = Self.SEQ_LEN * Self.Inner.OUT_DIM

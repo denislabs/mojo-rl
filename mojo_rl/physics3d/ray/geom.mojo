@@ -430,7 +430,7 @@ struct RayBoxHit[DTYPE: DType](Copyable, Movable):
 
     var t: Scalar[Self.DTYPE]
     var normal: Vec3Generic[Self.DTYPE]
-    # ⚠⚠ SIX NAMED SCALARS, NOT AN `InlineArray`, AND THAT IS A GPU
+    # ⚠⚠ SIX NAMED SCALARS, NOT AN `Array`, AND THAT IS A GPU
     # REQUIREMENT RATHER THAN A STYLE CHOICE. A per-thread array indexed by a
     # RUNTIME value reads back the WRONG VALUE on Metal, silently — four times
     # in this engine now (`87960e10` is the most recent, and its message says

@@ -223,7 +223,7 @@ struct TileCollision:
             MutAnyOrigin,
         ],
         num_active_tiles: Int,
-    ) -> InlineArray[Scalar[dtype], NUM_WHEELS]:
+    ) -> Array[Scalar[dtype], NUM_WHEELS]:
         """Get friction limits for all 4 wheels.
 
         Computes wheel world positions from hull state and looks up
@@ -277,7 +277,7 @@ struct TileCollision:
             rr_x, rr_y, tiles, num_active_tiles
         )
 
-        var result = InlineArray[Scalar[dtype], NUM_WHEELS](
+        var result = Array[Scalar[dtype], NUM_WHEELS](
             fill=Scalar[dtype](0)
         )
         result[0] = fl_limit

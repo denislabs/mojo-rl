@@ -61,7 +61,7 @@ def atari_frames_kernel(
     if i < n_envs:
         var st = states[i].copy()
         var act = actions[i]
-        var dummy = InlineArray[UInt8, 4](fill=0)
+        var dummy = Array[UInt8, 4](fill=0)
         for _ in range(n_frames):
             set_action(st, act)
             run_frame_cycle_accurate[RENDER=False](

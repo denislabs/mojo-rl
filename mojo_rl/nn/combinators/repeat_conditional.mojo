@@ -305,9 +305,9 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
             self.children[i].polyak_from[target](src.children[i], tau, ctx)
 
 
-def _rc_in_dims[DX: Int, DC: Int]() -> InlineArray[Int, 2]:
-    """`InlineArray` has no variadic-element literal in Mojo 1.0 (`Array` is not
+def _rc_in_dims[DX: Int, DC: Int]() -> Array[Int, 2]:
+    """`Array` has no variadic-element literal in Mojo 1.0 (`Array` is not
     `ImplicitlyCopyable`); mirrors `concat.mojo`'s comptime helpers."""
-    var a = InlineArray[Int, 2](fill=DX)
+    var a = Array[Int, 2](fill=DX)
     a[1] = DC
     return a^

@@ -78,7 +78,7 @@ def atari_frames_kernel[
     if i < Int(n_envs):
         var st = states[i].copy()
         var act = actions[i]
-        var dummy = InlineArray[UInt8, 4](fill=0)
+        var dummy = Array[UInt8, 4](fill=0)
         for _ in range(Int(n_frames)):
             set_action(st, act)
             run_frame_cycle_accurate[RENDER=False, UNIFORM=UNIFORM](
@@ -157,7 +157,7 @@ def cpu_step[
 ):
     """One frame on CPU via the chosen runner variant (for self-check)."""
     var optab = materialize[OPCODE_TABLE]()
-    var dummy = InlineArray[UInt8, 4](fill=0)
+    var dummy = Array[UInt8, 4](fill=0)
     set_action(st, action)
     run_frame_cycle_accurate[RENDER=False, UNIFORM=UNIFORM](
         st, rom, rom_size, dummy.unsafe_ptr(), optab.unsafe_ptr()

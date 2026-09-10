@@ -394,7 +394,7 @@ def _island_pgs_solve_env[
     var contact_island = Scratch[Int, cap[D.CAP_MAX_CONTACTS]()](
         max_contacts, fill=-1
     )
-    var island_converged = InlineArray[Int, MAX_ISLANDS](fill=0)
+    var island_converged = Array[Int, MAX_ISLANDS](fill=0)
     var num_islands = 0
     var num_converged = 0
 
@@ -459,7 +459,7 @@ def _island_pgs_solve_env[
     for _ in range(PGS_ITERATIONS):
         if num_converged >= num_islands:
             break
-        var island_max_delta_n = InlineArray[Scalar[DTYPE], MAX_ISLANDS](
+        var island_max_delta_n = Array[Scalar[DTYPE], MAX_ISLANDS](
             fill=Scalar[DTYPE](0)
         )
         for c in range(nc):
@@ -794,7 +794,7 @@ def _island_pgs_solve_env[
                         solver[env, ws_le_neg + d * max_contacts + c] = Scalar[DTYPE](0)
                 else:
                     # Warm-start friction impulses (elliptic only)
-                    var warm_idx = InlineArray[Int, 5](uninitialized=True)
+                    var warm_idx = Array[Int, 5](uninitialized=True)
                     warm_idx[0] = CONTACT_IDX_FORCE_T1
                     warm_idx[1] = CONTACT_IDX_FORCE_T2
                     warm_idx[2] = CONTACT_IDX_FORCE_TORSION
@@ -814,7 +814,7 @@ def _island_pgs_solve_env[
     for _ in range(PGS_ITERATIONS):
         if num_converged >= num_islands:
             break
-        var island_max_delta_c = InlineArray[Scalar[DTYPE], MAX_ISLANDS](
+        var island_max_delta_c = Array[Scalar[DTYPE], MAX_ISLANDS](
             fill=Scalar[DTYPE](0)
         )
         # --- Normal constraints PGS update ---
@@ -1072,7 +1072,7 @@ def _island_pgs_solve_env[
                 var dim = 1 + num_fric
 
                 # Build block AR matrix on-the-fly from J/MinvJ
-                var AR = InlineArray[Scalar[DTYPE], 36](
+                var AR = Array[Scalar[DTYPE], 36](
                     fill=Scalar[DTYPE](0)
                 )
                 # Compute R_n directly from stored imp and diag_n
@@ -1122,7 +1122,7 @@ def _island_pgs_solve_env[
                         AR[(d1 + 1) * dim + (d2 + 1)] = ff
 
                 # Compute block residual
-                var block_res = InlineArray[Scalar[DTYPE], 6](
+                var block_res = Array[Scalar[DTYPE], 6](
                     fill=Scalar[DTYPE](0)
                 )
                 var a_n_res: Scalar[DTYPE] = 0
@@ -1155,7 +1155,7 @@ def _island_pgs_solve_env[
                     )
 
                 # Save old forces
-                var oldforce = InlineArray[Scalar[DTYPE], 6](
+                var oldforce = Array[Scalar[DTYPE], 6](
                     fill=Scalar[DTYPE](0)
                 )
                 oldforce[0] = rebind[Scalar[DTYPE]](
@@ -1183,7 +1183,7 @@ def _island_pgs_solve_env[
                     for d in range(num_fric):
                         solver[env, ws_lf + d * max_contacts + c] = Scalar[DTYPE](0)
                 else:
-                    var v = InlineArray[Scalar[DTYPE], 6](
+                    var v = Array[Scalar[DTYPE], 6](
                         fill=Scalar[DTYPE](0)
                     )
                     v[0] = rebind[Scalar[DTYPE]](
@@ -1230,10 +1230,10 @@ def _island_pgs_solve_env[
                     solver[env, ws_lambda_n + c]
                 )
                 if fn_val >= Scalar[DTYPE](1e-10) and num_fric > 0:
-                    var Ac = InlineArray[Scalar[DTYPE], 25](
+                    var Ac = Array[Scalar[DTYPE], 25](
                         fill=Scalar[DTYPE](0)
                     )
-                    var bc_arr = InlineArray[Scalar[DTYPE], 5](
+                    var bc_arr = Array[Scalar[DTYPE], 5](
                         fill=Scalar[DTYPE](0)
                     )
                     for j in range(num_fric):
@@ -1250,7 +1250,7 @@ def _island_pgs_solve_env[
                             fn_val - oldforce[0]
                         )
 
-                    var mu_arr = InlineArray[Scalar[DTYPE], 5](
+                    var mu_arr = Array[Scalar[DTYPE], 5](
                         fill=Scalar[DTYPE](0)
                     )
                     for d in range(num_fric):
@@ -1260,13 +1260,13 @@ def _island_pgs_solve_env[
 
                     var flg_active = False
                     if num_fric == 2:
-                        var A2 = InlineArray[Scalar[DTYPE], 4](
+                        var A2 = Array[Scalar[DTYPE], 4](
                             fill=Scalar[DTYPE](0)
                         )
-                        var b2 = InlineArray[Scalar[DTYPE], 2](
+                        var b2 = Array[Scalar[DTYPE], 2](
                             fill=Scalar[DTYPE](0)
                         )
-                        var d2 = InlineArray[Scalar[DTYPE], 2](
+                        var d2 = Array[Scalar[DTYPE], 2](
                             fill=Scalar[DTYPE](0)
                         )
                         for ii in range(2):
@@ -1282,13 +1282,13 @@ def _island_pgs_solve_env[
                         solver[env, ws_lf + 0 * max_contacts + c] = r0
                         solver[env, ws_lf + 1 * max_contacts + c] = r1
                     elif num_fric == 3:
-                        var A3 = InlineArray[Scalar[DTYPE], 9](
+                        var A3 = Array[Scalar[DTYPE], 9](
                             fill=Scalar[DTYPE](0)
                         )
-                        var b3 = InlineArray[Scalar[DTYPE], 3](
+                        var b3 = Array[Scalar[DTYPE], 3](
                             fill=Scalar[DTYPE](0)
                         )
-                        var d3 = InlineArray[Scalar[DTYPE], 3](
+                        var d3 = Array[Scalar[DTYPE], 3](
                             fill=Scalar[DTYPE](0)
                         )
                         for ii in range(3):
@@ -1306,13 +1306,13 @@ def _island_pgs_solve_env[
                         solver[env, ws_lf + 1 * max_contacts + c] = r1
                         solver[env, ws_lf + 2 * max_contacts + c] = r2
                     elif num_fric == 5:
-                        var A5 = InlineArray[Scalar[DTYPE], 25](
+                        var A5 = Array[Scalar[DTYPE], 25](
                             fill=Scalar[DTYPE](0)
                         )
-                        var b5 = InlineArray[Scalar[DTYPE], 5](
+                        var b5 = Array[Scalar[DTYPE], 5](
                             fill=Scalar[DTYPE](0)
                         )
-                        var d5 = InlineArray[Scalar[DTYPE], 5](
+                        var d5 = Array[Scalar[DTYPE], 5](
                             fill=Scalar[DTYPE](0)
                         )
                         for ii in range(5):
@@ -1320,7 +1320,7 @@ def _island_pgs_solve_env[
                             d5[ii] = mu_arr[ii]
                             for jj in range(5):
                                 A5[ii * 5 + jj] = Ac[ii * num_fric + jj]
-                        var res5 = InlineArray[Scalar[DTYPE], 5](
+                        var res5 = Array[Scalar[DTYPE], 5](
                             fill=Scalar[DTYPE](0)
                         )
                         flg_active = mj_qcqp5[DTYPE](

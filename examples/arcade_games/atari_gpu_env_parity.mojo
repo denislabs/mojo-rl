@@ -42,7 +42,7 @@ def cpu_step(
     """One env step on CPU (mirrors the GPU step kernel). Returns (reward, done)."""
     var ale = PongDef.map_action(action_idx)
     var prev = Int(st.score)
-    var dummy = InlineArray[UInt8, 4](fill=0)
+    var dummy = Array[UInt8, 4](fill=0)
     for _ in range(FRAME_SKIP):
         set_action(st, ale)
         run_frame_cycle_accurate[RENDER=False](

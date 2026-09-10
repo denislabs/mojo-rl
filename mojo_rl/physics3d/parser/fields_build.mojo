@@ -31,7 +31,7 @@ Only the BODY mass/inertia block is staged in host Lists (inertiafromgeom +
 settotalmass mutate it); all other records are written straight into `mf`.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import sqrt, tan, pi
 
 from mojo_rl.physics3d.joint_types import (
@@ -465,7 +465,7 @@ def _geom_mass_and_inertia[
     geom_mesh_vol: List[Scalar[DTYPE]],
     geom_mesh_eig: List[Scalar[DTYPE]],
     stored_density: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 4]:
+) -> Array[Scalar[DTYPE], 4]:
     """(mass, Ixx, Iyy, Izz) for one geom, meshes included.
 
     ⚠ A MESH's moments are `eigval * (mass / volume)`, and both halves matter:
@@ -474,7 +474,7 @@ def _geom_mass_and_inertia[
     centre-of-mass pass. `geom_inertia`'s `else` branch returns (0, 0, 0) for a
     mesh — silently — which is what this exists to stop.
     """
-    var out = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     if geom_type == GEOM_MESH:
         var vol = geom_mesh_vol[g]
         if vol <= Scalar[DTYPE](1e-30):
@@ -694,7 +694,7 @@ def _inertia_from_geoms_staging[
                         ]
                         body_mass[body_id] = gm
                         body_inv_mass[body_id] = Scalar[DTYPE](1.0) / gm
-                        var inertia = InlineArray[Scalar[DTYPE], 3](
+                        var inertia = Array[Scalar[DTYPE], 3](
                             fill=Scalar[DTYPE](0)
                         )
                         inertia[0] = gmi[1]
@@ -752,7 +752,7 @@ def _inertia_from_geoms_staging[
             body_mass[body_id] = total_mass
             body_inv_mass[body_id] = Scalar[DTYPE](1.0) / total_mass
 
-            var toti = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+            var toti = Array[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
 
             for g in range(ngeom):
                 var go = g * MODEL_GEOM_SIZE
@@ -775,14 +775,14 @@ def _inertia_from_geoms_staging[
                     )
                     var gm = gmi[0]
                     if gm > Scalar[DTYPE](1e-10):
-                        var diag = InlineArray[Scalar[DTYPE], 3](
+                        var diag = Array[Scalar[DTYPE], 3](
                             fill=Scalar[DTYPE](0)
                         )
                         diag[0] = gmi[1]
                         diag[1] = gmi[2]
                         diag[2] = gmi[3]
 
-                        var inert_global = InlineArray[Scalar[DTYPE], 6](
+                        var inert_global = Array[Scalar[DTYPE], 6](
                             fill=Scalar[DTYPE](0)
                         )
                         globalinertia(
@@ -799,7 +799,7 @@ def _inertia_from_geoms_staging[
                         var dx = geoms[go + GEOM_IDX_POS_X] - com_x
                         var dy = geoms[go + GEOM_IDX_POS_Y] - com_y
                         var dz = geoms[go + GEOM_IDX_POS_Z] - com_z
-                        var inert_offset = InlineArray[Scalar[DTYPE], 6](
+                        var inert_offset = Array[Scalar[DTYPE], 6](
                             fill=Scalar[DTYPE](0)
                         )
                         offcenter(gm, dx, dy, dz, inert_offset)
@@ -1817,7 +1817,7 @@ def build_model_fields_from_flat[
             and mesh_inertia_valid[gd.mesh_id]
         ):
             var mi_g = mesh_inertia_cache[gd.mesh_id]
-            var rm = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+            var rm = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
             quat_to_mat[DTYPE](
                 Scalar[DTYPE](gd.quat_x),
                 Scalar[DTYPE](gd.quat_y),

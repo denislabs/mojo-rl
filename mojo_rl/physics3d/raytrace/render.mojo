@@ -8,7 +8,7 @@ module inherits both, and `test_camera_render_gpu_vs_cpu.mojo` is its half of
 the bargain.
 
 ⚠⚠ NO PER-THREAD ARRAY APPEARS HERE, AND THAT IS A REQUIREMENT, NOT A HABIT.
-An `InlineArray` indexed by a runtime value reads back silently wrong on Metal
+An `Array` indexed by a runtime value reads back silently wrong on Metal
 and has done so four times in this engine (`87960e10` is the most recent). A
 pixel's three colour channels are three named scalars in a `Vec3`, not a
 three-element array, for exactly that reason.

@@ -65,10 +65,10 @@ comptime OUT = "/tmp/mojo_rl_parquet_write_gate.parquet"
 comptime N_ROWS = 26
 comptime N_GROUPS = 4
 
-comptime GROUP_ROWS: InlineArray[Int, N_GROUPS] = [7, 3, 11, 5]
+comptime GROUP_ROWS: Array[Int, N_GROUPS] = [7, 3, 11, 5]
 
 # ⚠ PINNED FROM THE GENERATOR, not recovered from the golden — see the header.
-comptime TASK_LENS: InlineArray[Int, N_ROWS] = [
+comptime TASK_LENS: Array[Int, N_ROWS] = [
     1, 2, 1, 3, 1, 1, 2, 1, 1, 4, 1, 1, 2, 1, 1, 1, 3, 1, 1, 2, 1, 1,
     1, 2, 1, 1,
 ]

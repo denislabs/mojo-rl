@@ -129,12 +129,12 @@ def test_mesh_inertia_vs_mujoco() raises:
         var mz = Float64(py=m.mesh_quat[mi][3])
         var dq_p = Float64(0)
         var dq_n = Float64(0)
-        var ours = InlineArray[Float64, 4](fill=0.0)
+        var ours = Array[Float64, 4](fill=0.0)
         ours[0] = Float64(res.qw)
         ours[1] = Float64(res.qx)
         ours[2] = Float64(res.qy)
         ours[3] = Float64(res.qz)
-        var theirs = InlineArray[Float64, 4](fill=0.0)
+        var theirs = Array[Float64, 4](fill=0.0)
         theirs[0] = mw
         theirs[1] = mx
         theirs[2] = my
@@ -218,7 +218,7 @@ def test_mesh_inertia_vs_mujoco() raises:
 
         var mass = Float64(py=m.body_mass[b])
         var dens = mass / Float64(res.volume)
-        var pred = InlineArray[Float64, 3](fill=0.0)
+        var pred = Array[Float64, 3](fill=0.0)
         pred[0] = Float64(res.eig0) * dens
         pred[1] = Float64(res.eig1) * dens
         pred[2] = Float64(res.eig2) * dens

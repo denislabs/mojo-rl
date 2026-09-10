@@ -93,7 +93,7 @@ struct TimeAttentionLatents[
     D: Int, N_HEADS: Int, T: Int, S: Int, N_LATENTS: Int
 ](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.S * Self.D)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.S * Self.D)
     comptime OUT_DIM = Self.S * Self.D
     comptime MHA = MultiHeadAttention[Self.D, Self.N_HEADS, Self.T, True]
 

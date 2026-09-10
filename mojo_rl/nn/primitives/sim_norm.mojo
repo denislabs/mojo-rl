@@ -53,7 +53,7 @@ def _sim_norm_forward_kernel[
     # both the normaliser sum and the write (the legacy kernel read input 3×
     # and recomputed exp twice). Capped so the local array stays in registers.
     comptime if GROUP_SIZE <= 32:
-        var grp = InlineArray[Scalar[DT], GROUP_SIZE](fill=Scalar[DT](0))
+        var grp = Array[Scalar[DT], GROUP_SIZE](fill=Scalar[DT](0))
         var max_val = rebind[Scalar[DT]](input[b, base])
         grp[0] = max_val
 
@@ -120,7 +120,7 @@ def _sim_norm_backward_kernel[
 
 struct SimNorm[DIM_: Int, GROUPS_: Int](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
     comptime GROUP_SIZE: Int = Self.DIM_ // Self.GROUPS_
 
@@ -183,7 +183,7 @@ struct SimNorm[DIM_: Int, GROUPS_: Int](Module):
                             var v2 = ip[unsafe_offset=base + k]
                             if v2 > max_val:
                                 max_val = v2
-                        var es = InlineArray[Scalar[DT], GS](
+                        var es = Array[Scalar[DT], GS](
                             fill=Scalar[DT](0)
                         )
                         var sum_exp: Scalar[DT] = 0.0

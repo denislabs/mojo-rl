@@ -94,7 +94,7 @@ def test_two_hot_cpu_golden() raises:
     var dec_sum = Scalar[DT](0.0)
     for xi in range(len(xs)):
         var x = xs[xi]
-        var st_t = InlineArray[Scalar[DT], NUM_BINS](fill=0)
+        var st_t = Array[Scalar[DT], NUM_BINS](fill=0)
         st_two_hot_encode[NUM_BINS](x, st_bins, st_t)
         for i in range(NUM_BINS):
             enc_flat.data[xi * NUM_BINS + i] = st_t[i]

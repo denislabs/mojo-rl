@@ -1,7 +1,7 @@
 """The runtime replacement for `_acd` (phases 1a.2 / 1a.4).
 
 `ModelDefFromXML._acd` (`ComptimeActData`) is a comptime struct of ~20
-`InlineArray`s that the model's XML is interpreted into at struct-elaboration
+`Array`s that the model's XML is interpreted into at struct-elaboration
 time. Every actuator value the engine uses arrives through it: `apply_actions`
 materializes fourteen of those arrays per call, and `apply_actions_kernel_gpu`
 bakes them into the kernel as literals via a comptime-unrolled loop.

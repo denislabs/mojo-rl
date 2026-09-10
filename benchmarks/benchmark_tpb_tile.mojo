@@ -267,8 +267,8 @@ def benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
     var c_buf = ctx.enqueue_create_buffer[dtype](M * N)
 
     # Initialize with random data on host
-    var a_data = InlineArray[Scalar[dtype], M * K](uninitialized=True)
-    var b_data = InlineArray[Scalar[dtype], K * N](uninitialized=True)
+    var a_data = Array[Scalar[dtype], M * K](uninitialized=True)
+    var b_data = Array[Scalar[dtype], K * N](uninitialized=True)
 
     for i in range(M * K):
         a_data[i] = Scalar[dtype](random_float64() * 2 - 1)
@@ -407,8 +407,8 @@ def benchmark_elementwise_tpb[TPB: Int](ctx: DeviceContext) raises -> Float64:
     var c_buf = ctx.enqueue_create_buffer[dtype](SIZE)
 
     # Initialize
-    var a_data = InlineArray[Scalar[dtype], SIZE](uninitialized=True)
-    var b_data = InlineArray[Scalar[dtype], SIZE](uninitialized=True)
+    var a_data = Array[Scalar[dtype], SIZE](uninitialized=True)
+    var b_data = Array[Scalar[dtype], SIZE](uninitialized=True)
 
     for i in range(SIZE):
         a_data[i] = Scalar[dtype](random_float64() * 2 - 1)
@@ -499,8 +499,8 @@ def benchmark_combined[
     var relu_buf = ctx.enqueue_create_buffer[dtype](M * N)
 
     # Initialize
-    var a_data = InlineArray[Scalar[dtype], M * K](uninitialized=True)
-    var w_data = InlineArray[Scalar[dtype], K * N](uninitialized=True)
+    var a_data = Array[Scalar[dtype], M * K](uninitialized=True)
+    var w_data = Array[Scalar[dtype], K * N](uninitialized=True)
 
     for i in range(M * K):
         a_data[i] = Scalar[dtype](random_float64() * 2 - 1)

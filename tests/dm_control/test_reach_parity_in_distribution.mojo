@@ -210,8 +210,8 @@ def test_shallow_contact_parity() raises:
     var hi = refmod.arm_joint_bounds()[1]
     var rng = np.random.default_rng(11)
 
-    var qa = InlineArray[Float64, MD.NQ](fill=0.0)
-    var qb = InlineArray[Float64, MD.NQ](fill=0.0)
+    var qa = Array[Float64, MD.NQ](fill=0.0)
+    var qb = Array[Float64, MD.NQ](fill=0.0)
     var found = 0
     var worst = Float64(0)
     var worst_depth = Float64(0)

@@ -696,8 +696,8 @@ struct SwmPhase3[
                 for i in range(Self.D):
                     seq_u[(ep * n_frames + t) * 2 + i] = lat[i]
                 if t > 0:
-                    var x = InlineArray[Scalar[Self.dtype], 2](fill=0)
-                    var y = InlineArray[Scalar[Self.dtype], 2](fill=0)
+                    var x = Array[Scalar[Self.dtype], 2](fill=0)
+                    var y = Array[Scalar[Self.dtype], 2](fill=0)
                     for i in range(Self.D):
                         x[i] = prev[i]
                         y[i] = lat[i]

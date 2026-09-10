@@ -101,7 +101,7 @@ def _sweep[D: DType]() raises -> List[Float64]:
         pvn, pn, pm, pma, pmn, ea, el, mtri, mtriadr, mtrinum, mi,
     )
 
-    # ⚠ HEAP, NOT `InlineArray` — see `test_gjk_hillclimb_support.mojo`. The
+    # ⚠ HEAP, NOT `Array` — see `test_gjk_hillclimb_support.mojo`. The
     # `_ = buf^` lines below are load-bearing: Mojo destroys at LAST USE.
     var vbuf = List[Scalar[D]](length=NV * 3, fill=Scalar[D](0))
     var verts = LayoutTensor[D, Layout.row_major(NV, 3), MutAnyOrigin](

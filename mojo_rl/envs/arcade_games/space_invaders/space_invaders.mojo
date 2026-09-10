@@ -71,7 +71,7 @@ comptime INITIAL_LIVES: Int = 3
 comptime SI_MAX_STEPS: Int = 10000
 
 # Row scores: top rows worth more
-comptime ROW_SCORES: InlineArray[Int, 5] = [30, 20, 20, 10, 10]
+comptime ROW_SCORES: Array[Int, 5] = [30, 20, 20, 10, 10]
 
 # State indices
 comptime S_SHIP_X: Int = 0
@@ -111,7 +111,7 @@ struct SpaceInvadersEnv[DTYPE: DType](
     comptime STEP_WS_SHARED: Int = 0
     comptime STEP_WS_PER_ENV: Int = 0
 
-    var state: InlineArray[Scalar[Self.dtype], 80]
+    var state: Array[Scalar[Self.dtype], 80]
     var done: Bool
     var _rng_counter: UInt32
 
@@ -119,7 +119,7 @@ struct SpaceInvadersEnv[DTYPE: DType](
     var _renderer_initialized: Bool
 
     def __init__(out self):
-        self.state = InlineArray[Scalar[Self.dtype], 80](
+        self.state = Array[Scalar[Self.dtype], 80](
             fill=Scalar[Self.dtype](0.0)
         )
         self.done = False

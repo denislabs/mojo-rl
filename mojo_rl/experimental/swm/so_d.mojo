@@ -2,10 +2,10 @@
 
 This is deliberately NOT `mojo_rl.nn` machinery: the frame channel manipulates
 many tiny `D x D` orthogonal matrices (one per graph edge), not a few large
-weight slabs. `D` is a compile-time parameter, so an `InlineArray` backing is
+weight slabs. `D` is a compile-time parameter, so an `Array` backing is
 safe here — the runtime-bounds caveat that makes fixed-capacity arrays lose to
 the heap does not apply, and nothing in this file ever runs on a GPU (the
-Metal wide-per-thread `InlineArray` miscompute is out of scope by construction).
+Metal wide-per-thread `Array` miscompute is out of scope by construction).
 
 Row-major: `m[r, c]` with `r` the row. Default dtype is float64, because the
 Phase 1 gates compare against a numpy oracle at ~1e-13 and float32 would swamp
@@ -23,7 +23,7 @@ the whole reason the transport carries a separate discrete orientation bit
 (see docs/SHEAF_WORLD_MODELS_V2.md §4.2).
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import sqrt, abs, ceil, log2
 
 
@@ -35,11 +35,11 @@ struct SqMat[D: Int, dtype: DType = DType.float64](
     comptime SIZE: Int = Self.D * Self.D
     comptime SKEW_PARAMS: Int = Self.D * (Self.D - 1) // 2
 
-    var data: InlineArray[Scalar[Self.dtype], Self.SIZE]
+    var data: Array[Scalar[Self.dtype], Self.SIZE]
 
     def __init__(out self):
         """All zeros."""
-        self.data = InlineArray[Scalar[Self.dtype], Self.SIZE](fill=0)
+        self.data = Array[Scalar[Self.dtype], Self.SIZE](fill=0)
 
     def __init__(out self, *, copy: Self):
         self.data = copy.data.copy()
@@ -102,9 +102,9 @@ struct SqMat[D: Int, dtype: DType = DType.float64](
         return out^
 
     def matvec(
-        self, v: InlineArray[Scalar[Self.dtype], Self.D]
-    ) -> InlineArray[Scalar[Self.dtype], Self.D]:
-        var out = InlineArray[Scalar[Self.dtype], Self.D](fill=0)
+        self, v: Array[Scalar[Self.dtype], Self.D]
+    ) -> Array[Scalar[Self.dtype], Self.D]:
+        var out = Array[Scalar[Self.dtype], Self.D](fill=0)
         for i in range(Self.D):
             var s = Scalar[Self.dtype](0)
             for j in range(Self.D):
@@ -237,8 +237,8 @@ def skew_from_vector[
     Entry `k` fills the strictly-lower-triangular slot `(i, j)`, `i > j`, in
     row-major order, and its negation goes to `(j, i)`.
 
-    The argument is a `Span` and not a sized `InlineArray` on purpose. A
-    signature of `InlineArray[..., D * (D - 1) // 2]` type-checks when `D` is
+    The argument is a `Span` and not a sized `Array` on purpose. A
+    signature of `Array[..., D * (D - 1) // 2]` type-checks when `D` is
     itself a parameter, but FAILS to fold when a caller passes a literal
     (`skew_from_vector[2]` -> "types parameters include unfolded expression at
     parser time"). Since Phase 3 generates these coefficients at runtime from

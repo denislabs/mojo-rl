@@ -14,7 +14,7 @@ No stdlib float parsing or trig imports are used; everything is computed
 with arithmetic helpers defined in xml_parser.mojo.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 
 # `mjuu_eig3`, for <inertial fullinertia>. `parse_xml_full` is a RUNTIME
 # function (non-generic since 2026-08-05), so pulling in a `std.math`-using
@@ -2863,12 +2863,12 @@ def _fill_model(
     # deeply `<body>` elements nest. 128 is far beyond any real model (dog, the
     # deepest here, nests ~12) and the guard below makes an overflow loud.
     comptime _MAX_BODY_DEPTH = 128
-    var body_id_stack = InlineArray[Int, _MAX_BODY_DEPTH](fill=0)
+    var body_id_stack = Array[Int, _MAX_BODY_DEPTH](fill=0)
     # childclass_stack[depth] = default class inherited by elements at this
     # depth. MJCF's `childclass` applies to every descendant of the body that
     # declares it, until a deeper body overrides it; an element's own
     # `class=` still wins. Empty string = no inherited class.
-    var childclass_stack = InlineArray[String, _MAX_BODY_DEPTH](
+    var childclass_stack = Array[String, _MAX_BODY_DEPTH](
         fill=String("")
     )
     var depth = 0
@@ -3061,7 +3061,7 @@ def _fill_model(
             var cur_body = body_id_stack[depth]
             if cur_body >= 1 and cur_body - 1 < len(result.bodies):
                 # READ-MODIFY-WRITE: `result.bodies[i].field = x` on an
-                # InlineArray subscript mutates a COPY and silently drops.
+                # Array subscript mutates a COPY and silently drops.
                 var b = result.bodies[cur_body - 1]
 
                 var im_s = _extract_attr(tag, "mass")
@@ -3193,7 +3193,7 @@ def _fill_model(
                             "physics3d: <inertial fullinertia=...> needs"
                             " exactly 6 values (ixx iyy izz ixy ixz iyz)"
                         )
-                    var fi = InlineArray[Float64, 6](fill=Float64(0))
+                    var fi = Array[Float64, 6](fill=Float64(0))
                     for fk in range(6):
                         fi[fk] = _parse_float(fi_parts[fk])
 
@@ -6261,7 +6261,7 @@ def parse_xml_full(
 
     ⚠ NON-GENERIC since 2026-08-05. It used to take the fourteen dimensions as
     comptime parameters purely because `FlatModelDef` stored its output in
-    `InlineArray`s sized by them — so every distinct model instantiated a fresh
+    `Array`s sized by them — so every distinct model instantiated a fresh
     copy of this ~2900-line function. That was 94% of the build time
     (`docs/DM_CONTROL_PORT_PHASE2.md` §15): 1961 s at dm_control dog's
     dimensions, and a ~344 s floor even for a 2-geom model. Now it compiles

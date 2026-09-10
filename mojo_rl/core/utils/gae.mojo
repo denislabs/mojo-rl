@@ -24,7 +24,7 @@ Example usage:
     var advantages = compute_gae(rewards, values, next_value, done, gamma, lambda_)
     var returns = compute_returns_from_advantages(advantages, values)
 
-    # For InlineArray-based code (deep PPO)
+    # For Array-based code (deep PPO)
     compute_gae_inline[2048](
         rewards, values, next_value, dones, gamma, lambda_,
         buffer_len, advantages, returns
@@ -130,17 +130,17 @@ def compute_returns_from_advantages(
 def compute_gae_inline[
     dtype: DType, N: Int
 ](
-    rewards: InlineArray[Scalar[dtype], N],
-    values: InlineArray[Scalar[dtype], N],
+    rewards: Array[Scalar[dtype], N],
+    values: Array[Scalar[dtype], N],
     next_value: Scalar[dtype],
-    dones: InlineArray[Bool, N],
+    dones: Array[Bool, N],
     gamma: Float64,
     gae_lambda: Float64,
     buffer_len: Int,
-    mut advantages: InlineArray[Scalar[dtype], N],
-    mut returns: InlineArray[Scalar[dtype], N],
+    mut advantages: Array[Scalar[dtype], N],
+    mut returns: Array[Scalar[dtype], N],
 ):
-    """Compute GAE advantages and returns for InlineArray-based agents.
+    """Compute GAE advantages and returns for Array-based agents.
 
     This version handles multiple episodes within a single rollout by
     resetting the GAE accumulator when `done` is True.
@@ -161,8 +161,8 @@ def compute_gae_inline[
         N: Maximum rollout length.
 
     Example:
-        var advantages = InlineArray[Scalar[DType.float32], 2048](fill=0)
-        var returns = InlineArray[Scalar[DType.float32], 2048](fill=0)
+        var advantages = Array[Scalar[DType.float32], 2048](fill=0)
+        var returns = Array[Scalar[DType.float32], 2048](fill=0)
         compute_gae_inline[DType.float32, 2048](
             rewards, values, next_value, dones, 0.99, 0.95,
             buffer_len, advantages, returns

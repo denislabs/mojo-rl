@@ -174,7 +174,7 @@ def ell_hessian_block[
     D_n: Scalar[DTYPE],
     D_t: Scratch[Scalar[DTYPE], T_CAP],
     fr: Scratch[Scalar[DTYPE], T_CAP],
-    mut Hb: InlineArray[Scalar[DTYPE], HN],
+    mut Hb: Array[Scalar[DTYPE], HN],
 ):
     """The contact's `dim x dim` Hessian block in ROW space, row-major over
     `(n, t_0, ..., t_{nt-1})` with stride `NT+1`.
@@ -375,11 +375,11 @@ def ell_add_contact_hessian[
     """
     comptime ZERO = Scalar[DTYPE](0)
     comptime DIM = NT + 1
-    # `Hb` is (NT+1)^2 -- CONDIM-derived, so it stays a real InlineArray and
+    # `Hb` is (NT+1)^2 -- CONDIM-derived, so it stays a real Array and
     # keeps its comptime bound. `JH` is DIM rows of `nv`: the row COUNT is
     # condim, the row LENGTH is the dof count, and only the latter goes
     # dynamic. Not every comptime size in this file is a model dimension.
-    var Hb = InlineArray[Scalar[DTYPE], HN](fill=ZERO)
+    var Hb = Array[Scalar[DTYPE], HN](fill=ZERO)
     var JH = Scratch[Scalar[DTYPE], DIM * V_CAP](DIM * nv, fill=ZERO)
 
     for c in range(nc):

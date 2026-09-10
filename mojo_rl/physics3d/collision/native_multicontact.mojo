@@ -714,8 +714,8 @@ def _box_normals2[
 ](
     qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE],
     nx: Scalar[DTYPE], ny: Scalar[DTYPE], nz: Scalar[DTYPE],
-    mut n: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3],
-    mut idx: InlineArray[Int, MC_MAX_DEG],
+    mut n: Array[Scalar[DTYPE], MC_MAX_DEG * 3],
+    mut idx: Array[Int, MC_MAX_DEG],
 ) -> Int:
     """`boxNormals2` — recover the box face closest to the collision direction.
 
@@ -766,8 +766,8 @@ def _box_normals[
     dim: Int, v1: Int, v2: Int, v3: Int,
     qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE],
     dx: Scalar[DTYPE], dy: Scalar[DTYPE], dz: Scalar[DTYPE],
-    mut n: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3],
-    mut idx: InlineArray[Int, MC_MAX_DEG],
+    mut n: Array[Scalar[DTYPE], MC_MAX_DEG * 3],
+    mut idx: Array[Int, MC_MAX_DEG],
 ) -> Int:
     """`boxNormals` — candidate face normals from up to three corner ids.
 
@@ -901,8 +901,8 @@ def _box_edge_normals[
     gx: Scalar[DTYPE], gy: Scalar[DTYPE], gz: Scalar[DTYPE],
     qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE],
     hx: Scalar[DTYPE], hy: Scalar[DTYPE], hz: Scalar[DTYPE],
-    mut n: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3],
-    mut endverts: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3],
+    mut n: Array[Scalar[DTYPE], MC_MAX_DEG * 3],
+    mut endverts: Array[Scalar[DTYPE], MC_MAX_DEG * 3],
 ) -> Int:
     """`boxEdgeNormals` — the edge direction(s) leaving the contact feature."""
     if dim == 2:
@@ -972,9 +972,9 @@ def _box_face[
     wound the other way turns every clipping halfspace inside out and the clip
     comes back empty.
     """
-    var sx = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
-    var sy = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
-    var sz = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var sx = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var sy = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var sz = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     if face_id == 0:  # right (+x)
         sx[0] = hx; sy[0] = hy; sz[0] = hz
         sx[1] = hx; sy[1] = hy; sz[1] = -hz
@@ -1033,8 +1033,8 @@ def _mesh_normals[
     mesh_vert_polymap: LayoutTensor[
         DTYPE, L_MESH_VERT_POLYMAP, MutAnyOrigin
     ],
-    mut n: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3],
-    mut idx: InlineArray[Int, MC_MAX_DEG],
+    mut n: Array[Scalar[DTYPE], MC_MAX_DEG * 3],
+    mut idx: Array[Int, MC_MAX_DEG],
 ) -> Int:
     """`meshNormals` — candidate face normals from up to three hull vertices.
 
@@ -1162,8 +1162,8 @@ def _mesh_edge_normals[
     mesh_vert_polymap: LayoutTensor[
         DTYPE, L_MESH_VERT_POLYMAP, MutAnyOrigin
     ],
-    mut n: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3],
-    mut endverts: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3],
+    mut n: Array[Scalar[DTYPE], MC_MAX_DEG * 3],
+    mut endverts: Array[Scalar[DTYPE], MC_MAX_DEG * 3],
 ) -> Int:
     """`meshEdgeNormals` — edge directions leaving the contact vertex/edge.
 
@@ -1296,8 +1296,8 @@ def _mesh_face[
 def _aligned_faces[
     DTYPE: DType
 ](
-    v: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3], nv: Int,
-    w: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3], nw: Int,
+    v: Array[Scalar[DTYPE], MC_MAX_DEG * 3], nv: Int,
+    w: Array[Scalar[DTYPE], MC_MAX_DEG * 3], nw: Int,
     mut r0: Int, mut r1: Int,
 ) -> Bool:
     """`alignedFaces` — first pair of normals facing each other within tol."""
@@ -1317,8 +1317,8 @@ def _aligned_faces[
 def _aligned_face_edge[
     DTYPE: DType
 ](
-    edge: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3], nedge: Int,
-    face: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3], nface: Int,
+    edge: Array[Scalar[DTYPE], MC_MAX_DEG * 3], nedge: Int,
+    face: Array[Scalar[DTYPE], MC_MAX_DEG * 3], nface: Int,
     mut r0: Int, mut r1: Int,
 ) -> Bool:
     """`alignedFaceEdge` — first edge perpendicular to a face normal.
@@ -1380,9 +1380,9 @@ def native_multicontact_contacts[
     mesh_vert_polymap: LayoutTensor[
         DTYPE, L_MESH_VERT_POLYMAP, MutAnyOrigin
     ],
-    wf1: InlineArray[Scalar[DTYPE], 9],
-    wf2: InlineArray[Scalar[DTYPE], 9],
-    wx: InlineArray[Scalar[DTYPE], 6],
+    wf1: Array[Scalar[DTYPE], 9],
+    wf2: Array[Scalar[DTYPE], 9],
+    wx: Array[Scalar[DTYPE], 6],
     dist0: Scalar[DTYPE],
     contact_margin: Scalar[DTYPE],
     contact_friction: Scalar[DTYPE],
@@ -1528,11 +1528,11 @@ def native_multicontact_contacts[
     var dirz = wx[5] - wx[2]
     var dirlen = sqrt(dirx * dirx + diry * diry + dirz * dirz)
 
-    var n1 = InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3](fill=Scalar[DTYPE](0))
-    var n2 = InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3](fill=Scalar[DTYPE](0))
-    var idx1 = InlineArray[Int, MC_MAX_DEG](fill=0)
-    var idx2 = InlineArray[Int, MC_MAX_DEG](fill=0)
-    var endverts = InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3](
+    var n1 = Array[Scalar[DTYPE], MC_MAX_DEG * 3](fill=Scalar[DTYPE](0))
+    var n2 = Array[Scalar[DTYPE], MC_MAX_DEG * 3](fill=Scalar[DTYPE](0))
+    var idx1 = Array[Int, MC_MAX_DEG](fill=0)
+    var idx2 = Array[Int, MC_MAX_DEG](fill=0)
+    var endverts = Array[Scalar[DTYPE], MC_MAX_DEG * 3](
         fill=Scalar[DTYPE](0)
     )
 

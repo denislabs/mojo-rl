@@ -125,7 +125,7 @@ def _spt_zero_kernel[
 
 struct SinusoidalPos1DTokens[IGNORE_DIM: Int, SEQ: Int, DIM: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IGNORE_DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IGNORE_DIM)
     comptime OUT_DIM = Self.SEQ * Self.DIM
 
     var table: Tensor
@@ -202,7 +202,7 @@ struct SinusoidalPos2DTokens[
     """
 
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IGNORE_DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IGNORE_DIM)
     comptime OUT_DIM = Self.N_REPEAT * Self.OH * Self.OW * Self.DIM
 
     var table: Tensor
@@ -330,7 +330,7 @@ struct ZeroTokens[IGNORE_DIM: Int, N: Int, D: Int](Module):
     """
 
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IGNORE_DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IGNORE_DIM)
     comptime OUT_DIM = Self.N * Self.D
 
     def __init__(out self):

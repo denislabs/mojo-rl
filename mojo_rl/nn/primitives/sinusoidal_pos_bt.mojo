@@ -63,7 +63,7 @@ struct SinusoidalPosAddBT[
 ](Module):
     comptime ARITY: Int = 1
     comptime SD: Int = Self.S_ * Self.D_
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SD)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.SD)
     comptime OUT_DIM = Self.SD
 
     var bias: Tensor  # [T*S*D] (CPU data + device dev)

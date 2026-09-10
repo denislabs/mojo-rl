@@ -68,7 +68,7 @@ def _min_max_norm_forward_kernel[
     var my_max = neg_inf
 
     comptime if REG_CACHE:
-        var slice = InlineArray[Scalar[DT], ELEMS](fill=Scalar[DT](0))
+        var slice = Array[Scalar[DT], ELEMS](fill=Scalar[DT](0))
 
         comptime for e in range(ELEMS):
             var col = t + e * MMN_TPB
@@ -205,7 +205,7 @@ def _min_max_norm_backward_kernel[
 
 struct MinMaxNorm[DIM_: Int](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
 
     # Cache: per-sample copy of x, re-scanned for min/max/argmin/argmax in

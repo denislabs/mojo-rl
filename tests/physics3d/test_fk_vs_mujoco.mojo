@@ -9,7 +9,7 @@ Run with:
 
 from std.python import Python, PythonObject
 from std.math import abs, pi
-from std.collections import InlineArray
+from std.collections import Array
 from std.testing import assert_true, TestSuite
 
 from max.gpu.host import DeviceContext
@@ -62,7 +62,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 
 def compare_fk(
     test_name: String,
-    qpos_values: InlineArray[Float64, NQ],
+    qpos_values: Array[Float64, NQ],
 ) raises:
     """Run FK in both engines with identical qpos, compare results."""
     print("--- Test:", test_name, "---")
@@ -204,20 +204,20 @@ def compare_fk(
 
 def test_fk_default_qpos() raises:
     """Test FK at MuJoCo default qpos: rootz=0.7, all others zero."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
     compare_fk("Default qpos (rootz=0.7)", qpos)
 
 
 def test_fk_zero_qpos() raises:
     """Test FK at qpos=0 (robot at origin)."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     compare_fk("Zero qpos (robot at origin)", qpos)
 
 
 def test_fk_nonzero_joints() raises:
     """Test FK with non-zero joint angles."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 1.0  # rootx = 1m forward
     qpos[1] = 0.7  # rootz = 0.7m height
     qpos[2] = 0.3  # rooty = 0.3 rad pitch
@@ -232,7 +232,7 @@ def test_fk_nonzero_joints() raises:
 
 def test_fk_extreme_joints() raises:
     """Test FK at joint limits."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
     qpos[3] = -0.52  # bthigh min
     qpos[4] = 0.785  # bshin max
@@ -245,7 +245,7 @@ def test_fk_extreme_joints() raises:
 
 def test_fk_large_rootx() raises:
     """Test FK with large horizontal displacement."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 100.0  # rootx = 100m forward
     qpos[1] = 0.7  # rootz
     qpos[3] = 0.5  # bthigh

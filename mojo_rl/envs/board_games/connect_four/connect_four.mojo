@@ -88,7 +88,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     comptime SAVE_SIZE: Int = 47  # 46 state + 1 done flag
 
     # CPU state
-    var state: InlineArray[Scalar[Self.dtype], 46]
+    var state: Array[Scalar[Self.dtype], 46]
     var done: Bool
 
     # Renderer
@@ -96,7 +96,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     var _renderer_initialized: Bool
 
     def __init__(out self):
-        self.state = InlineArray[Scalar[Self.dtype], 46](
+        self.state = Array[Scalar[Self.dtype], 46](
             fill=Scalar[Self.dtype](0.0)
         )
         self.done = False

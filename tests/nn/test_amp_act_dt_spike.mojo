@@ -38,11 +38,11 @@ comptime BF16 = DType.bfloat16
 # ── ACT_DT-parametrized borrowing ref-pack (mirrors TensorRefs) ──────────
 @fieldwise_init
 struct TensorRefsA[N: Int, o: MutOrigin, ADT: DType = DT](Copyable, Movable):
-    var ptrs: InlineArray[Pointer[TensorImpl[Self.ADT], Self.o], Self.N]
+    var ptrs: Array[Pointer[TensorImpl[Self.ADT], Self.o], Self.N]
 
     def __init__(out self, ref[Self.o] t: TensorImpl[Self.ADT]) raises:
         comptime assert Self.N == 1, "spike: N==1 only"
-        self.ptrs = InlineArray[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
+        self.ptrs = Array[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
             fill=Pointer(to=t)
         )
 

@@ -19,7 +19,7 @@ The polar factor inherits `sign(det M)`, so this yields O(D) and not SO(D) —
 required, since the reflection is the entire signal being measured.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt
 
 from .so_d import SqMat
@@ -48,21 +48,21 @@ struct PairBatch[D: Int, dtype: DType = DType.float64](Copyable, Movable):
 
     def push(
         mut self,
-        x: InlineArray[Scalar[Self.dtype], Self.D],
-        y: InlineArray[Scalar[Self.dtype], Self.D],
+        x: Array[Scalar[Self.dtype], Self.D],
+        y: Array[Scalar[Self.dtype], Self.D],
     ):
         for i in range(Self.D):
             self.xs.append(x[i])
             self.ys.append(y[i])
 
-    def x_at(self, k: Int) -> InlineArray[Scalar[Self.dtype], Self.D]:
-        var v = InlineArray[Scalar[Self.dtype], Self.D](fill=0)
+    def x_at(self, k: Int) -> Array[Scalar[Self.dtype], Self.D]:
+        var v = Array[Scalar[Self.dtype], Self.D](fill=0)
         for i in range(Self.D):
             v[i] = self.xs[k * Self.D + i]
         return v^
 
-    def y_at(self, k: Int) -> InlineArray[Scalar[Self.dtype], Self.D]:
-        var v = InlineArray[Scalar[Self.dtype], Self.D](fill=0)
+    def y_at(self, k: Int) -> Array[Scalar[Self.dtype], Self.D]:
+        var v = Array[Scalar[Self.dtype], Self.D](fill=0)
         for i in range(Self.D):
             v[i] = self.ys[k * Self.D + i]
         return v^

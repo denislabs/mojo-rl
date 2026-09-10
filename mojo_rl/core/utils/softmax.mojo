@@ -15,8 +15,8 @@ Example usage:
     # ... compute logits ...
     var probs = softmax(logits)
 
-    # For InlineArray-based code (deep agents)
-    var logits = InlineArray[Scalar[DType.float32], 4](fill=0)
+    # For Array-based code (deep agents)
+    var logits = Array[Scalar[DType.float32], 4](fill=0)
     var probs = softmax_inline(logits)
 """
 
@@ -72,8 +72,8 @@ def softmax(logits: List[Float64]) -> List[Float64]:
 
 def softmax_inline[
     dtype: DType, N: Int
-](logits: InlineArray[Scalar[dtype], N]) -> InlineArray[Scalar[dtype], N]:
-    """Compute numerically stable softmax probabilities for InlineArray.
+](logits: Array[Scalar[dtype], N]) -> Array[Scalar[dtype], N]:
+    """Compute numerically stable softmax probabilities for Array.
 
     Computes: probs[i] = exp(logits[i] - max) / sum(exp(logits[j] - max))
 
@@ -88,12 +88,12 @@ def softmax_inline[
         N: Number of elements (actions).
 
     Example:
-        var logits = InlineArray[Scalar[DType.float32], 4](fill=0)
+        var logits = Array[Scalar[DType.float32], 4](fill=0)
         logits[0] = 1.0
         logits[1] = 2.0
         var probs = softmax_inline(logits).
     """
-    var probs = InlineArray[Scalar[dtype], N](uninitialized=True)
+    var probs = Array[Scalar[dtype], N](uninitialized=True)
 
     # Find max for numerical stability
     var max_logit = logits[0]
@@ -197,8 +197,8 @@ def sample_from_probs(probs: List[Float64]) -> Int:
 
 def sample_from_probs_inline[
     dtype: DType, N: Int
-](probs: InlineArray[Scalar[dtype], N]) -> Int:
-    """Sample an action index from a probability distribution (InlineArray).
+](probs: Array[Scalar[dtype], N]) -> Int:
+    """Sample an action index from a probability distribution (Array).
 
     Args:
         probs: Probability distribution over actions.
@@ -248,8 +248,8 @@ def argmax_probs(probs: List[Float64]) -> Int:
 
 def argmax_probs_inline[
     dtype: DType, N: Int
-](probs: InlineArray[Scalar[dtype], N]) -> Int:
-    """Get the action with highest probability (greedy selection, InlineArray).
+](probs: Array[Scalar[dtype], N]) -> Int:
+    """Get the action with highest probability (greedy selection, Array).
 
     Args:
         probs: Probability distribution over actions.

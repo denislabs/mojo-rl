@@ -52,7 +52,7 @@ directly would ever notice (reset infidelities are invisible to all of them).
 
 from std.math import log, sqrt, cos, sin, pi, inf
 from std.random import random_float64
-from std.collections import InlineArray
+from std.collections import Array
 
 from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.xmat import xmat_elem, XMAT_ZX, XMAT_ZY, XMAT_ZZ
@@ -144,7 +144,7 @@ def _world_to_torso[DTYPE: DType, D: DimsLike](
     v with COLUMN k of R, i.e. with R's k-th basis vector expressed in world
     coordinates. See note 2 in the module docstring.
     """
-    var r = InlineArray[Float64, 9](fill=0.0)
+    var r = Array[Float64, 9](fill=0.0)
     for k in range(9):
         r[k] = xmat_elem(d, DOG_TORSO_BODY_IDX, k)
     return (
@@ -223,7 +223,7 @@ def _stand_factors[DTYPE: DType, D: DimsLike](
     # `upright()` is z_projection()[:, 2] over skull, torso, pelvis — the 'zz'
     # element of each body's xmat. Three separate reward factors.
     var f_upright = Float64(1.0)
-    var uprights = InlineArray[Int, 3](fill=0)
+    var uprights = Array[Int, 3](fill=0)
     uprights[0] = DOG_SKULL_BODY_IDX
     uprights[1] = DOG_TORSO_BODY_IDX
     uprights[2] = DOG_PELVIS_BODY_IDX
@@ -270,7 +270,7 @@ def _dog_obs_cpu[DTYPE: DType, D: DimsLike](
 
         # --- z_projection: xmat[[skull, torso, pelvis], ['zx','zy','zz']] --
         #     row-major indices 6, 7, 8 of each body's rotation matrix.
-        var zbodies = InlineArray[Int, 3](fill=0)
+        var zbodies = Array[Int, 3](fill=0)
         zbodies[0] = DOG_SKULL_BODY_IDX
         zbodies[1] = DOG_TORSO_BODY_IDX
         zbodies[2] = DOG_PELVIS_BODY_IDX
@@ -322,12 +322,12 @@ def _dog_obs_cpu[DTYPE: DType, D: DimsLike](
         #     A `<force>` sensor is THREE numbers; `site_force_torque` returns
         #     six and the torque half belongs to a `<torque>` sensor dog does
         #     not declare.
-        var f_bodies = InlineArray[Int, 4](fill=0)
+        var f_bodies = Array[Int, 4](fill=0)
         f_bodies[0] = DOG_BODY_FOOT_ANCHOR_L
         f_bodies[1] = DOG_BODY_FOOT_ANCHOR_R
         f_bodies[2] = DOG_BODY_HAND_ANCHOR_L
         f_bodies[3] = DOG_BODY_HAND_ANCHOR_R
-        var f_sites = InlineArray[Int, 4](fill=0)
+        var f_sites = Array[Int, 4](fill=0)
         f_sites[0] = DOG_SITE_FOOT_ANCHOR_L
         f_sites[1] = DOG_SITE_FOOT_ANCHOR_R
         f_sites[2] = DOG_SITE_HAND_ANCHOR_L
@@ -344,7 +344,7 @@ def _dog_obs_cpu[DTYPE: DType, D: DimsLike](
             obs.append(Scalar[DTYPE](ft[2]))
 
         # --- touch_sensors: palm_L, palm_R, sole_L, sole_R -----------------
-        var t_sites = InlineArray[Int, 4](fill=0)
+        var t_sites = Array[Int, 4](fill=0)
         t_sites[0] = DOG_SITE_PALM_L
         t_sites[1] = DOG_SITE_PALM_R
         t_sites[2] = DOG_SITE_SOLE_L
@@ -436,7 +436,7 @@ def _stand_factors_gpu[
     )
 
     var f_upright = Scalar[DTYPE](1.0)
-    var uprights = InlineArray[Int, 3](fill=0)
+    var uprights = Array[Int, 3](fill=0)
     uprights[0] = DOG_SKULL_BODY_IDX
     uprights[1] = DOG_TORSO_BODY_IDX
     uprights[2] = DOG_PELVIS_BODY_IDX
@@ -455,7 +455,7 @@ def _stand_factors_gpu[
     # ⚠ dog's OWN touch sum spans 22.6% over root yaw (a model indeterminacy,
     # filed as an engine bug twice before it was measured), so a reward
     # mismatch driven by this term is not automatically a port defect.
-    var t_sites = InlineArray[Int, 4](fill=0)
+    var t_sites = Array[Int, 4](fill=0)
     t_sites[0] = DOG_SITE_PALM_L
     t_sites[1] = DOG_SITE_PALM_R
     t_sites[2] = DOG_SITE_SOLE_L
@@ -576,7 +576,7 @@ def _dog_obs_gpu[
     k += 1
 
     # --- z_projection: skull / torso / pelvis, rows zx zy zz --------------
-    var zbodies = InlineArray[Int, 3](fill=0)
+    var zbodies = Array[Int, 3](fill=0)
     zbodies[0] = DOG_SKULL_BODY_IDX
     zbodies[1] = DOG_TORSO_BODY_IDX
     zbodies[2] = DOG_PELVIS_BODY_IDX
@@ -604,7 +604,7 @@ def _dog_obs_gpu[
         Dims[nq=NQ, nv=NV, nbody=NBODY, nsite=NSITE_F](),
         xvel, bodies, env, DOG_TORSO_BODY_IDX, vx, vy, vz
     )
-    var r = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var r = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     for j in range(9):
         r[j] = xmat_elem_gpu[DTYPE](
             xquat, env, DOG_TORSO_BODY_IDX, j
@@ -644,12 +644,12 @@ def _dog_obs_gpu[
     # --- foot_forces: <force> at foot_L, foot_R, hand_L, hand_R ----------
     #     A `<force>` sensor is THREE numbers; `site_force_torque` returns six
     #     and the torque half belongs to a `<torque>` sensor dog does not have.
-    var f_bodies = InlineArray[Int, 4](fill=0)
+    var f_bodies = Array[Int, 4](fill=0)
     f_bodies[0] = DOG_BODY_FOOT_ANCHOR_L
     f_bodies[1] = DOG_BODY_FOOT_ANCHOR_R
     f_bodies[2] = DOG_BODY_HAND_ANCHOR_L
     f_bodies[3] = DOG_BODY_HAND_ANCHOR_R
-    var f_sites = InlineArray[Int, 4](fill=0)
+    var f_sites = Array[Int, 4](fill=0)
     f_sites[0] = DOG_SITE_FOOT_ANCHOR_L
     f_sites[1] = DOG_SITE_FOOT_ANCHOR_R
     f_sites[2] = DOG_SITE_HAND_ANCHOR_L
@@ -666,7 +666,7 @@ def _dog_obs_gpu[
             k += 1
 
     # --- touch_sensors: palm_L, palm_R, sole_L, sole_R -------------------
-    var t_sites = InlineArray[Int, 4](fill=0)
+    var t_sites = Array[Int, 4](fill=0)
     t_sites[0] = DOG_SITE_PALM_L
     t_sites[1] = DOG_SITE_PALM_R
     t_sites[2] = DOG_SITE_SOLE_L

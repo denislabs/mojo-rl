@@ -140,7 +140,7 @@ struct MAEReplacer[
     NP: Int, D: Int, P_MIN: Float64, P_MAX: Float64, SEED: UInt64
 ](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.NP * Self.D)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.NP * Self.D)
     comptime OUT_DIM = Self.NP * Self.D
 
     var mask_token: Param["mask_token", False, Self.D]

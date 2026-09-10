@@ -84,7 +84,7 @@ def _dueling_grad_kernel[
 
 struct DuelingHead[NA: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.NA + 1)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.NA + 1)
     comptime OUT_DIM: Int = Self.NA
 
     def __init__(out self):

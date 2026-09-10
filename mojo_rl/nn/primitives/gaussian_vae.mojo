@@ -118,7 +118,7 @@ def _gr_backward_kernel[
 
 struct GaussianReparam[LATENT: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=2 * Self.LATENT)
+    comptime IN_DIMS = Array[Int, 1](fill=2 * Self.LATENT)
     comptime OUT_DIM: Int = Self.LATENT
 
     var eps: Tensor
@@ -309,7 +309,7 @@ def _kl_backward_kernel[
 
 struct GaussianKLStdNormal[LATENT: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=2 * Self.LATENT)
+    comptime IN_DIMS = Array[Int, 1](fill=2 * Self.LATENT)
     comptime OUT_DIM: Int = 1
 
     def __init__(out self):

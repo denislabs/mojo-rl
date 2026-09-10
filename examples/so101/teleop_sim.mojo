@@ -72,9 +72,9 @@ struct LeaderArmSource(ActionSource, Movable):
 
     var arm: SO101Arm
     var map: SimJointMap
-    var _raw: InlineArray[Int32, SO101_N]
+    var _raw: Array[Int32, SO101_N]
     var _last_ok: Int
-    var _clamped: InlineArray[Float64, SO101_N]
+    var _clamped: Array[Float64, SO101_N]
 
     def __init__(out self, var port: String) raises:
         # max_step_ticks=0: nothing here ever writes a goal, so the step clamp
@@ -86,19 +86,19 @@ struct LeaderArmSource(ActionSource, Movable):
         var sf = SoArm101Model.make_spec_fields[DType.float64]()
         var lo_col = actuator_column(sf, ACT_IDX_CTRL_MIN, SO101_N)
         var hi_col = actuator_column(sf, ACT_IDX_CTRL_MAX, SO101_N)
-        var lo = InlineArray[Float64, SO101_N](fill=0.0)
-        var hi = InlineArray[Float64, SO101_N](fill=0.0)
+        var lo = Array[Float64, SO101_N](fill=0.0)
+        var hi = Array[Float64, SO101_N](fill=0.0)
         for i in range(SO101_N):
             lo[i] = Float64(lo_col[i])
             hi[i] = Float64(hi_col[i])
         self.map = SimJointMap.identity(lo^, hi^)
 
-        self._raw = InlineArray[Int32, SO101_N](fill=0)
+        self._raw = Array[Int32, SO101_N](fill=0)
         # -1, not 0: `run_view` prints `status()` ONCE before the first `act`,
         # and "0 of 6 motors answered" there reads as a dead bus when it only
         # means "not read yet".
         self._last_ok = -1
-        self._clamped = InlineArray[Float64, SO101_N](fill=0.0)
+        self._clamped = Array[Float64, SO101_N](fill=0.0)
 
     # ── ActionSource ───────────────────────────────────────────────────────
 

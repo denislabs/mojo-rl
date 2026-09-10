@@ -27,8 +27,8 @@ from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
 
 
-def _dims2(d0: Int, d1: Int) -> InlineArray[Int, 2]:
-    var a = InlineArray[Int, 2](fill=0)
+def _dims2(d0: Int, d1: Int) -> Array[Int, 2]:
+    var a = Array[Int, 2](fill=0)
     a[0] = d0
     a[1] = d1
     return a^

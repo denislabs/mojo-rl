@@ -88,7 +88,7 @@ def mz_two_hot_target_batch[
     var bins = compute_bins[NUM_BINS](v_min, v_max)
     for b in range(BATCH):
         var ht = mz_scalar_transform(values[val_off + b])
-        var tgt = InlineArray[Scalar[DT], NUM_BINS](fill=0)
+        var tgt = Array[Scalar[DT], NUM_BINS](fill=0)
         two_hot_encode[NUM_BINS](ht, bins, tgt)
         var base = b * NUM_BINS
         for i in range(NUM_BINS):
@@ -108,7 +108,7 @@ def mz_two_hot_target_one[
     ``target[tgt_off .. tgt_off+NUM_BINS)``."""
     var bins = compute_bins[NUM_BINS](v_min, v_max)
     var ht = mz_scalar_transform(value)
-    var tgt = InlineArray[Scalar[DT], NUM_BINS](fill=0)
+    var tgt = Array[Scalar[DT], NUM_BINS](fill=0)
     two_hot_encode[NUM_BINS](ht, bins, tgt)
     for i in range(NUM_BINS):
         target[tgt_off + i] = tgt[i]

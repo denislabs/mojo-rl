@@ -48,7 +48,7 @@ def quat2mat[
     quaternion and did the arithmetic in WORLD coordinates instead: the same
     mathematics and a different rounding path.
 
-    ⚠⚠ IT RETURNS A TUPLE, NOT AN `InlineArray`, AND THAT IS A GPU
+    ⚠⚠ IT RETURNS A TUPLE, NOT AN `Array`, AND THAT IS A GPU
     REQUIREMENT. This is `@always_inline`d into every branch of `_support`, so
     a nine-element per-thread array here is nine more stack slots per call site
     in a Metal kernel that is already at its ceiling — the heightfield GPU leg
@@ -128,14 +128,14 @@ def local_to_global[
     m6: Scalar[DTYPE], m7: Scalar[DTYPE], m8: Scalar[DTYPE],
     lx: Scalar[DTYPE], ly: Scalar[DTYPE], lz: Scalar[DTYPE],
     px: Scalar[DTYPE], py: Scalar[DTYPE], pz: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """`localToGlobal` — `mat * local + pos`, with the add written LAST exactly
     as the reference writes it.
 
-    ⚠ RETURNS THE `InlineArray` THE SUPPORTS ALREADY RETURN, so this adds no
+    ⚠ RETURNS THE `Array` THE SUPPORTS ALREADY RETURN, so this adds no
     slot of its own — it is the existing return value, filled in place.
     """
-    var r = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+    var r = Array[Scalar[DTYPE], 3](uninitialized=True)
     r[0] = m0 * lx + m1 * ly + m2 * lz
     r[1] = m3 * lx + m4 * ly + m5 * lz
     r[2] = m6 * lx + m7 * ly + m8 * lz
@@ -156,9 +156,9 @@ def support_sphere[
     pos_y: Scalar[DTYPE],
     pos_z: Scalar[DTYPE],
     radius: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """Support point on sphere: center + radius * dir."""
-    var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var result = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     result[0] = pos_x + radius * dir_x
     result[1] = pos_y + radius * dir_y
     result[2] = pos_z + radius * dir_z
@@ -181,7 +181,7 @@ def support_capsule[
     qw: Scalar[DTYPE],
     radius: Scalar[DTYPE],
     half_length: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """`mjc_capsuleSupport` (`engine_collision_convex.c`), in the LOCAL frame.
 
         mulMatTVec3(local_dir, mat, dir)
@@ -227,7 +227,7 @@ def support_box[
     half_y: Scalar[DTYPE],
     half_z: Scalar[DTYPE],
     mut corner: Int,
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """`mjc_boxSupport` — the sign of each LOCAL component, in the local frame.
 
     ⚠ `warm` comes back as MuJoCo's `obj->vertindex`, which for a box is the
@@ -274,7 +274,7 @@ def support_ellipsoid[
     half_x: Scalar[DTYPE],
     half_y: Scalar[DTYPE],
     half_z: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """`mjc_ellipsoidSupport` (`engine_collision_convex.c:562`), verbatim.
 
         res = local_dir * size          (elementwise)
@@ -304,7 +304,7 @@ def support_ellipsoid[
     # `res[i] = mat[3*i] * size[0] + pos[i]` outright, and the threshold is
     # `norm2 < mjMINVAL^2` on the SQUARED norm rather than 1e-15 on the norm.
     if norm2 < Scalar[DTYPE](1e-30):
-        var deg = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+        var deg = Array[Scalar[DTYPE], 3](uninitialized=True)
         deg[0] = m[0] * half_x + pos_x
         deg[1] = m[3] * half_x + pos_y
         deg[2] = m[6] * half_x + pos_z
@@ -335,7 +335,7 @@ def support_cylinder[
     qw: Scalar[DTYPE],
     radius: Scalar[DTYPE],
     half_length: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """`mjc_cylinderSupport` (`engine_collision_convex.c`), in the LOCAL frame.
 
         mulMatTVec3(local_dir, mat, dir)
@@ -387,7 +387,7 @@ def support_mesh[
     verts: List[Scalar[DTYPE]],
     vert_offset: Int,
     num_verts: Int,
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """Support point on mesh: exhaustive scan of hull vertices.
 
     Vertices are stored in local frame. We rotate dir to local frame,
@@ -420,7 +420,7 @@ def support_mesh[
         qx, qy, qz, qw, verts[off], verts[off + 1], verts[off + 2]
     )
 
-    var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var result = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     result[0] = pos_x + local_pt[0]
     result[1] = pos_y + local_pt[1]
     result[2] = pos_z + local_pt[2]
@@ -460,7 +460,7 @@ def _project_origin_line[
 ](
     v1x: Scalar[DTYPE], v1y: Scalar[DTYPE], v1z: Scalar[DTYPE],
     v2x: Scalar[DTYPE], v2y: Scalar[DTYPE], v2z: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """`projectOriginLine` — the origin projected onto the line v1 v2.
 
         res = v2 - <v2, v2 - v1> / <v2 - v1, v2 - v1> * (v2 - v1)
@@ -471,7 +471,7 @@ def _project_origin_line[
     var scl = -(
         (v2x * dx + v2y * dy + v2z * dz) / (dx * dx + dy * dy + dz * dz)
     )
-    var out = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+    var out = Array[Scalar[DTYPE], 3](uninitialized=True)
     out[0] = v2x + scl * dx
     out[1] = v2y + scl * dy
     out[2] = v2z + scl * dz
@@ -494,7 +494,7 @@ def _s1d[
 ](
     s1x: Scalar[DTYPE], s1y: Scalar[DTYPE], s1z: Scalar[DTYPE],
     s2x: Scalar[DTYPE], s2y: Scalar[DTYPE], s2z: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 2]:
+) -> Array[Scalar[DTYPE], 2]:
     """`S1D` — barycentric coordinates of the origin's closest point on a segment.
 
     ⚠ THE FALLBACK IS `(0, 1)`, NOT A CLAMP. When the projection falls outside
@@ -536,7 +536,7 @@ def _s1d[
         _same_sign2[DTYPE](mu_max, c1) != 0
         and _same_sign2[DTYPE](mu_max, c2) != 0
     )
-    var out = InlineArray[Scalar[DTYPE], 2](uninitialized=True)
+    var out = Array[Scalar[DTYPE], 2](uninitialized=True)
     if same:
         out[0] = c1 / mu_max
         out[1] = c2 / mu_max
@@ -553,12 +553,12 @@ def _s2d[
     s1x: Scalar[DTYPE], s1y: Scalar[DTYPE], s1z: Scalar[DTYPE],
     s2x: Scalar[DTYPE], s2y: Scalar[DTYPE], s2z: Scalar[DTYPE],
     s3x: Scalar[DTYPE], s3y: Scalar[DTYPE], s3z: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 3]:
+) -> Array[Scalar[DTYPE], 3]:
     """`S2D` — barycentric coordinates of the origin's closest point on a triangle."""
     var pr = project_origin_plane[DTYPE](
         s1x, s1y, s1z, s2x, s2y, s2z, s3x, s3y, s3z
     )
-    var out = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     if pr[0] == Scalar[DTYPE](0):
         # degenerate plane: drop to the segment s1 s2
         var l1 = _s1d[DTYPE](s1x, s1y, s1z, s2x, s2y, s2z)
@@ -686,7 +686,7 @@ def _subdistance[
     wrow: Int,
     base: Int,
     n: Int,
-) -> InlineArray[Scalar[DTYPE], 4]:
+) -> Array[Scalar[DTYPE], 4]:
     """`subdistance` / `S3D` — the barycentric coordinates of the point in the
     simplex closest to the origin. Montanari et al, ToG 2017.
 
@@ -702,7 +702,7 @@ def _subdistance[
     `polytope2/3/4` seeds EPA from, so a different tie-break here is a
     different seed, a different final face and a different contact normal.
     """
-    var lam = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var lam = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     if n < 2:
         lam[0] = Scalar[DTYPE](1)
         return lam^
@@ -821,8 +821,8 @@ def support_prism[
     dir_x: Scalar[DTYPE],
     dir_y: Scalar[DTYPE],
     dir_z: Scalar[DTYPE],
-    prism: InlineArray[Scalar[DTYPE], 18],
-) -> InlineArray[Scalar[DTYPE], 3]:
+    prism: Array[Scalar[DTYPE], 18],
+) -> Array[Scalar[DTYPE], 3]:
     """Support point of a HEIGHTFIELD PRISM — six explicit vertices.
 
     `mjc_ConvexHField` (`engine_collision_convex.c:1125`) does not collide the
@@ -874,7 +874,7 @@ def support_prism[
         if d > bestdot:
             bestdot = d
             best = i
-    var out = InlineArray[Scalar[DTYPE], 3](uninitialized=True)
+    var out = Array[Scalar[DTYPE], 3](uninitialized=True)
     out[0] = prism[best * 3 + 0]
     out[1] = prism[best * 3 + 1]
     out[2] = prism[best * 3 + 2]

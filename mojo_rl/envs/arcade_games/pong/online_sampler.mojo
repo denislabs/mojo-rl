@@ -132,7 +132,7 @@ struct OnlinePongSampler[
 
     # PongPixelEnv owns raw frame buffers + a custom __deinit__, so it is Movable
     # but NOT Copyable — we hold a List of freshly-constructed (moved, not
-    # copied) envs rather than InlineArray(fill=...). One shared policy serves
+    # copied) envs rather than Array(fill=...). One shared policy serves
     # the whole pool: select_action takes the env as an arg and reads global
     # RNG, so it carries no per-env state.
     var envs: List[PongPixelEnv[PONG_DT]]

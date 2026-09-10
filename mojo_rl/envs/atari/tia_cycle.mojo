@@ -108,21 +108,21 @@ struct DelayQueue(Copyable, Movable):
     after the push".
     """
 
-    var valid: InlineArray[Bool, DQ_CAP]
+    var valid: Array[Bool, DQ_CAP]
     # Color-clock countdowns (Stella delays are ≤6), so UInt8 storage is exact
     # and 8× smaller than Int — the largest single per-thread footprint cut for
     # the GPU port (128 B → 16 B). Decrement/compare only; never wraps (the
     # ==0 entries are drained before the decrement pass).
-    var remaining: InlineArray[UInt8, DQ_CAP]
-    var reg: InlineArray[UInt8, DQ_CAP]
-    var value: InlineArray[UInt8, DQ_CAP]
+    var remaining: Array[UInt8, DQ_CAP]
+    var reg: Array[UInt8, DQ_CAP]
+    var value: Array[UInt8, DQ_CAP]
     var count: Int  # live entries — lets cycle_collect early-out (hot path)
 
     def __init__(out self):
-        self.valid = InlineArray[Bool, DQ_CAP](fill=False)
-        self.remaining = InlineArray[UInt8, DQ_CAP](fill=0)
-        self.reg = InlineArray[UInt8, DQ_CAP](fill=0)
-        self.value = InlineArray[UInt8, DQ_CAP](fill=0)
+        self.valid = Array[Bool, DQ_CAP](fill=False)
+        self.remaining = Array[UInt8, DQ_CAP](fill=0)
+        self.reg = Array[UInt8, DQ_CAP](fill=0)
+        self.value = Array[UInt8, DQ_CAP](fill=0)
         self.count = 0
 
     def push(mut self, reg: UInt8, value: UInt8, delay: Int):
@@ -140,8 +140,8 @@ struct DelayQueue(Copyable, Movable):
     @always_inline
     def cycle_collect(
         mut self,
-        mut due_reg: InlineArray[UInt8, DQ_CAP],
-        mut due_val: InlineArray[UInt8, DQ_CAP],
+        mut due_reg: Array[UInt8, DQ_CAP],
+        mut due_val: Array[UInt8, DQ_CAP],
     ) -> Int:
         """Advance one color clock; write the regs that fire this clock into
         the caller's fixed drain buffers and return how many fired.
@@ -149,7 +149,7 @@ struct DelayQueue(Copyable, Movable):
         Called once per color clock (~60k/frame); the queue is empty on the
         vast majority of clocks, so the count==0 early-out is the difference
         between O(1) and 2×DQ_CAP scans per clock. Drains into caller-owned
-        `InlineArray[UInt8, DQ_CAP]` (no heap) — at most DQ_CAP entries can be
+        `Array[UInt8, DQ_CAP]` (no heap) — at most DQ_CAP entries can be
         due in a single clock, so the fixed capacity can never overflow. The
         fill order matches the old List `append` order exactly (same slot
         scan), so `_cycle_apply_reg` sees writes in the identical sequence.

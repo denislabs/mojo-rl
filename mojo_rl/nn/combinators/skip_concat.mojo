@@ -36,7 +36,7 @@ struct SkipConcat[Inner: Module](Module):
     comptime ARITY = 1
     comptime IN = Self.Inner.IN_DIMS[0]
     comptime OINNER = Self.Inner.OUT_DIM
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.Inner.IN_DIMS[0])
+    comptime IN_DIMS = Array[Int, 1](fill=Self.Inner.IN_DIMS[0])
     comptime OUT_DIM = Self.Inner.IN_DIMS[0] + Self.Inner.OUT_DIM
     # The skip is a column concat (no dtype change) — activation dtype is just
     # the wrapped module's.

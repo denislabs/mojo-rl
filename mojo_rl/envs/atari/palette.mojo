@@ -6,13 +6,13 @@ Each entry is stored as packed 0xRRGGBB.
 Palette from ALE (Arcade Learning Environment) — Stella emulator NTSC palette.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 
 # NTSC palette: 256 entries for direct indexing with the full 8-bit color register.
 # Even indices = color, odd indices = grayscale equivalent.
 # Format: 0x00RRGGBB
 # Source: ALE src/ale/common/Palettes.hpp (NTSCPalette)
-comptime NTSC_PALETTE: InlineArray[UInt32, 256] = [
+comptime NTSC_PALETTE: Array[UInt32, 256] = [
     # 0x0_: Grays
     0x000000,
     0x000000,

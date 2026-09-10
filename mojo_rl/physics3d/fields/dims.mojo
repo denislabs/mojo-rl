@@ -285,7 +285,7 @@ struct Dims[
     comptime NTEN = Self.nten
     comptime NKEY = Self.nkey
 
-    # Cap == exact. Every `InlineArray[T, D.CAP_NV]` on the static leg is
+    # Cap == exact. Every `Array[T, D.CAP_NV]` on the static leg is
     # therefore the allocation that ships today, to the byte.
     comptime CAP_NQ = Self.nq
     comptime CAP_NV = Self.nv
@@ -487,7 +487,7 @@ struct DynDims(DimsLike):
     This type used to take fifteen `cap_*` parameters and check them at
     construction, because §4.2 planned to keep the per-call scratch on the
     STACK with a fixed cap. §10.7 built that and refuted it: a fixed-cap
-    `InlineArray` under a RUNTIME bound is 1.13-1.18x *worse* than the heap
+    `Array` under a RUNTIME bound is 1.13-1.18x *worse* than the heap
     `List` it was meant to beat, because the cost is the runtime bound, not
     the cap size. `Scratch` therefore sends this leg to the heap (`CAP == 0`),
     and a cap that sizes nothing is a promise with nothing behind it.

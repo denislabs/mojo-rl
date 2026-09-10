@@ -75,7 +75,7 @@ from std.math import sqrt
 @always_inline
 def _default_axis[
     DTYPE: DType
-](ny: Scalar[DTYPE]) -> InlineArray[Scalar[DTYPE], 3]:
+](ny: Scalar[DTYPE]) -> Array[Scalar[DTYPE], 3]:
     """`mju_makeFrame`'s undefined-yaxis case, engine_util_spatial.c:517-525.
 
     `(0,1,0)` unless the normal is itself close to y, in which case `(0,0,1)`.
@@ -84,7 +84,7 @@ def _default_axis[
     comparison below is written to match that boundary rather than the more
     natural `abs(ny) < 0.5`.
     """
-    var out = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     if ny < Scalar[DTYPE](0.5) and ny > Scalar[DTYPE](-0.5):
         out[1] = Scalar[DTYPE](1)
     else:
@@ -102,7 +102,7 @@ def contact_tangent_frame[
     hint_x_in: Scalar[DTYPE],
     hint_y_in: Scalar[DTYPE],
     hint_z_in: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 6]:
+) -> Array[Scalar[DTYPE], 6]:
     """Orthonormal (t1, t2) for a contact normal, from a possibly-absent hint.
 
     Returns `[t1x, t1y, t1z, t2x, t2y, t2z]` with `t2 = n x t1`. The normal is
@@ -156,7 +156,7 @@ def contact_tangent_frame[
         t1y = t1y / t1_mag
         t1z = t1z / t1_mag
 
-    var out = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
+    var out = Array[Scalar[DTYPE], 6](uninitialized=True)
     out[0] = t1x
     out[1] = t1y
     out[2] = t1z

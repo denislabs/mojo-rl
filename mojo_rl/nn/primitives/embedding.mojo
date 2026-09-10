@@ -61,7 +61,7 @@ def _emb_accum_kernel[
 
 struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.VOCAB_)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.VOCAB_)
     comptime OUT_DIM = Self.EMBED_DIM_
     comptime W_SIZE = Self.VOCAB_ * Self.EMBED_DIM_
     # Activation-flow dtype (satisfies the Module trait). `Embedding[V, D]` =

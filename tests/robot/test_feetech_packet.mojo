@@ -46,7 +46,7 @@ def _assert_bytes[
 
 def test_ping_matches_reference_sdk() raises:
     """The reference SDK's own `PacketHandler(0).ping(port, 1)` bytes."""
-    var buf = InlineArray[UInt8, 32](fill=0)
+    var buf = Array[UInt8, 32](fill=0)
     var s = Span(buf)
     var n = build_ping(1, s)
     _assert_bytes("ping", s, n, [0xFF, 0xFF, 0x01, 0x02, 0x01, 0xFB])
@@ -54,7 +54,7 @@ def test_ping_matches_reference_sdk() raises:
 
 def test_read_matches_reference_sdk() raises:
     """Reference `readTxRx(port, id=1, addr=56 Present_Position, len=2)`."""
-    var buf = InlineArray[UInt8, 32](fill=0)
+    var buf = Array[UInt8, 32](fill=0)
     var s = Span(buf)
     var n = build_read(1, 56, 2, s)
     _assert_bytes(
@@ -65,14 +65,14 @@ def test_read_matches_reference_sdk() raises:
 def test_write_matches_reference_sdk() raises:
     """Reference `write2ByteTxRx(id=3, addr=42 Goal_Position, 2048)` — and
     the 1-byte form, which is the one that arms torque."""
-    var buf = InlineArray[UInt8, 32](fill=0)
+    var buf = Array[UInt8, 32](fill=0)
     var s = Span(buf)
     var n = build_write(3, 42, 2048, 2, s)
     _assert_bytes(
         "write2", s, n, [0xFF, 0xFF, 0x03, 0x05, 0x03, 0x2A, 0x00, 0x08, 0xC2]
     )
 
-    var buf1 = InlineArray[UInt8, 32](fill=0)
+    var buf1 = Array[UInt8, 32](fill=0)
     var s1 = Span(buf1)
     var n1 = build_write(2, 40, 1, 1, s1)
     _assert_bytes(
@@ -84,7 +84,7 @@ def test_sync_read_matches_reference_sdk() raises:
     """GroupSyncRead(56, 2) over ids 1..6 — the packet the control loop sends
     every tick."""
     var ids: List[UInt8] = [1, 2, 3, 4, 5, 6]
-    var buf = InlineArray[UInt8, 32](fill=0)
+    var buf = Array[UInt8, 32](fill=0)
     var s = Span(buf)
     var n = build_sync_read(56, 2, Span(ids), s)
     _assert_bytes(
@@ -103,7 +103,7 @@ def test_sync_write_matches_reference_sdk() raises:
     id/value pair or a big-endian split cannot pass."""
     var ids: List[UInt8] = [1, 2, 3, 4, 5, 6]
     var vals: List[Int32] = [100, 200, 300, 400, 500, 600]
-    var buf = InlineArray[UInt8, 64](fill=0)
+    var buf = Array[UInt8, 64](fill=0)
     var s = Span(buf)
     var n = build_sync_write(42, 2, Span(ids), Span(vals), s)
     _assert_bytes(
@@ -163,7 +163,7 @@ def test_parse_status_walks_six_concatenated_replies() raises:
     """A sync-read answer is N separate status packets back to back. Walking
     them is where an off-by-one in `end` shows up, so all six ids and all six
     positions are checked."""
-    var rx = InlineArray[UInt8, 48](fill=0)
+    var rx = Array[UInt8, 48](fill=0)
     var s = Span(rx)
     var positions: List[Int] = [1931, 812, 3125, 2901, 2102, 2559]
     for m in range(6):

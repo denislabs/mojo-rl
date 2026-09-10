@@ -123,8 +123,8 @@ def _axis_of(
 
 
 def _pnpoly3(
-    px: InlineArray[Float32, 3],
-    py: InlineArray[Float32, 3],
+    px: Array[Float32, 3],
+    py: Array[Float32, 3],
     tx: Float32,
     ty: Float32,
 ) -> Bool:
@@ -240,9 +240,9 @@ def _triangulate_face(
         else:
             remaining_iters -= 1
 
-        var ind = InlineArray[Int, 3](fill=0)
-        var px = InlineArray[Float32, 3](fill=Float32(0))
-        var py = InlineArray[Float32, 3](fill=Float32(0))
+        var ind = Array[Int, 3](fill=0)
+        var px = Array[Float32, 3](fill=Float32(0))
+        var py = Array[Float32, 3](fill=Float32(0))
         for k in range(3):
             var vi = rem[(guess + k) % m]
             ind[k] = vi

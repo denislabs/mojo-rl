@@ -142,7 +142,7 @@ struct SerialPort(Movable):
             _ = external_call["close", Int32](self.fd)
 
     def _configure(mut self) raises:
-        var tio = InlineArray[UInt8, TERMIOS_SIZE](fill=0)
+        var tio = Array[UInt8, TERMIOS_SIZE](fill=0)
         var p = tio.unsafe_ptr()
         if external_call["tcgetattr", Int32](self.fd, p) != 0:
             raise Error("serial: tcgetattr failed, errno=" + String(errno()))
@@ -184,7 +184,7 @@ struct SerialPort(Movable):
 
     def speed(mut self) -> Int:
         """`c_ospeed` as the driver currently reports it."""
-        var tio = InlineArray[UInt8, TERMIOS_SIZE](fill=0)
+        var tio = Array[UInt8, TERMIOS_SIZE](fill=0)
         var p = tio.unsafe_ptr()
         _ = external_call["tcgetattr", Int32](self.fd, p)
         return Int(p.unsafe_offset(OFF_OSPEED).unsafe_bitcast[UInt64]()[])

@@ -75,32 +75,32 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
       fog_params:     vec4  (16 bytes) - x = fogstart, y = fogend, z = unused, w = unused
     """
 
-    var view_proj: InlineArray[Float32, 16]
-    var camera_pos: InlineArray[Float32, 4]
-    var light0_dir: InlineArray[Float32, 4]
-    var light0_color: InlineArray[Float32, 4]
-    var light1_dir: InlineArray[Float32, 4]
-    var light1_color: InlineArray[Float32, 4]
-    var light2_dir: InlineArray[Float32, 4]
-    var light2_color: InlineArray[Float32, 4]
-    var light3_dir: InlineArray[Float32, 4]
-    var light3_color: InlineArray[Float32, 4]
-    var ground_params: InlineArray[Float32, 4]
-    var fog_params: InlineArray[Float32, 4]
+    var view_proj: Array[Float32, 16]
+    var camera_pos: Array[Float32, 4]
+    var light0_dir: Array[Float32, 4]
+    var light0_color: Array[Float32, 4]
+    var light1_dir: Array[Float32, 4]
+    var light1_color: Array[Float32, 4]
+    var light2_dir: Array[Float32, 4]
+    var light2_color: Array[Float32, 4]
+    var light3_dir: Array[Float32, 4]
+    var light3_color: Array[Float32, 4]
+    var ground_params: Array[Float32, 4]
+    var fog_params: Array[Float32, 4]
 
     def __init__(out self):
-        self.view_proj = InlineArray[Float32, 16](fill=Float32(0))
-        self.camera_pos = InlineArray[Float32, 4](fill=Float32(0))
-        self.light0_dir = InlineArray[Float32, 4](fill=Float32(0))
-        self.light0_color = InlineArray[Float32, 4](fill=Float32(0))
-        self.light1_dir = InlineArray[Float32, 4](fill=Float32(0))
-        self.light1_color = InlineArray[Float32, 4](fill=Float32(0))
-        self.light2_dir = InlineArray[Float32, 4](fill=Float32(0))
-        self.light2_color = InlineArray[Float32, 4](fill=Float32(0))
-        self.light3_dir = InlineArray[Float32, 4](fill=Float32(0))
-        self.light3_color = InlineArray[Float32, 4](fill=Float32(0))
-        self.ground_params = InlineArray[Float32, 4](fill=Float32(0))
-        self.fog_params = InlineArray[Float32, 4](fill=Float32(0))
+        self.view_proj = Array[Float32, 16](fill=Float32(0))
+        self.camera_pos = Array[Float32, 4](fill=Float32(0))
+        self.light0_dir = Array[Float32, 4](fill=Float32(0))
+        self.light0_color = Array[Float32, 4](fill=Float32(0))
+        self.light1_dir = Array[Float32, 4](fill=Float32(0))
+        self.light1_color = Array[Float32, 4](fill=Float32(0))
+        self.light2_dir = Array[Float32, 4](fill=Float32(0))
+        self.light2_color = Array[Float32, 4](fill=Float32(0))
+        self.light3_dir = Array[Float32, 4](fill=Float32(0))
+        self.light3_color = Array[Float32, 4](fill=Float32(0))
+        self.ground_params = Array[Float32, 4](fill=Float32(0))
+        self.fog_params = Array[Float32, 4](fill=Float32(0))
 
     def __init__(out self, *, copy: Self):
         self.view_proj = copy.view_proj.copy()
@@ -140,14 +140,14 @@ struct ObjectUniforms(ImplicitlyCopyable, Movable):
       material: vec4 (16 bytes) — x=shininess, y=specular, z=reflectance, w=emission
     """
 
-    var model: InlineArray[Float32, 16]
-    var color: InlineArray[Float32, 4]
-    var material: InlineArray[Float32, 4]
+    var model: Array[Float32, 16]
+    var color: Array[Float32, 4]
+    var material: Array[Float32, 4]
 
     def __init__(out self):
-        self.model = InlineArray[Float32, 16](fill=Float32(0))
-        self.color = InlineArray[Float32, 4](fill=Float32(0))
-        self.material = InlineArray[Float32, 4](fill=Float32(0))
+        self.model = Array[Float32, 16](fill=Float32(0))
+        self.color = Array[Float32, 4](fill=Float32(0))
+        self.material = Array[Float32, 4](fill=Float32(0))
         # Defaults: shininess=0.5, specular=0.5, reflectance=0.0, emission=0.0
         self.material[0] = 0.5
         self.material[1] = 0.5
@@ -186,20 +186,20 @@ struct SkyboxUniforms(ImplicitlyCopyable, Movable):
     compile error anywhere, it is garbage in the shader.
     """
 
-    var top_color: InlineArray[Float32, 4]
-    var bottom_color: InlineArray[Float32, 4]
-    var mark_color: InlineArray[Float32, 4]
-    var cam_right: InlineArray[Float32, 4]
-    var cam_up: InlineArray[Float32, 4]
-    var cam_fwd: InlineArray[Float32, 4]
+    var top_color: Array[Float32, 4]
+    var bottom_color: Array[Float32, 4]
+    var mark_color: Array[Float32, 4]
+    var cam_right: Array[Float32, 4]
+    var cam_up: Array[Float32, 4]
+    var cam_fwd: Array[Float32, 4]
 
     def __init__(out self):
-        self.top_color = InlineArray[Float32, 4](fill=Float32(0))
-        self.bottom_color = InlineArray[Float32, 4](fill=Float32(0))
-        self.mark_color = InlineArray[Float32, 4](fill=Float32(0))
-        self.cam_right = InlineArray[Float32, 4](fill=Float32(0))
-        self.cam_up = InlineArray[Float32, 4](fill=Float32(0))
-        self.cam_fwd = InlineArray[Float32, 4](fill=Float32(0))
+        self.top_color = Array[Float32, 4](fill=Float32(0))
+        self.bottom_color = Array[Float32, 4](fill=Float32(0))
+        self.mark_color = Array[Float32, 4](fill=Float32(0))
+        self.cam_right = Array[Float32, 4](fill=Float32(0))
+        self.cam_up = Array[Float32, 4](fill=Float32(0))
+        self.cam_fwd = Array[Float32, 4](fill=Float32(0))
         # Default: white top, dark blue bottom
         self.top_color[0] = 0.8
         self.top_color[1] = 0.85
@@ -235,12 +235,12 @@ struct LineUniforms(ImplicitlyCopyable, Movable):
       color: vec4 (16 bytes)
     """
 
-    var view_proj: InlineArray[Float32, 16]
-    var color: InlineArray[Float32, 4]
+    var view_proj: Array[Float32, 16]
+    var color: Array[Float32, 4]
 
     def __init__(out self):
-        self.view_proj = InlineArray[Float32, 16](fill=Float32(0))
-        self.color = InlineArray[Float32, 4](fill=Float32(0))
+        self.view_proj = Array[Float32, 16](fill=Float32(0))
+        self.color = Array[Float32, 4](fill=Float32(0))
 
     def __init__(out self, *, copy: Self):
         self.view_proj = copy.view_proj.copy()
@@ -260,12 +260,12 @@ struct ShadowUniforms(ImplicitlyCopyable, Movable):
                                 z=shadow map resolution, w=unused
     """
 
-    var light_view_proj: InlineArray[Float32, 16]
-    var params: InlineArray[Float32, 4]
+    var light_view_proj: Array[Float32, 16]
+    var params: Array[Float32, 4]
 
     def __init__(out self):
-        self.light_view_proj = InlineArray[Float32, 16](fill=Float32(0))
-        self.params = InlineArray[Float32, 4](fill=Float32(0))
+        self.light_view_proj = Array[Float32, 16](fill=Float32(0))
+        self.params = Array[Float32, 4](fill=Float32(0))
         # Defaults: intensity=0.5, bias=0.005, map size 4096.
         # ⚠ `bias` IS THE HEAD-ON VALUE ONLY. The shader scales it by the
         # receiver's slope; see `compute_shadow` for why a constant is wrong on
@@ -544,7 +544,7 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
 # --- Helper functions ---
 
 
-def mat4_to_gpu_f32(m: Mat4) -> InlineArray[Float32, 16]:
+def mat4_to_gpu_f32(m: Mat4) -> Array[Float32, 16]:
     """Convert row-major Mat4[float64] to column-major Float32 array for GPU.
 
     Mat4 is row-major, but Metal/GLSL expect column-major. We transpose during
@@ -556,7 +556,7 @@ def mat4_to_gpu_f32(m: Mat4) -> InlineArray[Float32, 16]:
     Returns:
         Column-major Float32 array (16 elements).
     """
-    var out = InlineArray[Float32, 16](fill=Float32(0))
+    var out = Array[Float32, 16](fill=Float32(0))
     # Transpose: out[col*4 + row] = m.row_col
     # Column 0
     out[0] = Float32(m.m00)
@@ -625,7 +625,7 @@ def perspective_projection(
     return m
 
 
-def color_to_vec4(color: Color) -> InlineArray[Float32, 4]:
+def color_to_vec4(color: Color) -> Array[Float32, 4]:
     """Convert Color to normalized Float32 RGBA.
 
     Args:
@@ -634,7 +634,7 @@ def color_to_vec4(color: Color) -> InlineArray[Float32, 4]:
     Returns:
         Float32 RGBA array with alpha from color.a.
     """
-    var out = InlineArray[Float32, 4](fill=Float32(0))
+    var out = Array[Float32, 4](fill=Float32(0))
     out[0] = Float32(color.r) / 255.0
     out[1] = Float32(color.g) / 255.0
     out[2] = Float32(color.b) / 255.0
@@ -642,7 +642,7 @@ def color_to_vec4(color: Color) -> InlineArray[Float32, 4]:
     return out^
 
 
-def color_to_vec4(r: UInt8, g: UInt8, b: UInt8) -> InlineArray[Float32, 4]:
+def color_to_vec4(r: UInt8, g: UInt8, b: UInt8) -> Array[Float32, 4]:
     """Convert UInt8 RGB to normalized Float32 RGBA.
 
     Args:
@@ -653,7 +653,7 @@ def color_to_vec4(r: UInt8, g: UInt8, b: UInt8) -> InlineArray[Float32, 4]:
     Returns:
         Float32 RGBA array with alpha = 1.0.
     """
-    var out = InlineArray[Float32, 4](fill=Float32(0))
+    var out = Array[Float32, 4](fill=Float32(0))
     out[0] = Float32(r) / 255.0
     out[1] = Float32(g) / 255.0
     out[2] = Float32(b) / 255.0
@@ -661,9 +661,9 @@ def color_to_vec4(r: UInt8, g: UInt8, b: UInt8) -> InlineArray[Float32, 4]:
     return out^
 
 
-def make_identity_f32() -> InlineArray[Float32, 16]:
+def make_identity_f32() -> Array[Float32, 16]:
     """Create a Float32 identity matrix in column-major order."""
-    var out = InlineArray[Float32, 16](fill=Float32(0))
+    var out = Array[Float32, 16](fill=Float32(0))
     out[0] = 1.0
     out[5] = 1.0
     out[10] = 1.0
@@ -759,7 +759,7 @@ struct TextUniforms(ImplicitlyCopyable, Movable):
     """64-byte uniform block for text shader: column-major ortho projection mat4.
     """
 
-    var ortho_proj: InlineArray[Float32, 16]
+    var ortho_proj: Array[Float32, 16]
 
     def __init__(out self):
         self.ortho_proj = make_identity_f32()

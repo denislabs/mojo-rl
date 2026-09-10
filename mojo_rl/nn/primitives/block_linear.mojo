@@ -252,7 +252,7 @@ def _bl_accum_dw_kernel[
 
 struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.IN)
     comptime OUT_DIM = Self.OUT
     comptime IPB = Self.IN // Self.BLOCKS
     comptime OPB = Self.OUT // Self.BLOCKS

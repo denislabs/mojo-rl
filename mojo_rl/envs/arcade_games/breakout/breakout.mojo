@@ -66,7 +66,7 @@ comptime INITIAL_LIVES: Int = 5
 comptime BREAKOUT_MAX_STEPS: Int = 10000
 
 # Score per brick row (top rows = more points, like original)
-comptime ROW_SCORES: InlineArray[Int, 6] = [7, 7, 4, 4, 1, 1]
+comptime ROW_SCORES: Array[Int, 6] = [7, 7, 4, 4, 1, 1]
 
 # State slot indices
 comptime S_BALL_X: Int = 0
@@ -101,7 +101,7 @@ struct BreakoutEnv[DTYPE: DType](
     comptime STEP_WS_SHARED: Int = 0
     comptime STEP_WS_PER_ENV: Int = 0
 
-    var state: InlineArray[Scalar[Self.dtype], 56]
+    var state: Array[Scalar[Self.dtype], 56]
     var done: Bool
     var _rng_counter: UInt32
 
@@ -109,7 +109,7 @@ struct BreakoutEnv[DTYPE: DType](
     var _renderer_initialized: Bool
 
     def __init__(out self):
-        self.state = InlineArray[Scalar[Self.dtype], 56](
+        self.state = Array[Scalar[Self.dtype], 56](
             fill=Scalar[Self.dtype](0.0)
         )
         self.done = False

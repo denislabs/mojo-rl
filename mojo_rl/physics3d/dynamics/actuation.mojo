@@ -169,7 +169,7 @@ def apply_actions_fields[
     var n_act = sf.dims.get_nact()
     var n_ten = _floor1(sf.dims.get_nten())
     # ⚠ THE VALUES NOW COME FROM `sf`, NOT FROM `_acd`. This used to
-    # materialize twenty-three comptime `InlineArray`s per call (Mojo 1.0
+    # materialize twenty-three comptime `Array`s per call (Mojo 1.0
     # cannot index one at runtime), which is also why they were hoisted.
     # `SpecFields` is `List`-backed, so a read is a load and there is
     # nothing to hoist — but `o`/`to` below are the record base offsets and

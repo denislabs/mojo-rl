@@ -18,7 +18,7 @@ initialize the running count to 1e3 so the first batches don't move the
 running stats by orders of magnitude.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import sqrt
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
@@ -144,8 +144,8 @@ struct ObsNormStats[OBS_DIM: Int](Movable):
     var var_buf: DeviceBuffer[gpu_dtype]
     var count_buf: DeviceBuffer[gpu_dtype]
 
-    var host_mean: InlineArray[Float64, Self.OBS_DIM]
-    var host_var: InlineArray[Float64, Self.OBS_DIM]
+    var host_mean: Array[Float64, Self.OBS_DIM]
+    var host_var: Array[Float64, Self.OBS_DIM]
     var host_count: Float64
 
     var frozen: Bool
@@ -175,8 +175,8 @@ struct ObsNormStats[OBS_DIM: Int](Movable):
         ctx.enqueue_copy(self.count_buf, count_host)
         ctx.synchronize()
 
-        self.host_mean = InlineArray[Float64, Self.OBS_DIM](fill=0.0)
-        self.host_var = InlineArray[Float64, Self.OBS_DIM](fill=1.0)
+        self.host_mean = Array[Float64, Self.OBS_DIM](fill=0.0)
+        self.host_var = Array[Float64, Self.OBS_DIM](fill=1.0)
         self.host_count = count_prior
 
         self.frozen = False

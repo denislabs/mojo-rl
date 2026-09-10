@@ -424,7 +424,7 @@ struct DreamerV3Trainer[
         comptime if Self.train_target == "gpu":
             self.ctx.value().synchronize()
 
-    def profile_sections(mut self) raises -> InlineArray[Float64, 5]:
+    def profile_sections(mut self) raises -> Array[Float64, 5]:
         """EAGER per-section wall times for ONE train step, in ms:
         [0] draw+noise prologue, [1] WM-BPTT (fwd+bwd+opt), [2] core→imagine
         sync, [3] imagination AC (+Polyak), [4] total. GPU: `synchronize()`
@@ -432,7 +432,7 @@ struct DreamerV3Trainer[
         run is compute-bound — capture ≈ 0 gain — so eager ≈ captured steady
         state). Trains normally (advances `train_steps`); the AC-gate is
         ignored (both sections always run) so profile with ac_start=0."""
-        var out = InlineArray[Float64, 5](fill=0.0)
+        var out = Array[Float64, 5](fill=0.0)
         if not self.can_train():
             return out^
         self._prof_sync()

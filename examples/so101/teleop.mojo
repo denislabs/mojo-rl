@@ -101,7 +101,7 @@ def main() raises:
     # The leader is backdriven by hand: it must NOT hold position.
     leader.set_torque(False)
 
-    var present = InlineArray[Int32, SO101_N](fill=0)
+    var present = Array[Int32, SO101_N](fill=0)
     var got = follower.read_positions(Span(present))
     if got != SO101_N:
         raise Error(
@@ -123,8 +123,8 @@ def main() raises:
     follower.set_torque(True)
     print("follower torque ON — hold the leader, then move it\n")
 
-    var lead_raw = InlineArray[Int32, SO101_N](fill=0)
-    var goals = InlineArray[Int32, SO101_N](fill=0)
+    var lead_raw = Array[Int32, SO101_N](fill=0)
+    var goals = Array[Int32, SO101_N](fill=0)
     var period_ns = 1_000_000_000 // HZ
     var ticks = HZ * SECONDS
     var dropped = 0

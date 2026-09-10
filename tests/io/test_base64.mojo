@@ -35,9 +35,9 @@ from mojo_rl.io.base64 import b64_decode, b64_encode, b64_encode_n
 
 comptime _N = 32
 
-comptime _LENS: InlineArray[Int, _N] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 61, 62, 63, 64, 100, 255, 256]
+comptime _LENS: Array[Int, _N] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 61, 62, 63, 64, 100, 255, 256]
 
-comptime _EXPECT: InlineArray[StaticString, _N] = [
+comptime _EXPECT: Array[StaticString, _N] = [
     "",
     "Aw==",
     "Awo=",
@@ -83,7 +83,7 @@ def _message(n: Int) -> List[UInt8]:
 def main() raises:
     print("[base64] gate")
 
-    # ⚠ Materialised ONCE. A comptime InlineArray is not ImplicitlyCopyable,
+    # ⚠ Materialised ONCE. A comptime Array is not ImplicitlyCopyable,
     # and indexing it inside the loop would copy the whole table per iteration.
     var lens = materialize[_LENS]()
     var expect = materialize[_EXPECT]()

@@ -127,7 +127,7 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
     comptime STEP_WS_PER_ENV: Int = 0
 
     # CPU state
-    var state: InlineArray[Scalar[Self.dtype], 12]
+    var state: Array[Scalar[Self.dtype], 12]
     var done: Bool
     var _rng_counter: UInt32
 
@@ -136,7 +136,7 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
     var _renderer_initialized: Bool
 
     def __init__(out self):
-        self.state = InlineArray[Scalar[Self.dtype], 12](
+        self.state = Array[Scalar[Self.dtype], 12](
             fill=Scalar[Self.dtype](0.0)
         )
         self.done = False

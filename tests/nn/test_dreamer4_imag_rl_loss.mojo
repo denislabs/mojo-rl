@@ -52,8 +52,8 @@ def test_lambda_returns() raises:
     var con = _alloc(B * H)
     var ret = _alloc(B * (H - 1))
     # rewards/values along a 4-step rollout; γ folded into con.
-    var rews: InlineArray[Float64, 4] = [0.0, 1.0, 2.0, 3.0]
-    var vals: InlineArray[Float64, 4] = [0.5, 0.6, 0.7, 0.8]
+    var rews: Array[Float64, 4] = [0.0, 1.0, 2.0, 3.0]
+    var vals: Array[Float64, 4] = [0.5, 0.6, 0.7, 0.8]
     comptime GAMMA = 0.997
     comptime LAM = 0.95
     for t in range(H):
@@ -67,7 +67,7 @@ def test_lambda_returns() raises:
     # the shifted arriving reward, so out_rew[t+1] is the reward for out_act[t]):
     #   R_{H-1}=v_{H-1};  R_t = r_{t+1} + live·[(1-λ)v_{t+1} + λ R_{t+1}]
     var rn = vals[3]
-    var expected: InlineArray[Float64, 3] = [0.0, 0.0, 0.0]
+    var expected: Array[Float64, 3] = [0.0, 0.0, 0.0]
     var t2 = H - 2
     while t2 >= 0:
         var live = GAMMA
@@ -97,7 +97,7 @@ def test_value_overfit() raises:
     for i in range(B * H * BINS):
         vlogits[i] = Scalar[DT](0.0)
     var ret = _alloc(B * HM1)
-    var targets: InlineArray[Float64, 4] = [1.5, -0.7, 3.0, 0.2]
+    var targets: Array[Float64, 4] = [1.5, -0.7, 3.0, 0.2]
     for i in range(B * HM1):
         ret[i] = Scalar[DT](targets[i])
 
@@ -154,10 +154,10 @@ def test_pmpo_gradcheck() raises:
     for i in range(B * H * NACT):
         plog[i] = Scalar[DT](0.2 * Float64(((i * 7) % 5) - 2))
         prior[i] = Scalar[DT](0.15 * Float64(((i * 3) % 4) - 1))
-    var acts: InlineArray[Int, 6] = [0, 1, 2, 1, 0, 2]
+    var acts: Array[Int, 6] = [0, 1, 2, 1, 0, 2]
     for i in range(B * H):
         actions[i] = Scalar[DT](Float64(acts[i]))
-    var advs: InlineArray[Float64, 4] = [1.2, -0.5, 0.0, -2.0]  # mix of signs
+    var advs: Array[Float64, 4] = [1.2, -0.5, 0.0, -2.0]  # mix of signs
     for i in range(B * HM1):
         adv[i] = Scalar[DT](advs[i])
 

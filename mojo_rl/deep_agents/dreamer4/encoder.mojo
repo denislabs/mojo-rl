@@ -50,7 +50,7 @@ struct Dreamer4Encoder[
     comptime ARITY: Int = 1
     comptime S: Int = Self.L + Self.NP
     comptime ND: Int = Self.NP * Self.D                  # masked-token width
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.NP * Self.DP)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.NP * Self.DP)
     comptime OUT_DIM = Self.L * Self.D_BOT
 
     comptime PROJ = Tokenwise[Self.NP, Linear[Self.DP, Self.D]]

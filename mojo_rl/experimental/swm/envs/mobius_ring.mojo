@@ -36,7 +36,7 @@ for the gates and for the place oracle E1 is entitled to (v2 §4.1); an encoder
 under test must never read them.
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, cos, sin, sqrt, tanh
 
 from ..so_d import SqMat

@@ -92,7 +92,7 @@ struct SigLIPAttention[SEQ: Int, DIM: Int, HEADS: Int](Module):
 
     comptime ARITY: Int = 1
     comptime SEQ_DIM: Int = Self.SEQ * Self.DIM
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ_DIM)
+    comptime IN_DIMS = Array[Int, 1](fill=Self.SEQ_DIM)
     comptime OUT_DIM: Int = Self.SEQ_DIM
 
     comptime Proj = Tokenwise[Self.SEQ, Linear[Self.DIM, Self.DIM]]

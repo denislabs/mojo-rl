@@ -463,7 +463,7 @@ struct LunarLander[
         var terrain_rng = PhiloxRandom(seed=combined_seed + 1000, offset=0)
 
         # First pass: generate raw heights
-        var raw_heights = InlineArray[Float64, LLConstants.TERRAIN_CHUNKS + 1](
+        var raw_heights = Array[Float64, LLConstants.TERRAIN_CHUNKS + 1](
             fill=LLConstants.HELIPAD_Y
         )
         for chunk in range(LLConstants.TERRAIN_CHUNKS + 1):
@@ -705,7 +705,7 @@ struct LunarLander[
 
     def get_observation(
         mut self, env: Int
-    ) -> InlineArray[Scalar[Self.dtype], LLConstants.OBS_DIM_VAL]:
+    ) -> Array[Scalar[Self.dtype], LLConstants.OBS_DIM_VAL]:
         """Get normalized observation for an environment."""
         # Get main lander body state
         var x = Scalar[DType.float64](
@@ -758,7 +758,7 @@ struct LunarLander[
         if right_leg_y - LLConstants.LEG_H <= right_terrain_y + 0.01:
             right_contact = Scalar[Self.dtype](1.0)
 
-        var obs = InlineArray[Scalar[Self.dtype], LLConstants.OBS_DIM_VAL](
+        var obs = Array[Scalar[Self.dtype], LLConstants.OBS_DIM_VAL](
             fill=Scalar[Self.dtype](0.0)
         )
         obs[0] = Scalar[Self.dtype](pos_norm[0])
@@ -1982,7 +1982,7 @@ struct LunarLander[
 
         # Step 1: Generate raw heights (matching CPU: random * H_UNITS/2)
         # Use a local array to store raw heights before smoothing
-        var raw_heights = InlineArray[Scalar[dtype], 12](
+        var raw_heights = Array[Scalar[dtype], 12](
             fill=Scalar[dtype](0.0)
         )
         var h_units_half = Scalar[dtype](LLConstants.H_UNITS / 2.0)
@@ -1991,7 +1991,7 @@ struct LunarLander[
             raw_heights[chunk] = rand_vals[0] * h_units_half
 
         # Step 2: Apply 3-point smoothing (matching CPU)
-        var smoothed_heights = InlineArray[Scalar[dtype], 11](
+        var smoothed_heights = Array[Scalar[dtype], 11](
             fill=Scalar[dtype](LLConstants.HELIPAD_Y)
         )
         for chunk in range(n_chunks):

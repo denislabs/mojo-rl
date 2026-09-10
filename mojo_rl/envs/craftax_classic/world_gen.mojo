@@ -88,7 +88,7 @@ def apply_world_gen_rules(
 
     Shared by the CPU world generator and the GPU per-thread world gen,
     so callers only need to vary how they allocate the four scratch
-    buffers (InlineArray on CPU, per-env DeviceBuffer slice on GPU).
+    buffers (Array on CPU, per-env DeviceBuffer slice on GPU).
     """
     var py = MAP_H // 2
     var px = MAP_W // 2
@@ -209,7 +209,7 @@ def generate_world_inline(
 
     Caller provides four scratch buffers of length MAP_SIZE for the
     intermediate noise fields. CPU callers stack-allocate them via
-    InlineArray; GPU callers slice them off a per-env workspace.
+    Array; GPU callers slice them off a per-env workspace.
     """
     var rng = PhiloxRandom(seed=rng_seed, offset=0)
     generate_fractal_noise_2d_normalized[
@@ -235,10 +235,10 @@ def generate_world_cpu(
     always_diamond: Bool = False,
 ) -> Tuple[Int, Int]:
     """CPU entry point: stack-allocates noise scratch + calls inline core."""
-    var water = InlineArray[Float32, MAP_SIZE](fill=Float32(0.0))
-    var mountain = InlineArray[Float32, MAP_SIZE](fill=Float32(0.0))
-    var path = InlineArray[Float32, MAP_SIZE](fill=Float32(0.0))
-    var tree = InlineArray[Float32, MAP_SIZE](fill=Float32(0.0))
+    var water = Array[Float32, MAP_SIZE](fill=Float32(0.0))
+    var mountain = Array[Float32, MAP_SIZE](fill=Float32(0.0))
+    var path = Array[Float32, MAP_SIZE](fill=Float32(0.0))
+    var tree = Array[Float32, MAP_SIZE](fill=Float32(0.0))
     return generate_world_inline(
         rng_seed,
         water.unsafe_ptr().unsafe_bitcast[Float32]().as_unsafe_any_origin(),

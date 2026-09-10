@@ -1,7 +1,7 @@
 """Group C (C3) microbench: storage DuelingHeadC51 combine GPU —
 naive (one thread per (b,atom), reads the NA-wide advantage slab TWICE: once
 to sum for the mean, once to write each Q) vs register-cached (reads the NA
-advantages once into an InlineArray, reuses for both the sum and the writes).
+advantages once into an Array, reuses for both the sum and the writes).
 Self-contained A/B in one process.
 
 The audit flagged "double serial loop, no parallelism over actions", but the
@@ -26,7 +26,7 @@ from layout import Layout, LayoutTensor
 
 comptime DT = DType.float32
 comptime TPB = 128
-comptime NA_CAP = 32   # register-cache InlineArray bound (Atari NA ≤ 18)
+comptime NA_CAP = 32   # register-cache Array bound (Atari NA ≤ 18)
 
 
 def _combine_naive[
@@ -62,7 +62,7 @@ def _combine_regcache[
         var b = lin // N_ATOMS
         var k = lin % N_ATOMS
         var v_k = rebind[Scalar[DT]](raw_in[b, k])
-        var adv = InlineArray[Scalar[DT], NA](uninitialized=True)
+        var adv = Array[Scalar[DT], NA](uninitialized=True)
         var sum_a: Scalar[DT] = 0.0
         for a in range(NA):
             var x = rebind[Scalar[DT]](raw_in[b, N_ATOMS + a * N_ATOMS + k])

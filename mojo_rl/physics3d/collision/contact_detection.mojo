@@ -548,9 +548,9 @@ def _plane_mesh_contacts[
     var first_z = ground_z + best_h * Scalar[DTYPE](0.5)
 
     # ── up to two extra contacts around the support vertex ───────────────
-    var sel_x = InlineArray[Scalar[DTYPE], MAXPLANEMESH](fill=Scalar[DTYPE](0))
-    var sel_y = InlineArray[Scalar[DTYPE], MAXPLANEMESH](fill=Scalar[DTYPE](0))
-    var sel_h = InlineArray[Scalar[DTYPE], MAXPLANEMESH](fill=Scalar[DTYPE](0))
+    var sel_x = Array[Scalar[DTYPE], MAXPLANEMESH](fill=Scalar[DTYPE](0))
+    var sel_y = Array[Scalar[DTYPE], MAXPLANEMESH](fill=Scalar[DTYPE](0))
+    var sel_h = Array[Scalar[DTYPE], MAXPLANEMESH](fill=Scalar[DTYPE](0))
     sel_x[0] = best_x
     sel_y[0] = best_y
     sel_h[0] = best_h
@@ -867,7 +867,7 @@ def pair_params[
     pairs: LayoutTensor[
         DTYPE, L_PAIRS, MutAnyOrigin
     ],
-) -> InlineArray[Scalar[DTYPE], 12]:
+) -> Array[Scalar[DTYPE], 12]:
     """A predefined pair's parameters, in `mix_contact_params`' layout.
 
     Returned in the same 12-slot shape the mixing helper produces so the two
@@ -880,7 +880,7 @@ def pair_params[
     `MODEL_PAIR_SIZE` for the measurement showing the derivation in
     `mjCPair::Compile` is unreachable from XML.
     """
-    var out = InlineArray[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
     out[0] = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_CONDIM])
     out[1] = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_FRICTION])
     out[2] = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_FRICTION_SPIN])
@@ -923,7 +923,7 @@ def mix_contact_params[
     si2_j: Scalar[DTYPE],
     si3_j: Scalar[DTYPE],
     si4_j: Scalar[DTYPE],
-) -> InlineArray[Scalar[DTYPE], 12]:
+) -> Array[Scalar[DTYPE], 12]:
     """MuJoCo's contact-parameter mixing. Port of
     `engine_collision_driver.c:1426-1480`.
 
@@ -962,7 +962,7 @@ def mix_contact_params[
     friction and condim UNCONDITIONALLY and never looked at solref/solimp at
     all, so `priority` was ignored and per-geom solparams were dead data.
     """
-    var out = InlineArray[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
+    var out = Array[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
 
     if prio_i != prio_j:
         var hi_i = prio_i > prio_j
@@ -1230,7 +1230,7 @@ def _emit_plane_contact[
     plq_y: Scalar[DTYPE],
     plq_z: Scalar[DTYPE],
     plq_w: Scalar[DTYPE],
-    pn: InlineArray[Scalar[DTYPE], 3],
+    pn: Array[Scalar[DTYPE], 3],
     contact_margin: Scalar[DTYPE],
     contact_friction: Scalar[DTYPE],
     contact_friction_spin: Scalar[DTYPE],
@@ -1462,13 +1462,13 @@ def _capsule_capsule_contacts[
     var max_contacts = (
         max_contacts_in if max_contacts_in >= 0 else dims.get_max_contacts()
     )
-    var cc_dist = InlineArray[Scalar[DTYPE], CC_MAX_POINTS](
+    var cc_dist = Array[Scalar[DTYPE], CC_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
-    var cc_pos = InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS](
+    var cc_pos = Array[Scalar[DTYPE], 3 * CC_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
-    var cc_n = InlineArray[Scalar[DTYPE], 3 * CC_MAX_POINTS](
+    var cc_n = Array[Scalar[DTYPE], 3 * CC_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
     var n_cc = capsule_capsule_manifold[DTYPE](
@@ -1571,7 +1571,7 @@ def _hfield_contacts[
     function to copy, which is the opposite of `_capsule_capsule_contacts` and
     `_capsule_box_contacts` beside it. Those buffer at most two and four
     points; a heightfield's ceiling is `mjMAXCONPAIR` = 50, and three
-    `InlineArray`s of that size are 350 float64 of PER-THREAD stack. The Metal
+    `Array`s of that size are 350 float64 of PER-THREAD stack. The Metal
     collision kernel does not have it — the first version of this file was
     written the buffering way and `test_plane_mesh_fields` failed to build with
     "Compute function exceeds available stack space".
@@ -1675,13 +1675,13 @@ def _capsule_box_contacts[
     var max_contacts = (
         max_contacts_in if max_contacts_in >= 0 else dims.get_max_contacts()
     )
-    var cb_dist = InlineArray[Scalar[DTYPE], CB_MAX_POINTS](
+    var cb_dist = Array[Scalar[DTYPE], CB_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
-    var cb_pos = InlineArray[Scalar[DTYPE], 3 * CB_MAX_POINTS](
+    var cb_pos = Array[Scalar[DTYPE], 3 * CB_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
-    var cb_n = InlineArray[Scalar[DTYPE], 3 * CB_MAX_POINTS](
+    var cb_n = Array[Scalar[DTYPE], 3 * CB_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
     var n_cb = box_capsule_manifold[DTYPE](
@@ -1795,13 +1795,13 @@ def _box_box_contacts[
         max_contacts_in if max_contacts_in >= 0 else dims.get_max_contacts()
     )
     var n_bb = 0
-    var bb_dist = InlineArray[Scalar[DTYPE], BB_MAX_POINTS](
+    var bb_dist = Array[Scalar[DTYPE], BB_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
-    var bb_pos = InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS](
+    var bb_pos = Array[Scalar[DTYPE], 3 * BB_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
-    var bb_n = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var bb_n = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     var code = box_box_manifold[DTYPE](
         ai_x, ai_y, ai_z, ai_qx, ai_qy, ai_qz, ai_qw, ai_hx, ai_hy, ai_hz,
         bj_x, bj_y, bj_z, bj_qx, bj_qy, bj_qz, bj_qw, bj_hx, bj_hy, bj_hz,
@@ -1858,7 +1858,7 @@ def _fill_pair_solparams[
     env: Int,
     n0: Int,
     n1: Int,
-    mx: InlineArray[Scalar[DTYPE], 12],
+    mx: Array[Scalar[DTYPE], 12],
     contacts: LayoutTensor[
         DTYPE, L_CONTACTS,
         MutAnyOrigin,
@@ -3497,13 +3497,13 @@ def _detect_contacts_env[
                         and contact_margin <= Scalar[DTYPE](0)
                         and MC_ENABLED
                     )
-                    var wf1 = InlineArray[Scalar[DTYPE], 9](
+                    var wf1 = Array[Scalar[DTYPE], 9](
                         fill=Scalar[DTYPE](0)
                     )
-                    var wf2 = InlineArray[Scalar[DTYPE], 9](
+                    var wf2 = Array[Scalar[DTYPE], 9](
                         fill=Scalar[DTYPE](0)
                     )
-                    var wxx = InlineArray[Scalar[DTYPE], 6](
+                    var wxx = Array[Scalar[DTYPE], 6](
                         fill=Scalar[DTYPE](0)
                     )
                     var wf_ok = 0

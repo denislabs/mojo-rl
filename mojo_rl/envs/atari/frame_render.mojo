@@ -92,7 +92,7 @@ def _write_pixel_bgra[
     buf: Pointer[UInt8, o],
     offset: Int,
     color_idx: UInt8,
-    palette: InlineArray[UInt32, 256],
+    palette: Array[UInt32, 256],
 ):
     """Write one BGRA pixel using a pre-materialized palette."""
     var rgb = palette[Int(color_idx)]

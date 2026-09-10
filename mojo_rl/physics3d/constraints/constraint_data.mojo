@@ -113,7 +113,7 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
     # Mass matrix (with armature + implicit damping) — for primal solvers
     var M_hat: List[Scalar[Self.DTYPE]]
     # Net unconstrained force (qfrc - bias - passive) — for primal solvers
-    var qfrc_smooth: InlineArray[Scalar[Self.DTYPE], _max_one[Self.NV]()]
+    var qfrc_smooth: Array[Scalar[Self.DTYPE], _max_one[Self.NV]()]
     var num_rows: Int
     var num_normals: Int  # Normal contact constraints [0..num_normals)
     var num_friction: Int  # Friction rows [num_normals..num_normals+num_friction)
@@ -139,7 +139,7 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
         for _ in range(MSize):
             self.M_hat.append(Scalar[Self.DTYPE](0))
 
-        self.qfrc_smooth = InlineArray[Scalar[Self.DTYPE], VSize](
+        self.qfrc_smooth = Array[Scalar[Self.DTYPE], VSize](
             fill=Scalar[Self.DTYPE](0)
         )
         self.num_rows = 0
