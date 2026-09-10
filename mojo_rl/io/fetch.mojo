@@ -166,9 +166,18 @@ def fetch_to_cache(
 
 
 def upload_file(
-    url: String, path: String, label: String = String("upload")
+    url: String,
+    path: String,
+    label: String = String("upload"),
+    quiet: Bool = False,
 ) raises -> Int:
     """PUT a local file to a presigned URL. Returns the HTTP status.
+
+    ⚠ `quiet=True` SUPPRESSES BOTH THE PROGRESS METER AND THE SUMMARY, and it
+    is not a cosmetic option. `ArtifactSink` calls this from a BACKGROUND
+    THREAD, where `http_sink.mojo`'s rule applies: nothing is printed from a
+    worker, or a slow upload interleaves bytes into training output from a
+    second thread. The caller reports afterwards, from the owning thread.
 
     ⚠ Single-part. R2 caps a single PUT at 5 GB; past that the object needs a
     multipart upload, which `rclone` / `aws s3 cp` already implement against
@@ -186,14 +195,17 @@ def upload_file(
     var c = HttpClient()
     c.timeout_ms(0, 30000)
     c.stall_guard(1024, 60)
-    var r = c.upload(url, path, String("PUT"), label)
+    var r = c.upload(
+        url, path, String("PUT"), String("") if quiet else label
+    )
     if not r.ok():
         raise Error(
             "[" + label + "] PUT " + url + " -> " + String(r.status) + ": "
             + r.text()
         )
-    print(
-        "  [" + label + "] uploaded " + String(size // 1000000) + " MB,"
-        " status " + String(r.status)
-    )
+    if not quiet:
+        print(
+            "  [" + label + "] uploaded " + String(size // 1000000) + " MB,"
+            " status " + String(r.status)
+        )
     return r.status

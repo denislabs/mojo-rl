@@ -223,6 +223,94 @@ struct RemoteCatalog(Movable & Deinitable):
 
     # ── write ─────────────────────────────────────────────────────────
 
+    def push_artifact(
+        mut self,
+        run_id: String,
+        rel_path: String,
+        local_path: String,
+        kind: String = String("other"),
+    ) raises -> String:
+        """Register, upload, then confirm ONE run artifact. Returns its id.
+
+        The same three steps as `push` above and for the same reason: the row
+        stays `pending` between register and complete, so an interrupted
+        transfer leaves a row the catalog refuses to serve rather than one
+        advertising a truncated object.
+
+        ⚠ `rel_path` IS RELATIVE TO THE RUN DIRECTORY ("checkpoints/best.ckpt")
+        and `local_path` is where those bytes actually are. They are separate
+        arguments because they are separate facts: the first is the identity
+        the artifact keeps forever — it is the same string the local `run.kv`
+        carries on its `artifact=` line, which is what makes a later
+        `project-push` a resume rather than a re-send — while the second is an
+        accident of where the run happened to be working.
+
+        ⚠ NOTHING IS PRINTED. This is called from `ArtifactSink`'s worker
+        thread, and `http_sink.mojo` states the rule: a worker that prints can
+        interleave into training output from a second thread. Hence
+        `quiet=True` below, which also turns off libcurl's progress meter.
+
+        ⚠ RE-REGISTERING THE SAME `rel_path` IS THE SUPERSEDE PATH, not an
+        error. The monitor keeps one row per (run, path) — within a run,
+        `best.ckpt` is a role — so this returns the SAME id and resets the row
+        to pending, which is exactly what a newer `best` should do.
+        """
+        var w = JsonWriter()
+        w.begin_object()
+        w.member(String("run_id"), run_id)
+        w.member(String("path"), rel_path)
+        w.member(String("kind"), kind)
+        w.end_object()
+
+        var reg = self._request(
+            String("POST"), String("/artifacts"), w.done(), 201
+        )
+        var root = reg.root()
+        var id = _opt_string(reg, root, String("id"))
+        var upload_url = _opt_string(reg, root, String("upload_url"))
+        if id.byte_length() == 0 or upload_url.byte_length() == 0:
+            raise Error(
+                "push_artifact: the registration answered without an id or an"
+                " upload_url"
+            )
+
+        _ = upload_file(upload_url, local_path, rel_path, quiet=True)
+
+        # ⚠ HASHED AFTER THE UPLOAD, NOT BEFORE. A checkpoint written by a run
+        # that is still training can change under us; hashing first and
+        # uploading second would store a digest for bytes that never went. This
+        # way the digest describes a file that has already been read once —
+        # still not atomic, but wrong in the direction that a later `pull`
+        # DETECTS rather than one it silently trusts.
+        var size = file_size(local_path)
+        var sha = sha256_file(local_path)
+
+        var done = JsonWriter()
+        done.begin_object()
+        done.member(String("size_bytes"), size)
+        done.member(String("sha256"), sha)
+        done.end_object()
+        _ = self._request(
+            String("POST"),
+            String("/artifacts/") + id + "/complete",
+            done.done(),
+            200,
+        )
+        return id^
+
+    def artifacts_of(mut self, run_id: String) raises -> JsonDoc:
+        """Every artifact row for a run, pending ones included.
+
+        ⚠ THE PENDING ROWS ARE THE POINT for `project-push`: they are precisely
+        the ones whose bytes may still only exist on this box.
+        """
+        return self._request(
+            String("GET"),
+            String("/artifacts?run_id=") + run_id,
+            String(""),
+            200,
+        )
+
     def push(
         mut self,
         path: String,

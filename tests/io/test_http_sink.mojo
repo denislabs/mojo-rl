@@ -26,7 +26,7 @@ from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.io.http_sink import (
     DEFAULT_SLOT_BYTES,
     HttpPostSink,
-    _unframe,
+    unframe,
     frame_into,
 )
 
@@ -35,7 +35,7 @@ comptime DEAD_URL = "http://127.0.0.1:9/ingest"
 
 
 def test_frame_roundtrip() raises:
-    """`frame_into` and `_unframe` are inverses, including at the edges."""
+    """`frame_into` and `unframe` are inverses, including at the edges."""
     var ring = SharedRing(capacity=8, slot_bytes=4096)
     var urls = List[String]()
     var bodies = List[String]()
@@ -58,7 +58,7 @@ def test_frame_roundtrip() raises:
         var c = ring.begin_pop()
         if not c.ok():
             raise Error("ring emptied early at case " + String(i))
-        var pair = _unframe(c.data(), c.len)
+        var pair = unframe(c.data(), c.len)
         compared += 1
         if pair[0] != urls[i] or pair[1] != bodies[i]:
             differing += 1

@@ -336,6 +336,12 @@ tests/io/test_http_sink.mojo
 # passes just as happily for a worker that pings every millisecond, so the
 # interval has an upper bound too. Needs `pixi run build-http`.
 tests/io/test_http_sink_heartbeat.mojo
+# §7's ArtifactSink, against a fixture playing BOTH the monitor and R2. The
+# decisive legs need the fixture's SLOW-PUT mode: over loopback a transfer
+# finishes before the next offer is made, so a sink with no dedup at all — and
+# a close() that waits for nothing — both pass without it. Checks the received
+# bytes hash to the file on disk. Needs `pixi run build-http`.
+tests/io/test_artifact_sink.mojo
 # A run's END is a signal it sends, and its START is not its first metric.
 # Offline like test_http_sink beside it: routes and payloads by value, plus the
 # idempotence latches and the inertness that a `close()` which now POSTs could

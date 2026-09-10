@@ -107,8 +107,8 @@ has generous headroom; an over-long payload is refused and counted in
 
 
 @always_inline
-def _frame_len(url: String, body: String) -> Int:
-    return 4 + url.byte_length() + body.byte_length()
+def _frame_len(head: String, tail: String) -> Int:
+    return 4 + head.byte_length() + tail.byte_length()
 
 
 # ── the worker ────────────────────────────────────────────────────────────
@@ -205,7 +205,7 @@ struct HttpPostWorker(BackgroundWorker):
         var url: String
         var body: String
         try:
-            url, body = _unframe(claim.data(), claim.len)
+            url, body = unframe(claim.data(), claim.len)
         except:
             _ = self.stats.fetch_add(STAT_ABANDONED, Int64(1))
             self.ring.end_pop()
@@ -291,14 +291,20 @@ struct HttpPostWorker(BackgroundWorker):
         pass
 
 
-def frame_into(ring: SharedRing, url: String, body: String) -> Bool:
-    """Write `[Int32 url_len][url][body]` into a free slot. False if dropped.
+def frame_into(ring: SharedRing, head: String, tail: String) -> Bool:
+    """Write `[Int32 head_len][head][tail]` into a free slot. False if dropped.
+
+    ⚠ THE FRAMING IS GENERIC, THE NAMES WERE NOT. This POSTs a `(url, body)`
+    pair and `artifact_sink.mojo` sends a `(kind, path)` pair through the same
+    two functions — so the parameters say `head`/`tail` rather than pretending
+    there is only one caller. Two sinks framing bytes two ways would be the
+    same rule written twice.
 
     Module-level so the gate can exercise the real framing rather than a
-    re-implementation of it — `_unframe` is its inverse and the two are tested
+    re-implementation of it — `unframe` is its inverse and the two are tested
     as a pair in `tests/io/test_http_sink.mojo`.
     """
-    var n = _frame_len(url, body)
+    var n = _frame_len(head, tail)
     if n > ring.slot_bytes():
         ring.drop_oversize()
         return False
@@ -308,46 +314,46 @@ def frame_into(ring: SharedRing, url: String, body: String) -> Bool:
         return False
     var dst = claim.data()
     Pointer[Int32, MutUntrackedOrigin](unsafe_from_address=Int(dst))[] = Int32(
-        url.byte_length()
+        head.byte_length()
     )
-    if url.byte_length() > 0:
+    if head.byte_length() > 0:
         unsafe_memcpy(
             dest=dst.unsafe_offset(4),
-            src=url.as_bytes().unsafe_ptr(),
-            count=url.byte_length(),
+            src=head.as_bytes().unsafe_ptr(),
+            count=head.byte_length(),
         )
-    if body.byte_length() > 0:
+    if tail.byte_length() > 0:
         unsafe_memcpy(
-            dest=dst.unsafe_offset(4 + url.byte_length()),
-            src=body.as_bytes().unsafe_ptr(),
-            count=body.byte_length(),
+            dest=dst.unsafe_offset(4 + head.byte_length()),
+            src=tail.as_bytes().unsafe_ptr(),
+            count=tail.byte_length(),
         )
     ring.end_push(n)
     return True
 
 
-def _unframe(
+def unframe(
     p: Pointer[UInt8, MutUntrackedOrigin], n: Int
 ) raises -> Tuple[String, String]:
-    """`[Int32 url_len][url][body]` back into two strings."""
+    """`[Int32 head_len][head][tail]` back into two strings."""
     if n < 4:
         raise Error("http_sink: frame shorter than its header")
-    var url_len = Int(
+    var head_len = Int(
         Pointer[Int32, MutUntrackedOrigin](unsafe_from_address=Int(p))[]
     )
-    if url_len < 0 or 4 + url_len > n:
-        raise Error("http_sink: frame url_len out of range")
-    var url_b = List[UInt8]()
-    for i in range(url_len):
-        url_b.append(p[unsafe_offset = 4 + i])
-    url_b.append(0)
-    var body_b = List[UInt8]()
-    for i in range(4 + url_len, n):
-        body_b.append(p[unsafe_offset=i])
-    body_b.append(0)
+    if head_len < 0 or 4 + head_len > n:
+        raise Error("http_sink: frame head_len out of range")
+    var head_b = List[UInt8]()
+    for i in range(head_len):
+        head_b.append(p[unsafe_offset = 4 + i])
+    head_b.append(0)
+    var tail_b = List[UInt8]()
+    for i in range(4 + head_len, n):
+        tail_b.append(p[unsafe_offset=i])
+    tail_b.append(0)
     return (
-        String(unsafe_from_utf8_ptr=url_b.unsafe_ptr()),
-        String(unsafe_from_utf8_ptr=body_b.unsafe_ptr()),
+        String(unsafe_from_utf8_ptr=head_b.unsafe_ptr()),
+        String(unsafe_from_utf8_ptr=tail_b.unsafe_ptr()),
     )
 
 
