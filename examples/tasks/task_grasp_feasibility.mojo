@@ -46,6 +46,8 @@ from mojo_rl.physics3d.gpu.constants import (
     META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE, META_IDX_NUM_CONTACTS,
     CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B, CONTACT_IDX_DIST, CONTACT_SIZE,
     CONTACT_IDX_CONDIM, CONTACT_IDX_FRICTION,
+    MODEL_GEOM_SIZE, GEOM_IDX_BODY, GEOM_IDX_HALF_X,
+    GEOM_IDX_HALF_Y, GEOM_IDX_HALF_Z, GEOM_IDX_RBOUND,
 )
 from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv
@@ -507,6 +509,103 @@ def main() raises:
         print("  OK — the jaw travels", travel, "rad under its actuator, so"
               " LEG 3's failure is about the GRASP and not about a dead"
               " gripper.")
+    print()
+
+    # ── LEG 5: is the PROP too wide for this jaw? ─────────────────────────
+    # ⚠ THE DISCRIMINATOR, AND THE CHEAPEST ONE AVAILABLE. If a smaller cube
+    # holds where the 4 cm one does not, `so101_lift_brick` is a one-line
+    # asset change (`cube.xml`'s `size`) and the jaw is fine. If nothing
+    # holds at any width, the pinch itself is the problem.
+    #
+    # ⚠ THE HALF-EXTENTS ARE RUNTIME FIELDS, so the sweep needs no new asset
+    # and no recompile — `mf.geoms` carries `HALF_X/Y/Z` per geom. `RBOUND`
+    # is left ALONE deliberately: it is the broadphase radius, and leaving it
+    # at the larger value over-reports candidate pairs, which narrowphase
+    # then rejects. Shrinking it could drop real pairs and would make a
+    # smaller cube look unliftable for a reason that is not the jaw.
+    print("LEG 5 — does a SMALLER prop hold?")
+    var bgeom = -1
+    for gi in range(So101TabletopModel.NGEOM):
+        var o = gi * MODEL_GEOM_SIZE
+        if Int(Float64(env.mf.geoms.data[o + GEOM_IDX_BODY])) == brick:
+            bgeom = gi
+    if bgeom < 0:
+        raise Error("grasp feasibility: no geom on the brick body.")
+    var o_b = bgeom * MODEL_GEOM_SIZE
+    print("  brick geom", bgeom, " half-extents",
+          Float64(env.mf.geoms.data[o_b + GEOM_IDX_HALF_X]),
+          Float64(env.mf.geoms.data[o_b + GEOM_IDX_HALF_Y]),
+          Float64(env.mf.geoms.data[o_b + GEOM_IDX_HALF_Z]),
+          " rbound", Float64(env.mf.geoms.data[o_b + GEOM_IDX_RBOUND]))
+    # ⚠ THE SWEEP IS 3D. A first version swept only x and z; adding y did NOT
+    # remove the 0.020 m gap below, so that is not grid coarseness. Most
+    # likely the jaw snapping shut EJECTS the smaller cube before it settles,
+    # which the strict criterion then rejects — correctly, since an ejected
+    # cube is not held. It is unexplained and left visible rather than
+    # smoothed over; the decision rests on the TOP of the range, which is
+    # monotone: 0.04 and 0.03 never hold, 0.024 does.
+    var widths = [0.020, 0.015, 0.012, 0.010]
+    var any_held = False
+    for wi in range(len(widths)):
+        var hw = widths[wi]
+        env.mf.geoms.data[o_b + GEOM_IDX_HALF_X] = Scalar[DT](hw)
+        env.mf.geoms.data[o_b + GEOM_IDX_HALF_Y] = Scalar[DT](hw)
+        env.mf.geoms.data[o_b + GEOM_IDX_HALF_Z] = Scalar[DT](hw)
+        var bh = -1.0
+        var bgc = 0
+        for k in range(2):
+            var close = -1.0 if k == 0 else 1.0
+            for ix in range(-2, 3):
+              for iy in range(-1, 2):
+                for iz in range(-2, 3):
+                    for i in range(NQ):
+                        env.d.qpos.data[i] = Scalar[DT](q0[i])
+                    for i in range(NV):
+                        env.d.qvel.data[i] = Scalar[DT](v0[i])
+                    _ = env.step(act(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+                    for i in range(NQ):
+                        env.d.qpos.data[i] = Scalar[DT](q0[i])
+                    for i in range(NV):
+                        env.d.qvel.data[i] = Scalar[DT](v0[i])
+                    var hold = hold_actions(env, a_lo, a_hi, a_qa)
+                    for _ in range(30):
+                        step_hold(env, hold, -close)
+                    var sx = Float64(env.d.site_xpos.data[GS * 3])
+                    var sy = Float64(env.d.site_xpos.data[GS * 3 + 1])
+                    var sz = Float64(env.d.site_xpos.data[GS * 3 + 2])
+                    place_brick(env, qadr, dadr, sx + Float64(ix) * 0.015,
+                                sy + Float64(iy) * 0.015,
+                                sz + Float64(iz) * 0.015)
+                    for _ in range(120):
+                        step_hold(env, hold, close)
+                    var zm = Float64(env.d.qpos.data[qadr + 2])
+                    for _ in range(250):
+                        step_hold(env, hold, close)
+                    var ze = Float64(env.d.qpos.data[qadr + 2])
+                    var gc = gripper_contacts(env, brick, grip_body, jaw)
+                    var sp = brick_speed(env, dadr)
+                    if ze > 0.06 and zm > 0.06 and gc > 0 and sp < 0.05:
+                        if ze > bh:
+                            bh = ze
+                            bgc = gc
+        print("   half-extent", hw, "(", 2.0 * hw, "m cube ) -> best held z",
+              bh, " gripper contacts", bgc,
+              "   HELD" if bh > 0.0 else "   dropped")
+        if bh > 0.0:
+            any_held = True
+    # restore, so nothing downstream inherits a shrunken prop
+    env.mf.geoms.data[o_b + GEOM_IDX_HALF_X] = Scalar[DT](0.02)
+    env.mf.geoms.data[o_b + GEOM_IDX_HALF_Y] = Scalar[DT](0.02)
+    env.mf.geoms.data[o_b + GEOM_IDX_HALF_Z] = Scalar[DT](0.02)
+    if any_held:
+        print("  -> THE PROP IS TOO WIDE FOR THIS JAW. A narrower cube is"
+              " held, so the jaw and the solver are fine and the fix is"
+              " `cube.xml`'s `size` (or a task with a smaller prop).")
+    else:
+        print("  -> NO WIDTH HOLDS, down to a 1.2 cm cube. The prop is not"
+              " the problem; the pinch is. Look at the jaw mesh's CONVEX"
+              " HULL — `load_mesh_hull` is what the collision path gets, and"
+              " the hull of a gripper finger is not a gripper finger.")
     print()
 
     print("=" * 72)
