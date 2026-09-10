@@ -316,17 +316,17 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             # ix = x @ W_ih ; hx = h_prev @ W_hh  (two GEMMs; was a hand-rolled
             # per-thread inner product over IN_+H for all 3 gates).
             var x_v = TileTensor(
-                x_in.dev.value(), row_major[B, Self.IN0_DIM]()
+                x_in.dev.value(), row_major(B, Self.IN0_DIM)
             )
-            var h_v = TileTensor(h_in.dev.value(), row_major[B, H]())
+            var h_v = TileTensor(h_in.dev.value(), row_major(B, H))
             var Wih_v = TileTensor(
-                self.W_ih.val.dev.value(), row_major[Self.IN0_DIM, THREE_H]()
+                self.W_ih.val.dev.value(), row_major(Self.IN0_DIM, THREE_H)
             )
             var Whh_v = TileTensor(
-                self.W_hh.val.dev.value(), row_major[H, THREE_H]()
+                self.W_hh.val.dev.value(), row_major(H, THREE_H)
             )
-            var ix_v = TileTensor(self._ix.dev.value(), row_major[B, THREE_H]())
-            var hx_v = TileTensor(self._hx.dev.value(), row_major[B, THREE_H]())
+            var ix_v = TileTensor(self._ix.dev.value(), row_major(B, THREE_H))
+            var hx_v = TileTensor(self._hx.dev.value(), row_major(B, THREE_H))
             max_matmul[target="gpu"](ix_v, x_v, Wih_v, c)
             max_matmul[target="gpu"](hx_v, h_v, Whh_v, c)
             # elementwise gates + reset coupling + output + cache.
@@ -478,16 +478,16 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             )
 
             # dx = d_ix @ W_ihᵀ ; dh = d_hx @ W_hhᵀ (then += go⊙z).
-            var dix_tt = TileTensor(self._dix.dev.value(), row_major[B, THREE_H]())
-            var dhx_tt = TileTensor(self._dhx.dev.value(), row_major[B, THREE_H]())
+            var dix_tt = TileTensor(self._dix.dev.value(), row_major(B, THREE_H))
+            var dhx_tt = TileTensor(self._dhx.dev.value(), row_major(B, THREE_H))
             var Wih_tt = TileTensor(
-                self.W_ih.val.dev.value(), row_major[Self.IN0_DIM, THREE_H]()
+                self.W_ih.val.dev.value(), row_major(Self.IN0_DIM, THREE_H)
             )
             var Whh_tt = TileTensor(
-                self.W_hh.val.dev.value(), row_major[H, THREE_H]()
+                self.W_hh.val.dev.value(), row_major(H, THREE_H)
             )
-            var dx_tt = TileTensor(dx_in.dev.value(), row_major[B, Self.IN0_DIM]())
-            var dh_tt = TileTensor(dh_in.dev.value(), row_major[B, H]())
+            var dx_tt = TileTensor(dx_in.dev.value(), row_major(B, Self.IN0_DIM))
+            var dh_tt = TileTensor(dh_in.dev.value(), row_major(B, H))
             max_matmul[transpose_b=True, target="gpu"](dx_tt, dix_tt, Wih_tt, c)
             max_matmul[transpose_b=True, target="gpu"](dh_tt, dhx_tt, Whh_tt, c)
             comptime zk = _gru_dh_add_zh_kernel[B, H]
@@ -497,13 +497,13 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             )
 
             # dW_ih += xᵀ @ d_ix ; dW_hh += h_prevᵀ @ d_hx (temp + accumulate).
-            var xT_tt = TileTensor(self._xT.dev.value(), row_major[Self.IN0_DIM, B]())
-            var hT_tt = TileTensor(self._hT.dev.value(), row_major[H, B]())
+            var xT_tt = TileTensor(self._xT.dev.value(), row_major(Self.IN0_DIM, B))
+            var hT_tt = TileTensor(self._hT.dev.value(), row_major(H, B))
             var dWih_tmp_tt = TileTensor(
-                self._dWih_tmp.dev.value(), row_major[Self.IN0_DIM, THREE_H]()
+                self._dWih_tmp.dev.value(), row_major(Self.IN0_DIM, THREE_H)
             )
             var dWhh_tmp_tt = TileTensor(
-                self._dWhh_tmp.dev.value(), row_major[H, THREE_H]()
+                self._dWhh_tmp.dev.value(), row_major(H, THREE_H)
             )
             max_matmul[target="gpu"](dWih_tmp_tt, xT_tt, dix_tt, c)
             max_matmul[target="gpu"](dWhh_tmp_tt, hT_tt, dhx_tt, c)

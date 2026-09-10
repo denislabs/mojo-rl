@@ -635,13 +635,13 @@ struct MaskedAttention[
 
         # 2. scores = Q @ Kᵀ.
         var scores_tt = TileTensor(
-            self.ss0.dev.value(), row_major[BH, Self.SEQ_LEN, Self.SEQ_LEN]()
+            self.ss0.dev.value(), row_major(BH, Self.SEQ_LEN, Self.SEQ_LEN)
         )
         var pq_tt = TileTensor(
-            self.sp0.dev.value(), row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
+            self.sp0.dev.value(), row_major(BH, Self.SEQ_LEN, Self.HEAD_DIM)
         )
         var pk_tt = TileTensor(
-            self.sp1.dev.value(), row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
+            self.sp1.dev.value(), row_major(BH, Self.SEQ_LEN, Self.HEAD_DIM)
         )
         batched_matmul[transpose_b=True, target="gpu"](
             scores_tt, pq_tt, pk_tt, context=c
@@ -661,10 +661,10 @@ struct MaskedAttention[
 
         # 4. packed_out = attn @ V.
         var pout_tt = TileTensor(
-            self.sp3.dev.value(), row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
+            self.sp3.dev.value(), row_major(BH, Self.SEQ_LEN, Self.HEAD_DIM)
         )
         var pv_tt = TileTensor(
-            self.sp2.dev.value(), row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
+            self.sp2.dev.value(), row_major(BH, Self.SEQ_LEN, Self.HEAD_DIM)
         )
         batched_matmul[target="gpu"](pout_tt, scores_tt, pv_tt, context=c)
 
@@ -893,11 +893,11 @@ struct MaskedAttention[
         )
 
         # 2. dattn(ss0) = dout @ Vᵀ.
-        var pdout_tt = TileTensor(self.sp0.dev.value(), row_major[BH, SL, HD]())
-        var pq_tt = TileTensor(self.sp1.dev.value(), row_major[BH, SL, HD]())
-        var pk_tt = TileTensor(self.sp2.dev.value(), row_major[BH, SL, HD]())
-        var pv_tt = TileTensor(self.sp3.dev.value(), row_major[BH, SL, HD]())
-        var dattn_tt = TileTensor(self.ss0.dev.value(), row_major[BH, SL, SL]())
+        var pdout_tt = TileTensor(self.sp0.dev.value(), row_major(BH, SL, HD))
+        var pq_tt = TileTensor(self.sp1.dev.value(), row_major(BH, SL, HD))
+        var pk_tt = TileTensor(self.sp2.dev.value(), row_major(BH, SL, HD))
+        var pv_tt = TileTensor(self.sp3.dev.value(), row_major(BH, SL, HD))
+        var dattn_tt = TileTensor(self.ss0.dev.value(), row_major(BH, SL, SL))
         batched_matmul[transpose_b=True, target="gpu"](
             dattn_tt, pdout_tt, pv_tt, context=c
         )
@@ -924,8 +924,8 @@ struct MaskedAttention[
         )
 
         # 5. dV(sp3) = attn_T(ss0) @ dout(sp0).
-        var attnT_tt = TileTensor(self.ss0.dev.value(), row_major[BH, SL, SL]())
-        var dV_tt = TileTensor(self.sp3.dev.value(), row_major[BH, SL, HD]())
+        var attnT_tt = TileTensor(self.ss0.dev.value(), row_major(BH, SL, SL))
+        var dV_tt = TileTensor(self.sp3.dev.value(), row_major(BH, SL, HD))
         batched_matmul[target="gpu"](dV_tt, attnT_tt, pdout_tt, context=c)
 
         # 6. dscore_T(ss0) = transpose(dscore(ss1)).
@@ -937,13 +937,13 @@ struct MaskedAttention[
         )
 
         # 7. dK(sp0) = dscore_T(ss0) @ Q(sp1).
-        var dscoreT_tt = TileTensor(self.ss0.dev.value(), row_major[BH, SL, SL]())
-        var dK_tt = TileTensor(self.sp0.dev.value(), row_major[BH, SL, HD]())
+        var dscoreT_tt = TileTensor(self.ss0.dev.value(), row_major(BH, SL, SL))
+        var dK_tt = TileTensor(self.sp0.dev.value(), row_major(BH, SL, HD))
         batched_matmul[target="gpu"](dK_tt, dscoreT_tt, pq_tt, context=c)
 
         # 8. dQ(sp1) = dscore(ss1) @ K(sp2).
-        var dscore_tt = TileTensor(self.ss1.dev.value(), row_major[BH, SL, SL]())
-        var dQ_tt = TileTensor(self.sp1.dev.value(), row_major[BH, SL, HD]())
+        var dscore_tt = TileTensor(self.ss1.dev.value(), row_major(BH, SL, SL))
+        var dQ_tt = TileTensor(self.sp1.dev.value(), row_major(BH, SL, HD))
         batched_matmul[target="gpu"](dQ_tt, dscore_tt, pk_tt, context=c)
 
         # 9. unpack dQ(sp1)/dK(sp0)/dV(sp3) → grad_input.

@@ -392,15 +392,15 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 )
                 var xg_tt = TileTensor(
                     self.xg.dev.value(),
-                    row_major[Self.BLOCKS, B, Self.IPB](),
+                    row_major(Self.BLOCKS, B, Self.IPB),
                 )
                 var w_tt = TileTensor(
                     self.weight.val.dev.value(),
-                    row_major[Self.BLOCKS, Self.IPB, Self.OPB](),
+                    row_major(Self.BLOCKS, Self.IPB, Self.OPB),
                 )
                 var og_tt = TileTensor(
                     self.og.dev.value(),
-                    row_major[Self.BLOCKS, B, Self.OPB](),
+                    row_major(Self.BLOCKS, B, Self.OPB),
                 )
                 batched_matmul[target="gpu"](og_tt, xg_tt, w_tt, context=c)
                 comptime n_so = (B * Self.OUT + TPB - 1) // TPB
@@ -596,16 +596,16 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 )
                 var gog_tt = TileTensor(
                     self.gog.dev.value(),
-                    row_major[Self.BLOCKS, B, Self.OPB](),
+                    row_major(Self.BLOCKS, B, Self.OPB),
                 )
                 # dW[k] = xᵀ[k] @ go[k]  →  += into weight.grd
                 var xt_tt = TileTensor(
                     self.xt.dev.value(),
-                    row_major[Self.BLOCKS, Self.IPB, B](),
+                    row_major(Self.BLOCKS, Self.IPB, B),
                 )
                 var dwg_tt = TileTensor(
                     self.dwg.dev.value(),
-                    row_major[Self.BLOCKS, Self.IPB, Self.OPB](),
+                    row_major(Self.BLOCKS, Self.IPB, Self.OPB),
                 )
                 batched_matmul[target="gpu"](dwg_tt, xt_tt, gog_tt, context=c)
                 comptime n_aw = (Self.W_SIZE + TPB - 1) // TPB
@@ -618,11 +618,11 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 # dx[k] = go[k] @ W[k]ᵀ  →  scatter back to [B, IN]
                 var w_tt = TileTensor(
                     self.weight.val.dev.value(),
-                    row_major[Self.BLOCKS, Self.IPB, Self.OPB](),
+                    row_major(Self.BLOCKS, Self.IPB, Self.OPB),
                 )
                 var gxg_tt = TileTensor(
                     self.gxg.dev.value(),
-                    row_major[Self.BLOCKS, B, Self.IPB](),
+                    row_major(Self.BLOCKS, B, Self.IPB),
                 )
                 batched_matmul[transpose_b=True, target="gpu"](
                     gxg_tt, gog_tt, w_tt, context=c

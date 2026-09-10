@@ -238,13 +238,13 @@ struct PairwiseDot[D_: Int, BATCH: Int](Module):
                 # batch axis. At PD_BATCH_DIM == 1 it is measurably WORSE on
                 # NVIDIA — see the note above.
                 var m_tt = TileTensor(
-                    out.dev.value(), row_major[PD_BATCH_DIM, B, B]()
+                    out.dev.value(), row_major(PD_BATCH_DIM, B, B)
                 )
                 var a_tt = TileTensor(
-                    a.dev.value(), row_major[PD_BATCH_DIM, B, Self.D_]()
+                    a.dev.value(), row_major(PD_BATCH_DIM, B, Self.D_)
                 )
                 var c_tt = TileTensor(
-                    c.dev.value(), row_major[PD_BATCH_DIM, B, Self.D_]()
+                    c.dev.value(), row_major(PD_BATCH_DIM, B, Self.D_)
                 )
                 batched_matmul[transpose_b=True, target="gpu"](
                     m_tt, a_tt, c_tt, context=dc

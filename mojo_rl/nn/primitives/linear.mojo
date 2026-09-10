@@ -26,7 +26,7 @@ from std.sys import CompilationTarget
 from std.gpu import global_idx, thread_idx, block_idx
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
-from max.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 from mojo_rl.nn.core.splitk_gemm import (
@@ -282,6 +282,36 @@ def _accum_2d_kernel[
 # `decide_partitions`). They used to be written out here and were then copied
 # verbatim into `Conv2D`; a rule whose failure mode is a silent wrong gradient
 # gets exactly one home.
+
+
+@always_inline
+def _gemm_bkn[
+    B: Int, K: Int, N: Int
+](
+    mut dst: DeviceBuffer[DT],
+    x: DeviceBuffer[DT],
+    w: DeviceBuffer[DT],
+    c: DeviceContext,
+) raises:
+    """`dst[B,N] = x[B,K] @ w[K,N]` through MAX's matmul.
+
+    The views carry RUNTIME extents, so every shape shares one set of
+    dispatch kernels instead of instantiating all ~10 candidates per shape
+    (docs/COMPILE_TIME_PROFILING.md §3.8: 1101 -> 456 Metal modules on the
+    ACT trainer). Measured on Apple: runtime extents are also faster at every
+    training batch (296 -> 163 us at [64x512]@[512x512]) but lose the gemv
+    specialisation at B == 1 (55 -> 90 us), which is the acting path, so
+    that one shape keeps its static views."""
+    comptime if B == 1:
+        var xs = TileTensor(x, row_major[B, K]())
+        var ws = TileTensor(w, row_major[K, N]())
+        var ds = TileTensor(dst, row_major[B, N]())
+        max_matmul[target="gpu"](ds, xs, ws, c)
+    else:
+        var xd = TileTensor(x, row_major(B, K))
+        var wd = TileTensor(w, row_major(K, N))
+        var dd = TileTensor(dst, row_major(B, N))
+        max_matmul[target="gpu"](dd, xd, wd, c)
 
 
 struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
@@ -723,7 +753,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                 var c = ctx.value()
                 outd.ensure_gpu(c, B * Self.OUT_)
                 var out_v = TileTensor(
-                    outd.dev.value(), row_major[B, Self.OUT_]()
+                    outd.dev.value(), row_major(B, Self.OUT_)
                 )
                 var bl = self.bias.val.lt[
                     "gpu", Layout.row_major(Self.OUT_)
@@ -736,7 +766,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     self._ensure_w_pad(c)
                     var wp_v = TileTensor(
                         self.w_pad.dev.value(),
-                        row_major[Self.K_PAD, Self.N_PAD](),
+                        row_major(Self.K_PAD, Self.N_PAD),
                     )
                     # The activation only needs a copy when K is padded; when
                     # only N is padded, K_PAD == IN_ and `in0d` is already the
@@ -756,14 +786,14 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     var xp_v = TileTensor(
                         self.x_pad.dev.value() if Self.NEEDS_PAD
                         else in0d.dev.value(),
-                        row_major[B, Self.K_PAD](),
+                        row_major(B, Self.K_PAD),
                     )
                     comptime if Self.NEEDS_N_PAD:
                         # GEMM into the widened destination, then slice back to
                         # `OUT_` — fused with the bias add, so no extra launch.
                         self.y_pad.ensure_gpu(c, B * Self.N_PAD)
                         var yp_v = TileTensor(
-                            self.y_pad.dev.value(), row_major[B, Self.N_PAD]()
+                            self.y_pad.dev.value(), row_major(B, Self.N_PAD)
                         )
                         max_matmul[target="gpu"](yp_v, xp_v, wp_v, c)
                         c.enqueue_function[
@@ -786,14 +816,10 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                             block_dim=256,
                         )
                 else:
-                    var x_v = TileTensor(
-                        in0d.dev.value(), row_major[B, Self.IN_]()
+                    _gemm_bkn[B, Self.IN_, Self.OUT_](
+                        outd.dev.value(), in0d.dev.value(),
+                        self.weight.val.dev.value(), c,
                     )
-                    var w_v = TileTensor(
-                        self.weight.val.dev.value(),
-                        row_major[Self.IN_, Self.OUT_](),
-                    )
-                    max_matmul[target="gpu"](out_v, x_v, w_v, c)
                     c.enqueue_function[_bias_add_kernel[B, Self.OUT_]](
                         outd.lt["gpu", Layout.row_major(B, Self.OUT_)](),
                         bl,
@@ -817,11 +843,11 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                 grid_dim=(Self.B_SIZE + 255) // 256,
                 block_dim=256,
             )
-            var x_v = TileTensor(in0.dev.value(), row_major[B, Self.IN_]())
+            var x_v = TileTensor(in0.dev.value(), row_major(B, Self.IN_))
             var w_bf_v = TileTensor(
-                self.w_bf.dev.value(), row_major[Self.IN_, Self.OUT_]()
+                self.w_bf.dev.value(), row_major(Self.IN_, Self.OUT_)
             )
-            var out_v = TileTensor(out.dev.value(), row_major[B, Self.OUT_]())
+            var out_v = TileTensor(out.dev.value(), row_major(B, Self.OUT_))
             # bf16-in → bf16-out GEMM (fp32 accumulation is automatic).
             max_matmul[target="gpu"](out_v, x_v, w_bf_v, c)
             var ol = out.lt["gpu", Layout.row_major(B, Self.OUT_)]()
@@ -961,7 +987,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     self._ensure_w_pad(c)
                     var wp_v = TileTensor(
                         self.w_pad.dev.value(),
-                        row_major[Self.K_PAD, Self.N_PAD](),
+                        row_major(Self.K_PAD, Self.N_PAD),
                     )
                     # go: [B, OUT_] -> [B, N_PAD]
                     comptime if Self.NEEDS_N_PAD:
@@ -979,7 +1005,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     var gop_v = TileTensor(
                         self.go_pad.dev.value() if Self.NEEDS_N_PAD
                         else god.dev.value(),
-                        row_major[B, Self.N_PAD](),
+                        row_major(B, Self.N_PAD),
                     )
                     # cacheT: [IN_, B] -> [K_PAD, B]  (append zero ROWS)
                     comptime if Self.NEEDS_PAD:
@@ -999,13 +1025,13 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     var cTp_v = TileTensor(
                         self.cT_pad.dev.value() if Self.NEEDS_PAD
                         else self.cacheT.dev.value(),
-                        row_major[Self.K_PAD, B](),
+                        row_major(Self.K_PAD, B),
                     )
                     # grad_w = cacheTᵀ @ go   ->  [K_PAD, N_PAD]
                     self.dW_pad.ensure_gpu(c, Self.WPAD_SIZE)
                     var dWp_v = TileTensor(
                         self.dW_pad.dev.value(),
-                        row_major[Self.K_PAD, Self.N_PAD](),
+                        row_major(Self.K_PAD, Self.N_PAD),
                     )
                     # ── grad_w: split-K on OUR workspace, or plain matmul ──
                     # This is the GEMM MODULAR_MATMUL_ALLOC_REPORT.md
@@ -1043,7 +1069,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         self.gi_pad.ensure_gpu(c, B * Self.K_PAD)
                         var gip_v = TileTensor(
                             self.gi_pad.dev.value(),
-                            row_major[B, Self.K_PAD](),
+                            row_major(B, Self.K_PAD),
                         )
                         max_matmul[transpose_b=True, target="gpu"](
                             gip_v, gop_v, wp_v, c
@@ -1061,7 +1087,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     else:
                         # K_PAD == IN_ here, so this writes `gind` directly.
                         var gi_v = TileTensor(
-                            gind.dev.value(), row_major[B, Self.K_PAD]()
+                            gind.dev.value(), row_major(B, Self.K_PAD)
                         )
                         max_matmul[transpose_b=True, target="gpu"](
                             gi_v, gop_v, wp_v, c
@@ -1088,16 +1114,16 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                 else:
                     var dW_v = TileTensor(
                         self.dW_tmp.dev.value(),
-                        row_major[Self.IN_, Self.OUT_](),
+                        row_major(Self.IN_, Self.OUT_),
                     )
                     var gi_v = TileTensor(
-                        gind.dev.value(), row_major[B, Self.IN_]()
+                        gind.dev.value(), row_major(B, Self.IN_)
                     )
                     var cT_v = TileTensor(
-                        self.cacheT.dev.value(), row_major[Self.IN_, B]()
+                        self.cacheT.dev.value(), row_major(Self.IN_, B)
                     )
                     var go_v = TileTensor(
-                        god.dev.value(), row_major[B, Self.OUT_]()
+                        god.dev.value(), row_major(B, Self.OUT_)
                     )
                     # Same split-K routing as the padded branch above. This is
                     # the branch an ALIGNED Linear takes (K_PAD == IN_ and
@@ -1119,7 +1145,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
                     var w_v = TileTensor(
                         self.weight.val.dev.value(),
-                        row_major[Self.IN_, Self.OUT_](),
+                        row_major(Self.IN_, Self.OUT_),
                     )
                     max_matmul[transpose_b=True, target="gpu"](
                         gi_v, go_v, w_v, c
@@ -1167,17 +1193,17 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                 block_dim=(_T_TILE, _T_BR),
             )
             var dW_v = TileTensor(
-                self.dW_tmp.dev.value(), row_major[Self.IN_, Self.OUT_]()
+                self.dW_tmp.dev.value(), row_major(Self.IN_, Self.OUT_)
             )
-            var gi_v = TileTensor(gin.dev.value(), row_major[B, Self.IN_]())
+            var gi_v = TileTensor(gin.dev.value(), row_major(B, Self.IN_))
             var cTb_v = TileTensor(
-                self.cacheT_bf.dev.value(), row_major[Self.IN_, B]()
+                self.cacheT_bf.dev.value(), row_major(Self.IN_, B)
             )
             var gob_v = TileTensor(
-                grad_output.dev.value(), row_major[B, Self.OUT_]()
+                grad_output.dev.value(), row_major(B, Self.OUT_)
             )
             var wb_v = TileTensor(
-                self.w_bf.dev.value(), row_major[Self.IN_, Self.OUT_]()
+                self.w_bf.dev.value(), row_major(Self.IN_, Self.OUT_)
             )
             # grad_w = cacheT_bfᵀ-form @ go → fp32 dW (bf16-in, fp32-out).
             # ⚠ NOT routed through split-K, deliberately. bf16 operands with an

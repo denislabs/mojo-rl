@@ -1248,13 +1248,13 @@ struct Conv2D[
                     # bit for bit, at an aligned contraction length.
                     var w_buf = self._w_col_buf(c)
                     var col_tt = TileTensor(
-                        self.col_t.dev.value(), row_major[BS, Self.CPAD]()
+                        self.col_t.dev.value(), row_major(BS, Self.CPAD)
                     )
                     var w_tt = TileTensor(
                         w_buf, row_major[Self.OCPAD, Self.CPAD]()
                     )
                     var outp_tt = TileTensor(
-                        self.outp_t.dev.value(), row_major[BS, Self.OCPAD]()
+                        self.outp_t.dev.value(), row_major(BS, Self.OCPAD)
                     )
                     # Same treatment as the dW, and for the same reason:
                     # once `CPAD >= 2048` MAX partitions K here too and
@@ -1366,13 +1366,13 @@ struct Conv2D[
                 # (2) out_packed[BS,OC] = col[BS,COL] @ W[OC,COL]ᵀ — bf16-in →
                 # bf16-out GEMM (fp32 accumulation is automatic).
                 var col_tt = TileTensor(
-                    self.col_t_bf.dev.value(), row_major[BS, Self.COL]()
+                    self.col_t_bf.dev.value(), row_major(BS, Self.COL)
                 )
                 var w_tt = TileTensor(
-                    self.w_bf.dev.value(), row_major[Self.OC_, Self.COL]()
+                    self.w_bf.dev.value(), row_major(Self.OC_, Self.COL)
                 )
                 var outp_tt = TileTensor(
-                    self.outp_t_bf.dev.value(), row_major[BS, Self.OC_]()
+                    self.outp_t_bf.dev.value(), row_major(BS, Self.OC_)
                 )
                 max_matmul[transpose_b=True, target="gpu"](
                     outp_tt, col_tt, w_tt, c
@@ -1688,13 +1688,13 @@ struct Conv2D[
             )
             # (3) dW_tmp = goᵀ @ col → accumulate into grad_w
             var goT_tt = TileTensor(
-                self.goT_t.dev.value(), row_major[Self.OC_, BS]()
+                self.goT_t.dev.value(), row_major(Self.OC_, BS)
             )
             var col_tt = TileTensor(
-                self.col_t.dev.value(), row_major[BS, Self.CPAD]()
+                self.col_t.dev.value(), row_major(BS, Self.CPAD)
             )
             var dW_tmp_tt = TileTensor(
-                self.dW_tmp.dev.value(), row_major[Self.OC_, Self.CPAD]()
+                self.dW_tmp.dev.value(), row_major(Self.OC_, Self.CPAD)
             )
             # ── dW: split-K on OUR workspace, or plain matmul ──────────
             # `[OC, BS] @ [BS, CPAD]`: K is `batch * OH * OW`, so this is the
@@ -1765,13 +1765,13 @@ struct Conv2D[
                 block_dim=TPB,
             )
             var wT_tt = TileTensor(
-                self.wT_t.dev.value(), row_major[Self.COL, Self.OC_]()
+                self.wT_t.dev.value(), row_major(Self.COL, Self.OC_)
             )
             var goT2_tt = TileTensor(
-                self.goT_t.dev.value(), row_major[Self.OC_, BS]()
+                self.goT_t.dev.value(), row_major(Self.OC_, BS)
             )
             var dcolT_tt = TileTensor(
-                self.col_t.dev.value(), row_major[Self.COL, BS]()
+                self.col_t.dev.value(), row_major(Self.COL, BS)
             )
             max_matmul[target="gpu"](dcolT_tt, wT_tt, goT2_tt, c)
             comptime nb_dx = (B * Self.IN_FLAT + CONV_DW_TPB - 1) // CONV_DW_TPB
@@ -1863,13 +1863,13 @@ struct Conv2D[
             # (3) dW_tmp = goᵀ @ col → bf16-in, FP32-out GEMM → accumulate into
             # the fp32 master grad.
             var goT_tt = TileTensor(
-                self.goT_t_bf.dev.value(), row_major[Self.OC_, BS]()
+                self.goT_t_bf.dev.value(), row_major(Self.OC_, BS)
             )
             var col_tt = TileTensor(
-                self.col_t_bf.dev.value(), row_major[BS, Self.COL]()
+                self.col_t_bf.dev.value(), row_major(BS, Self.COL)
             )
             var dW_tmp_tt = TileTensor(
-                self.dW_tmp.dev.value(), row_major[Self.OC_, Self.COL]()
+                self.dW_tmp.dev.value(), row_major(Self.OC_, Self.COL)
             )
             # ⚠ NOT routed through split-K, deliberately. This is the
             # bf16-flow dW (bf16 operands, fp32 output). It would work the same
@@ -1916,13 +1916,13 @@ struct Conv2D[
                 block_dim=TPB,
             )
             var wbT_tt = TileTensor(
-                self.wT_bf.dev.value(), row_major[Self.COL, Self.OC_]()
+                self.wT_bf.dev.value(), row_major(Self.COL, Self.OC_)
             )
             var goT2_tt = TileTensor(
-                self.goT_t_bf.dev.value(), row_major[Self.OC_, BS]()
+                self.goT_t_bf.dev.value(), row_major(Self.OC_, BS)
             )
             var dcolT_tt = TileTensor(
-                self.col_t_bf.dev.value(), row_major[Self.COL, BS]()
+                self.col_t_bf.dev.value(), row_major(Self.COL, BS)
             )
             max_matmul[target="gpu"](dcolT_tt, wbT_tt, goT2_tt, c)
             comptime nb_dx = (B * Self.IN_FLAT + CONV_DW_TPB - 1) // CONV_DW_TPB

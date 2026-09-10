@@ -198,14 +198,14 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                 comptime lvb = Layout.row_major(Self.VOCAB_, B)
                 # out[B, ED] = input[B, VOCAB] @ weight[VOCAB, ED]
                 var in_v = TileTensor(
-                    in0d.dev.value(), row_major[B, Self.VOCAB_]()
+                    in0d.dev.value(), row_major(B, Self.VOCAB_)
                 )
                 var w_v = TileTensor(
                     self.weight.val.dev.value(),
-                    row_major[Self.VOCAB_, Self.EMBED_DIM_](),
+                    row_major(Self.VOCAB_, Self.EMBED_DIM_),
                 )
                 var out_v = TileTensor(
-                    outd.dev.value(), row_major[B, Self.EMBED_DIM_]()
+                    outd.dev.value(), row_major(B, Self.EMBED_DIM_)
                 )
                 max_matmul[target="gpu"](out_v, in_v, w_v, c)
                 # cache_inᵀ[VOCAB, B] = input[B, VOCAB]ᵀ  (for grad_w in
@@ -233,13 +233,13 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
             # only on a version bump). out[B, ED] = input[B, VOCAB] @ W[VOCAB, ED]
             # bf16-in → bf16-out GEMM (fp32 accumulation is automatic).
             self._ensure_w_bf(c)
-            var in_v = TileTensor(in0.dev.value(), row_major[B, Self.VOCAB_]())
+            var in_v = TileTensor(in0.dev.value(), row_major(B, Self.VOCAB_))
             var w_bf_v = TileTensor(
                 self.w_bf.dev.value(),
-                row_major[Self.VOCAB_, Self.EMBED_DIM_](),
+                row_major(Self.VOCAB_, Self.EMBED_DIM_),
             )
             var out_v = TileTensor(
-                out.dev.value(), row_major[B, Self.EMBED_DIM_]()
+                out.dev.value(), row_major(B, Self.EMBED_DIM_)
             )
             max_matmul[target="gpu"](out_v, in_v, w_bf_v, c)
             # cache_inᵀ[VOCAB, B] = input[B, VOCAB]ᵀ at bf16 (for grad_w), via
@@ -325,23 +325,23 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                 comptime lwf = Layout.row_major(Self.W_SIZE)
                 # grad_in[B, VOCAB] = grad_out[B, ED] @ weight[VOCAB, ED]ᵀ
                 var go_v = TileTensor(
-                    god.dev.value(), row_major[B, Self.EMBED_DIM_]()
+                    god.dev.value(), row_major(B, Self.EMBED_DIM_)
                 )
                 var w_v = TileTensor(
                     self.weight.val.dev.value(),
-                    row_major[Self.VOCAB_, Self.EMBED_DIM_](),
+                    row_major(Self.VOCAB_, Self.EMBED_DIM_),
                 )
                 var gi_v = TileTensor(
-                    gind.dev.value(), row_major[B, Self.VOCAB_]()
+                    gind.dev.value(), row_major(B, Self.VOCAB_)
                 )
                 max_matmul[transpose_b=True, target="gpu"](gi_v, go_v, w_v, c)
                 # gw_tmp[VOCAB, ED] = cache_inᵀ[VOCAB, B] @ grad_out[B, ED]
                 var cinT_v = TileTensor(
-                    self.cache_inT.dev.value(), row_major[Self.VOCAB_, B]()
+                    self.cache_inT.dev.value(), row_major(Self.VOCAB_, B)
                 )
                 var gwtmp_v = TileTensor(
                     self.gw_tmp.dev.value(),
-                    row_major[Self.VOCAB_, Self.EMBED_DIM_](),
+                    row_major(Self.VOCAB_, Self.EMBED_DIM_),
                 )
                 comptime if splitk_path_applies[c.default_device_info]():
                     if self._sk_p < 0:
@@ -378,22 +378,22 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
             # bf16 gin (bf16-in, bf16-out — gin flows at bf16).
             self._ensure_w_bf(c)
             var go_v = TileTensor(
-                grad_output.dev.value(), row_major[B, Self.EMBED_DIM_]()
+                grad_output.dev.value(), row_major(B, Self.EMBED_DIM_)
             )
             var w_bf_v = TileTensor(
                 self.w_bf.dev.value(),
-                row_major[Self.VOCAB_, Self.EMBED_DIM_](),
+                row_major(Self.VOCAB_, Self.EMBED_DIM_),
             )
-            var gi_v = TileTensor(gin.dev.value(), row_major[B, Self.VOCAB_]())
+            var gi_v = TileTensor(gin.dev.value(), row_major(B, Self.VOCAB_))
             max_matmul[transpose_b=True, target="gpu"](gi_v, go_v, w_bf_v, c)
             # gw_tmp[VOCAB, ED] = cache_inᵀ_bf[VOCAB, B] @ grad_out[B, ED]:
             # bf16-in → FP32-out GEMM into the fp32 gw_tmp.
             var cinT_v = TileTensor(
-                self.cache_inT_bf.dev.value(), row_major[Self.VOCAB_, B]()
+                self.cache_inT_bf.dev.value(), row_major(Self.VOCAB_, B)
             )
             var gwtmp_v = TileTensor(
                 self.gw_tmp.dev.value(),
-                row_major[Self.VOCAB_, Self.EMBED_DIM_](),
+                row_major(Self.VOCAB_, Self.EMBED_DIM_),
             )
             # ⚠ NOT routed through split-K, deliberately: the bf16 flow is a
             # different MAX instantiation (`MatmulKernels[bfloat16, bfloat16,

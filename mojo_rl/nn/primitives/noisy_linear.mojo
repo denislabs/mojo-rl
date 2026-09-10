@@ -402,11 +402,11 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
                 block_dim=TPB,
             )
             # 3. out = x @ W_eff + b_eff.
-            var x_v = TileTensor(in0.dev.value(), row_major[B, Self.IN_]())
+            var x_v = TileTensor(in0.dev.value(), row_major(B, Self.IN_))
             var w_v = TileTensor(
-                self.w_eff.dev.value(), row_major[Self.IN_, Self.OUT_]()
+                self.w_eff.dev.value(), row_major(Self.IN_, Self.OUT_)
             )
-            var out_v = TileTensor(out.dev.value(), row_major[B, Self.OUT_]())
+            var out_v = TileTensor(out.dev.value(), row_major(B, Self.OUT_))
             max_matmul[target="gpu"](out_v, x_v, w_v, c)
             comptime nb_ba = (B * Self.OUT_ + TPB - 1) // TPB
             c.enqueue_function[_noisy_bias_add_kernel[B, Self.OUT_]](
@@ -505,13 +505,13 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
                 block_dim=(_T_TILE, _T_BR),
             )
             var cT_tt = TileTensor(
-                self.cacheT.dev.value(), row_major[Self.IN_, B]()
+                self.cacheT.dev.value(), row_major(Self.IN_, B)
             )
             var go_tt = TileTensor(
-                grad_output.dev.value(), row_major[B, Self.OUT_]()
+                grad_output.dev.value(), row_major(B, Self.OUT_)
             )
             var dW_tt = TileTensor(
-                self.dW_tmp.dev.value(), row_major[Self.IN_, Self.OUT_]()
+                self.dW_tmp.dev.value(), row_major(Self.IN_, Self.OUT_)
             )
             comptime if splitk_path_applies[c.default_device_info]():
                 if self._sk_p < 0:
@@ -544,12 +544,12 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
                 block_dim=TPB,
             )
             # grad_x = go @ W_effᵀ
-            var gi_v = TileTensor(gin.dev.value(), row_major[B, Self.IN_]())
+            var gi_v = TileTensor(gin.dev.value(), row_major(B, Self.IN_))
             var go_v = TileTensor(
-                grad_output.dev.value(), row_major[B, Self.OUT_]()
+                grad_output.dev.value(), row_major(B, Self.OUT_)
             )
             var w_v = TileTensor(
-                self.w_eff.dev.value(), row_major[Self.IN_, Self.OUT_]()
+                self.w_eff.dev.value(), row_major(Self.IN_, Self.OUT_)
             )
             max_matmul[transpose_b=True, target="gpu"](gi_v, go_v, w_v, c)
 
