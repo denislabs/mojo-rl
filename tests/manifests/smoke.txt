@@ -376,6 +376,13 @@ tests/core/test_drivers_use_runcontext.mojo
 # and that a run falls back to the flat `runs/` root until its project exists.
 # Mutation-checked. Writes under /tmp.
 tests/core/test_project.mojo
+# Promotion (§8): the record round-trip, and the four properties the plan calls
+# load-bearing — HARD LINK not a symlink (checked by inode), the materialised
+# bytes hash to the run's checkpoint, `supersedes` records the previous holder,
+# and re-promoting REPOINTS the role rather than leaving old weights a deploy
+# would keep using. Plus the deploy-side resolver: a role resolves, an
+# unpromoted one falls back rather than raising. Mutation-checked.
+tests/core/test_policy.mojo
 # The JSON writer, byte-exact against output `json.loads` accepted, plus the
 # escapes, the \u fallback for control bytes, and the refusal of NaN /
 # Infinity. Self-contained; this is what replaced `json.dumps` in the logger.

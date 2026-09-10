@@ -75,9 +75,26 @@ from mojo_rl.physics3d.gpu.constants import (
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
 from mojo_rl.robot.so101.sim_map import SimJointMap
 from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
+from mojo_rl.core.policy import describe_policy, resolve_policy
 
 comptime FOLLOWER_PORT = "/dev/cu.usbmodem5B8E1139971"
-comptime CHECKPOINT_PATH = "sac_so_arm101_reach.ckpt"
+comptime POLICY_PROJECT = "so101"
+comptime POLICY_ROLE = "reach"
+comptime CHECKPOINT_FALLBACK = "sac_so_arm101_reach.ckpt"
+"""⚠⚠ THE DEPLOY PATH NAMES A ROLE, NOT A RUN — §8, decision 2.
+
+`resolve_policy` returns `projects/so101/policies/reach.ckpt` when a checkpoint
+has been promoted into that role, so a better one is a `project-promote` away
+and NOTHING HERE IS EDITED, rebuilt or re-flashed.
+
+⚠ It falls back to the old flat constant when no policy exists. A deploy path
+is the one place where failing closed is worse than failing open: an arm that
+will not start because the project layer is not set up yet is a regression for
+someone who only wanted to run what worked yesterday.
+
+⚠ AND THE ARM PRINTS WHICH ONE IT GOT, BEFORE IT MOVES. Silently loading
+different weights than the operator expects is precisely the failure this layer
+exists to prevent."""
 
 comptime EnvT = Phyics3dEnv[
     SoArm101Model, SoArm101ReachConfig, DT, TERMINATE_ON_UNHEALTHY=False
@@ -230,13 +247,26 @@ def main() raises:
     var agent = SAC["cpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN](
         action_scale=ACTION_SCALE,
     )
+    var ckpt_path = resolve_policy(
+        String(POLICY_PROJECT), String(POLICY_ROLE), String(CHECKPOINT_FALLBACK)
+    )
     try:
-        agent.load(CHECKPOINT_PATH)
+        agent.load(ckpt_path)
     except e:
-        print("ERROR loading", CHECKPOINT_PATH, "-", e)
+        print("ERROR loading", ckpt_path, "-", e)
         print("Train first: examples/so101/sac_so_arm101_reach_training_gpu.mojo")
+        print("Or promote one: pixi run project-promote <run_id> best --as reach")
         return
-    print("  policy          =", CHECKPOINT_PATH)
+    print("  policy          =", ckpt_path)
+    # ⚠ WHICH RUN, AND WHAT THE HUMAN SAID ABOUT IT — before the arm moves.
+    var provenance = describe_policy(String(POLICY_PROJECT), String(POLICY_ROLE))
+    if provenance:
+        print("  promoted from   =", provenance)
+    else:
+        print(
+            "  promoted from   = (none — this is the flat fallback"
+            " constant, not a promoted policy)"
+        )
 
     # ── the kinematics oracle ─────────────────────────────────────────────
     # A full env, used for FK only. It is never stepped: `set_state` runs the

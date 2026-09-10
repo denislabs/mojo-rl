@@ -160,10 +160,20 @@ from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
 from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
 from mojo_rl.vision.camera_thread import CameraReader
 from mojo_rl.vision.preprocess import camera_frame_to_chw_rgb
+from mojo_rl.core.policy import describe_policy, resolve_policy
 
 
 comptime FOLLOWER_PORT = "/dev/cu.usbmodem5B8E1139971"
+comptime POLICY_PROJECT = "so101"
+comptime POLICY_ROLE = "act"
 comptime DEFAULT_CKPT = "act_so101_best_gpu.ckpt"
+"""⚠⚠ A FALLBACK, NOT THE DEPLOY TARGET — §8, decision 2. `--ckpt` still wins;
+absent it, a checkpoint promoted into `projects/so101/policies/act.ckpt` is
+used, and only if there is none does this flat constant apply.
+
+⚠ Falling back rather than raising is deliberate: an arm that will not start
+because the project layer is not set up yet is a regression for someone who
+only wanted to run what worked yesterday."""
 
 comptime QPOS = SO101_QPOS
 comptime ADIM = SO101_ADIM
@@ -477,7 +487,24 @@ def main() raises:
     if store == "":
         store = store_path()
     if ckpt == "":
-        ckpt = String(DEFAULT_CKPT)
+        # ⚠ THE ROLE BEFORE THE CONSTANT, and an explicit `--ckpt` before both.
+        ckpt = resolve_policy(
+            String(POLICY_PROJECT), String(POLICY_ROLE), String(DEFAULT_CKPT)
+        )
+        var provenance = describe_policy(
+            String(POLICY_PROJECT), String(POLICY_ROLE)
+        )
+        # ⚠ SAY WHICH WEIGHTS, BEFORE THE ARM MOVES. Silently loading something
+        # other than what the operator expects is the failure this prevents.
+        if provenance:
+            print("  policy          = " + ckpt)
+            print("  promoted from   = " + provenance)
+        else:
+            print(
+                "  policy          = " + ckpt
+                + "  (flat fallback; nothing promoted into the '"
+                + String(POLICY_ROLE) + "' role)"
+            )
     if len(devices) == 0:
         devices.append(0)
         devices.append(1)

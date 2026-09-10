@@ -29,6 +29,8 @@ from std.os.path import exists
 
 from mojo_rl.core.policy import (
     PolicyRecord,
+    describe_policy,
+    resolve_policy,
     load_policy,
     parse_policy,
     policy_ckpt_path,
@@ -246,6 +248,54 @@ def main() raises:
     print("  a missing checkpoint is refused, and the refusal lists what exists")
     checks += 2
 
+    # ── 9. ⚠⚠ THE DEPLOY PATH RESOLVES THE ROLE, NOT A RUN ──────────
+    #
+    # This is decision 2, and it is the only reason the rest of the file
+    # matters: `deploy_reach_real` asks for "reach" and gets whatever was last
+    # promoted, with no run id anywhere on the deploy path.
+    var proot = String(TMP) + "/projects"
+    var got = resolve_policy(
+        String("so101"), String("reach"), String("FLAT.ckpt"), proot
+    )
+    if got != role:
+        raise Error("resolve_policy returned '" + got + "', want the role " + role)
+    # ...and an UNPROMOTED role falls back rather than raising. A deploy path is
+    # the one place where failing closed is worse than failing open.
+    var fb = resolve_policy(
+        String("so101"), String("no_such_role"), String("FLAT.ckpt"), proot
+    )
+    if fb != "FLAT.ckpt":
+        raise Error("an unpromoted role did not fall back: '" + fb + "'")
+    print("  deploy: the role resolves; an unpromoted one falls back")
+    checks += 2
+
+    # ── 10. and the provenance says WHICH run, with the human's note ─
+    var prov = describe_policy(String("so101"), String("reach"), proot)
+    if prov.find(rid_b) < 0:
+        raise Error("the provenance line does not name the run: " + prov)
+    if prov.find("better, 9/10") < 0:
+        raise Error("the provenance line lost the note: " + prov)
+    if describe_policy(String("so101"), String("nope"), proot) != "":
+        raise Error("an unpromoted role described itself anyway")
+    print("  deploy: the provenance names the run and carries the note")
+    checks += 2
+
+    # ── 11. ⚠ a record whose WEIGHTS are gone must not stay silent ───
+    _ = run_capture("rm -f " + quote_arg(role))
+    var shown = run_capture(
+        "MOJO_RL_PROJECTS=" + quote_arg(proot)
+        + " pixi run mojo run -I . tools/project/project_cli.mojo show so101"
+        + " 2>&1 || true",
+        1 << 20,
+    )
+    if shown.find("MISSING WEIGHTS") < 0:
+        raise Error(
+            "a policy record with no weights was listed as if it were fine —"
+            " a deploy would find nothing at the role:\n" + shown
+        )
+    print("  a record whose weights are gone is flagged, not listed as fine")
+    checks += 1
+
     _ = run_capture("rm -rf " + quote_arg(String(TMP)))
     print("[PASS] policy (" + String(checks) + " checks)")
 
@@ -258,3 +308,6 @@ def main() raises:
 #   E5  promote does not replace an existing role -> check 5
 #   E6  promote `mv`s instead of linking       -> check 6
 #   E7  a missing checkpoint is not refused    -> check 8
+#   E8  resolve_policy ignores the role         -> check 9
+#   E9  resolve_policy raises instead of falling back -> check 9
+#   E10 project-show hides missing weights      -> check 11

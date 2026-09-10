@@ -40,6 +40,7 @@ second flat 218-file directory from accreting beside the first one.
 """
 
 from .kv import KvWriter, kv_lines
+from .project import projects_root
 from ..io.fileio import write_text_atomic
 
 
@@ -157,3 +158,63 @@ def policy_ckpt_path(project_dir: String, name: String) -> String:
 
 def write_policy(project_dir: String, ref rec: PolicyRecord) raises:
     write_text_atomic(policy_kv_path(project_dir, rec.name), rec.render())
+
+
+def resolve_policy(
+    project: String,
+    name: String,
+    fallback: String = String(""),
+    root: String = String(""),
+) raises -> String:
+    """The weights a deploy path should load for a ROLE, or `fallback`.
+
+    ⚠⚠ THIS IS DECISION 2, AND IT IS THE ONLY THING A DEPLOY SCRIPT SHOULD
+    KNOW. It names a role — "reach" — never a run id, so a better checkpoint is
+    one `project-promote` away and no deploy script is edited, rebuilt, or
+    re-flashed.
+
+    ⚠ IT FALLS BACK RATHER THAN RAISING, and the fallback is the constant the
+    script used before. A deploy path is the one place in this tree where
+    failing closed is worse than failing open: an arm that will not start
+    because a project layer is not set up yet is a regression for someone who
+    only wanted to run the thing that worked yesterday.
+
+    ⚠ `root` OVERRIDES `projects_root()`, for a gate that must not depend on
+    the ambient `MOJO_RL_PROJECTS`. Deploy paths leave it empty.
+
+    ⚠ THE CALLER MUST PRINT WHICH ONE IT GOT. Silently loading different
+    weights than the operator expects is the failure this whole layer exists to
+    prevent — see `describe_policy`.
+    """
+    from std.os.path import exists
+
+    var base = root if root.byte_length() > 0 else projects_root()
+    var role = policy_ckpt_path(base + "/" + project, name)
+    if exists(role):
+        return role
+    return fallback
+
+
+def describe_policy(
+    project: String, name: String, root: String = String("")
+) raises -> String:
+    """One line saying WHICH run's weights a role currently holds, or "".
+
+    ⚠ MEANT TO BE PRINTED BEFORE THE ARM MOVES. "reach -> 2026-09-02_... (best),
+    promoted 2026-09-02, note: 8/10 on the real arm" is the sentence that lets
+    an operator stop a deploy they did not intend.
+    """
+    from std.os.path import exists
+
+    var base = root if root.byte_length() > 0 else projects_root()
+    var kv = policy_kv_path(base + "/" + project, name)
+    if not exists(kv):
+        return String("")
+    var rec = load_policy(kv)
+    var line = (
+        rec.name + " -> " + rec.run + " (" + rec.checkpoint + "), promoted "
+        + rec.promoted
+    )
+    if rec.note.byte_length() > 0:
+        line += ("\n    note: " + rec.note)
+    return line^
