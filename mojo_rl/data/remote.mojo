@@ -298,6 +298,60 @@ struct RemoteCatalog(Movable & Deinitable):
         )
         return id^
 
+    def record_policy(
+        mut self,
+        project: String,
+        name: String,
+        run_id: String,
+        checkpoint: String,
+        sha256: String,
+        bytes: Int,
+        note: String,
+        supersedes: String,
+        promoted_at: String,
+    ) raises -> String:
+        """Record a promotion. Returns the row id.
+
+        ⚠⚠ THE BOX IS THE RECORD AND THIS IS THE INDEX (§10). The weights are
+        already hard-linked and `policies/<name>.kv` already written by the
+        time this is called, so a caller must NOT let a failure here fail the
+        promotion — `project-promote` reports it and carries on. A promotion
+        that only exists locally is a normal state; one that exists only on the
+        server would be a lie.
+
+        ⚠ `promoted_at` IS THE BOX'S CLOCK, sent explicitly. A promotion made
+        offline and pushed a week later belongs in the history where the PERSON
+        put it, so the server does not substitute its own `now()`.
+        """
+        var w = JsonWriter()
+        w.begin_object()
+        w.member(String("project"), project)
+        w.member(String("name"), name)
+        w.member(String("run_id"), run_id)
+        w.member(String("checkpoint"), checkpoint)
+        if sha256.byte_length() == 64:
+            w.member(String("sha256"), sha256)
+        if bytes > 0:
+            w.member(String("bytes"), bytes)
+        w.member(String("note"), note)
+        w.member(String("supersedes"), supersedes)
+        w.member(String("promoted_at"), promoted_at)
+        w.end_object()
+        var doc = self._request(
+            String("POST"), String("/policies"), w.done(), 201
+        )
+        return _opt_string(doc, doc.root(), String("id"))
+
+    def policies_of(
+        mut self, project: String, current_only: Bool = False
+    ) raises -> JsonDoc:
+        """A project's promotion history, newest first (`current_only` gives
+        just who fills each role now)."""
+        var q = String("/policies?project=") + project
+        if current_only:
+            q += "&current=1"
+        return self._request(String("GET"), q, String(""), 200)
+
     def describe_artifact(mut self, id: String) raises -> DatasetMeta:
         """Artifact row + a presigned download URL.
 

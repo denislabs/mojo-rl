@@ -79,6 +79,12 @@ def _promote(rid: String, which: String, name: String, note: String) raises -> S
         + " pixi run mojo run -I . tools/project/project_cli.mojo promote "
         + quote_arg(rid) + " " + quote_arg(which) + " --as " + quote_arg(name)
         + (" --note " + quote_arg(note) if note.byte_length() > 0 else "")
+        # ⚠⚠ `--no-push` IS NOT OPTIONAL HERE. `project-promote` records every
+        # promotion on the monitor named in `.env`, which for a developer
+        # running this is their REAL one — a gate that writes rows into
+        # production is a defect, not a thorough test. The POST path is
+        # exercised against the fixture in the worker's own suite.
+        + " --no-push"
         # ⚠ `|| true`: check 8 promotes a checkpoint that does not exist ON
         # PURPOSE, and the CLI is supposed to exit non-zero for it. Without
         # this the gate cannot observe its own refusal.
@@ -296,6 +302,20 @@ def main() raises:
     print("  a record whose weights are gone is flagged, not listed as fine")
     checks += 1
 
+    # ── 12. ⚠ `--no-push` really does keep it local ─────────────────
+    #
+    # Every promotion above passed it, so if the flag were ignored this whole
+    # file would have been writing into a real account. That makes this the
+    # check the rest of the file depends on.
+    var quiet = _promote(rid_a, String("best"), String("checkflag"), String(""))
+    if quiet.find("monitor") >= 0:
+        raise Error(
+            "--no-push was ignored; the gate is talking to a real monitor:\n"
+            + quiet
+        )
+    print("  --no-push keeps a promotion local, as every check above assumed")
+    checks += 1
+
     _ = run_capture("rm -rf " + quote_arg(String(TMP)))
     print("[PASS] policy (" + String(checks) + " checks)")
 
@@ -311,3 +331,4 @@ def main() raises:
 #   E8  resolve_policy ignores the role         -> check 9
 #   E9  resolve_policy raises instead of falling back -> check 9
 #   E10 project-show hides missing weights      -> check 11
+#   E11 --no-push is ignored                    -> check 12

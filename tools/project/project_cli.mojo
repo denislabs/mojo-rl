@@ -6,6 +6,7 @@
     pixi run run-tag <run_id> "meilleur reach à ce jour, testé 8/10"
     pixi run project-prune so101 --older-than 30 [--apply]
     pixi run project-promote <run_id> best --as reach --note "8/10 on the arm"
+        (add --no-push to keep it local; the box is the record either way)
     pixi run project-push so101 [<run_id>] [--kind checkpoint]
     pixi run project-pull so101 <run_id> [--kind checkpoint]
 
@@ -486,6 +487,23 @@ def cmd_promote() raises:
             spec.policies.append(name)
             spec.write()
 
+    # ⚠⚠ THE POST COMES LAST AND CANNOT FAIL THE PROMOTION. The weights are
+    # already linked and the `.kv` already written; the box is the record and
+    # the monitor is its index (§10). A promotion that exists only locally is a
+    # normal state — `--no-push` or an offline box — and one that existed only
+    # on the server would be a lie. So this reports and carries on.
+    var pushed = String("")
+    if not _has("--no-push"):
+        try:
+            var cat = RemoteCatalog.from_env()
+            _ = cat.record_policy(
+                project, name, pol.run, which, sha, size, note,
+                pol.supersedes, pol.promoted,
+            )
+            pushed = String("recorded on the monitor")
+        except e:
+            pushed = String("NOT recorded on the monitor: ") + String(e)
+
     print("promoted " + rid + " (" + which + ") as '" + name + "'")
     print("  role     " + dst)
     print("  record   " + policy_kv_path(pdir, name))
@@ -497,6 +515,11 @@ def cmd_promote() raises:
         print("  supersedes " + pol.supersedes)
     if rec.outcome.byte_length() > 0:
         print("  the run said: " + rec.outcome)
+    if pushed.byte_length() > 0:
+        # ⚠ PRINTED EITHER WAY. A promotion the monitor never heard about is
+        # invisible on a second machine, and silence about that is how someone
+        # later concludes the history is complete when it is not.
+        print("  " + pushed)
 
 
 # =============================================================================
