@@ -17,6 +17,7 @@ visitor and rides the param walk for checkpointing (Stage 4).
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
+from std.memory import UnsafePointer
 from .tensor import Tensor
 
 
@@ -37,6 +38,91 @@ trait ParamVisitor(Deinitable):
         default prefix. Optimizer visitors ignore it; checkpoint / named_params
         visitors use it."""
         ...
+
+
+# ──────────────────────────────────────────────────────────────────────
+# ParamVisitorRef — the visitor with its TYPE erased (spike).
+#
+# `for_each_param[target, V]` is instantiated once per (module type, V,
+# target): on the ACT trainer that is 156 copies of the walk, 1078 KB of
+# text, because every optimizer / checkpoint / clip visitor is its own `V`
+# (docs/COMPILE_TIME_PROFILING.md §4). A `ParamVisitorRef` is ONE concrete
+# `V`: an opaque state pointer plus a thin function pointer to a thunk that
+# knows the real visitor. Every walk driven through a ref shares the same
+# instantiation. The price is that the parameter size crosses the pointer
+# as a runtime `Int`, so a visitor reachable this way implements
+# `visit_rt` (runtime N) beside `visit` (comptime N).
+# ──────────────────────────────────────────────────────────────────────
+trait ParamVisitorRT(Deinitable):
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """`visit` with the size as a runtime value. Same contract."""
+        ...
+
+
+comptime _VisitState = UnsafePointer[NoneType, MutExternalOrigin]
+comptime _VisitFn = def(
+    _VisitState, String, mut Tensor, mut Tensor, mut Tensor, mut Tensor,
+    Int, Bool, Optional[DeviceContext],
+) raises thin
+
+
+def _visit_thunk[V: ParamVisitorRT, target: StaticString](
+    state: _VisitState,
+    name: String,
+    mut param: Tensor,
+    mut grad: Tensor,
+    mut m: Tensor,
+    mut v: Tensor,
+    n: Int,
+    apply_decay: Bool,
+    ctx: Optional[DeviceContext],
+) raises:
+    state.bitcast[V]()[].visit_rt[target](
+        name, param, grad, m, v, n, apply_decay, ctx
+    )
+
+
+struct ParamVisitorRef(ParamVisitor):
+    """A type-erased `ParamVisitor`. Build one with `of[V, target](v)`; it
+    borrows `v` for as long as the walk runs and must not outlive it."""
+
+    var state: _VisitState
+    var call: _VisitFn
+
+    def __init__(out self, state: _VisitState, call: _VisitFn):
+        self.state = state
+        self.call = call
+
+    @staticmethod
+    def of[V: ParamVisitorRT, target: StaticString](mut v: V) -> ParamVisitorRef:
+        return ParamVisitorRef(
+            UnsafePointer(to=v)
+            .bitcast[NoneType]()
+            .unsafe_origin_cast[MutExternalOrigin](),
+            _visit_thunk[V, target],
+        )
+
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        self.call(self.state, name, param, grad, m, v, N, apply_decay, ctx)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -191,9 +277,22 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam):
 # against a frozen cast). Covers BOTH optimizer paths uniformly — the
 # per-param walk AND the arena grouped step (which bypasses `visit`).
 # ──────────────────────────────────────────────────────────────────────
-struct ParamVersionBump(ParamVisitor):
+struct ParamVersionBump(ParamVisitor, ParamVisitorRT):
     def __init__(out self):
         pass
+
+    def visit_rt[target: StaticString](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        n: Int,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        param.version += 1
 
     def visit[target: StaticString, N: Int](
         mut self,
@@ -205,4 +304,4 @@ struct ParamVersionBump(ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        param.version += 1
+        self.visit_rt[target](name, param, grad, m, v, N, apply_decay, ctx)
