@@ -44,7 +44,7 @@ def _logger(run_id: String) raises -> RemoteLogger:
 
 
 def test_urls_are_built_from_the_base() raises:
-    """The three routes, by value.
+    """The four routes, by value.
 
     ⚠ A TRAILING SLASH ON THE BASE MUST NOT DOUBLE. `.env` is hand-edited and
     `RL_MONITOR_URL` has arrived both ways.
@@ -57,6 +57,7 @@ def test_urls_are_built_from_the_base() raises:
             (lg._ingest_url(), String(DEAD) + "/ingest"),
             (lg._runs_url(), String(DEAD) + "/runs"),
             (lg._finish_url(), String(DEAD) + "/runs/r1/finish"),
+            (lg._ping_url(), String(DEAD) + "/runs/r1/ping"),
         ]
         for c in cases:
             checked += 1
@@ -64,8 +65,8 @@ def test_urls_are_built_from_the_base() raises:
                 wrong += 1
                 print("    got", c[0], "want", c[1])
     print("  urls:", checked, "checked,", wrong, "differing")
-    if wrong != 0 or checked != 6:
-        raise Error("url construction: " + String(wrong) + " of 6 wrong")
+    if wrong != 0 or checked != 8:
+        raise Error("url construction: " + String(wrong) + " of 8 wrong")
 
 
 def test_register_payload_carries_the_config() raises:
@@ -93,6 +94,20 @@ def test_register_payload_carries_the_config() raises:
     print("  register payload:", len(want) - missing, "of", len(want), "fields")
     if missing != 0:
         raise Error("register payload missing " + String(missing) + " fields")
+
+
+def test_ping_payload_names_the_run() raises:
+    """⚠ THE PING'S BODY IS NOT EMPTY, and the reason is not the server.
+
+    The route already carries the id, so the body is redundant to it — but the
+    sink's transport POSTs JSON, and a body that names the run is what makes a
+    captured ping readable in a log without cross-referencing the URL.
+    """
+    var lg = _logger(String("2026-09-10_hb_deadbeef"))
+    var p = lg._ping_payload()
+    if p.find('"run_id":"2026-09-10_hb_deadbeef"') < 0:
+        raise Error("ping payload does not name the run: " + p)
+    print("  ping payload names the run")
 
 
 def test_finish_payload_carries_status_and_outcome() raises:
@@ -265,6 +280,7 @@ def main() raises:
     print("=" * 62)
     test_urls_are_built_from_the_base()
     test_register_payload_carries_the_config()
+    test_ping_payload_names_the_run()
     test_finish_payload_carries_status_and_outcome()
     test_registration_precedes_the_first_metric()
     test_close_reports_done_and_does_not_overwrite_a_stated_end()
