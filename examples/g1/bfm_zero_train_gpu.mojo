@@ -139,21 +139,21 @@ def draw_index_kernel[N: Int](
     u: Pointer[Scalar[DT], MutAnyOrigin],       # N uniforms
     table: Pointer[Scalar[DT], MutAnyOrigin],   # a table of candidates (as float)
     n_table: Int32,
-    out: Pointer[Scalar[DT], MutAnyOrigin],     # N picks (as float)
+    picks: Pointer[Scalar[DT], MutAnyOrigin],   # N picks (as float)
 ):
-    """`out[i] = table[floor(u[i] · n_table)]`."""
+    """`picks[i] = table[floor(u[i] · n_table)]`."""
     var i = Int(global_idx.x)
     if i >= N:
         return
     var k = Int(u[unsafe_offset=i] * Scalar[DT](Int(n_table)))
     if k >= Int(n_table):
         k = Int(n_table) - 1
-    out[unsafe_offset=i] = table[unsafe_offset=k]
+    picks[unsafe_offset=i] = table[unsafe_offset=k]
 
 
 def track_row_index_kernel[N: Int, T: Int](
     starts: Pointer[Scalar[DT], MutAnyOrigin],  # N window starts (as float)
-    idx: Pointer[IDX_DT, MutAnyOrigin],         # N * T row ids: start + 1 + t
+    idx: Pointer[Scalar[IDX_DT], MutAnyOrigin],         # N * T row ids: start + 1 + t
 ):
     var i = Int(global_idx.x)
     if i >= N * T:
@@ -164,13 +164,13 @@ def track_row_index_kernel[N: Int, T: Int](
 
 
 def chunk_index_kernel[ROWS: Int](
-    idx: Pointer[IDX_DT, MutAnyOrigin],   # the full row-id table
+    idx: Pointer[Scalar[IDX_DT], MutAnyOrigin],   # the full row-id table
     off: Int32,
-    out: Pointer[IDX_DT, MutAnyOrigin],   # ROWS ids from `off`
+    dst: Pointer[Scalar[IDX_DT], MutAnyOrigin],   # ROWS ids from `off`
 ):
     var i = Int(global_idx.x)
     if i < ROWS:
-        out[unsafe_offset=i] = idx[unsafe_offset=Int(off) + i]
+        dst[unsafe_offset=i] = idx[unsafe_offset=Int(off) + i]
 
 
 def copy_rows_kernel[W: Int, ROWS: Int](
@@ -404,7 +404,7 @@ def main() raises:
     var track_b = ctx.enqueue_create_buffer[DT](N_PAD * D)
     var track_z = ctx.enqueue_create_buffer[DT](N_TRACK * TRACK_LEN * D)
 
-    def _rsi_reset(lie_sign: Float64) raises:
+    def _rsi_reset(lie_sign: Float64) capturing raises:
         """`reset_batch`, then every lane injected from the store, then the
         FK / velocity / observation refresh — what `set_state` does on CPU."""
         env.reset_batch[N_ENVS](Optional(ctx), rng_seed + rng_off)
@@ -430,7 +430,7 @@ def main() raises:
         env._run_fields_vel(ctx)
         env._extract_obs_only(ctx)
 
-    def _draw_tracking() raises:
+    def _draw_tracking() capturing raises:
         """N_TRACK lanes and windows; B on the windows' next rows with the
         current normaliser and B; the mean-of-8 projected tracking z."""
         comptime NU2 = N_TRACK * 2
@@ -484,7 +484,7 @@ def main() raises:
             grid_dim=_blocks(N_ENVS), block_dim=TPB,
         )
 
-    def _pin_step(t: Int) raises:
+    def _pin_step(t: Int) capturing raises:
         ctx.enqueue_function[pin_step_kernel[D, N_TRACK, TRACK_LEN]](
             mptr(track_lanes.unsafe_ptr()), mptr(track_z.unsafe_ptr()), Int32(t),
             mptr(agent.base.z_pin.dev.value().unsafe_ptr()),
