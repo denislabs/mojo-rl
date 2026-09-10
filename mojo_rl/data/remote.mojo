@@ -298,6 +298,35 @@ struct RemoteCatalog(Movable & Deinitable):
         )
         return id^
 
+    def describe_artifact(mut self, id: String) raises -> DatasetMeta:
+        """Artifact row + a presigned download URL.
+
+        ⚠ REUSES `DatasetMeta` RATHER THAN A NEAR-IDENTICAL TWIN. The fields a
+        transfer needs are the same four — id, status, size, digest, url — and
+        a second struct differing only in its name is a second thing to keep in
+        step with the Worker. `name` carries the artifact's relative path,
+        which is its identity here.
+
+        ⚠ RAISES 409 IF THE UPLOAD NEVER COMPLETED. A pending row is not
+        served, so a crashed upload cannot advertise a truncated object.
+        """
+        var doc = self._request(
+            String("GET"), String("/artifacts/") + id, String(""), 200
+        )
+        var root = doc.root()
+        var m = DatasetMeta()
+        m.id = _opt_string(doc, root, String("id"))
+        m.name = _opt_string(doc, root, String("path"))
+        m.status = _opt_string(doc, root, String("status"))
+        m.size_bytes = _opt_int(doc, root, String("sizeBytes"))
+        m.sha256 = _opt_string(doc, root, String("sha256"))
+        m.download_url = _opt_string(doc, root, String("download_url"))
+        if m.download_url.byte_length() == 0:
+            raise Error(
+                "describe_artifact(" + id + "): no download_url in the reply"
+            )
+        return m^
+
     def artifacts_of(mut self, run_id: String) raises -> JsonDoc:
         """Every artifact row for a run, pending ones included.
 

@@ -286,6 +286,8 @@ project-show = { cmd = "mojo run -I . tools/project/project_cli.mojo show", desc
 project-prune = { cmd = "mojo run -I . tools/project/project_cli.mojo prune", description = "Delete old untagged runs. DRY RUN unless --apply" }
 # The one field a human has to write, and what makes runs searchable at all:
 #   grep -l 'tag=.*reach' projects/*/runs/*/run.kv
+project-push = { cmd = "mojo run -I . tools/project/project_cli.mojo push", description = "Send a project's run artifacts to the monitor (needs RL_MONITOR_*)" }
+project-pull = { cmd = "mojo run -I . tools/project/project_cli.mojo pull", description = "Bring a run's artifacts back onto this box (needs RL_MONITOR_*)" }
 run-tag = { cmd = "mojo run -I . tools/project/project_cli.mojo tag", description = 'Tag a run: run-tag <run_id> "free text"' }
 
 # Record teleoperation into a LeRobot v3 dataset. ⚠ SAFE BY DEFAULT: without
