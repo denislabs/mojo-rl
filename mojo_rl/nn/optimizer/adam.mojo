@@ -27,7 +27,7 @@ from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
 from ..core.param import ParamVisitor, ParamVersionBump
 from ..core.param import ParamWalkable
-from .param_arena import ParamArena
+from .param_arena import ParamArena, align_param_off
 from .grad_clip import (
     clip_grad_norm, clip_arena_grads, clip_arena_grads_captured,
 )
@@ -238,6 +238,9 @@ struct _MomentPlacer(ParamVisitor):
         ctx: Optional[DeviceContext],
     ) raises:
         comptime if target == "gpu":
+            # Same rounding as `ParamArena` — the moments alias val/grd BY
+            # OFFSET, so the two walks must land on identical boundaries.
+            self.off = align_param_off(self.off)
             m.dev = Optional(self.m_arena.create_sub_buffer[DT](self.off, N))
             m.n = N
             v.dev = Optional(self.v_arena.create_sub_buffer[DT](self.off, N))

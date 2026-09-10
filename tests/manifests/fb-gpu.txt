@@ -45,3 +45,9 @@ tests/dm_control/test_walker_batched_truncation_gpu.mojo
 # generics exceed Apple's ld symbol-name limit: build it by hand with
 # `-Xlinker -ld_classic` (see its header). Links as is on Linux.
 tests/fb/test_bfm_agent_g1_dims_smoke.mojo
+
+# The misaligned-GEMM launch failure that killed the G1 actor on the 5090
+# (§12.5): ParamArena packed param slices at element granularity, so obs 527's
+# odd-width norms left `Linear[1024,512]`'s weight 8 bytes off a 16-byte
+# boundary and every float4 tile load in `multistage_gemm` faulted. Cheap.
+tests/nn/test_arena_slice_alignment_gpu.mojo

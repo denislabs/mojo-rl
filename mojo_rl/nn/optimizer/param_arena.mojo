@@ -28,6 +28,40 @@ from ..core.param import ParamWalkable
 from ..core.named_params import named_params
 
 
+# ── slice alignment ──────────────────────────────────────────────────────────
+#
+# ⚠ EVERY param slice must start on a 16-byte boundary, and this is the ONLY
+# place that rule is written. MAX's `multistage_gemm` loads its A/B operands
+# with 16-byte (float4) vectors, so a weight whose arena offset is not a
+# multiple of 4 floats makes EVERY tile load in the GEMM misaligned:
+#
+#   Invalid __global__ read of size 16 bytes ... Access at 0x...078 is misaligned
+#   CUDA call failed: CUDA_ERROR_LAUNCH_FAILED (unspecified launch failure)
+#
+# Packing at element granularity is what breaks it: ONE param of odd size
+# (a LayerNorm over an odd observation width, a bias of odd width) shifts every
+# later param off the boundary, and two of them land it at 8 mod 16 — the worst
+# case, since even a float2 load then splits. The alignment is invisible to
+# everything downstream: the gaps are zero in `val`/`grd`/`m`/`v` (all
+# zero-filled at alloc) and zero in `decay_mask`, so the flat Adam/SGD/polyak/
+# grad-clip kernels over `[0, total)` read and write zeros there.
+#
+# 128 B (not the minimum 16) because it is also the cache-line/`cp.async`
+# granularity, and the cost is at most 31 floats per param.
+comptime PARAM_ALIGN = 32  # elements; 128 B at float32
+
+
+def align_param_off(off: Int) -> Int:
+    """Round an arena element offset up to the next `PARAM_ALIGN` boundary.
+
+    Called at EVERY offset walk over the arena — the sizing pass, the
+    decay-mask pass and the placement walk in this file, and `_MomentPlacer`'s
+    walk in `adam.mojo`. They must agree exactly: `m`/`v` alias `val`/`grd` by
+    offset, so a walk that skips this rounds a param's moments onto a DIFFERENT
+    param's values, silently."""
+    return ((off + PARAM_ALIGN - 1) // PARAM_ALIGN) * PARAM_ALIGN
+
+
 struct ParamArena(Movable & ParamVisitor):
     var val: Tensor  # contiguous param-value arena
     var grd: Tensor  # contiguous gradient arena
@@ -62,6 +96,7 @@ struct ParamArena(Movable & ParamVisitor):
         model's Param, so the rebinds persist."""
         comptime if target == "gpu":
             var c = ctx.value()
+            self._off = align_param_off(self._off)
             var vsub = self.val.dev.value().create_sub_buffer[DT](self._off, N)
             c.enqueue_copy(vsub, param.dev.value())  # preserve init values
             param.dev = Optional(vsub)
@@ -81,13 +116,14 @@ struct ParamArena(Movable & ParamVisitor):
             var nps = named_params["gpu"](model)
             var total = 0
             for i in range(len(nps)):
-                total += nps[i].size
+                total = align_param_off(total) + nps[i].size
             self.total = total
 
             var dm = Tensor.alloc(total)  # host decay mask
             var off = 0
             for i in range(len(nps)):
                 var d = Scalar[DT](1.0) if nps[i].decay else Scalar[DT](0.0)
+                off = align_param_off(off)
                 for k in range(nps[i].size):
                     dm.data[off + k] = d
                 off += nps[i].size
@@ -123,7 +159,7 @@ struct ParamArena(Movable & ParamVisitor):
             comptime for i in range(models.__len__()):
                 var nps = named_params["gpu"](models[i])
                 for j in range(len(nps)):
-                    total += nps[j].size
+                    total = align_param_off(total) + nps[j].size
             self.total = total
 
             var dm = Tensor.alloc(total)
@@ -134,6 +170,7 @@ struct ParamArena(Movable & ParamVisitor):
                     var d = (
                         Scalar[DT](1.0) if nps[j].decay else Scalar[DT](0.0)
                     )
+                    off = align_param_off(off)
                     for k in range(nps[j].size):
                         dm.data[off + k] = d
                     off += nps[j].size
