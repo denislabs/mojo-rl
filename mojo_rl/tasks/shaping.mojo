@@ -90,3 +90,51 @@ def shaping_words(
     out.append(goal_margin)
     out.append(reach_margin)
     return out^
+
+
+comptime OPTIMAL_MARGIN_PER_METRE: Float64 = 1.5174271293851465
+"""`margin / shortfall` at which a `tolerance` term's gradient is greatest.
+
+`k / sqrt(2)` where `k = sqrt(-2 ln(DEFAULT_VALUE_AT_MARGIN))`. ⚠ IT IS TIED
+TO `DEFAULT_VALUE_AT_MARGIN`; a term built at a different `value_at_margin`
+has a different constant, which is why `optimal_margin` is the only place it
+is written.
+"""
+
+
+def optimal_margin(shortfall: Float64) raises -> Float64:
+    """The margin at which a `tolerance` term starting at `shortfall` has the
+    steepest gradient — and, at the same time, 0.632 of headroom.
+
+    ## ⚠⚠ THE GRADIENT IS NOT MONOTONE IN THE MARGIN
+
+    Both ends are flat: a narrow band is flat everywhere outside itself, a
+    wide one is flat near zero. Measured on `lift`'s 0.030 m z-shortfall
+    against the real `tolerance`:
+
+        margin   term@reset   gradient/m
+        0.020        0.006          1.9      too narrow — dead band
+        0.046        0.376         24.5      the peak
+        0.050        0.437         24.1
+        0.100        0.813         11.2      too wide — mostly free
+        0.150        0.912          5.6
+
+    Both wrong margins shipped. 0.02 gave a run whose return never moved;
+    0.10 gave a run that bought +0.034 reward per step over doing nothing and
+    left the brick on the table, because 0.81 of the goal term was paid
+    before the policy acted.
+
+    ⚠ THE ARGUMENT IS THE SHORTFALL PAST THE RADIUS, not the raw distance.
+    `tolerance` is 1 inside `[lower, upper]`, so a term with a nonzero radius
+    has less to close than its distance suggests.
+
+    ⚠ A STARTING POINT, NOT A RULE. The optimum is computed at the RESET
+    distance; the gradient a policy needs is the one along the path it takes.
+    """
+    if shortfall <= 0.0:
+        raise Error(
+            "tasks: optimal_margin(" + String(shortfall) + "). The term is"
+            " already inside its radius at reset, so there is no distance to"
+            " close and no margin makes it train."
+        )
+    return OPTIMAL_MARGIN_PER_METRE * shortfall

@@ -30,6 +30,7 @@ checked against a run's own `mean_reward`.
 from std.random import random_float64
 from std.sys import argv
 
+from mojo_rl.tasks.shaping import optimal_margin
 from mojo_rl.tasks.spec import (
     load_family, load_task, validate_task_against_family,
 )
@@ -66,6 +67,79 @@ comptime NQ = So101TabletopModel.NQ
 comptime NV = So101TabletopModel.NV
 comptime CFG = So101TabletopConfig
 comptime SEED = 3
+
+
+def margin_report(
+    label: String, dist: Float64, radius: Float64, margin: Float64
+) raises:
+    """What `margin` is worth against a term that starts at `dist`.
+
+    ## ⚠⚠ TWO NUMBERS DECIDE A MARGIN AND NEITHER IS THE DISTANCE
+
+    **The term at reset** is what the policy is handed for doing nothing. A
+    `tolerance` band wide against the distance to be closed pays out before
+    the episode starts: at margin 0.10 against `lift`'s 0.030 m z-shortfall
+    the goal term is 0.81, so 81% of it is free and only 0.19 is left to
+    train on.
+
+    **The gradient** is what it can climb. It is NOT monotone in the margin —
+    it peaks and falls away on both sides, because a wide band is flat near
+    zero and a narrow one is flat everywhere outside itself:
+
+        margin   term@reset   gradient/m     (lift, shortfall 0.030 m)
+        0.020        0.006          1.9      too narrow — dead band
+        0.046        0.376         24.5      the peak
+        0.050        0.437         24.1
+        0.100        0.813         11.2      too wide — mostly free
+        0.150        0.912          5.6
+
+    The peak sits where `k * dist / margin == sqrt(2)`, with `k =
+    sqrt(-2 ln(value_at_margin))` — which is `margin ≈ 1.518 * dist` for the
+    default `value_at_margin`, and lands the term at exp(-1) = 0.368. Both
+    conditions at once, so there is no trade to make.
+
+    ⚠ IT IS A STARTING POINT, NOT A RULE. The optimum is computed at the
+    RESET distance, and the gradient a policy actually needs is the one along
+    the path it takes. A term with no headroom cannot train regardless.
+    """
+    # ⚠ THE BAND IS SUBTRACTED FIRST. `tolerance` is 1 inside
+    # `[0, radius]`, so the distance that has to be closed is the SHORTFALL
+    # past the radius, not the raw distance — using the raw one would move
+    # the recommended margin by the radius.
+    var d = dist - radius
+    if d <= 0.0:
+        print("  ", label, "margin: already inside the radius at reset —"
+              " the term is 1.0 and this half of the shaping is off")
+        return
+    var t = Float64(
+        tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
+            Scalar[DT](dist), Scalar[DT](0), Scalar[DT](radius),
+            Scalar[DT](margin),
+        )
+    )
+    var h = 1e-5
+    var tp = Float64(
+        tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
+            Scalar[DT](dist + h), Scalar[DT](0), Scalar[DT](radius),
+            Scalar[DT](margin),
+        )
+    )
+    var tm = Float64(
+        tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
+            Scalar[DT](dist - h), Scalar[DT](0), Scalar[DT](radius),
+            Scalar[DT](margin),
+        )
+    )
+    var grad = (tp - tm) / (2.0 * h)
+    var best = optimal_margin(d)
+    print("  ", label, "margin", margin, "-> term at reset", t,
+          " headroom", 1.0 - t, " gradient", grad, "/m")
+    print("        gradient-optimal margin for a", d, "m shortfall is",
+          best, "(term at reset 0.368)")
+    if t > 0.6:
+        print("        ⚠ MORE THAN 0.6 OF THIS TERM IS FREE AT RESET. The"
+              " margin is wide against the distance to be closed, so most of"
+              " the term is paid before the policy acts.")
 
 
 def main() raises:
@@ -261,5 +335,15 @@ def main() raises:
           CFG.SHAPE_W_GOAL * gt + CFG.SHAPE_W_REACH * rt)
     print("  reach/goal contribution ratio:",
           (CFG.SHAPE_W_REACH * rt) / (CFG.SHAPE_W_GOAL * gt))
+
+    # ⚠⚠ WHAT THE MARGIN IS WORTH, WHICH IS THE NUMBER THIS PROBE EXISTS FOR.
+    # The distances above are the input to a margin choice and the probe used
+    # to stop before making it, so the choice stayed a guess — and it has been
+    # wrong twice on `lift` in opposite directions. 0.02 against a 0.030 m
+    # shortfall left a gradient of 1.9/m; 0.10 left the goal term at 0.81
+    # BEFORE the policy moved anything, so a 1M-step run bought +0.034/step
+    # and the brick never left the table.
+    margin_report("goal ", mg, CFG.GOAL_RADIUS, CFG.GOAL_MARGIN)
+    margin_report("reach", mr, CFG.REACH_RADIUS, CFG.REACH_MARGIN)
     print()
     print("=== MEASURED ===")
