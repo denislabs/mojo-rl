@@ -342,6 +342,12 @@ tests/io/test_http_sink_heartbeat.mojo
 # a close() that waits for nothing — both pass without it. Checks the received
 # bytes hash to the file on disk. Needs `pixi run build-http`.
 tests/io/test_artifact_sink.mojo
+# A SOURCE gate: 18 `trainer.save_state(checkpoint_path)` sites across four
+# drivers must each be followed by `announce_checkpoint(...)`, and no driver
+# may inline the offer. A site that saves and forgets shows NOTHING — the run
+# trains, the file is on disk, and only the box dying reveals the loss. Prints
+# sites-scanned beside violations, and pins the count at 18.
+tests/deep_agents/test_checkpoints_announce.mojo
 # A run's END is a signal it sends, and its START is not its first metric.
 # Offline like test_http_sink beside it: routes and payloads by value, plus the
 # idempotence latches and the inertness that a `close()` which now POSTs could

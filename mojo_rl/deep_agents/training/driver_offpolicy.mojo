@@ -67,6 +67,8 @@ from .blocks.episode_readback import (
     accumulate_episode_returns,
 )
 from .blocks.cadence import DriverCadence
+from .checkpoint import announce_checkpoint
+from ...io.artifact_sink import ArtifactSink
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -456,6 +458,8 @@ def run_offpolicy_train[
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
+    artifacts: Optional[ArtifactSink] = None,
+    run_dir: String = "",
     base_step: Int = 0,
     progress_label: String = "off-policy",
 ) raises -> List[Scalar[DT]]:
@@ -705,11 +709,13 @@ def run_offpolicy_train[
             and checkpoint_path.byte_length() > 0
         ):
             trainer.save_state(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     # Always overwrite the final checkpoint at end so resume gets the
     # freshest weights regardless of cadence alignment.
     if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
         trainer.save_state(checkpoint_path)
+        announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     return ep_returns^
 
@@ -862,6 +868,8 @@ def run_offpolicy_train_batched[
     episode_sync_every: Int = 1,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
+    artifacts: Optional[ArtifactSink] = None,
+    run_dir: String = "",
     eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
     eval_every: Int = 0,
     eval_episodes: Int = 16,
@@ -1480,6 +1488,7 @@ def run_offpolicy_train_batched[
         # CUDA-graph-capture safe. Default `save_state` impl is a no-op.
         if cad.ckpt_due(step_idx):
             trainer.save_state(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
             if verbose:
                 cad.clear()
                 print(
@@ -1526,6 +1535,7 @@ def run_offpolicy_train_batched[
     # freshest weights regardless of cadence alignment.
     if cad.ckpt_on:
         trainer.save_state(checkpoint_path)
+        announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     # Defensive final drain of any buffered episode readbacks. With
     # `sync_every == 1` (or the last iteration hitting an emit boundary)
@@ -1566,6 +1576,8 @@ def run_offpolicy_train_cpu_env_gpu_agent[
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
+    artifacts: Optional[ArtifactSink] = None,
+    run_dir: String = "",
     base_step: Int = 0,
     progress_label: String = "off-policy",
 ) raises -> List[Scalar[DT]]:
@@ -1781,11 +1793,13 @@ def run_offpolicy_train_cpu_env_gpu_agent[
         # trainer's one-file v2 envelope. Default trait impl is a no-op.
         if cad.ckpt_due(step_idx):
             trainer.save_state(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     # Always overwrite the final checkpoint at end so resume gets the
     # freshest weights regardless of cadence alignment.
     if cad.ckpt_on:
         trainer.save_state(checkpoint_path)
+        announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     return ep_returns^
 

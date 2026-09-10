@@ -34,6 +34,8 @@ from .driver_onpolicy import (
     OnPolicyBatchedCore,
     _run_onpolicy_batched_body,
 )
+from .checkpoint import announce_checkpoint
+from ...io.artifact_sink import ArtifactSink
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -119,6 +121,8 @@ def run_onpolicy_discrete_train[
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
+    artifacts: Optional[ArtifactSink] = None,
+    run_dir: String = "",
     base_step: Int = 0,
     progress_label: String = "on-policy",
 ) raises -> List[Scalar[DT]]:
@@ -220,9 +224,11 @@ def run_onpolicy_discrete_train[
             and checkpoint_path.byte_length() > 0
         ):
             trainer.save_state(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
         trainer.save_state(checkpoint_path)
+        announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     return ep_returns^
 
@@ -324,6 +330,8 @@ def run_onpolicy_discrete_train_batched[
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
+    artifacts: Optional[ArtifactSink] = None,
+    run_dir: String = "",
     base_step: Int = 0,
     progress_label: String = "on-policy-disc",
 ) raises -> List[Scalar[DT]]:

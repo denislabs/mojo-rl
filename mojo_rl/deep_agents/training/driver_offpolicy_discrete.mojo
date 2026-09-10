@@ -45,6 +45,8 @@ from .blocks.episode_readback import (
 )
 from .blocks.cadence import DriverCadence
 from ..data.n_step_replay import GPUNStepBuffer
+from .checkpoint import announce_checkpoint
+from ...io.artifact_sink import ArtifactSink
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -324,6 +326,8 @@ def run_offpolicy_discrete_train[
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
+    artifacts: Optional[ArtifactSink] = None,
+    run_dir: String = "",
     base_step: Int = 0,
     eval_env: Optional[Pointer[E, MutAnyOrigin]] = None,
     eval_every: Int = 0,
@@ -514,6 +518,7 @@ def run_offpolicy_discrete_train[
             and checkpoint_path.byte_length() > 0
         ):
             trainer.save_state(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
         # `eval_every` — deterministic (noise-off) greedy eval on a SEPARATE
         # env. For ε=0 Noisy nets the training rollout IS the noisy argmax, so
@@ -548,6 +553,7 @@ def run_offpolicy_discrete_train[
     # freshest weights regardless of cadence alignment.
     if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
         trainer.save_state(checkpoint_path)
+        announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     return ep_returns^
 
@@ -658,6 +664,8 @@ def run_offpolicy_discrete_train_gpu_batched[
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
+    artifacts: Optional[ArtifactSink] = None,
+    run_dir: String = "",
     eval_env: Optional[Pointer[E, MutAnyOrigin]] = None,
     eval_every: Int = 0,
     eval_episodes: Int = 16,
@@ -922,6 +930,7 @@ def run_offpolicy_discrete_train_gpu_batched[
 
         if cad.ckpt_due(step_idx):
             trainer.save_state(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
         # Deterministic greedy eval on the isolated `eval_env` (noise off).
         if cad.eval_due(step_idx):
@@ -950,6 +959,7 @@ def run_offpolicy_discrete_train_gpu_batched[
 
     if cad.ckpt_on:
         trainer.save_state(checkpoint_path)
+        announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     # Defensive final drain of any buffered episode readbacks — a no-op
     # (and NO sync) when the last iteration hit an emit boundary.
@@ -989,6 +999,8 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
+    artifacts: Optional[ArtifactSink] = None,
+    run_dir: String = "",
     eval_env: Optional[Pointer[E, MutAnyOrigin]] = None,
     eval_every: Int = 0,
     eval_episodes: Int = 16,
@@ -1193,6 +1205,7 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
 
         if cad.ckpt_due(step_idx):
             trainer.save_state(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
         # Deterministic greedy eval on the isolated `eval_env` (noise off).
         if cad.eval_due(step_idx):
@@ -1223,6 +1236,7 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
 
     if cad.ckpt_on:
         trainer.save_state(checkpoint_path)
+        announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     return ep_returns^
 

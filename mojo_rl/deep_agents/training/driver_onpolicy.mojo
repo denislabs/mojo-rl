@@ -27,6 +27,8 @@ from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from .batched_env import BatchedEnv
 from .driver_scratch import DriverScratch
 from .blocks.cadence import DriverCadence
+from .checkpoint import announce_checkpoint
+from ...io.artifact_sink import ArtifactSink
 
 
 trait OnPolicyCheckpointable(Deinitable, Movable):
@@ -161,6 +163,8 @@ def run_onpolicy_train[
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
+    artifacts: Optional[ArtifactSink] = None,
+    run_dir: String = "",
     base_step: Int = 0,
     progress_label: String = "on-policy",
 ) raises -> List[Scalar[DT]]:
@@ -300,11 +304,13 @@ def run_onpolicy_train[
             and checkpoint_path.byte_length() > 0
         ):
             trainer.save_state(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     # Always overwrite the final checkpoint at end so resume gets the
     # freshest weights regardless of cadence alignment.
     if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
         trainer.save_state(checkpoint_path)
+        announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     return ep_returns^
 
@@ -395,6 +401,8 @@ def run_onpolicy_train_batched[
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
+    artifacts: Optional[ArtifactSink] = None,
+    run_dir: String = "",
     base_step: Int = 0,
     progress_label: String = "on-policy",
 ) raises -> List[Scalar[DT]]:
@@ -716,8 +724,10 @@ def _run_onpolicy_batched_body[
         # trainer's one-file v2 envelope. Default trait impl is no-op.
         if cad.ckpt_due(step_idx):
             trainer.save_state(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     if cad.ckpt_on:
         trainer.save_state(checkpoint_path)
+        announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
     return ep_returns^
