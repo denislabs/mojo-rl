@@ -51,3 +51,8 @@ tests/fb/test_bfm_agent_g1_dims_smoke.mojo
 # odd-width norms left `Linear[1024,512]`'s weight 8 bytes off a 16-byte
 # boundary and every float4 tile load in `multistage_gemm` faulted. Cheap.
 tests/nn/test_arena_slice_alignment_gpu.mojo
+
+# The capture blocker after the alignment fix (§12.8): `StopGradParams` built a
+# FRESH grad stash per backward, so B-net's `RMSNorm[256]` gamma was a 1 KB
+# device alloc+free on every vjp — illegal inside a CUDA-graph capture. Cheap.
+tests/nn/test_stop_grad_params_reuse_gpu.mojo

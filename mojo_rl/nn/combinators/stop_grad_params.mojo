@@ -27,16 +27,29 @@ from ..core.amp import AMPPolicy, NoAMP
 
 
 struct _GradStash(ParamVisitor):
-    """Two-pass param-grad save/restore. First walk (restoring=False) copies each
-    param's grad into `saved`; second walk (restoring=True) copies it back."""
+    """Two-pass param-grad save/restore over PERSISTENT buffers. First walk
+    (restoring=False) copies each param's grad into `saved`; second walk
+    (restoring=True) copies it back.
+
+    ⚠ The buffers are owned by the `StopGradParams` that drives the walk and
+    REUSED across backwards — `slot` indexes them, and only the first backward
+    grows the list. They used to be per-call: `visit` did `Tensor.alloc(N)`
+    into a fresh `List`, so every backward through this wrapper was a device
+    alloc + free per param. Allocation inside a CUDA-graph capture region is
+    illegal, so that made this wrapper a capture BLOCKER — it is what stopped
+    the BFM-Zero G1 run on a `request=1KB`, which is exactly the B-net's
+    `RMSNorm[256]` gamma (`docs/BFM_ZERO_G1_REPRODUCTION.md` §12.8). Keep every
+    device buffer this visitor touches out of the per-call path."""
     var saved: List[Tensor]
     var restoring: Bool
     var idx: Int
+    var slot: Int
 
     def __init__(out self):
         self.saved = List[Tensor]()
         self.restoring = False
         self.idx = 0
+        self.slot = 0
 
     def visit[target: StaticString, N: Int](
         mut self, name: String, mut param: Tensor, mut grad: Tensor,
@@ -44,19 +57,25 @@ struct _GradStash(ParamVisitor):
         ctx: Optional[DeviceContext],
     ) raises:
         if not self.restoring:
-            var t = Tensor.alloc(N)
+            # Grow ONLY on the first backward; `ensure`/`ensure_gpu` are
+            # monotone, so every later call finds the buffer already big
+            # enough and allocates nothing.
+            if self.slot >= len(self.saved):
+                self.saved.append(Tensor())
             comptime if target == "cpu":
+                self.saved[self.slot].ensure(N)
                 for k in range(N):
-                    t.data[k] = grad.data[k]
+                    self.saved[self.slot].data[k] = grad.data[k]
             else:
-                t.ensure_gpu(ctx.value(), N)
+                self.saved[self.slot].ensure_gpu(ctx.value(), N)
                 # Size-exact sub-buffer copy — `grad` may be larger than N
                 # (monotone ensure_gpu); whole-buffer copies error on the
                 # size mismatch. Mirrors compute_graph's fix.
                 var g_src = grad.dev.value().create_sub_buffer[DT](0, N)
-                var t_dst = t.dev.value().create_sub_buffer[DT](0, N)
+                var t_dst = self.saved[self.slot].dev.value(
+                ).create_sub_buffer[DT](0, N)
                 ctx.value().enqueue_copy(t_dst, g_src)
-            self.saved.append(t^)
+            self.slot += 1
         else:
             comptime if target == "cpu":
                 for k in range(N):
@@ -77,9 +96,13 @@ struct StopGradParams[Inner: Module](Module):
     comptime ACT_DT = Self.Inner.ACT_DT
 
     var inner: Self.Inner
+    # ⚠ PERSISTENT — see `_GradStash`. A per-call stash makes this wrapper a
+    # CUDA-graph capture blocker.
+    var stash: _GradStash
 
     def __init__(out self):
         self.inner = Self.Inner()
+        self.stash = _GradStash()
 
     def __init__[
         target: StaticString, INIT: Initializer
@@ -88,6 +111,7 @@ struct StopGradParams[Inner: Module](Module):
         `Sequential.__init__[target, INIT]` (docs/COMPILE_TIME_PROFILING.md
         §3.2)."""
         self.inner = Self.Inner.make[target, INIT](ctx)
+        self.stash = _GradStash()
 
     @staticmethod
     def make[
@@ -123,17 +147,18 @@ struct StopGradParams[Inner: Module](Module):
     ) raises:
         comptime ci = Self.Inner.ACT_DT
         comptime cn = Self.Inner.ARITY
-        var stash = _GradStash()
-        self.inner.for_each_param[target](stash, ctx)  # snapshot
+        self.stash.restoring = False
+        self.stash.slot = 0
+        self.inner.for_each_param[target](self.stash, ctx)  # snapshot
         self.inner.vjp[target, B, POLICY=POLICY](
             rebind[TensorRefs[cn, ofi, ci]](forward_input),
             rebind[TensorImpl[ci]](grad_output),
             rebind[TensorRefs[cn, ogi, ci]](grad_inputs),
             ctx,
         )
-        stash.restoring = True
-        stash.idx = 0
-        self.inner.for_each_param[target](stash, ctx)  # restore (freeze params)
+        self.stash.restoring = True
+        self.stash.idx = 0
+        self.inner.for_each_param[target](self.stash, ctx)  # restore (freeze)
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
