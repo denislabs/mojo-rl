@@ -23,6 +23,7 @@ from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 
 from ..training.blocks import SampleBlock
 from ..training.batched_env import BatchedEnv
+from ...io.artifact_sink import ArtifactSink
 from ..training.driver_offpolicy_discrete import (
     run_offpolicy_discrete_train,
     run_offpolicy_discrete_train_gpu_batched,
@@ -108,6 +109,8 @@ struct DQNAgent[
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = "",
         checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         """Single-env discrete off-policy training via
@@ -134,6 +137,8 @@ struct DQNAgent[
             diag_every=diag_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            artifacts=artifacts,
+            run_dir=run_dir,
         )
 
     def train_gpu_batched[
@@ -157,6 +162,8 @@ struct DQNAgent[
         diag_every: Int = 0,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = "",
         eval_env: Optional[Pointer[E, MutAnyOrigin]] = None,
         eval_every: Int = 0,
         eval_episodes: Int = 16,
@@ -208,6 +215,8 @@ struct DQNAgent[
             diag_every=diag_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            artifacts=artifacts,
+            run_dir=run_dir,
             eval_env=eval_env,
             eval_every=eval_every,
             eval_episodes=eval_episodes,

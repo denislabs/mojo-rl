@@ -38,6 +38,7 @@ from mojo_rl.deep_agents.training.checkpoint import (
 )
 from mojo_rl.io.artifact_sink import ArtifactSink
 from mojo_rl.io.fileio import read_file_bytes
+from mojo_rl.io.proc import quote_arg, run_capture
 
 
 def drivers() -> List[String]:
@@ -165,6 +166,71 @@ def main() raises:
         )
     print("  and no driver inlines the offer; the rule has one home")
 
+    # ── the facades forward it too, or the driver never sees it ─────
+    #
+    # ⚠⚠ A DRIVER PARAMETER NOTHING PASSES IS A NO-OP WITH GOOD DOCUMENTATION.
+    # Almost every example calls a FACADE (`SACAgent.train`, `DQNAgent.train`)
+    # rather than the driver directly, so `artifacts` has to be forwarded at
+    # twenty-two sites across eleven `agent.mojo` files. One that forwards
+    # `checkpoint_path` and not `artifacts` compiles, runs, trains, saves — and
+    # never uploads, with nothing to see.
+    #
+    # Discovered the hard way: the first wiring pass changed the drivers only,
+    # and the build failed with "unexpected keyword argument 'artifacts'"
+    # because the facade in between knew nothing about it.
+    var fwd = run_capture(
+        String(
+            "grep -rl 'checkpoint_path=checkpoint_path,'"
+            " mojo_rl/deep_agents/*/agent.mojo 2>/dev/null"
+        ),
+        1 << 20,
+    )
+    var facades = 0
+    var unforwarded = 0
+    for line in fwd.split("\n"):
+        var f = String(line).strip()
+        if String(f).byte_length() == 0:
+            continue
+        facades += 1
+        var text = _read(String(f))
+        var n_ckpt = 0
+        var n_art = 0
+        for l2 in text.split("\n"):
+            var t = String(l2).strip()
+            if t == "checkpoint_path=checkpoint_path,":
+                n_ckpt += 1
+            elif t == "artifacts=artifacts,":
+                n_art += 1
+        if n_art != n_ckpt:
+            unforwarded += 1
+            print(
+                "    "
+                + String(f)
+                + " forwards checkpoint_path "
+                + String(n_ckpt)
+                + "x but artifacts "
+                + String(n_art)
+                + "x"
+            )
+    print(
+        "  "
+        + String(facades)
+        + " facades forward a checkpoint_path, "
+        + String(unforwarded)
+        + " of them drop `artifacts`"
+    )
+    if facades == 0:
+        raise Error(
+            "no facade forwards checkpoint_path — the grep found nothing, so"
+            " this check proved nothing"
+        )
+    if unforwarded != 0:
+        raise Error(
+            String(unforwarded)
+            + " facade(s) forward the checkpoint path and not the sink. Those"
+            " agents train, save, and never upload."
+        )
+
     # ── the rule the source gate CANNOT see ─────────────────────────
     #
     # ⚠⚠ A SOURCE GATE PROVES THE CALL IS THERE, NOT THAT IT DOES ANYTHING.
@@ -284,6 +350,7 @@ def main() raises:
 #   C4  offered_path returns the ABSOLUTE path    -> offered_path by value
 #   C5  the trailing-separator guard is removed   -> offered_path by value
 #   C6  a path outside the run is kept anyway     -> offered_path by value
+#   D1  a facade forwards checkpoint_path only    -> the facade scan
 #
 # ⚠⚠ C3 SURVIVED TWICE, AND THE FILE GREW TWICE BECAUSE OF IT. A SOURCE gate
 # proves the call is THERE; it cannot prove the call DOES anything. Splitting
@@ -294,3 +361,8 @@ def main() raises:
 #
 # The general shape: a gate that checks structure and a gate that checks a pure
 # function can both be green while the wire between them is cut.
+#
+# ⚠ D1 EXISTS BECAUSE THE FIRST WIRING PASS FORGOT THE FACADES ENTIRELY. The
+# drivers took the new argument and the build failed with "unexpected keyword
+# argument 'artifacts'" — which was lucky. Had the facades used **kwargs or a
+# forwarding wrapper, they would have compiled and silently never uploaded.

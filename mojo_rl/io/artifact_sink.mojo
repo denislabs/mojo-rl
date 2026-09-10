@@ -485,3 +485,72 @@ struct ArtifactSink(ImplicitlyCopyable, Movable):
             + String(self.dropped())
             + " dropped (queue full)"
         )
+
+
+def sink_for_run(
+    run_id: String,
+    run_dir: String,
+    keep_every: Bool = False,
+    env_path: String = String(".env"),
+) raises -> Optional[ArtifactSink]:
+    """The sink a driver should use, or None when there is nowhere to upload.
+
+    ⚠⚠ IT RETURNS NONE RATHER THAN RAISING WHEN `.env` HAS NO MONITOR. A box
+    with no credentials must still train — the artifact uplink is an addition
+    to a run, never a precondition for one — and `announce_checkpoint` is a
+    no-op on a `None`, so a driver needs no branch of its own.
+
+    ⚠ CONSTRUCTING THIS SPAWNS A THREAD, so it is deliberately NOT called from
+    `RunContext.__init__`: a run that produces no artifacts (an eval, a probe)
+    should not pay for one. The driver asks when it knows it will save.
+
+    ⚠ AND IT IS ONE PLACE, not seven. Each driver reading `.env` itself would
+    be the same rule written once per driver — the shape this tree pays for
+    most often — and the failure would be silent: a driver whose env lookup
+    drifted would simply never upload.
+    """
+    from ..core.dotenv import load_dotenv
+
+    var env: Dict[String, String]
+    try:
+        env = load_dotenv(env_path)
+    except:
+        return None
+    if "RL_MONITOR_URL" not in env or "RL_MONITOR_API_KEY" not in env:
+        return None
+    var url = env["RL_MONITOR_URL"]
+    var key = env["RL_MONITOR_API_KEY"]
+    if url.byte_length() == 0 or key.byte_length() == 0:
+        return None
+    return Optional(
+        ArtifactSink(
+            run_id=run_id,
+            run_dir=run_dir,
+            base_url=url,
+            api_key=key,
+            keep_every=keep_every,
+        )
+    )
+
+
+def close_sink(mut artifacts: Optional[ArtifactSink], drain_ms: Int = 120_000):
+    """Drain, join and REPORT. A no-op without a sink.
+
+    ⚠⚠ THE REPORT IS NOT OPTIONAL, which is why closing and reporting are one
+    call. `abandoned` and `dropped` name artifacts that are still only on this
+    box — the exact condition the sink exists to end — so a driver that closed
+    quietly would turn a silent failure into a reassuring one.
+
+    ⚠ Never raises. A driver must not fail at the finish line because the
+    dashboard was down.
+    """
+    if not artifacts:
+        return
+    var s = artifacts.value()
+    try:
+        s.close(drain_ms=drain_ms)
+    except:
+        pass
+    var line = s.report()
+    if line.byte_length() > 0:
+        print(line)

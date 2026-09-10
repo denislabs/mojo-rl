@@ -202,6 +202,7 @@ from mojo_rl.nn.primitives.linear_relu import LinearReLU
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import CsvLogger, RemoteLogger, CompositeLogger
 from mojo_rl.core.run import RunContext, register_run
+from mojo_rl.io.artifact_sink import close_sink, sink_for_run
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
@@ -814,6 +815,13 @@ def main() raises:
         # that dies before step 0 never appears at all.
         register_run(run, logger)
 
+        # ⚠⚠ THE ARTIFACT UPLINK. §7: a checkpoint leaves the box WHILE the run
+        # is going, so a box that dies at 3am does not take the weights with
+        # it. `sink_for_run` returns None when `.env` names no monitor — a box
+        # with no credentials must still train — and every announce downstream
+        # is a no-op on a None, so there is no branch to write here.
+        var artifacts = sink_for_run(run.id, run.dir)
+
         # ⚠⚠ THE CONFIG ALSO GOES OUT AS SCALARS AT STEP 0, SO THE CSV IS
         # SELF-DESCRIBING. `set_config` reaches the dashboard and NOT the CSV
         # — `CsvLogger` writes `step,wall_time_ms,name,value` and has nowhere
@@ -973,6 +981,8 @@ def main() raises:
             episode_sync_every=32,
             checkpoint_every=CHECKPOINT_EVERY,
             checkpoint_path=ckpt_path,
+            artifacts=artifacts,
+            run_dir=run.dir,
             # ⚠ GREEDY, on a SEPARATE env, at a FIXED eval seed — the
             # criterion number. `mean_return()` below is measured under SAC's
             # stochastic policy and understates what the actor has learned;
@@ -1027,6 +1037,13 @@ def main() raises:
         # did not get that far".
         logger.close()
         _ = logger        # keeps `logger_ptr` alive to here
+
+        # ⚠ CLOSED BEFORE THE VERDICT IS WRITTEN, NOT AFTER. `close_sink`
+        # drains what is queued and JOINS, so a checkpoint saved in the last
+        # iteration is on the far side before the process can exit — which is
+        # the entire point. It also prints the transfer accounting, including
+        # what was abandoned: those are artifacts still only on this box.
+        close_sink(artifacts)
 
         # ⚠⚠ THE RUN RECORDS ITS OWN VERDICT. "I forgot if the checkpoint was
         # successful" is pain 1, and no naming convention fixes it — a written

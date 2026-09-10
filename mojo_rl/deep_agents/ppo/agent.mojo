@@ -28,6 +28,7 @@ from mojo_rl.nn.core.module import Module
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 
 from ..training.batched_env import BatchedEnv
+from ...io.artifact_sink import ArtifactSink
 from ..training.driver_onpolicy import (
     run_onpolicy_train,
     run_onpolicy_train_batched,
@@ -113,6 +114,8 @@ struct PPOAgent[
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = "",
         checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         """On-policy training via `run_onpolicy_train_batched`.
@@ -145,6 +148,8 @@ struct PPOAgent[
             diag_every=diag_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            artifacts=artifacts,
+            run_dir=run_dir,
         )
 
     def train_single[
@@ -160,6 +165,8 @@ struct PPOAgent[
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = "",
         checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         """Single-env on-policy training via `run_onpolicy_train`. Covers
@@ -187,6 +194,8 @@ struct PPOAgent[
             diag_every=diag_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            artifacts=artifacts,
+            run_dir=run_dir,
         )
 
     # ─── Single-step inference (host-list interface) ───────────────────

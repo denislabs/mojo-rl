@@ -34,6 +34,7 @@ from ..ppo.agent import PPOAgent
 from ..ppo.metrics import PPOMetrics
 from ..ppo_discrete.agent import PPODiscreteAgent
 from ..training.batched_env import BatchedEnv
+from ...io.artifact_sink import ArtifactSink
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -105,6 +106,8 @@ struct A2CDiscreteAgent[
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = "",
         checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         return self.inner.train[E, L](
@@ -115,6 +118,8 @@ struct A2CDiscreteAgent[
             logger=logger,
             diag_every=diag_every,
             checkpoint_path=checkpoint_path,
+            artifacts=artifacts,
+            run_dir=run_dir,
             checkpoint_every=checkpoint_every,
         )
 
@@ -239,6 +244,8 @@ struct A2CAgent[
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = "",
         checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         return self.inner.train_single[E, L](
@@ -249,6 +256,8 @@ struct A2CAgent[
             logger=logger,
             diag_every=diag_every,
             checkpoint_path=checkpoint_path,
+            artifacts=artifacts,
+            run_dir=run_dir,
             checkpoint_every=checkpoint_every,
         )
 
@@ -266,6 +275,8 @@ struct A2CAgent[
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = "",
         checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         return self.inner.train[E, L](
@@ -277,6 +288,8 @@ struct A2CAgent[
             logger=logger,
             diag_every=diag_every,
             checkpoint_path=checkpoint_path,
+            artifacts=artifacts,
+            run_dir=run_dir,
             checkpoint_every=checkpoint_every,
         )
 

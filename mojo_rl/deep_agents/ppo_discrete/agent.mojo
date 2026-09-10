@@ -36,6 +36,7 @@ from ..training.driver_onpolicy_discrete import (
 )
 
 from ..ppo.metrics import PPOMetrics
+from ...io.artifact_sink import ArtifactSink
 from .trainer import PPODiscreteTrainer
 
 
@@ -105,6 +106,8 @@ struct PPODiscreteAgent[
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = "",
         checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         """Single-env discrete on-policy training via
@@ -120,6 +123,8 @@ struct PPODiscreteAgent[
             diag_every=diag_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            artifacts=artifacts,
+            run_dir=run_dir,
         )
 
     def train_batched[
@@ -137,6 +142,8 @@ struct PPODiscreteAgent[
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = "",
         checkpoint_every: Int = 0,
         base_step: Int = 0,
     ) raises -> List[Scalar[DT]]:
@@ -156,6 +163,8 @@ struct PPODiscreteAgent[
             diag_every=diag_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            artifacts=artifacts,
+            run_dir=run_dir,
             base_step=base_step,
         )
 

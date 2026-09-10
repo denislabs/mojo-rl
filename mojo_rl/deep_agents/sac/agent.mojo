@@ -43,6 +43,7 @@ from mojo_rl.core.env_traits import BoxContinuousActionEnv, RenderableEnv
 
 from ..training.blocks import SampleBlock
 from ..training.batched_env import BatchedEnv
+from ...io.artifact_sink import ArtifactSink
 from ..training.driver_offpolicy import (
     run_offpolicy_train,
     run_offpolicy_train_batched,
@@ -158,6 +159,8 @@ struct SACAgent[
         diag_every: Int = 0,
         episode_sync_every: Int = 1,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = "",
         checkpoint_every: Int = 0,
         base_step: Int = 0,
         eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
@@ -253,6 +256,8 @@ struct SACAgent[
             episode_sync_every=episode_sync_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            artifacts=artifacts,
+            run_dir=run_dir,
             base_step=base_step,
             eval_env=eval_env,
             eval_every=eval_every,
@@ -273,6 +278,8 @@ struct SACAgent[
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = "",
         checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         """Single-env off-policy training via `run_offpolicy_train`.
@@ -315,6 +322,8 @@ struct SACAgent[
             diag_every=diag_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            artifacts=artifacts,
+            run_dir=run_dir,
         )
 
     # ─── Evaluation ─────────────────────────────────────────────────────

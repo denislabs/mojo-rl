@@ -39,6 +39,7 @@ from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 
 from ..training.blocks import SampleBlock
+from ...io.artifact_sink import ArtifactSink
 from ..training.driver_offpolicy import (
     run_offpolicy_train, run_offpolicy_eval,
 )
@@ -156,6 +157,8 @@ struct REDQOFEAgent[
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = "",
         checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
         """Single-env CPU off-policy training via the canonical
@@ -199,6 +202,8 @@ struct REDQOFEAgent[
             diag_every=diag_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            artifacts=artifacts,
+            run_dir=run_dir,
         )
 
     def train_single_manual[
