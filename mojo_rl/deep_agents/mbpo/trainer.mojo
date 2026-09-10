@@ -20,7 +20,7 @@ CPU is behaviorally equivalent to the prior CPU MBPOTrainer. Conforms to
 `OffPolicyAgentGpu`.
 """
 
-from mojo_rl.nn.core.param import walk_params
+from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
 from std.math import exp as fexp, sqrt as fsqrt, log as flog, tanh as ftanh
 from std.random import random_float64, randn_float64
 from std.time import perf_counter_ns
@@ -1272,7 +1272,8 @@ struct MBPOTrainer[
             walk_params[Self.train_target](self.ensemble.members[i], w, self.ctx, "dyn_member" + String(i)
             )
         w.mode = 1
-        self.actor.for_each_state[Self.train_target](w, self.ctx, "actor")
+        var _sref1 = ParamVisitorRef.of[type_of(w), Self.train_target](w)
+        self.actor.for_each_state[Self.train_target](_sref1, self.ctx, "actor")
         self.pair1.online.for_each_state[Self.train_target](
             w, self.ctx, "critic1"
         )
@@ -1307,7 +1308,8 @@ struct MBPOTrainer[
             walk_params[Self.train_target](self.ensemble.members[i], r, self.ctx, "dyn_member" + String(i)
             )
         r.mode = 1
-        self.actor.for_each_state[Self.train_target](r, self.ctx, "actor")
+        var _sref2 = ParamVisitorRef.of[type_of(r), Self.train_target](r)
+        self.actor.for_each_state[Self.train_target](_sref2, self.ctx, "actor")
         self.pair1.online.for_each_state[Self.train_target](
             r, self.ctx, "critic1"
         )

@@ -71,7 +71,7 @@ the GRADIENTS are identical either way, because the loss value never enters the
 update. Log every few hundred steps, not every step.
 """
 
-from mojo_rl.nn.core.param import walk_params
+from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import abs, sqrt
 from std.random import random_float64
@@ -1106,10 +1106,14 @@ struct FBTrainer[
         walk_params[Self.TARGET](self.f2.online, w, self.ctx, "f2")
         walk_params[Self.TARGET](self.actor.online, w, self.ctx, "actor")
         w.mode = 1
-        self.bnet.online.for_each_state[Self.TARGET](w, self.ctx, "b")
-        self.f1.online.for_each_state[Self.TARGET](w, self.ctx, "f1")
-        self.f2.online.for_each_state[Self.TARGET](w, self.ctx, "f2")
-        self.actor.online.for_each_state[Self.TARGET](w, self.ctx, "actor")
+        var _sref1 = ParamVisitorRef.of[type_of(w), Self.TARGET](w)
+        self.bnet.online.for_each_state[Self.TARGET](_sref1, self.ctx, "b")
+        var _sref2 = ParamVisitorRef.of[type_of(w), Self.TARGET](w)
+        self.f1.online.for_each_state[Self.TARGET](_sref2, self.ctx, "f1")
+        var _sref3 = ParamVisitorRef.of[type_of(w), Self.TARGET](w)
+        self.f2.online.for_each_state[Self.TARGET](_sref3, self.ctx, "f2")
+        var _sref4 = ParamVisitorRef.of[type_of(w), Self.TARGET](w)
+        self.actor.online.for_each_state[Self.TARGET](_sref4, self.ctx, "actor")
         with open(path, "w") as f:
             f.write(w.content)
 
@@ -1138,10 +1142,14 @@ struct FBTrainer[
         walk_params[Self.TARGET](self.f2.online, r, self.ctx, "f2")
         walk_params[Self.TARGET](self.actor.online, r, self.ctx, "actor")
         r.mode = 1
-        self.bnet.online.for_each_state[Self.TARGET](r, self.ctx, "b")
-        self.f1.online.for_each_state[Self.TARGET](r, self.ctx, "f1")
-        self.f2.online.for_each_state[Self.TARGET](r, self.ctx, "f2")
-        self.actor.online.for_each_state[Self.TARGET](r, self.ctx, "actor")
+        var _sref5 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+        self.bnet.online.for_each_state[Self.TARGET](_sref5, self.ctx, "b")
+        var _sref6 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+        self.f1.online.for_each_state[Self.TARGET](_sref6, self.ctx, "f1")
+        var _sref7 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+        self.f2.online.for_each_state[Self.TARGET](_sref7, self.ctx, "f2")
+        var _sref8 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+        self.actor.online.for_each_state[Self.TARGET](_sref8, self.ctx, "actor")
         self.bnet.target_net.polyak_from[Self.TARGET](
             self.bnet.online, Scalar[DT](1.0), self.ctx
         )

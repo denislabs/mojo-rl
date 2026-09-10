@@ -30,7 +30,7 @@ the per-sample / EV kernels read/write owned `Tensor`s via `.lt["gpu", layout]()
 views (no raw pointers).
 """
 
-from mojo_rl.nn.core.param import walk_params
+from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
 from std.gpu import global_idx, thread_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
@@ -917,8 +917,10 @@ struct PPOTrainer[
         walk_params[Self.train_target](self.actor, w, self.ctx, "actor")
         walk_params[Self.train_target](self.critic, w, self.ctx, "critic")
         w.mode = 1
-        self.actor.for_each_state[Self.train_target](w, self.ctx, "actor")
-        self.critic.for_each_state[Self.train_target](w, self.ctx, "critic")
+        var _sref1 = ParamVisitorRef.of[type_of(w), Self.train_target](w)
+        self.actor.for_each_state[Self.train_target](_sref1, self.ctx, "actor")
+        var _sref2 = ParamVisitorRef.of[type_of(w), Self.train_target](w)
+        self.critic.for_each_state[Self.train_target](_sref2, self.ctx, "critic")
         w.content += (
             "_total_train_steps=" + String(self._total_train_steps) + "\n"
         )
@@ -943,8 +945,10 @@ struct PPOTrainer[
         walk_params[Self.train_target](self.actor, r, self.ctx, "actor")
         walk_params[Self.train_target](self.critic, r, self.ctx, "critic")
         r.mode = 1
-        self.actor.for_each_state[Self.train_target](r, self.ctx, "actor")
-        self.critic.for_each_state[Self.train_target](r, self.ctx, "critic")
+        var _sref3 = ParamVisitorRef.of[type_of(r), Self.train_target](r)
+        self.actor.for_each_state[Self.train_target](_sref3, self.ctx, "actor")
+        var _sref4 = ParamVisitorRef.of[type_of(r), Self.train_target](r)
+        self.critic.for_each_state[Self.train_target](_sref4, self.ctx, "critic")
         self._total_train_steps = Int(
             self._scan_scalar(
                 content, "_total_train_steps=",

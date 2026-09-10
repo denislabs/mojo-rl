@@ -59,7 +59,7 @@ layout (so `fb_eval_walker_online.mojo` loads it unchanged) and `D` +
 `Q_D` to the sidecar `p + ".cpr"`.
 """
 
-from mojo_rl.nn.core.param import walk_params
+from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import sqrt
 from std.random import random_float64
@@ -783,9 +783,12 @@ struct FBCPRHead[
         walk_params[Self.TARGET](self.qd1.online, w, self.ctx, "qd1")
         walk_params[Self.TARGET](self.qd2.online, w, self.ctx, "qd2")
         w.mode = 1
-        self.disc.for_each_state[Self.TARGET](w, self.ctx, "disc")
-        self.qd1.online.for_each_state[Self.TARGET](w, self.ctx, "qd1")
-        self.qd2.online.for_each_state[Self.TARGET](w, self.ctx, "qd2")
+        var _sref1 = ParamVisitorRef.of[type_of(w), Self.TARGET](w)
+        self.disc.for_each_state[Self.TARGET](_sref1, self.ctx, "disc")
+        var _sref2 = ParamVisitorRef.of[type_of(w), Self.TARGET](w)
+        self.qd1.online.for_each_state[Self.TARGET](_sref2, self.ctx, "qd1")
+        var _sref3 = ParamVisitorRef.of[type_of(w), Self.TARGET](w)
+        self.qd2.online.for_each_state[Self.TARGET](_sref3, self.ctx, "qd2")
         with open(path + ".cpr", "w") as f:
             f.write(w.content)
 
@@ -812,9 +815,12 @@ struct FBCPRHead[
         walk_params[Self.TARGET](self.qd1.online, r, self.ctx, "qd1")
         walk_params[Self.TARGET](self.qd2.online, r, self.ctx, "qd2")
         r.mode = 1
-        self.disc.for_each_state[Self.TARGET](r, self.ctx, "disc")
-        self.qd1.online.for_each_state[Self.TARGET](r, self.ctx, "qd1")
-        self.qd2.online.for_each_state[Self.TARGET](r, self.ctx, "qd2")
+        var _sref4 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+        self.disc.for_each_state[Self.TARGET](_sref4, self.ctx, "disc")
+        var _sref5 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+        self.qd1.online.for_each_state[Self.TARGET](_sref5, self.ctx, "qd1")
+        var _sref6 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+        self.qd2.online.for_each_state[Self.TARGET](_sref6, self.ctx, "qd2")
         self.qd1.target_net.polyak_from[Self.TARGET](
             self.qd1.online, Scalar[DT](1.0), self.ctx
         )

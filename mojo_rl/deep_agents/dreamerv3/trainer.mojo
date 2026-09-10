@@ -35,7 +35,7 @@ from mojo_rl.nn.core.checkpoint import (
     BinaryCheckpointWriter, BinaryCheckpointReader,
     _write_file_bytes, _read_file_bytes, _is_v3_header,
 )
-from mojo_rl.nn.core.param import ParamVisitor, walk_params
+from mojo_rl.nn.core.param import ParamVisitor, walk_params, ParamVisitorRef
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
 from mojo_rl.nn.optimizer.schedules import LinearWarmupSchedule
@@ -766,14 +766,22 @@ struct DreamerV3Trainer[
         walk_params[Self.train_target](self.slowvalue, w, self.ctx, "slowvalue")
         walk_params[Self.train_target](self.policy, w, self.ctx, "policy")
         w.mode = 1
-        self.enc.for_each_state[Self.train_target](w, self.ctx, "enc")
-        self.core.for_each_state[Self.train_target](w, self.ctx, "core")
-        self.dec.for_each_state[Self.train_target](w, self.ctx, "dec")
-        self.rew.for_each_state[Self.train_target](w, self.ctx, "rew")
-        self.con.for_each_state[Self.train_target](w, self.ctx, "con")
-        self.value.for_each_state[Self.train_target](w, self.ctx, "value")
-        self.slowvalue.for_each_state[Self.train_target](w, self.ctx, "slowvalue")
-        self.policy.for_each_state[Self.train_target](w, self.ctx, "policy")
+        var _sref1 = ParamVisitorRef.of[type_of(w), Self.train_target](w)
+        self.enc.for_each_state[Self.train_target](_sref1, self.ctx, "enc")
+        var _sref2 = ParamVisitorRef.of[type_of(w), Self.train_target](w)
+        self.core.for_each_state[Self.train_target](_sref2, self.ctx, "core")
+        var _sref3 = ParamVisitorRef.of[type_of(w), Self.train_target](w)
+        self.dec.for_each_state[Self.train_target](_sref3, self.ctx, "dec")
+        var _sref4 = ParamVisitorRef.of[type_of(w), Self.train_target](w)
+        self.rew.for_each_state[Self.train_target](_sref4, self.ctx, "rew")
+        var _sref5 = ParamVisitorRef.of[type_of(w), Self.train_target](w)
+        self.con.for_each_state[Self.train_target](_sref5, self.ctx, "con")
+        var _sref6 = ParamVisitorRef.of[type_of(w), Self.train_target](w)
+        self.value.for_each_state[Self.train_target](_sref6, self.ctx, "value")
+        var _sref7 = ParamVisitorRef.of[type_of(w), Self.train_target](w)
+        self.slowvalue.for_each_state[Self.train_target](_sref7, self.ctx, "slowvalue")
+        var _sref8 = ParamVisitorRef.of[type_of(w), Self.train_target](w)
+        self.policy.for_each_state[Self.train_target](_sref8, self.ctx, "policy")
         _write_file_bytes(path, w.content)
 
     def load_state(mut self, path: String) raises:

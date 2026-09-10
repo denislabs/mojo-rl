@@ -57,16 +57,18 @@ from .graph_module2 import TwoInputGraph
 from .graph_decl import GraphDecl
 
 
-def _cg_accum_kernel[
-    N: Int, ADT: DType = DT
+def _cg_accum_kernel_rt[
+    ADT: DType = DT
 ](
-    dst: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
-    src: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
+    dst: Pointer[Scalar[ADT], MutAnyOrigin],
+    src: Pointer[Scalar[ADT], MutAnyOrigin],
+    n_arg: Int64,
 ):
-    """dst[i] += src[i] — fan-out grad accumulation on device."""
+    """`dst[i] += src[i]` over `[0, n)` with the length at RUNTIME: one
+    kernel for every fan-out edge instead of one instantiation per size."""
     var i = Int(global_idx.x)
-    if i < N:
-        dst[i] = rebind[Scalar[ADT]](dst[i]) + rebind[Scalar[ADT]](src[i])
+    if i < Int(n_arg):
+        dst[i] = dst[i] + src[i]
 
 
 struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph & ParamWalkable):
@@ -210,6 +212,39 @@ struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph & ParamWalkable):
         return c
 
     @staticmethod
+    def _accumulate_grads_rt[
+        target: StaticString
+    ](
+        mut gpool: TensorPack[Self.N, Self.ACT_DT],
+        mut tmp: TensorPack[Self.MAXARITY, Self.ACT_DT],
+        ctx: Optional[DeviceContext],
+        na: Int,
+        sizes: Array[Int, Self.MAXARITY],
+        slots: Array[Int, Self.MAXARITY],
+    ) raises:
+        """Fan-out-accumulate `tmp[k]` into `gpool[slots[k]]` for `k < na`,
+        every index a RUNTIME value. One instantiation per (graph, target):
+        the comptime-indexed `_accumulate_grads[B, target, NA, i]` was one
+        per NODE per branch — 81 copies and 81 per-size kernels on the ACT
+        trainer (docs/COMPILE_TIME_PROFILING.md §3.7)."""
+        for k in range(na):
+            var ak = sizes[k]
+            var sk = slots[k]
+            comptime if target == "cpu":
+                for q in range(ak):
+                    gpool[sk].data[q] += tmp[k].data[q]
+            else:
+                var c = ctx.value()
+                c.enqueue_function[_cg_accum_kernel_rt[Self.ACT_DT]](
+                    gpool[sk].dev.value(),
+                    tmp[k].dev.value(),
+                    Int64(ak),
+                    grid_dim=(ak + TPB - 1) // TPB,
+                    block_dim=TPB,
+                )
+
+    @staticmethod
+    @always_inline
     def _accumulate_grads[
         B: Int, target: StaticString, NA: Int, i: Int
     ](
@@ -217,23 +252,16 @@ struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph & ParamWalkable):
         mut tmp: TensorPack[Self.MAXARITY, Self.ACT_DT],
         ctx: Optional[DeviceContext],
     ) raises:
-        """Fan-out-accumulate node `i`'s grad_inputs (`tmp[0:NA]`) into the fed
-        slots' grad buffers (`gpool[sk] += tmp[k]`). Shared by the owned /
-        external vjp branches; `NA` is the branch-appropriate arity."""
+        """Node `i`'s fan-out, resolved at compile time into two small index
+        arrays and handed to the runtime-indexed walk above."""
+        var sizes = Array[Int, Self.MAXARITY](fill=0)
+        var slots = Array[Int, Self.MAXARITY](fill=0)
         comptime for k in range(NA):
             comptime ak = B * Self.DECLS[i].IN_DIMS_L[k]
             comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES_L[k]]()
-            comptime if target == "cpu":
-                for q in range(ak):
-                    gpool[sk].data[q] += tmp[k].data[q]
-            else:
-                var c = ctx.value()
-                c.enqueue_function[_cg_accum_kernel[ak, Self.ACT_DT]](
-                    gpool[sk].lt["gpu", Layout.row_major(ak)](),
-                    tmp[k].lt["gpu", Layout.row_major(ak)](),
-                    grid_dim=(ak + TPB - 1) // TPB,
-                    block_dim=TPB,
-                )
+            sizes[k] = ak
+            slots[k] = sk
+        Self._accumulate_grads_rt[target](gpool, tmp, ctx, NA, sizes, slots)
 
     def set_input[
         slot_name: StaticString, B: Int

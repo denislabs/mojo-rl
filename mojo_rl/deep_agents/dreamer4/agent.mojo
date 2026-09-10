@@ -365,7 +365,8 @@ struct Dreamer4Agent[
         var _ref1 = ParamVisitorRef.of[type_of(w), tgt](w)
         m.for_each_param[tgt](_ref1, ctx)
         w.mode = 1
-        m.for_each_state[tgt](w, ctx)
+        var _sref1 = ParamVisitorRef.of[type_of(w), tgt](w)
+        m.for_each_state[tgt](_sref1, ctx)
 
     @staticmethod
     def _rsec[M: Module, tgt: StaticString](
@@ -375,7 +376,8 @@ struct Dreamer4Agent[
         var _ref2 = ParamVisitorRef.of[type_of(r), tgt](r)
         m.for_each_param[tgt](_ref2, ctx)
         r.mode = 1
-        m.for_each_state[tgt](r, ctx)
+        var _sref2 = ParamVisitorRef.of[type_of(r), tgt](r)
+        m.for_each_state[tgt](_sref2, ctx)
 
     def save[
         TOK: Module

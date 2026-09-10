@@ -40,7 +40,7 @@ from std.sys.info import size_of
 from mojo_rl.io.fileio import read_file_bytes, write_file_atomic
 from mojo_rl.nn.constants import DT
 from .tensor import Tensor
-from .param import ParamVisitor, ParamVisitorRT, walk_params
+from .param import ParamVisitor, ParamVisitorRT, walk_params, ParamVisitorRef
 from .param import ParamWalkable
 
 def _write_file_bytes(var path: String, content: List[UInt8]) raises:
@@ -405,7 +405,8 @@ def save_params[
     w.mode = 0
     walk_params[target](model, w, ctx)
     w.mode = 1
-    model.for_each_state[target](w, ctx)
+    var _sref1 = ParamVisitorRef.of[type_of(w), target](w)
+    model.for_each_state[target](_sref1, ctx)
     _write_file_bytes(path, w.content)
 
 
@@ -420,7 +421,8 @@ def load_params[
         r.mode = 0
         walk_params[target](model, r, ctx)
         r.mode = 1
-        model.for_each_state[target](r, ctx)
+        var _sref2 = ParamVisitorRef.of[type_of(r), target](r)
+        model.for_each_state[target](_sref2, ctx)
         return
     # Legacy v2 text checkpoint.
     var content: String
@@ -437,7 +439,8 @@ def load_params[
     r.mode = 0
     walk_params[target](model, r, ctx)
     r.mode = 1
-    model.for_each_state[target](r, ctx)
+    var _sref3 = ParamVisitorRef.of[type_of(r), target](r)
+    model.for_each_state[target](_sref3, ctx)
 
 
 def save_params_multi[
@@ -459,7 +462,8 @@ def save_params_multi[
         w.mode = 0
         walk_params[target](models[i], w, ctx)
         w.mode = 1
-        models[i].for_each_state[target](w, ctx)
+        var _sref4 = ParamVisitorRef.of[type_of(w), target](w)
+        models[i].for_each_state[target](_sref4, ctx)
     _write_file_bytes(path, w.content)
 
 
@@ -480,7 +484,8 @@ def load_params_multi[
             rb.mode = 0
             walk_params[target](models[i], rb, ctx)
             rb.mode = 1
-            models[i].for_each_state[target](rb, ctx)
+            var _sref5 = ParamVisitorRef.of[type_of(rb), target](rb)
+            models[i].for_each_state[target](_sref5, ctx)
         return
     var content: String
     with open(path, "r") as f:
@@ -497,4 +502,5 @@ def load_params_multi[
         r.mode = 0
         walk_params[target](models[i], r, ctx)
         r.mode = 1
-        models[i].for_each_state[target](r, ctx)
+        var _sref6 = ParamVisitorRef.of[type_of(r), target](r)
+        models[i].for_each_state[target](_sref6, ctx)

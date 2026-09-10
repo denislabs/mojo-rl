@@ -20,7 +20,7 @@ unsafe_ptr). CPU + GPU; CUDA-graph capture surface preserved.
 Conforms to `OffPolicyDiscreteAgentGpu`.
 """
 
-from mojo_rl.nn.core.param import walk_params
+from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
 from std.math import exp as fexp, log as flog
 from std.random import random_float64
 from std.gpu import global_idx
@@ -906,7 +906,8 @@ struct C51Trainer[
         w.mode = 0
         walk_params[Self.train_target](self.pair.online, w, self.ctx, "q_net")
         w.mode = 1
-        self.pair.online.for_each_state[Self.train_target](w, self.ctx, "q_net")
+        var _sref1 = ParamVisitorRef.of[type_of(w), Self.train_target](w)
+        self.pair.online.for_each_state[Self.train_target](_sref1, self.ctx, "q_net")
         w.content += "eps.epsilon=" + String(self.epsilon) + "\n"
         w.content += "eps.epsilon_decay=" + String(self.epsilon_decay) + "\n"
         w.content += "eps.epsilon_min=" + String(self.epsilon_min) + "\n"
@@ -932,7 +933,8 @@ struct C51Trainer[
         r.mode = 0
         walk_params[Self.train_target](self.pair.online, r, self.ctx, "q_net")
         r.mode = 1
-        self.pair.online.for_each_state[Self.train_target](r, self.ctx, "q_net")
+        var _sref2 = ParamVisitorRef.of[type_of(r), Self.train_target](r)
+        self.pair.online.for_each_state[Self.train_target](_sref2, self.ctx, "q_net")
         self.epsilon = self._scan_scalar(content, "eps.epsilon=", self.epsilon)
         self.epsilon_decay = self._scan_scalar(
             content, "eps.epsilon_decay=", self.epsilon_decay

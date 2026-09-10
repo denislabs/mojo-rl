@@ -16,7 +16,7 @@ compose from combinator child indices + field names (e.g. "0.weight",
 from max.gpu.host import DeviceContext
 
 from .tensor import Tensor
-from .param import ParamVisitor, ParamVisitorRT, walk_params
+from .param import ParamVisitor, ParamVisitorRT, walk_params, ParamVisitorRef
 from .param import ParamWalkable
 
 
@@ -81,5 +81,6 @@ def named_states[
     """Flat (name, size, decay=False) list of every persisted State (e.g.
     BatchNorm running stats), in `for_each_state` walk order."""
     var c = _NamedCollector()
-    model.for_each_state[target](c, ctx)
+    var _sref1 = ParamVisitorRef.of[type_of(c), target](c)
+    model.for_each_state[target](_sref1, ctx)
     return c.items.copy()

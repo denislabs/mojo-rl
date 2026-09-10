@@ -23,7 +23,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from .tensor import Tensor
-from .param import ParamVisitor, ParamVisitorRT, walk_params
+from .param import ParamVisitor, ParamVisitorRT, walk_params, ParamVisitorRef
 from .module import Module
 
 
@@ -139,11 +139,13 @@ def hard_copy[
     walk = no-op)."""
     var c = _CollectVisitor()
     walk_params[target](src, c, ctx)
-    src.for_each_state[target](c, ctx)
+    var _sref1 = ParamVisitorRef.of[type_of(c), target](c)
+    src.for_each_state[target](_sref1, ctx)
     # Copy the small collected lists (arena promotion is infrequent); moving
     # individual fields out of `c` would partially destroy it.
     var inj = _InjectVisitor(c.names.copy(), c.vals.copy())
     walk_params[target](dst, inj, ctx)
-    dst.for_each_state[target](inj, ctx)
+    var _sref2 = ParamVisitorRef.of[type_of(inj), target](inj)
+    dst.for_each_state[target](_sref2, ctx)
     if inj.cur != len(inj.vals):
         raise Error("hard_copy: src has more params/states than dst")

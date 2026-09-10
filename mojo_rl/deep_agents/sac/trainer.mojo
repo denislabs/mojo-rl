@@ -24,7 +24,7 @@ Dimensions (OBS / ACT / BATCH) derive from `SAMPLE` so they're specified
 once (on the sample block type).
 """
 
-from mojo_rl.nn.core.param import walk_params
+from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
 from std.math import exp as fexp, log as flog, tanh as ftanh
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
@@ -1090,7 +1090,8 @@ struct SACTrainer[
             walk_params[Self.train_target](self.pair2.online, r, self.ctx, "critic2"
             )
             r.mode = 1
-            self.actor.for_each_state[Self.train_target](r, self.ctx, "actor")
+            var _sref1 = ParamVisitorRef.of[type_of(r), Self.train_target](r)
+            self.actor.for_each_state[Self.train_target](_sref1, self.ctx, "actor")
             self.pair1.online.for_each_state[Self.train_target](
                 r, self.ctx, "critic1"
             )

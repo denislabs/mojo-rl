@@ -32,7 +32,7 @@ both targets; CUDA-graph capture DEFERRED (host control flow). Dimensions
 (OBS / ACT / BATCH) derive from `SAMPLE`; PHI_S_DIM from SB; PHI_SA_DIM from AB.
 """
 
-from mojo_rl.nn.core.param import walk_params
+from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
 from std.math import exp as fexp, log as flog, tanh as ftanh
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
@@ -790,7 +790,8 @@ struct REDQOFETrainer[
         walk_params[Self.train_target](self.predictor, w, self.ctx, "predictor"
         )
         w.mode = 1
-        self.actor.for_each_state[Self.train_target](w, self.ctx, "actor")
+        var _sref1 = ParamVisitorRef.of[type_of(w), Self.train_target](w)
+        self.actor.for_each_state[Self.train_target](_sref1, self.ctx, "actor")
         for i in range(Self.N):
             self.ensemble.pairs[i].online.for_each_state[Self.train_target](
                 w, self.ctx, "critic" + String(i)
@@ -830,7 +831,8 @@ struct REDQOFETrainer[
         walk_params[Self.train_target](self.predictor, r, self.ctx, "predictor"
         )
         r.mode = 1
-        self.actor.for_each_state[Self.train_target](r, self.ctx, "actor")
+        var _sref2 = ParamVisitorRef.of[type_of(r), Self.train_target](r)
+        self.actor.for_each_state[Self.train_target](_sref2, self.ctx, "actor")
         for i in range(Self.N):
             self.ensemble.pairs[i].online.for_each_state[Self.train_target](
                 r, self.ctx, "critic" + String(i)

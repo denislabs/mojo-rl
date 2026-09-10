@@ -47,7 +47,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.io.safetensors import SafeTensors, SafeTensorsWriter
 from mojo_rl.nn.constants import DT
-from .param import ParamVisitor, ParamWalkable, ParamVisitorRT, walk_params
+from .param import ParamVisitor, ParamWalkable, ParamVisitorRT, walk_params, ParamVisitorRef
 from .tensor import Tensor
 
 
@@ -188,7 +188,8 @@ def save_safetensors[
     var s = SafeTensorsSaver()
     walk_params[target](model, s, ctx)
     if include_state:
-        model.for_each_state[target, SafeTensorsSaver](s, ctx)
+        var _sref1 = ParamVisitorRef.of[type_of(s), target](s)
+        model.for_each_state[target](_sref1, ctx)
     if s.count == 0:
         raise Error(
             "save_safetensors: the walk visited no tensors — '" + path
@@ -221,7 +222,8 @@ def load_safetensors[
 
     if include_state:
         var sl = SafeTensorsLoader(SafeTensors(String(path)))
-        model.for_each_state[target, SafeTensorsLoader](sl, ctx)
+        var _sref2 = ParamVisitorRef.of[type_of(sl), target](sl)
+        model.for_each_state[target](_sref2, ctx)
         n += len(sl.loaded)
         if len(sl.missing) > 0 and missing == 0:
             first_missing = sl.missing[0]

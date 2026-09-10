@@ -95,7 +95,7 @@ from layout import Layout
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn import Adam, Kaiming, Tensor
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.param import ParamVisitor, ParamVisitorRT, walk_params
+from mojo_rl.nn.core.param import ParamVisitor, ParamVisitorRT, walk_params, ParamVisitorRef
 from mojo_rl.nn.models.resnet18 import (
     RESNET18_OUT_CH,
     ResNet18Backbone,
@@ -1217,7 +1217,8 @@ struct ACTTrainer[
         w.mode = 0
         walk_params[Self.target](self.graph, w, self.ctx)
         w.mode = 1
-        self.graph.for_each_state[Self.target, BinaryCheckpointWriter](w, self.ctx)
+        var _sref1 = ParamVisitorRef.of[type_of(w), Self.target](w)
+        self.graph.for_each_state[Self.target](_sref1, self.ctx)
         _write_file_bytes(path, w.content)
 
     def load_backbone(
@@ -1395,4 +1396,5 @@ struct ACTTrainer[
         r.mode = 0
         walk_params[Self.target](self.graph, r, self.ctx)
         r.mode = 1
-        self.graph.for_each_state[Self.target, BinaryCheckpointReader](r, self.ctx)
+        var _sref2 = ParamVisitorRef.of[type_of(r), Self.target](r)
+        self.graph.for_each_state[Self.target](_sref2, self.ctx)
