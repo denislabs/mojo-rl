@@ -16,7 +16,22 @@
   <worldbody>
     <body name="cube">
       <freejoint name="free"/>
-      <geom name="geom" type="box" size="0.02 0.02 0.02" density="500"
+      <!-- ⚠⚠ 0.012, NOT 0.02 — THE SO-101 JAW CANNOT CLOSE ON A 4 cm CUBE.
+           Measured by `examples/tasks/task_grasp_feasibility.mojo`, which
+           hands the controller a closed grasp for free and holds the arm
+           still: a 0.04 m cube is held at 0 of 250 placements and a 0.03 m
+           one at none either, while a 0.024 m cube is held at z 0.267 with
+           four gripper contacts, at rest, and still there half a second
+           later. The usable opening is between 2.4 and 3 cm.
+
+           `so101_lift_brick` returned 0.0 on two 1M-step runs with textbook
+           critics because of this line, not because of its reward.
+
+           ⚠ `family_config.SLOT_RADIUS` MUST MATCH. The sampler uses it for
+           BOTH the pairwise clash test and the resting height
+           (`z = site_z + radius`), so a prop smaller than the radius spawns
+           floating and drops at reset. -->
+      <geom name="geom" type="box" size="0.012 0.012 0.012" density="500"
             rgba="0.2 0.6 0.9 1"/>
     </body>
   </worldbody>

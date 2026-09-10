@@ -292,12 +292,18 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     comptime REGION_Y1_2: Float64 = -0.04
 
     # ⚠ THE SLOT RADIUS THE SAMPLER REJECTS ON, and the height it rests at.
-    # Every free slot in this family is `assets/props/cube.xml`, a 2 cm
+    # Every free slot in this family is `assets/props/cube.xml`, a 1.2 cm
     # half-size box, so one constant serves all three. `sampler.
     # sample_placements` takes it as `radii[si]` and uses it for BOTH the
     # pairwise clash test and the resting height (`z = site_z + radius`), so a
     # per-asset table would have to feed both.
-    comptime SLOT_RADIUS: Float64 = 0.02
+    #
+    # ⚠⚠ IT TRACKS `cube.xml`'s `size` AND THERE IS NOTHING TO ENFORCE THAT.
+    # A radius larger than the prop spawns it FLOATING — it drops at reset,
+    # and every reset distance the shaping was calibrated against moves. The
+    # prop shrank from 0.02 to 0.012 because the SO-101 jaw cannot close on a
+    # 4 cm cube (see the header of `cube.xml`); this moved with it.
+    comptime SLOT_RADIUS: Float64 = 0.012
 
     # ⚠⚠ MATCHES `sampler.MAX_PLACE_ATTEMPTS` AND `sampler.PLACEMENT_SALT`,
     # and BOTH must, or the device and the host draw different numbers from

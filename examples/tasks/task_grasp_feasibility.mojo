@@ -439,8 +439,11 @@ def main() raises:
 
     # ⚠ THE CRITERION IS HEIGHT ABOVE THE TABLE TOP (0.02), not above the
     # floor, and not "did it move" — a brick resting on the table top has its
-    # centre at 0.04, so anything at or below that was not held.
-    print("  (a brick resting on the table top has its centre at 0.04)")
+    # centre one prop half-extent above it, so anything near that was not
+    # held. 0.06 clears both the 4 cm prop this probe was written against and
+    # the 2.4 cm one it argued for.
+    print("  (a brick resting on the table top has its centre at"
+          " SLOT_RADIUS above it)")
     if best_hold < 0.06:
         print("  ⚠⚠ THE GRIPPER DID NOT HOLD THE BRICK at ANY of the swept"
               " placements, handed a closed grasp for free with the arm"
