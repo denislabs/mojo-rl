@@ -31,3 +31,9 @@ tests/robots/test_g1_rsi_table.mojo
 # G1b: the native importer against the reference's own dump, two clips,
 # every column, each band a measured mechanism of the reference's code
 tests/robots/test_lafan_import_vs_oracle.mojo
+
+# G3.1: `rsi_inject_kernel` itself — its only other caller is the training
+# driver, which does not build for Metal, and a generic kernel is type-checked
+# only when instantiated. Also gates that the driver's host-side lie-down
+# diagnostic counts the same lanes the kernel actually transformed.
+tests/robots/test_g1_rsi_inject_kernel_gpu.mojo

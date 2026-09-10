@@ -173,6 +173,16 @@ struct G1RsiTable(Movable, Deinitable):
         return out^
 
 
+def lie_down_selected(u2: Scalar[DT], lie_prob: Scalar[DT]) -> Bool:
+    """Does this lane get the lie-down transform? THE RULE, in ONE place.
+
+    `rsi_inject_kernel` applies it on the device and the training driver's
+    reset diagnostic counts it on the host from the same `u` buffer. Written
+    twice, the two would drift and the diagnostic would quietly report a
+    fraction the simulation is not using — so both call this."""
+    return u2 < lie_prob
+
+
 def rsi_inject_kernel[LANES: Int, NQ: Int, NV: Int](
     rows: Pointer[Scalar[DT], MutAnyOrigin],        # n_rows * (NQ + NV)
     ep_offset: Pointer[Scalar[DT], MutAnyOrigin],   # n_ep
@@ -204,7 +214,7 @@ def rsi_inject_kernel[LANES: Int, NQ: Int, NV: Int](
         qpos[unsafe_offset=l * NQ + i] = rows[unsafe_offset=r * W + i]
     for i in range(NV):
         qvel[unsafe_offset=l * NV + i] = rows[unsafe_offset=r * W + NQ + i]
-    if u[unsafe_offset=l * 3 + 2] < lie_prob:
+    if lie_down_selected(u[unsafe_offset=l * 3 + 2], lie_prob):
         qpos[unsafe_offset=l * NQ + 2] = Scalar[DT](G1_LIE_DOWN_Z)
         var q = lie_down_quat[DT](
             qpos[unsafe_offset=l * NQ + 3], qpos[unsafe_offset=l * NQ + 4],

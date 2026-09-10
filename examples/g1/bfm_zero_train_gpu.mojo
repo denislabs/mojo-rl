@@ -90,6 +90,7 @@ from mojo_rl.envs.robots.unitree_g1_xml import (
 )
 from mojo_rl.envs.robots.unitree_g1_rsi import (
     G1RsiTable, rsi_inject_kernel, G1_RSI_NQ, G1_RSI_NV, G1_LIE_DOWN_PROB,
+    lie_down_selected,
 )
 
 
@@ -378,6 +379,9 @@ def main() raises:
     var u_rsi = ctx.enqueue_create_buffer[DT](N_ENVS * 3)
     var row_got = ctx.enqueue_create_buffer[DT](N_ENVS)
     var h_row_got = ctx.enqueue_create_host_buffer[DT](N_ENVS)
+    # The lie-down diagnostic reads the SAME uniforms the inject kernel drew,
+    # and decides with the same `lie_down_selected` — no second copy of the rule.
+    var h_u_rsi = ctx.enqueue_create_host_buffer[DT](N_ENVS * 3)
     var rng_seed = UInt64(seed_v) + 99
     var rng_off = UInt64(0)
 
@@ -500,7 +504,8 @@ def main() raises:
     var train_graph: Optional[CUDAGraph] = None
     var n_batched = total_env_steps // N_ENVS
     var t0 = perf_counter_ns()
-    var lie_total = 0
+    var lie_total = 0   # lanes given the lie-down transform, over diagnostic resets
+    var lie_resets = 0  # diagnostic resets counted, the denominator for the above
     print("  batched steps", n_batched, " seed steps", SEED_STEPS, " updates/step", ups, " tracking", track_on)
     for s in range(n_batched):
         var env_steps = s * N_ENVS
@@ -510,16 +515,27 @@ def main() raises:
             if smoke or s % (T_EPISODE * 20) == 0:
                 # diagnostics: which rows the lanes got, and how many lie down
                 ctx.enqueue_copy(h_row_got, row_got)
+                ctx.enqueue_copy(h_u_rsi, u_rsi)
                 ctx.synchronize()
                 var lo = 1e30
                 var hi = -1e30
+                var lie_n = 0
                 for l in range(N_ENVS):
                     var v = Float64(h_row_got[l])
                     if v < lo:
                         lo = v
                     if v > hi:
                         hi = v
-                print("  [reset @", s, "] rows in [", lo, ",", hi, "] of", n_rows)
+                    if lie_down_selected(h_u_rsi[l * 3 + 2], Scalar[DT](lie_prob)):
+                        lie_n += 1
+                lie_total += lie_n
+                lie_resets += 1
+                print(
+                    "  [reset @", s, "] rows in [", lo, ",", hi, "] of", n_rows,
+                    " lie-down", Float64(lie_n) / Float64(N_ENVS),
+                    "(want", lie_prob, ", cumulative",
+                    Float64(lie_total) / Float64(lie_resets * N_ENVS), ")",
+                )
         if track_on and s % TRACK_LEN == 0:
             _draw_tracking()
         if track_on:
@@ -567,11 +583,14 @@ def main() raises:
             agent.save_state(p)
             print("  checkpoint", p)
     ctx.synchronize()
+    # ⚠ STOP THE CLOCK BEFORE THE CHECKPOINT. `el` used to be taken AFTER
+    # `save_state`, so the headline rate measured a file write: on the 40-step
+    # smoke that one write was ~17 s of a 49 s run and dragged 1030 env st/s
+    # down to 830 (docs/BFM_ZERO_G1_REPRODUCTION.md §12.9).
+    var el = Float64(perf_counter_ns() - t0) * 1e-9
     var final_ckpt = run.checkpoint_path(String("step_") + String(n_batched))
     agent.save_state(final_ckpt)
-    var el = Float64(perf_counter_ns() - t0) * 1e-9
     print("done:", n_batched, "batched steps,", agent.total_train_steps(), "updates in", el, "s;", Float64(n_batched * N_ENVS) / el, "env st/s")
     print("final checkpoint:", final_ckpt)
     print("run record      :", run.kv_path())
     run.close()
-    _ = lie_total
