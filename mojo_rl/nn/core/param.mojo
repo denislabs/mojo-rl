@@ -69,7 +69,7 @@ trait ParamVisitorRT(Deinitable):
         ...
 
 
-comptime _VisitState = UnsafePointer[NoneType, MutExternalOrigin]
+comptime _VisitState = UnsafePointer[NoneType, MutUntrackedOrigin]
 comptime _VisitFn = def(
     _VisitState, String, mut Tensor, mut Tensor, mut Tensor, mut Tensor,
     Int, Bool, Optional[DeviceContext],
@@ -108,7 +108,7 @@ struct ParamVisitorRef(ParamVisitor):
         return ParamVisitorRef(
             UnsafePointer(to=v)
             .bitcast[NoneType]()
-            .unsafe_origin_cast[MutExternalOrigin](),
+            .unsafe_origin_cast[MutUntrackedOrigin](),
             _visit_thunk[V, target],
         )
 

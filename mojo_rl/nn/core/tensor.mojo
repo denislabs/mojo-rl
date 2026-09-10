@@ -132,7 +132,7 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
 
     # ----- CPU -----------------------------------------------------------
     @staticmethod
-    def alloc(n: Int) raises -> Self:
+    def alloc(n: Int) -> Self:
         var t = Self()
         t.data = List[Scalar[Self.dt]](length=n, fill=Scalar[Self.dt](0))
         t.n = n

@@ -333,6 +333,23 @@ struct Phyics3dBatchedEnv[
         # the spec-direct fields build and uploads every record
         # tensor (bodies/joints/meta/curriculum/…) — the reset FK, cfrc_ext,
         # and reward-curriculum hooks now read those directly.
+        # The device buffers come FIRST. Every raising call in a constructor
+        # carries an unwind path over the fields built before it; with these
+        # nine after Model / Data / SpecFields that was nine copies of "free
+        # sixty tensors" (docs/COMPILE_TIME_PROFILING.md §3.6).
+        self._obs = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.OBS_DIM)
+        self._action = ctx.enqueue_create_buffer[DT](
+            Self.N_ENVS * Self.ACT_DIM
+        )
+        self._reward = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
+        self._done = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
+        self._terminated = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
+        self._env_rng_counter = ctx.enqueue_create_buffer[DType.uint64](1)
+        self._site_dummy = ctx.enqueue_create_buffer[DT](
+            Self.N_ENVS * Self.SITE_DIM
+        )
+        self._act = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.NA_F)
+        self._reset_mask = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
         self.mf = type_of(self.mf)()
         Self.MODEL_DEF.init_fields[DT](ctx, self.mf)
         self.sf = type_of(self.sf)()
@@ -352,26 +369,13 @@ struct Phyics3dBatchedEnv[
         else:
             self.integ_rk4.prepare_gpu(ctx)
 
-        self._obs = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.OBS_DIM)
-        self._action = ctx.enqueue_create_buffer[DT](
-            Self.N_ENVS * Self.ACT_DIM
-        )
-        self._reward = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
-        self._done = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
-        self._terminated = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
         ctx.enqueue_memset(self._obs, 0)
         ctx.enqueue_memset(self._action, 0)
         ctx.enqueue_memset(self._reward, 0)
         ctx.enqueue_memset(self._done, 0)
         ctx.enqueue_memset(self._terminated, 0)
-        self._env_rng_counter = ctx.enqueue_create_buffer[DType.uint64](1)
         # Always allocated (a field cannot be conditionally absent); only
         # BOUND when NSITE == 0. N_ENVS * SITE_DIM = N_ENVS * 3 floats.
-        self._site_dummy = ctx.enqueue_create_buffer[DT](
-            Self.N_ENVS * Self.SITE_DIM
-        )
-        self._act = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.NA_F)
-        self._reset_mask = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
         self._reset_mask.enqueue_fill(Scalar[DT](0))
         # `mj_resetData` zeroes `act`; so does `Phyics3dEnv._reset_state`.
         var _h_act0 = ctx.enqueue_create_host_buffer[DT](

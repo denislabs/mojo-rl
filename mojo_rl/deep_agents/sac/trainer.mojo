@@ -221,6 +221,163 @@ struct SACTrainer[
         self._update_count = 0
         self._total_train_steps = 0
 
+    def __init__(
+        out self,
+        ctx: Optional[DeviceContext] = None,
+        actor_lr: Scalar[DT] = Scalar[DT](3e-4),
+        critic_lr: Scalar[DT] = Scalar[DT](1e-3),
+        alpha_lr: Scalar[DT] = Scalar[DT](3e-4),
+        gamma: Scalar[DT] = Scalar[DT](0.99),
+        tau: Scalar[DT] = Scalar[DT](0.005),
+        action_scale: Scalar[DT] = Scalar[DT](1.0),
+        init_alpha: Scalar[DT] = Scalar[DT](0.2),
+        target_entropy: Scalar[DT] = Scalar[DT](-1.0),
+        learning_starts: Int = 1_000,
+        window_size: Int = 10,
+        initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+        max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
+        per_alpha: Scalar[DT] = Scalar[DT](0.6),
+        per_beta: Scalar[DT] = Scalar[DT](0.4),
+        per_epsilon: Scalar[DT] = Scalar[DT](1e-6),
+        use_bf16: Bool = False,
+        use_ere: Bool = False,
+        ere_eta: Scalar[DT] = Scalar[DT](0.996),
+        ere_c_min: Int = 1,
+        ere_k_max: Int = 1000,
+    ) raises:
+        """Unified factory. PER args applied via the SampleBlock trait's
+        `configure_per` (no-op for uniform blocks). `ctx` required for
+        train_target='gpu'."""
+        comptime assert (
+            Self.train_target == "cpu" or Self.train_target == "gpu"
+        ), "SACTrainer: target must be 'cpu' or 'gpu'"
+        comptime if Self.train_target == "gpu":
+            if not ctx:
+                raise Error("SACTrainer.make[target='gpu']: ctx required")
+
+        # Fields `make` never sets keep their defaults; the rest are built
+        # in place below (docs/COMPILE_TIME_PROFILING.md §3.2: no
+        # default-construct-then-move chain).
+        self.alpha_opt = ScalarAdam.new(flog(Scalar[DT](0.2)), Scalar[DT](3e-4))
+        self.sample_blk = Self.SAMPLE()
+        self._ob_scr = Tensor()
+        self._ao_scr = Tensor()
+        self._alp_scr = Tensor()
+        self._warmup_rng_seed = UInt64(0x5AC_C0FFEE)
+        self._warmup_rng_offset = UInt64(0)
+        self._actor_L_accum = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._alpha_accum = Scalar[DT](0.0)
+        self._mean_q_accum = Scalar[DT](0.0)
+        self._mean_target_accum = Scalar[DT](0.0)
+        self._mean_reward_accum = Scalar[DT](0.0)
+        self._mean_next_q_accum = Scalar[DT](0.0)
+        self._mean_done_accum = Scalar[DT](0.0)
+        self._mean_abs_action_accum = Scalar[DT](0.0)
+        self._mean_q_dev = DeviceMeanAccum()
+        self._mean_target_dev = DeviceMeanAccum()
+        self._mean_reward_dev = DeviceMeanAccum()
+        self._mean_next_q_dev = DeviceMeanAccum()
+        self._mean_done_dev = DeviceMeanAccum()
+        self._mean_abs_action_dev = DeviceMeanAccum()
+        self._update_count = 0
+        self._total_train_steps = 0
+
+        self.ctx = ctx
+
+        self.actor = Self.ACTOR.make[Self.train_target, Xavier](ctx)
+        self.pair1 = OnlineTargetPair[Self.CRITIC].make[
+            Self.train_target, Xavier
+        ](ctx)
+        self.pair2 = OnlineTargetPair[Self.CRITIC].make[
+            Self.train_target, Xavier
+        ](ctx)
+
+        self.actor_opt = Adam(lr=actor_lr)
+        self.critic1_opt = Adam(lr=critic_lr)
+        self.critic2_opt = Adam(lr=critic_lr)
+        comptime if Self.train_target == "gpu":
+            self.actor_opt.adopt[Self.train_target, Self.ACTOR](self.actor, ctx)
+            self.critic1_opt.adopt[Self.train_target, Self.CRITIC](
+                self.pair1.online, ctx
+            )
+            self.critic2_opt.adopt[Self.train_target, Self.CRITIC](
+                self.pair2.online, ctx
+            )
+
+        self.target_y_blk = TargetYBlock[
+            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
+        ].make[Self.train_target](
+            action_scale=action_scale, gamma=gamma, ctx=ctx
+        )
+        self.twin_critic_blk = TwinCriticStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        ].make[Self.train_target](ctx=ctx)
+        self.actor_loss_blk = SACActorLoss[
+            Self.ACTOR, Self.CRITIC, Self.BATCH
+        ].make[Self.train_target](ctx=ctx, action_scale=action_scale)
+        self.alpha_blk = AlphaUpdateStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH
+        ].make(target_entropy=target_entropy)
+        self.polyak_blk = PolyakStep[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
+        ].make(tau=tau)
+
+        # On GPU the entropy temperature lives in a device buffer updated by a
+        # 1-thread kernel; on CPU it stays a host scalar (bit-identity path).
+        comptime if Self.train_target == "gpu":
+            self.alpha_opt = ScalarAdam.new_device(
+                ctx.value(), flog(init_alpha), alpha_lr
+            )
+            # One-time wiring of the device α buffer into both Scale-consuming
+            # blocks (target-y soft-V and actor-loss α·log_prob). After this
+            # neither block bakes α as a per-step host scalar; both read it
+            # on-device, and the device ScalarAdam refreshes it each step.
+            # target-y reads α via a raw GPU-ABI kernel arg (its own kernel);
+            # the actor-loss Scale node takes a type-safe device sub-buffer.
+            self.target_y_blk.set_alpha_ptr(self.alpha_opt.alpha_dev_ptr())
+            self.actor_loss_blk.set_alpha_buf(self.alpha_opt.alpha_dev_buffer())
+        else:
+            self.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
+
+        self.sel = RSample[Self.ACT_DIM].make[Self.train_target, Zero](ctx)
+        self.sel.action_scale = action_scale
+
+        self.state = TrainerState[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH
+        ].make[Self.train_target](ctx=ctx)
+
+        self.tracker = EpisodeTracker.new(
+            window_size=window_size, initial_fill=initial_episode_fill
+        )
+
+        self.action_scale = action_scale
+        self.learning_starts = learning_starts
+
+        # PER / ERE wiring: no-op default for uniform blocks.
+        self.sample_blk.configure_per(
+            alpha=per_alpha, beta=per_beta, epsilon=per_epsilon
+        )
+        self.sample_blk.setup(learning_starts, ctx=ctx)
+        self.sample_blk.configure_ere(
+            enable=use_ere, eta=ere_eta, c_min=ere_c_min, k_max=ere_k_max
+        )
+
+        # Pre-size the action scratch for the single-env path.
+        comptime if Self.train_target == "cpu":
+            self._ob_scr.ensure(Self.OBS_DIM)
+            self._ao_scr.ensure(2 * Self.ACT_DIM)
+            self._alp_scr.ensure(Self.ACT_DIM + 1)
+        else:
+            # Device-resident diagnostic accumulators (no per-step D2H).
+            self._mean_q_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            self._mean_target_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            self._mean_reward_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            self._mean_next_q_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            self._mean_done_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            self._mean_abs_action_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+
+
     @staticmethod
     def make(
         ctx: Optional[DeviceContext] = None,
@@ -248,109 +405,29 @@ struct SACTrainer[
         """Unified factory. PER args applied via the SampleBlock trait's
         `configure_per` (no-op for uniform blocks). `ctx` required for
         train_target='gpu'."""
-        comptime assert (
-            Self.train_target == "cpu" or Self.train_target == "gpu"
-        ), "SACTrainer: target must be 'cpu' or 'gpu'"
-        comptime if Self.train_target == "gpu":
-            if not ctx:
-                raise Error("SACTrainer.make[target='gpu']: ctx required")
-
-        var t = Self()
-        t.ctx = ctx
-
-        t.actor = Self.ACTOR.make[Self.train_target, Xavier](ctx)
-        t.pair1 = OnlineTargetPair[Self.CRITIC].make[
-            Self.train_target, Xavier
-        ](ctx)
-        t.pair2 = OnlineTargetPair[Self.CRITIC].make[
-            Self.train_target, Xavier
-        ](ctx)
-
-        t.actor_opt = Adam(lr=actor_lr)
-        t.critic1_opt = Adam(lr=critic_lr)
-        t.critic2_opt = Adam(lr=critic_lr)
-        comptime if Self.train_target == "gpu":
-            t.actor_opt.adopt[Self.train_target, Self.ACTOR](t.actor, ctx)
-            t.critic1_opt.adopt[Self.train_target, Self.CRITIC](
-                t.pair1.online, ctx
-            )
-            t.critic2_opt.adopt[Self.train_target, Self.CRITIC](
-                t.pair2.online, ctx
-            )
-
-        t.target_y_blk = TargetYBlock[
-            Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
-        ].make[Self.train_target](
-            action_scale=action_scale, gamma=gamma, ctx=ctx
+        return Self(
+            ctx=ctx,
+            actor_lr=actor_lr,
+            critic_lr=critic_lr,
+            alpha_lr=alpha_lr,
+            gamma=gamma,
+            tau=tau,
+            action_scale=action_scale,
+            init_alpha=init_alpha,
+            target_entropy=target_entropy,
+            learning_starts=learning_starts,
+            window_size=window_size,
+            initial_episode_fill=initial_episode_fill,
+            max_grad_norm=max_grad_norm,
+            per_alpha=per_alpha,
+            per_beta=per_beta,
+            per_epsilon=per_epsilon,
+            use_bf16=use_bf16,
+            use_ere=use_ere,
+            ere_eta=ere_eta,
+            ere_c_min=ere_c_min,
+            ere_k_max=ere_k_max,
         )
-        t.twin_critic_blk = TwinCriticStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
-        ].make[Self.train_target](ctx=ctx)
-        t.actor_loss_blk = SACActorLoss[
-            Self.ACTOR, Self.CRITIC, Self.BATCH
-        ].make[Self.train_target](ctx=ctx, action_scale=action_scale)
-        t.alpha_blk = AlphaUpdateStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH
-        ].make(target_entropy=target_entropy)
-        t.polyak_blk = PolyakStep[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
-        ].make(tau=tau)
-
-        # On GPU the entropy temperature lives in a device buffer updated by a
-        # 1-thread kernel; on CPU it stays a host scalar (bit-identity path).
-        comptime if Self.train_target == "gpu":
-            t.alpha_opt = ScalarAdam.new_device(
-                ctx.value(), flog(init_alpha), alpha_lr
-            )
-            # One-time wiring of the device α buffer into both Scale-consuming
-            # blocks (target-y soft-V and actor-loss α·log_prob). After this
-            # neither block bakes α as a per-step host scalar; both read it
-            # on-device, and the device ScalarAdam refreshes it each step.
-            # target-y reads α via a raw GPU-ABI kernel arg (its own kernel);
-            # the actor-loss Scale node takes a type-safe device sub-buffer.
-            t.target_y_blk.set_alpha_ptr(t.alpha_opt.alpha_dev_ptr())
-            t.actor_loss_blk.set_alpha_buf(t.alpha_opt.alpha_dev_buffer())
-        else:
-            t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
-
-        t.sel = RSample[Self.ACT_DIM].make[Self.train_target, Zero](ctx)
-        t.sel.action_scale = action_scale
-
-        t.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH
-        ].make[Self.train_target](ctx=ctx)
-
-        t.tracker = EpisodeTracker.new(
-            window_size=window_size, initial_fill=initial_episode_fill
-        )
-
-        t.action_scale = action_scale
-        t.learning_starts = learning_starts
-
-        # PER / ERE wiring: no-op default for uniform blocks.
-        t.sample_blk.configure_per(
-            alpha=per_alpha, beta=per_beta, epsilon=per_epsilon
-        )
-        t.sample_blk.setup(learning_starts, ctx=ctx)
-        t.sample_blk.configure_ere(
-            enable=use_ere, eta=ere_eta, c_min=ere_c_min, k_max=ere_k_max
-        )
-
-        # Pre-size the action scratch for the single-env path.
-        comptime if Self.train_target == "cpu":
-            t._ob_scr.ensure(Self.OBS_DIM)
-            t._ao_scr.ensure(2 * Self.ACT_DIM)
-            t._alp_scr.ensure(Self.ACT_DIM + 1)
-        else:
-            # Device-resident diagnostic accumulators (no per-step D2H).
-            t._mean_q_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
-            t._mean_target_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
-            t._mean_reward_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
-            t._mean_next_q_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
-            t._mean_done_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
-            t._mean_abs_action_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
-        return t^
-
     def set_beta(mut self, beta: Scalar[DT]):
         """PER IS-β anneal hook. No-op for uniform sample blocks."""
         self.sample_blk.set_beta(beta)
