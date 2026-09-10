@@ -135,6 +135,40 @@ def hold_actions(
     return out^
 
 
+def gripper_contacts(mut e: EnvT, brick: Int, g0: Int, g1: Int) -> Int:
+    """Contacts between the brick and the GRIPPER bodies specifically.
+
+    ⚠⚠ "THE BRICK IS HIGH" IS NOT "THE BRICK IS HELD". A cube the closing jaw
+    has FLICKED is airborne, and sampled at the wrong instant it reads as a
+    successful grasp with a perfectly good height — the first version of this
+    probe passed on exactly that, reporting z 0.18 with ZERO contacts, which
+    is a state no settled object can be in. A grasp is: touching the gripper,
+    above the table, and still there later.
+    """
+    var n = Int(Float64(e.d.meta.data[META_IDX_NUM_CONTACTS]))
+    var hits = 0
+    for c in range(n):
+        var o = c * CONTACT_SIZE
+        var a = Int(Float64(e.d.contacts.data[o + CONTACT_IDX_BODY_A]))
+        var b = Int(Float64(e.d.contacts.data[o + CONTACT_IDX_BODY_B]))
+        var other = -1
+        if a == brick:
+            other = b
+        elif b == brick:
+            other = a
+        if other == g0 or other == g1:
+            hits += 1
+    return hits
+
+
+def brick_speed(mut e: EnvT, dadr: Int) -> Float64:
+    """|linear velocity| of the brick — an airborne cube is not at rest."""
+    var vx = Float64(e.d.qvel.data[dadr])
+    var vy = Float64(e.d.qvel.data[dadr + 1])
+    var vz = Float64(e.d.qvel.data[dadr + 2])
+    return (vx * vx + vy * vy + vz * vz) ** 0.5
+
+
 def step_hold(mut e: EnvT, h: List[Float64], grip: Float64) raises:
     """One step holding the arm and commanding the gripper."""
     var v = List[Float64]()
@@ -175,6 +209,12 @@ def main() raises:
     if jaw < 0:
         raise Error("grasp feasibility: no moving_jaw body in the composed"
                     " scene — the probe cannot locate the gripper.")
+    var grip_body = -1
+    for i in range(len(fmd.body_names)):
+        if fmd.body_names[i] == "robot_gripper":
+            grip_body = i
+    print("  grip  body", grip_body,
+          "=", fmd.body_names[grip_body] if grip_body >= 0 else "NOT FOUND")
 
     var env = EnvT()
     _ = env.reset()
@@ -325,6 +365,9 @@ def main() raises:
     best_off.append(0.0)
     best_off.append(0.0)
     var trials = 0
+    var best_any = -1.0
+    var best_any_gc = 0
+    var best_any_spd = 0.0
     comptime STEP_M = 0.015          # 1.5 cm — the brick is 4 cm across
     for k in range(2):
         var close = -1.0 if k == 0 else 1.0
@@ -355,20 +398,42 @@ def main() raises:
                     # close, and keep holding the arm still
                     for _ in range(120):
                         step_hold(env, hold, close)
+                    var z_mid = Float64(env.d.qpos.data[qadr + 2])
+                    # ⚠ AND THEN KEEP HOLDING. A flicked cube passes through
+                    # a good height on its way back down; a held one is still
+                    # there 0.5 s later.
+                    for _ in range(250):
+                        step_hold(env, hold, close)
                     var z_end = Float64(env.d.qpos.data[qadr + 2])
+                    var gc = gripper_contacts(env, brick, grip_body, jaw)
+                    var spd = brick_speed(env, dadr)
                     trials += 1
-                    if z_end > best_hold:
+                    # ⚠⚠ ALL FOUR, NOT THE HEIGHT ALONE: above the table, in
+                    # contact with the gripper, at rest, and still up at both
+                    # samples.
+                    var held = (
+                        z_end > 0.06 and z_mid > 0.06 and gc > 0
+                        and spd < 0.05
+                    )
+                    if held and z_end > best_hold:
                         best_hold = z_end
                         best_dir = close
-                        best_contacts = brick_contacts(env, brick)[0]
+                        best_contacts = gc
                         best_off[0] = ox
                         best_off[1] = oy
                         best_off[2] = oz
+                    if z_end > best_any:
+                        best_any = z_end
+                        best_any_gc = gc
+                        best_any_spd = spd
     print("  swept", trials, "placements over a +-3 cm grid, both closing"
           " directions")
-    print("  best final brick z", best_hold, "at offset", best_off[0],
+    print("  best HELD brick z", best_hold, "at offset", best_off[0],
           best_off[1], best_off[2], " gripper action", best_dir,
-          " contacts", best_contacts)
+          " gripper contacts", best_contacts)
+    print("  highest brick z of ANY trial", best_any, " gripper contacts",
+          best_any_gc, " speed", best_any_spd,
+          "  <- height alone, which is NOT a grasp")
 
     # ⚠ THE CRITERION IS HEIGHT ABOVE THE TABLE TOP (0.02), not above the
     # floor, and not "did it move" — a brick resting on the table top has its
