@@ -107,6 +107,7 @@ from mojo_rl.render.imgui import (
 )
 from mojo_rl.render.renderer3d import Renderer3D
 from mojo_rl.utils.fmt import fixed
+from mojo_rl.vision.calib_file import CameraCalib, read_calib, write_calib
 from mojo_rl.vision.opencv import (
     ArucoDetector,
     CALIB_FIX_K3,
@@ -187,7 +188,8 @@ def main() raises:
     var board_sy = BOARD_SY
     var square_mm = BOARD_SQUARE_MM
     var board_marker_mm = BOARD_MARKER_MM
-    var calib_path = String("scratch/camera_calib.txt")
+    var calib_path = String("")
+    var cam_name = String("")
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
@@ -211,6 +213,16 @@ def main() raises:
             board_marker_mm = Float32(Float64(String(args[i + 1])))
         elif a == "--calib" and i + 1 < len(args):
             calib_path = String(args[i + 1])
+        elif a == "--camera" and i + 1 < len(args):
+            cam_name = String(args[i + 1])
+
+    # ⚠ ONE FILE PER CAMERA, NAMED. A single `camera_calib.txt` is how a
+    # two-camera rig ends up with the front camera's intrinsics applied to the
+    # side one — which fails no check and simply mis-ranges everything.
+    if cam_name == "":
+        cam_name = String("cam") + String(device_index)
+    if calib_path == "":
+        calib_path = String("scratch/camera_") + cam_name + ".txt"
 
     if not opencv_shim_available():
         print("OpenCV shim not built.  Run:  pixi run build-opencv")
@@ -348,33 +360,44 @@ def main() raises:
     # AGAIN. Loading is best-effort and silent on absence: a first run has no
     # file, and that is not an error.
     var cal_loaded = False
+    # ⚠ ABSENCE IS NORMAL, A BAD FILE IS NOT. A first run has no calibration
+    # and that is not an error; a file that exists and does not parse is worth
+    # a line, and the pre-2026-09 six-float format lands exactly there.
+    var have_file: Bool
     try:
         with open(calib_path, "r") as f:
-            var raw = f.read_bytes()
-            var text = String("")
-            for i in range(len(raw)):
-                text += chr(Int(raw[i]))
-            var parts = text.split()
-            if len(parts) >= 6:
-                cal_k = List[Float64]()
-                cal_k.append(Float64(parts[0]))
-                cal_k.append(0.0)
-                cal_k.append(Float64(parts[2]))
-                cal_k.append(0.0)
-                cal_k.append(Float64(parts[1]))
-                cal_k.append(Float64(parts[3]))
-                cal_k.append(0.0)
-                cal_k.append(0.0)
-                cal_k.append(1.0)
-                cal_dist = List[Float64]()
-                cal_dist.append(Float64(parts[4]))
-                cal_dist.append(Float64(parts[5]))
-                fx = Float32(cal_k[0])
-                cal_done = True
-                cal_loaded = True
-                print("loaded calibration from", calib_path, "fx", cal_k[0])
+            _ = f.read()
+        have_file = True
     except:
-        pass
+        have_file = False
+    if have_file:
+        try:
+            var prev = read_calib(calib_path)
+            cal_k = prev.k_matrix()
+            cal_dist = prev.dist.copy()
+            fx = Float32(prev.fx)
+            cal_done = True
+            cal_loaded = True
+            print("loaded calibration from", calib_path, "fx", prev.fx)
+            if prev.width != frame_w or prev.height != frame_h:
+                print(
+                    "  ⚠⚠ MEASURED AT",
+                    prev.width,
+                    "x",
+                    prev.height,
+                    "and this source gives",
+                    frame_w,
+                    "x",
+                    frame_h,
+                )
+                print("     fx AND cx are both wrong by the ratio —")
+                print("     recalibrate at this size rather than scaling.")
+        except e:
+            print("⚠ could not read", calib_path, "-", e)
+            print("  A pre-2026-09 six-float calibration lands here.")
+            print("  Recapture — the new format carries the camera's name")
+            print("  and the size it was measured at, so it cannot be")
+            print("  applied to the wrong picture.")
 
     var cov_x0 = Float32(1.0e9)
     var cov_x1 = Float32(-1.0e9)
@@ -391,7 +414,6 @@ def main() raises:
     var obj: List[Float64]
     var img_xy: List[Float64]
     var k: List[Float64]
-    var dist = List[Float64]()
     var rvec = List[Float64]()
     var tvec = List[Float64]()
 
@@ -499,10 +521,18 @@ def main() raises:
         else:
             ig_text_disabled(String("detection off"))
 
-        ig_separator_text(String("pose (uncalibrated)"))
-        ig_text_colored(
-            String("fx is a GUESS until you calibrate"), 1.0, 0.75, 0.2, 1.0
-        )
+        # ⚠ THE HEADING IS A CLAIM ABOUT THE NUMBERS BELOW IT, so it changes
+        # when the numbers do. It read "uncalibrated" permanently, including
+        # after a twelve-pose calibration had been loaded from disk.
+        if cal_done:
+            ig_separator_text(String("pose (calibrated)"))
+            ig_text_disabled(String("full K and dist — the slider is inert"))
+        else:
+            ig_separator_text(String("pose (uncalibrated)"))
+            ig_text_colored(
+                String("fx is a GUESS until you calibrate"),
+                1.0, 0.75, 0.2, 1.0,
+            )
         _ = ig_slider_float(String("fx px"), fx, 200.0, 2000.0)
         _ = ig_slider_float(String("marker mm"), marker_mm, 5.0, 200.0)
         have_z = False
@@ -524,19 +554,38 @@ def main() raises:
             img_xy = List[Float64]()
             for i in range(8):
                 img_xy.append(Float64(corners[i]))
+            # ⚠⚠ ONCE A CALIBRATION EXISTS, USE ALL OF IT — NOT JUST `fx`.
+            # This used to build `k` from the slider with the principal point
+            # ASSUMED at the image centre and an EMPTY `dist`, and it kept
+            # doing that after a calibration had measured both. On the lens
+            # this was written for that is not a rounding difference: `cy`
+            # came out 40 px (5.6%) off centre and `k1` = -0.25, so the pose
+            # was being computed from a camera model the program itself had
+            # already disproved — and the readout looked perfectly reasonable.
+            #
+            # ⚠ `dist` GOES TO `solve_pnp` DIRECTLY, which is why this tree
+            # needs no image-space undistortion: OpenCV undistorts the four
+            # corner points inside the solver.
             k = List[Float64]()
-            k.append(Float64(fx))
-            k.append(0.0)
-            k.append(Float64(frame_w) / 2.0)
-            k.append(0.0)
-            k.append(Float64(fx))
-            k.append(Float64(frame_h) / 2.0)
-            k.append(0.0)
-            k.append(0.0)
-            k.append(1.0)
+            var pnp_dist = List[Float64]()
+            if cal_done:
+                for i in range(9):
+                    k.append(cal_k[i])
+                for i in range(len(cal_dist)):
+                    pnp_dist.append(cal_dist[i])
+            else:
+                k.append(Float64(fx))
+                k.append(0.0)
+                k.append(Float64(frame_w) / 2.0)
+                k.append(0.0)
+                k.append(Float64(fx))
+                k.append(Float64(frame_h) / 2.0)
+                k.append(0.0)
+                k.append(0.0)
+                k.append(1.0)
             try:
                 solve_pnp(
-                    obj, img_xy, k, dist, rvec, tvec, SOLVEPNP_IPPE_SQUARE
+                    obj, img_xy, k, pnp_dist, rvec, tvec, SOLVEPNP_IPPE_SQUARE
                 )
                 last_z_mm = tvec[2] * 1000.0
                 have_z = True
@@ -572,7 +621,20 @@ def main() raises:
             )
             ig_text(String("implied fx ") + fixed(suggested, 1) + " px")
             ig_text(String("z is off by ") + fixed(err_pct, 1) + " %")
-            if ig_button(String("snap fx to this distance")):
+            # ⚠⚠ ONCE CALIBRATED THIS SECTION CHANGES JOB: from a crude
+            # one-parameter FIT to an INDEPENDENT CHECK, and the button has to
+            # go with it. The pose no longer reads the slider, so snapping it
+            # would move a number that changes nothing on screen — a control
+            # that silently does nothing, which is worse than one that is
+            # visibly greyed.
+            #
+            # ⚠ AND THE CHECK IS THE BETTER HALF. `rms` is a residual against
+            # the corners the fit was given; a tape measure is evidence from
+            # outside the fit entirely. Agreement within ~1-2% at TWO
+            # different distances is the cheapest confirmation available.
+            if cal_done:
+                _ = ig_button(String("snap fx (calibrated — inert)"))
+            elif ig_button(String("snap fx to this distance")):
                 fx = Float32(suggested)
         else:
             ig_text_disabled(String("implied fx -"))
@@ -580,8 +642,12 @@ def main() raises:
             # ⚠ DRAWN BUT INERT, not hidden: a button that vanishes takes
             # everything below it with it.
             _ = ig_button(String("snap fx (needs a marker)"))
-        ig_text_disabled(String("Measure a real distance, set it above,"))
-        ig_text_disabled(String("click, then verify at a SECOND distance."))
+        if cal_done:
+            ig_text_disabled(String("Measure a real distance, set it above,"))
+            ig_text_disabled(String("and read the error at TWO distances."))
+        else:
+            ig_text_disabled(String("Measure a real distance, set it above,"))
+            ig_text_disabled(String("click, then verify at a SECOND distance."))
 
         # ── calibration ─────────────────────────────────────────────────────
         ig_separator_text(String("calibration (ChArUco)"))
@@ -675,11 +741,23 @@ def main() raises:
             # cheap part is a file. Making the save a separate click is how the
             # expensive part gets repeated.
             try:
-                with open(calib_path, "w") as f:
-                    f.write(String(cal_k[0]) + " " + String(cal_k[4]) + " ")
-                    f.write(String(cal_k[2]) + " " + String(cal_k[5]) + " ")
-                    f.write(String(cal_dist[0]) + " " + String(cal_dist[1]))
-                    f.write(String("\n"))
+                var out_cal = CameraCalib(
+                    cam_name.copy(),
+                    device_index,
+                    frame_w,
+                    frame_h,
+                    cal_k[0],
+                    cal_k[4],
+                    cal_k[2],
+                    cal_k[5],
+                )
+                for di in range(len(cal_dist)):
+                    out_cal.dist.append(cal_dist[di])
+                out_cal.rms_px = cal_rms
+                # ⚠ INTRINSICS ONLY. Where the camera IS belongs to
+                # `examples/so101/calibrate_camera_extrinsics.mojo`, which
+                # reads this file, adds the extrinsics and writes it back.
+                write_calib(calib_path, out_cal)
                 print("  saved to", calib_path)
             except e:
                 print("  COULD NOT SAVE to", calib_path, "-", e)

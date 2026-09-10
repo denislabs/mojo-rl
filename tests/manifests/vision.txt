@@ -38,3 +38,18 @@ tests/vision/test_act_preprocess.mojo
 # and infers through the other, and no gate could see that boundary. Needs no
 # shim, no camera and no PIL.
 tests/vision/test_resize_deploy_vs_import.mojo
+# The camera -> robot-base rigid fit (Kabsch through the shim's `svd_3x3`),
+# which had no caller but its own test until this landed. ⚠ A THIRD KIND OF
+# EXACTNESS: the transform is synthesised here, so the truth is exact and the
+# claim is about the SOLVER, not about a rig. The case it exists for is the
+# REFLECTION — `R = V Ut` maximises over ORTHOGONAL matrices, so a mirror
+# world fits BETTER than any rotation and reports rms 0.000 mm. Needs the
+# shim; needs no camera, no arm and no fixture.
+tests/vision/test_extrinsics_kabsch.mojo
+# The calibration FILE — identity, image size, intrinsics, optional extrinsics.
+# ⚠ MOST OF ITS CHECKS ARE REFUSALS, and that is the point: every format
+# round-trips, so a format is judged by what it REJECTS. A calibration measured
+# at 1280x720 handed to a 640x480 frame is off by exactly 2x in fx AND cx,
+# looks entirely reasonable, and was undetectable in the six-float file this
+# replaces. Needs no shim, no camera, no fixture.
+tests/vision/test_calib_file.mojo
