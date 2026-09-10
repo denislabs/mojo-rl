@@ -223,9 +223,10 @@ struct TiedLinear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
         forward (the cast) and reused in vjp (no opt step between a fwd/bwd)."""
         ref w = self._val()[]
         self.w_bf.ensure_gpu(c, Self.W_SIZE)
-        c.enqueue_function[_cast_f2b_kernel[Self.W_SIZE]](
-            w.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-            self.w_bf.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+        c.enqueue_function[_cast_f2b_kernel](
+            w.dev.value(),
+            self.w_bf.dev.value(),
+            Int64(Self.W_SIZE),
             grid_dim=(Self.W_SIZE + 255) // 256,
             block_dim=256,
         )

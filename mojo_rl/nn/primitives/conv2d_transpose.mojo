@@ -506,9 +506,10 @@ struct Conv2DTranspose[
             else:
                 max_matmul[target="gpu"](dW_tmp_tt, xT_tt, ecol2_tt, c)
             comptime nb_acc = (Self.W_SIZE + CONV_TPB - 1) // CONV_TPB
-            c.enqueue_function[_accum_kernel[Self.W_SIZE]](
-                self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                self.dW_tmp.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+            c.enqueue_function[_accum_kernel](
+                self.weight.grd.dev.value(),
+                self.dW_tmp.dev.value(),
+                Int64(Self.W_SIZE),
                 grid_dim=nb_acc,
                 block_dim=CONV_TPB,
             )

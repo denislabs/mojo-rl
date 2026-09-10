@@ -1059,9 +1059,10 @@ struct Conv2D[
         intervenes between a fwd and its bwd)."""
         self.w_bf.ensure_gpu(c, Self.W_SIZE)
         if self._force_recast or self.weight.val.version != self._w_cast_version:
-            c.enqueue_function[_cast_f2b_kernel[Self.W_SIZE]](
-                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                self.w_bf.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+            c.enqueue_function[_cast_f2b_kernel](
+                self.weight.val.dev.value(),
+                self.w_bf.dev.value(),
+                Int64(Self.W_SIZE),
                 grid_dim=(Self.W_SIZE + 255) // 256,
                 block_dim=256,
             )
@@ -1139,9 +1140,9 @@ struct Conv2D[
                         Self.OW,
                         Self.LAYOUT,
                     ](in0d.data, b * Self.IN_FLAT, col)
-                    var col_tt = TileTensor(col, row_major[Self.SO, Self.COL]())
+                    var col_tt = TileTensor(col, row_major(Self.SO, Self.COL))
                     var out_b_tt = TileTensor(
-                        out_b, row_major[Self.OC_, Self.SO]()
+                        out_b, row_major(Self.OC_, Self.SO)
                     )
                     # out_b[OC,SO] = W[OC,COL] @ col[SO,COL]ᵀ
                     max_matmul[transpose_b=True, target="cpu"](
@@ -1251,7 +1252,7 @@ struct Conv2D[
                         self.col_t.dev.value(), row_major(BS, Self.CPAD)
                     )
                     var w_tt = TileTensor(
-                        w_buf, row_major[Self.OCPAD, Self.CPAD]()
+                        w_buf, row_major(Self.OCPAD, Self.CPAD)
                     )
                     var outp_tt = TileTensor(
                         self.outp_t.dev.value(), row_major(BS, Self.OCPAD)
@@ -1311,9 +1312,10 @@ struct Conv2D[
             # only on a version bump). bias: cheap per-forward DT→bf16 cast.
             self._ensure_w_bf(c)
             self.b_a.ensure_gpu(c, Self.B_SIZE)
-            c.enqueue_function[_cast_f2b_kernel[Self.B_SIZE]](
-                self.bias.val.lt["gpu", Layout.row_major(Self.B_SIZE)](),
-                self.b_a.lt["gpu", Layout.row_major(Self.B_SIZE)](),
+            c.enqueue_function[_cast_f2b_kernel](
+                self.bias.val.dev.value(),
+                self.b_a.dev.value(),
+                Int64(Self.B_SIZE),
                 grid_dim=(Self.B_SIZE + 255) // 256,
                 block_dim=256,
             )
@@ -1581,17 +1583,17 @@ struct Conv2D[
                             d_col[s] = acc
                     else:
                         var col_tt = TileTensor(
-                            col, row_major[Self.SO, Self.COL]()
+                            col, row_major(Self.SO, Self.COL)
                         )
                         var go_b_tt = TileTensor(
-                            go_b, row_major[Self.OC_, Self.SO]()
+                            go_b, row_major(Self.OC_, Self.SO)
                         )
                         # dW += go_b[OC,SO] @ col[SO,COL]
                         var dw_tmp = List[Scalar[DT]](
                             length=Self.W_SIZE, fill=Scalar[DT](0)
                         )
                         var dw_tmp_tt = TileTensor(
-                            dw_tmp, row_major[Self.OC_, Self.COL]()
+                            dw_tmp, row_major(Self.OC_, Self.COL)
                         )
                         max_matmul[target="cpu"](dw_tmp_tt, go_b_tt, col_tt, None)
                         for k in range(Self.W_SIZE):
@@ -1606,10 +1608,10 @@ struct Conv2D[
                                     oc * Self.SO + s
                                 ]
                         var go_b_T_tt = TileTensor(
-                            go_b_T, row_major[Self.SO, Self.OC_]()
+                            go_b_T, row_major(Self.SO, Self.OC_)
                         )
                         var d_col_tt = TileTensor(
-                            d_col, row_major[Self.SO, Self.COL]()
+                            d_col, row_major(Self.SO, Self.COL)
                         )
                         max_matmul[target="cpu"](
                             d_col_tt, go_b_T_tt, w_tt, None

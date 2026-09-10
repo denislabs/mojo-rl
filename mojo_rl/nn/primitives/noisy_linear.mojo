@@ -495,9 +495,11 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
                 block_dim=TPB,
             )
             # grad_w: transpose x → cacheᵀ (B1' tiled), dW = cacheᵀ @ go.
-            c.enqueue_function[_transpose_tiled_kernel[B, Self.IN_]](
-                fin.lt["gpu", Layout.row_major(B, Self.IN_)](),
-                self.cacheT.lt["gpu", Layout.row_major(Self.IN_, B)](),
+            c.enqueue_function[_transpose_tiled_kernel[DT]](
+                fin.dev.value(),
+                self.cacheT.dev.value(),
+                Int64(B),
+                Int64(Self.IN_),
                 grid_dim=(
                     (Self.IN_ + _T_TILE - 1) // _T_TILE,
                     (B + _T_TILE - 1) // _T_TILE,
@@ -527,9 +529,10 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
             else:
                 max_matmul[target="gpu"](dW_tt, cT_tt, go_tt, c)
             comptime nb_w = (Self.W_SIZE + TPB - 1) // TPB
-            c.enqueue_function[_accum_kernel[Self.W_SIZE]](
+            c.enqueue_function[_accum_kernel](
                 self.mu_w.grd.lt["gpu", lw](),
                 self.dW_tmp.lt["gpu", lw](),
+                Int64(Self.W_SIZE),
                 grid_dim=nb_w,
                 block_dim=TPB,
             )

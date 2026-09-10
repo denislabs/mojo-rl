@@ -300,9 +300,10 @@ struct BatchNorm1D[
                     in_f32.data[i] = in0.data[i].cast[DT]()
             else:
                 var c = ctx.value()
-                c.enqueue_function[_cast_b2f_kernel[N]](
-                    in0.lt["gpu", Layout.row_major(N)](),
-                    in_f32.lt["gpu", Layout.row_major(N)](),
+                c.enqueue_function[_cast_b2f_kernel](
+                    in0.dev.value(),
+                    in_f32.dev.value(),
+                    Int64(N),
                     grid_dim=(N + 255) // 256,
                     block_dim=256,
                 )
@@ -312,9 +313,10 @@ struct BatchNorm1D[
                     out.data[i] = out_f32.data[i].cast[Self.ACT_DT]()
             else:
                 var c = ctx.value()
-                c.enqueue_function[_cast_f2b_kernel[N]](
-                    out_f32.lt["gpu", Layout.row_major(N)](),
-                    out.lt["gpu", Layout.row_major(N)](),
+                c.enqueue_function[_cast_f2b_kernel](
+                    out_f32.dev.value(),
+                    out.dev.value(),
+                    Int64(N),
                     grid_dim=(N + 255) // 256,
                     block_dim=256,
                 )
@@ -474,9 +476,10 @@ struct BatchNorm1D[
                     go_f32.data[i] = grad_output.data[i].cast[DT]()
             else:
                 var c = ctx.value()
-                c.enqueue_function[_cast_b2f_kernel[N]](
-                    grad_output.lt["gpu", Layout.row_major(N)](),
-                    go_f32.lt["gpu", Layout.row_major(N)](),
+                c.enqueue_function[_cast_b2f_kernel](
+                    grad_output.dev.value(),
+                    go_f32.dev.value(),
+                    Int64(N),
                     grid_dim=(N + 255) // 256,
                     block_dim=256,
                 )
@@ -486,9 +489,10 @@ struct BatchNorm1D[
                     gin.data[i] = gin_f32.data[i].cast[Self.ACT_DT]()
             else:
                 var c = ctx.value()
-                c.enqueue_function[_cast_f2b_kernel[N]](
-                    gin_f32.lt["gpu", Layout.row_major(N)](),
-                    gin.lt["gpu", Layout.row_major(N)](),
+                c.enqueue_function[_cast_f2b_kernel](
+                    gin_f32.dev.value(),
+                    gin.dev.value(),
+                    Int64(N),
                     grid_dim=(N + 255) // 256,
                     block_dim=256,
                 )

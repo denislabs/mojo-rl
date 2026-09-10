@@ -1307,9 +1307,13 @@ def ezv2_unroll_train_step_gpu_vp[
             d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
             grid_dim=nbOBS, block_dim=TPB)
     else:
-        ctx.enqueue_function[_cast_f2b_kernel[B * OBS]](
-            d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
-            grid_dim=nbOBS, block_dim=TPB)
+        ctx.enqueue_function[_cast_f2b_kernel](
+            d_obs.lt_at["gpu", LBOBS](0),
+            d_obs_work.lt["gpu", LBOBS](),
+            Int64(B * OBS),
+            grid_dim=nbOBS,
+            block_dim=TPB,
+        )
     call_forward["gpu", B](rep, child_refs[N=REP.ARITY, CADT=ADT](d_obs_work), z_work, octx)
     ctx.enqueue_function[kBcopy](
         z_work.lt["gpu", LBL](), zst.lt_at["gpu", LBL](0),
@@ -1334,9 +1338,13 @@ def ezv2_unroll_train_step_gpu_vp[
             ref dzf = rebind[Tensor](dz)
             rew.reward_step_forward["gpu", B](dzf, hbuf, cbuf, cache, vp, octx)
         else:
-            ctx.enqueue_function[_cast_b2f_kernel[B * LATENT]](
-                dz.lt["gpu", LBL](), dz_f32.lt["gpu", LBL](),
-                grid_dim=nbLAT, block_dim=TPB)
+            ctx.enqueue_function[_cast_b2f_kernel](
+                dz.lt["gpu", LBL](),
+                dz_f32.lt["gpu", LBL](),
+                Int64(B * LATENT),
+                grid_dim=nbLAT,
+                block_dim=TPB,
+            )
             rew.reward_step_forward["gpu", B](dz_f32, hbuf, cbuf, cache, vp, octx)
         ctx.enqueue_copy(
             h_store.dev.value().create_sub_buffer[DT]((k + 1) * HH, HH),
@@ -1358,10 +1366,13 @@ def ezv2_unroll_train_step_gpu_vp[
                 d_obs_work.lt["gpu", LBOBS](),
                 grid_dim=nbOBS, block_dim=TPB)
         else:
-            ctx.enqueue_function[_cast_f2b_kernel[B * OBS]](
+            ctx.enqueue_function[_cast_f2b_kernel](
                 d_obs.lt_at["gpu", LBOBS](k * B * OBS),
                 d_obs_work.lt["gpu", LBOBS](),
-                grid_dim=nbOBS, block_dim=TPB)
+                Int64(B * OBS),
+                grid_dim=nbOBS,
+                block_dim=TPB,
+            )
         call_forward["gpu", B](rep, child_refs[N=REP.ARITY, CADT=ADT](d_obs_work), ztmp, octx)
         call_forward["gpu", B](proj, child_refs[N=PROJM.ARITY, CADT=ADT](ztmp), projo, octx)
         ctx.enqueue_function[kBcopyPROJ](
@@ -1417,9 +1428,13 @@ def ezv2_unroll_train_step_gpu_vp[
             call_vjp["gpu", B](
                 pred, child_refs[N=PRED.ARITY, CADT=ADT](zk_work), gpout,
                 child_refs[N=PRED.ARITY, CADT=ADT](gpin_b), octx)
-            ctx.enqueue_function[_cast_b2f_kernel[B * LATENT]](
-                gpin_b.lt["gpu", LBL](), gpin.lt["gpu", LBL](),
-                grid_dim=nbLAT, block_dim=TPB)
+            ctx.enqueue_function[_cast_b2f_kernel](
+                gpin_b.lt["gpu", LBL](),
+                gpin.lt["gpu", LBL](),
+                Int64(B * LATENT),
+                grid_dim=nbLAT,
+                block_dim=TPB,
+            )
 
         # (b) consistency (k >= 1)
         if k >= 1:
@@ -1468,9 +1483,13 @@ def ezv2_unroll_train_step_gpu_vp[
                 rew.reward_step_forward["gpu", B](
                     dzd, hbuf, cbuf, cache, vp, octx)
             else:
-                ctx.enqueue_function[_cast_b2f_kernel[B * LATENT]](
-                    dz.lt["gpu", LBL](), dz_f32.lt["gpu", LBL](),
-                    grid_dim=nbLAT, block_dim=TPB)
+                ctx.enqueue_function[_cast_b2f_kernel](
+                    dz.lt["gpu", LBL](),
+                    dz_f32.lt["gpu", LBL](),
+                    Int64(B * LATENT),
+                    grid_dim=nbLAT,
+                    block_dim=TPB,
+                )
                 rew.reward_step_forward["gpu", B](
                     dz_f32, hbuf, cbuf, cache, vp, octx)
             ctx.enqueue_function[kTwoHot](
@@ -1514,9 +1533,13 @@ def ezv2_unroll_train_step_gpu_vp[
                     dynz, child_refs[N=DYNZ.ARITY, CADT=ADT](din), gza,
                     child_refs[N=DYNZ.ARITY, CADT=ADT](gdin), octx)
             else:
-                ctx.enqueue_function[_cast_f2b_kernel[B * LATENT]](
-                    gz.lt["gpu", LBL](), gz_b.lt["gpu", LBL](),
-                    grid_dim=nbLAT, block_dim=TPB)
+                ctx.enqueue_function[_cast_f2b_kernel](
+                    gz.lt["gpu", LBL](),
+                    gz_b.lt["gpu", LBL](),
+                    Int64(B * LATENT),
+                    grid_dim=nbLAT,
+                    block_dim=TPB,
+                )
                 call_vjp["gpu", B](
                     dynz, child_refs[N=DYNZ.ARITY, CADT=ADT](din), gz_b,
                     child_refs[N=DYNZ.ARITY, CADT=ADT](gdin), octx)
@@ -1535,9 +1558,13 @@ def ezv2_unroll_train_step_gpu_vp[
             d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
             grid_dim=nbOBS, block_dim=TPB)
     else:
-        ctx.enqueue_function[_cast_f2b_kernel[B * OBS]](
-            d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
-            grid_dim=nbOBS, block_dim=TPB)
+        ctx.enqueue_function[_cast_f2b_kernel](
+            d_obs.lt_at["gpu", LBOBS](0),
+            d_obs_work.lt["gpu", LBOBS](),
+            Int64(B * OBS),
+            grid_dim=nbOBS,
+            block_dim=TPB,
+        )
     call_forward["gpu", B](rep, child_refs[N=REP.ARITY, CADT=ADT](d_obs_work), z_work, octx)
     # rep.vjp grad_output = the fp32 carry gz → cast to bf16 for the net.
     comptime if ADT == DT:
@@ -1546,9 +1573,13 @@ def ezv2_unroll_train_step_gpu_vp[
             rep, child_refs[N=REP.ARITY, CADT=ADT](d_obs_work), gza,
             child_refs[N=REP.ARITY, CADT=ADT](gobs), octx)
     else:
-        ctx.enqueue_function[_cast_f2b_kernel[B * LATENT]](
-            gz.lt["gpu", LBL](), gz_b.lt["gpu", LBL](),
-            grid_dim=nbLAT, block_dim=TPB)
+        ctx.enqueue_function[_cast_f2b_kernel](
+            gz.lt["gpu", LBL](),
+            gz_b.lt["gpu", LBL](),
+            Int64(B * LATENT),
+            grid_dim=nbLAT,
+            block_dim=TPB,
+        )
         call_vjp["gpu", B](
             rep, child_refs[N=REP.ARITY, CADT=ADT](d_obs_work), gz_b,
             child_refs[N=REP.ARITY, CADT=ADT](gobs), octx)

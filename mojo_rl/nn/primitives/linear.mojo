@@ -54,31 +54,40 @@ from ..core.polyak import polyak_tensor
 # `_bias_add_kernel` is dtype-parametric: the fp32 path calls it with DT, the
 # bf16-flow path with bfloat16 (activation + cached bf16 bias both at ADT).
 def _bias_add_kernel[
-    B: Int, OUT: Int, ADT: DType = DT
+    ADT: DType = DT
 ](
-    o: LayoutTensor[ADT, Layout.row_major(B, OUT), MutAnyOrigin],
-    bias: LayoutTensor[ADT, Layout.row_major(OUT), MutAnyOrigin],
+    o: Pointer[Scalar[ADT], MutAnyOrigin],
+    bias: Pointer[Scalar[ADT], MutAnyOrigin],
+    b_arg: Int64,
+    out_arg: Int64,
 ):
+    """`o[b, j] += bias[j]` over a row-major [B, OUT]; dims at RUNTIME so one
+    module serves every shape (docs/COMPILE_TIME_PROFILING.md §3.9)."""
+    var n_out = Int(out_arg)
     var idx = Int(global_idx.x)
-    if idx < B * OUT:
-        o[idx // OUT, idx % OUT] += bias[idx % OUT]
+    if idx < Int(b_arg) * n_out:
+        o[idx] += bias[idx % n_out]
 
 
 # Naive grad_w transpose (one thread/elem, strided read). Still used by
 # linear_relu / noisy_linear; linear + linear_act use the tiled B1' kernel below.
-def _transpose_kernel[
-    ROWS: Int, COLS: Int
-](
-    src: LayoutTensor[DT, Layout.row_major(ROWS, COLS), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(COLS, ROWS), MutAnyOrigin],
+def _transpose_kernel(
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    rows_arg: Int64,
+    cols_arg: Int64,
 ):
+    var rows = Int(rows_arg)
+    var cols = Int(cols_arg)
     var idx = Int(global_idx.x)
-    if idx < ROWS * COLS:
-        dst[idx % COLS, idx // COLS] = src[idx // COLS, idx % COLS]
+    if idx < rows * cols:
+        var r = idx // cols
+        var c = idx % cols
+        dst[c * rows + r] = src[idx]
 
 
 comptime _T_TILE = 32
-comptime _T_BR = 8        # 32x8 BLOCK_ROWS, 4 elems/thread (B1')
+comptime _T_BR = 8  # 32x8 BLOCK_ROWS, 4 elems/thread (B1')
 
 
 # Tiled grad_w transpose: 32x8 BLOCK_ROWS shared-mem tile (B1'). Coalesces the
@@ -88,45 +97,48 @@ comptime _T_BR = 8        # 32x8 BLOCK_ROWS, 4 elems/thread (B1')
 # Dtype-parametric (`ADT`): the fp32 path transposes a DT activation; the bf16
 # path transposes the bf16 forward-input directly (its source is already bf16).
 def _transpose_tiled_kernel[
-    ROWS: Int, COLS: Int, ADT: DType = DT
+    ADT: DType = DT
 ](
-    src: LayoutTensor[ADT, Layout.row_major(ROWS, COLS), MutAnyOrigin],
-    dst: LayoutTensor[ADT, Layout.row_major(COLS, ROWS), MutAnyOrigin],
+    src: Pointer[Scalar[ADT], MutAnyOrigin],
+    dst: Pointer[Scalar[ADT], MutAnyOrigin],
+    rows_arg: Int64,
+    cols_arg: Int64,
 ):
+    var ROWS = Int(rows_arg)
+    var COLS = Int(cols_arg)
     var tile = LayoutTensor[
         ADT,
-        Layout.row_major(_T_TILE, _T_TILE + 1),   # +1 pad → no bank conflicts
+        Layout.row_major(_T_TILE, _T_TILE + 1),  # +1 pad → no bank conflicts
         MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
-    var cy = Int(block_idx.y) * _T_TILE       # tile origin in ROWS
-    var cx = Int(block_idx.x) * _T_TILE       # tile origin in COLS
-    var tx = Int(thread_idx.x)                # [0, _T_TILE)
-    var ty = Int(thread_idx.y)                # [0, _T_BR)
+    var cy = Int(block_idx.y) * _T_TILE  # tile origin in ROWS
+    var cx = Int(block_idx.x) * _T_TILE  # tile origin in COLS
+    var tx = Int(thread_idx.x)  # [0, _T_TILE)
+    var ty = Int(thread_idx.y)  # [0, _T_BR)
 
     var c = cx + tx
     comptime for r in range(0, _T_TILE, _T_BR):
         var rr = cy + ty + r
         if rr < ROWS and c < COLS:
-            tile[ty + r, tx] = rebind[Scalar[ADT]](src[rr, c])
+            tile[ty + r, tx] = src[rr * COLS + c]
     barrier()
 
-    var r2 = cy + tx                          # dst col (coalesced, stride 1)
+    var r2 = cy + tx  # dst col (coalesced, stride 1)
     comptime for r in range(0, _T_TILE, _T_BR):
-        var c2 = cx + ty + r                  # dst row
+        var c2 = cx + ty + r  # dst row
         if r2 < ROWS and c2 < COLS:
-            dst[c2, r2] = rebind[Scalar[ADT]](tile[tx, ty + r])
+            dst[(c2) * ROWS + (r2)] = rebind[Scalar[ADT]](tile[tx, ty + r])
 
 
-def _accum_kernel[
-    N: Int
-](
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+def _accum_kernel(
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    n_arg: Int64,
 ):
     var i = Int(global_idx.x)
-    if i < N:
+    if i < Int(n_arg):
         dst[i] += src[i]
 
 
@@ -134,145 +146,142 @@ def _accum_kernel[
 # the bf16 path reads a bf16 `go` and accumulates into the FP32 `gb` (each
 # element cast to DT before summing — the accumulator stays fp32).
 def _lin_gb_kernel[
-    B: Int, OUT: Int, ADT: DType = DT
+    ADT: DType = DT
 ](
-    go: LayoutTensor[ADT, Layout.row_major(B, OUT), MutAnyOrigin],
-    gb: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
+    go: Pointer[Scalar[ADT], MutAnyOrigin],
+    gb: Pointer[Scalar[DT], MutAnyOrigin],
+    b_arg: Int64,
+    out_arg: Int64,
 ):
+    """`gb[j] += sum_b go[b, j]`, one thread per column."""
+    var n_out = Int(out_arg)
     var j = Int(global_idx.x)
-    if j < OUT:
+    if j < n_out:
         var s: Scalar[DT] = 0
-        for b in range(B):
-            s += rebind[Scalar[ADT]](go[b, j]).cast[DT]()
+        for b in range(Int(b_arg)):
+            s += go[b * n_out + j].cast[DT]()
         gb[j] += s
 
 
 comptime BF16 = DType.bfloat16
 
 
-def _cast_f2b_kernel[
-    N: Int
-](
-    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    dst: LayoutTensor[BF16, Layout.row_major(N), MutAnyOrigin],
+def _cast_f2b_kernel(
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[BF16], MutAnyOrigin],
+    n_arg: Int64,
 ):
     var i = Int(global_idx.x)
-    if i < N:
+    if i < Int(n_arg):
         dst[i] = src[i].cast[BF16]()
 
 
-def _cast_b2f_kernel[
-    N: Int
-](
-    src: LayoutTensor[BF16, Layout.row_major(N), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+def _cast_b2f_kernel(
+    src: Pointer[Scalar[BF16], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    n_arg: Int64,
 ):
     var i = Int(global_idx.x)
-    if i < N:
+    if i < Int(n_arg):
         dst[i] = src[i].cast[DT]()
 
 
-def _pad_cols_kernel[
-    ROWS: Int, SRC_COLS: Int, DST_COLS: Int
-](
-    src: LayoutTensor[DT, Layout.row_major(ROWS * SRC_COLS), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(ROWS * DST_COLS), MutAnyOrigin],
+def _pad_cols_kernel(
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    rows_arg: Int64,
+    src_cols_arg: Int64,
+    dst_cols_arg: Int64,
 ):
-    """`dst[r, :SRC_COLS] = src[r]`, `dst[r, SRC_COLS:] = 0`.
-
-    Serves BOTH K-alignment pads: the activation ([B, IN_] -> [B, K_PAD], a
-    real per-row widening) and the weight ([IN_, OUT_] -> [K_PAD, OUT_], which
-    is row-appending and so is the ROWS=1 flat case).
-    """
+    """[ROWS, SRC_COLS] -> [ROWS, DST_COLS], zero beyond SRC_COLS. Serves both
+    K-alignment pads (the activation, and the weight as the ROWS=1 flat
+    case)."""
+    var src_cols = Int(src_cols_arg)
+    var dst_cols = Int(dst_cols_arg)
     var i = Int(global_idx.x)
-    if i < ROWS * DST_COLS:
-        var r = i // DST_COLS
-        var c = i % DST_COLS
-        if c < SRC_COLS:
-            dst[i] = src[r * SRC_COLS + c]
+    if i < Int(rows_arg) * dst_cols:
+        var r = i // dst_cols
+        var c = i % dst_cols
+        if c < src_cols:
+            dst[i] = src[r * src_cols + c]
         else:
             dst[i] = Scalar[DT](0)
 
 
-def _pad_2d_kernel[
-    SRC_ROWS: Int, SRC_COLS: Int, DST_ROWS: Int, DST_COLS: Int
-](
-    src: LayoutTensor[DT, Layout.row_major(SRC_ROWS * SRC_COLS), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(DST_ROWS * DST_COLS), MutAnyOrigin],
+def _pad_2d_kernel(
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    src_rows_arg: Int64,
+    src_cols_arg: Int64,
+    dst_rows_arg: Int64,
+    dst_cols_arg: Int64,
 ):
-    """Zero-pad a row-major matrix in BOTH dimensions.
-
-    `dst[r, c] = src[r, c]` inside the source rectangle, 0 outside. Needed for
-    the weight once N is padded as well as K: the slab becomes
-    `[K_PAD, N_PAD]`, and appending K rows is no longer a flat tail because the
-    row STRIDE changed from `OUT_` to `N_PAD`.
-    """
+    """`dst[r, c] = src[r, c]` inside the source rectangle, 0 outside."""
+    var src_rows = Int(src_rows_arg)
+    var src_cols = Int(src_cols_arg)
+    var dst_cols = Int(dst_cols_arg)
     var i = Int(global_idx.x)
-    if i < DST_ROWS * DST_COLS:
-        var r = i // DST_COLS
-        var c = i % DST_COLS
-        if r < SRC_ROWS and c < SRC_COLS:
-            dst[i] = src[r * SRC_COLS + c]
+    if i < Int(dst_rows_arg) * dst_cols:
+        var r = i // dst_cols
+        var c = i % dst_cols
+        if r < src_rows and c < src_cols:
+            dst[i] = src[r * src_cols + c]
         else:
             dst[i] = Scalar[DT](0)
 
 
-def _bias_add_slice_kernel[
-    B: Int, OUT: Int, N_PAD: Int
-](
-    ypad: LayoutTensor[DT, Layout.row_major(B * N_PAD), MutAnyOrigin],
-    bias: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(B * OUT), MutAnyOrigin],
+def _bias_add_slice_kernel(
+    ypad: Pointer[Scalar[DT], MutAnyOrigin],
+    bias: Pointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    b_arg: Int64,
+    out_arg: Int64,
+    n_pad_arg: Int64,
 ):
-    """`dst[b, j] = ypad[b, j] + bias[j]` for `j < OUT` — the N-pad slice-back.
-
-    Fused with the bias add so N padding costs NO extra launch: it replaces
-    `_bias_add_kernel` rather than following it. The padded columns
-    `[OUT, N_PAD)` are simply never read.
-    """
+    """`dst[b, j] = ypad[b, j] + bias[j]`, reading the padded [B, N_PAD]."""
+    var n_out = Int(out_arg)
+    var n_pad = Int(n_pad_arg)
     var i = Int(global_idx.x)
-    if i < B * OUT:
-        var b = i // OUT
-        var j = i % OUT
-        dst[i] = ypad[b * N_PAD + j] + bias[j]
+    if i < Int(b_arg) * n_out:
+        var b = i // n_out
+        var j = i % n_out
+        dst[i] = ypad[b * n_pad + j] + bias[j]
 
 
-def _slice_cols_kernel[
-    ROWS: Int, DST_COLS: Int, SRC_COLS: Int
-](
-    src: LayoutTensor[DT, Layout.row_major(ROWS * SRC_COLS), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(ROWS * DST_COLS), MutAnyOrigin],
+def _slice_cols_kernel(
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    rows_arg: Int64,
+    dst_cols_arg: Int64,
+    src_cols_arg: Int64,
 ):
-    """`dst[r, :] = src[r, :DST_COLS]` — drop a padded column tail.
-
-    The inverse of `_pad_cols_kernel`, for `vjp`'s `grad_input`: the GEMM
-    produces `[B, K_PAD]` and the caller's gradient slot is `[B, IN_]`.
+    """The inverse of `_pad_cols_kernel`: [ROWS, SRC_COLS] -> [ROWS, DST_COLS].
     """
+    var dst_cols = Int(dst_cols_arg)
+    var src_cols = Int(src_cols_arg)
     var i = Int(global_idx.x)
-    if i < ROWS * DST_COLS:
-        var r = i // DST_COLS
-        var cc = i % DST_COLS
-        dst[i] = src[r * SRC_COLS + cc]
+    if i < Int(rows_arg) * dst_cols:
+        var r = i // dst_cols
+        var cc = i % dst_cols
+        dst[i] = src[r * src_cols + cc]
 
 
-def _accum_2d_kernel[
-    ROWS: Int, COLS: Int, SRC_COLS: Int
-](
-    dst: LayoutTensor[DT, Layout.row_major(ROWS * COLS), MutAnyOrigin],
-    src: LayoutTensor[DT, Layout.row_major(ROWS * SRC_COLS), MutAnyOrigin],
+def _accum_2d_kernel(
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    rows_arg: Int64,
+    cols_arg: Int64,
+    src_cols_arg: Int64,
 ):
-    """`dst[r, c] += src[r, c]` where `src` has a WIDER row stride.
-
-    `vjp` accumulates the padded `[K_PAD, N_PAD]` dW into the logical
-    `[IN_, OUT_]` master grad, so the flat `_accum_kernel` is wrong the moment
-    either dim is padded — the row strides differ and every row after the first
-    is offset.
-    """
+    """`dst[r, c] += src[r, c]` where src has a wider row stride (padded dW
+    into the logical master grad)."""
+    var cols = Int(cols_arg)
+    var src_cols = Int(src_cols_arg)
     var i = Int(global_idx.x)
-    if i < ROWS * COLS:
-        var r = i // COLS
-        var cc = i % COLS
-        dst[i] += src[r * SRC_COLS + cc]
+    if i < Int(rows_arg) * cols:
+        var r = i // cols
+        var cc = i % cols
+        dst[i] += src[r * src_cols + cc]
 
 
 # ── Linear ─────────────────────────────────────────────────────────────
@@ -475,6 +484,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     @staticmethod
     def _round_up(v: Int, to: Int) -> Int:
         return ((v + to - 1) // to) * to
+
     # Activation-flow dtype (satisfies the Module trait). `Linear[IN, OUT]` =
     # fp32 (ACT_DT == DT, the legacy path); `Linear[IN, OUT, bfloat16]` flows
     # activations at bf16 (the AMP "Step B" memory win).
@@ -483,6 +493,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     @staticmethod
     def display_label() -> String:
         return String("Linear")
+
     comptime B_SIZE = Self.OUT_
 
     var weight: Param["weight", True, Self.W_SIZE]
@@ -502,7 +513,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     # (backward grad_w). No `x_bf`/`o_bf`/`go_bf`: activations ALREADY flow at bf16
     # (no input/output/grad_output cast — the whole point of bf16-flow).
     var w_bf: TensorImpl[Self.ADT]
-    var b_a: TensorImpl[Self.ADT]        # cached bf16 bias (forward bias-add)
+    var b_a: TensorImpl[Self.ADT]  # cached bf16 bias (forward bias-add)
     var cacheT_bf: TensorImpl[Self.ADT]  # transposed-x bf16 (backward grad_w)
     var _w_cast_version: Int  # `weight.val.version` at last bf16 weight cast
     # K-alignment scratch (lazy; GPU fp32 forward only, and only when
@@ -622,11 +633,13 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
             # [IN_, OUT_] -> [K_PAD, N_PAD]. This must be the 2-D pad, not a
             # flat tail copy: once N is padded the row STRIDE changes from
             # `OUT_` to `N_PAD`, so every row moves, not just the appended ones.
-            c.enqueue_function[
-                _pad_2d_kernel[Self.IN_, Self.OUT_, Self.K_PAD, Self.N_PAD]
-            ](
-                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                self.w_pad.lt["gpu", Layout.row_major(Self.WPAD_SIZE)](),
+            c.enqueue_function[_pad_2d_kernel](
+                self.weight.val.dev.value(),
+                self.w_pad.dev.value(),
+                Int64(Self.IN_),
+                Int64(Self.OUT_),
+                Int64(Self.K_PAD),
+                Int64(Self.N_PAD),
                 grid_dim=(Self.WPAD_SIZE + 255) // 256,
                 block_dim=256,
             )
@@ -637,12 +650,17 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
         `weight.val`. Recasts ONLY when the optimizer bumped `val.version` since
         the last cast (so the weight cast is ONCE per step, not per fwd/bwd).
         Shared by forward (the cast) and vjp (which REUSES it — no optimizer step
-        intervenes between a fwd and its bwd, so the forward's cast is valid)."""
+        intervenes between a fwd and its bwd, so the forward's cast is valid).
+        """
         self.w_bf.ensure_gpu(c, Self.W_SIZE)
-        if self._force_recast or self.weight.val.version != self._w_cast_version:
-            c.enqueue_function[_cast_f2b_kernel[Self.W_SIZE]](
-                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                self.w_bf.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+        if (
+            self._force_recast
+            or self.weight.val.version != self._w_cast_version
+        ):
+            c.enqueue_function[_cast_f2b_kernel](
+                self.weight.val.dev.value(),
+                self.w_bf.dev.value(),
+                Int64(Self.W_SIZE),
                 grid_dim=(Self.W_SIZE + 255) // 256,
                 block_dim=256,
             )
@@ -703,32 +721,30 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         _CBLASOrder.ROW_MAJOR,
                         _CBLASTranspose.NO_TRANSPOSE,
                         _CBLASTranspose.NO_TRANSPOSE,
-                        Int32(B),           # M
-                        Int32(Self.OUT_),   # N
-                        Int32(Self.IN_),    # K
+                        Int32(B),  # M
+                        Int32(Self.OUT_),  # N
+                        Int32(Self.IN_),  # K
                         Float32(1.0),
                         rebind[Pointer[Float32, ImmutAnyOrigin]](
                             in0d.data.unsafe_ptr()
                         ),
-                        Int32(Self.IN_),    # lda
+                        Int32(Self.IN_),  # lda
                         rebind[Pointer[Float32, ImmutAnyOrigin]](
                             self.weight.val.data.unsafe_ptr()
                         ),
-                        Int32(Self.OUT_),   # ldb
-                        Float32(0.0),       # beta: overwrite, bias added below
+                        Int32(Self.OUT_),  # ldb
+                        Float32(0.0),  # beta: overwrite, bias added below
                         rebind[Pointer[Float32, MutAnyOrigin]](
                             outd.data.unsafe_ptr()
                         ),
-                        Int32(Self.OUT_),   # ldc
+                        Int32(Self.OUT_),  # ldc
                     )
                 else:
                     var x_v = TileTensor(in0d.data, row_major[B, Self.IN_]())
                     var w_v = TileTensor(
                         self.weight.val.data, row_major[Self.IN_, Self.OUT_]()
                     )
-                    var out_v = TileTensor(
-                        outd.data, row_major[B, Self.OUT_]()
-                    )
+                    var out_v = TileTensor(outd.data, row_major[B, Self.OUT_]())
                     max_matmul[target="cpu"](out_v, x_v, w_v, None)
                 # bias add, SIMD over the row (the scalar double loop was part
                 # of the non-GEMM cost that dominates CPU trunks).
@@ -755,9 +771,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                 var out_v = TileTensor(
                     outd.dev.value(), row_major(B, Self.OUT_)
                 )
-                var bl = self.bias.val.lt[
-                    "gpu", Layout.row_major(Self.OUT_)
-                ]()
+                var bl = self.bias.val.dev.value()
                 # Zero-padding K leaves the dot products EXACTLY unchanged (the
                 # appended columns are 0); only the GEMM's tiling — and hence
                 # its fp32 reduction ORDER — moves, which can shift a result by
@@ -773,19 +787,17 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     # right shape.
                     comptime if Self.NEEDS_PAD:
                         self.x_pad.ensure_gpu(c, B * Self.K_PAD)
-                        c.enqueue_function[
-                            _pad_cols_kernel[B, Self.IN_, Self.K_PAD]
-                        ](
-                            in0d.lt["gpu", Layout.row_major(B * Self.IN_)](),
-                            self.x_pad.lt[
-                                "gpu", Layout.row_major(B * Self.K_PAD)
-                            ](),
+                        c.enqueue_function[_pad_cols_kernel](
+                            in0d.dev.value(),
+                            self.x_pad.dev.value(),
+                            Int64(B),
+                            Int64(Self.IN_),
+                            Int64(Self.K_PAD),
                             grid_dim=(B * Self.K_PAD + 255) // 256,
                             block_dim=256,
                         )
                     var xp_v = TileTensor(
-                        self.x_pad.dev.value() if Self.NEEDS_PAD
-                        else in0d.dev.value(),
+                        self.x_pad.dev.value() if Self.NEEDS_PAD else in0d.dev.value(),
                         row_major(B, Self.K_PAD),
                     )
                     comptime if Self.NEEDS_N_PAD:
@@ -796,50 +808,54 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                             self.y_pad.dev.value(), row_major(B, Self.N_PAD)
                         )
                         max_matmul[target="gpu"](yp_v, xp_v, wp_v, c)
-                        c.enqueue_function[
-                            _bias_add_slice_kernel[B, Self.OUT_, Self.N_PAD]
-                        ](
-                            self.y_pad.lt[
-                                "gpu", Layout.row_major(B * Self.N_PAD)
-                            ](),
+                        c.enqueue_function[_bias_add_slice_kernel](
+                            self.y_pad.dev.value(),
                             bl,
-                            outd.lt["gpu", Layout.row_major(B * Self.OUT_)](),
+                            outd.dev.value(),
+                            Int64(B),
+                            Int64(Self.OUT_),
+                            Int64(Self.N_PAD),
                             grid_dim=(B * Self.OUT_ + 255) // 256,
                             block_dim=256,
                         )
                     else:
                         max_matmul[target="gpu"](out_v, xp_v, wp_v, c)
-                        c.enqueue_function[_bias_add_kernel[B, Self.OUT_]](
-                            outd.lt["gpu", Layout.row_major(B, Self.OUT_)](),
+                        c.enqueue_function[_bias_add_kernel[DT]](
+                            outd.dev.value(),
                             bl,
+                            Int64(B),
+                            Int64(Self.OUT_),
                             grid_dim=(B * Self.OUT_ + 255) // 256,
                             block_dim=256,
                         )
                 else:
                     _gemm_bkn[B, Self.IN_, Self.OUT_](
-                        outd.dev.value(), in0d.dev.value(),
-                        self.weight.val.dev.value(), c,
+                        outd.dev.value(),
+                        in0d.dev.value(),
+                        self.weight.val.dev.value(),
+                        c,
                     )
-                    c.enqueue_function[_bias_add_kernel[B, Self.OUT_]](
-                        outd.lt["gpu", Layout.row_major(B, Self.OUT_)](),
+                    c.enqueue_function[_bias_add_kernel[DT]](
+                        outd.dev.value(),
                         bl,
+                        Int64(B),
+                        Int64(Self.OUT_),
                         grid_dim=(B * Self.OUT_ + 255) // 256,
                         block_dim=256,
                     )
         else:
             # ── bf16-flow path (GPU-only) ──
-            comptime assert (
-                target == "gpu"
-            ), "bf16-flow Linear is GPU-only"
+            comptime assert target == "gpu", "bf16-flow Linear is GPU-only"
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.OUT_)
             # x (in0) is ALREADY bf16 — no input cast. W: cached bf16 (recast
             # only on a version bump). bias: cheap per-forward DT→bf16 cast.
             self._ensure_w_bf(c)
             self.b_a.ensure_gpu(c, Self.B_SIZE)
-            c.enqueue_function[_cast_f2b_kernel[Self.B_SIZE]](
-                self.bias.val.lt["gpu", Layout.row_major(Self.B_SIZE)](),
-                self.b_a.lt["gpu", Layout.row_major(Self.B_SIZE)](),
+            c.enqueue_function[_cast_f2b_kernel](
+                self.bias.val.dev.value(),
+                self.b_a.dev.value(),
+                Int64(Self.B_SIZE),
                 grid_dim=(Self.B_SIZE + 255) // 256,
                 block_dim=256,
             )
@@ -850,10 +866,15 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
             var out_v = TileTensor(out.dev.value(), row_major(B, Self.OUT_))
             # bf16-in → bf16-out GEMM (fp32 accumulation is automatic).
             max_matmul[target="gpu"](out_v, x_v, w_bf_v, c)
-            var ol = out.lt["gpu", Layout.row_major(B, Self.OUT_)]()
-            var bl = self.b_a.lt["gpu", Layout.row_major(Self.OUT_)]()
-            c.enqueue_function[_bias_add_kernel[B, Self.OUT_, Self.ADT]](
-                ol, bl, grid_dim=(B * Self.OUT_ + 255) // 256, block_dim=256
+            var ol = out.dev.value()
+            var bl = self.b_a.dev.value()
+            c.enqueue_function[_bias_add_kernel[Self.ADT]](
+                ol,
+                bl,
+                Int64(B),
+                Int64(Self.OUT_),
+                grid_dim=(B * Self.OUT_ + 255) // 256,
+                block_dim=256,
             )
 
     def vjp[
@@ -882,9 +903,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                 self.cacheT.ensure(Self.IN_ * B)
                 self.dW_tmp.ensure(Self.W_SIZE)
                 var x_v = TileTensor(find.data, row_major[B, Self.IN_]())
-                var go_v = TileTensor(
-                    god.data, row_major[B, Self.OUT_]()
-                )
+                var go_v = TileTensor(god.data, row_major[B, Self.OUT_]())
                 var gi_v = TileTensor(gind.data, row_major[B, Self.IN_]())
                 var w_v = TileTensor(
                     self.weight.val.data, row_major[Self.IN_, Self.OUT_]()
@@ -954,24 +973,25 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                 self.cacheT.ensure_gpu(c, Self.IN_ * B)
                 self.dW_tmp.ensure_gpu(c, Self.W_SIZE)
                 # grad_b += colsum(go)
-                var gol = god.lt[
-                    "gpu", Layout.row_major(B, Self.OUT_)
-                ]()
-                var gbl = self.bias.grd.lt[
-                    "gpu", Layout.row_major(Self.OUT_)
-                ]()
-                c.enqueue_function[_lin_gb_kernel[B, Self.OUT_]](
-                    gol, gbl, grid_dim=(Self.OUT_ + 255) // 256, block_dim=256
+                var gol = god.dev.value()
+                var gbl = self.bias.grd.dev.value()
+                c.enqueue_function[_lin_gb_kernel[DT]](
+                    gol,
+                    gbl,
+                    Int64(B),
+                    Int64(Self.OUT_),
+                    grid_dim=(Self.OUT_ + 255) // 256,
+                    block_dim=256,
                 )
                 # grad_w += cacheᵀ @ go: transpose x → cacheT (B1' tiled, fp32),
                 # then the two GEMMs (grad_w + grad_x), then the grad_w accumulate.
-                var xl = find.lt["gpu", Layout.row_major(B, Self.IN_)]()
-                var cTl = self.cacheT.lt[
-                    "gpu", Layout.row_major(Self.IN_, B)
-                ]()
-                c.enqueue_function[_transpose_tiled_kernel[B, Self.IN_]](
+                var xl = find.dev.value()
+                var cTl = self.cacheT.dev.value()
+                c.enqueue_function[_transpose_tiled_kernel[DT]](
                     xl,
                     cTl,
+                    Int64(B),
+                    Int64(Self.IN_),
                     grid_dim=(
                         (Self.IN_ + _T_TILE - 1) // _T_TILE,
                         (B + _T_TILE - 1) // _T_TILE,
@@ -992,39 +1012,34 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     # go: [B, OUT_] -> [B, N_PAD]
                     comptime if Self.NEEDS_N_PAD:
                         self.go_pad.ensure_gpu(c, B * Self.N_PAD)
-                        c.enqueue_function[
-                            _pad_cols_kernel[B, Self.OUT_, Self.N_PAD]
-                        ](
-                            god.lt["gpu", Layout.row_major(B * Self.OUT_)](),
-                            self.go_pad.lt[
-                                "gpu", Layout.row_major(B * Self.N_PAD)
-                            ](),
+                        c.enqueue_function[_pad_cols_kernel](
+                            god.dev.value(),
+                            self.go_pad.dev.value(),
+                            Int64(B),
+                            Int64(Self.OUT_),
+                            Int64(Self.N_PAD),
                             grid_dim=(B * Self.N_PAD + 255) // 256,
                             block_dim=256,
                         )
                     var gop_v = TileTensor(
-                        self.go_pad.dev.value() if Self.NEEDS_N_PAD
-                        else god.dev.value(),
+                        self.go_pad.dev.value() if Self.NEEDS_N_PAD else god.dev.value(),
                         row_major(B, Self.N_PAD),
                     )
                     # cacheT: [IN_, B] -> [K_PAD, B]  (append zero ROWS)
                     comptime if Self.NEEDS_PAD:
                         self.cT_pad.ensure_gpu(c, Self.K_PAD * B)
-                        c.enqueue_function[
-                            _pad_2d_kernel[Self.IN_, B, Self.K_PAD, B]
-                        ](
-                            self.cacheT.lt[
-                                "gpu", Layout.row_major(Self.IN_ * B)
-                            ](),
-                            self.cT_pad.lt[
-                                "gpu", Layout.row_major(Self.K_PAD * B)
-                            ](),
+                        c.enqueue_function[_pad_2d_kernel](
+                            self.cacheT.dev.value(),
+                            self.cT_pad.dev.value(),
+                            Int64(Self.IN_),
+                            Int64(B),
+                            Int64(Self.K_PAD),
+                            Int64(B),
                             grid_dim=(Self.K_PAD * B + 255) // 256,
                             block_dim=256,
                         )
                     var cTp_v = TileTensor(
-                        self.cT_pad.dev.value() if Self.NEEDS_PAD
-                        else self.cacheT.dev.value(),
+                        self.cT_pad.dev.value() if Self.NEEDS_PAD else self.cacheT.dev.value(),
                         row_major(Self.K_PAD, B),
                     )
                     # grad_w = cacheTᵀ @ go   ->  [K_PAD, N_PAD]
@@ -1052,9 +1067,15 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                             self._decide_sk_p(B, c)
                         if self._sk_p > 1:
                             dispatch_splitk_gemm(
-                                dWp_v, cTp_v, gop_v,
-                                Self.K_PAD, Self.N_PAD, B,
-                                self._sk_p, self.sk_ws, c,
+                                dWp_v,
+                                cTp_v,
+                                gop_v,
+                                Self.K_PAD,
+                                Self.N_PAD,
+                                B,
+                                self._sk_p,
+                                self.sk_ws,
+                                c,
                             )
                         else:
                             max_matmul[target="gpu"](dWp_v, cTp_v, gop_v, c)
@@ -1074,13 +1095,12 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         max_matmul[transpose_b=True, target="gpu"](
                             gip_v, gop_v, wp_v, c
                         )
-                        c.enqueue_function[
-                            _slice_cols_kernel[B, Self.IN_, Self.K_PAD]
-                        ](
-                            self.gi_pad.lt[
-                                "gpu", Layout.row_major(B * Self.K_PAD)
-                            ](),
-                            gind.lt["gpu", Layout.row_major(B * Self.IN_)](),
+                        c.enqueue_function[_slice_cols_kernel](
+                            self.gi_pad.dev.value(),
+                            gind.dev.value(),
+                            Int64(B),
+                            Int64(Self.IN_),
+                            Int64(Self.K_PAD),
                             grid_dim=(B * Self.IN_ + 255) // 256,
                             block_dim=256,
                         )
@@ -1095,19 +1115,16 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     # ⚠ STRIDED accumulate: dW_pad's row stride is N_PAD, the
                     # master grad's is OUT_. A flat `_accum_kernel` would fold
                     # the padded columns into the next row's gradient.
-                    c.enqueue_function[
-                        _accum_2d_kernel[Self.IN_, Self.OUT_, Self.N_PAD]
-                    ](
-                        self.weight.grd.lt[
-                            "gpu", Layout.row_major(Self.W_SIZE)
-                        ](),
+                    c.enqueue_function[_accum_2d_kernel](
+                        self.weight.grd.dev.value(),
                         # PREFIX view: dW_pad is [K_PAD, N_PAD] but only its
                         # first IN_ rows carry gradient — the rest correspond to
                         # the zero-padded contraction rows. Row-major makes
                         # those first IN_ rows contiguous from offset 0.
-                        self.dW_pad.lt[
-                            "gpu", Layout.row_major(Self.IN_ * Self.N_PAD)
-                        ](),
+                        self.dW_pad.dev.value(),
+                        Int64(Self.IN_),
+                        Int64(Self.OUT_),
+                        Int64(Self.N_PAD),
                         grid_dim=(Self.W_SIZE + 255) // 256,
                         block_dim=256,
                     )
@@ -1135,9 +1152,15 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                             self._decide_sk_p(B, c)
                         if self._sk_p > 1:
                             dispatch_splitk_gemm(
-                                dW_v, cT_v, go_v,
-                                Self.IN_, Self.OUT_, B,
-                                self._sk_p, self.sk_ws, c,
+                                dW_v,
+                                cT_v,
+                                go_v,
+                                Self.IN_,
+                                Self.OUT_,
+                                B,
+                                self._sk_p,
+                                self.sk_ws,
+                                c,
                             )
                         else:
                             max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
@@ -1151,41 +1174,43 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         gi_v, go_v, w_v, c
                     )
                     # grad_w += dW (accumulate into the fp32 master grad)
-                    c.enqueue_function[_accum_kernel[Self.W_SIZE]](
-                        self.weight.grd.lt[
-                            "gpu", Layout.row_major(Self.W_SIZE)
-                        ](),
-                        self.dW_tmp.lt[
-                            "gpu", Layout.row_major(Self.W_SIZE)
-                        ](),
+                    c.enqueue_function[_accum_kernel](
+                        self.weight.grd.dev.value(),
+                        self.dW_tmp.dev.value(),
+                        Int64(Self.W_SIZE),
                         grid_dim=(Self.W_SIZE + 255) // 256,
                         block_dim=256,
                     )
         else:
             # ── bf16-flow path (GPU-only) ──
-            comptime assert (
-                target == "gpu"
-            ), "bf16-flow Linear is GPU-only"
+            comptime assert target == "gpu", "bf16-flow Linear is GPU-only"
             var c = ctx.value()
             gin.ensure_gpu(c, B * Self.IN_)
             self.cacheT_bf.ensure_gpu(c, Self.IN_ * B)
             self.dW_tmp.ensure_gpu(c, Self.W_SIZE)
             # grad_b += colsum(go): bf16 go → fp32 master grad (fp32 accumulator).
-            var gol = grad_output.lt["gpu", Layout.row_major(B, Self.OUT_)]()
-            var gbl = self.bias.grd.lt["gpu", Layout.row_major(Self.OUT_)]()
-            c.enqueue_function[_lin_gb_kernel[B, Self.OUT_, Self.ADT]](
-                gol, gbl, grid_dim=(Self.OUT_ + 255) // 256, block_dim=256
+            var gol = grad_output.dev.value()
+            var gbl = self.bias.grd.dev.value()
+            c.enqueue_function[_lin_gb_kernel[Self.ADT]](
+                gol,
+                gbl,
+                Int64(B),
+                Int64(Self.OUT_),
+                grid_dim=(Self.OUT_ + 255) // 256,
+                block_dim=256,
             )
             # grad_w += cacheᵀ @ go. `fin`/`go` are ALREADY bf16 (no cast).
             # Transpose the bf16 fwd-input directly → bf16 cacheT_bf, then a
             # bf16-in → FP32-out GEMM into the fp32 dW_tmp, then accumulate into
             # the fp32 master grad. W reuses the forward's cached cast.
             self._ensure_w_bf(c)
-            var xl = fin.lt["gpu", Layout.row_major(B, Self.IN_)]()
-            var cTl = self.cacheT_bf.lt["gpu", Layout.row_major(Self.IN_, B)]()
-            c.enqueue_function[_transpose_tiled_kernel[B, Self.IN_, Self.ADT]](
+            var xl = fin.dev.value()
+            var cTl = self.cacheT_bf.dev.value()
+            c.enqueue_function[_transpose_tiled_kernel[Self.ADT]](
                 xl,
                 cTl,
+                Int64(B),
+                Int64(Self.IN_),
                 grid_dim=(
                     (Self.IN_ + _T_TILE - 1) // _T_TILE,
                     (B + _T_TILE - 1) // _T_TILE,
@@ -1214,12 +1239,14 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
             # grad_x = go @ Wᵀ → bf16 gin (bf16-in, bf16-out — gin flows at bf16).
             max_matmul[transpose_b=True, target="gpu"](gi_v, gob_v, wb_v, c)
             # grad_w += dW (accumulate into the fp32 master grad)
-            var gwl = self.weight.grd.lt[
-                "gpu", Layout.row_major(Self.W_SIZE)
-            ]()
-            var dWl = self.dW_tmp.lt["gpu", Layout.row_major(Self.W_SIZE)]()
-            c.enqueue_function[_accum_kernel[Self.W_SIZE]](
-                gwl, dWl, grid_dim=(Self.W_SIZE + 255) // 256, block_dim=256
+            var gwl = self.weight.grd.dev.value()
+            var dWl = self.dW_tmp.dev.value()
+            c.enqueue_function[_accum_kernel](
+                gwl,
+                dWl,
+                Int64(Self.W_SIZE),
+                grid_dim=(Self.W_SIZE + 255) // 256,
+                block_dim=256,
             )
 
     # for_each_param / zero_grad inherit the Module reflection defaults

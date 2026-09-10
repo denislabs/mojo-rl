@@ -362,11 +362,13 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
             # [IN_, OUT_] -> [K_PAD, N_PAD]. This must be the 2-D pad, not a
             # flat tail copy: once N is padded the row STRIDE changes from
             # `OUT_` to `N_PAD`, so every row moves, not just the appended ones.
-            c.enqueue_function[
-                _pad_2d_kernel[Self.IN_, Self.OUT_, Self.K_PAD, Self.N_PAD]
-            ](
-                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                self.w_pad.lt["gpu", Layout.row_major(Self.WPAD_SIZE)](),
+            c.enqueue_function[_pad_2d_kernel](
+                self.weight.val.dev.value(),
+                self.w_pad.dev.value(),
+                Int64(Self.IN_),
+                Int64(Self.OUT_),
+                Int64(Self.K_PAD),
+                Int64(Self.N_PAD),
                 grid_dim=(Self.WPAD_SIZE + 255) // 256,
                 block_dim=256,
             )
@@ -378,9 +380,10 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
         step, not per fwd/bwd). Mirror of `Linear._ensure_w_bf`."""
         self.w_bf.ensure_gpu(c, Self.W_SIZE)
         if self._force_recast or self.weight.val.version != self._w_cast_version:
-            c.enqueue_function[_cast_f2b_kernel[Self.W_SIZE]](
-                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                self.w_bf.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+            c.enqueue_function[_cast_f2b_kernel](
+                self.weight.val.dev.value(),
+                self.w_bf.dev.value(),
+                Int64(Self.W_SIZE),
                 grid_dim=(Self.W_SIZE + 255) // 256,
                 block_dim=256,
             )
@@ -463,13 +466,12 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                     self._ensure_w_pad(c)
                     comptime if Self.NEEDS_PAD:
                         self.x_pad.ensure_gpu(c, B * Self.K_PAD)
-                        c.enqueue_function[
-                            _pad_cols_kernel[B, Self.IN_, Self.K_PAD]
-                        ](
-                            in0d.lt["gpu", Layout.row_major(B * Self.IN_)](),
-                            self.x_pad.lt[
-                                "gpu", Layout.row_major(B * Self.K_PAD)
-                            ](),
+                        c.enqueue_function[_pad_cols_kernel](
+                            in0d.dev.value(),
+                            self.x_pad.dev.value(),
+                            Int64(B),
+                            Int64(Self.IN_),
+                            Int64(Self.K_PAD),
                             grid_dim=(B * Self.K_PAD + 255) // 256,
                             block_dim=256,
                         )
@@ -533,9 +535,10 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
             # on a version bump). bias: cheap per-forward DT→bf16 cast.
             self._ensure_w_bf(c)
             self.b_a.ensure_gpu(c, Self.B_SIZE)
-            c.enqueue_function[_cast_f2b_kernel[Self.B_SIZE]](
-                self.bias.val.lt["gpu", Layout.row_major(Self.B_SIZE)](),
-                self.b_a.lt["gpu", Layout.row_major(Self.B_SIZE)](),
+            c.enqueue_function[_cast_f2b_kernel](
+                self.bias.val.dev.value(),
+                self.b_a.dev.value(),
+                Int64(Self.B_SIZE),
                 grid_dim=(Self.B_SIZE + 255) // 256,
                 block_dim=256,
             )
@@ -661,15 +664,19 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                     grid_dim=(M + TPB - 1) // TPB,
                     block_dim=TPB,
                 )
-                c.enqueue_function[_lin_gb_kernel[B, Self.OUT_]](
-                    god.lt["gpu", Layout.row_major(B, Self.OUT_)](),
-                    self.bias.grd.lt["gpu", Layout.row_major(Self.OUT_)](),
+                c.enqueue_function[_lin_gb_kernel[DT]](
+                    god.dev.value(),
+                    self.bias.grd.dev.value(),
+                    Int64(B),
+                    Int64(Self.OUT_),
                     grid_dim=(Self.OUT_ + TPB - 1) // TPB,
                     block_dim=TPB,
                 )
-                c.enqueue_function[_transpose_tiled_kernel[B, Self.IN_]](
-                    find.lt["gpu", Layout.row_major(B, Self.IN_)](),
-                    self.cacheT.lt["gpu", Layout.row_major(Self.IN_, B)](),
+                c.enqueue_function[_transpose_tiled_kernel[DT]](
+                    find.dev.value(),
+                    self.cacheT.dev.value(),
+                    Int64(B),
+                    Int64(Self.IN_),
                     grid_dim=(
                         (Self.IN_ + _T_TILE - 1) // _T_TILE,
                         (B + _T_TILE - 1) // _T_TILE,
@@ -694,13 +701,12 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                     )
                     comptime if Self.NEEDS_N_PAD:
                         self.go_pad.ensure_gpu(c, B * Self.N_PAD)
-                        c.enqueue_function[
-                            _pad_cols_kernel[B, Self.OUT_, Self.N_PAD]
-                        ](
-                            god.lt["gpu", Layout.row_major(B * Self.OUT_)](),
-                            self.go_pad.lt[
-                                "gpu", Layout.row_major(B * Self.N_PAD)
-                            ](),
+                        c.enqueue_function[_pad_cols_kernel](
+                            god.dev.value(),
+                            self.go_pad.dev.value(),
+                            Int64(B),
+                            Int64(Self.OUT_),
+                            Int64(Self.N_PAD),
                             grid_dim=(B * Self.N_PAD + 255) // 256,
                             block_dim=256,
                         )
@@ -712,15 +718,13 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                     # cacheT: [IN_, B] -> [K_PAD, B]  (append zero ROWS)
                     comptime if Self.NEEDS_PAD:
                         self.cT_pad.ensure_gpu(c, Self.K_PAD * B)
-                        c.enqueue_function[
-                            _pad_2d_kernel[Self.IN_, B, Self.K_PAD, B]
-                        ](
-                            self.cacheT.lt[
-                                "gpu", Layout.row_major(Self.IN_ * B)
-                            ](),
-                            self.cT_pad.lt[
-                                "gpu", Layout.row_major(Self.K_PAD * B)
-                            ](),
+                        c.enqueue_function[_pad_2d_kernel](
+                            self.cacheT.dev.value(),
+                            self.cT_pad.dev.value(),
+                            Int64(Self.IN_),
+                            Int64(B),
+                            Int64(Self.K_PAD),
+                            Int64(B),
                             grid_dim=(Self.K_PAD * B + 255) // 256,
                             block_dim=256,
                         )
@@ -750,12 +754,8 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                     # ⚠ STRIDED accumulate: dW_pad's row stride is N_PAD, the
                     # master grad's is OUT_. A flat `_accum_kernel` would fold
                     # the padded columns into the next row's gradient.
-                    c.enqueue_function[
-                        _accum_2d_kernel[Self.IN_, Self.OUT_, Self.N_PAD]
-                    ](
-                        self.weight.grd.lt[
-                            "gpu", Layout.row_major(Self.W_SIZE)
-                        ](),
+                    c.enqueue_function[_accum_2d_kernel](
+                        self.weight.grd.dev.value(),
                         # PREFIX view: dW_pad is [K_PAD, N_PAD] but only its
                         # first IN_ rows carry gradient — the rest correspond
                         # to the zero-padded contraction rows. Row-major makes
@@ -764,9 +764,10 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                         # so passing the full WPAD_SIZE is a shape error (it
                         # only shows up when K is padded and N is not, which is
                         # why the parity test carries that case).
-                        self.dW_pad.lt[
-                            "gpu", Layout.row_major(Self.IN_ * Self.N_PAD)
-                        ](),
+                        self.dW_pad.dev.value(),
+                        Int64(Self.IN_),
+                        Int64(Self.OUT_),
+                        Int64(Self.N_PAD),
                         grid_dim=(Self.W_SIZE + TPB - 1) // TPB,
                         block_dim=TPB,
                     )
@@ -780,13 +781,12 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                         max_matmul[transpose_b=True, target="gpu"](
                             gip_v, gop_v, wp_v, c
                         )
-                        c.enqueue_function[
-                            _slice_cols_kernel[B, Self.IN_, Self.K_PAD]
-                        ](
-                            self.gi_pad.lt[
-                                "gpu", Layout.row_major(B * Self.K_PAD)
-                            ](),
-                            gind.lt["gpu", Layout.row_major(B * Self.IN_)](),
+                        c.enqueue_function[_slice_cols_kernel](
+                            self.gi_pad.dev.value(),
+                            gind.dev.value(),
+                            Int64(B),
+                            Int64(Self.IN_),
+                            Int64(Self.K_PAD),
                             grid_dim=(B * Self.IN_ + 255) // 256,
                             block_dim=256,
                         )
@@ -822,13 +822,10 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                             max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
                     else:
                         max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
-                    c.enqueue_function[_accum_kernel[Self.W_SIZE]](
-                        self.weight.grd.lt[
-                            "gpu", Layout.row_major(Self.W_SIZE)
-                        ](),
-                        self.dW_tmp.lt[
-                            "gpu", Layout.row_major(Self.W_SIZE)
-                        ](),
+                    c.enqueue_function[_accum_kernel](
+                        self.weight.grd.dev.value(),
+                        self.dW_tmp.dev.value(),
+                        Int64(Self.W_SIZE),
                         grid_dim=(Self.W_SIZE + TPB - 1) // TPB,
                         block_dim=TPB,
                     )
@@ -865,9 +862,11 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                 block_dim=TPB,
             )
             # grad_b += colsum(go): bf16 go → fp32 master grad (fp32 accumulator).
-            c.enqueue_function[_lin_gb_kernel[B, Self.OUT_, Self.ADT]](
-                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_)](),
-                self.bias.grd.lt["gpu", Layout.row_major(Self.OUT_)](),
+            c.enqueue_function[_lin_gb_kernel[Self.ADT]](
+                grad_output.dev.value(),
+                self.bias.grd.dev.value(),
+                Int64(B),
+                Int64(Self.OUT_),
                 grid_dim=(Self.OUT_ + TPB - 1) // TPB,
                 block_dim=TPB,
             )
@@ -875,9 +874,11 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
             # (B1' tiled), then a bf16-in → FP32-out GEMM into fp32 dW_tmp, then
             # accumulate into the fp32 master grad. W reuses the forward's cast.
             self._ensure_w_bf(c)
-            c.enqueue_function[_transpose_tiled_kernel[B, Self.IN_, Self.ADT]](
-                fin.lt["gpu", Layout.row_major(B, Self.IN_)](),
-                self.cacheT_bf.lt["gpu", Layout.row_major(Self.IN_, B)](),
+            c.enqueue_function[_transpose_tiled_kernel[Self.ADT]](
+                fin.dev.value(),
+                self.cacheT_bf.dev.value(),
+                Int64(B),
+                Int64(Self.IN_),
                 grid_dim=(
                     (Self.IN_ + _T_TILE - 1) // _T_TILE,
                     (B + _T_TILE - 1) // _T_TILE,
@@ -901,9 +902,10 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
             # it on the fp32 assumption would be a silent wrong gradient, not a
             # slowdown. Needs a bf16 A/B gate before it moves.
             max_matmul[target="gpu"](dW_v, cTb_v, gob_v, c)
-            c.enqueue_function[_accum_kernel[Self.W_SIZE]](
-                self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                self.dW_tmp.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+            c.enqueue_function[_accum_kernel](
+                self.weight.grd.dev.value(),
+                self.dW_tmp.dev.value(),
+                Int64(Self.W_SIZE),
                 grid_dim=(Self.W_SIZE + TPB - 1) // TPB,
                 block_dim=TPB,
             )

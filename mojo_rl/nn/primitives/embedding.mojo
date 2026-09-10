@@ -129,9 +129,10 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
         `Linear._ensure_w_bf`."""
         self.w_bf.ensure_gpu(c, Self.W_SIZE)
         if self._force_recast or self.weight.val.version != self._w_cast_version:
-            c.enqueue_function[_cast_f2b_kernel[Self.W_SIZE]](
-                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                self.w_bf.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+            c.enqueue_function[_cast_f2b_kernel](
+                self.weight.val.dev.value(),
+                self.w_bf.dev.value(),
+                Int64(Self.W_SIZE),
                 grid_dim=(Self.W_SIZE + 255) // 256,
                 block_dim=256,
             )
@@ -210,9 +211,11 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                 max_matmul[target="gpu"](out_v, in_v, w_v, c)
                 # cache_inᵀ[VOCAB, B] = input[B, VOCAB]ᵀ  (for grad_w in
                 # backward), via Linear's B1' tiled transpose.
-                c.enqueue_function[_transpose_tiled_kernel[B, Self.VOCAB_]](
+                c.enqueue_function[_transpose_tiled_kernel[DT]](
                     in0d.lt["gpu", lbv](),
                     self.cache_inT.lt["gpu", lvb](),
+                    Int64(B),
+                    Int64(Self.VOCAB_),
                     grid_dim=(
                         (Self.VOCAB_ + _T_TILE - 1) // _T_TILE,
                         (B + _T_TILE - 1) // _T_TILE,
@@ -244,9 +247,11 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
             max_matmul[target="gpu"](out_v, in_v, w_bf_v, c)
             # cache_inᵀ[VOCAB, B] = input[B, VOCAB]ᵀ at bf16 (for grad_w), via
             # Linear's dtype-parametric tiled transpose (bf16 in → bf16 out).
-            c.enqueue_function[_transpose_tiled_kernel[B, Self.VOCAB_, Self.ADT]](
+            c.enqueue_function[_transpose_tiled_kernel[Self.ADT]](
                 in0.lt["gpu", lbv](),
                 self.cache_inT_bf.lt["gpu", lvb](),
+                Int64(B),
+                Int64(Self.VOCAB_),
                 grid_dim=(
                     (Self.VOCAB_ + _T_TILE - 1) // _T_TILE,
                     (B + _T_TILE - 1) // _T_TILE,
