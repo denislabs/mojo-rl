@@ -378,7 +378,10 @@ def main() raises:
 #   H4  a record does not reset at `pack=`         -> check 1
 #   H5  provider=https sends HF_TOKEN              -> check 3
 #   H6  token_env missing is silently ignored      -> check 3
-#   H7  materialise symlinks the whole directory   -> check 5
+#   H7  materialise symlinks the whole directory   -> check 4 (the .ok leaks
+#                                                     THROUGH the link)
+#   H7b the same, with the .ok removed so check 4   -> check 5, alone
+#       cannot fire
 #
 # ⚠⚠ H7 SURVIVED THE FIRST SWEEP TWICE OVER, and both causes are worth having
 # written down. The MUTANT was wrong: `ln -s src dest` where `dest` had already
