@@ -7,9 +7,29 @@ rollouts, 16 updates per batched step. G3.3 of
     pixi run -e nvidia mojo run -I . examples/g1/bfm_zero_train_gpu.mojo --steps 204800   # 200 batched steps
     pixi run -e nvidia mojo run -I . examples/g1/bfm_zero_train_gpu.mojo --steps 192000000 --tag g3_priv
 
+    # resume the 192 M run from the checkpoint a dead box left behind
+    pixi run -e nvidia mojo run -I . examples/g1/bfm_zero_train_gpu.mojo \\
+        --resume runs/<id>/checkpoints/step_50000.ckpt --start-at 51200000
+
 `--smoke` is a PRESET (40 batched steps, print every 10, reset diagnostics on
 every reset), not an override — pass `--steps` and it wins, so
 `--smoke --steps 204800` is a long smoke rather than a silent 40 steps.
+
+THE RUN IS AN OBJECT ON DISK, not a terminal. `RunContext` names the directory;
+`runs/<id>/metrics.csv` carries every curve as the run goes (`CsvLogger`), the
+dashboard gets the same points when `.env` names one (`RemoteLogger`, inert
+without a URL), `run.kv` records `status`/`outcome` WRITTEN and never inferred,
+and each checkpoint is offered to the artifact sink so a box that dies at hour
+40 does not take the weights with it. A 30-minute check-up is therefore
+`tail -3 runs/<id>/metrics.csv` plus `run.kv`, from anywhere — read `norm/B`
+first, it is sqrt(d) = 16 by construction and any drift is a bug, not a trend.
+
+`--resume PATH` restores the online nets + `.norm`; `--start-at N` is the env
+steps that checkpoint already represents, so `--steps` stays the TOTAL and this
+run does the remainder, with printed/logged steps and checkpoint names carrying
+the offset. ⚠ The targets are hard-copied from the online nets, the Adam
+moments re-warm, and the REPLAY RING STARTS EMPTY (~32 min to refill at 1024
+lanes) — a resume is not bit-identical to an uninterrupted run.
 
 ⚠ NVIDIA ONLY. The G1 batched env does not compile for Metal (§12.2), so this
 file is written on the laptop and built on the box — every laptop-side edit
@@ -80,7 +100,11 @@ from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.core.run import RunContext
+from mojo_rl.core.run import RunContext, register_run
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import CsvLogger, RemoteLogger, CompositeLogger
+from mojo_rl.io.artifact_sink import close_sink, sink_for_run
+from mojo_rl.deep_agents.training.checkpoint import announce_checkpoint
 from mojo_rl.data.store import TrajectoryStore
 from mojo_rl.data.resident import IDX_DT
 from mojo_rl.deep_agents.fb import FBCPROnlineAgent
@@ -308,6 +332,29 @@ def main() raises:
     var store_path = _flag(String("--store"), String("lafan_g1_50hz.h5"))
     var ckpt_every = atol(_flag(String("--ckpt-every"), String(2000)))   # batched steps
     var print_every = atol(_flag(String("--print-every"), String(100)))
+    # ── resume ───────────────────────────────────────────────────────────
+    # `--resume PATH` restores the online nets + the `.norm` sidecar from a
+    # checkpoint; `--start-at N` is how many ENV steps that checkpoint already
+    # represents, so `--steps` stays the TOTAL target and this run does the
+    # remainder. Both the printed step and the logged step carry the offset,
+    # so a resumed run's curves continue the first one's instead of restarting
+    # at zero, and its checkpoints keep climbing the same ladder.
+    #
+    # ⚠ WHAT A RESUME DOES NOT CARRY. `save_state` writes the ONLINE nets only
+    # (`fb/trainer.mojo`): the targets are hard-copied from them on load, the
+    # Adam moments re-warm, and THE REPLAY RING STARTS EMPTY. The ring is a
+    # 2 M-transition rolling window, i.e. ~32 min of collection at 1024 lanes,
+    # so a resume costs about that before the batch distribution is back to
+    # normal. That is proportionate to a 33-min checkpoint cadence; it is not
+    # free, and it is why this is not bit-identical to an uninterrupted run.
+    #
+    # ⚠ THE SEED PHASE RE-RUNS ON A RESUME, AND THAT IS CORRECT. `env_steps`
+    # counts THIS execution, so the `env_steps >= SEED_STEPS` gate below holds
+    # the updates off for the first 10 batched steps — which is what an empty
+    # ring needs. Offsetting it would start training against ~0 transitions.
+    var resume_path = _flag(String("--resume"), String(""))
+    var start_at = atol(_flag(String("--start-at"), String(0)))
+    var s_off = start_at // N_ENVS  # the batched-step offset
     var seed_v = atol(_flag(String("--seed"), String(20260909)))
     var lie_prob = atof(_flag(String("--lie-prob"), String(G1_LIE_DOWN_PROB)))
     var track_on = not _has("--no-track")
@@ -335,6 +382,71 @@ def main() raises:
     )
     run.set_tag(tag)
     print("run:", run.dir)
+
+    # ── the run's own record: a CSV that outlives the ssh session ─────────
+    # ⚠ A 55-HOUR RUN THAT ONLY PRINTS TO STDOUT HAS NO RECORD. The terminal
+    # is not an artefact: a dropped connection, a full scrollback or a box
+    # that dies takes the whole curve with it. `CsvLogger` writes
+    # `step,wall_time_ms,name,value` into the run directory as the run goes.
+    # ⚠ `RemoteLogger` WITH NO URL IS INERT — its POST sink is built lazily on
+    # the first payload — so this costs nothing with no `.env`, and its header
+    # states the rule that matters here: a dashboard that cannot be reached
+    # must never take the training run with it.
+    var env_vars = load_dotenv()
+    var remote = RemoteLogger(
+        server_url=env_vars.get("RL_MONITOR_URL", ""),
+        run_name=run.name(),
+        run_id=run.id,
+        buffer_size=64,
+        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+    )
+    remote.set_config("algorithm", "BFM-Zero FB-CPR")
+    remote.set_config("env", "unitree_g1")
+    remote.set_config("target", "gpu")
+    remote.set_config("lanes", String(N_ENVS))
+    remote.set_config("obs", String(OBS))
+    remote.set_config("act", String(ACT))
+    remote.set_config("d", String(D))
+    remote.set_config("h", String(H))
+    remote.set_config("layers", String(L))
+    remote.set_config("updates_per_step", String(ups))
+    remote.set_config("seed_steps", String(SEED_STEPS))
+    remote.set_config("store", store_path)
+    remote.set_config("resume_from", resume_path)
+    remote.set_config("start_at", String(start_at))
+    var logger = CompositeLogger(CsvLogger(run.metrics_path()), remote)
+    # ⚠ AFTER the config and before step 0 — `register_run` seeds the
+    # dashboard from the run (id, project, commit, seed, host) and POSTs
+    # `/runs`. A run that dies before step 0 otherwise never appears at all.
+    register_run(run, logger)
+
+    # ⚠⚠ THE ARTIFACT UPLINK. A checkpoint leaves the box WHILE the run is
+    # going, so a rented box that dies at hour 40 does not take 40 hours of
+    # weights with it. `sink_for_run` returns None when `.env` names no
+    # monitor — a box with no credentials must still train — and every
+    # `announce_checkpoint` below is a no-op on a None, so there is no branch.
+    var artifacts = sink_for_run(run.id, run.dir)
+
+    # ⚠ THE SETTINGS GO OUT AS SCALARS TOO, SO THE CSV IS SELF-DESCRIBING.
+    # `set_config` reaches the dashboard and NOT the CSV — `CsvLogger` has
+    # nowhere to put a config field — so a CSV read a week later would carry
+    # the curves and none of the settings that produced them. As `cfg/*` so
+    # they sort together and cannot collide with a metric name.
+    logger.log_scalar(String("cfg/lanes"), Float64(N_ENVS), 0)
+    logger.log_scalar(String("cfg/obs"), Float64(OBS), 0)
+    logger.log_scalar(String("cfg/act"), Float64(ACT), 0)
+    logger.log_scalar(String("cfg/d"), Float64(D), 0)
+    logger.log_scalar(String("cfg/h"), Float64(H), 0)
+    logger.log_scalar(String("cfg/layers"), Float64(L), 0)
+    logger.log_scalar(String("cfg/updates_per_step"), Float64(ups), 0)
+    logger.log_scalar(String("cfg/seed_steps"), Float64(SEED_STEPS), 0)
+    logger.log_scalar(String("cfg/t_episode"), Float64(T_EPISODE), 0)
+    logger.log_scalar(String("cfg/track_len"), Float64(TRACK_LEN), 0)
+    logger.log_scalar(String("cfg/lie_prob"), lie_prob, 0)
+    logger.log_scalar(String("cfg/seed"), Float64(seed_v), 0)
+    logger.log_scalar(String("cfg/start_at"), Float64(start_at), 0)
+    logger.log_scalar(String("cfg/resumed"),
+                      1.0 if resume_path.byte_length() > 0 else 0.0, 0)
 
     var ctx = DeviceContext()
     print("BFM-Zero G1 privileged arm: lanes", N_ENVS, " obs", OBS, " act", ACT, " d", D, " h", H, " L", L)
@@ -378,6 +490,27 @@ def main() raises:
     agent.attach_expert_windows(eobs^, starts8_dev^, len(starts8))
     if track_on:
         agent.base.enable_z_pin()
+
+    # ⚠⚠ A FAILED `--resume` MUST NOT FALL BACK TO TRAINING FROM SCRATCH.
+    # The two runs look identical in the log until the curve starts from zero
+    # hours later, and on a 55-hour run the wasted box time IS the cost of the
+    # mistake. Refuse instead. (Same rule as
+    # `examples/so101/sac_so_arm101_reach_training_gpu.mojo`.)
+    if resume_path.byte_length() > 0:
+        try:
+            agent.load_state(resume_path)
+            print("resumed from", resume_path, " at env step", start_at)
+            print(
+                "  ⚠ online nets + normaliser restored; the targets are"
+                " hard-copied from them,\n    Adam moments re-warm, and the"
+                " replay ring starts EMPTY (~32 min to refill)."
+            )
+        except e:
+            print("ERROR: --resume given but", resume_path, "did not load:")
+            print("   ", e)
+            print("Refusing to silently train from scratch. Drop --resume to")
+            print("start fresh, or pass a path that exists.")
+            return
 
     # ── rollout buffers ───────────────────────────────────────────────
     var prev_obs = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
@@ -513,7 +646,19 @@ def main() raises:
             agent.train_device_kernels()
 
     var train_graph: Optional[CUDAGraph] = None
-    var n_batched = total_env_steps // N_ENVS
+    # The REMAINDER when resuming: `--steps` is the total target and
+    # `--start-at` is what a previous run already did.
+    var n_batched = (total_env_steps - start_at) // N_ENVS
+    if n_batched <= 0:
+        print("nothing to do: --start-at", start_at, ">= --steps", total_env_steps)
+        run.set_outcome(String("noop_start_at_ge_steps"))
+        logger.close()
+        close_sink(artifacts)
+        run.close()
+        return
+    var last_measure = 0.0
+    var last_rate = 0.0
+    var lie_frac = 0.0
     var t0 = perf_counter_ns()
     var lie_total = 0   # lanes given the lie-down transform, over diagnostic resets
     var lie_resets = 0  # diagnostic resets counted, the denominator for the above
@@ -541,6 +686,7 @@ def main() raises:
                         lie_n += 1
                 lie_total += lie_n
                 lie_resets += 1
+                lie_frac = Float64(lie_n) / Float64(N_ENVS)
                 print(
                     "  [reset @", s, "] rows in [", lo, ",", hi, "] of", n_rows,
                     " lie-down", Float64(lie_n) / Float64(N_ENVS),
@@ -584,24 +730,62 @@ def main() raises:
             var b_norm = 0.0
             if env_steps >= SEED_STEPS:
                 agent.base.peek_losses(measure, ortho, actor, f_norm, b_norm)
+            var rate = Float64(env_steps) / (el + 1e-9)
+            last_measure = measure
+            last_rate = rate
             print(
-                "  step", s, " env", env_steps, " ", Float64(env_steps) / (el + 1e-9), "env st/s",
+                "  step", s + s_off, " env", env_steps + start_at, " ", rate, "env st/s",
                 " ring", agent.base.size, " updates", agent.total_train_steps(),
                 " measure", measure, " ortho", ortho, " actor", actor, " |F|", f_norm, " |B|", b_norm,
             )
+            # ⚠ THE STEP IS THE GLOBAL ONE so a resumed run's curve continues
+            # the first one's instead of overwriting it from zero.
+            # ⚠ `env/st_s` IS ALSO A LEARNING SIGNAL, not only a speed one:
+            # collision cost tracks how much robot is touching the ground
+            # (physics3d/PERFORMANCE.md §13.51), so a policy that learns to
+            # stand makes the run go FASTER.
+            var mn = List[String]()
+            var mv = List[Float64]()
+            mn.append(String("loss/measure")); mv.append(measure)
+            mn.append(String("loss/ortho")); mv.append(ortho)
+            mn.append(String("loss/actor")); mv.append(actor)
+            mn.append(String("norm/F")); mv.append(f_norm)
+            mn.append(String("norm/B")); mv.append(b_norm)
+            mn.append(String("env/st_s")); mv.append(rate)
+            mn.append(String("env/ring")); mv.append(Float64(agent.base.size))
+            mn.append(String("train/updates")); mv.append(Float64(agent.total_train_steps()))
+            mn.append(String("env/lie_down")); mv.append(lie_frac)
+            mn.append(String("env/elapsed_s")); mv.append(el)
+            logger.log_scalars(mn, mv, env_steps + start_at)
         if ckpt_every > 0 and s > 0 and s % ckpt_every == 0:
-            var p = run.checkpoint_path(String("step_") + String(s))
+            var p = run.checkpoint_path(String("step_") + String(s + s_off))
             agent.save_state(p)
+            announce_checkpoint(p, artifacts, run.dir)
             print("  checkpoint", p)
+            logger.flush()  # the CSV is the record; do not lose it to a crash
     ctx.synchronize()
     # ⚠ STOP THE CLOCK BEFORE THE CHECKPOINT. `el` used to be taken AFTER
     # `save_state`, so the headline rate measured a file write: on the 40-step
     # smoke that one write was ~17 s of a 49 s run and dragged 1030 env st/s
     # down to 830 (docs/BFM_ZERO_G1_REPRODUCTION.md §12.9).
     var el = Float64(perf_counter_ns() - t0) * 1e-9
-    var final_ckpt = run.checkpoint_path(String("step_") + String(n_batched))
+    var final_ckpt = run.checkpoint_path(String("step_") + String(n_batched + s_off))
     agent.save_state(final_ckpt)
+    announce_checkpoint(final_ckpt, artifacts, run.dir)
     print("done:", n_batched, "batched steps,", agent.total_train_steps(), "updates in", el, "s;", Float64(n_batched * N_ENVS) / el, "env st/s")
     print("final checkpoint:", final_ckpt)
     print("run record      :", run.kv_path())
+    print("metrics         :", run.metrics_path())
+    # ⚠ `status` AND `outcome` ARE WRITTEN, NEVER INFERRED (core/run.mojo). A
+    # `run.kv` still saying `running` with an hour-old `started` IS a crashed
+    # run — which is exactly what a 55-hour run needs a reader to be able to
+    # tell without the terminal it was launched from.
+    run.set_outcome(
+        String("env_steps=") + String(start_at + n_batched * N_ENVS)
+        + " updates=" + String(agent.total_train_steps())
+        + " measure=" + String(last_measure)
+        + " env_st_s=" + String(last_rate)
+    )
+    logger.close()
+    close_sink(artifacts)
     run.close()
