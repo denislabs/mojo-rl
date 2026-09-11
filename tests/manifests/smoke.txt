@@ -422,3 +422,9 @@ tests/nn/test_im2col_cpu.mojo
 tests/nn/test_grad_penalty.mojo
 # BCE-with-logits: closed form, cotangent vs finite difference, finite at |l|=60.
 tests/nn/test_bce_logits.mojo
+
+# `linear_sum_assignment` + `emd_uniform`: the native port of the last metric
+# on the G1 tracking-eval path that needed Python. Gated exactly against brute
+# force for n <= 7 (independent of scipy) and bit-identically against scipy at
+# the eval's real (100, 29) shape; the scipy leg skips loudly if it is absent.
+tests/core/test_assignment_emd.mojo
