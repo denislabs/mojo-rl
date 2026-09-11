@@ -38,7 +38,7 @@ Apple's ld symbol-name limit; see the agent smoke).
 where five read 1.74).
 """
 
-from std.math import sqrt
+from std.math import sqrt, abs
 from std.python import Python, PythonObject
 from std.sys import argv
 from std.time import perf_counter_ns
@@ -46,6 +46,7 @@ from std.time import perf_counter_ns
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.core.cont_action import ContAction
+from mojo_rl.core.assignment import emd_uniform
 from mojo_rl.data.store import TrajectoryStore
 from mojo_rl.deep_agents.fb.trainer import FBTrainer
 from mojo_rl.deep_agents.fb.obs_norm import ObsNorm
@@ -166,6 +167,10 @@ def main() raises:
     var store = TrajectoryStore(store_path)
     var st = store.load_column[DType.float32](String("state"))
     var pv = store.load_column[DType.float32](String("privileged"))
+    # ⚠ The reference's target is `qpos_ref[:, 7:]` — the 29 joint angles after
+    # the 7-wide free joint (`Episode.__init__`). Loading the column here is
+    # what lets `emd` be computed natively instead of in the oracle.
+    var qpos_col = store.load_column[DType.float32](String("qpos"))
 
     var env = UnitreeG1[DType.float64]()
     _ = env.reset()
@@ -180,6 +185,13 @@ def main() raises:
     var t0 = perf_counter_ns()
     var n_scored = 0
     var sum_distance = 0.0
+    var sum_emd = 0.0
+    # The native EMD is gated against the oracle's on EVERY segment scored, so
+    # the agreement is measured on real trajectories rather than only on the
+    # synthetic cases of `tests/core/test_assignment_emd.mojo`.
+    var worst_emd_gap = 0.0
+    var ach = List[Float64](length=SEG_ROWS * ACT, fill=0.0)
+    var tgt = List[Float64](length=SEG_ROWS * ACT, fill=0.0)
 
     for ci in range(len(clips)):
         var clip = clips[ci]
@@ -219,6 +231,13 @@ def main() raises:
             for i in range(NQ):
                 qp[i] = Float64(env.d.qpos.data[i])
             _ = ep.record(_py_list(builtins, qp))
+            var nrec = 0
+            # ⚠ TWO RECORD SITES, AND THEY MUST STAY IN STEP. The `nrec == T`
+            # assert below is the guard: add a `record` without its
+            # accumulation and the count no longer matches.
+            for k in range(ACT):
+                ach[nrec * ACT + k] = qp[7 + k]
+            nrec += 1
             for step in range(T - 1):
                 var o = env.get_obs_list()
                 for k in range(OBS):
@@ -240,13 +259,43 @@ def main() raises:
                 for i in range(NQ):
                     qp[i] = Float64(env.d.qpos.data[i])
                 _ = ep.record(_py_list(builtins, qp))
+                for k in range(ACT):
+                    ach[nrec * ACT + k] = qp[7 + k]
+                nrec += 1
+            if nrec != T:
+                raise Error(
+                    "achieved rows " + String(nrec) + " != T " + String(T)
+                    + " — a `record` site lost its native accumulation"
+                )
+            # target = the store's qpos rows for this segment, joints only
+            for j in range(T):
+                for k in range(ACT):
+                    tgt[j * ACT + k] = Float64(
+                        qpos_col[(r0 + j) * NQ + 7 + k]
+                    )
+            var emd_native = emd_uniform(ach, tgt, T, ACT)
             var m = ep.metrics()
+            var emd_gap = abs(emd_native - Float64(py=m["emd"]))
+            if emd_gap > worst_emd_gap:
+                worst_emd_gap = emd_gap
+            sum_emd += emd_native
             print(String(tally.add(clip, seg, m)))
             sum_distance += Float64(py=m["distance"])
             n_scored += 1
         print(String(tally.report(clip)))
     var el = Float64(perf_counter_ns() - t0) * 1e-9
     print("OVERALL: mean distance", sum_distance / Float64(max(n_scored, 1)), "over", n_scored, "segments in", el, "s")
+    print("OVERALL: mean emd (native)", sum_emd / Float64(max(n_scored, 1)))
+    print("  native-vs-oracle EMD: worst |diff| over", n_scored, "segments =",
+          worst_emd_gap)
+    # ⚠ NOT A TOLERANCE THAT WAS TUNED. The solve is combinatorial, so the two
+    # agree EXACTLY once the costs do; this band is float64 round-off on a sum
+    # of 499 terms, and anything above it is a real disagreement.
+    if n_scored > 0 and worst_emd_gap > 1e-9:
+        raise Error(
+            "native EMD disagrees with the oracle by " + String(worst_emd_gap)
+            + " — `core/assignment.mojo` and `_emd` have diverged"
+        )
     if out_csv != "":
         _ = tally.write_csv(out_csv)
         print("wrote", out_csv)
