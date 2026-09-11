@@ -50,3 +50,9 @@ tests/dm_control/test_wide_reset.mojo
 # prev_x, fails by 41.5). This is what makes a reward invented after collection
 # scorable at all. ~3.5 min: it builds walker, cheetah, point_mass and Gym.
 tests/dm_control/test_reward_relabel.mojo
+
+# FB checkpoints are v3 binary and the v2 text ones on disk still load. The
+# text format cost 23 B for a 4 B float — 921 MB per G1 checkpoint, ~86 GB over
+# a 192 M-step run — and a format change that could not read the old files
+# would break the resume of a run already in flight.
+tests/deep_agents/test_fb_checkpoint_formats.mojo

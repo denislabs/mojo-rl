@@ -86,6 +86,8 @@ from mojo_rl.nn.core.initializer import Initializer, Xavier
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.core.checkpoint import (
     CheckpointWriter, CheckpointReader, _split_lines,
+    BinaryCheckpointWriter, BinaryCheckpointReader,
+    _read_file_bytes, _write_file_bytes, _is_v3_header,
 )
 
 from ..core.online_target_pair import OnlineTargetPair
@@ -1099,7 +1101,7 @@ struct FBTrainer[
         the M2 run script trained for 2 M steps and exited without saving
         anything: hours of GPU time producing a log file and no weights.
         """
-        var w = CheckpointWriter(save_moments=False)
+        var w = BinaryCheckpointWriter(save_moments=False)
         w.mode = 0
         walk_params[Self.TARGET](self.bnet.online, w, self.ctx, "b")
         walk_params[Self.TARGET](self.f1.online, w, self.ctx, "f1")
@@ -1114,8 +1116,7 @@ struct FBTrainer[
         self.f2.online.for_each_state[Self.TARGET](_sref3, self.ctx, "f2")
         var _sref4 = ParamVisitorRef.of[type_of(w), Self.TARGET](w)
         self.actor.online.for_each_state[Self.TARGET](_sref4, self.ctx, "actor")
-        with open(path, "w") as f:
-            f.write(w.content)
+        _write_file_bytes(path, w.content)
 
     def load_state(mut self, path: String) raises:
         """Restore the online nets and HARD-COPY them onto the targets.
@@ -1124,32 +1125,56 @@ struct FBTrainer[
         online nets are trained, and the first bootstrapped target is garbage —
         a resume that silently undoes part of the run it is resuming.
         """
-        var content: String
-        with open(path, "r") as f:
-            content = String(f.read())
-        var lines = _split_lines(content)
-        # The `storage-ckpt vN` header is not a section; the reader expects the
-        # first line to BE one, so strip it. (`CheckpointWriter` emits it.)
-        var body = List[String]()
-        for li in range(len(lines)):
-            if lines[li].startswith("storage-ckpt"):
-                continue
-            body.append(lines[li])
-        var r = CheckpointReader(body^)
-        r.mode = 0
-        walk_params[Self.TARGET](self.bnet.online, r, self.ctx, "b")
-        walk_params[Self.TARGET](self.f1.online, r, self.ctx, "f1")
-        walk_params[Self.TARGET](self.f2.online, r, self.ctx, "f2")
-        walk_params[Self.TARGET](self.actor.online, r, self.ctx, "actor")
-        r.mode = 1
-        var _sref5 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
-        self.bnet.online.for_each_state[Self.TARGET](_sref5, self.ctx, "b")
-        var _sref6 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
-        self.f1.online.for_each_state[Self.TARGET](_sref6, self.ctx, "f1")
-        var _sref7 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
-        self.f2.online.for_each_state[Self.TARGET](_sref7, self.ctx, "f2")
-        var _sref8 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
-        self.actor.online.for_each_state[Self.TARGET](_sref8, self.ctx, "actor")
+        # ⚠ THE FORMAT IS DISPATCHED ON THE HEADER, both ways forever. v3 is
+        # binary (4 B a float); v2 was one DECIMAL FLOAT PER LINE, 23 B a
+        # float — a 500 MB file per G1 checkpoint, 921 MB with the sidecar,
+        # and ~16.5 s of the step it was written on. New files are v3; every
+        # v2 file already on disk still loads, because a run in flight must
+        # not be made unresumable by a format change.
+        var bytes = _read_file_bytes(path)
+        if _is_v3_header(bytes):
+            var rb = BinaryCheckpointReader(bytes^)
+            rb.mode = 0
+            walk_params[Self.TARGET](self.bnet.online, rb, self.ctx, "b")
+            walk_params[Self.TARGET](self.f1.online, rb, self.ctx, "f1")
+            walk_params[Self.TARGET](self.f2.online, rb, self.ctx, "f2")
+            walk_params[Self.TARGET](self.actor.online, rb, self.ctx, "actor")
+            rb.mode = 1
+            var _b1 = ParamVisitorRef.of[type_of(rb), Self.TARGET](rb)
+            self.bnet.online.for_each_state[Self.TARGET](_b1, self.ctx, "b")
+            var _b2 = ParamVisitorRef.of[type_of(rb), Self.TARGET](rb)
+            self.f1.online.for_each_state[Self.TARGET](_b2, self.ctx, "f1")
+            var _b3 = ParamVisitorRef.of[type_of(rb), Self.TARGET](rb)
+            self.f2.online.for_each_state[Self.TARGET](_b3, self.ctx, "f2")
+            var _b4 = ParamVisitorRef.of[type_of(rb), Self.TARGET](rb)
+            self.actor.online.for_each_state[Self.TARGET](_b4, self.ctx, "actor")
+        else:
+            var content: String
+            with open(path, "r") as f:
+                content = String(f.read())
+            var lines = _split_lines(content)
+            # The `storage-ckpt vN` header is not a section; the reader expects
+            # the first line to BE one, so strip it.
+            var body = List[String]()
+            for li in range(len(lines)):
+                if lines[li].startswith("storage-ckpt"):
+                    continue
+                body.append(lines[li])
+            var r = CheckpointReader(body^)
+            r.mode = 0
+            walk_params[Self.TARGET](self.bnet.online, r, self.ctx, "b")
+            walk_params[Self.TARGET](self.f1.online, r, self.ctx, "f1")
+            walk_params[Self.TARGET](self.f2.online, r, self.ctx, "f2")
+            walk_params[Self.TARGET](self.actor.online, r, self.ctx, "actor")
+            r.mode = 1
+            var _sref5 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+            self.bnet.online.for_each_state[Self.TARGET](_sref5, self.ctx, "b")
+            var _sref6 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+            self.f1.online.for_each_state[Self.TARGET](_sref6, self.ctx, "f1")
+            var _sref7 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+            self.f2.online.for_each_state[Self.TARGET](_sref7, self.ctx, "f2")
+            var _sref8 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+            self.actor.online.for_each_state[Self.TARGET](_sref8, self.ctx, "actor")
         self.bnet.target_net.polyak_from[Self.TARGET](
             self.bnet.online, Scalar[DT](1.0), self.ctx
         )

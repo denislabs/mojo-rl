@@ -74,6 +74,8 @@ from mojo_rl.nn.core.initializer import Initializer, Xavier
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.core.checkpoint import (
     CheckpointWriter, CheckpointReader, _split_lines,
+    BinaryCheckpointWriter, BinaryCheckpointReader,
+    _read_file_bytes, _write_file_bytes, _is_v3_header,
 )
 from mojo_rl.nn.loss.grad_penalty import GradPenalty
 from mojo_rl.nn.loss.bce_logits import bce_logits_const_t
@@ -777,7 +779,7 @@ struct FBCPRHead[
         """`D` and the `Q_D` twins to `path + ".cpr"`. The FB nets go to
         `path` through the trainer's own `save_state`, so every FB eval reads
         the FB file unchanged."""
-        var w = CheckpointWriter(save_moments=False)
+        var w = BinaryCheckpointWriter(save_moments=False)
         w.mode = 0
         walk_params[Self.TARGET](self.disc, w, self.ctx, "disc")
         walk_params[Self.TARGET](self.qd1.online, w, self.ctx, "qd1")
@@ -789,8 +791,7 @@ struct FBCPRHead[
         self.qd1.online.for_each_state[Self.TARGET](_sref2, self.ctx, "qd1")
         var _sref3 = ParamVisitorRef.of[type_of(w), Self.TARGET](w)
         self.qd2.online.for_each_state[Self.TARGET](_sref3, self.ctx, "qd2")
-        with open(path + ".cpr", "w") as f:
-            f.write(w.content)
+        _write_file_bytes(path + ".cpr", w.content)
 
     def load_sidecar(mut self, path: String) raises:
         """CPR nets from `path + ".cpr"`. ⚠ A missing sidecar RAISES: a
@@ -800,27 +801,44 @@ struct FBCPRHead[
         var sp = path + ".cpr"
         if not _path_exists(sp):
             raise Error("FBCPRHead.load_sidecar: sidecar missing: " + sp)
-        var content: String
-        with open(sp, "r") as f:
-            content = String(f.read())
-        var lines = _split_lines(content)
-        var body = List[String]()
-        for li in range(len(lines)):
-            if lines[li].startswith("storage-ckpt"):
-                continue
-            body.append(lines[li])
-        var r = CheckpointReader(body^)
-        r.mode = 0
-        walk_params[Self.TARGET](self.disc, r, self.ctx, "disc")
-        walk_params[Self.TARGET](self.qd1.online, r, self.ctx, "qd1")
-        walk_params[Self.TARGET](self.qd2.online, r, self.ctx, "qd2")
-        r.mode = 1
-        var _sref4 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
-        self.disc.for_each_state[Self.TARGET](_sref4, self.ctx, "disc")
-        var _sref5 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
-        self.qd1.online.for_each_state[Self.TARGET](_sref5, self.ctx, "qd1")
-        var _sref6 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
-        self.qd2.online.for_each_state[Self.TARGET](_sref6, self.ctx, "qd2")
+        # ⚠ Dispatched on the header, same as `FBTrainer.load_state`: v3
+        # binary for new files, v2 text for every sidecar already on disk.
+        var bytes = _read_file_bytes(sp)
+        if _is_v3_header(bytes):
+            var rb = BinaryCheckpointReader(bytes^)
+            rb.mode = 0
+            walk_params[Self.TARGET](self.disc, rb, self.ctx, "disc")
+            walk_params[Self.TARGET](self.qd1.online, rb, self.ctx, "qd1")
+            walk_params[Self.TARGET](self.qd2.online, rb, self.ctx, "qd2")
+            rb.mode = 1
+            var _c1 = ParamVisitorRef.of[type_of(rb), Self.TARGET](rb)
+            self.disc.for_each_state[Self.TARGET](_c1, self.ctx, "disc")
+            var _c2 = ParamVisitorRef.of[type_of(rb), Self.TARGET](rb)
+            self.qd1.online.for_each_state[Self.TARGET](_c2, self.ctx, "qd1")
+            var _c3 = ParamVisitorRef.of[type_of(rb), Self.TARGET](rb)
+            self.qd2.online.for_each_state[Self.TARGET](_c3, self.ctx, "qd2")
+        else:
+            var content: String
+            with open(sp, "r") as f:
+                content = String(f.read())
+            var lines = _split_lines(content)
+            var body = List[String]()
+            for li in range(len(lines)):
+                if lines[li].startswith("storage-ckpt"):
+                    continue
+                body.append(lines[li])
+            var r = CheckpointReader(body^)
+            r.mode = 0
+            walk_params[Self.TARGET](self.disc, r, self.ctx, "disc")
+            walk_params[Self.TARGET](self.qd1.online, r, self.ctx, "qd1")
+            walk_params[Self.TARGET](self.qd2.online, r, self.ctx, "qd2")
+            r.mode = 1
+            var _sref4 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+            self.disc.for_each_state[Self.TARGET](_sref4, self.ctx, "disc")
+            var _sref5 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+            self.qd1.online.for_each_state[Self.TARGET](_sref5, self.ctx, "qd1")
+            var _sref6 = ParamVisitorRef.of[type_of(r), Self.TARGET](r)
+            self.qd2.online.for_each_state[Self.TARGET](_sref6, self.ctx, "qd2")
         self.qd1.target_net.polyak_from[Self.TARGET](
             self.qd1.online, Scalar[DT](1.0), self.ctx
         )
