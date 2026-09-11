@@ -4429,3 +4429,110 @@ Both are rare, localised, reproducible from the saved state, and open.
 the protocol: record MuJoCo's own torques, replay open-loop, find the
 first divergent substep, then inject and sweep.
 
+
+### 13.51 OPEN, a new operating point (2026-09-11): collision is 47% of a G1 RL run, on 9.4% of the SMs
+
+**Handoff.** The RL side has an operating point this file has never priced, and
+at it the SAP collision kernel is the single largest cost in the whole training
+loop. Measured on an RTX 5090 with `nsys`, the BFM-Zero G1 driver
+(`examples/g1/bfm_zero_train_gpu.mojo --smoke --no-graph`, 1024 lanes, a 29-DOF
+humanoid, 40 control steps x 4 substeps = 160 collision launches, GPU 97% busy):
+
+| | GPU time | share |
+|---|---|---|
+| `physics3d` (22 kernels) | 17.32 s | **52.0%** |
+| the RL learner (GEMMs, nn, Adam — everything else) | 15.99 s | 48.0% |
+| — of which the SAP collision kernel ALONE | 15.74 s | **47.2%** |
+
+`_detect_contacts_sap_fields_kernel`, 160 instances, 98.4 ms average
+(med 105.6, min 46.8, max 153.5, sd 32.4). Its launch, from the trace:
+
+    GrdX = 16   BlkX = 64   ->  1024 threads = ONE PER ENV   (SAP_TPB = 64)
+    16 blocks on a 170-SM 5090 -> at most 9.4% of the SMs can be busy
+    Reg/Trd = 255 = the ceiling; local-memory spills are likely
+
+**The cost is not static — it climbs 2.4x and then plateaus.** Per-call duration
+binned ten at a time over the run (`nsys stats --report cuda_gpu_trace`, filter
+the kernel, print start and duration):
+
+| instances | steps | avg ms | |
+|---|---|---|---|
+| 1-40 | 0-9 (seed) | 58.0 | settling out of the RSI reset pose, 70 -> 52 |
+| 41-100 | 10-24 | 92.7 | climbing |
+| 101-160 | 25-39 | **130.9** | plateau, 126-137, flat |
+
+The mechanism is contact count: untrained lanes fall over, so more of each
+humanoid touches the ground. It is policy-dependent in a useful direction — a
+policy that learns to stand should make collision CHEAPER, and the driver's
+`env st/s` is therefore a crude learning signal. `T_EPISODE = 500`, so an
+episode reaches the plateau by step ~25 and stays there: **the plateau, not the
+40-step average, is the figure for a long run.** At 1024 lanes that is 987 ms
+per control step (collision 524 ms of it, 53%), i.e. 1038 env st/s, and the
+192 M-step G3 run is ~51 h. Collision made free would floor it at ~24 h; 2x
+would give ~34 h.
+
+**What to re-price, and why it is not simply "turn on the block kernel".**
+`_detect_contacts_sap_block_kernel` already exists and is one flag away
+(`COLL_BLOCK_KERNEL`, `ccd_workspace.mojo:285`). It is OFF **by a measurement**,
+and that measurement is sound: `docs/BLOCK_DIAGONAL_MASS_MATRIX_IMPLEMENTATION.md`
+§6 (2026-09-07), quoted at the flag itself. On the 5090 at k=0 it read
+269.7 us for the block kernel against 269.0 for the serial one (381 vs 430 at
+k=13), with the bisect putting 206 of its 270 us into four GJK candidates on
+four lanes of one warp — divergence, because lanes are parallel only on the same
+instructions. The conclusion there was that the block kernel is the substrate
+for a warp-cooperative GJK and should stay off until that exists. **Do not read
+this section as overturning that.** Read it as: that verdict was taken at a
+different operating point, and three things here are new to it.
+
+1. **Scale.** The park scene at k=0/k=13, not 1024 lanes of a 29-DOF humanoid.
+   16 blocks was not obviously wrong when the alternative was also small; at
+   1024 envs it leaves 90% of a 170-SM card idle.
+2. **Divergence now cuts the other way too.** With one thread per env, a warp
+   is 32 ENVS and takes the time of its slowest env. Early in an episode the
+   lanes are alike; at the plateau some stand and some are sprawled, so lane
+   imbalance is serialised inside the warp. That is the same SIMT argument that
+   condemned the block kernel, now charged against the serial mapping — and it
+   is a plausible part of why the cost rose 2.4x rather than tracking mean
+   contact count. Neither effect was visible on a scene whose envs are
+   identical.
+3. **Registers.** 255 reg/thread on a 64-thread block is the signature of large
+   per-thread scratch. The same shape has bitten physics3d before (the
+   `Scratch` pool of §13.36, the `Scratch[i]` indexing of §13.21); a block
+   mapping turns per-thread scratch into per-block scratch, which may matter
+   more here than the GJK divergence does.
+
+**Suggested first steps, cheapest first.** (a) Re-run the A/B at THIS operating
+point before any code: `COLL_BLOCK_KERNEL = True` and compare a 40-step
+`--smoke` — but note `COLL_CCD_LANES` and the staging slab expand with it, and
+one blocked-kernel build on the rented box is ~15 min of COMPILE, so budget it.
+(b) Whatever the verdict, measure the warp's lane imbalance directly: the
+per-call duration series above is cheap and already discriminating, and a
+per-env contact-count histogram at the plateau would say how much of the 131 ms
+is the slowest lane. (c) The occupancy question is separable from the GJK
+question — a grid of 1024 blocks with the SAME per-env serial body (one thread
+doing the work, 1023 idle in the block) is a bad kernel but a clean measurement
+of how much is launch/occupancy versus GJK.
+
+⚠ Reproduce before optimising, and do it on the box: this is one `nsys` run and
+it is already the whole diagnosis.
+
+    pixi run -e nvidia mojo build -I . examples/g1/bfm_zero_train_gpu.mojo -o /tmp/g1train
+    pixi run -e nvidia bash -c 'unset LD_PRELOAD; nsys profile --trace=cuda \
+      -o g1_full /tmp/g1train --smoke --no-graph'
+    nsys stats --report cuda_gpu_kern_sum g1_full.nsys-rep
+    nsys stats --report cuda_gpu_trace  g1_full.nsys-rep 2>/dev/null \
+      | awk '/collision/ {n++; s+=$2; if(n%10==0){printf "%3d-%3d %6.1f ms\n", n-9, n, s/10/1e6; s=0}}'
+
+⚠ `--delay`/`--duration` are a trap here: the driver's startup (store load, RSI
+table, network init, arena adopt) is > 23 s, so a delay tuned to the TRAINING
+clock fires during setup and the report comes back "does not contain CUDA kernel
+data". 40 steps is only ~1.5 M kernel events (~0.2 GB) — just profile the whole
+run. And use `awk`, not `grep`, to read the output: the `rtk` proxy writes a
+match summary into a pipe rather than the matching lines, so a `grep | sort |
+uniq -c` returns EMPTY, which reads exactly like a clean result.
+
+Context for the RL side: `docs/BFM_ZERO_G1_REPRODUCTION.md` §12.9. The run
+sheet's "the learner should be the wall-clock, ~4 k env st/s at 16 updates" is
+WRONG at these dims — 4 k needs 256 ms per control step and collision alone is
+393 ms (524 at the plateau), so the target is unreachable by more than the
+entire budget no matter what the learner does.
