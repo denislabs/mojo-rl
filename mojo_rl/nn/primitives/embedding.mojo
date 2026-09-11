@@ -19,6 +19,7 @@ is low-precision. Output is bf16, grad_W accumulates bf16→fp32 master. The fp3
 GPU-only.
 """
 
+from mojo_rl.nn.core.mm import mm, bmm
 from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -208,7 +209,9 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                 var out_v = TileTensor(
                     outd.dev.value(), row_major(B, Self.EMBED_DIM_)
                 )
-                max_matmul[target="gpu"](out_v, in_v, w_v, c)
+                mm[A0=B, A1=Self.VOCAB_, B0=Self.VOCAB_, B1=Self.EMBED_DIM_, O0=B, O1=Self.EMBED_DIM_](
+                    outd.dev.value(), in0d.dev.value(), self.weight.val.dev.value(), c
+                )
                 # cache_inᵀ[VOCAB, B] = input[B, VOCAB]ᵀ  (for grad_w in
                 # backward), via Linear's B1' tiled transpose.
                 c.enqueue_function[_transpose_tiled_kernel[DT]](
@@ -244,7 +247,9 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
             var out_v = TileTensor(
                 out.dev.value(), row_major(B, Self.EMBED_DIM_)
             )
-            max_matmul[target="gpu"](out_v, in_v, w_bf_v, c)
+            mm[A0=B, A1=Self.VOCAB_, B0=Self.VOCAB_, B1=Self.EMBED_DIM_, O0=B, O1=Self.EMBED_DIM_](
+                out.dev.value(), in0.dev.value(), self.w_bf.dev.value(), c
+            )
             # cache_inᵀ[VOCAB, B] = input[B, VOCAB]ᵀ at bf16 (for grad_w), via
             # Linear's dtype-parametric tiled transpose (bf16 in → bf16 out).
             c.enqueue_function[_transpose_tiled_kernel[Self.ADT]](
@@ -339,7 +344,9 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                 var gi_v = TileTensor(
                     gind.dev.value(), row_major(B, Self.VOCAB_)
                 )
-                max_matmul[transpose_b=True, target="gpu"](gi_v, go_v, w_v, c)
+                mm[transpose_b=True, A0=B, A1=Self.EMBED_DIM_, B0=Self.VOCAB_, B1=Self.EMBED_DIM_, O0=B, O1=Self.VOCAB_](
+                    gind.dev.value(), god.dev.value(), self.weight.val.dev.value(), c
+                )
                 # gw_tmp[VOCAB, ED] = cache_inᵀ[VOCAB, B] @ grad_out[B, ED]
                 var cinT_v = TileTensor(
                     self.cache_inT.dev.value(), row_major(Self.VOCAB_, B)
@@ -358,9 +365,13 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                             self._sk_p, self.sk_ws, c,
                         )
                     else:
-                        max_matmul[target="gpu"](gwtmp_v, cinT_v, go_v, c)
+                        mm[A0=Self.VOCAB_, A1=B, B0=B, B1=Self.EMBED_DIM_, O0=Self.VOCAB_, O1=Self.EMBED_DIM_](
+                            self.gw_tmp.dev.value(), self.cache_inT.dev.value(), god.dev.value(), c
+                        )
                 else:
-                    max_matmul[target="gpu"](gwtmp_v, cinT_v, go_v, c)
+                    mm[A0=Self.VOCAB_, A1=B, B0=B, B1=Self.EMBED_DIM_, O0=Self.VOCAB_, O1=Self.EMBED_DIM_](
+                        self.gw_tmp.dev.value(), self.cache_inT.dev.value(), god.dev.value(), c
+                    )
                 # weight.grad += gw_tmp  (accumulate, matches legacy semantics)
                 comptime gw_blk = (Self.W_SIZE + TPB - 1) // TPB
                 c.enqueue_function[_emb_accum_kernel[Self.W_SIZE]](
@@ -390,7 +401,9 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                 row_major(Self.VOCAB_, Self.EMBED_DIM_),
             )
             var gi_v = TileTensor(gin.dev.value(), row_major(B, Self.VOCAB_))
-            max_matmul[transpose_b=True, target="gpu"](gi_v, go_v, w_bf_v, c)
+            mm[transpose_b=True, A0=B, A1=Self.EMBED_DIM_, B0=Self.VOCAB_, B1=Self.EMBED_DIM_, O0=B, O1=Self.VOCAB_](
+                gin.dev.value(), grad_output.dev.value(), self.w_bf.dev.value(), c
+            )
             # gw_tmp[VOCAB, ED] = cache_inᵀ_bf[VOCAB, B] @ grad_out[B, ED]:
             # bf16-in → FP32-out GEMM into the fp32 gw_tmp.
             var cinT_v = TileTensor(
@@ -405,7 +418,9 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
             # float32]`) whose `_bk_base` differs, which changes both the tile
             # config and `partitions_legal`'s alignment. Same reasoning as the
             # bf16 site in `LinearAct.vjp`.
-            max_matmul[target="gpu"](gwtmp_v, cinT_v, go_v, c)
+            mm[A0=Self.VOCAB_, A1=B, B0=B, B1=Self.EMBED_DIM_, O0=Self.VOCAB_, O1=Self.EMBED_DIM_](
+                self.gw_tmp.dev.value(), self.cache_inT_bf.dev.value(), grad_output.dev.value(), c
+            )
             # weight.grad (fp32 master) += gw_tmp (fp32)
             comptime gw_blk = (Self.W_SIZE + TPB - 1) // TPB
             c.enqueue_function[_emb_accum_kernel[Self.W_SIZE]](

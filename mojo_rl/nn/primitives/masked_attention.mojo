@@ -23,6 +23,7 @@ The BMM fast path REUSES the base storage attention's mask-agnostic
 pack/unpack/transpose/jvp kernels verbatim; only the softmax adds the mask.
 """
 
+from mojo_rl.nn.core.mm import mm, bmm
 from std.math import exp, sqrt
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
 from max.gpu.host import DeviceContext
@@ -643,8 +644,8 @@ struct MaskedAttention[
         var pk_tt = TileTensor(
             self.sp1.dev.value(), row_major(BH, Self.SEQ_LEN, Self.HEAD_DIM)
         )
-        batched_matmul[transpose_b=True, target="gpu"](
-            scores_tt, pq_tt, pk_tt, context=c
+        bmm[transpose_b=True, A0=BH, A1=Self.SEQ_LEN, A2=Self.HEAD_DIM, B0=BH, B1=Self.SEQ_LEN, B2=Self.HEAD_DIM, O0=BH, O1=Self.SEQ_LEN, O2=Self.SEQ_LEN](
+            self.ss0.dev.value(), self.sp0.dev.value(), self.sp1.dev.value(), c
         )
 
         # 3. masked softmax in-place; mirror weights into cache.attn.
@@ -666,7 +667,9 @@ struct MaskedAttention[
         var pv_tt = TileTensor(
             self.sp2.dev.value(), row_major(BH, Self.SEQ_LEN, Self.HEAD_DIM)
         )
-        batched_matmul[target="gpu"](pout_tt, scores_tt, pv_tt, context=c)
+        bmm[A0=BH, A1=Self.SEQ_LEN, A2=Self.SEQ_LEN, B0=BH, B1=Self.SEQ_LEN, B2=Self.HEAD_DIM, O0=BH, O1=Self.SEQ_LEN, O2=Self.HEAD_DIM](
+            self.sp3.dev.value(), self.ss0.dev.value(), self.sp2.dev.value(), c
+        )
 
         # 5. unpack → output.
         comptime up_k = _attn_unpack_out_kernel[
@@ -898,8 +901,8 @@ struct MaskedAttention[
         var pk_tt = TileTensor(self.sp2.dev.value(), row_major(BH, SL, HD))
         var pv_tt = TileTensor(self.sp3.dev.value(), row_major(BH, SL, HD))
         var dattn_tt = TileTensor(self.ss0.dev.value(), row_major(BH, SL, SL))
-        batched_matmul[transpose_b=True, target="gpu"](
-            dattn_tt, pdout_tt, pv_tt, context=c
+        bmm[transpose_b=True, A0=BH, A1=SL, A2=HD, B0=BH, B1=SL, B2=HD, O0=BH, O1=SL, O2=SL](
+            self.ss0.dev.value(), self.sp0.dev.value(), self.sp3.dev.value(), c
         )
 
         # 3. softmax jvp → dscore(ss1).
@@ -926,7 +929,9 @@ struct MaskedAttention[
         # 5. dV(sp3) = attn_T(ss0) @ dout(sp0).
         var attnT_tt = TileTensor(self.ss0.dev.value(), row_major(BH, SL, SL))
         var dV_tt = TileTensor(self.sp3.dev.value(), row_major(BH, SL, HD))
-        batched_matmul[target="gpu"](dV_tt, attnT_tt, pdout_tt, context=c)
+        bmm[A0=BH, A1=SL, A2=SL, B0=BH, B1=SL, B2=HD, O0=BH, O1=SL, O2=HD](
+            self.sp3.dev.value(), self.ss0.dev.value(), self.sp0.dev.value(), c
+        )
 
         # 6. dscore_T(ss0) = transpose(dscore(ss1)).
         comptime ts_k = _attn_transpose_scores_kernel[SL, SCORES, BH]
@@ -939,12 +944,16 @@ struct MaskedAttention[
         # 7. dK(sp0) = dscore_T(ss0) @ Q(sp1).
         var dscoreT_tt = TileTensor(self.ss0.dev.value(), row_major(BH, SL, SL))
         var dK_tt = TileTensor(self.sp0.dev.value(), row_major(BH, SL, HD))
-        batched_matmul[target="gpu"](dK_tt, dscoreT_tt, pq_tt, context=c)
+        bmm[A0=BH, A1=SL, A2=SL, B0=BH, B1=SL, B2=HD, O0=BH, O1=SL, O2=HD](
+            self.sp0.dev.value(), self.ss0.dev.value(), self.sp1.dev.value(), c
+        )
 
         # 8. dQ(sp1) = dscore(ss1) @ K(sp2).
         var dscore_tt = TileTensor(self.ss1.dev.value(), row_major(BH, SL, SL))
         var dQ_tt = TileTensor(self.sp1.dev.value(), row_major(BH, SL, HD))
-        batched_matmul[target="gpu"](dQ_tt, dscore_tt, pk_tt, context=c)
+        bmm[A0=BH, A1=SL, A2=SL, B0=BH, B1=SL, B2=HD, O0=BH, O1=SL, O2=HD](
+            self.sp1.dev.value(), self.ss1.dev.value(), self.sp2.dev.value(), c
+        )
 
         # 9. unpack dQ(sp1)/dK(sp0)/dV(sp3) → grad_input.
         comptime ug_k = _attn_unpack_grad_kernel[

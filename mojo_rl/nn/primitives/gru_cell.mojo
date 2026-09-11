@@ -36,6 +36,7 @@ in one `vjp`; the kernel order still keeps the dW reads before any dx/dh
 writes (defensive, though the packs no longer alias).
 """
 
+from mojo_rl.nn.core.mm import mm, bmm
 from std.math import exp, tanh
 from linalg.matmul import matmul as max_matmul
 from std.gpu import thread_idx, block_idx, global_idx
@@ -327,8 +328,12 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             )
             var ix_v = TileTensor(self._ix.dev.value(), row_major(B, THREE_H))
             var hx_v = TileTensor(self._hx.dev.value(), row_major(B, THREE_H))
-            max_matmul[target="gpu"](ix_v, x_v, Wih_v, c)
-            max_matmul[target="gpu"](hx_v, h_v, Whh_v, c)
+            mm[A0=B, A1=Self.IN0_DIM, B0=Self.IN0_DIM, B1=THREE_H, O0=B, O1=THREE_H](
+                self._ix.dev.value(), x_in.dev.value(), self.W_ih.val.dev.value(), c
+            )
+            mm[A0=B, A1=H, B0=H, B1=THREE_H, O0=B, O1=THREE_H](
+                self._hx.dev.value(), h_in.dev.value(), self.W_hh.val.dev.value(), c
+            )
             # elementwise gates + reset coupling + output + cache.
             comptime gk = _gru_gate_fwd_kernel[B, H]
             comptime nblk = (B * H + TPB - 1) // TPB
@@ -488,8 +493,12 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             )
             var dx_tt = TileTensor(dx_in.dev.value(), row_major(B, Self.IN0_DIM))
             var dh_tt = TileTensor(dh_in.dev.value(), row_major(B, H))
-            max_matmul[transpose_b=True, target="gpu"](dx_tt, dix_tt, Wih_tt, c)
-            max_matmul[transpose_b=True, target="gpu"](dh_tt, dhx_tt, Whh_tt, c)
+            mm[transpose_b=True, A0=B, A1=THREE_H, B0=Self.IN0_DIM, B1=THREE_H, O0=B, O1=Self.IN0_DIM](
+                dx_in.dev.value(), self._dix.dev.value(), self.W_ih.val.dev.value(), c
+            )
+            mm[transpose_b=True, A0=B, A1=THREE_H, B0=H, B1=THREE_H, O0=B, O1=H](
+                dh_in.dev.value(), self._dhx.dev.value(), self.W_hh.val.dev.value(), c
+            )
             comptime zk = _gru_dh_add_zh_kernel[B, H]
             c.enqueue_function[zk](
                 go_lt, cc, dh_in.lt["gpu", Layout.row_major(B, H)](),
@@ -505,8 +514,12 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             var dWhh_tmp_tt = TileTensor(
                 self._dWhh_tmp.dev.value(), row_major(H, THREE_H)
             )
-            max_matmul[target="gpu"](dWih_tmp_tt, xT_tt, dix_tt, c)
-            max_matmul[target="gpu"](dWhh_tmp_tt, hT_tt, dhx_tt, c)
+            mm[A0=Self.IN0_DIM, A1=B, B0=B, B1=THREE_H, O0=Self.IN0_DIM, O1=THREE_H](
+                self._dWih_tmp.dev.value(), self._xT.dev.value(), self._dix.dev.value(), c
+            )
+            mm[A0=H, A1=B, B0=B, B1=THREE_H, O0=H, O1=THREE_H](
+                self._dWhh_tmp.dev.value(), self._hT.dev.value(), self._dhx.dev.value(), c
+            )
             comptime aih = _gru_accum_kernel[Self.W_IH_SIZE]
             c.enqueue_function[aih](
                 self.W_ih.grd.lt["gpu", Layout.row_major(Self.W_IH_SIZE)](),

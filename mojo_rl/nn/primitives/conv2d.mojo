@@ -23,6 +23,7 @@ re-derives the legacy kernels here so `nn/storage` stays independent of the
 legacy package (which gets deleted at the end of the migration).
 """
 
+from mojo_rl.nn.core.mm import mm, bmm
 from std.sys import CompilationTarget
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
 from max.gpu.primitives import block
@@ -1271,12 +1272,12 @@ struct Conv2D[
                                 self._sk_p_fwd, self.sk_ws_fwd, c,
                             )
                         else:
-                            max_matmul[transpose_b=True, target="gpu"](
-                                outp_tt, col_tt, w_tt, c
+                            mm[transpose_b=True, A0=BS, A1=Self.CPAD, B0=Self.OCPAD, B1=Self.CPAD, O0=BS, O1=Self.OCPAD](
+                                self.outp_t.dev.value(), self.col_t.dev.value(), w_buf, c
                             )
                     else:
-                        max_matmul[transpose_b=True, target="gpu"](
-                            outp_tt, col_tt, w_tt, c
+                        mm[transpose_b=True, A0=BS, A1=Self.CPAD, B0=Self.OCPAD, B1=Self.CPAD, O0=BS, O1=Self.OCPAD](
+                            self.outp_t.dev.value(), self.col_t.dev.value(), w_buf, c
                         )
                     # (3) scatter → output[B, OC·SO] + bias
                     comptime nb_sc = (
@@ -1376,8 +1377,8 @@ struct Conv2D[
                 var outp_tt = TileTensor(
                     self.outp_t_bf.dev.value(), row_major(BS, Self.OC_)
                 )
-                max_matmul[transpose_b=True, target="gpu"](
-                    outp_tt, col_tt, w_tt, c
+                mm[transpose_b=True, A0=BS, A1=Self.COL, B0=Self.OC_, B1=Self.COL, O0=BS, O1=Self.OC_](
+                    self.outp_t_bf.dev.value(), self.col_t_bf.dev.value(), self.w_bf.dev.value(), c
                 )
                 # (3) scatter → output[B, OC·SO] + bf16 bias
                 comptime nb_sc = (B * Self.OUT_FLAT + CONV_TPB - 1) // CONV_TPB
@@ -1714,9 +1715,13 @@ struct Conv2D[
                         self._sk_p, self.sk_ws, c,
                     )
                 else:
-                    max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, c)
+                    mm[A0=Self.OC_, A1=BS, B0=BS, B1=Self.CPAD, O0=Self.OC_, O1=Self.CPAD](
+                        self.dW_tmp.dev.value(), self.goT_t.dev.value(), self.col_t.dev.value(), c
+                    )
             else:
-                max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, c)
+                mm[A0=Self.OC_, A1=BS, B0=BS, B1=Self.CPAD, O0=Self.OC_, O1=Self.CPAD](
+                    self.dW_tmp.dev.value(), self.goT_t.dev.value(), self.col_t.dev.value(), c
+                )
             # ⚠ STRIDED accumulate: dW comes back `[OC, CPAD]` and the master
             # grad is `[OC, COL]`. A flat add folds each row's padding into the
             # next row's leading weights — see `_accum_w_2d_kernel`.
@@ -1775,7 +1780,9 @@ struct Conv2D[
             var dcolT_tt = TileTensor(
                 self.col_t.dev.value(), row_major(Self.COL, BS)
             )
-            max_matmul[target="gpu"](dcolT_tt, wT_tt, goT2_tt, c)
+            mm[A0=Self.COL, A1=Self.OC_, B0=Self.OC_, B1=BS, O0=Self.COL, O1=BS](
+                self.col_t.dev.value(), self.wT_t.dev.value(), self.goT_t.dev.value(), c
+            )
             comptime nb_dx = (B * Self.IN_FLAT + CONV_DW_TPB - 1) // CONV_DW_TPB
             c.enqueue_function[
                 _dx_col2im_kernel[
@@ -1878,7 +1885,9 @@ struct Conv2D[
             # way, but no gate builds bf16 Conv2Ds and a mistake here would be
             # silent. Route it when there is a bf16 arm in the gate, not before
             # — same call as `Linear`'s bf16 dW site.
-            max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, c)
+            mm[A0=Self.OC_, A1=BS, B0=BS, B1=Self.COL, O0=Self.OC_, O1=Self.COL](
+                self.dW_tmp.dev.value(), self.goT_t_bf.dev.value(), self.col_t_bf.dev.value(), c
+            )
             comptime nb_acc = (Self.W_SIZE + TPB - 1) // TPB
             c.enqueue_function[_accum_kernel[Self.W_SIZE]](
                 self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
@@ -1926,7 +1935,9 @@ struct Conv2D[
             var dcolT_tt = TileTensor(
                 self.col_t_bf.dev.value(), row_major(Self.COL, BS)
             )
-            max_matmul[target="gpu"](dcolT_tt, wbT_tt, goT2_tt, c)
+            mm[A0=Self.COL, A1=Self.OC_, B0=Self.OC_, B1=BS, O0=Self.COL, O1=BS](
+                self.col_t_bf.dev.value(), self.wT_bf.dev.value(), self.goT_t_bf.dev.value(), c
+            )
             comptime nb_dx = (B * Self.IN_FLAT + CONV_DW_TPB - 1) // CONV_DW_TPB
             c.enqueue_function[
                 _dx_col2im_kernel[

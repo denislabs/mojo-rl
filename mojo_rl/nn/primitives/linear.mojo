@@ -22,6 +22,7 @@ first binds the element to a named `ref` (`ref in0 = inputs[0]`) that lives for
 the whole function, then builds views from that.
 """
 
+from mojo_rl.nn.core.mm import mm, bmm
 from std.sys import CompilationTarget
 from std.gpu import global_idx, thread_idx, block_idx
 from max.gpu.sync import barrier
@@ -311,16 +312,7 @@ def _gemm_bkn[
     training batch (296 -> 163 us at [64x512]@[512x512]) but lose the gemv
     specialisation at B == 1 (55 -> 90 us), which is the acting path, so
     that one shape keeps its static views."""
-    comptime if B == 1:
-        var xs = TileTensor(x, row_major[B, K]())
-        var ws = TileTensor(w, row_major[K, N]())
-        var ds = TileTensor(dst, row_major[B, N]())
-        max_matmul[target="gpu"](ds, xs, ws, c)
-    else:
-        var xd = TileTensor(x, row_major(B, K))
-        var wd = TileTensor(w, row_major(K, N))
-        var dd = TileTensor(dst, row_major(B, N))
-        max_matmul[target="gpu"](dd, xd, wd, c)
+    mm[A0=B, A1=K, B0=K, B1=N, O0=B, O1=N](dst, x, w, c)
 
 
 struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
@@ -807,7 +799,9 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         var yp_v = TileTensor(
                             self.y_pad.dev.value(), row_major(B, Self.N_PAD)
                         )
-                        max_matmul[target="gpu"](yp_v, xp_v, wp_v, c)
+                        mm[A0=B, A1=Self.K_PAD, B0=Self.K_PAD, B1=Self.N_PAD, O0=B, O1=Self.N_PAD](
+                            self.y_pad.dev.value(), self.x_pad.dev.value() if Self.NEEDS_PAD else in0d.dev.value(), self.w_pad.dev.value(), c
+                        )
                         c.enqueue_function[_bias_add_slice_kernel](
                             self.y_pad.dev.value(),
                             bl,
@@ -819,7 +813,9 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                             block_dim=256,
                         )
                     else:
-                        max_matmul[target="gpu"](out_v, xp_v, wp_v, c)
+                        mm[A0=B, A1=Self.K_PAD, B0=Self.K_PAD, B1=Self.N_PAD, O0=B, O1=Self.OUT_](
+                            outd.dev.value(), self.x_pad.dev.value() if Self.NEEDS_PAD else in0d.dev.value(), self.w_pad.dev.value(), c
+                        )
                         c.enqueue_function[_bias_add_kernel[DT]](
                             outd.dev.value(),
                             bl,
@@ -865,7 +861,9 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
             )
             var out_v = TileTensor(out.dev.value(), row_major(B, Self.OUT_))
             # bf16-in → bf16-out GEMM (fp32 accumulation is automatic).
-            max_matmul[target="gpu"](out_v, x_v, w_bf_v, c)
+            mm[A0=B, A1=Self.IN_, B0=Self.IN_, B1=Self.OUT_, O0=B, O1=Self.OUT_](
+                out.dev.value(), in0.dev.value(), self.w_bf.dev.value(), c
+            )
             var ol = out.dev.value()
             var bl = self.b_a.dev.value()
             c.enqueue_function[_bias_add_kernel[Self.ADT]](
@@ -1078,9 +1076,13 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                                 c,
                             )
                         else:
-                            max_matmul[target="gpu"](dWp_v, cTp_v, gop_v, c)
+                            mm[A0=Self.K_PAD, A1=B, B0=B, B1=Self.N_PAD, O0=Self.K_PAD, O1=Self.N_PAD](
+                                self.dW_pad.dev.value(), self.cT_pad.dev.value() if Self.NEEDS_PAD else self.cacheT.dev.value(), self.go_pad.dev.value() if Self.NEEDS_N_PAD else god.dev.value(), c
+                            )
                     else:
-                        max_matmul[target="gpu"](dWp_v, cTp_v, gop_v, c)
+                        mm[A0=Self.K_PAD, A1=B, B0=B, B1=Self.N_PAD, O0=Self.K_PAD, O1=Self.N_PAD](
+                                self.dW_pad.dev.value(), self.cT_pad.dev.value() if Self.NEEDS_PAD else self.cacheT.dev.value(), self.go_pad.dev.value() if Self.NEEDS_N_PAD else god.dev.value(), c
+                            )
                     # grad_input = go @ w_padᵀ  ->  [B, K_PAD]
                     # ⚠ The GEMM DESTINATION must be a mutable view, so this
                     # cannot use the `... if NEEDS_PAD else ...` form the
@@ -1092,8 +1094,8 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                             self.gi_pad.dev.value(),
                             row_major(B, Self.K_PAD),
                         )
-                        max_matmul[transpose_b=True, target="gpu"](
-                            gip_v, gop_v, wp_v, c
+                        mm[transpose_b=True, A0=B, A1=Self.N_PAD, B0=Self.K_PAD, B1=Self.N_PAD, O0=B, O1=Self.K_PAD](
+                            self.gi_pad.dev.value(), self.go_pad.dev.value() if Self.NEEDS_N_PAD else god.dev.value(), self.w_pad.dev.value(), c
                         )
                         c.enqueue_function[_slice_cols_kernel](
                             self.gi_pad.dev.value(),
@@ -1109,8 +1111,8 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         var gi_v = TileTensor(
                             gind.dev.value(), row_major(B, Self.K_PAD)
                         )
-                        max_matmul[transpose_b=True, target="gpu"](
-                            gi_v, gop_v, wp_v, c
+                        mm[transpose_b=True, A0=B, A1=Self.N_PAD, B0=Self.K_PAD, B1=Self.N_PAD, O0=B, O1=Self.K_PAD](
+                            gind.dev.value(), self.go_pad.dev.value() if Self.NEEDS_N_PAD else god.dev.value(), self.w_pad.dev.value(), c
                         )
                     # ⚠ STRIDED accumulate: dW_pad's row stride is N_PAD, the
                     # master grad's is OUT_. A flat `_accum_kernel` would fold
@@ -1163,15 +1165,19 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                                 c,
                             )
                         else:
-                            max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
+                            mm[A0=Self.IN_, A1=B, B0=B, B1=Self.OUT_, O0=Self.IN_, O1=Self.OUT_](
+                                self.dW_tmp.dev.value(), self.cacheT.dev.value(), god.dev.value(), c
+                            )
                     else:
-                        max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
+                        mm[A0=Self.IN_, A1=B, B0=B, B1=Self.OUT_, O0=Self.IN_, O1=Self.OUT_](
+                            self.dW_tmp.dev.value(), self.cacheT.dev.value(), god.dev.value(), c
+                        )
                     var w_v = TileTensor(
                         self.weight.val.dev.value(),
                         row_major(Self.IN_, Self.OUT_),
                     )
-                    max_matmul[transpose_b=True, target="gpu"](
-                        gi_v, go_v, w_v, c
+                    mm[transpose_b=True, A0=B, A1=Self.OUT_, B0=Self.IN_, B1=Self.OUT_, O0=B, O1=Self.IN_](
+                        gind.dev.value(), god.dev.value(), self.weight.val.dev.value(), c
                     )
                     # grad_w += dW (accumulate into the fp32 master grad)
                     c.enqueue_function[_accum_kernel](
@@ -1235,9 +1241,13 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
             # fp32 output would work the same way, but nothing gates it yet —
             # `tests/nn/test_linear_splitk_dw_gpu.mojo` builds fp32 Linears.
             # Route it when that gate grows a bf16 arm, not before.
-            max_matmul[target="gpu"](dW_v, cTb_v, gob_v, c)
+            mm[A0=Self.IN_, A1=B, B0=B, B1=Self.OUT_, O0=Self.IN_, O1=Self.OUT_](
+                self.dW_tmp.dev.value(), self.cacheT_bf.dev.value(), grad_output.dev.value(), c
+            )
             # grad_x = go @ Wᵀ → bf16 gin (bf16-in, bf16-out — gin flows at bf16).
-            max_matmul[transpose_b=True, target="gpu"](gi_v, gob_v, wb_v, c)
+            mm[transpose_b=True, A0=B, A1=Self.OUT_, B0=Self.IN_, B1=Self.OUT_, O0=B, O1=Self.IN_](
+                gin.dev.value(), grad_output.dev.value(), self.w_bf.dev.value(), c
+            )
             # grad_w += dW (accumulate into the fp32 master grad)
             var gwl = self.weight.grd.dev.value()
             var dWl = self.dW_tmp.dev.value()

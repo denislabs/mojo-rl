@@ -50,6 +50,7 @@ scalar softmax, unpack — with the packed slabs sized separately for the query
 and key/value streams, and per-sample masking folded into the softmax kernel.
 """
 
+from mojo_rl.nn.core.mm import mm, bmm
 from std.math import exp, sqrt
 from std.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext
@@ -720,8 +721,8 @@ struct CrossAttention[
         var sc_tt = TileTensor(self.ss0.dev.value(), row_major(BH, QL, KL))
         var pq_tt = TileTensor(self.sq0.dev.value(), row_major(BH, QL, HD))
         var pk_tt = TileTensor(self.sk0.dev.value(), row_major(BH, KL, HD))
-        batched_matmul[transpose_b=True, target="gpu"](
-            sc_tt, pq_tt, pk_tt, context=c
+        bmm[transpose_b=True, A0=BH, A1=QL, A2=HD, B0=BH, B1=KL, B2=HD, O0=BH, O1=QL, O2=KL](
+            self.ss0.dev.value(), self.sq0.dev.value(), self.sk0.dev.value(), c
         )
 
         # 3. scale + mask + stable softmax, in place; mirror into the cache.
@@ -752,7 +753,9 @@ struct CrossAttention[
         # 4. pout(sq1) = attn(ss0) @ V(sk1).
         var pout_tt = TileTensor(self.sq1.dev.value(), row_major(BH, QL, HD))
         var pv_tt = TileTensor(self.sk1.dev.value(), row_major(BH, KL, HD))
-        batched_matmul[target="gpu"](pout_tt, sc_tt, pv_tt, context=c)
+        bmm[A0=BH, A1=QL, A2=KL, B0=BH, B1=KL, B2=HD, O0=BH, O1=QL, O2=HD](
+            self.sq1.dev.value(), self.ss0.dev.value(), self.sk1.dev.value(), c
+        )
 
         # 5. unpack -> token-major output.
         c.enqueue_function[
@@ -842,8 +845,8 @@ struct CrossAttention[
 
         # 2. dattn(ss0) = dout @ Vt   (BH, QL, KL).
         var dattn_tt = TileTensor(self.ss0.dev.value(), row_major(BH, QL, KL))
-        batched_matmul[transpose_b=True, target="gpu"](
-            dattn_tt, pdout_tt, pv_tt, context=c
+        bmm[transpose_b=True, A0=BH, A1=QL, A2=HD, B0=BH, B1=KL, B2=HD, O0=BH, O1=QL, O2=KL](
+            self.ss0.dev.value(), self.sq0.dev.value(), self.sk1.dev.value(), c
         )
 
         # 3. dscore(ss1) = softmax JVP.
@@ -872,12 +875,16 @@ struct CrossAttention[
         # 5. dV(sk2) = attn_T(ss0) @ dout(sq0)   (BH, KL, HD).
         var attnT_tt = TileTensor(self.ss0.dev.value(), row_major(BH, KL, QL))
         var dV_tt = TileTensor(self.sk2.dev.value(), row_major(BH, KL, HD))
-        batched_matmul[target="gpu"](dV_tt, attnT_tt, pdout_tt, context=c)
+        bmm[A0=BH, A1=KL, A2=QL, B0=BH, B1=QL, B2=HD, O0=BH, O1=KL, O2=HD](
+            self.sk2.dev.value(), self.ss0.dev.value(), self.sq0.dev.value(), c
+        )
 
         # 6. dQ(sq2) = dscore(ss1) @ K(sk0)  — BEFORE sk0 is recycled for dK.
         var dscore_tt = TileTensor(self.ss1.dev.value(), row_major(BH, QL, KL))
         var dQ_tt = TileTensor(self.sq2.dev.value(), row_major(BH, QL, HD))
-        batched_matmul[target="gpu"](dQ_tt, dscore_tt, pk_tt, context=c)
+        bmm[A0=BH, A1=QL, A2=KL, B0=BH, B1=KL, B2=HD, O0=BH, O1=QL, O2=HD](
+            self.sq2.dev.value(), self.ss1.dev.value(), self.sk0.dev.value(), c
+        )
 
         # 7. dscore_T(ss0) = transpose(dscore)  — ss0 free, attn_T read at 5.
         c.enqueue_function[_xa_transpose_scores_kernel[QL, KL, SC]](
@@ -891,7 +898,9 @@ struct CrossAttention[
             self.ss0.dev.value(), row_major(BH, KL, QL)
         )
         var dK_tt = TileTensor(self.sk0.dev.value(), row_major(BH, KL, HD))
-        batched_matmul[target="gpu"](dK_tt, dscoreT_tt, pq_tt, context=c)
+        bmm[A0=BH, A1=KL, A2=QL, B0=BH, B1=QL, B2=HD, O0=BH, O1=KL, O2=HD](
+            self.sk0.dev.value(), self.ss0.dev.value(), self.sq1.dev.value(), c
+        )
 
         # 9. unpack.
         c.enqueue_function[

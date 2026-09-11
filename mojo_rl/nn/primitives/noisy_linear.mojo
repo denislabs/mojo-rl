@@ -15,6 +15,7 @@ Backward: grad_µ_b = Σ_b go ; grad_σ_b = grad_µ_b · ε_out ; dW = xᵀ @ go
     grad_µ_w += dW ; grad_σ_w += dW · ε_in · ε_out ; grad_x = go @ W_effᵀ.
 """
 
+from mojo_rl.nn.core.mm import mm, bmm
 from std.math import sqrt as fsqrt, log as flog, cos as fcos, pi
 from std.random import random_float64
 from std.gpu import global_idx, thread_idx, block_idx
@@ -407,7 +408,9 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
                 self.w_eff.dev.value(), row_major(Self.IN_, Self.OUT_)
             )
             var out_v = TileTensor(out.dev.value(), row_major(B, Self.OUT_))
-            max_matmul[target="gpu"](out_v, x_v, w_v, c)
+            mm[A0=B, A1=Self.IN_, B0=Self.IN_, B1=Self.OUT_, O0=B, O1=Self.OUT_](
+                out.dev.value(), in0.dev.value(), self.w_eff.dev.value(), c
+            )
             comptime nb_ba = (B * Self.OUT_ + TPB - 1) // TPB
             c.enqueue_function[_noisy_bias_add_kernel[B, Self.OUT_]](
                 out.lt["gpu", Layout.row_major(B, Self.OUT_)](),
@@ -525,9 +528,13 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
                         self._sk_p, self.sk_ws, c,
                     )
                 else:
-                    max_matmul[target="gpu"](dW_tt, cT_tt, go_tt, c)
+                    mm[A0=Self.IN_, A1=B, B0=B, B1=Self.OUT_, O0=Self.IN_, O1=Self.OUT_](
+                        self.dW_tmp.dev.value(), self.cacheT.dev.value(), grad_output.dev.value(), c
+                    )
             else:
-                max_matmul[target="gpu"](dW_tt, cT_tt, go_tt, c)
+                mm[A0=Self.IN_, A1=B, B0=B, B1=Self.OUT_, O0=Self.IN_, O1=Self.OUT_](
+                    self.dW_tmp.dev.value(), self.cacheT.dev.value(), grad_output.dev.value(), c
+                )
             comptime nb_w = (Self.W_SIZE + TPB - 1) // TPB
             c.enqueue_function[_accum_kernel](
                 self.mu_w.grd.lt["gpu", lw](),
@@ -554,7 +561,9 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
             var w_v = TileTensor(
                 self.w_eff.dev.value(), row_major(Self.IN_, Self.OUT_)
             )
-            max_matmul[transpose_b=True, target="gpu"](gi_v, go_v, w_v, c)
+            mm[transpose_b=True, A0=B, A1=Self.OUT_, B0=Self.IN_, B1=Self.OUT_, O0=B, O1=Self.IN_](
+                gin.dev.value(), grad_output.dev.value(), self.w_eff.dev.value(), c
+            )
 
     def polyak_from[
         target: StaticString

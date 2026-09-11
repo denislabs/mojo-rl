@@ -27,6 +27,7 @@ per-block matmul (carried verbatim from legacy). GPU: one-thread-per-element
 kernels (carried verbatim, transformed to LayoutTensor args).
 """
 
+from mojo_rl.nn.core.mm import mm, bmm
 from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -402,7 +403,9 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                     self.og.dev.value(),
                     row_major(Self.BLOCKS, B, Self.OPB),
                 )
-                batched_matmul[target="gpu"](og_tt, xg_tt, w_tt, context=c)
+                bmm[A0=Self.BLOCKS, A1=B, A2=Self.IPB, B0=Self.BLOCKS, B1=Self.IPB, B2=Self.OPB, O0=Self.BLOCKS, O1=B, O2=Self.OPB](
+                    self.og.dev.value(), self.xg.dev.value(), self.weight.val.dev.value(), c
+                )
                 comptime n_so = (B * Self.OUT + TPB - 1) // TPB
                 c.enqueue_function[
                     _bl_scatter_out_bias_kernel[B, Self.OUT, Self.BLOCKS]
@@ -607,7 +610,9 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                     self.dwg.dev.value(),
                     row_major(Self.BLOCKS, Self.IPB, Self.OPB),
                 )
-                batched_matmul[target="gpu"](dwg_tt, xt_tt, gog_tt, context=c)
+                bmm[A0=Self.BLOCKS, A1=Self.IPB, A2=B, B0=Self.BLOCKS, B1=B, B2=Self.OPB, O0=Self.BLOCKS, O1=Self.IPB, O2=Self.OPB](
+                    self.dwg.dev.value(), self.xt.dev.value(), self.gog.dev.value(), c
+                )
                 comptime n_aw = (Self.W_SIZE + TPB - 1) // TPB
                 c.enqueue_function[_bl_accum_dw_kernel[Self.W_SIZE]](
                     self.dwg.lt["gpu", Layout.row_major(Self.W_SIZE)](),
@@ -624,8 +629,8 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                     self.gxg.dev.value(),
                     row_major(Self.BLOCKS, B, Self.IPB),
                 )
-                batched_matmul[transpose_b=True, target="gpu"](
-                    gxg_tt, gog_tt, w_tt, context=c
+                bmm[transpose_b=True, A0=Self.BLOCKS, A1=B, A2=Self.OPB, B0=Self.BLOCKS, B1=Self.IPB, B2=Self.OPB, O0=Self.BLOCKS, O1=B, O2=Self.IPB](
+                    self.gxg.dev.value(), self.gog.dev.value(), self.weight.val.dev.value(), c
                 )
                 comptime n_sx = (B * Self.IN + TPB - 1) // TPB
                 c.enqueue_function[

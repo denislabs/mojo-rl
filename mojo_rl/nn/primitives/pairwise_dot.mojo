@@ -52,6 +52,7 @@ silently miscomputes at N=1. `PairwiseDot`'s N is BATCH, so a single-row
 inference path reusing this primitive would land exactly on that bug.
 """
 
+from mojo_rl.nn.core.mm import mm, bmm
 from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -246,8 +247,8 @@ struct PairwiseDot[D_: Int, BATCH: Int](Module):
                 var c_tt = TileTensor(
                     c.dev.value(), row_major(PD_BATCH_DIM, B, Self.D_)
                 )
-                batched_matmul[transpose_b=True, target="gpu"](
-                    m_tt, a_tt, c_tt, context=dc
+                bmm[transpose_b=True, A0=PD_BATCH_DIM, A1=B, A2=Self.D_, B0=PD_BATCH_DIM, B1=B, B2=Self.D_, O0=PD_BATCH_DIM, O1=B, O2=B](
+                    out.dev.value(), a.dev.value(), c.dev.value(), dc
                 )
             else:
                 comptime lay_in = Layout.row_major(B, Self.D_)
