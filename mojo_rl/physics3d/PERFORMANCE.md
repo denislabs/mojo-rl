@@ -4430,7 +4430,32 @@ the protocol: record MuJoCo's own torques, replay open-loop, find the
 first divergent substep, then inject and sweep.
 
 
-### 13.51 OPEN, a new operating point (2026-09-11): collision is 47% of a G1 RL run, on 9.4% of the SMs
+### 13.51 CLOSED by §13.52 (2026-09-11): collision was 47% of a G1 RL run, on 9.4% of the SMs
+
+> **CLOSED.** §13.52 rebuilt the block kernel for this operating point and it
+> landed. Re-profiled in the SAME way (`--smoke --no-graph` under `nsys`), at
+> the RL level: the collision kernel went **98.4 -> 11.3 ms** average per call
+> (**8.74x**; 10.4x on the isolated kernel), its share of the whole training
+> run **47.2% -> 9.3%**, and physics3d overall **52.0% -> 17.4%**. The run got
+> **1.67x** faster end to end (34.26 -> 20.51 s for 40 batched steps) and the
+> 192 M-step G3 run went from ~51 h to **~30 h**.
+>
+> Two things in that re-profile are worth keeping. **The learner's absolute
+> kernel time was 15.99 s before and 16.00 s after — 0.06% across two separate
+> profiles.** That is the control: it says nothing but physics moved, and it is
+> why the 1.67x can be read as a real effect rather than run-to-run spread.
+> And **the 2.4x ramp documented below is GONE** — the per-step times are now
+> 634 / 644 / 623 ms across the three steady segments, flat, because collision's
+> whole swing is ~11 ms of a 634 ms step instead of ~107 ms of a 1030 ms one.
+> The plateau caveat that made the old extrapolation shaky no longer bites.
+>
+> The next physics kernel is the Newton solver: 7.3%, 8.80 ms x 160, and
+> essentially unmoved by this work (8.93 -> 8.80 ms). The learner is now
+> GEMM-bound, which is the healthy state.
+>
+> The original handoff follows, unedited, because its MEASUREMENTS are what
+> §13.52 was aimed at and the reasoning about operating points is reusable.
+
 
 **Handoff.** The RL side has an operating point this file has never priced, and
 at it the SAP collision kernel is the single largest cost in the whole training
