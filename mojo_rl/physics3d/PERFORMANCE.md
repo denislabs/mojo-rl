@@ -4537,7 +4537,27 @@ WRONG at these dims — 4 k needs 256 ms per control step and collision alone is
 393 ms (524 at the plateau), so the target is unreachable by more than the
 entire budget no matter what the learner does.
 
-### 13.52 BUILT, PRICED ON APPLE ONLY (2026-09-11): the block collision kernel rebuilt for §13.51's operating point — 2.10x at 1024 G1 lanes on an M1 Pro, exact modulo ties; the 5090 decides
+### 13.52 LANDED (2026-09-11): the block collision kernel rebuilt for §13.51's operating point — 10.4x at 1024 G1 lanes on the RTX 5090, bit-identical to the serial kernel; 2.10x on an M1 Pro
+
+**The 5090 numbers (same day, the run sheet below, `COLL_BLOCK_KERNEL`
+now `True` in the tree):**
+
+| RTX 5090, 1024 lanes, ncon mean 6.0 max 40, last round of 16 snapshots | ms / launch | vs serial | csum vs serial stateless | lanes off the CPU |
+|---|---|---|---|---|
+| serial, warm start off | 107.7 | 1.00 | — | 264 of 16384, worst 0.057 |
+| block, warm start off | **10.36** | **10.4x** | **identical on all 16 snapshots** | 264, worst 0.057 — the SAME lanes |
+| block, warm start on | 10.13 | 10.6x | differs on ties from snapshot 4 on | 272 |
+
+So on NVIDIA the two kernels are the same contact set to the last bit
+when stateless, and both sit the same 264 lanes off the CPU — that band is
+the CPU-vs-CUDA float32 knife edge, shared, and the Apple serial kernel's
+extra ~500 lanes below were Metal. No env was sent to the serial fallback
+on any snapshot. At §13.51's plateau that is collision from ~524 ms to
+~50 ms per control step of 4 substeps: the training driver is now
+learner-bound, and the 192 M-step G3 run's collision share drops from 47%
+to ~7% of the old total.
+
+**What was built, and the Apple measurement it was built against:**
 
 **What §13.51 asked for, and what this is.** §13.51 priced the serial SAP
 kernel at 47% of a G1 training run and suggested three cheap steps: re-run

@@ -33,8 +33,9 @@ This file reproduces the WORKLOAD without the learner or the solver:
      field within `CPU_TOL`. ⚠ THE CHECK PRINTS FAIL ON THE G1 FOR BOTH
      KERNELS, AND THE NUMBER BESIDE IT IS THE RESULT: a float32 mesh-mesh
      manifold on a knife edge clips one vertex more or fewer on one side
-     (§13.52: 26 distinct cases in 2048 for the block kernel, ~90 for the
-     serial one on Apple). `diag_lanes=N` prints N mismatched lanes' contact
+     (§13.52: on the 5090 BOTH kernels sit the SAME 264 lanes of 16384 off
+     the CPU, worst 0.057; on Apple 208 for the block kernel and ~750 for
+     the serial one). `diag_lanes=N` prints N mismatched lanes' contact
      lists from both sides, which is how a knife edge (same body pair, ±1
      manifold point, shared points 1e-8 apart) is told from a missing
      contact (a pair on one side only). Read the count and the dump, not

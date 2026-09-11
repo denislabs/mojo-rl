@@ -272,26 +272,27 @@ comptime CCD_WS_SIZE: Int = HW_WS_OFF + 2 * HILL_WARM_SLOTS
 # with it, which is what bounds blocks per SM on CUDA (255 regs x 32 = 8K of
 # 64K).
 comptime COLL_TPB: Int = 32
-# ⚠ OFF BY DEFAULT UNTIL THE 5090 HAS PRICED THE 2026-09-11 KERNEL. The
-# first block kernel (2026-09-07) was measured NEUTRAL on the RTX 5090 at
-# the k=0 park scene (269.7 vs 269.0 µs; 381 vs 430 at k=13), with the
-# bisect putting 206 of its 270 µs in FOUR GJK candidates on four lanes of
-# one warp next to 28 lanes of cheap candidates — lanes are parallel only
-# on the SAME instructions, and that layout diverged on the code itself.
+# ⚠ ON SINCE 2026-09-11, BY A MEASUREMENT ON THE TARGET GPU. The first
+# block kernel (2026-09-07) was measured NEUTRAL on the RTX 5090 at the k=0
+# park scene (269.7 vs 269.0 µs; 381 vs 430 at k=13), with the bisect
+# putting 206 of its 270 µs in FOUR GJK candidates on four lanes of one
+# warp next to 28 lanes of cheap candidates — lanes are parallel only on
+# the SAME instructions, and that layout diverged on the code itself.
 # PERFORMANCE.md §13.51 then found the serial kernel at 47% of a G1 training
 # run (1024 sprawled humanoids, 131 ms a launch, 16 blocks on 170 SMs), and
 # §13.52 rebuilt this kernel for that point: candidates run in KIND order
 # (a warp's lanes on the same routine), every thread with its own CCD row,
 # the plane candidates gated before they are listed, no per-thread pose
-# copies. Apple M1 Pro, 1024 sprawled G1 lanes: 298 -> 142 ms a launch
-# (2.10x), no env sent to the serial fallback, every collision gate green
-# both ways. Flip to True to use it;
+# copies. RTX 5090, 1024 sprawled G1 lanes: 107.7 -> 10.4 ms a launch
+# (10.4x), bit-identical to the serial kernel on every snapshot with the
+# warm start off, no env sent to the serial fallback; Apple M1 Pro 298 ->
+# 142 (2.10x); every collision gate green both ways.
 # `benchmarks/physics3d_gpu/bench_g1_collision.mojo` is the A/B, its CPU
 # column with `diag_lanes` the correctness witness, and its `csum` line the
 # bit-identity gate — STATELESS (`HILL_WARM_ACROSS_STEPS=False` both sides)
 # and on NVIDIA only: on Apple the SERIAL kernel is the side off the CPU
-# (§13.52).
-comptime COLL_BLOCK_KERNEL: Bool = False
+# (§13.52). False = the one-thread-per-env kernel, kept as the reference.
+comptime COLL_BLOCK_KERNEL: Bool = True
 comptime COLL_CCD_LANES: Int = COLL_TPB if COLL_BLOCK_KERNEL else 1
 # ⚠ 256, NOT 128: a sprawled G1 lists ~60-120 sweep candidates plus the
 # plane's survivors, and an env past the cap goes to the SERIAL fallback —
