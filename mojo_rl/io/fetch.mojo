@@ -71,11 +71,20 @@ def fetch_to_cache(
     expect_sha256: String = String(""),
     expect_size: Int = 0,
     label: String = String("fetch"),
+    bearer: String = String(""),
 ) raises -> String:
     """Download `url` to `dest`, resuming and verifying. Returns `dest`.
 
     A `dest` that already exists and matches `expect_sha256` is left alone and
     no bytes move — the point of carrying the hash in the catalog.
+
+    ⚠ `bearer` IS FOR A HOST THAT GATES THE BYTES THEMSELVES, and the asset
+    resolver only uses it for `provider=hf`. A presigned URL — how datasets,
+    artifacts and `provider=monitor` all work — needs none, and that is the
+    better shape: the credential goes to our Worker and the storage host never
+    sees one. ⚠ A token set here IS carried across redirects by libcurl, which
+    is exactly what the Hub's `resolve` -> CDN hop requires and exactly why it
+    must not be pointed at an arbitrary third-party URL.
     """
     var part = dest + ".part"
     makedirs(parent_dir(dest), exist_ok=True)
@@ -92,6 +101,8 @@ def fetch_to_cache(
     var c = HttpClient()
     c.timeout_ms(0, 30000)  # see the module docstring: throughput, not total
     c.stall_guard(1024, 60)
+    if bearer.byte_length() > 0:
+        c.bearer(bearer)
 
     var retries = 0
     while True:

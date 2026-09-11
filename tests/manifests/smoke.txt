@@ -383,6 +383,14 @@ tests/core/test_project.mojo
 # would keep using. Plus the deploy-side resolver: a role resolves, an
 # unpromoted one falls back rather than raising. Mutation-checked.
 tests/core/test_policy.mojo
+# Asset packs (§9 infrastructure; NOTHING is migrated yet). The declaration
+# grammar and its eight refusals, the CREDENTIAL decision — which is the whole
+# reason `provider=` exists, since two https URLs can need different secrets or
+# none — and a real pull through a real archive against the loopback fixture:
+# byte-identical including a nested file, hard-linked not symlinked, a second
+# pull that makes no request, a corrupted cache repaired, and bytes that never
+# match refused with nothing materialised. Needs `pixi run build-http`.
+tests/assets/test_asset_packs.mojo
 # The JSON writer, byte-exact against output `json.loads` accepted, plus the
 # escapes, the \u fallback for control bytes, and the refusal of NaN /
 # Infinity. Self-contained; this is what replaced `json.dumps` in the logger.
