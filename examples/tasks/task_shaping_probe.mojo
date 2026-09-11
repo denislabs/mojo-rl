@@ -145,6 +145,18 @@ def margin_report(
 def main() raises:
     var task_name = String("so101_gather_bricks")
     var a = argv()
+    # ⚠⚠ THE MARGINS ARE OVERRIDABLE, because the point of this probe is to
+    # CHOOSE them. It read `CFG.GOAL_MARGIN`/`CFG.REACH_MARGIN` — the
+    # COMPILED defaults — so it reported on 0.10/0.20 no matter what the run
+    # being calibrated actually passed to `--goal-margin`, and a candidate
+    # margin could not be evaluated at all.
+    var gm = CFG.GOAL_MARGIN
+    var rm = CFG.REACH_MARGIN
+    for i in range(len(a)):
+        if String(a[i]) == "--goal-margin" and i + 1 < len(a):
+            gm = Float64(String(a[i + 1]))
+        elif String(a[i]) == "--reach-margin" and i + 1 < len(a):
+            rm = Float64(String(a[i + 1]))
     if len(a) > 1:
         task_name = String(a[1])
 
@@ -245,6 +257,13 @@ def main() raises:
     var sum_reach = 0.0
     var sum_goal_c = 0.0
     var sum_reach_c = 0.0
+    # ⚠⚠ THE REWARD'S SPREAD ACROSS STATES, which is the critic's target
+    # variance and the cost side of a gradient-optimal margin. Accumulated
+    # per STEP at the margins in use, not recomputed from the mean distance —
+    # `tolerance` is convex, so the term at the mean distance is not the mean
+    # of the term.
+    var sum_r = 0.0
+    var sum_r2 = 0.0
     var max_reach = 0.0
     var clipped_reach = 0
     var clipped_goal = 0
@@ -293,6 +312,19 @@ def main() raises:
             max_reach = reach
         sum_goal_c += gd
         sum_reach_c += reach
+        var r_step = CFG.SHAPE_W_GOAL * Float64(
+            tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
+                Scalar[DT](gd), Scalar[DT](0),
+                Scalar[DT](CFG.GOAL_RADIUS), Scalar[DT](gm),
+            )
+        ) + CFG.SHAPE_W_REACH * Float64(
+            tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
+                Scalar[DT](reach), Scalar[DT](0),
+                Scalar[DT](CFG.REACH_RADIUS), Scalar[DT](rm),
+            )
+        )
+        sum_r += r_step
+        sum_r2 += r_step * r_step
         n += 1
         _ = step
 
@@ -317,17 +349,16 @@ def main() raises:
     var gt = Float64(
         tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
             Scalar[DT](mg), Scalar[DT](0), Scalar[DT](0),
-            Scalar[DT](CFG.GOAL_MARGIN),
+            Scalar[DT](gm),
         )
     )
     var rt = Float64(
         tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
             Scalar[DT](mr), Scalar[DT](0), Scalar[DT](CFG.REACH_RADIUS),
-            Scalar[DT](CFG.REACH_MARGIN),
+            Scalar[DT](rm),
         )
     )
-    print("  tolerance at those distances (margins", CFG.GOAL_MARGIN, "/",
-          CFG.REACH_MARGIN, "):")
+    print("  tolerance at those distances (margins", gm, "/", rm, "):")
     print("     goal ", gt, "  reach ", rt)
     print("  reward at weights", CFG.SHAPE_W_GOAL, "/", CFG.SHAPE_W_REACH,
           ":  goal", CFG.SHAPE_W_GOAL * gt, " reach",
@@ -343,7 +374,21 @@ def main() raises:
     # shortfall left a gradient of 1.9/m; 0.10 left the goal term at 0.81
     # BEFORE the policy moved anything, so a 1M-step run bought +0.034/step
     # and the brick never left the table.
-    margin_report("goal ", mg, CFG.GOAL_RADIUS, CFG.GOAL_MARGIN)
-    margin_report("reach", mr, CFG.REACH_RADIUS, CFG.REACH_MARGIN)
+    # ⚠ THE SPREAD IS THE COST OF THE GRADIENT. A margin chosen to maximise
+    # d(term)/d(distance) also maximises how much the reward MOVES between
+    # nearby states, and that spread is what the critic has to fit. Measured
+    # on `so101_lift_brick` under a random policy: at margin 0.10 the goal
+    # term sits at 0.81 with little variation and two runs kept textbook
+    # critics; at the gradient-optimal 0.058 the term is 0.368 with the
+    # steepest response, and the run diverged to 57x its fixed point. n=2 vs
+    # n=1, so this is a mechanism to watch and not a finding — but a margin
+    # decision that reads only the gradient is reading one side of it.
+    var mean_r = sum_r / Float64(n)
+    var var_r = sum_r2 / Float64(n) - mean_r * mean_r
+    var sd_r = 0.0 if var_r <= 0.0 else var_r ** 0.5
+    print("  shaped reward under a random policy: mean", mean_r, " sd", sd_r,
+          " sd/mean", 0.0 if mean_r == 0.0 else sd_r / mean_r)
+    margin_report("goal ", mg, CFG.GOAL_RADIUS, gm)
+    margin_report("reach", mr, CFG.REACH_RADIUS, rm)
     print()
     print("=== MEASURED ===")
