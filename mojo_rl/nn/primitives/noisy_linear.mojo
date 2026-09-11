@@ -510,13 +510,13 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
                 block_dim=(_T_TILE, _T_BR),
             )
             var cT_tt = TileTensor(
-                self.cacheT.dev.value(), row_major(Self.IN_, B)
+                self.cacheT.dev.value(), row_major[Self.IN_, B]()
             )
             var go_tt = TileTensor(
-                grad_output.dev.value(), row_major(B, Self.OUT_)
+                grad_output.dev.value(), row_major[B, Self.OUT_]()
             )
             var dW_tt = TileTensor(
-                self.dW_tmp.dev.value(), row_major(Self.IN_, Self.OUT_)
+                self.dW_tmp.dev.value(), row_major[Self.IN_, Self.OUT_]()
             )
             comptime if splitk_path_applies[c.default_device_info]():
                 if self._sk_p < 0:

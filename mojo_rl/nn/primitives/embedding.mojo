@@ -335,7 +335,7 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                 comptime lwf = Layout.row_major(Self.W_SIZE)
                 # grad_in[B, VOCAB] = grad_out[B, ED] @ weight[VOCAB, ED]ᵀ
                 var go_v = TileTensor(
-                    god.dev.value(), row_major(B, Self.EMBED_DIM_)
+                    god.dev.value(), row_major[B, Self.EMBED_DIM_]()
                 )
                 var w_v = TileTensor(
                     self.weight.val.dev.value(),
@@ -349,11 +349,11 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                 )
                 # gw_tmp[VOCAB, ED] = cache_inᵀ[VOCAB, B] @ grad_out[B, ED]
                 var cinT_v = TileTensor(
-                    self.cache_inT.dev.value(), row_major(Self.VOCAB_, B)
+                    self.cache_inT.dev.value(), row_major[Self.VOCAB_, B]()
                 )
                 var gwtmp_v = TileTensor(
                     self.gw_tmp.dev.value(),
-                    row_major(Self.VOCAB_, Self.EMBED_DIM_),
+                    row_major[Self.VOCAB_, Self.EMBED_DIM_](),
                 )
                 comptime if splitk_path_applies[c.default_device_info]():
                     if self._sk_p < 0:

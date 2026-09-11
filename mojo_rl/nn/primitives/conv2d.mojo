@@ -1250,13 +1250,13 @@ struct Conv2D[
                     # bit for bit, at an aligned contraction length.
                     var w_buf = self._w_col_buf(c)
                     var col_tt = TileTensor(
-                        self.col_t.dev.value(), row_major(BS, Self.CPAD)
+                        self.col_t.dev.value(), row_major[BS, Self.CPAD]()
                     )
                     var w_tt = TileTensor(
-                        w_buf, row_major(Self.OCPAD, Self.CPAD)
+                        w_buf, row_major[Self.OCPAD, Self.CPAD]()
                     )
                     var outp_tt = TileTensor(
-                        self.outp_t.dev.value(), row_major(BS, Self.OCPAD)
+                        self.outp_t.dev.value(), row_major[BS, Self.OCPAD]()
                     )
                     # Same treatment as the dW, and for the same reason:
                     # once `CPAD >= 2048` MAX partitions K here too and
@@ -1691,13 +1691,13 @@ struct Conv2D[
             )
             # (3) dW_tmp = goᵀ @ col → accumulate into grad_w
             var goT_tt = TileTensor(
-                self.goT_t.dev.value(), row_major(Self.OC_, BS)
+                self.goT_t.dev.value(), row_major[Self.OC_, BS]()
             )
             var col_tt = TileTensor(
-                self.col_t.dev.value(), row_major(BS, Self.CPAD)
+                self.col_t.dev.value(), row_major[BS, Self.CPAD]()
             )
             var dW_tmp_tt = TileTensor(
-                self.dW_tmp.dev.value(), row_major(Self.OC_, Self.CPAD)
+                self.dW_tmp.dev.value(), row_major[Self.OC_, Self.CPAD]()
             )
             # ── dW: split-K on OUR workspace, or plain matmul ──────────
             # `[OC, BS] @ [BS, CPAD]`: K is `batch * OH * OW`, so this is the

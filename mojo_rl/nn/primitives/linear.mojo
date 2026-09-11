@@ -1021,7 +1021,7 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         )
                     var gop_v = TileTensor(
                         self.go_pad.dev.value() if Self.NEEDS_N_PAD else god.dev.value(),
-                        row_major(B, Self.N_PAD),
+                        row_major[B, Self.N_PAD](),
                     )
                     # cacheT: [IN_, B] -> [K_PAD, B]  (append zero ROWS)
                     comptime if Self.NEEDS_PAD:
@@ -1038,13 +1038,13 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         )
                     var cTp_v = TileTensor(
                         self.cT_pad.dev.value() if Self.NEEDS_PAD else self.cacheT.dev.value(),
-                        row_major(Self.K_PAD, B),
+                        row_major[Self.K_PAD, B](),
                     )
                     # grad_w = cacheTᵀ @ go   ->  [K_PAD, N_PAD]
                     self.dW_pad.ensure_gpu(c, Self.WPAD_SIZE)
                     var dWp_v = TileTensor(
                         self.dW_pad.dev.value(),
-                        row_major(Self.K_PAD, Self.N_PAD),
+                        row_major[Self.K_PAD, Self.N_PAD](),
                     )
                     # ── grad_w: split-K on OUR workspace, or plain matmul ──
                     # This is the GEMM MODULAR_MATMUL_ALLOC_REPORT.md
@@ -1133,16 +1133,16 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                 else:
                     var dW_v = TileTensor(
                         self.dW_tmp.dev.value(),
-                        row_major(Self.IN_, Self.OUT_),
+                        row_major[Self.IN_, Self.OUT_](),
                     )
                     var gi_v = TileTensor(
                         gind.dev.value(), row_major(B, Self.IN_)
                     )
                     var cT_v = TileTensor(
-                        self.cacheT.dev.value(), row_major(Self.IN_, B)
+                        self.cacheT.dev.value(), row_major[Self.IN_, B]()
                     )
                     var go_v = TileTensor(
-                        god.dev.value(), row_major(B, Self.OUT_)
+                        god.dev.value(), row_major[B, Self.OUT_]()
                     )
                     # Same split-K routing as the padded branch above. This is
                     # the branch an ALIGNED Linear takes (K_PAD == IN_ and
