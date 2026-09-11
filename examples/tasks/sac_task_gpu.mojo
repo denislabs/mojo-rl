@@ -1075,10 +1075,20 @@ def main() raises:
               "(" + String(peak_q / q_fp) + "x the fixed point)"
               if q_fp > 0.0 else "")
         print("  peak critic_loss   :", peak_loss)
-        # ⚠ 10x IS A DIVERGENCE, NOT A WIDE BAND. The converged run peaked at
-        # 1.00x and the destroyed one at 89x; nothing observed on this family
-        # has landed between 2x and 80x, so the threshold is not fitted to the
-        # gap so much as placed in the middle of an empty decade.
+        # ⚠ TWO BANDS, BECAUSE THE MIDDLE OF THE RANGE TURNED OUT TO BE
+        # POPULATED. This said 10x sat "in the middle of an empty decade" on
+        # the strength of two runs, 1.00x and 89x. A later `lift` run peaked
+        # at 4.19x: it did not diverge, it overshot and decayed — and it
+        # learned nothing at all (`mean_reward` 0.3931 -> 0.3949 over 1M
+        # steps). That run passed silently under a single 10x gate while
+        # being neither healthy nor diverged, which is the reading the gate
+        # exists to prevent.
+        if q_fp > 0.0 and peak_q > 2.0 * q_fp and peak_q <= 10.0 * q_fp:
+            print("  ⚠ THE CRITIC OVERSHOT.", peak_q / q_fp, "x its fixed"
+                  " point at the peak — not a divergence, but the runs that")
+            print("     learned on this family peaked INSIDE 1.01x. Treat the")
+            print("     rate as provisional and read the return against this")
+            print("     run's own warmup baseline before believing it.")
         if q_fp > 0.0 and peak_q > 10.0 * q_fp:
             print("  ⚠⚠ THE CRITIC DIVERGED. `mean_q` reached", peak_q,
                   "against a fixed point of", q_fp, "— the policy was")

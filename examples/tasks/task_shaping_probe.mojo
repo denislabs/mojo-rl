@@ -152,11 +152,23 @@ def main() raises:
     # margin could not be evaluated at all.
     var gm = CFG.GOAL_MARGIN
     var rm = CFG.REACH_MARGIN
+    # ⚠⚠ THE WEIGHTS TOO, AND FOR THE SAME REASON. `CFG.SHAPE_W_REACH` is
+    # 0.50 and every run of `sac_task_gpu.mojo` so far has passed
+    # `--shape-reach 0.21`, so this file reported a reward the trainer never
+    # charged — 0.585 per step against the 0.393 the run's own warmup buffer
+    # measured. A probe whose job is to calibrate a run has to be given the
+    # run's numbers.
+    var wg = CFG.SHAPE_W_GOAL
+    var wr = CFG.SHAPE_W_REACH
     for i in range(len(a)):
         if String(a[i]) == "--goal-margin" and i + 1 < len(a):
             gm = Float64(String(a[i + 1]))
         elif String(a[i]) == "--reach-margin" and i + 1 < len(a):
             rm = Float64(String(a[i + 1]))
+        elif String(a[i]) == "--shape-goal" and i + 1 < len(a):
+            wg = Float64(String(a[i + 1]))
+        elif String(a[i]) == "--shape-reach" and i + 1 < len(a):
+            wr = Float64(String(a[i + 1]))
     if len(a) > 1:
         task_name = String(a[1])
 
@@ -312,12 +324,12 @@ def main() raises:
             max_reach = reach
         sum_goal_c += gd
         sum_reach_c += reach
-        var r_step = CFG.SHAPE_W_GOAL * Float64(
+        var r_step = wg * Float64(
             tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
                 Scalar[DT](gd), Scalar[DT](0),
                 Scalar[DT](CFG.GOAL_RADIUS), Scalar[DT](gm),
             )
-        ) + CFG.SHAPE_W_REACH * Float64(
+        ) + wr * Float64(
             tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DT](
                 Scalar[DT](reach), Scalar[DT](0),
                 Scalar[DT](CFG.REACH_RADIUS), Scalar[DT](rm),
@@ -360,12 +372,9 @@ def main() raises:
     )
     print("  tolerance at those distances (margins", gm, "/", rm, "):")
     print("     goal ", gt, "  reach ", rt)
-    print("  reward at weights", CFG.SHAPE_W_GOAL, "/", CFG.SHAPE_W_REACH,
-          ":  goal", CFG.SHAPE_W_GOAL * gt, " reach",
-          CFG.SHAPE_W_REACH * rt, " total",
-          CFG.SHAPE_W_GOAL * gt + CFG.SHAPE_W_REACH * rt)
-    print("  reach/goal contribution ratio:",
-          (CFG.SHAPE_W_REACH * rt) / (CFG.SHAPE_W_GOAL * gt))
+    print("  reward at weights", wg, "/", wr,
+          ":  goal", wg * gt, " reach", wr * rt, " total", wg * gt + wr * rt)
+    print("  reach/goal contribution ratio:", (wr * rt) / (wg * gt))
 
     # ⚠⚠ WHAT THE MARGIN IS WORTH, WHICH IS THE NUMBER THIS PROBE EXISTS FOR.
     # The distances above are the input to a margin choice and the probe used

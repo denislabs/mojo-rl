@@ -102,6 +102,30 @@ def main() raises:
               " threshold — the check is reading an absolute Q, not a ratio")
         fails += 1
 
+    # ⚠⚠ THE OVERSHOOT BAND, which exists because the middle of the range
+    # turned out to be populated. A `lift` run peaked at 4.19x with
+    # `critic_loss` 33.9 — it did not diverge, it overshot and decayed, and
+    # it learned nothing (`mean_reward` 0.3931 -> 0.3949 over 1M steps). A
+    # single 10x gate passes that run silently while it is neither healthy
+    # nor diverged.
+    var mid_path = String("/tmp/_ch_overshoot.csv")
+    write_csv(mid_path, 165.3, 33.9, 0.395)
+    var h_mid = critic_health(mid_path, 0.99)
+    var r_mid = h_mid[0] / h_mid[2]
+    print("  overshoot: peak_q", h_mid[0], " fixed point", h_mid[2],
+          " ratio", r_mid)
+    if r_mid <= 2.0 or r_mid > 10.0:
+        print("  FAIL: the 4.19x run does not land in the overshoot band"
+              " (2x, 10x] — it would be reported as healthy or as diverged,"
+              " and it is neither")
+        fails += 1
+    # ⚠ AND THE HEALTHY RUN MUST STAY BELOW THE NEW LOWER EDGE, or the band
+    # swallows the runs that actually learned.
+    if h_ok[0] / h_ok[2] > 2.0:
+        print("  FAIL: the converged run trips the overshoot band")
+        fails += 1
+    remove(mid_path)
+
     remove(ok_path)
     remove(bad_path)
     remove(scaled)

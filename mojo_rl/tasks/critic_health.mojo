@@ -43,6 +43,17 @@ def critic_health(csv_path: String, gamma: Float64) raises -> Tuple[
     magnitude (0.89 vs 27215); the FINAL ratio separates them by 5%. Those
     numbers are read off the two real CSVs, not reconstructed.
 
+    ## ⚠ THE MIDDLE OF THE RANGE IS NOT EMPTY, AND THIS FILE USED TO SAY IT WAS
+
+    The 10x threshold was first justified as sitting "in the middle of an
+    empty decade" — 1.00x on the converged run, 89x on the destroyed one,
+    nothing between. A later `lift` run at `updates_per_step 16` peaked at
+    **4.19x** with `critic_loss` 33.9: it did not diverge, it overshot and
+    decayed, and it learned nothing (`mean_reward` 0.3931 -> 0.3949 over 1M
+    steps). So the decade is populated, the claim was an artefact of two data
+    points, and a run between 2x and 10x is worth SAYING rather than passing
+    silently — it is not a diverged run and it is not a healthy one.
+
     ⚠ THE FIXED POINT IS THE RUN'S OWN. `mean_reward / (1 - gamma)` from the
     last row that carries one, so the check needs no per-task calibration —
     the same reason the baseline comes from the run's own warmup.
