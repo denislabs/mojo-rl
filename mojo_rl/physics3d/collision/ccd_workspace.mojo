@@ -249,12 +249,15 @@ comptime CCD_WS_SIZE: Int = HW_WS_OFF + 2 * HILL_WARM_SLOTS
 #
 # One block per env, `COLL_TPB` threads over the candidate pairs. A pair that
 # reaches GJK/EPA or the multicontact clipper needs a CCD workspace ROW, and a
-# row is `CCD_WS_SIZE` = 11,394 scalars (45 KB in float32) — one per thread
-# would be gigabytes at 1024 envs — so those candidates run on the first
-# `COLL_CCD_LANES` threads, each with its own row: `Data.ccd_ws` is
-# `[BATCH * COLL_CCD_LANES, CCD_WS_SIZE]` and the serial kernels keep using
-# row `env` (< BATCH, so never another env's lane). 4 lanes = 187 MB at
-# 1024 envs; the k=13 park scene has 4 such candidates per step.
+# row is `CCD_WS_SIZE` = 11,394 scalars (45 KB in float32). EVERY THREAD OF
+# THE BLOCK HAS ONE (2026-09-11): `Data.ccd_ws` is
+# `[BATCH * COLL_CCD_LANES, CCD_WS_SIZE]` with `COLL_CCD_LANES == COLL_TPB`,
+# 1.49 GB at 1024 envs x 32 lanes — the price of running 32 GJK candidates
+# of one env at once instead of four. (Until 2026-09-11 four lanes carried
+# the CCD candidates and 28 threads the cheap ones, 187 MB; on a sprawled
+# G1 nearly every candidate is a mesh pair, so that put ~40 GJKs through
+# four lanes ten rounds deep, PERFORMANCE.md §13.51.) The serial kernels keep
+# using row `env` (< BATCH, so never another env's lane).
 #
 # Contacts are emitted into a per-env STAGING region of `COLL_STAGE_SLOTS`
 # records, `COLL_STAGE_MAXC` per candidate, at offsets thread 0 assigns in
@@ -267,28 +270,43 @@ comptime CCD_WS_SIZE: Int = HW_WS_OFF + 2 * HILL_WARM_SLOTS
 # 32, not 64: E2 on Metal (block ledger §6) put the thread count at a 1.4x
 # term between 8 and 64 threads, and a block's register footprint scales
 # with it, which is what bounds blocks per SM on CUDA (255 regs x 32 = 8K of
-# 64K). 28 threads for the cheap candidates cover the 61 the k=0 park scene
-# sweeps in three rounds.
+# 64K).
 comptime COLL_TPB: Int = 32
-# ⚠ OFF BY DEFAULT, AND THE REASON IS A MEASUREMENT (BLOCK_DIAGONAL_..., §6,
-# 2026-09-07). On the RTX 5090 at k=0 the block kernel's launch read 269.7 µs
-# against the serial kernel's 269.0 (381 vs 430 at k=13), exact both ways;
-# the bisect put 206 of its 270 µs in FOUR GJK candidates on four lanes of
-# one warp — twice what the same four cost one after another on one thread,
-# because lanes are parallel only on the SAME instructions and four
-# different pairs diverge at every branch. The old mapping (32 envs per
-# warp, each lane its own env, in lockstep) was the SIMT-friendly one. The
-# kernel stays as the substrate for a WARP-cooperative GJK (one warp per
-# candidate, the hill climb's neighbourhood across lanes), which is the
-# lever that fits SIMT; until that exists this is False, and the workspace
-# lanes and staging slab below collapse to one row so nothing is paid.
+# ⚠ OFF BY DEFAULT UNTIL THE 5090 HAS PRICED THE 2026-09-11 KERNEL. The
+# first block kernel (2026-09-07) was measured NEUTRAL on the RTX 5090 at
+# the k=0 park scene (269.7 vs 269.0 µs; 381 vs 430 at k=13), with the
+# bisect putting 206 of its 270 µs in FOUR GJK candidates on four lanes of
+# one warp next to 28 lanes of cheap candidates — lanes are parallel only
+# on the SAME instructions, and that layout diverged on the code itself.
+# PERFORMANCE.md §13.51 then found the serial kernel at 47% of a G1 training
+# run (1024 sprawled humanoids, 131 ms a launch, 16 blocks on 170 SMs), and
+# §13.52 rebuilt this kernel for that point: candidates run in KIND order
+# (a warp's lanes on the same routine), every thread with its own CCD row,
+# the plane candidates gated before they are listed, no per-thread pose
+# copies. Apple M1 Pro, 1024 sprawled G1 lanes: 298 -> 142 ms a launch
+# (2.10x), no env sent to the serial fallback, every collision gate green
+# both ways. Flip to True to use it;
+# `benchmarks/physics3d_gpu/bench_g1_collision.mojo` is the A/B, its CPU
+# column with `diag_lanes` the correctness witness, and its `csum` line the
+# bit-identity gate — STATELESS (`HILL_WARM_ACROSS_STEPS=False` both sides)
+# and on NVIDIA only: on Apple the SERIAL kernel is the side off the CPU
+# (§13.52).
 comptime COLL_BLOCK_KERNEL: Bool = False
-comptime COLL_CCD_LANES: Int = 4 if COLL_BLOCK_KERNEL else 1
-comptime COLL_NCAND_CAP: Int = 128
+comptime COLL_CCD_LANES: Int = COLL_TPB if COLL_BLOCK_KERNEL else 1
+# ⚠ 256, NOT 128: a sprawled G1 lists ~60-120 sweep candidates plus the
+# plane's survivors, and an env past the cap goes to the SERIAL fallback —
+# the whole win evaporates one env at a time. The staging slab is
+# `BATCH * 256 * 8 * CONTACT_SIZE` floats (251 MB at 1024 lanes).
+comptime COLL_NCAND_CAP: Int = 256
 comptime COLL_STAGE_MAXC: Int = 8
 comptime COLL_STAGE_SLOTS: Int = (
     COLL_NCAND_CAP * COLL_STAGE_MAXC if COLL_BLOCK_KERNEL else 1
 )
+# ⚠ A TIMING INSTRUMENT, NOT A MODE. True skips the serial fallback launch
+# for the envs the block kernel marked (`ncon = -1`), so a benchmark can
+# COUNT them (they keep the mark) and time the block kernel alone. The
+# contact set is WRONG for those envs while this is on.
+comptime COLL_NO_FALLBACK: Bool = False
 
 # The single-row spelling, for host callers that collide one pair at a time
 # (every gate and probe in `tests/physics3d`). The engine binds

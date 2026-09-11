@@ -168,7 +168,7 @@ def _hf_len(n: Int) -> Int:
 from .ccd_workspace import (
     CCD_WS_SIZE, COLL_TPB, COLL_CCD_LANES, COLL_NCAND_CAP, COLL_STAGE_MAXC,
     HILL_WARM_ACROSS_STEPS, HILL_WARM_SLOTS, HW_WS_OFF,
-    COLL_STAGE_SLOTS, COLL_BLOCK_KERNEL,
+    COLL_STAGE_SLOTS, COLL_BLOCK_KERNEL, COLL_NO_FALLBACK,
 )
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
@@ -460,6 +460,244 @@ struct _SapProbe(Copyable, Movable):
 
 
 
+struct _PlaneGate[DTYPE: DType](Copyable, Movable):
+    """What `_sap_plane_gate` decided and computed on the way: `ok` = the
+    candidate survives every filter and the bounding reject, plus the
+    values the narrow phase needs next (the pair index, the margins, the
+    geom's pose in the plane's frame)."""
+    var ok: Bool
+    var gj_type: Int
+    var gj_body: Int
+    var ipair: Int
+    var cim: Scalar[Self.DTYPE]
+    var cgp: Scalar[Self.DTYPE]
+    var cm: Scalar[Self.DTYPE]
+    var pj_x: Scalar[Self.DTYPE]
+    var pj_y: Scalar[Self.DTYPE]
+    var pj_z: Scalar[Self.DTYPE]
+    var qj_x: Scalar[Self.DTYPE]
+    var qj_y: Scalar[Self.DTYPE]
+    var qj_z: Scalar[Self.DTYPE]
+    var qj_w: Scalar[Self.DTYPE]
+
+    def __init__(out self):
+        """A rejected candidate."""
+        self.ok = False
+        self.gj_type = -1
+        self.gj_body = -1
+        self.ipair = -1
+        self.cim = Scalar[Self.DTYPE](0)
+        self.cgp = Scalar[Self.DTYPE](0)
+        self.cm = Scalar[Self.DTYPE](0)
+        self.pj_x = Scalar[Self.DTYPE](0)
+        self.pj_y = Scalar[Self.DTYPE](0)
+        self.pj_z = Scalar[Self.DTYPE](0)
+        self.qj_x = Scalar[Self.DTYPE](0)
+        self.qj_y = Scalar[Self.DTYPE](0)
+        self.qj_z = Scalar[Self.DTYPE](0)
+        self.qj_w = Scalar[Self.DTYPE](1)
+
+
+@always_inline
+def _sap_plane_gate[
+    DTYPE: DType,
+    BATCH: Int,
+    D: DimsLike,
+    EX_CAP: Int,
+    L_GEOMS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_EXCLUDES: Layout,
+    L_PAIRS: Layout,
+](
+    gi: Int,
+    gj: Int,
+    gi_body: Int,
+    gi_contype: Int,
+    gi_conaffinity: Int,
+    plp_x: Scalar[DTYPE],
+    plp_y: Scalar[DTYPE],
+    plp_z: Scalar[DTYPE],
+    plq_x: Scalar[DTYPE],
+    plq_y: Scalar[DTYPE],
+    plq_z: Scalar[DTYPE],
+    plq_w: Scalar[DTYPE],
+    gj_px: Scalar[DTYPE],
+    gj_py: Scalar[DTYPE],
+    gj_pz: Scalar[DTYPE],
+    gj_qx: Scalar[DTYPE],
+    gj_qy: Scalar[DTYPE],
+    gj_qz: Scalar[DTYPE],
+    gj_qw: Scalar[DTYPE],
+    dims: D,
+    nbody: Int,
+    ex_sig: Scratch[Int, EX_CAP],
+    n_sig: Int,
+    geoms: LayoutTensor[
+        DTYPE, L_GEOMS, MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, L_BODIES, MutAnyOrigin
+    ],
+    mmeta: LayoutTensor[
+        DTYPE, L_MMETA, MutAnyOrigin
+    ],
+    excludes: LayoutTensor[
+        DTYPE, L_EXCLUDES, MutAnyOrigin
+    ],
+    pairs: LayoutTensor[
+        DTYPE, L_PAIRS, MutAnyOrigin
+    ],
+) -> _PlaneGate[DTYPE]:
+    """Everything of the plane phase that can REJECT a (plane, geom)
+    candidate before any contact is computed, in the order the serial loop
+    always ran it: the geom is itself a plane; no `<pair>` and (the world
+    body, `pair_body_filtered`, the contype/conaffinity masks); then the
+    bounding-sphere reject in the plane's frame with the pair's cutoff.
+    Pure in the model and the two poses, so the block kernel's candidate
+    list and the serial narrow phase take the SAME decision from the same
+    inputs — a candidate the gate drops would have emitted nothing.
+
+    ⚠ ONE RULE. `_sap_plane_narrow` used to hold these tests inline; the
+    block kernel needs them BEFORE it hands a candidate to a thread (the
+    plane phase lists every geom in the model), and a second copy of a
+    filter is how `<geom gap>` went wrong fifteen times
+    (`_a_rule_written_inline_twice_drifts`). Extracted 2026-09-11."""
+    var gj_type = Int(
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_TYPE])
+    )
+    if gj_type == GEOM_PLANE:
+        return _PlaneGate[DTYPE]()
+    var gj_body = Int(
+        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_BODY])
+    )
+    # `<contact><pair>` bypasses every filter below — see the same
+    # gate in `_detect_contacts_env`. A plane/geom pair is a normal
+    # thing to declare (it is the ONLY form ToddlerBot's scene files
+    # use), and the world plane's body is 0, so without this the
+    # `gj_body == 0` skip and the weld test would drop it.
+    var ipair = find_predefined_pair[DTYPE](
+        gi, gj, dims, pairs, mmeta
+    )
+    if ipair < 0:
+        if gj_body == 0:
+            return _PlaneGate[DTYPE]()
+        # DEFECT 24 — this loop had NO body filter. MuJoCo runs the
+        # plane path through `filterBodyPair` like every other pair
+        # (`engine_collision_driver.c:1277`), which discards on
+        # `weldbody1 == weldbody2`; a jointless body welds to the
+        # world, so every static geom was colliding with the ground
+        # here while the O(N^2) path correctly emitted nothing. See
+        # `pair_body_filtered`.
+        if pair_body_filtered[DTYPE, EX_CAP=EX_CAP](
+            gi_body, gj_body, bodies, mmeta, excludes,
+            ex_sig, n_sig, nbody,
+        ):
+            return _PlaneGate[DTYPE]()
+        var gj_contype = Int(
+            rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
+        )
+        var gj_conaffinity = Int(
+            rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
+        )
+        if (gi_contype & gj_conaffinity) == 0 and (
+            gj_contype & gi_conaffinity
+        ) == 0:
+            return _PlaneGate[DTYPE]()
+
+    # MuJoCo's full contact-parameter rule, PRIORITY FIRST — shared
+    # with `detect_contacts` so the two paths cannot drift, which is
+    # exactly how the SAP ellipsoid branch went missing. A predefined
+    # pair supplies its own parameters instead, unmixed.
+    var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
+    var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
+    # Sum of the two geoms' margins, or the PAIR's own — never both.
+    var cim = mgi + mgj  # MuJoCo 3.5+: sum of margins
+    var cgp = (
+        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_GAP])
+        + rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_GAP])
+    )
+    if ipair >= 0:
+        cim = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_MARGIN])
+        cgp = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_GAP])
+    # ⚠⚠ TWO VALUES, NOT ONE. `cm` is the narrowphase CUTOFF and `cim`
+    # is what the contact stores as its `includemargin`; 3.10.0 passes
+    # `margin + gap` to the collision function and `margin` alone to
+    # `mj_setContact`, so a contact in [margin, margin+gap) is DETECTED
+    # and then EXCLUDED from the solver by
+    # `con->exclude = dist >= includemargin`. With no `<geom gap>` the
+    # two are equal and every line below is what it always was.
+    var cm = cim + cgp
+
+    # Pose IN THE PLANE'S FRAME, so `ground_z` below is 0 and the
+    # branch arithmetic is the same as it always was.
+    var lpj = to_plane_frame[DTYPE](
+        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+        gj_px, gj_py, gj_pz,
+    )
+    var lqj = quat_to_plane_frame[DTYPE](
+        plq_x, plq_y, plq_z, plq_w,
+        gj_qx, gj_qy, gj_qz, gj_qw,
+    )
+    var pj_x = lpj[0]
+    var pj_y = lpj[1]
+    var pj_z = lpj[2]
+    var qj_x = lqj[0]
+    var qj_y = lqj[1]
+    var qj_z = lqj[2]
+    var qj_w = lqj[3]
+
+    # ── PLANE-SIDE BOUNDING-SPHERE REJECT — MuJoCo's second
+    # `mj_filterSphere` arm. In the plane's own frame `pj_z` IS
+    # `planeGeomDist`: the signed distance from the plane to the geom
+    # centre. If the geom's bounding sphere cannot reach the plane,
+    # nothing downstream can produce a contact.
+    #
+    # ⚠⚠ WITHOUT THIS, A PLANE PAIRED WITH A MESH SCANS EVERY HULL
+    # VERTEX, EVERY STEP, FOREVER. `_plane_mesh_contacts` has no early
+    # out — it transforms all `pm_vnum` vertices looking for the
+    # deepest. SO-ARM101 carries 30 mesh geoms totalling 33 076 hull
+    # vertices and a floor its arm never touches, and that scan was
+    # 72% of its entire physics step. It is also why the arm-to-arm
+    # cost ratio tracked HULL SIZE rather than anything physical.
+    #
+    #     SO-ARM101   1.86 -> 0.65 ms/env step   ( 539 -> 1544 Hz)
+    #     SO-ARM100   1.11 -> 1.04 ms/env step   ( 901 ->  959 Hz)
+    #
+    # ⚠ THE TWO ARMS SEPARATE HERE, AND THAT IS THE POINT. SO-ARM100
+    # barely moves: 2 551 hull vertices is a scan it could afford.
+    # SO-ARM101's 33 076 is not, and removing it INVERTS the pair —
+    # the arm with 13x the geometry is now the FASTER of the two,
+    # because what remains is no longer proportional to hull size.
+    # SO-ARM100's residual is elsewhere (its Newton solve is ~25% of
+    # its step, against ~0.5% of SO-ARM101's).
+    #
+    # ⚠ `+ cm` AGAIN, for the same silent reason as the geom-geom arm
+    # above: a geom hovering within its margin of the floor is a
+    # contact MuJoCo reports.
+    var rbound_j_pl = rebind[Scalar[DTYPE]](
+        geoms[gj, GEOM_IDX_RBOUND]
+    )
+    if rbound_j_pl > Scalar[DTYPE](0) and pj_z > cm + rbound_j_pl:
+        return _PlaneGate[DTYPE]()
+    var out = _PlaneGate[DTYPE]()
+    out.ok = True
+    out.gj_type = gj_type
+    out.gj_body = gj_body
+    out.ipair = ipair
+    out.cim = cim
+    out.cgp = cgp
+    out.cm = cm
+    out.pj_x = pj_x
+    out.pj_y = pj_y
+    out.pj_z = pj_z
+    out.qj_x = qj_x
+    out.qj_y = qj_y
+    out.qj_z = qj_z
+    out.qj_w = qj_w
+    return out^
+
+
 @always_inline
 def _sap_plane_narrow[
     DTYPE: DType,
@@ -506,13 +744,18 @@ def _sap_plane_narrow[
     n_sig: Int,
     mut pr: _SapProbe,
     mut num_contacts: Int,
-    wpx: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
-    wpy: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
-    wpz: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
-    wqx: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
-    wqy: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
-    wqz: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
-    wqw: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    # `gj`'s world pose. The two narrow-phase routines used to take the
+    # seven per-geom pose arrays and index them; they only ever read the
+    # candidate's own geoms, and the block kernel paid a private copy of
+    # all seven arrays PER THREAD to call them (7 x NGEOM floats of local
+    # memory — the 255-register signature of PERFORMANCE.md §13.51).
+    gj_px: Scalar[DTYPE],
+    gj_py: Scalar[DTYPE],
+    gj_pz: Scalar[DTYPE],
+    gj_qx: Scalar[DTYPE],
+    gj_qy: Scalar[DTYPE],
+    gj_qz: Scalar[DTYPE],
+    gj_qw: Scalar[DTYPE],
     geoms: LayoutTensor[
         DTYPE, L_GEOMS, MutAnyOrigin
     ],
@@ -547,6 +790,8 @@ def _sap_plane_narrow[
         MutAnyOrigin,
     ],
     ws: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    # The warm-slot row (`gjk_epa_witness`); -1 = `wrow`.
+    hw_row: Int = -1,
 ):
     """ONE (plane, non-plane geom) candidate of the plane phase — filters,
     contact parameters, the plane narrow phase and its emission — moved out
@@ -554,126 +799,37 @@ def _sap_plane_narrow[
     the loop's `max_contacts` guard, which stays with the loop. Each
     `continue` is a `return`; nothing followed the body inside the loop.
 
-    ⚠ THE CPU PATH CALLS THIS TOO — one plane narrow phase, both targets."""
-    var gj_type = Int(
-        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_TYPE])
-    )
-    if gj_type == GEOM_PLANE:
-        return
-    var gj_body = Int(
-        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_BODY])
-    )
-    # `<contact><pair>` bypasses every filter below — see the same
-    # gate in `_detect_contacts_env`. A plane/geom pair is a normal
-    # thing to declare (it is the ONLY form ToddlerBot's scene files
-    # use), and the world plane's body is 0, so without this the
-    # `gj_body == 0` skip and the weld test would drop it.
-    var ipair = find_predefined_pair[DTYPE](
-        gi, gj, dims, pairs, mmeta
-    )
-    if ipair < 0:
-        if gj_body == 0:
-            return
-        # DEFECT 24 — this loop had NO body filter. MuJoCo runs the
-        # plane path through `filterBodyPair` like every other pair
-        # (`engine_collision_driver.c:1277`), which discards on
-        # `weldbody1 == weldbody2`; a jointless body welds to the
-        # world, so every static geom was colliding with the ground
-        # here while the O(N^2) path correctly emitted nothing. See
-        # `pair_body_filtered`.
-        if pair_body_filtered[DTYPE, EX_CAP=EX_CAP](
-            gi_body, gj_body, bodies, mmeta, excludes,
-            ex_sig, n_sig, nbody,
-        ):
-            return
-        var gj_contype = Int(
-            rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
-        )
-        var gj_conaffinity = Int(
-            rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
-        )
-        if (gi_contype & gj_conaffinity) == 0 and (
-            gj_contype & gi_conaffinity
-        ) == 0:
-            return
+    ⚠ THE CPU PATH CALLS THIS TOO — one plane narrow phase, both targets.
 
-    # MuJoCo's full contact-parameter rule, PRIORITY FIRST — shared
-    # with `detect_contacts` so the two paths cannot drift, which is
-    # exactly how the SAP ellipsoid branch went missing. A predefined
-    # pair supplies its own parameters instead, unmixed.
-    var _n0 = num_contacts
-    var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
-    var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
-    # Sum of the two geoms' margins, or the PAIR's own — never both.
-    var cim = mgi + mgj  # MuJoCo 3.5+: sum of margins
-    var cgp = (
-        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_GAP])
-        + rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_GAP])
-    )
-    if ipair >= 0:
-        cim = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_MARGIN])
-        cgp = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_GAP])
-    # ⚠⚠ TWO VALUES, NOT ONE. `cm` is the narrowphase CUTOFF and `cim`
-    # is what the contact stores as its `includemargin`; 3.10.0 passes
-    # `margin + gap` to the collision function and `margin` alone to
-    # `mj_setContact`, so a contact in [margin, margin+gap) is DETECTED
-    # and then EXCLUDED from the solver by
-    # `con->exclude = dist >= includemargin`. With no `<geom gap>` the
-    # two are equal and every line below is what it always was.
-    var cm = cim + cgp
-
-    # Pose IN THE PLANE'S FRAME, so `ground_z` below is 0 and the
-    # branch arithmetic is the same as it always was.
-    var lpj = to_plane_frame[DTYPE](
+    ⚠ THE FILTERS AND THE BOUNDING REJECT LIVE IN `_sap_plane_gate`, which
+    the block-per-env kernel also runs BEFORE it lists a plane candidate —
+    the plane phase used to hand every geom of the model to a thread (74 on
+    the G1, of which the gate keeps the dozen near the floor), and that
+    alone overflowed `COLL_NCAND_CAP` and sent the env to the serial path.
+    One rule, two callers; this routine keeps only what follows a pass."""
+    var g8 = _sap_plane_gate[DTYPE, BATCH, D, EX_CAP](
+        gi, gj, gi_body, gi_contype, gi_conaffinity,
         plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
-        wpx[gj], wpy[gj], wpz[gj],
+        gj_px, gj_py, gj_pz, gj_qx, gj_qy, gj_qz, gj_qw,
+        dims, nbody, ex_sig, n_sig, geoms, bodies, mmeta, excludes, pairs,
     )
-    var lqj = quat_to_plane_frame[DTYPE](
-        plq_x, plq_y, plq_z, plq_w,
-        wqx[gj], wqy[gj], wqz[gj], wqw[gj],
-    )
-    var pj_x = lpj[0]
-    var pj_y = lpj[1]
-    var pj_z = lpj[2]
-    var qj_x = lqj[0]
-    var qj_y = lqj[1]
-    var qj_z = lqj[2]
-    var qj_w = lqj[3]
-    var ground_z = Scalar[DTYPE](0)
-
-    # ── PLANE-SIDE BOUNDING-SPHERE REJECT — MuJoCo's second
-    # `mj_filterSphere` arm. In the plane's own frame `pj_z` IS
-    # `planeGeomDist`: the signed distance from the plane to the geom
-    # centre. If the geom's bounding sphere cannot reach the plane,
-    # nothing downstream can produce a contact.
-    #
-    # ⚠⚠ WITHOUT THIS, A PLANE PAIRED WITH A MESH SCANS EVERY HULL
-    # VERTEX, EVERY STEP, FOREVER. `_plane_mesh_contacts` has no early
-    # out — it transforms all `pm_vnum` vertices looking for the
-    # deepest. SO-ARM101 carries 30 mesh geoms totalling 33 076 hull
-    # vertices and a floor its arm never touches, and that scan was
-    # 72% of its entire physics step. It is also why the arm-to-arm
-    # cost ratio tracked HULL SIZE rather than anything physical.
-    #
-    #     SO-ARM101   1.86 -> 0.65 ms/env step   ( 539 -> 1544 Hz)
-    #     SO-ARM100   1.11 -> 1.04 ms/env step   ( 901 ->  959 Hz)
-    #
-    # ⚠ THE TWO ARMS SEPARATE HERE, AND THAT IS THE POINT. SO-ARM100
-    # barely moves: 2 551 hull vertices is a scan it could afford.
-    # SO-ARM101's 33 076 is not, and removing it INVERTS the pair —
-    # the arm with 13x the geometry is now the FASTER of the two,
-    # because what remains is no longer proportional to hull size.
-    # SO-ARM100's residual is elsewhere (its Newton solve is ~25% of
-    # its step, against ~0.5% of SO-ARM101's).
-    #
-    # ⚠ `+ cm` AGAIN, for the same silent reason as the geom-geom arm
-    # above: a geom hovering within its margin of the floor is a
-    # contact MuJoCo reports.
-    var rbound_j_pl = rebind[Scalar[DTYPE]](
-        geoms[gj, GEOM_IDX_RBOUND]
-    )
-    if rbound_j_pl > Scalar[DTYPE](0) and pj_z > cm + rbound_j_pl:
+    if not g8.ok:
         return
+    var gj_type = g8.gj_type
+    var gj_body = g8.gj_body
+    var ipair = g8.ipair
+    var _n0 = num_contacts
+    var cim = g8.cim
+    var cgp = g8.cgp
+    var cm = g8.cm
+    var pj_x = g8.pj_x
+    var pj_y = g8.pj_y
+    var pj_z = g8.pj_z
+    var qj_x = g8.qj_x
+    var qj_y = g8.qj_y
+    var qj_z = g8.qj_z
+    var qj_w = g8.qj_w
+    var ground_z = Scalar[DTYPE](0)
     # ⚠ MIXED AFTER THE REJECT, as the SAP pair loop below already
     # does (its note above `mix_contact_params`): the mix is ~30
     # tensor reads plus MuJoCo's priority/solref/solimp rules, for
@@ -1000,8 +1156,9 @@ def _sap_plane_narrow[
             else:
                 pm_slot = -1
             var pmw = -1
+            var hrow = hw_row if hw_row >= 0 else wrow
             if pm_slot >= 0:
-                var pf = rebind[Scalar[DTYPE]](ws[wrow, HW_WS_OFF + 2 * pm_slot])
+                var pf = rebind[Scalar[DTYPE]](ws[hrow, HW_WS_OFF + 2 * pm_slot])
                 if pf >= Scalar[DTYPE](0) and pf < Scalar[DTYPE](1e8):
                     pmw = Int(pf)
             _plane_mesh_contacts[
@@ -1033,7 +1190,7 @@ def _sap_plane_narrow[
                 max_contacts_in=max_contacts,
             )
             if pm_slot >= 0:
-                ws[wrow, HW_WS_OFF + 2 * pm_slot] = Scalar[DTYPE](pmw)
+                ws[hrow, HW_WS_OFF + 2 * pm_slot] = Scalar[DTYPE](pmw)
             comptime if _COLL_PROBE:
                 pr._c_pmesh += Int(perf_counter_ns()) - pr._c_t0
                 pr._n_pmesh += 1
@@ -1084,13 +1241,23 @@ def _sap_pair_narrow[
     n_sig: Int,
     mut pr: _SapProbe,
     mut num_contacts: Int,
-    wpx: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
-    wpy: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
-    wpz: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
-    wqx: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
-    wqy: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
-    wqz: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
-    wqw: Scratch[Scalar[DTYPE], cap[D.NGEOM]()],
+    # The two geoms' world poses, `si`'s then `sj`'s — in the SWEEP's
+    # order; the canonical (gi, gj) below picks from them. See the same
+    # note on `_sap_plane_narrow`: the routine reads only its own pair.
+    si_px: Scalar[DTYPE],
+    si_py: Scalar[DTYPE],
+    si_pz: Scalar[DTYPE],
+    si_qx: Scalar[DTYPE],
+    si_qy: Scalar[DTYPE],
+    si_qz: Scalar[DTYPE],
+    si_qw: Scalar[DTYPE],
+    sj_px: Scalar[DTYPE],
+    sj_py: Scalar[DTYPE],
+    sj_pz: Scalar[DTYPE],
+    sj_qx: Scalar[DTYPE],
+    sj_qy: Scalar[DTYPE],
+    sj_qz: Scalar[DTYPE],
+    sj_qw: Scalar[DTYPE],
     ccd_tol: Scalar[DTYPE],
     ccd_iter: Int,
     multiccd_off: Bool,
@@ -1150,6 +1317,8 @@ def _sap_pair_narrow[
     ws: LayoutTensor[
         DTYPE, L_WS, MutAnyOrigin
     ],
+    # The warm-slot row (`gjk_epa_witness`); -1 = `wrow`.
+    hw_row: Int = -1,
 ):
     """ONE candidate geom pair of the SAP sweep — canonicalisation, filters,
     contact parameters, the narrow-phase dispatch and its emission — moved
@@ -1188,13 +1357,14 @@ def _sap_pair_narrow[
     var gi_conaffinity = Int(
         rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONAFFINITY])
     )
-    var pi_x = wpx[gi]
-    var pi_y = wpy[gi]
-    var pi_z = wpz[gi]
-    var qi_x = wqx[gi]
-    var qi_y = wqy[gi]
-    var qi_z = wqz[gi]
-    var qi_w = wqw[gi]
+    var gi_is_si = gi == si
+    var pi_x = si_px if gi_is_si else sj_px
+    var pi_y = si_py if gi_is_si else sj_py
+    var pi_z = si_pz if gi_is_si else sj_pz
+    var qi_x = si_qx if gi_is_si else sj_qx
+    var qi_y = si_qy if gi_is_si else sj_qy
+    var qi_z = si_qz if gi_is_si else sj_qz
+    var qi_w = si_qw if gi_is_si else sj_qw
     var ri = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RADIUS])
     var hli = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_LENGTH])
     var hxi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_X])
@@ -1271,13 +1441,13 @@ def _sap_pair_narrow[
     # two are equal and every line below is what it always was.
     var cm = cim + cgp
 
-    var pj_x = wpx[gj]
-    var pj_y = wpy[gj]
-    var pj_z = wpz[gj]
-    var qj_x = wqx[gj]
-    var qj_y = wqy[gj]
-    var qj_z = wqz[gj]
-    var qj_w = wqw[gj]
+    var pj_x = sj_px if gi_is_si else si_px
+    var pj_y = sj_py if gi_is_si else si_py
+    var pj_z = sj_pz if gi_is_si else si_pz
+    var qj_x = sj_qx if gi_is_si else si_qx
+    var qj_y = sj_qy if gi_is_si else si_qy
+    var qj_z = sj_qz if gi_is_si else si_qz
+    var qj_w = sj_qw if gi_is_si else si_qw
     var rj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RADIUS])
     var hlj = rebind[Scalar[DTYPE]](
         geoms[gj, GEOM_IDX_HALF_LENGTH]
@@ -2003,6 +2173,7 @@ def _sap_pair_narrow[
                         ccd_tol, ccd_iter, cm,
                         cm,
                         warm_slot=hw_slot,
+                        hw_row=hw_row,
                     )
                     if rq[0] == Scalar[DTYPE](-1.0e30):
                         dist = rq[0]
@@ -2023,6 +2194,7 @@ def _sap_pair_narrow[
                 # witness sits inside that branch.
                 cm,
                 warm_slot=hw_slot,
+                hw_row=hw_row,
             )
             comptime if _COLL_PROBE:
                 pr._c_gjk += Int(perf_counter_ns()) - pr._c_t0
@@ -2528,7 +2700,7 @@ def _detect_contacts_sap_env[
                 env, env, wrow, dims, gi, gj, gi_body, gi_contype, gi_conaffinity,
                 plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
                 pn, nbody, max_contacts, ex_sig, n_sig, pr, num_contacts,
-                wpx, wpy, wpz, wqx, wqy, wqz, wqw,
+                wpx[gj], wpy[gj], wpz[gj], wqx[gj], wqy[gj], wqz[gj], wqw[gj],
                 geoms, bodies, mmeta, excludes, pairs, mesh_meta, mesh_verts, mesh_vert_edgeadr, mesh_edges, contacts, ws,
             )
 
@@ -2683,7 +2855,8 @@ def _detect_contacts_sap_env[
             ](
                 env, env, wrow, dims, si, sj, si_type, nbody, max_contacts,
                 ex_sig, n_sig, pr, num_contacts,
-                wpx, wpy, wpz, wqx, wqy, wqz, wqw,
+                wpx[si], wpy[si], wpz[si], wqx[si], wqy[si], wqz[si], wqw[si],
+                wpx[sj], wpy[sj], wpz[sj], wqx[sj], wqy[sj], wqz[sj], wqw[sj],
                 ccd_tol, ccd_iter, multiccd_off,
                 geoms, bodies, mmeta, excludes, pairs, mesh_meta, mesh_verts, mesh_polys, mesh_polyvert, mesh_polymap, mesh_vert_polymap, mesh_vert_edgeadr, mesh_edges, hfield_meta, hfield_data, contacts, ws,
             )
@@ -2813,11 +2986,17 @@ def _detect_contacts_sap_fields_kernel[
 # AABB phase, 2 = after thread 0's candidate generation, 3 = after the
 # per-thread narrow phase, 0 = production. Same pattern as
 # `newton_solve.NEWTON_STOP_AFTER`, for the same reason: on the RTX 5090 the
-# per-thread narrow phase (phase 2) read 240 of the 270 us; 21/22/23 split it
-# into the per-thread setup, the cheap candidates and the CCD candidates —
-# block kernel's launch at k=0 read 269.7 us against the serial kernel's
-# 269.0, so the chain it was built to cut is somewhere it did not reach.
+# per-thread narrow phase (phase 2) read 240 of the 270 us at the k=0 park
+# scene (2026-09-07; the 21/22/23 sub-stops of that bisect split the old
+# cheap-thread / CCD-lane assignment and went with it, 2026-09-11).
 comptime COLL_STOP_AFTER: Int = 0
+
+# Candidate KIND keys for the block kernel's phase-2 order: a geom pair is
+# `rank_lo * 8 + rank_hi` (`mj_geom_type_rank`, 0..7), a plane candidate is
+# `_KIND_PLANE_BASE + rank(geom)`. Lanes of a warp run the same narrow-phase
+# routine when their candidates share a key — see the kernel's docstring.
+comptime _KIND_PLANE_BASE: Int = 64
+comptime _KIND_MAX: Int = 80
 
 
 def _detect_contacts_sap_block_kernel[
@@ -2910,19 +3089,29 @@ def _detect_contacts_sap_block_kernel[
     """ONE BLOCK PER ENV, `COLL_TPB` threads over the candidate pairs.
 
     The per-env serial kernel spends its wall time on one thread walking the
-    geom table, the sweep and four GJK hill climbs one dependent global load
+    geom table, the sweep and every GJK hill climb one dependent global load
     at a time — 430 µs per env at the k=13 park scene against 10 µs on a CPU
-    core (block ledger §6). Here: phase 0 computes world poses and AABBs one
-    geom per thread into threadgroup memory; phase 1 (thread 0) runs the
-    pair-margin inflation, the plane loop's and the sweep's CANDIDATE
-    generation — the AABB tests and the `break` only — into a threadgroup
-    list in the serial EMISSION ORDER, assigning each candidate a staging
-    window and a thread; phase 2 runs `_sap_plane_narrow` /
-    `_sap_pair_narrow` one candidate per thread into that window (GJK/EPA
-    candidates on the first `COLL_CCD_LANES` threads, each with its own CCD
-    row); phase 3 (thread 0) compacts the windows in candidate order into
-    `contacts[env]`, which reproduces the serial array bit for bit, then
-    the MuJoCo-order sort and `ncon`.
+    core (block ledger §6), and at 1024 lanes of a sprawled G1 a warp of 32
+    such threads takes the time of its slowest env (PERFORMANCE.md §13.51).
+    Here: phase 0 computes world poses and AABBs one geom per thread into
+    threadgroup memory; phase 1 lists the CANDIDATES in the serial EMISSION
+    ORDER — the plane phase gated by `_sap_plane_gate` on all threads
+    (the serial loop hands every geom to the plane; the gate keeps the few
+    near it), then thread 0's pair-margin inflation, sweep list, sort and
+    sweep (the AABB tests and the `break` only) — each with a staging
+    window at its emission offset; then sorts the list by KIND (the geom
+    type pair, `_KIND_*`) with a counting sort. Phase 2 runs the candidates
+    in that kind order, `COLL_TPB` at a time: candidate `p` of the sorted
+    list on thread `p % COLL_TPB` in round `p // COLL_TPB`, so the lanes of
+    a warp are on the SAME narrow-phase routine (mesh-mesh next to
+    mesh-mesh) and diverge only on their trip counts, not on their code —
+    the 2026-09-07 layout put a GJK lane beside 28 cheap lanes and read
+    2x the serial time for four candidates. Every thread has its own CCD
+    row (`COLL_CCD_LANES == COLL_TPB`); the hill climb's cross-step warm
+    slots stay on lane 0's row of the env (`hw_row`), so a pair finds its
+    previous vertex whatever lane it lands on. Phase 3 (thread 0) compacts
+    the windows in candidate order into `contacts[env]`, which reproduces
+    the serial array bit for bit, then the MuJoCo-order sort and `ncon`.
 
     ⚠ EXACT OR SERIAL, NEVER APPROXIMATE. A candidate list past
     `COLL_NCAND_CAP` or a routine that filled its whole window (it may have
@@ -2966,9 +3155,24 @@ def _detect_contacts_sap_block_kernel[
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
     # candidate list: a, b, si_type (-1 = plane candidate), staging offset,
-    # thread, emitted count
+    # kind key (phase 3 reuses the slot for the destination offset),
+    # emitted count
     var cand_sh = LayoutTensor[
         DTYPE, Layout.row_major(6 * NC), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    # the candidates in kind order (indices into the list above)
+    var ord_sh = LayoutTensor[
+        DTYPE, Layout.row_major(NC), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var kcnt_sh = LayoutTensor[
+        DTYPE, Layout.row_major(_KIND_MAX), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    # the plane gate's verdict per geom, for the plane being listed
+    var pf_sh = LayoutTensor[
+        DTYPE, Layout.row_major(NG), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
     var ctrl_sh = LayoutTensor[
@@ -3035,7 +3239,88 @@ def _detect_contacts_sap_block_kernel[
             smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](0)
         return
 
-    # ── phase 1: candidates, in the serial emission order (thread 0) ─────
+    # ── phase 1a: the model's `<exclude>` signatures, once per block ─────
+    if tid == 0:
+        var ex0 = Scratch[Int, EX_CAP](
+            NEXCLUDE if NEXCLUDE > 0 else 1, fill=0
+        )
+        var n_sig0 = exclude_signatures[DTYPE, EX_CAP](
+            nbody, NEXCLUDE, mmeta, excludes, ex0
+        )
+        for k in range(EX_CAP):
+            ex_sh[k] = Scalar[DTYPE](ex0[k])
+        ctrl_sh[2] = Scalar[DTYPE](n_sig0)
+    barrier()
+    # Every thread's private copy (the helpers take a `Scratch`; it is one
+    # slot on a model with no `<exclude>`).
+    var ex_sig = Scratch[Int, EX_CAP](
+        NEXCLUDE if NEXCLUDE > 0 else 1, fill=0
+    )
+    for k in range(EX_CAP):
+        ex_sig[k] = Int(rebind[Scalar[DTYPE]](ex_sh[k]))
+    var n_sig = Int(rebind[Scalar[DTYPE]](ctrl_sh[2]))
+
+    # ── phase 1b: candidates, in the serial emission order ───────────────
+    # The push state is thread 0's. Every thread declares the variables so
+    # the closure can be defined at block scope: the plane phase alternates
+    # all-thread gating and thread-0 pushes across barriers.
+    var ncand = 0
+    var overflow = 0
+    var off = 0
+
+    @parameter
+    @always_inline
+    def _push(a: Int, b: Int, t: Int, key: Int):
+        if ncand >= NC:
+            overflow = 1
+            return
+        cand_sh[0 * NC + ncand] = Scalar[DTYPE](a)
+        cand_sh[1 * NC + ncand] = Scalar[DTYPE](b)
+        cand_sh[2 * NC + ncand] = Scalar[DTYPE](t)
+        cand_sh[3 * NC + ncand] = Scalar[DTYPE](off)
+        cand_sh[4 * NC + ncand] = Scalar[DTYPE](key)
+        cand_sh[5 * NC + ncand] = Scalar[DTYPE](0)
+        off += COLL_STAGE_MAXC
+        ncand += 1
+
+    # 3. plane vs non-plane, the serial loop's order. All threads gate
+    # their share of the geoms against the plane; thread 0 lists the
+    # survivors in geom order. (`continue` is uniform: the type is shared.)
+    for gi in range(ngeom):
+        if Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + gi])) != GEOM_PLANE:
+            continue
+        var gi_body = Int(rebind[Scalar[DTYPE]](gf_sh[1 * NG + gi]))
+        var gi_contype = Int(rebind[Scalar[DTYPE]](gf_sh[2 * NG + gi]))
+        var gi_conaffinity = Int(rebind[Scalar[DTYPE]](gf_sh[3 * NG + gi]))
+        for gj in range(tid, ngeom, COLL_TPB):
+            var g8 = _sap_plane_gate[DTYPE, BATCH, type_of(dims), EX_CAP](
+                gi, gj, gi_body, gi_contype, gi_conaffinity,
+                rebind[Scalar[DTYPE]](wp_sh[0 * NG + gi]),
+                rebind[Scalar[DTYPE]](wp_sh[1 * NG + gi]),
+                rebind[Scalar[DTYPE]](wp_sh[2 * NG + gi]),
+                rebind[Scalar[DTYPE]](wp_sh[3 * NG + gi]),
+                rebind[Scalar[DTYPE]](wp_sh[4 * NG + gi]),
+                rebind[Scalar[DTYPE]](wp_sh[5 * NG + gi]),
+                rebind[Scalar[DTYPE]](wp_sh[6 * NG + gi]),
+                rebind[Scalar[DTYPE]](wp_sh[0 * NG + gj]),
+                rebind[Scalar[DTYPE]](wp_sh[1 * NG + gj]),
+                rebind[Scalar[DTYPE]](wp_sh[2 * NG + gj]),
+                rebind[Scalar[DTYPE]](wp_sh[3 * NG + gj]),
+                rebind[Scalar[DTYPE]](wp_sh[4 * NG + gj]),
+                rebind[Scalar[DTYPE]](wp_sh[5 * NG + gj]),
+                rebind[Scalar[DTYPE]](wp_sh[6 * NG + gj]),
+                dims, nbody, ex_sig, n_sig,
+                geoms, bodies, mmeta, excludes, pairs,
+            )
+            pf_sh[gj] = Scalar[DTYPE](1) if g8.ok else Scalar[DTYPE](0)
+        barrier()
+        if tid == 0:
+            for gj in range(ngeom):
+                if rebind[Scalar[DTYPE]](pf_sh[gj]) != Scalar[DTYPE](0):
+                    var gj_type = Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + gj]))
+                    _push(gi, gj, -1, _KIND_PLANE_BASE + mj_geom_type_rank(gj_type))
+        barrier()
+
     if tid == 0:
         var n_pair_aabb = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NPAIR]))
         if n_pair_aabb > npair:
@@ -3058,44 +3343,6 @@ def _detect_contacts_sap_block_kernel[
                 ab_sh[3 * NG + g] = rebind[Scalar[DTYPE]](ab_sh[3 * NG + g]) + pm
                 ab_sh[4 * NG + g] = rebind[Scalar[DTYPE]](ab_sh[4 * NG + g]) - pm
                 ab_sh[5 * NG + g] = rebind[Scalar[DTYPE]](ab_sh[5 * NG + g]) + pm
-        var multiccd_off = (
-            rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_MULTICCD_DISABLED]) != 0
-        )
-        var ncand = 0
-        var overflow = 0
-        var off = 0
-        var n_ccd = 0
-        var n_cheap = 0
-        comptime CHEAP = COLL_TPB - COLL_CCD_LANES
-
-        @parameter
-        @always_inline
-        def _push(a: Int, b: Int, t: Int, ccd: Bool):
-            if ncand >= NC:
-                overflow = 1
-                return
-            var thr: Int
-            if ccd:
-                thr = n_ccd % COLL_CCD_LANES
-                n_ccd += 1
-            else:
-                thr = COLL_CCD_LANES + n_cheap % CHEAP
-                n_cheap += 1
-            cand_sh[0 * NC + ncand] = Scalar[DTYPE](a)
-            cand_sh[1 * NC + ncand] = Scalar[DTYPE](b)
-            cand_sh[2 * NC + ncand] = Scalar[DTYPE](t)
-            cand_sh[3 * NC + ncand] = Scalar[DTYPE](off)
-            cand_sh[4 * NC + ncand] = Scalar[DTYPE](thr)
-            cand_sh[5 * NC + ncand] = Scalar[DTYPE](0)
-            off += COLL_STAGE_MAXC
-            ncand += 1
-
-        # 3. plane vs non-plane, the serial loop's order
-        for gi in range(ngeom):
-            if Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + gi])) != GEOM_PLANE:
-                continue
-            for gj in range(ngeom):
-                _push(gi, gj, -1, False)
         # 4a. the sweep list — `pair_geom` parked in `idx_sh[NG + g]`
         for g in range(ngeom):
             idx_sh[NG + g] = Scalar[DTYPE](0)
@@ -3135,6 +3382,7 @@ def _detect_contacts_sap_block_kernel[
             var si = Int(rebind[Scalar[DTYPE]](idx_sh[i]))
             var si_max_x = rebind[Scalar[DTYPE]](ab_sh[1 * NG + si])
             var si_type = Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + si]))
+            var si_rank = mj_geom_type_rank(si_type)
             for j in range(i + 1, sap_n):
                 var sj = Int(rebind[Scalar[DTYPE]](idx_sh[j]))
                 if rebind[Scalar[DTYPE]](ab_sh[0 * NG + sj]) > si_max_x:
@@ -3149,64 +3397,44 @@ def _detect_contacts_sap_block_kernel[
                     or rebind[Scalar[DTYPE]](ab_sh[4 * NG + si]) > rebind[Scalar[DTYPE]](ab_sh[5 * NG + sj])
                 ):
                     continue
-                var sj_type = Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + sj]))
-                # Needs a CCD row: anything that can reach GJK/EPA or the
-                # clipper. Conservative — a cheap pair on a lane costs a
-                # slot, a CCD pair off a lane would race on lane 0's row.
-                var ccd = (
-                    si_type == GEOM_MESH or sj_type == GEOM_MESH
-                    or si_type == GEOM_CYLINDER or sj_type == GEOM_CYLINDER
-                    or si_type == GEOM_ELLIPSOID or sj_type == GEOM_ELLIPSOID
-                    or (
-                        not multiccd_off
-                        and multi_ccd_pair_supported(si_type, sj_type)
-                    )
+                var sj_rank = mj_geom_type_rank(
+                    Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + sj]))
                 )
-                _push(si, sj, si_type, ccd)
-        var ex0 = Scratch[Int, EX_CAP](
-            NEXCLUDE if NEXCLUDE > 0 else 1, fill=0
-        )
-        var n_sig0 = exclude_signatures[DTYPE, EX_CAP](
-            nbody, NEXCLUDE, mmeta, excludes, ex0
-        )
-        for k in range(EX_CAP):
-            ex_sh[k] = Scalar[DTYPE](ex0[k])
+                var key = (
+                    si_rank * 8 + sj_rank if si_rank <= sj_rank
+                    else sj_rank * 8 + si_rank
+                )
+                _push(si, sj, si_type, key)
+        # 5. the kind order: a counting sort on the keys, stable, so two
+        # candidates of one kind keep their emission order.
+        for k in range(_KIND_MAX):
+            kcnt_sh[k] = Scalar[DTYPE](0)
+        for c in range(ncand):
+            var key = Int(rebind[Scalar[DTYPE]](cand_sh[4 * NC + c]))
+            kcnt_sh[key] = rebind[Scalar[DTYPE]](kcnt_sh[key]) + Scalar[DTYPE](1)
+        var run = 0
+        for k in range(_KIND_MAX):
+            var n = Int(rebind[Scalar[DTYPE]](kcnt_sh[k]))
+            kcnt_sh[k] = Scalar[DTYPE](run)
+            run += n
+        for c in range(ncand):
+            var key = Int(rebind[Scalar[DTYPE]](cand_sh[4 * NC + c]))
+            var pos = Int(rebind[Scalar[DTYPE]](kcnt_sh[key]))
+            ord_sh[pos] = Scalar[DTYPE](c)
+            kcnt_sh[key] = Scalar[DTYPE](pos + 1)
         ctrl_sh[0] = Scalar[DTYPE](ncand)
         ctrl_sh[1] = Scalar[DTYPE](overflow)
-        ctrl_sh[2] = Scalar[DTYPE](n_sig0)
     barrier()
+    # From here every thread reads the block's count, not its own copy.
+    ncand = Int(rebind[Scalar[DTYPE]](ctrl_sh[0]))
+    overflow = Int(rebind[Scalar[DTYPE]](ctrl_sh[1]))
     comptime if COLL_STOP_AFTER == 2:
         if tid == 0:
             smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](0)
         return
 
-    # ── phase 2: one candidate per thread, into its staging window ───────
-    var ncand = Int(rebind[Scalar[DTYPE]](ctrl_sh[0]))
-    var overflow = Int(rebind[Scalar[DTYPE]](ctrl_sh[1]))
+    # ── phase 2: the candidates in kind order, COLL_TPB per round ────────
     if overflow == 0:
-        # The helpers take the world poses as `Scratch`; a private copy from
-        # threadgroup memory, 7 * ngeom reads per thread.
-        var wpx = Scratch[Scalar[DTYPE], cap[NGEOM]()](ngeom, uninitialized=0)
-        var wpy = Scratch[Scalar[DTYPE], cap[NGEOM]()](ngeom, uninitialized=0)
-        var wpz = Scratch[Scalar[DTYPE], cap[NGEOM]()](ngeom, uninitialized=0)
-        var wqx = Scratch[Scalar[DTYPE], cap[NGEOM]()](ngeom, uninitialized=0)
-        var wqy = Scratch[Scalar[DTYPE], cap[NGEOM]()](ngeom, uninitialized=0)
-        var wqz = Scratch[Scalar[DTYPE], cap[NGEOM]()](ngeom, uninitialized=0)
-        var wqw = Scratch[Scalar[DTYPE], cap[NGEOM]()](ngeom, uninitialized=0)
-        for g in range(ngeom):
-            wpx[g] = rebind[Scalar[DTYPE]](wp_sh[0 * NG + g])
-            wpy[g] = rebind[Scalar[DTYPE]](wp_sh[1 * NG + g])
-            wpz[g] = rebind[Scalar[DTYPE]](wp_sh[2 * NG + g])
-            wqx[g] = rebind[Scalar[DTYPE]](wp_sh[3 * NG + g])
-            wqy[g] = rebind[Scalar[DTYPE]](wp_sh[4 * NG + g])
-            wqz[g] = rebind[Scalar[DTYPE]](wp_sh[5 * NG + g])
-            wqw[g] = rebind[Scalar[DTYPE]](wp_sh[6 * NG + g])
-        var ex_sig = Scratch[Int, EX_CAP](
-            NEXCLUDE if NEXCLUDE > 0 else 1, fill=0
-        )
-        for k in range(EX_CAP):
-            ex_sig[k] = Int(rebind[Scalar[DTYPE]](ex_sh[k]))
-        var n_sig = Int(rebind[Scalar[DTYPE]](ctrl_sh[2]))
         var ccd_tol = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_CCD_TOLERANCE])
         if ccd_tol <= 0:
             ccd_tol = Scalar[DTYPE](MJ_CCD_TOLERANCE)
@@ -3219,50 +3447,52 @@ def _detect_contacts_sap_block_kernel[
             rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_MULTICCD_DISABLED]) != 0
         )
         var pr = _SapProbe()
-        var wrow = env * COLL_CCD_LANES + (tid if tid < COLL_CCD_LANES else 0)
+        # Every thread its own CCD row; the warm slots on the env's first.
+        comptime assert COLL_CCD_LANES == COLL_TPB, (
+            "the block collision kernel gives every thread a CCD row:"
+            " COLL_CCD_LANES must equal COLL_TPB (ccd_workspace.mojo)"
+        )
+        var wrow = env * COLL_CCD_LANES + tid
+        var hw_row = env * COLL_CCD_LANES
         var full = 0
-        # Sub-stops of the bisect (see the knob): 21 = the per-thread setup
-        # above and nothing else; 22 = cheap candidates only (the CCD lanes
-        # skip theirs); 23 = CCD candidates only (the cheap threads skip).
-        comptime if COLL_STOP_AFTER == 21:
-            # keep the setup live: consume one copied value
-            if wpx[0] == Scalar[DTYPE](-1.0e30):
-                full = 1
-            ncand = 0
-        for c in range(ncand):
-            if Int(rebind[Scalar[DTYPE]](cand_sh[4 * NC + c])) != tid:
-                continue
-            comptime if COLL_STOP_AFTER == 22:
-                if tid < COLL_CCD_LANES:
-                    continue
-            comptime if COLL_STOP_AFTER == 23:
-                if tid >= COLL_CCD_LANES:
-                    continue
+        for p in range(tid, ncand, COLL_TPB):
+            var c = Int(rebind[Scalar[DTYPE]](ord_sh[p]))
             var a = Int(rebind[Scalar[DTYPE]](cand_sh[0 * NC + c]))
             var b = Int(rebind[Scalar[DTYPE]](cand_sh[1 * NC + c]))
             var t = Int(rebind[Scalar[DTYPE]](cand_sh[2 * NC + c]))
             var start = Int(rebind[Scalar[DTYPE]](cand_sh[3 * NC + c]))
             var num_contacts = start
             var win_end = start + COLL_STAGE_MAXC
+            var a_px = rebind[Scalar[DTYPE]](wp_sh[0 * NG + a])
+            var a_py = rebind[Scalar[DTYPE]](wp_sh[1 * NG + a])
+            var a_pz = rebind[Scalar[DTYPE]](wp_sh[2 * NG + a])
+            var a_qx = rebind[Scalar[DTYPE]](wp_sh[3 * NG + a])
+            var a_qy = rebind[Scalar[DTYPE]](wp_sh[4 * NG + a])
+            var a_qz = rebind[Scalar[DTYPE]](wp_sh[5 * NG + a])
+            var a_qw = rebind[Scalar[DTYPE]](wp_sh[6 * NG + a])
+            var b_px = rebind[Scalar[DTYPE]](wp_sh[0 * NG + b])
+            var b_py = rebind[Scalar[DTYPE]](wp_sh[1 * NG + b])
+            var b_pz = rebind[Scalar[DTYPE]](wp_sh[2 * NG + b])
+            var b_qx = rebind[Scalar[DTYPE]](wp_sh[3 * NG + b])
+            var b_qy = rebind[Scalar[DTYPE]](wp_sh[4 * NG + b])
+            var b_qz = rebind[Scalar[DTYPE]](wp_sh[5 * NG + b])
+            var b_qw = rebind[Scalar[DTYPE]](wp_sh[6 * NG + b])
             if t < 0:
                 # a plane candidate: the plane's own data, as the serial loop
                 # head computes it once per plane
                 var gi_body = Int(rebind[Scalar[DTYPE]](gf_sh[1 * NG + a]))
                 var gi_contype = Int(rebind[Scalar[DTYPE]](gf_sh[2 * NG + a]))
                 var gi_conaffinity = Int(rebind[Scalar[DTYPE]](gf_sh[3 * NG + a]))
-                var plq_x = wqx[a]
-                var plq_y = wqy[a]
-                var plq_z = wqz[a]
-                var plq_w = wqw[a]
-                var pn = plane_world_normal[DTYPE](plq_x, plq_y, plq_z, plq_w)
+                var pn = plane_world_normal[DTYPE](a_qx, a_qy, a_qz, a_qw)
                 _sap_plane_narrow[
                     DTYPE, BATCH, type_of(dims), EX_CAP, HFIELD_ENABLED=False
                 ](
                     env, env, wrow, dims, a, b, gi_body, gi_contype, gi_conaffinity,
-                    wpx[a], wpy[a], wpz[a], plq_x, plq_y, plq_z, plq_w,
+                    a_px, a_py, a_pz, a_qx, a_qy, a_qz, a_qw,
                     pn, nbody, win_end, ex_sig, n_sig, pr, num_contacts,
-                    wpx, wpy, wpz, wqx, wqy, wqz, wqw,
+                    b_px, b_py, b_pz, b_qx, b_qy, b_qz, b_qw,
                     geoms, bodies, mmeta, excludes, pairs, mesh_meta, mesh_verts, mesh_vert_edgeadr, mesh_edges, stage, ccd_ws,
+                    hw_row=hw_row,
                 )
             else:
                 _sap_pair_narrow[
@@ -3270,9 +3500,11 @@ def _detect_contacts_sap_block_kernel[
                 ](
                     env, env, wrow, dims, a, b, t, nbody, win_end,
                     ex_sig, n_sig, pr, num_contacts,
-                    wpx, wpy, wpz, wqx, wqy, wqz, wqw,
+                    a_px, a_py, a_pz, a_qx, a_qy, a_qz, a_qw,
+                    b_px, b_py, b_pz, b_qx, b_qy, b_qz, b_qw,
                     ccd_tol, ccd_iter, multiccd_off,
                     geoms, bodies, mmeta, excludes, pairs, mesh_meta, mesh_verts, mesh_polys, mesh_polyvert, mesh_polymap, mesh_vert_polymap, mesh_vert_edgeadr, mesh_edges, hfield_meta, hfield_data, stage, ccd_ws,
+                    hw_row=hw_row,
                 )
             var cnt = num_contacts - start
             if cnt >= COLL_STAGE_MAXC:
@@ -3281,7 +3513,7 @@ def _detect_contacts_sap_block_kernel[
         if full == 1:
             ctrl_sh[1] = Scalar[DTYPE](1)
     barrier()
-    comptime if COLL_STOP_AFTER == 3 or COLL_STOP_AFTER >= 21:
+    comptime if COLL_STOP_AFTER == 3:
         if tid == 0:
             smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](0)
         return
@@ -3465,6 +3697,8 @@ def detect_contacts_sap[
             )
         # The serial kernel: every env when the block kernel is off, only the
         # envs it marked otherwise (see the mark in phase 3).
+        comptime if USE_BLOCK and COLL_NO_FALLBACK:
+            return
         c.enqueue_function[
             _detect_contacts_sap_fields_kernel[
                 DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, D.MAX_CONTACTS, D.NGEOM,

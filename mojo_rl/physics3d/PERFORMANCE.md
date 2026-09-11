@@ -4536,3 +4536,141 @@ sheet's "the learner should be the wall-clock, ~4 k env st/s at 16 updates" is
 WRONG at these dims — 4 k needs 256 ms per control step and collision alone is
 393 ms (524 at the plateau), so the target is unreachable by more than the
 entire budget no matter what the learner does.
+
+### 13.52 BUILT, PRICED ON APPLE ONLY (2026-09-11): the block collision kernel rebuilt for §13.51's operating point — 2.10x at 1024 G1 lanes on an M1 Pro, exact modulo ties; the 5090 decides
+
+**What §13.51 asked for, and what this is.** §13.51 priced the serial SAP
+kernel at 47% of a G1 training run and suggested three cheap steps: re-run
+the block-kernel A/B at this operating point, measure the lane imbalance,
+separate occupancy from GJK. This section did the first with a NEW block
+kernel rather than the 2026-09-07 one, because reading that kernel against
+the G1 showed it could not have won here whatever the GPU:
+
+1. **Its plane phase listed every geom.** The serial loop hands all 74 geoms
+   to the plane and rejects inside the narrow phase; the block kernel pushed
+   all 74 as candidates BEFORE the sweep's own 60-120, and `COLL_NCAND_CAP`
+   was 128 — a sprawled env overflowed the list and went to the serial
+   fallback, one env at a time, silently.
+2. **Four CCD lanes.** On the park scene four GJK candidates a step was the
+   whole story; on the G1 (27 collidable meshes of 40 geoms, self-collision
+   on) nearly every sweep candidate is a mesh pair. ~40 GJKs through four
+   lanes is ten serial rounds.
+3. **A GJK lane beside 28 cheap lanes.** The bisect that parked the kernel
+   (block ledger §6) measured exactly that layout: lanes of one warp on
+   DIFFERENT routines serialise on the code, not on the data.
+4. **Seven private pose arrays per thread.** The narrow-phase helpers took
+   `Scratch` arrays and every thread copied 7 x NGEOM floats to call them —
+   the 255-register, local-memory signature §13.51 read off the trace.
+
+**The kernel now** (`_detect_contacts_sap_block_kernel`, same file):
+
+- Phase 1 gates each (plane, geom) on ALL threads with `_sap_plane_gate` —
+  the plane routine's own filters and bounding-sphere reject, extracted so
+  there is ONE rule (`_sap_plane_narrow` calls the same function first). On
+  the G1 the gate keeps the dozen geoms near the floor out of 74.
+- Thread 0 lists the sweep candidates as before (emission order, staging
+  offsets), then a counting sort by KIND (`rank_lo*8 + rank_hi` of the two
+  geom types; planes at `_KIND_PLANE_BASE + rank`).
+- Phase 2 runs candidate `p` of the kind-sorted list on thread `p % 32` in
+  round `p // 32`: the lanes of a warp are on the same routine and diverge
+  only on trip counts. Every thread has its own CCD row
+  (`COLL_CCD_LANES == COLL_TPB`, `Data.ccd_ws` 1.49 GB at 1024 lanes); the
+  hill climb's cross-step warm slots (§13.49) stay on lane 0's row of the
+  env (`hw_row`, threaded through `_sap_pair_narrow` / `_sap_plane_narrow` /
+  `gjk_epa_witness`), so a pair finds last step's vertex whatever lane it
+  lands on.
+- The helpers take the two geoms' poses as 14 scalars (they never read any
+  other geom's); the per-thread copies are gone.
+- `COLL_NCAND_CAP` 128 -> 256; `COLL_NO_FALLBACK` (a timing instrument: the
+  serial fallback launch is skipped and marked envs keep `ncon = -1`, so a
+  benchmark can COUNT them).
+
+**The benchmark**, `benchmarks/physics3d_gpu/bench_g1_collision.mojo`:
+128 CPU rollouts of `UnitreeG1[float32]` under saturating random PD
+targets (the body falls), `qpos` snapshotted at control steps 24-39, tiled
+to 1024 lanes; per snapshot, FK on the device then ONE collision launch
+timed between synchronizes; a float64 `csum` of the whole contact array per
+snapshot; a CPU column (`detect_contacts_sap["cpu"]`, same poses) compared
+contact by contact. The snapshots are consecutive steps of the same lanes,
+so the warm slots see what training sees. CPU side: 2.6 s for the rollouts.
+
+**Apple M1 Pro (14-core GPU), 1024 lanes, ncon mean 6.0, max 39, no lane
+saturated, mean of the last round's 16 snapshots:**
+
+| kernel | warm start | ms / launch | vs serial | lanes sent to the serial fallback |
+|---|---|---|---|---|
+| serial (HEAD, `COLL_BLOCK_KERNEL=False`) | on | **298.3** | 1.00 | — |
+| serial, refactored helpers | off | 303.6 | 0.98 | — |
+| block (this section) | on | **141.8** | **2.10x** | 0 (fallback enabled) |
+| block, `COLL_NO_FALLBACK=True` | off | 146.4 | 2.04x | **0 of 1024 on all 16 snapshots** |
+
+The first launch of a binary is 17-34 s: Metal's shader compile, not a
+number. §13.51's cost curve (58 -> 131 ms on the 5090 as the envs fall) is
+the same mechanism the benchmark's `ncon` line tracks; the M1 Pro's 298 ms
+against the 5090's 131 for the serial kernel is the shape one expects of a
+laptop GPU on a latency-bound serial chain.
+
+**Exactness, and why the serial kernel is NOT the reference on Apple.**
+The plan was `csum(block) == csum(serial)` per snapshot. They differ on
+every snapshot, INCLUDING the cold first one with the warm start compiled
+out — and the CPU column says which side moved:
+
+| GPU kernel vs the CPU path, same poses, 16 snapshots x 1024 lanes | lanes with a different `ncon` | worst field diff |
+|---|---|---|
+| serial, warm on (HEAD) | 792 of 16384 | 1.83 |
+| serial, warm off | 752 | — |
+| block, warm on | **208** | 0.077 |
+| block, warm off | **208** | 0.077 |
+
+The block kernel's 208 are 26 distinct (rollout, snapshot) cases tiled 8x,
+and every one dumped (`diag_lanes`) is the SAME body pair on both sides
+with the multicontact manifold one clipped vertex longer or shorter, the
+shared points agreeing to ~1e-8 — the clipper on a float32 knife edge, the
+CPU-vs-GPU arithmetic band the parity gates carry at 1e-4. The serial
+kernel's 752-792 are 3.6x more of them with a 1.83 worst — on Apple the
+per-env serial kernel with its wide per-thread `Scratch` arrays is the one
+`feedback_metal_wide_per_thread_inlinearray_miscompute` describes, and it
+was the reference until now. So on THIS machine the block kernel is the
+closer of the two to the CPU. **The exactness claim has to be made on the
+5090**, where no such miscompute is on record: with
+`HILL_WARM_ACROSS_STEPS=False` in both binaries the two kernels are
+stateless and `csum` must be IDENTICAL on every snapshot; with it on they
+may differ on ties only (§13.48 — a seed can move a support point along a
+flat face; the block kernel's lanes can also race on a hash slot, which
+costs steps and can change a tie, never a point). `ncon` mismatches vs the
+CPU should come back at the block kernel's ~1% with sub-1e-1 worst, not the
+serial kernel's ~5%.
+
+**The 5090 run sheet** (each binary ~2 min of compile — the benchmark has
+no solver; `COLL_BLOCK_KERNEL` and `HILL_WARM_ACROSS_STEPS` live in
+`ccd_workspace.mojo`):
+
+    B=benchmarks/physics3d_gpu/bench_g1_collision.mojo
+    # 1. serial, warm off            (flip HILL_WARM_ACROSS_STEPS=False)
+    pixi run -e nvidia mojo build -I . $B -o /tmp/g1coll_serial_cold && /tmp/g1coll_serial_cold 128 40 24 2 1
+    # 2. block, warm off             (flip COLL_BLOCK_KERNEL=True)
+    pixi run -e nvidia mojo build -I . $B -o /tmp/g1coll_block_cold  && /tmp/g1coll_block_cold  128 40 24 2 1
+    #    -> the csum column of 1 and 2 must be identical on all 16 snapshots
+    # 3. block, warm on              (HILL_WARM_ACROSS_STEPS=True again)
+    pixi run -e nvidia mojo build -I . $B -o /tmp/g1coll_block       && /tmp/g1coll_block       128 40 24 2 1
+    #    -> the ms/launch that matters; 4 = the serial HEAD number if wanted
+    # then the driver, block on:
+    pixi run -e nvidia mojo build -I . examples/g1/bfm_zero_train_gpu.mojo -o /tmp/g1train
+    pixi run -e nvidia bash -c 'unset LD_PRELOAD; nsys profile --trace=cuda -o g1_block /tmp/g1train --smoke --no-graph'
+    nsys stats --report cuda_gpu_kern_sum g1_block.nsys-rep   # the block kernel's 160 instances vs §13.51's 98.4 ms
+
+`COLL_BLOCK_KERNEL` stays `False` in the tree until step 3 has a number:
+the last time this file flipped a kernel on an Apple measurement the sign
+was wrong on the 5090 (`_a_terms_repeat_cost_is_not_its_removal_saving`).
+
+**What the 5090 may still show, and the next levers if it does.** (a) The
+kind order removes code divergence, not trip-count divergence: a round's
+time is its slowest GJK. If the plateau is still GJK-bound the lever is
+the warp-cooperative hill climb the 2026-09-07 note named, or neighbour
+coordinates inline in the adjacency (one dependent load per step instead
+of three). (b) The warm slots are a 128-slot hash per env; ~100 candidates
+means ~10 collisions per env per step, each a cold walk, and a race on the
+block kernel. A per-pair table (`NGEOM^2` slots, 44 KB per env on the G1)
+would make the warm start collision-free and the kernel deterministic; it
+needs a `Data` tensor of its own. (c) `Data.ccd_ws` at 1.49 GB is paid
+once; if the box is tight, `COLL_TPB=16` halves it and the rounds double.

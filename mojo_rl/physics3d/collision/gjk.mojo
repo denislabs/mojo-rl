@@ -1568,6 +1568,15 @@ def gjk_epa_witness[
         Scalar[DTYPE], NPRISM
     ](fill=Scalar[DTYPE](0)),
     warm_slot: Int = -1,
+    # The ROW the warm slots are read from and written to; -1 = `wrow`.
+    # The block-per-env collision kernel gives every thread its own
+    # workspace row (EPA's polytope, the clipper's polygons) but keeps the
+    # warm slots on ONE row per env — lane 0's — so a pair's vertex from the
+    # previous step is found whatever lane the pair lands on this step.
+    # Two lanes of one env can race on a slot (a hash collision); any
+    # value in a slot is safe (`ccd_workspace.mojo`), so that costs steps,
+    # never a point.
+    hw_row: Int = -1,
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -1588,13 +1597,14 @@ def gjk_epa_witness[
     var warm1 = -1
     var warm2 = -1
     var off = HW_WS_OFF + 2 * warm_slot
+    var hrow = hw_row if hw_row >= 0 else wrow
     if warm_slot >= 0:
         if type1 == GEOM_MESH:
-            var f = rebind[Scalar[DTYPE]](ws[wrow, off])
+            var f = rebind[Scalar[DTYPE]](ws[hrow, off])
             if f >= Scalar[DTYPE](0) and f < Scalar[DTYPE](1e8):
                 warm1 = Int(f)
         if type2 == GEOM_MESH:
-            var f2 = rebind[Scalar[DTYPE]](ws[wrow, off + 1])
+            var f2 = rebind[Scalar[DTYPE]](ws[hrow, off + 1])
             if f2 >= Scalar[DTYPE](0) and f2 < Scalar[DTYPE](1e8):
                 warm2 = Int(f2)
     var r = _gjk_epa_witness_run[DTYPE, NPRISM=NPRISM](
@@ -1647,9 +1657,9 @@ def gjk_epa_witness[
     )
     if warm_slot >= 0:
         if type1 == GEOM_MESH:
-            ws[wrow, off] = Scalar[DTYPE](warm1)
+            ws[hrow, off] = Scalar[DTYPE](warm1)
         if type2 == GEOM_MESH:
-            ws[wrow, off + 1] = Scalar[DTYPE](warm2)
+            ws[hrow, off + 1] = Scalar[DTYPE](warm2)
     return r^
 
 
