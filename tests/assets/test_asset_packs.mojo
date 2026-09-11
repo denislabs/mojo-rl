@@ -28,7 +28,7 @@ needs the network, a credential, or a live service.
   the cache is cleared — the same failure `project-promote` avoids.
 """
 
-from std.os import getenv
+from std.os import getenv, setenv
 
 from mojo_rl.core.dotenv import load_dotenv
 from std.os.path import exists
@@ -85,6 +85,17 @@ def _refused(text: String, what: String) raises -> Bool:
 
 def main() raises:
     print("=== asset packs (§9) ===")
+
+    # ⚠⚠ THE GATE OWNS ITS CACHE, AND IT LEARNED THIS THE HARD WAY. Running
+    # against `~/.cache/mojo_rl` meant a MUTATION SWEEP polluted it: the H10
+    # mutant disables the sha256 check, so it cached a deliberately-wrong
+    # archive AND marked it `.ok` — after which the next honest run found the
+    # marker, skipped the fetch entirely, and PASSED check 7b without
+    # verifying anything. A gate that shares mutable state with its own
+    # previous runs can be made vacuous by them.
+    _ = run_capture("rm -rf " + quote_arg(String(WORK)))
+    _ = setenv("MOJO_RL_CACHE", String(WORK) + "/cache", True)
+
     if not http_shim_available():
         raise Error("the HTTP shim is not built — `pixi run build-http`")
     var checks = 0
@@ -208,7 +219,6 @@ def main() raises:
     checks += 3
 
     # ── 4. a real pull: build, serve, fetch, verify, extract, link ──
-    _ = run_capture("rm -rf " + quote_arg(String(WORK)))
     _ = run_capture(
         "mkdir -p " + quote_arg(String(WORK) + "/src/meshes") + " "
         + quote_arg(String(WORK) + "/env")
@@ -244,8 +254,6 @@ def main() raises:
     var loaded = load_packs(String(WORK) + "/env/assets.kv")
     var pack = loaded.packs[0].copy()
 
-    # a clean cache, so the pull is a real one
-    _ = run_capture("rm -rf " + quote_arg(archive_path(pack)) + " " + quote_arg(extract_dir(pack)))
     if pack_status(pack, loaded.dir) != "absent":
         raise Error("the gate started with the pack already present")
 
@@ -264,18 +272,29 @@ def main() raises:
     print("  pull: 2 files including a nested one, byte-identical, no .ok leaked")
     checks += 3
 
-    # ── 5. ⚠ hard link, never a symlink ─────────────────────────────
-    var is_link = run_capture(
+    # ── 5. ⚠⚠ HARD LINK, NEVER A SYMLINK — THE DIRECTORY AND THE FILES
+    #
+    # ⚠ BOTH ARE CHECKED, and the first version checked only the file. A
+    # `ln -s <cache> <dest>` makes the DIRECTORY a link while every path
+    # through it — `dest/base.stl` — is an ordinary file, so a file-only check
+    # passes for exactly the defect it was written to catch. The mutation sweep
+    # found this; reading it would not have.
+    var link_dir = run_capture(
+        "test -L " + quote_arg(dest) + " && echo YES || true", 1 << 12
+    ).find("YES") >= 0
+    if link_dir:
+        raise Error(
+            "the materialised asset DIRECTORY is a symlink into the cache — it"
+            " breaks under rsync and the moment the cache is cleared"
+        )
+    var link_file = run_capture(
         "test -L " + quote_arg(dest + "/base.stl") + " && echo YES || true",
         1 << 12,
     ).find("YES") >= 0
-    if is_link:
-        raise Error(
-            "the materialised asset is a SYMLINK into the cache — it breaks"
-            " under rsync and the moment the cache is cleared"
-        )
-    print("  materialised: not a symlink")
-    checks += 1
+    if link_file:
+        raise Error("a materialised FILE is a symlink into the cache")
+    print("  materialised: neither the directory nor its files are symlinks")
+    checks += 2
 
     # ── 6. ⚠ a second pull moves NO bytes ───────────────────────────
     var before = run_capture(
@@ -327,13 +346,15 @@ def main() raises:
     liar.dest = String("assets/liar")
     var liar_dest = loaded.dir + "/assets/liar"
     var caught = False
+    var liar_said = String("")
     try:
-        _ = pull_pack(liar, loaded.dir)
+        liar_said = pull_pack(liar, loaded.dir)
     except:
         caught = True
     if not caught:
         raise Error(
             "a pack whose bytes do not match its declared sha256 was accepted"
+            " (pull_pack returned '" + liar_said + "')"
         )
     if exists(liar_dest):
         raise Error(
@@ -357,7 +378,14 @@ def main() raises:
 #   H4  a record does not reset at `pack=`         -> check 1
 #   H5  provider=https sends HF_TOKEN              -> check 3
 #   H6  token_env missing is silently ignored      -> check 3
-#   H7  materialise uses `ln -s`                   -> check 5
+#   H7  materialise symlinks the whole directory   -> check 5
+#
+# ⚠⚠ H7 SURVIVED THE FIRST SWEEP TWICE OVER, and both causes are worth having
+# written down. The MUTANT was wrong: `ln -s src dest` where `dest` had already
+# been created as a directory fails, and the `|| cp -a` fallback then did the
+# right thing — so it tested nothing. And the CHECK was wrong: it looked at
+# `dest/base.stl`, which is an ordinary file even when `dest` itself is a
+# symlink. A file-only assertion passes for precisely the defect it names.
 #   H8  materialise copies the .ok marker          -> check 4
 #   H9  pull_pack ignores an existing dest         -> check 6
-#   H10 fetch_to_cache skips the sha256 check      -> check 7
+#   H10 fetch_to_cache skips the sha256 check      -> check 7b
