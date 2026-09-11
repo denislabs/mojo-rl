@@ -1368,15 +1368,6 @@ struct Conv2D[
             else:
                 # (2) out_packed[BS,OC] = col[BS,COL] @ W[OC,COL]ᵀ — bf16-in →
                 # bf16-out GEMM (fp32 accumulation is automatic).
-                var col_tt = TileTensor(
-                    self.col_t_bf.dev.value(), row_major(BS, Self.COL)
-                )
-                var w_tt = TileTensor(
-                    self.w_bf.dev.value(), row_major(Self.OC_, Self.COL)
-                )
-                var outp_tt = TileTensor(
-                    self.outp_t_bf.dev.value(), row_major(BS, Self.OC_)
-                )
                 mm[transpose_b=True, A0=BS, A1=Self.COL, B0=Self.OC_, B1=Self.COL, O0=BS, O1=Self.OC_](
                     self.outp_t_bf.dev.value(), self.col_t_bf.dev.value(), self.w_bf.dev.value(), c
                 )
@@ -1771,15 +1762,6 @@ struct Conv2D[
                 grid_dim=nb_wt,
                 block_dim=TPB,
             )
-            var wT_tt = TileTensor(
-                self.wT_t.dev.value(), row_major(Self.COL, Self.OC_)
-            )
-            var goT2_tt = TileTensor(
-                self.goT_t.dev.value(), row_major(Self.OC_, BS)
-            )
-            var dcolT_tt = TileTensor(
-                self.col_t.dev.value(), row_major(Self.COL, BS)
-            )
             mm[A0=Self.COL, A1=Self.OC_, B0=Self.OC_, B1=BS, O0=Self.COL, O1=BS](
                 self.col_t.dev.value(), self.wT_t.dev.value(), self.goT_t.dev.value(), c
             )
@@ -1871,15 +1853,6 @@ struct Conv2D[
             )
             # (3) dW_tmp = goᵀ @ col → bf16-in, FP32-out GEMM → accumulate into
             # the fp32 master grad.
-            var goT_tt = TileTensor(
-                self.goT_t_bf.dev.value(), row_major(Self.OC_, BS)
-            )
-            var col_tt = TileTensor(
-                self.col_t_bf.dev.value(), row_major(BS, Self.COL)
-            )
-            var dW_tmp_tt = TileTensor(
-                self.dW_tmp.dev.value(), row_major(Self.OC_, Self.COL)
-            )
             # ⚠ NOT routed through split-K, deliberately. This is the
             # bf16-flow dW (bf16 operands, fp32 output). It would work the same
             # way, but no gate builds bf16 Conv2Ds and a mistake here would be
@@ -1925,15 +1898,6 @@ struct Conv2D[
                 self.wT_bf.lt["gpu", Layout.row_major(Self.COL, Self.OC_)](),
                 grid_dim=nb_wt,
                 block_dim=TPB,
-            )
-            var wbT_tt = TileTensor(
-                self.wT_bf.dev.value(), row_major(Self.COL, Self.OC_)
-            )
-            var goT2_tt = TileTensor(
-                self.goT_t_bf.dev.value(), row_major(Self.OC_, BS)
-            )
-            var dcolT_tt = TileTensor(
-                self.col_t_bf.dev.value(), row_major(Self.COL, BS)
             )
             mm[A0=Self.COL, A1=Self.OC_, B0=Self.OC_, B1=BS, O0=Self.COL, O1=BS](
                 self.col_t_bf.dev.value(), self.wT_bf.dev.value(), self.goT_t_bf.dev.value(), c

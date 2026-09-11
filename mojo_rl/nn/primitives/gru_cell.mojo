@@ -316,18 +316,6 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             self._hx.ensure_gpu(c, B * THREE_H)
             # ix = x @ W_ih ; hx = h_prev @ W_hh  (two GEMMs; was a hand-rolled
             # per-thread inner product over IN_+H for all 3 gates).
-            var x_v = TileTensor(
-                x_in.dev.value(), row_major(B, Self.IN0_DIM)
-            )
-            var h_v = TileTensor(h_in.dev.value(), row_major(B, H))
-            var Wih_v = TileTensor(
-                self.W_ih.val.dev.value(), row_major(Self.IN0_DIM, THREE_H)
-            )
-            var Whh_v = TileTensor(
-                self.W_hh.val.dev.value(), row_major(H, THREE_H)
-            )
-            var ix_v = TileTensor(self._ix.dev.value(), row_major(B, THREE_H))
-            var hx_v = TileTensor(self._hx.dev.value(), row_major(B, THREE_H))
             mm[A0=B, A1=Self.IN0_DIM, B0=Self.IN0_DIM, B1=THREE_H, O0=B, O1=THREE_H](
                 self._ix.dev.value(), x_in.dev.value(), self.W_ih.val.dev.value(), c
             )
@@ -483,14 +471,6 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             )
 
             # dx = d_ix @ W_ihᵀ ; dh = d_hx @ W_hhᵀ (then += go⊙z).
-            var dix_tt = TileTensor(self._dix.dev.value(), row_major(B, THREE_H))
-            var dhx_tt = TileTensor(self._dhx.dev.value(), row_major(B, THREE_H))
-            var Wih_tt = TileTensor(
-                self.W_ih.val.dev.value(), row_major(Self.IN0_DIM, THREE_H)
-            )
-            var Whh_tt = TileTensor(
-                self.W_hh.val.dev.value(), row_major(H, THREE_H)
-            )
             var dx_tt = TileTensor(dx_in.dev.value(), row_major(B, Self.IN0_DIM))
             var dh_tt = TileTensor(dh_in.dev.value(), row_major(B, H))
             mm[transpose_b=True, A0=B, A1=THREE_H, B0=Self.IN0_DIM, B1=THREE_H, O0=B, O1=Self.IN0_DIM](
@@ -508,12 +488,6 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             # dW_ih += xᵀ @ d_ix ; dW_hh += h_prevᵀ @ d_hx (temp + accumulate).
             var xT_tt = TileTensor(self._xT.dev.value(), row_major(Self.IN0_DIM, B))
             var hT_tt = TileTensor(self._hT.dev.value(), row_major(H, B))
-            var dWih_tmp_tt = TileTensor(
-                self._dWih_tmp.dev.value(), row_major(Self.IN0_DIM, THREE_H)
-            )
-            var dWhh_tmp_tt = TileTensor(
-                self._dWhh_tmp.dev.value(), row_major(H, THREE_H)
-            )
             mm[A0=Self.IN0_DIM, A1=B, B0=B, B1=THREE_H, O0=Self.IN0_DIM, O1=THREE_H](
                 self._dWih_tmp.dev.value(), self._xT.dev.value(), self._dix.dev.value(), c
             )

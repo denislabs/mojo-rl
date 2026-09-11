@@ -199,16 +199,6 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                 comptime lbv = Layout.row_major(B, Self.VOCAB_)
                 comptime lvb = Layout.row_major(Self.VOCAB_, B)
                 # out[B, ED] = input[B, VOCAB] @ weight[VOCAB, ED]
-                var in_v = TileTensor(
-                    in0d.dev.value(), row_major(B, Self.VOCAB_)
-                )
-                var w_v = TileTensor(
-                    self.weight.val.dev.value(),
-                    row_major(Self.VOCAB_, Self.EMBED_DIM_),
-                )
-                var out_v = TileTensor(
-                    outd.dev.value(), row_major(B, Self.EMBED_DIM_)
-                )
                 mm[A0=B, A1=Self.VOCAB_, B0=Self.VOCAB_, B1=Self.EMBED_DIM_, O0=B, O1=Self.EMBED_DIM_](
                     outd.dev.value(), in0d.dev.value(), self.weight.val.dev.value(), c
                 )
@@ -239,14 +229,6 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
             # only on a version bump). out[B, ED] = input[B, VOCAB] @ W[VOCAB, ED]
             # bf16-in → bf16-out GEMM (fp32 accumulation is automatic).
             self._ensure_w_bf(c)
-            var in_v = TileTensor(in0.dev.value(), row_major(B, Self.VOCAB_))
-            var w_bf_v = TileTensor(
-                self.w_bf.dev.value(),
-                row_major(Self.VOCAB_, Self.EMBED_DIM_),
-            )
-            var out_v = TileTensor(
-                out.dev.value(), row_major(B, Self.EMBED_DIM_)
-            )
             mm[A0=B, A1=Self.VOCAB_, B0=Self.VOCAB_, B1=Self.EMBED_DIM_, O0=B, O1=Self.EMBED_DIM_](
                 out.dev.value(), in0.dev.value(), self.w_bf.dev.value(), c
             )
@@ -337,13 +319,6 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
                 var go_v = TileTensor(
                     god.dev.value(), row_major[B, Self.EMBED_DIM_]()
                 )
-                var w_v = TileTensor(
-                    self.weight.val.dev.value(),
-                    row_major(Self.VOCAB_, Self.EMBED_DIM_),
-                )
-                var gi_v = TileTensor(
-                    gind.dev.value(), row_major(B, Self.VOCAB_)
-                )
                 mm[transpose_b=True, A0=B, A1=Self.EMBED_DIM_, B0=Self.VOCAB_, B1=Self.EMBED_DIM_, O0=B, O1=Self.VOCAB_](
                     gind.dev.value(), god.dev.value(), self.weight.val.dev.value(), c
                 )
@@ -393,26 +368,11 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
             # bf16 cast. grad_in[B, VOCAB] = grad_out[B, ED] @ W[VOCAB, ED]ᵀ →
             # bf16 gin (bf16-in, bf16-out — gin flows at bf16).
             self._ensure_w_bf(c)
-            var go_v = TileTensor(
-                grad_output.dev.value(), row_major(B, Self.EMBED_DIM_)
-            )
-            var w_bf_v = TileTensor(
-                self.w_bf.dev.value(),
-                row_major(Self.VOCAB_, Self.EMBED_DIM_),
-            )
-            var gi_v = TileTensor(gin.dev.value(), row_major(B, Self.VOCAB_))
             mm[transpose_b=True, A0=B, A1=Self.EMBED_DIM_, B0=Self.VOCAB_, B1=Self.EMBED_DIM_, O0=B, O1=Self.VOCAB_](
                 gin.dev.value(), grad_output.dev.value(), self.w_bf.dev.value(), c
             )
             # gw_tmp[VOCAB, ED] = cache_inᵀ_bf[VOCAB, B] @ grad_out[B, ED]:
             # bf16-in → FP32-out GEMM into the fp32 gw_tmp.
-            var cinT_v = TileTensor(
-                self.cache_inT_bf.dev.value(), row_major(Self.VOCAB_, B)
-            )
-            var gwtmp_v = TileTensor(
-                self.gw_tmp.dev.value(),
-                row_major(Self.VOCAB_, Self.EMBED_DIM_),
-            )
             # ⚠ NOT routed through split-K, deliberately: the bf16 flow is a
             # different MAX instantiation (`MatmulKernels[bfloat16, bfloat16,
             # float32]`) whose `_bk_base` differs, which changes both the tile

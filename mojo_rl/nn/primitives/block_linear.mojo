@@ -391,18 +391,6 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                     grid_dim=n_gx,
                     block_dim=TPB,
                 )
-                var xg_tt = TileTensor(
-                    self.xg.dev.value(),
-                    row_major(Self.BLOCKS, B, Self.IPB),
-                )
-                var w_tt = TileTensor(
-                    self.weight.val.dev.value(),
-                    row_major(Self.BLOCKS, Self.IPB, Self.OPB),
-                )
-                var og_tt = TileTensor(
-                    self.og.dev.value(),
-                    row_major(Self.BLOCKS, B, Self.OPB),
-                )
                 bmm[A0=Self.BLOCKS, A1=B, A2=Self.IPB, B0=Self.BLOCKS, B1=Self.IPB, B2=Self.OPB, O0=Self.BLOCKS, O1=B, O2=Self.OPB](
                     self.og.dev.value(), self.xg.dev.value(), self.weight.val.dev.value(), c
                 )
@@ -597,19 +585,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                     grid_dim=n_gt,
                     block_dim=TPB,
                 )
-                var gog_tt = TileTensor(
-                    self.gog.dev.value(),
-                    row_major(Self.BLOCKS, B, Self.OPB),
-                )
                 # dW[k] = xᵀ[k] @ go[k]  →  += into weight.grd
-                var xt_tt = TileTensor(
-                    self.xt.dev.value(),
-                    row_major(Self.BLOCKS, Self.IPB, B),
-                )
-                var dwg_tt = TileTensor(
-                    self.dwg.dev.value(),
-                    row_major(Self.BLOCKS, Self.IPB, Self.OPB),
-                )
                 bmm[A0=Self.BLOCKS, A1=Self.IPB, A2=B, B0=Self.BLOCKS, B1=B, B2=Self.OPB, O0=Self.BLOCKS, O1=Self.IPB, O2=Self.OPB](
                     self.dwg.dev.value(), self.xt.dev.value(), self.gog.dev.value(), c
                 )
@@ -621,14 +597,6 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                     block_dim=TPB,
                 )
                 # dx[k] = go[k] @ W[k]ᵀ  →  scatter back to [B, IN]
-                var w_tt = TileTensor(
-                    self.weight.val.dev.value(),
-                    row_major(Self.BLOCKS, Self.IPB, Self.OPB),
-                )
-                var gxg_tt = TileTensor(
-                    self.gxg.dev.value(),
-                    row_major(Self.BLOCKS, B, Self.IPB),
-                )
                 bmm[transpose_b=True, A0=Self.BLOCKS, A1=B, A2=Self.OPB, B0=Self.BLOCKS, B1=Self.IPB, B2=Self.OPB, O0=Self.BLOCKS, O1=B, O2=Self.IPB](
                     self.gxg.dev.value(), self.gog.dev.value(), self.weight.val.dev.value(), c
                 )

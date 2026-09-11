@@ -768,15 +768,6 @@ struct ScaledDotProductAttention[
         )
 
         # 2. scores = Q @ Kᵀ  (BH, SEQ, SEQ).
-        var scores_tt = TileTensor(
-            self.ss0.dev.value(), row_major(BH, Self.SEQ_LEN, Self.SEQ_LEN)
-        )
-        var pq_tt = TileTensor(
-            self.sp0.dev.value(), row_major(BH, Self.SEQ_LEN, Self.HEAD_DIM)
-        )
-        var pk_tt = TileTensor(
-            self.sp1.dev.value(), row_major(BH, Self.SEQ_LEN, Self.HEAD_DIM)
-        )
         bmm[transpose_b=True, A0=BH, A1=Self.SEQ_LEN, A2=Self.HEAD_DIM, B0=BH, B1=Self.SEQ_LEN, B2=Self.HEAD_DIM, O0=BH, O1=Self.SEQ_LEN, O2=Self.SEQ_LEN](
             self.ss0.dev.value(), self.sp0.dev.value(), self.sp1.dev.value(), c
         )
@@ -793,12 +784,6 @@ struct ScaledDotProductAttention[
         )
 
         # 4. packed_out = attn @ V.
-        var pout_tt = TileTensor(
-            self.sp3.dev.value(), row_major(BH, Self.SEQ_LEN, Self.HEAD_DIM)
-        )
-        var pv_tt = TileTensor(
-            self.sp2.dev.value(), row_major(BH, Self.SEQ_LEN, Self.HEAD_DIM)
-        )
         bmm[A0=BH, A1=Self.SEQ_LEN, A2=Self.SEQ_LEN, B0=BH, B1=Self.SEQ_LEN, B2=Self.HEAD_DIM, O0=BH, O1=Self.SEQ_LEN, O2=Self.HEAD_DIM](
             self.sp3.dev.value(), self.ss0.dev.value(), self.sp2.dev.value(), c
         )
@@ -1071,11 +1056,6 @@ struct ScaledDotProductAttention[
         )
 
         # 2. dattn(ss0) = dout @ Vᵀ.
-        var pdout_tt = TileTensor(self.sp0.dev.value(), row_major(BH, SL, HD))
-        var pq_tt = TileTensor(self.sp1.dev.value(), row_major(BH, SL, HD))
-        var pk_tt = TileTensor(self.sp2.dev.value(), row_major(BH, SL, HD))
-        var pv_tt = TileTensor(self.sp3.dev.value(), row_major(BH, SL, HD))
-        var dattn_tt = TileTensor(self.ss0.dev.value(), row_major(BH, SL, SL))
         bmm[transpose_b=True, A0=BH, A1=SL, A2=HD, B0=BH, B1=SL, B2=HD, O0=BH, O1=SL, O2=SL](
             self.ss0.dev.value(), self.sp0.dev.value(), self.sp3.dev.value(), c
         )
@@ -1102,8 +1082,6 @@ struct ScaledDotProductAttention[
         )
 
         # 5. dV(sp3) = attn_T(ss0) @ dout(sp0)  (sp3 free — pv last read step 2).
-        var attnT_tt = TileTensor(self.ss0.dev.value(), row_major(BH, SL, SL))
-        var dV_tt = TileTensor(self.sp3.dev.value(), row_major(BH, SL, HD))
         bmm[A0=BH, A1=SL, A2=SL, B0=BH, B1=SL, B2=HD, O0=BH, O1=SL, O2=HD](
             self.sp3.dev.value(), self.ss0.dev.value(), self.sp0.dev.value(), c
         )
@@ -1117,15 +1095,11 @@ struct ScaledDotProductAttention[
         )
 
         # 7. dK(sp0) = dscore_T(ss0) @ Q(sp1)  (sp0 free — pdout last read s5).
-        var dscoreT_tt = TileTensor(self.ss0.dev.value(), row_major(BH, SL, SL))
-        var dK_tt = TileTensor(self.sp0.dev.value(), row_major(BH, SL, HD))
         bmm[A0=BH, A1=SL, A2=SL, B0=BH, B1=SL, B2=HD, O0=BH, O1=SL, O2=HD](
             self.sp0.dev.value(), self.ss0.dev.value(), self.sp1.dev.value(), c
         )
 
         # 8. dQ(sp1) = dscore(ss1) @ K(sp2)  (sp1 free — pq last read step 7).
-        var dscore_tt = TileTensor(self.ss1.dev.value(), row_major(BH, SL, SL))
-        var dQ_tt = TileTensor(self.sp1.dev.value(), row_major(BH, SL, HD))
         bmm[A0=BH, A1=SL, A2=SL, B0=BH, B1=SL, B2=HD, O0=BH, O1=SL, O2=HD](
             self.sp1.dev.value(), self.ss1.dev.value(), self.sp2.dev.value(), c
         )

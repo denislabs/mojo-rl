@@ -718,9 +718,6 @@ struct CrossAttention[
         )
 
         # 2. scores(ss0) = Q @ Kt   (BH, QL, KL).
-        var sc_tt = TileTensor(self.ss0.dev.value(), row_major(BH, QL, KL))
-        var pq_tt = TileTensor(self.sq0.dev.value(), row_major(BH, QL, HD))
-        var pk_tt = TileTensor(self.sk0.dev.value(), row_major(BH, KL, HD))
         bmm[transpose_b=True, A0=BH, A1=QL, A2=HD, B0=BH, B1=KL, B2=HD, O0=BH, O1=QL, O2=KL](
             self.ss0.dev.value(), self.sq0.dev.value(), self.sk0.dev.value(), c
         )
@@ -751,8 +748,6 @@ struct CrossAttention[
             )
 
         # 4. pout(sq1) = attn(ss0) @ V(sk1).
-        var pout_tt = TileTensor(self.sq1.dev.value(), row_major(BH, QL, HD))
-        var pv_tt = TileTensor(self.sk1.dev.value(), row_major(BH, KL, HD))
         bmm[A0=BH, A1=QL, A2=KL, B0=BH, B1=KL, B2=HD, O0=BH, O1=QL, O2=HD](
             self.sq1.dev.value(), self.ss0.dev.value(), self.sk1.dev.value(), c
         )
@@ -838,13 +833,8 @@ struct CrossAttention[
             grid_dim=kblocks, block_dim=TPB,
         )
 
-        var pdout_tt = TileTensor(self.sq0.dev.value(), row_major(BH, QL, HD))
-        var pq_tt = TileTensor(self.sq1.dev.value(), row_major(BH, QL, HD))
-        var pk_tt = TileTensor(self.sk0.dev.value(), row_major(BH, KL, HD))
-        var pv_tt = TileTensor(self.sk1.dev.value(), row_major(BH, KL, HD))
 
         # 2. dattn(ss0) = dout @ Vt   (BH, QL, KL).
-        var dattn_tt = TileTensor(self.ss0.dev.value(), row_major(BH, QL, KL))
         bmm[transpose_b=True, A0=BH, A1=QL, A2=HD, B0=BH, B1=KL, B2=HD, O0=BH, O1=QL, O2=KL](
             self.ss0.dev.value(), self.sq0.dev.value(), self.sk1.dev.value(), c
         )
@@ -873,15 +863,11 @@ struct CrossAttention[
         )
 
         # 5. dV(sk2) = attn_T(ss0) @ dout(sq0)   (BH, KL, HD).
-        var attnT_tt = TileTensor(self.ss0.dev.value(), row_major(BH, KL, QL))
-        var dV_tt = TileTensor(self.sk2.dev.value(), row_major(BH, KL, HD))
         bmm[A0=BH, A1=KL, A2=QL, B0=BH, B1=QL, B2=HD, O0=BH, O1=KL, O2=HD](
             self.sk2.dev.value(), self.ss0.dev.value(), self.sq0.dev.value(), c
         )
 
         # 6. dQ(sq2) = dscore(ss1) @ K(sk0)  — BEFORE sk0 is recycled for dK.
-        var dscore_tt = TileTensor(self.ss1.dev.value(), row_major(BH, QL, KL))
-        var dQ_tt = TileTensor(self.sq2.dev.value(), row_major(BH, QL, HD))
         bmm[A0=BH, A1=QL, A2=KL, B0=BH, B1=KL, B2=HD, O0=BH, O1=QL, O2=HD](
             self.sq2.dev.value(), self.ss1.dev.value(), self.sk0.dev.value(), c
         )
@@ -894,10 +880,6 @@ struct CrossAttention[
         )
 
         # 8. dK(sk0) = dscore_T(ss0) @ Q(sq1)  — sk0 free, pk read at 6.
-        var dscoreT_tt = TileTensor(
-            self.ss0.dev.value(), row_major(BH, KL, QL)
-        )
-        var dK_tt = TileTensor(self.sk0.dev.value(), row_major(BH, KL, HD))
         bmm[A0=BH, A1=KL, A2=QL, B0=BH, B1=QL, B2=HD, O0=BH, O1=KL, O2=HD](
             self.sk0.dev.value(), self.ss0.dev.value(), self.sq1.dev.value(), c
         )

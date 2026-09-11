@@ -238,15 +238,6 @@ struct PairwiseDot[D_: Int, BATCH: Int](Module):
                 # Kept for profiling and for the day this primitive grows a real
                 # batch axis. At PD_BATCH_DIM == 1 it is measurably WORSE on
                 # NVIDIA — see the note above.
-                var m_tt = TileTensor(
-                    out.dev.value(), row_major(PD_BATCH_DIM, B, B)
-                )
-                var a_tt = TileTensor(
-                    a.dev.value(), row_major(PD_BATCH_DIM, B, Self.D_)
-                )
-                var c_tt = TileTensor(
-                    c.dev.value(), row_major(PD_BATCH_DIM, B, Self.D_)
-                )
                 bmm[transpose_b=True, A0=PD_BATCH_DIM, A1=B, A2=Self.D_, B0=PD_BATCH_DIM, B1=B, B2=Self.D_, O0=PD_BATCH_DIM, O1=B, O2=B](
                     out.dev.value(), a.dev.value(), c.dev.value(), dc
                 )

@@ -760,9 +760,6 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
             else:
                 var c = ctx.value()
                 outd.ensure_gpu(c, B * Self.OUT_)
-                var out_v = TileTensor(
-                    outd.dev.value(), row_major(B, Self.OUT_)
-                )
                 var bl = self.bias.val.dev.value()
                 # Zero-padding K leaves the dot products EXACTLY unchanged (the
                 # appended columns are 0); only the GEMM's tiling — and hence
@@ -770,10 +767,6 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                 # an ulp. Padding N adds columns nothing ever reads.
                 comptime if Self.NEEDS_PAD or Self.NEEDS_N_PAD:
                     self._ensure_w_pad(c)
-                    var wp_v = TileTensor(
-                        self.w_pad.dev.value(),
-                        row_major(Self.K_PAD, Self.N_PAD),
-                    )
                     # The activation only needs a copy when K is padded; when
                     # only N is padded, K_PAD == IN_ and `in0d` is already the
                     # right shape.
@@ -788,17 +781,10 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                             grid_dim=(B * Self.K_PAD + 255) // 256,
                             block_dim=256,
                         )
-                    var xp_v = TileTensor(
-                        self.x_pad.dev.value() if Self.NEEDS_PAD else in0d.dev.value(),
-                        row_major(B, Self.K_PAD),
-                    )
                     comptime if Self.NEEDS_N_PAD:
                         # GEMM into the widened destination, then slice back to
                         # `OUT_` — fused with the bias add, so no extra launch.
                         self.y_pad.ensure_gpu(c, B * Self.N_PAD)
-                        var yp_v = TileTensor(
-                            self.y_pad.dev.value(), row_major(B, Self.N_PAD)
-                        )
                         mm[A0=B, A1=Self.K_PAD, B0=Self.K_PAD, B1=Self.N_PAD, O0=B, O1=Self.N_PAD](
                             self.y_pad.dev.value(), self.x_pad.dev.value() if Self.NEEDS_PAD else in0d.dev.value(), self.w_pad.dev.value(), c
                         )
@@ -855,11 +841,6 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                 grid_dim=(Self.B_SIZE + 255) // 256,
                 block_dim=256,
             )
-            var x_v = TileTensor(in0.dev.value(), row_major(B, Self.IN_))
-            var w_bf_v = TileTensor(
-                self.w_bf.dev.value(), row_major(Self.IN_, Self.OUT_)
-            )
-            var out_v = TileTensor(out.dev.value(), row_major(B, Self.OUT_))
             # bf16-in → bf16-out GEMM (fp32 accumulation is automatic).
             mm[A0=B, A1=Self.IN_, B0=Self.IN_, B1=Self.OUT_, O0=B, O1=Self.OUT_](
                 out.dev.value(), in0.dev.value(), self.w_bf.dev.value(), c
@@ -1003,10 +984,6 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     # dot product, so the gradients are unchanged up to fp32
                     # reduction order.
                     self._ensure_w_pad(c)
-                    var wp_v = TileTensor(
-                        self.w_pad.dev.value(),
-                        row_major(Self.K_PAD, Self.N_PAD),
-                    )
                     # go: [B, OUT_] -> [B, N_PAD]
                     comptime if Self.NEEDS_N_PAD:
                         self.go_pad.ensure_gpu(c, B * Self.N_PAD)
@@ -1090,10 +1067,6 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     # immutable origin and `max_matmul`'s `c` rejects it.
                     comptime if Self.NEEDS_PAD:
                         self.gi_pad.ensure_gpu(c, B * Self.K_PAD)
-                        var gip_v = TileTensor(
-                            self.gi_pad.dev.value(),
-                            row_major(B, Self.K_PAD),
-                        )
                         mm[transpose_b=True, A0=B, A1=Self.N_PAD, B0=Self.K_PAD, B1=Self.N_PAD, O0=B, O1=Self.K_PAD](
                             self.gi_pad.dev.value(), self.go_pad.dev.value() if Self.NEEDS_N_PAD else god.dev.value(), self.w_pad.dev.value(), c
                         )
@@ -1108,9 +1081,6 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         )
                     else:
                         # K_PAD == IN_ here, so this writes `gind` directly.
-                        var gi_v = TileTensor(
-                            gind.dev.value(), row_major(B, Self.K_PAD)
-                        )
                         mm[transpose_b=True, A0=B, A1=Self.N_PAD, B0=Self.K_PAD, B1=Self.N_PAD, O0=B, O1=Self.K_PAD](
                             gind.dev.value(), self.go_pad.dev.value() if Self.NEEDS_N_PAD else god.dev.value(), self.w_pad.dev.value(), c
                         )
@@ -1134,9 +1104,6 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     var dW_v = TileTensor(
                         self.dW_tmp.dev.value(),
                         row_major[Self.IN_, Self.OUT_](),
-                    )
-                    var gi_v = TileTensor(
-                        gind.dev.value(), row_major(B, Self.IN_)
                     )
                     var cT_v = TileTensor(
                         self.cacheT.dev.value(), row_major[Self.IN_, B]()
@@ -1172,10 +1139,6 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         mm[A0=Self.IN_, A1=B, B0=B, B1=Self.OUT_, O0=Self.IN_, O1=Self.OUT_](
                             self.dW_tmp.dev.value(), self.cacheT.dev.value(), god.dev.value(), c
                         )
-                    var w_v = TileTensor(
-                        self.weight.val.dev.value(),
-                        row_major(Self.IN_, Self.OUT_),
-                    )
                     mm[transpose_b=True, A0=B, A1=Self.OUT_, B0=Self.IN_, B1=Self.OUT_, O0=B, O1=Self.IN_](
                         gind.dev.value(), god.dev.value(), self.weight.val.dev.value(), c
                     )
@@ -1222,19 +1185,6 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     (B + _T_TILE - 1) // _T_TILE,
                 ),
                 block_dim=(_T_TILE, _T_BR),
-            )
-            var dW_v = TileTensor(
-                self.dW_tmp.dev.value(), row_major(Self.IN_, Self.OUT_)
-            )
-            var gi_v = TileTensor(gin.dev.value(), row_major(B, Self.IN_))
-            var cTb_v = TileTensor(
-                self.cacheT_bf.dev.value(), row_major(Self.IN_, B)
-            )
-            var gob_v = TileTensor(
-                grad_output.dev.value(), row_major(B, Self.OUT_)
-            )
-            var wb_v = TileTensor(
-                self.w_bf.dev.value(), row_major(Self.IN_, Self.OUT_)
             )
             # grad_w = cacheT_bfᵀ-form @ go → fp32 dW (bf16-in, fp32-out).
             # ⚠ NOT routed through split-K, deliberately. bf16 operands with an

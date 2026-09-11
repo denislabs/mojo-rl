@@ -403,11 +403,6 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
                 block_dim=TPB,
             )
             # 3. out = x @ W_eff + b_eff.
-            var x_v = TileTensor(in0.dev.value(), row_major(B, Self.IN_))
-            var w_v = TileTensor(
-                self.w_eff.dev.value(), row_major(Self.IN_, Self.OUT_)
-            )
-            var out_v = TileTensor(out.dev.value(), row_major(B, Self.OUT_))
             mm[A0=B, A1=Self.IN_, B0=Self.IN_, B1=Self.OUT_, O0=B, O1=Self.OUT_](
                 out.dev.value(), in0.dev.value(), self.w_eff.dev.value(), c
             )
@@ -554,13 +549,6 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
                 block_dim=TPB,
             )
             # grad_x = go @ W_effᵀ
-            var gi_v = TileTensor(gin.dev.value(), row_major(B, Self.IN_))
-            var go_v = TileTensor(
-                grad_output.dev.value(), row_major(B, Self.OUT_)
-            )
-            var w_v = TileTensor(
-                self.w_eff.dev.value(), row_major(Self.IN_, Self.OUT_)
-            )
             mm[transpose_b=True, A0=B, A1=Self.OUT_, B0=Self.IN_, B1=Self.OUT_, O0=B, O1=Self.IN_](
                 gin.dev.value(), grad_output.dev.value(), self.w_eff.dev.value(), c
             )
