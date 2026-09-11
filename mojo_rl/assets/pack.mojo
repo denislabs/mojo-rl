@@ -15,7 +15,7 @@
         dest=assets/unitree_g1
 
         pack=so_arm101@v1
-        provider=monitor
+        provider=noeira
         id=so_arm101-assets@v1
         sha256=3ab0...
         bytes=16781312
@@ -34,9 +34,9 @@ So the provider names the ACCESS PATTERN:
 |------------|---------|-----------------------------|---------------------------|
 | `https`    | `url=`  | none, or `token_env=`       | a plain GET |
 | `hf`       | `url=`  | `HF_TOKEN`, or the `hf` CLI | bearer on the GET |
-| `monitor`  | `id=`   | `RL_MONITOR_API_KEY`        | catalog call -> **presigned** URL -> unauthenticated GET |
+| `noeira`   | `id=`   | `RL_MONITOR_API_KEY`        | catalog call -> **presigned** URL -> unauthenticated GET |
 
-⚠ `monitor` IS THE PRIVATE ONE, AND IT IS THE ONLY SHAPE THAT NEVER SENDS A
+⚠ `noeira` IS THE PRIVATE ONE, AND IT IS THE ONLY SHAPE THAT NEVER SENDS A
 SECRET TO THE STORAGE HOST. The API key goes to our Worker, which answers with
 a presigned URL; the transfer itself carries no credential at all. That is the
 same rule the dataset and artifact paths already follow, and it is why a
@@ -68,7 +68,7 @@ comptime SCHEMA_VERSION = "1"
 
 comptime PROVIDER_HTTPS = "https"
 comptime PROVIDER_HF = "hf"
-comptime PROVIDER_MONITOR = "monitor"
+comptime PROVIDER_NOEIRA = "noeira"
 
 
 struct Pack(Copyable, Movable):
@@ -79,9 +79,9 @@ struct Pack(Copyable, Movable):
     var version: String
     var provider: String
     var url: String
-    """For `https` / `hf`. Empty for `monitor`."""
+    """For `https` / `hf`. Empty for `noeira`."""
     var id: String
-    """For `monitor`: the catalog id to resolve. Empty otherwise."""
+    """For `noeira`: the catalog id to resolve. Empty otherwise."""
     var sha256: String
     """⚠ OF THE ARCHIVE, and REQUIRED. It is the cache key, the corruption
     check, and the reason a re-fetch can be skipped. A pack without one would
@@ -142,17 +142,17 @@ struct Pack(Copyable, Movable):
                 " know where to put the files"
             )
         # ⚠ AN ABSOLUTE OR CLIMBING `dest` WOULD WRITE OUTSIDE THE ENV. The
-        # same rule the monitor applies to an artifact path, for the same
-        # reason: this string ends up concatenated onto a directory.
+        # same rule the noeira Worker applies to an artifact path, for the
+        # same reason: this string ends up concatenated onto a directory.
         if self.dest.startswith("/") or self.dest.find("..") >= 0:
             raise Error(
                 "asset pack '" + self.ref() + "': dest must be a relative path"
                 " with no '..' — got '" + self.dest + "'"
             )
-        if self.provider == PROVIDER_MONITOR:
+        if self.provider == PROVIDER_NOEIRA:
             if self.id.byte_length() == 0:
                 raise Error(
-                    "asset pack '" + self.ref() + "': provider=monitor needs"
+                    "asset pack '" + self.ref() + "': provider=noeira needs"
                     " id= (the catalog id), not url= — the URL is presigned"
                     " per request and cannot be written down"
                 )
@@ -165,7 +165,7 @@ struct Pack(Copyable, Movable):
         else:
             raise Error(
                 "asset pack '" + self.ref() + "': unknown provider '"
-                + self.provider + "'. Known: https, hf, monitor."
+                + self.provider + "'. Known: https, hf, noeira."
             )
 
 

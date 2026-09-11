@@ -107,7 +107,7 @@ def main() raises:
         "url=https://hf.co/datasets/O/a/resolve/main/g1.tar.zst\n"
         "sha256=" + String("9" * 64) + "\nbytes=19923456\n"
         "dest=assets/unitree_g1\n"
-        "pack=so_arm101@v2\nprovider=monitor\nid=so101-assets@v2\n"
+        "pack=so_arm101@v2\nprovider=noeira\nid=so101-assets@v2\n"
         "sha256=" + String("a" * 64) + "\nbytes=16781312\n"
         "dest=assets/so_arm101\ntoken_env=MY_OWN_TOKEN\n"
     )
@@ -145,8 +145,8 @@ def main() raises:
         ("pack=x@v1\nprovider=https\nurl=http://h/x.tar\nsha256=" + String("9"*64) + "\ndest=/etc/passwd\n", "absolute dest"),
         # unknown provider — would fail on a box at 3am, not in the editor
         ("pack=x@v1\nprovider=ftp\nurl=http://h/x.tar\nsha256=" + String("9"*64) + "\ndest=assets/x\n", "unknown provider"),
-        # monitor with a url instead of an id
-        ("pack=x@v1\nprovider=monitor\nurl=http://h/x.tar\nsha256=" + String("9"*64) + "\ndest=assets/x\n", "monitor without id"),
+        # noeira with a url instead of an id
+        ("pack=x@v1\nprovider=noeira\nurl=http://h/x.tar\nsha256=" + String("9"*64) + "\ndest=assets/x\n", "noeira without id"),
         # hf with no url
         ("pack=x@v1\nprovider=hf\nsha256=" + String("9"*64) + "\ndest=assets/x\n", "hf without url"),
     ]

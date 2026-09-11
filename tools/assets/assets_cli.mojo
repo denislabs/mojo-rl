@@ -189,7 +189,7 @@ def cmd_where() raises:
                     )
                     + (
                         "  (presigned; the storage host sees no credential)"
-                        if p.provider == "monitor"
+                        if p.provider == "noeira"
                         else ""
                     )
                 )

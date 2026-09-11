@@ -24,7 +24,7 @@ a missing file much later.
 ## ⚠⚠ The credential is chosen by the PROVIDER, and never by the URL
 
 `resolve_url` is the whole point of this module. A private pack is not "a URL
-with a token bolted on": for `monitor` the API key goes to OUR Worker, which
+with a token bolted on": for `noeira` the API key goes to OUR Worker, which
 answers with a presigned URL, and the transfer itself carries no credential at
 all. That is why the provider has to be declared rather than inferred — two
 `https://` URLs can need different secrets, or none.
@@ -39,7 +39,7 @@ from ..io.fetch import fetch_to_cache
 from ..io.fileio import file_size
 from ..io.hf import mojo_rl_cache
 from ..io.proc import quote_arg, run_capture
-from .pack import PROVIDER_HF, PROVIDER_HTTPS, PROVIDER_MONITOR, Pack
+from .pack import PROVIDER_HF, PROVIDER_HTTPS, PROVIDER_NOEIRA, Pack
 
 
 def cache_root() raises -> String:
@@ -72,7 +72,7 @@ struct Resolved(Movable):
 
     var url: String
     var bearer: String
-    """Empty means send nothing. ⚠ For `monitor` this is ALWAYS empty: the URL
+    """Empty means send nothing. ⚠ For `noeira` this is ALWAYS empty: the URL
     is already presigned, so the credential stays with our Worker."""
 
     def __init__(out self, url: String, bearer: String = String("")):
@@ -113,7 +113,7 @@ def resolve_url(ref pack: Pack) raises -> Resolved:
             tok = _env_or_dotenv(String("HF_TOKEN"))
         return Resolved(String(pack.url), tok^)
 
-    if pack.provider == PROVIDER_MONITOR:
+    if pack.provider == PROVIDER_NOEIRA:
         # ⚠⚠ THE ONLY SHAPE THAT NEVER SENDS A SECRET TO THE STORAGE HOST. The
         # key authenticates a catalog call to our Worker; the Worker answers
         # with a presigned URL; the transfer that follows is anonymous.

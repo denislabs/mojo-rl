@@ -13,7 +13,7 @@ what makes moving it a reversible decision rather than a commitment.
 from .pack import (
     PROVIDER_HF,
     PROVIDER_HTTPS,
-    PROVIDER_MONITOR,
+    PROVIDER_NOEIRA,
     Pack,
     PackFile,
     load_packs,
