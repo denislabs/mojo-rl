@@ -12,11 +12,11 @@ State buffer layout per environment:
    cfrc_ext: NBODY*6 | cvel: NBODY*6 | cinert: NBODY*10 | qfrc_actuator: NV]
 
 Model buffer (static, same for all environments):
-  Per body (MODEL_BODY_SIZE=26): [mass, inv_mass, inertia(3), inv_inertia(3),
-    pos(3), quat(4), parent, ipos(3), iquat(4), rootid, weldid, mocap]
-  Per joint (MODEL_JOINT_SIZE=26): [type, body_id, qpos_adr, dof_adr,
+  Per body (MODEL_BODY_SIZE=28): [mass, inv_mass, inertia(3), inv_inertia(3),
+    pos(3), quat(4), parent, ipos(3), iquat(4), rootid, weldid, mocap, gravcomp, dofnum]
+  Per joint (MODEL_JOINT_SIZE=27): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss,
-    solref_limit(2), solimp_limit(5), qpos0]
+    solref_limit(2), solimp_limit(5), qpos0, margin]
   Metadata (MODEL_META_SIZE): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
     solref_contact(2), solimp_contact(5), solref_limit(2), solimp_limit(5), impratio, nequality,
     ntendon, nexclude, meaninertia, npair, noslip_tolerance, ccd_tolerance, ccd_iterations,
@@ -348,7 +348,7 @@ comptime META_IDX_REACH_MARGIN: Int = 26
 # Model Buffer Layout - Per Body
 # =============================================================================
 
-comptime MODEL_BODY_SIZE: Int = 27
+comptime MODEL_BODY_SIZE: Int = 28
 
 comptime BODY_IDX_MASS: Int = 0
 comptime BODY_IDX_INV_MASS: Int = 1
@@ -392,13 +392,17 @@ comptime BODY_IDX_MOCAP: Int = 25  # 1.0 if body pose is externally set (mocap)
 #
 # Appended (26 -> 27), so every index 0..25 keeps its value.
 comptime BODY_IDX_GRAVCOMP: Int = 26
+# MuJoCo `body_dofnum`: the body's OWN dof count. Read by the body-pair
+# filter's 3.12 rule — two dof-less weld roots exchange no force and are
+# skipped (engine_collision_driver.c:296-300; commit ed13bf56, AUD-35).
+comptime BODY_IDX_DOFNUM: Int = 27
 
 
 # =============================================================================
 # Model Buffer Layout - Per Joint
 # =============================================================================
 
-comptime MODEL_JOINT_SIZE: Int = 26  # +7 for per-joint solref/solimp limits (5 params) + qpos0
+comptime MODEL_JOINT_SIZE: Int = 27  # +7 for per-joint solref/solimp limits (5 params) + qpos0, +1 margin
 
 comptime JOINT_IDX_TYPE: Int = 0  # JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 comptime JOINT_IDX_BODY_ID: Int = 1
@@ -426,6 +430,11 @@ comptime JOINT_IDX_SOLIMP_LIMIT_2: Int = 22  # Per-joint limit solimp width
 comptime JOINT_IDX_SOLIMP_LIMIT_3: Int = 23  # Per-joint limit solimp midpoint
 comptime JOINT_IDX_SOLIMP_LIMIT_4: Int = 24  # Per-joint limit solimp power
 comptime JOINT_IDX_QPOS0: Int = 25  # Joint reference position (MuJoCo qpos0 / ref)
+# `<joint margin>` — MuJoCo's `jnt_margin`: a limit row is built when
+# `dist < margin` and its impedance/aref use `dist - margin` (AUD-03,
+# engine_core_constraint.c:1394-1425). NOT angle-converted by the compiler
+# (measured: `margin="30"` under angle="degree" stores 30).
+comptime JOINT_IDX_MARGIN: Int = 26
 
 # ⚠⚠ HOW AN UNLIMITED JOINT IS ENCODED, AND IT IS NOT MuJoCo'S ENCODING.
 # The record has NO `limited` flag: `FlatModelDef`'s `JointData.is_limited` is
@@ -469,6 +478,24 @@ comptime JOINT_RANGE_UNLIMITED: Float64 = 1e10
 # same quantity — that one is this parser's spelling of "no limit", this one
 # is MuJoCo's numeric ceiling. Do not fold them.
 comptime MJ_MAXVAL: Float64 = 1e10
+
+# MuJoCo 3.11's Newton termination (AUD-39, engine_solver.c:2401-2418,
+# 2473-2481): the Newton DECREMENT `0.5*scale*grad'H^-1 grad` is a third exit
+# criterion, and on the first pass, gated on the gradient criterion, it is
+# the zero-iteration certificate (a warm start already inside tolerance
+# takes no line search). It also moves the line-search exit from
+# `alpha < 1e-10` to `alpha == 0` exactly, and the improvement exit to
+# `improvement > 0 && improvement < tol` — tested after EVERY search and
+# never reverting.
+#
+# ⚠ THE KNOB IS THE COMMON SPELLING OF THREE LEGS, and it has to stay that
+# way: the per-env pyramidal and elliptic solvers and the blocked GPU kernel
+# each carry their own copy of these exits, because the kernel's rows live in
+# SHARED-memory LayoutTensors and cannot call the per-env helpers. A rule
+# written inline three times drifts — flipping this to False must return ALL
+# THREE to the 3.10 exits together, which is what makes CPU/GPU bit-identity
+# a meaningful A/B rather than a comparison of two different solvers.
+comptime NEWTON_312_CRITERIA: Bool = True
 
 
 # =============================================================================
@@ -1401,7 +1428,7 @@ comptime ACTDAMP_IDX_N: Int = 0
 comptime ACTDAMP_IDX_DOF_0: Int = 1
 comptime ACTDAMP_IDX_PAIR_0: Int = 1 + TENDON_MAX_WRAPS
 
-comptime MODEL_ACT_TENDON_SIZE: Int = 4 + 3 * TENDON_MAX_WRAPS
+comptime MODEL_ACT_TENDON_SIZE: Int = 5 + 3 * TENDON_MAX_WRAPS
 
 comptime ACTTEN_IDX_STIFFNESS: Int = 0  # 0 => no spring, skip the row
 # The deadband bounds. ⚠ WHEN `springlength` IS ABSENT BOTH DEFAULT TO the
@@ -1411,6 +1438,8 @@ comptime ACTTEN_IDX_SPRING_HI: Int = 2
 comptime ACTTEN_IDX_TRN_N: Int = 3
 comptime ACTTEN_IDX_TRN_QADR_0: Int = 4
 comptime ACTTEN_IDX_TRN_DADR_0: Int = ACTTEN_IDX_TRN_QADR_0 + TENDON_MAX_WRAPS
+# `<tendon damping>` (AUD-08): `-damping * ten_velocity` in `qfrc_passive`.
+comptime ACTTEN_IDX_DAMPING: Int = 4 + 3 * TENDON_MAX_WRAPS
 comptime ACTTEN_IDX_TRN_COEF_0: Int = (
     ACTTEN_IDX_TRN_QADR_0 + 2 * TENDON_MAX_WRAPS
 )

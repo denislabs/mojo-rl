@@ -188,7 +188,7 @@ def check_disjoint(mut t: Tally, mc: Int, nv: Int, max_condim: Int):
     )
 
 
-def main():
+def main() raises:
     print("=== solver_ws layout identity ===")
     var t = Tally()
 
@@ -230,3 +230,5 @@ def main():
         print("test_solver_ws_layout: ALL PASS")
     else:
         print("test_solver_ws_layout: FAILED")
+        # AUD-51: `run_tests.sh` reads the EXIT CODE; a printed FAILED is a pass.
+        raise Error("test_solver_ws_layout: FAILED — see the tally above")

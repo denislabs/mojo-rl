@@ -1,5 +1,11 @@
 """box/box narrow phase, swept over many poses (task #42).
 
+⚠ 2026-09-12: the manifold is MuJoCo 3.12's `mjc_BoxBox` (AUD-31). The
+narrative below about the 3.6.0 port (edge manifolds of 1..6 points, the `c1`
+quirk) describes the PREVIOUS algorithm; 3.12 emits exactly ONE point on an
+edge axis and every clipped vertex (<= 12) on a face axis. The gate compares
+against the runtime, so it is what decided the port was needed.
+
 WHAT THIS MEASURES, AND WHY IT COMES BEFORE THE FIX. `mjc_BoxBox` does two
 things: it picks a separating axis (its `code`, from 6 face axes on each box
 plus 9 edge-edge cross products), and it then builds a CONTACT MANIFOLD of up
@@ -423,7 +429,7 @@ def test_box_box_manifold_vs_mujoco() raises:
             if mjn != 0:
                 n_count_bad += 1
             continue
-        if code >= 12:
+        if code >= 6:  # 3.12 codes: 0..5 face, >= 6 edge pair
             n_edge += 1
             n_edge_points += n_bb
         else:
@@ -478,10 +484,13 @@ def test_box_box_manifold_vs_mujoco() raises:
         String("the face path emitted ") + String(n_face_points)
         + " points over " + String(n_face) + " poses, i.e. no manifold at all",
     )
+    # 3.12: an edge axis yields EXACTLY one contact (engine_collision_box.c:620),
+    # so the edge count equals the pose count. The old 1..6-point edge manifold
+    # is what this assertion used to demand.
     assert_true(
-        n_edge_points > n_edge,
+        n_edge_points == n_edge,
         String("the edge-edge path emitted ") + String(n_edge_points)
-        + " points over " + String(n_edge) + " poses, i.e. no manifold at all",
+        + " points over " + String(n_edge) + " poses; 3.12 emits exactly one per pose",
     )
     assert_true(
         n_count_bad == 0,

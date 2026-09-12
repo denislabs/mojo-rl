@@ -139,6 +139,7 @@ from mojo_rl.physics3d.gpu.constants import (
     TREE_KIND_COMPACT,
     MODEL_META_IDX_NTREE,
     BODY_IDX_WELDID,
+    BODY_IDX_DOFNUM,
     BODY_IDX_MOCAP,
     BODY_IDX_GRAVCOMP,
     JOINT_IDX_TYPE,
@@ -168,6 +169,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_SOLIMP_LIMIT_3,
     JOINT_IDX_SOLIMP_LIMIT_4,
     JOINT_IDX_QPOS0,
+    JOINT_IDX_MARGIN,
     MODEL_META_IDX_NBODY,
     MODEL_META_IDX_NJOINT,
     MODEL_META_IDX_GRAVITY_X,
@@ -388,6 +390,7 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_TRN_COEF_0,
     MODEL_ACT_TENDON_SIZE,
     ACTTEN_IDX_STIFFNESS,
+    ACTTEN_IDX_DAMPING,
     ACTTEN_IDX_SPRING_LO,
     ACTTEN_IDX_SPRING_HI,
     ACTTEN_IDX_TRN_N,
@@ -1554,24 +1557,32 @@ def build_model_fields_from_flat[
             )
             mf.joints.data[o + JOINT_IDX_ARMATURE] = Scalar[DTYPE](jd.armature)
             mf.joints.data[o + JOINT_IDX_DAMPING] = Scalar[DTYPE](jd.damping)
-            mf.joints.data[o + JOINT_IDX_STIFFNESS] = Scalar[DTYPE](0)
+            # ⚠ AUD-43: a BALL joint's stiffness reaches the record now — the
+            # passive routine springs it with `subQuat` against the identity.
+            # (This branch used to write 0, so no ball spring could ever act.)
+            mf.joints.data[o + JOINT_IDX_STIFFNESS] = Scalar[DTYPE](
+                jd.stiffness
+            )
             mf.joints.data[o + JOINT_IDX_SPRINGREF] = Scalar[DTYPE](0)
             mf.joints.data[o + JOINT_IDX_FRICTIONLOSS] = Scalar[DTYPE](0)
 
         # qpos0 = joint ref value (MuJoCo: displacement = qpos - qpos0).
         mf.joints.data[o + JOINT_IDX_QPOS0] = Scalar[DTYPE](jd.ref_val)
 
-        # Per-joint limit solref/solimp: parsed value if >= 0, else the model
-        # defaults (which at legacy fill time were the MuJoCo defaults).
-        mf.joints.data[o + JOINT_IDX_SOLREF_LIMIT_0] = (
-            Scalar[DTYPE](jd.solref_limit_0)
-            if jd.solref_limit_0 >= 0.0
-            else def_solref_limit_0
+        mf.joints.data[o + JOINT_IDX_MARGIN] = Scalar[DTYPE](jd.margin)
+
+        # Per-joint limit solref, AS PARSED. ⚠ AUD-29: this used to keep the
+        # value only `if >= 0.0`, which replaced a NEGATIVE (direct
+        # stiffness/damping form) solreflimit by the default — the joint
+        # limit came out 2.5x stiffer than MuJoCo's. The parser resolves
+        # element -> class -> MuJoCo default itself, so there is no sentinel
+        # left to test for. solimp keeps its `>= 0` test: a negative solimp
+        # has no meaning in MuJoCo.
+        mf.joints.data[o + JOINT_IDX_SOLREF_LIMIT_0] = Scalar[DTYPE](
+            jd.solref_limit_0
         )
-        mf.joints.data[o + JOINT_IDX_SOLREF_LIMIT_1] = (
-            Scalar[DTYPE](jd.solref_limit_1)
-            if jd.solref_limit_1 >= 0.0
-            else def_solref_limit_1
+        mf.joints.data[o + JOINT_IDX_SOLREF_LIMIT_1] = Scalar[DTYPE](
+            jd.solref_limit_1
         )
         mf.joints.data[o + JOINT_IDX_SOLIMP_LIMIT_0] = (
             Scalar[DTYPE](jd.solimp_limit_0)
@@ -1628,14 +1639,26 @@ def build_model_fields_from_flat[
             JOINT_IDX_SOLIMP_LIMIT_4
         ]
 
-    # body_weldid: bodies with joints weld to themselves, jointless bodies
-    # inherit the parent's weldid (MuJoCo convention).
+    # body_weldid: a body with joints is its own weld root, and so is a MOCAP
+    # body (3.12, commit ed13bf56: `weld_root = joints || mocap`,
+    # user_model.cc:4512). A jointless, non-mocap body inherits its parent's.
+    # ⚠ AUD-35: before 3.12 a mocap body inherited the world's weld id 0, so
+    # its jointed children escaped the parent-child filter (a mocap hand
+    # collided with its own fingers) and its geoms were static for rays.
+    # body_dofnum (the body's OWN dofs) is written beside it for the
+    # dof-less pair rule the same commit introduced.
     var body_has_joint = List[Bool](length=mf.dims.get_nbody(), fill=False)
+    var body_dofnum = List[Int](length=mf.dims.get_nbody(), fill=0)
     for j in range(len(fmd.joints)):
         body_has_joint[fmd.joints[j].body_id] = True
+        body_dofnum[fmd.joints[j].body_id] += fmd.joints[j].nv
+    for bi in range(mf.dims.get_nbody()):
+        mf.bodies.data[bi * MODEL_BODY_SIZE + BODY_IDX_DOFNUM] = Scalar[DTYPE](
+            body_dofnum[bi]
+        )
     var body_weldid = List[Int](length=mf.dims.get_nbody(), fill=0)
     for bi in range(1, mf.dims.get_nbody()):
-        if body_has_joint[bi]:
+        if body_has_joint[bi] or fmd.bodies[bi - 1].is_mocap:
             body_weldid[bi] = bi
         else:
             body_weldid[bi] = body_weldid[body_parent[bi]]
@@ -3189,6 +3212,9 @@ def build_spec_fields[DTYPE: DType, D: DimsLike](
         var o = t * MODEL_ACT_TENDON_SIZE
         sf.act_tendons.data[o + ACTTEN_IDX_STIFFNESS] = Scalar[DTYPE](
             td.stiffness
+        )
+        sf.act_tendons.data[o + ACTTEN_IDX_DAMPING] = Scalar[DTYPE](
+            td.damping
         )
         sf.act_tendons.data[o + ACTTEN_IDX_SPRING_LO] = Scalar[DTYPE](
             td.spring_lo

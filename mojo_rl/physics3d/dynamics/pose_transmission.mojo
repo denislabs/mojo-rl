@@ -115,6 +115,7 @@ from ..parser.flat_model import (
 )
 from ..gpu.constants import (
     ACTTEN_IDX_SPRING_HI,
+    ACTTEN_IDX_DAMPING,
     ACTTEN_IDX_SPRING_LO,
     ACTTEN_IDX_STIFFNESS,
     ACT_IDX_ACT_ADR,
@@ -762,7 +763,8 @@ def apply_pose_transmission[
             var k_spring = Float64(
                 sf.act_tendons.data[to + ACTTEN_IDX_STIFFNESS]
             )
-            if k_spring == 0.0:
+            var k_damp = Float64(sf.act_tendons.data[to + ACTTEN_IDX_DAMPING])
+            if k_spring == 0.0 and k_damp == 0.0:
                 continue
             var length = Float64(
                 spatial_tendon_length_jac[DTYPE, V_CAP, BATCH](
@@ -773,10 +775,17 @@ def apply_pose_transmission[
             var lo = Float64(sf.act_tendons.data[to + ACTTEN_IDX_SPRING_LO])
             var hi = Float64(sf.act_tendons.data[to + ACTTEN_IDX_SPRING_HI])
             var frc = Float64(0)
-            if length > hi:
-                frc = k_spring * (hi - length)
-            elif length < lo:
-                frc = k_spring * (lo - length)
+            if k_spring != 0.0:
+                if length > hi:
+                    frc = k_spring * (hi - length)
+                elif length < lo:
+                    frc = k_spring * (lo - length)
+            # `<tendon damping>` (AUD-08): `-damping * (J . qvel)`, explicit.
+            if k_damp != 0.0:
+                var ten_vel = Float64(0)
+                for a in range(nv):
+                    ten_vel += Float64(tJ[a]) * Float64(d.qvel.data[e * nv + a])
+                frc -= k_damp * ten_vel
             if frc == 0.0:
                 continue
             for a in range(nv):

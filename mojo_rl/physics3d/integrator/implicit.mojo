@@ -34,7 +34,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..kinematics.quat_math import quat_integrate, quat_normalize
+from ..kinematics.quat_math import quat_integrate, quat_normalize, quat_rotate, quat_mul
 from ..kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -89,6 +89,17 @@ from .euler import (
     _qacc_writeback_kernel,
 )
 from ..gpu.constants import (
+    MODEL_BODY_SIZE,
+    BODY_IDX_MASS,
+    BODY_IDX_IXX,
+    BODY_IDX_IYY,
+    BODY_IDX_IZZ,
+    BODY_IDX_PARENT,
+    BODY_IDX_IQUAT_X,
+    BODY_IDX_IQUAT_Y,
+    BODY_IDX_IQUAT_Z,
+    BODY_IDX_IQUAT_W,
+    JOINT_IDX_BODY_ID,
     MJ_MAXVAL,
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
@@ -261,6 +272,287 @@ def _msub_qderiv_env[
 
 
 # ── rhs = M * qacc_constrained, and adopting the re-solved acceleration ───
+# =============================================================================
+# implicitfast: the standalone free body's local 6x6 solve (AUD-44)
+# =============================================================================
+#
+# MuJoCo 3.11 (commit f0fa3d82) replaced midpoint integration of free bodies
+# with the GYROSCOPIC DERIVATIVE: `implicitfast` skips the RNE velocity
+# derivative globally (it is unsymmetric), but for a body that is a whole
+# kinematic tree of its own — one free joint, no children — the 6x6 block of
+# `M - h*qDeriv` is decoupled from every other dof, so the bias derivative can
+# be added back there and the block solved locally with an unsymmetric LU
+# (`engine_forward.c:1738-1758`, `engine_derivative.c:723-896`). Without it a
+# tumbling free body under implicitfast gains/loses energy that MuJoCo's
+# does not: 8.2e-5 of qvel per step on a 0.1 x 0.05 x 0.02 box spinning at
+# (1, 5, 2) rad/s, 6.8e-3 of qpos after 500 steps.
+
+
+@always_inline
+def _q2m[
+    DTYPE: DType
+](
+    qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE]
+) -> Array[Scalar[DTYPE], 9]:
+    """Rotation matrix of a unit quaternion (x, y, z, w), row-major."""
+    var m = Array[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var c0 = quat_rotate[DTYPE](qx, qy, qz, qw, Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0))
+    var c1 = quat_rotate[DTYPE](qx, qy, qz, qw, Scalar[DTYPE](0), Scalar[DTYPE](1), Scalar[DTYPE](0))
+    var c2 = quat_rotate[DTYPE](qx, qy, qz, qw, Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1))
+    m[0] = c0[0]
+    m[3] = c0[1]
+    m[6] = c0[2]
+    m[1] = c1[0]
+    m[4] = c1[1]
+    m[7] = c1[2]
+    m[2] = c2[0]
+    m[5] = c2[1]
+    m[8] = c2[2]
+    return m^
+
+
+@always_inline
+def _free_body_block_env[
+    DTYPE: DType,
+    D: DimsLike,
+    L_M: Layout,
+    L_NV: Layout,
+    L_JOINTS: Layout,
+    L_BODIES: Layout,
+    L_X3: Layout,
+    L_X4: Layout,
+](
+    env: Int,
+    dt: Scalar[DTYPE],
+    dims: D,
+    joints: LayoutTensor[DTYPE, L_JOINTS, MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_X3, MutAnyOrigin],
+    xipos: LayoutTensor[DTYPE, L_X3, MutAnyOrigin],
+    xquat: LayoutTensor[DTYPE, L_X4, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_NV, MutAnyOrigin],
+    mhat: LayoutTensor[DTYPE, L_M, MutAnyOrigin],
+    fnet: LayoutTensor[DTYPE, L_NV, MutAnyOrigin],
+    qacc_ws: LayoutTensor[DTYPE, L_NV, MutAnyOrigin],
+):
+    """For every standalone free body: `A = M_hat_block + h*B_bias`, then
+    `qacc_ws[block] = A^-1 fnet[block]` (`mjd_freeMhat` + `mju_solveLU6`).
+
+    `mhat` is `M - h*qDeriv` as `_msub_qderiv_env` left it (the global LU
+    factor lives in `scratch.L`, so the matrix is intact), `fnet` the re-solve
+    rhs `M*qacc_constrained`, and `qacc_ws` the global solve's answer, whose
+    six entries for this body are overwritten. The rows of a standalone body
+    touch no other dof, so the rest of `qacc_ws` is unaffected.
+    """
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
+    var nbody = dims.get_nbody()
+    comptime ZERO = Scalar[DTYPE](0)
+
+    for j in range(njoint):
+        if Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE])) != JNT_FREE:
+            continue
+        var body = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID]))
+        var adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
+        # `mj_isFreeBody`: exactly one joint on the body, no child body
+        var njb = 0
+        for jj in range(njoint):
+            if Int(rebind[Scalar[DTYPE]](joints[jj, JOINT_IDX_BODY_ID])) == body:
+                njb += 1
+        if njb != 1:
+            continue
+        var has_child = False
+        for b in range(1, nbody):
+            if Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT])) == body:
+                has_child = True
+        if has_child:
+            continue
+        if adr + 6 > nv:
+            continue
+
+        # A = M_hat block
+        var A = Array[Scalar[DTYPE], 36](fill=ZERO)
+        for r in range(6):
+            for c in range(6):
+                A[6 * r + c] = rebind[Scalar[DTYPE]](
+                    mhat[env, (adr + r) * nv + adr + c]
+                )
+
+        # freeBias_vel_blocks
+        var mass = rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_MASS])
+        var i0 = rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_IXX])
+        var i1 = rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_IYY])
+        var i2 = rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_IZZ])
+        var qx = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 0])
+        var qy = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 1])
+        var qz = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 2])
+        var qw = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 3])
+        var R = _q2m[DTYPE](qx, qy, qz, qw)
+        var xi = quat_mul[DTYPE](
+            qx, qy, qz, qw,
+            rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_IQUAT_X]),
+            rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_IQUAT_Y]),
+            rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_IQUAT_Z]),
+            rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_IQUAT_W]),
+        )
+        var Xi = _q2m[DTYPE](xi[0], xi[1], xi[2], xi[3])
+        var s0 = rebind[Scalar[DTYPE]](xipos[env, body * 3 + 0]) - rebind[Scalar[DTYPE]](xpos[env, body * 3 + 0])
+        var s1 = rebind[Scalar[DTYPE]](xipos[env, body * 3 + 1]) - rebind[Scalar[DTYPE]](xpos[env, body * 3 + 1])
+        var s2 = rebind[Scalar[DTYPE]](xipos[env, body * 3 + 2]) - rebind[Scalar[DTYPE]](xpos[env, body * 3 + 2])
+        var v0 = rebind[Scalar[DTYPE]](qvel[env, adr + 3])
+        var v1 = rebind[Scalar[DTYPE]](qvel[env, adr + 4])
+        var v2 = rebind[Scalar[DTYPE]](qvel[env, adr + 5])
+        # world-frame angular velocity w = R * qvel_rot
+        var w0 = R[0] * v0 + R[1] * v1 + R[2] * v2
+        var w1 = R[3] * v0 + R[4] * v1 + R[5] * v2
+        var w2 = R[6] * v0 + R[7] * v1 + R[8] * v2
+        # Iw = Xi diag(I) Xi^T
+        var XiI = Array[Scalar[DTYPE], 9](fill=ZERO)
+        for i in range(3):
+            XiI[3 * i + 0] = Xi[3 * i + 0] * i0
+            XiI[3 * i + 1] = Xi[3 * i + 1] * i1
+            XiI[3 * i + 2] = Xi[3 * i + 2] * i2
+        var Iw = Array[Scalar[DTYPE], 9](fill=ZERO)
+        Iw[0] = XiI[0] * Xi[0] + XiI[1] * Xi[1] + XiI[2] * Xi[2]
+        Iw[4] = XiI[3] * Xi[3] + XiI[4] * Xi[4] + XiI[5] * Xi[5]
+        Iw[8] = XiI[6] * Xi[6] + XiI[7] * Xi[7] + XiI[8] * Xi[8]
+        Iw[1] = XiI[0] * Xi[3] + XiI[1] * Xi[4] + XiI[2] * Xi[5]
+        Iw[3] = Iw[1]
+        Iw[2] = XiI[0] * Xi[6] + XiI[1] * Xi[7] + XiI[2] * Xi[8]
+        Iw[6] = Iw[2]
+        Iw[5] = XiI[3] * Xi[6] + XiI[4] * Xi[7] + XiI[5] * Xi[8]
+        Iw[7] = Iw[5]
+        # ws = w x s ; Iww = Iw * w
+        var ws0 = w1 * s2 - w2 * s1
+        var ws1 = w2 * s0 - w0 * s2
+        var ws2 = w0 * s1 - w1 * s0
+        var Iww0 = Iw[0] * w0 + Iw[1] * w1 + Iw[2] * w2
+        var Iww1 = Iw[3] * w0 + Iw[4] * w1 + Iw[5] * w2
+        var Iww2 = Iw[6] * w0 + Iw[7] * w1 + Iw[8] * w2
+        # K = s w^T - (w.s) I + [ws]_x
+        var wds = w0 * s0 + w1 * s1 + w2 * s2
+        var K = Array[Scalar[DTYPE], 9](fill=ZERO)
+        K[0] = s0 * w0 - wds
+        K[1] = s0 * w1 - ws2
+        K[2] = s0 * w2 + ws1
+        K[3] = s1 * w0 + ws2
+        K[4] = s1 * w1 - wds
+        K[5] = s1 * w2 - ws0
+        K[6] = s2 * w0 - ws1
+        K[7] = s2 * w1 + ws0
+        K[8] = s2 * w2 - wds
+        # lin = K * R
+        var lin = Array[Scalar[DTYPE], 9](fill=ZERO)
+        for r in range(3):
+            for c in range(3):
+                lin[3 * r + c] = K[3 * r + 0] * R[c] + K[3 * r + 1] * R[3 + c] + K[3 * r + 2] * R[6 + c]
+        # C = -mass [s]_x K + [w]_x Iw - [Iww]_x, column by column
+        var C = Array[Scalar[DTYPE], 9](fill=ZERO)
+        for c in range(3):
+            var sxk0 = s1 * K[6 + c] - s2 * K[3 + c]
+            var sxk1 = s2 * K[c] - s0 * K[6 + c]
+            var sxk2 = s0 * K[3 + c] - s1 * K[c]
+            var wxi0 = w1 * Iw[6 + c] - w2 * Iw[3 + c]
+            var wxi1 = w2 * Iw[c] - w0 * Iw[6 + c]
+            var wxi2 = w0 * Iw[3 + c] - w1 * Iw[c]
+            var t0 = ZERO
+            var t1 = ZERO
+            var t2 = ZERO
+            if c == 1:
+                t0 = Iww2
+            elif c == 2:
+                t0 = -Iww1
+            if c == 0:
+                t1 = -Iww2
+            elif c == 2:
+                t1 = Iww0
+            if c == 0:
+                t2 = Iww1
+            elif c == 1:
+                t2 = -Iww0
+            C[c] = -mass * sxk0 + wxi0 + t0
+            C[3 + c] = -mass * sxk1 + wxi1 + t1
+            C[6 + c] = -mass * sxk2 + wxi2 + t2
+        # rot = R^T C R
+        var tmp = Array[Scalar[DTYPE], 9](fill=ZERO)
+        for r in range(3):
+            for c in range(3):
+                tmp[3 * r + c] = R[r] * C[c] + R[3 + r] * C[3 + c] + R[6 + r] * C[6 + c]
+        var rot = Array[Scalar[DTYPE], 9](fill=ZERO)
+        for r in range(3):
+            for c in range(3):
+                rot[3 * r + c] = tmp[3 * r + 0] * R[c] + tmp[3 * r + 1] * R[3 + c] + tmp[3 * r + 2] * R[6 + c]
+        # A -= h * d(qfrc_smooth)/d(qvel): qfrc_smooth carries -qfrc_bias
+        var h_mass = -dt * mass
+        for r in range(3):
+            for c in range(3):
+                A[6 * r + 3 + c] += h_mass * lin[3 * r + c]
+                A[6 * (3 + r) + 3 + c] += dt * rot[3 * r + c]
+
+        # solve A x = fnet[block] — Gaussian elimination with partial pivoting
+        var x = Array[Scalar[DTYPE], 6](fill=ZERO)
+        for r in range(6):
+            x[r] = rebind[Scalar[DTYPE]](fnet[env, adr + r])
+        var singular = False
+        for k in range(6):
+            var piv = k
+            var best = abs(A[6 * k + k])
+            for r in range(k + 1, 6):
+                if abs(A[6 * r + k]) > best:
+                    best = abs(A[6 * r + k])
+                    piv = r
+            if best < Scalar[DTYPE](1e-300):
+                singular = True
+                break
+            if piv != k:
+                for c in range(6):
+                    var t = A[6 * k + c]
+                    A[6 * k + c] = A[6 * piv + c]
+                    A[6 * piv + c] = t
+                var tx = x[k]
+                x[k] = x[piv]
+                x[piv] = tx
+            for r in range(k + 1, 6):
+                var f = A[6 * r + k] / A[6 * k + k]
+                if f == ZERO:
+                    continue
+                for c in range(k, 6):
+                    A[6 * r + c] -= f * A[6 * k + c]
+                x[r] -= f * x[k]
+        if singular:
+            continue
+        for k in range(5, -1, -1):
+            var acc = x[k]
+            for c in range(k + 1, 6):
+                acc -= A[6 * k + c] * x[c]
+            x[k] = acc / A[6 * k + k]
+        for r in range(6):
+            qacc_ws[env, adr + r] = x[r]
+
+
+def _free_body_block_kernel[
+    DTYPE: DType, NV: Int, NJOINT: Int, NBODY: Int, BATCH: Int
+](
+    dt: Scalar[DTYPE],
+    joints: LayoutTensor[DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xipos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xquat: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    mhat: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    fnet: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    qacc_ws: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+):
+    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if env >= BATCH:
+        return
+    _free_body_block_env[DTYPE](
+        env, dt, Dims[nv=NV, njoint=NJOINT, nbody=NBODY](),
+        joints, bodies, xpos, xipos, xquat, qvel, mhat, fnet, qacc_ws,
+    )
+
+
 @always_inline
 def _mrhs_env[
     DTYPE: DType,
@@ -918,6 +1210,54 @@ struct ImplicitIntegrator[
         # and M_hat^-1 is not what the constraint rows were solved against.
         lu_factor[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
         lu_solve[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
+
+        # ── implicitfast: standalone free bodies get the gyroscopic derivative
+        # through a local unsymmetric 6x6 solve (AUD-44, 3.11 f0fa3d82). Under
+        # full `implicit` the RNE derivative already carries it.
+        comptime if Self.SKIP_RNE_DERIV:
+            comptime if target == "cpu":
+                var dm_f = d.dims
+                var nb_f = dm_f.get_nbody()
+                var rl_M_f = rl2(Self.BATCH, dm_f.get_nv() * dm_f.get_nv())
+                var rl_NV_f = rl2(Self.BATCH, dm_f.get_nv())
+                var rl_J_f = rl2(dm_f.get_njoint(), MODEL_JOINT_SIZE)
+                var rl_B_f = rl2(nb_f, MODEL_BODY_SIZE)
+                var rl_X3_f = rl2(Self.BATCH, nb_f * 3)
+                var rl_X4_f = rl2(Self.BATCH, nb_f * 4)
+                var joints_f = m.joints.lt_dyn["cpu", DYN2](rl_J_f)
+                var bodies_f = m.bodies.lt_dyn["cpu", DYN2](rl_B_f)
+                var xpos_f = d.xpos.lt_dyn["cpu", DYN2](rl_X3_f)
+                var xipos_f = d.xipos.lt_dyn["cpu", DYN2](rl_X3_f)
+                var xquat_f = d.xquat.lt_dyn["cpu", DYN2](rl_X4_f)
+                var qvel_f = d.qvel.lt_dyn["cpu", DYN2](rl_NV_f)
+                var M_f = self.scratch.M.lt_dyn["cpu", DYN2](rl_M_f)
+                var fnet_f = self.scratch.fnet.lt_dyn["cpu", DYN2](rl_NV_f)
+                var qws_f = self.scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV_f)
+                for e in range(Self.BATCH):
+                    _free_body_block_env[Self.DTYPE](
+                        e, dt, dm_f, joints_f, bodies_f, xpos_f, xipos_f,
+                        xquat_f, qvel_f, M_f, fnet_f, qws_f,
+                    )
+            else:
+                ctx.value().enqueue_function[
+                    _free_body_block_kernel[
+                        Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.D.NBODY,
+                        Self.BATCH
+                    ]
+                ](
+                    dt,
+                    m.joints.lt["gpu", L_JOINT](),
+                    m.bodies.lt["gpu", Layout.row_major(Self.D.NBODY, MODEL_BODY_SIZE)](),
+                    d.xpos.lt["gpu", Layout.row_major(Self.BATCH, Self.D.NBODY * 3)](),
+                    d.xipos.lt["gpu", Layout.row_major(Self.BATCH, Self.D.NBODY * 3)](),
+                    d.xquat.lt["gpu", Layout.row_major(Self.BATCH, Self.D.NBODY * 4)](),
+                    d.qvel.lt["gpu", L_NV](),
+                    self.scratch.M.lt["gpu", L_M](),
+                    self.scratch.fnet.lt["gpu", L_NV](),
+                    self.scratch.qacc_ws.lt["gpu", L_NV](),
+                    grid_dim=(BLOCKS,),
+                    block_dim=(IM_TPB,),
+                )
 
         comptime if target == "cpu":
             var dm_a = d.dims

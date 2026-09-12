@@ -138,8 +138,16 @@ comptime MULTICCD_PERTURBATION_ANGLE: Float64 = 1e-3
 
 
 @always_inline
-def multi_ccd_pair_supported(gi_type: Int, gj_type: Int) -> Bool:
+def multi_ccd_pair_supported(
+    gi_type: Int, gj_type: Int, margin_positive: Bool = False
+) -> Bool:
     """Does this geom pair get a perturbed manifold?
+
+    ⚠ `margin_positive` (AUD-33): `maxContacts` returns 1 — not 4 — for ANY
+    pair when either object carries a margin (engine_collision_convex.c:
+    856-859), so a {box, mesh} x {box, mesh} pair with `margin + gap > 0`
+    skips the polygon clip and takes the perturbation loop: up to 5 points
+    where this used to leave 1. BOX x BOX never reaches `mjc_Convex`.
 
     MuJoCo's guard is "`mjc_Convex` handled it, `maxContacts` came back as 1,
     AND neither geom is a sphere or an ellipsoid". `maxContacts` is the part
@@ -157,6 +165,11 @@ def multi_ccd_pair_supported(gi_type: Int, gj_type: Int) -> Bool:
         return False
     if gi_type == GEOM_ELLIPSOID or gj_type == GEOM_ELLIPSOID:
         return False
+    if margin_positive:
+        var bm_i = gi_type == GEOM_BOX or gi_type == GEOM_MESH
+        var bm_j = gj_type == GEOM_BOX or gj_type == GEOM_MESH
+        if bm_i and bm_j and not (gi_type == GEOM_BOX and gj_type == GEOM_BOX):
+            return True
     if gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE:
         return True
     if gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER:

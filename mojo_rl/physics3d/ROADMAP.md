@@ -104,6 +104,11 @@ Reference material:
 
 ### What We're Missing (by impact)
 
+> **STALE — superseded 2026-09-12 by `docs/PHYSICS3D_MUJOCO_312_AUDIT.md`**, the
+> per-subsystem audit against MuJoCo 3.12.0 with its bug log (AUD-01..52).
+> Several rows below (`fromto`, 5-param `solimp`, cylinder collision, sites,
+> islands) have landed since this table was written; read the audit instead.
+
 | Gap | Impact | Phase |
 |-----|--------|-------|
 | ~~Hardcoded model definitions~~ | ~~High~~ | ~~0~~ DONE |

@@ -1166,6 +1166,12 @@ def _minkowski_support[
     # shrinks one side and not the other.
     shrink1: Bool = False,
     shrink2: Bool = False,
+    # ⚠ AUD-32: `inflate1=False` leaves object 1 UNINFLATED while object 2
+    # still grows by `ccd_margin/2` — MuJoCo's heightfield collider sets
+    # `obj2.margin = margin` and leaves the prism's at 0
+    # (engine_collision_convex.c:1246). Everything else (tolerances, the
+    # `+ ccd_margin` add-back) is unchanged; the hfield caller subtracts it.
+    inflate1: Bool = True,
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -1230,7 +1236,7 @@ def _minkowski_support[
         shrink2,
     )
     var hm1 = Scalar[DTYPE](0)
-    if not shrink1:
+    if not shrink1 and inflate1:
         hm1 = Scalar[DTYPE](0.5) * ccd_margin
     var hm2 = Scalar[DTYPE](0)
     if not shrink2:
@@ -1302,6 +1308,12 @@ def _gjk_intersect[
     # shrunken ones would certify a tetrahedron the caller cannot use.
     shrink1: Bool = False,
     shrink2: Bool = False,
+    # ⚠ AUD-32: `inflate1=False` leaves object 1 UNINFLATED while object 2
+    # still grows by `ccd_margin/2` — MuJoCo's heightfield collider sets
+    # `obj2.margin = margin` and leaves the prism's at 0
+    # (engine_collision_convex.c:1246). Everything else (tolerances, the
+    # `+ ccd_margin` add-back) is unchanged; the hfield caller subtracts it.
+    inflate1: Bool = True,
 ) -> Int:
     """Refine a 4-simplex until it ENCLOSES the origin. MuJoCo's `gjkIntersect`.
 
@@ -1455,6 +1467,7 @@ def _gjk_intersect[
             ccd_margin,
             shrink1,
             shrink2,
+            inflate1,
         )
         var tgt = _sel4i(index, sidx0, sidx1, sidx2, sidx3)
         set_sv(ws, wrow, base, tgt, 0, w[0])
@@ -1577,6 +1590,12 @@ def gjk_epa_witness[
     # value in a slot is safe (`ccd_workspace.mojo`), so that costs steps,
     # never a point.
     hw_row: Int = -1,
+    # ⚠ AUD-32: `inflate1=False` leaves object 1 UNINFLATED while object 2
+    # still grows by `ccd_margin/2` — MuJoCo's heightfield collider sets
+    # `obj2.margin = margin` and leaves the prism's at 0
+    # (engine_collision_convex.c:1246). Everything else (tolerances, the
+    # `+ ccd_margin` add-back) is unchanged; the hfield caller subtracts it.
+    inflate1: Bool = True,
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -1654,6 +1673,7 @@ def gjk_epa_witness[
         ccd_margin,
         dist_cutoff,
         prism,
+        inflate1=inflate1,
     )
     if warm_slot >= 0:
         if type1 == GEOM_MESH:
@@ -1737,6 +1757,12 @@ def _gjk_epa_witness_run[
     prism: Array[Scalar[DTYPE], NPRISM] = Array[
         Scalar[DTYPE], NPRISM
     ](fill=Scalar[DTYPE](0)),
+    # ⚠ AUD-32: `inflate1=False` leaves object 1 UNINFLATED while object 2
+    # still grows by `ccd_margin/2` — MuJoCo's heightfield collider sets
+    # `obj2.margin = margin` and leaves the prism's at 0
+    # (engine_collision_convex.c:1246). Everything else (tolerances, the
+    # `+ ccd_margin` add-back) is unchanged; the hfield caller subtracts it.
+    inflate1: Bool = True,
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -1819,7 +1845,9 @@ def _gjk_epa_witness_run[
     var full_m1 = Scalar[DTYPE](0)
     var full_m2 = Scalar[DTYPE](0)
     if _sh1:
-        full_m1 = r1 + Scalar[DTYPE](0.5) * ccd_margin
+        full_m1 = r1 + (
+            Scalar[DTYPE](0.5) * ccd_margin if inflate1 else Scalar[DTYPE](0)
+        )
     if _sh2:
         full_m2 = r2 + Scalar[DTYPE](0.5) * ccd_margin
     var shrunk = _sh1 or _sh2
@@ -1964,6 +1992,7 @@ def _gjk_epa_witness_run[
                 ccd_margin,
                 shrunk and _sh1,
                 shrunk and _sh2,
+                inflate1,
             )
 
             var w_dot = sn[0] * ndx + sn[1] * ndy + sn[2] * ndz
@@ -2081,6 +2110,7 @@ def _gjk_epa_witness_run[
                     ccd_margin,
                     shrunk and _sh1,
                     shrunk and _sh2,
+                    inflate1,
                 )
                 if gi == 1:
                     # enclosed, and `simplex` now holds a valid tetrahedron.
@@ -2567,6 +2597,7 @@ def _gjk_epa_witness_run[
                 warm1, warm2,
                 prism,
                 ccd_margin,
+                inflate1=inflate1,
             )
             set_ev(ws, wrow, nverts, 0, sp[0])
             set_ev(ws, wrow, nverts, 1, sp[1])
@@ -2727,6 +2758,7 @@ def _gjk_epa_witness_run[
                     warm1, warm2,
                     prism,
                     ccd_margin,
+                    inflate1=inflate1,
                 )
                 set_ev(ws, wrow, nverts, 0, sp[0])
                 set_ev(ws, wrow, nverts, 1, sp[1])
@@ -2854,6 +2886,7 @@ def _gjk_epa_witness_run[
                 warm1, warm2,
                 prism,
                 ccd_margin,
+                inflate1=inflate1,
             )
             # ⚠ `epaSupport` INSERTS THE VERTEX BEFORE ANY TEST, and the
             # reference has no capacity check here because `5 + N` vertices
@@ -3106,6 +3139,12 @@ def gjk_epa[
     # engine_collision_convex.c:104). -1 keeps the full distance. After `prism`, which
     # `hfield_convex` passes positionally.
     dist_cutoff: Scalar[DTYPE] = Scalar[DTYPE](-1),
+    # ⚠ AUD-32: `inflate1=False` leaves object 1 UNINFLATED while object 2
+    # still grows by `ccd_margin/2` — MuJoCo's heightfield collider sets
+    # `obj2.margin = margin` and leaves the prism's at 0
+    # (engine_collision_convex.c:1246). Everything else (tolerances, the
+    # `+ ccd_margin` add-back) is unchanged; the hfield caller subtracts it.
+    inflate1: Bool = True,
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -3141,4 +3180,5 @@ def gjk_epa[
         ccd_tol, ccd_iter, ccd_margin,
         dist_cutoff,
         prism,
+        inflate1=inflate1,
     )

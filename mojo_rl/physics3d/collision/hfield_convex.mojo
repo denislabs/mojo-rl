@@ -24,9 +24,13 @@ the test loop starts for exactly that reason.
 row `r+1` and `i == 1` takes row `r`. Reading it the other way round mirrors
 every prism about the cell diagonal.
 
-⚠ THE MARGIN GOES INTO THE PRISM'S TOP, NOT INTO THE QUERY. `addPrismVert`
-adds `margin` to `prism[5][2]` and `mjc_penetration` is then called with a
-margin of ZERO. The field is inflated, the geom is not.
+⚠ THE MARGIN GOES INTO THE PRISM'S TOP *AND* INTO THE GEOM'S SUPPORT.
+`addPrismVert` adds `margin` to `prism[5][2]`, `obj2.margin = margin` makes
+the geom's support grow by `margin/2`, and `mjc_penetration` is then
+called with a margin of ZERO — so the reported distance is inflated by
+1.5 x margin (AUD-32; this docstring used to claim the geom was not
+inflated, and the code believed it: every hfield contact with margin > 0
+read `margin/2` too shallow).
 
 ⚠ THE PRISM HEIGHT TEST IS A CHEAP REJECT WITH A REAL EFFECT ON THE CONTACT
 SET: a prism whose three top vertices are all below the other geom's lowest
@@ -355,8 +359,17 @@ def hfield_convex_contacts[
                     ws, env,
                     Scalar[DTYPE](MJ_CCD_TOLERANCE),
                     MJ_CCD_ITERATIONS,
-                    Scalar[DTYPE](0),
+                    # ⚠ AUD-32: the GEOM is inflated by margin/2 (MuJoCo sets
+                    # `obj2.margin = margin`, convex.c:1246) while the prism —
+                    # already raised by `margin` at its top — is not
+                    # (`inflate1=False`). `gjk_epa` adds `margin` back to
+                    # its result; MuJoCo's `mjc_penetration(..., 0.0)` adds
+                    # nothing, so the record stores `res[0] - margin`: the
+                    # doubly-inflated distance the reference reports (true
+                    # -0.001 at margin 0.04 reads -0.061 on both sides).
+                    margin,
                     prism,
+                    inflate1=False,
                 )
                 comptime if HF_DEBUG:
                     if res[0] < Scalar[DTYPE](0):
@@ -387,7 +400,7 @@ def hfield_convex_contacts[
                     contacts[env, o + CONTACT_IDX_NX] = nsign * wn[0]
                     contacts[env, o + CONTACT_IDX_NY] = nsign * wn[1]
                     contacts[env, o + CONTACT_IDX_NZ] = nsign * wn[2]
-                    contacts[env, o + CONTACT_IDX_DIST] = res[0]
+                    contacts[env, o + CONTACT_IDX_DIST] = res[0] - margin
                     contacts[env, o + CONTACT_IDX_INCLUDEMARGIN] = margin - gap
                     contacts[env, o + CONTACT_IDX_FRICTION] = contact_friction
                     contacts[

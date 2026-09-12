@@ -87,6 +87,7 @@ from ..gpu.constants import (
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_RANGE_MIN,
     JOINT_IDX_RANGE_MAX,
+    JOINT_IDX_MARGIN,
     JOINT_IDX_FRICTIONLOSS,
     JOINT_IDX_SOLREF_LIMIT_0,
     JOINT_IDX_SOLREF_LIMIT_1,
@@ -305,13 +306,19 @@ def build_scalar_rows[
         var dof = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
         var qadr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_QPOS_ADR]))
         var pos = rebind[Scalar[DTYPE]](qpos[env, qadr])
+        # `jnt_margin` (AUD-03): row when `dist < margin`, everything
+        # downstream sees `dist - margin` (engine_core_constraint.c:1394-1425).
+        var jmargin = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_MARGIN])
 
         # Per-joint solref/solimp with model-level fallback.
         var lr_tc = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_SOLREF_LIMIT_0])
         var lr_dr = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_SOLREF_LIMIT_1])
-        if lr_tc <= Scalar[DTYPE](0):
+        # ⚠ `== 0` NOT `<= 0` (AUD-29): a NEGATIVE solref is MuJoCo's direct
+        # stiffness/damping form and must reach `solref_spring_damper`. Only
+        # an unset (zero) record falls back to the model default.
+        if lr_tc == Scalar[DTYPE](0):
             lr_tc = lr_tc_def
-        if lr_dr <= Scalar[DTYPE](0):
+        if lr_dr == Scalar[DTYPE](0):
             lr_dr = lr_dr_def
         var li_dmin = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_SOLIMP_LIMIT_0])
         var li_dmax = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_SOLIMP_LIMIT_1])
@@ -343,9 +350,9 @@ def build_scalar_rows[
         for side in range(2):
             var sign = Scalar[DTYPE](1) if side == 0 else Scalar[DTYPE](-1)
             var dist = (pos - rmin) if side == 0 else (rmax - pos)
-            if dist >= Scalar[DTYPE](0) or n >= max_rows:
+            if dist >= jmargin or n >= max_rows:
                 continue
-            var pen = -dist
+            var pen = jmargin - dist
 
             # getimpedance (engine_core_constraint.c:1361-1379)
             var imp: Scalar[DTYPE]

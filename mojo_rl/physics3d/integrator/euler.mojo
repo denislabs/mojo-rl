@@ -25,7 +25,8 @@ from max.gpu.host import DeviceContext
 from max.gpu.sync import barrier
 from layout import Layout, LayoutTensor
 
-from ..kinematics.quat_math import quat_integrate, quat_normalize
+from std.math import sqrt
+from ..kinematics.quat_math import quat_integrate, quat_normalize, atan2_device
 from ..kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -192,15 +193,45 @@ def _fnet_passive_env[
         var sref = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_SPRINGREF])
         var floss = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_FRICTIONLOSS])
         if stiff > Scalar[DTYPE](0):
-            var nd = 1
-            if jnt_type == JNT_FREE:
-                nd = 6
-            elif jnt_type == JNT_BALL:
-                nd = 3
-            for d in range(nd):
-                var qpos_d = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + d])
-                var cur = rebind[Scalar[DTYPE]](fnet[env, dof_adr + d])
-                fnet[env, dof_adr + d] = cur - stiff * (qpos_d - sref)
+            if jnt_type == JNT_BALL:
+                # ⚠ AUD-43. MuJoCo: `mju_subQuat(dif, quat, qpos_spring)` with
+                # `qpos_spring` = the identity for a ball joint, then
+                # `torque = -stiffness * dif` (engine_passive.c:696-707).
+                # `dif` is the rotation's axis-angle vector — NOT the
+                # quaternion components, which is what this loop used to
+                # subtract `springref` from. `mju_quat2Vel` with the `> pi`
+                # wrap; qpos holds (w, x, y, z).
+                var qw = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 0])
+                var qx = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 1])
+                var qy = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 2])
+                var qz = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + 3])
+                var qn = sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
+                if qn > Scalar[DTYPE](0):
+                    qw /= qn
+                    qx /= qn
+                    qy /= qn
+                    qz /= qn
+                var s2 = sqrt(qx * qx + qy * qy + qz * qz)
+                var angle = Scalar[DTYPE](2) * atan2_device[DTYPE](s2, qw)
+                if angle > Scalar[DTYPE](3.141592653589793):
+                    angle -= Scalar[DTYPE](6.283185307179586)
+                if s2 > Scalar[DTYPE](0):
+                    var sc = angle / s2
+                    var c0 = rebind[Scalar[DTYPE]](fnet[env, dof_adr + 0])
+                    var c1 = rebind[Scalar[DTYPE]](fnet[env, dof_adr + 1])
+                    var c2 = rebind[Scalar[DTYPE]](fnet[env, dof_adr + 2])
+                    fnet[env, dof_adr + 0] = c0 - stiff * qx * sc
+                    fnet[env, dof_adr + 1] = c1 - stiff * qy * sc
+                    fnet[env, dof_adr + 2] = c2 - stiff * qz * sc
+            elif jnt_type == JNT_FREE:
+                # A free-joint spring pulls the body to its XML pose
+                # (`qpos_spring = qpos0`); the pose is not in this routine's
+                # inputs, and the parser refuses the model (AUD-43).
+                pass
+            else:
+                var qpos_d = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])
+                var cur = rebind[Scalar[DTYPE]](fnet[env, dof_adr])
+                fnet[env, dof_adr] = cur - stiff * (qpos_d - sref)
         # frictionloss is NOT a passive force. It used to be applied here as an
         # explicit Coulomb force with a 1e-4 velocity deadband, which cannot
         # arrest motion — it overshoots zero and settles into a period-2 limit

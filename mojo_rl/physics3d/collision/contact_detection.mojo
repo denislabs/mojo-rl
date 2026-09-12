@@ -77,6 +77,7 @@ from ..gpu.constants import (
     PAIR_IDX_GAP,
     BODY_IDX_PARENT,
     BODY_IDX_WELDID,
+    BODY_IDX_DOFNUM,
     META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
@@ -745,6 +746,16 @@ def pair_body_filtered[
 
     # Same weld body — this is the clause the plane loop was missing.
     if weld_i == weld_j:
+        return True
+
+    # Both dof-less (3.12, engine_collision_driver.c:296-300): no force can
+    # act between two static/mocap weld roots, so the pair is skipped. This
+    # landed with the mocap weld-root rule (AUD-35): a mocap body is now its
+    # own weld root, and without this clause it would collide with static
+    # geometry it used to share weld id 0 with.
+    var dof_i = Int(rebind[Scalar[DTYPE]](bodies[weld_i, BODY_IDX_DOFNUM]))
+    var dof_j = Int(rebind[Scalar[DTYPE]](bodies[weld_j, BODY_IDX_DOFNUM]))
+    if dof_i == 0 and dof_j == 0:
         return True
 
     # Weld-parent. Guarded on both being non-world, as MuJoCo guards it: a
@@ -1788,8 +1799,7 @@ def _box_box_contacts[
 
     A box resting on another touches over a whole face, and one point cannot
     express that — the same reason `_plane_box_contacts` exists. See
-    `box_box_manifold` for the port and for why it came from MuJoCo 3.6.0
-    rather than from `references/mujoco-3.3.6/`.
+    `box_box_manifold` — MuJoCo 3.12's `mjc_BoxBox` since 2026-09-12 (AUD-31).
     """
     var max_contacts = (
         max_contacts_in if max_contacts_in >= 0 else dims.get_max_contacts()
@@ -3679,7 +3689,7 @@ def _detect_contacts_env[
                 # the reference's 111. The SAP narrow phase carries the same
                 # guard — see the note at its copy of this hook.
                 if not multiccd_off and multi_ccd_pair_supported(
-                    gi_type, gj_type
+                    gi_type, gj_type, contact_margin > Scalar[DTYPE](0)
                 ):
                     _ = multi_ccd_extra_contacts[
                         DTYPE](

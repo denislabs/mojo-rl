@@ -2,6 +2,8 @@
 
 MuJoCo-inspired constraint-based physics engine using generalized (joint-space) coordinates. Supports CPU and GPU simulation with configurable constraint solvers.
 
+MuJoCo 3.12.0 compatibility: see `docs/PHYSICS3D_MUJOCO_312_AUDIT.md` (feature matrix + bug log).
+
 ## Architecture
 
 The engine follows MuJoCo's design: models are defined at compile time with bodies, joints, geoms, and actuators. Simulation state (qpos, qvel, xpos, xquat) is stored in a `Data` struct. The pipeline is: collision detection -> constraint building -> constraint solving -> integration.

@@ -16,6 +16,11 @@ from mojo_rl.physics3d.joint_types import (
 )
 # The single source for how many joints/sites one tendon may wrap. `TendonData`
 # and the packed field layout must agree, so both read it from here.
+from mojo_rl.physics3d.constants import (
+    SENSOBJ_SITE,
+    SENSDATA_REAL,
+    SENSSTAGE_POS,
+)
 from mojo_rl.physics3d.gpu.constants import (
     TENDON_MAX_WRAPS,
     TENDON_MAX_SPATIAL_WRAPS,
@@ -155,8 +160,14 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
     var springref: Float64
     var frictionloss: Float64
     var ref_val: Float64  # MuJoCo joint ref (zero-position offset for qpos0)
-    var solref_limit_0: Float64  # -1.0 = use model default
-    var solref_limit_1: Float64  # -1.0 = use model default
+    # `<joint margin>` — limit activation threshold (AUD-03); 0 = MuJoCo's default.
+    var margin: Float64
+    # ⚠ NO SENTINEL. These used to default to -1.0 = "use the model default"
+    # and `fields_build` tested `>= 0`, which threw away a legitimate NEGATIVE
+    # (direct stiffness/damping form) `solreflimit` (AUD-29). The parser always
+    # assigns them (element, else class chain, else these MuJoCo defaults).
+    var solref_limit_0: Float64
+    var solref_limit_1: Float64
     var solimp_limit_0: Float64  # -1.0 = use model default
     var solimp_limit_1: Float64  # -1.0 = use model default
     var solimp_limit_2: Float64  # -1.0 = use model default
@@ -210,8 +221,9 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
         springref: Float64 = 0.0,
         frictionloss: Float64 = 0.0,
         ref_val: Float64 = 0.0,
-        solref_limit_0: Float64 = -1.0,
-        solref_limit_1: Float64 = -1.0,
+        margin: Float64 = 0.0,
+        solref_limit_0: Float64 = 0.02,
+        solref_limit_1: Float64 = 1.0,
         solimp_limit_0: Float64 = -1.0,
         solimp_limit_1: Float64 = -1.0,
         solimp_limit_2: Float64 = -1.0,
@@ -243,6 +255,7 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
         self.springref = springref
         self.frictionloss = frictionloss
         self.ref_val = ref_val
+        self.margin = margin
         self.solref_limit_0 = solref_limit_0
         self.solref_limit_1 = solref_limit_1
         self.solimp_limit_0 = solimp_limit_0
@@ -1085,6 +1098,7 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
     # never has. fish is the only model in the tree that declares a tendon
     # spring at all (two `<fixed stiffness="1e-4">`).
     var stiffness: Float64
+    var damping: Float64  # `<tendon damping>` (AUD-08): -damping * ten_velocity
     var spring_lo: Float64
     var spring_hi: Float64
 
@@ -1147,6 +1161,7 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
         self.coefs = copy.coefs.copy()
         self.length_ref = copy.length_ref
         self.stiffness = copy.stiffness
+        self.damping = copy.damping
         self.spring_lo = copy.spring_lo
         self.spring_hi = copy.spring_hi
         self.num_wraps = copy.num_wraps
@@ -1186,6 +1201,7 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
         self.coefs = Array[Float64, TENDON_MAX_WRAPS](fill=0.0)
         self.length_ref = 0.0
         self.stiffness = 0.0
+        self.damping = 0.0
         self.spring_lo = 0.0
         self.spring_hi = 0.0
         self.num_wraps = 0
@@ -1356,11 +1372,18 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     """
 
     var joint_armature: Float64
+    var joint_margin: Float64  # `<default><joint margin>` (AUD-03)
     var joint_damping: Float64
     var joint_stiffness: Float64
     var joint_springdamper_0: Float64
     var joint_springdamper_1: Float64
     var joint_limited: Bool
+    # `limited` as the class STATED it ("" = not stated = MuJoCo's "auto").
+    # The Bool above cannot tell "false" from "absent", which is AUD-01:
+    # a class `range` made every joint limited even under a class
+    # `limited="false"` (dm_control fish) or a degenerate `range="0 0"`
+    # (Menagerie fourier_n1). `_parse_one_joint` resolves through this.
+    var joint_limited_s: String
     # `<joint actuatorfrcrange/actuatorfrclimited>` from a default
     # CLASS. Same three-field shape as `motor_force_*`, and resolved
     # by the same shared helper (`_apply_actfrcrange`).
@@ -1472,6 +1495,14 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     # Structural attributes, kept as raw strings ("" = not set by this class).
     # Set by `_parse_one_default_block`, consumed by the joint/geom element
     # parsers as a fallback when the element itself omits the attribute.
+    # `<default><pair ...>` (AUD-05): a pair's attributes resolve element ->
+    # class -> root default, exactly like a geom's. "" = not stated.
+    var pair_condim_s: String
+    var pair_friction_s: String
+    var pair_solref_s: String
+    var pair_solimp_s: String
+    var pair_margin_s: String
+    var pair_gap_s: String
     var joint_type_s: String
     var joint_axis_s: String
     var joint_range_s: String
@@ -1523,6 +1554,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     # `solreflimit` has the partial-value rule) and a second parse site is a
     # second place for those rules to drift.
     var tendon_stiffness_s: String
+    var tendon_damping_s: String
     var tendon_springlength_s: String
     var tendon_limited_s: String
     var tendon_range_s: String
@@ -1593,11 +1625,13 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         motor_gear: Float64 = 1.0,
     ):
         self.joint_armature = joint_armature
+        self.joint_margin = 0.0
         self.joint_damping = joint_damping
         self.joint_stiffness = joint_stiffness
         self.joint_springdamper_0 = joint_springdamper_0
         self.joint_springdamper_1 = joint_springdamper_1
         self.joint_limited = joint_limited
+        self.joint_limited_s = ""
         self.joint_actfrc_min = joint_actfrc_min
         self.joint_actfrc_max = joint_actfrc_max
         self.joint_actfrc_limited = joint_actfrc_limited
@@ -1657,6 +1691,12 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_biastype_s = ""
         self.motor_gainprm_s = ""
         self.motor_biasprm_s = ""
+        self.pair_condim_s = ""
+        self.pair_friction_s = ""
+        self.pair_solref_s = ""
+        self.pair_solimp_s = ""
+        self.pair_margin_s = ""
+        self.pair_gap_s = ""
         self.joint_type_s = ""
         self.joint_axis_s = ""
         self.joint_range_s = ""
@@ -1676,6 +1716,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.geom_group_s = ""
         self.geom_hfield_s = ""
         self.tendon_stiffness_s = ""
+        self.tendon_damping_s = ""
         self.tendon_springlength_s = ""
         self.tendon_limited_s = ""
         self.tendon_range_s = ""
@@ -1865,6 +1906,82 @@ struct PairData(Copyable, ImplicitlyCopyable, Movable):
         self.gap = 0.0
 
 
+struct SensorData(Copyable, ImplicitlyCopyable, Movable):
+    """One `<sensor>` element, resolved to indices.
+
+    The field set is MuJoCo's `m->sensor_*` arrays, one row of them, and the
+    names are theirs so the gate can compare column by column. Everything here
+    is derived by the COMPILER in MuJoCo (`mjCSensor::Compile`,
+    user_objects.cc:7840+), not read from the XML: `dim`, `datatype` and
+    `needstage` are functions of `sensor_type` alone, and `adr` is the running
+    sum of `dim`. Only `cutoff` (and the object reference) comes off the
+    element.
+
+    ⚠ `adr` IS THE CONTRACT WITH `sensordata`, and it is the reason this
+    record carries a field that is pure bookkeeping. MuJoCo lays every sensor's
+    values end to end in DECLARATION ORDER, so a reader that knows a sensor's
+    name learns its slice from `adr` and `dim` and nothing else. Recomputing it
+    at the read site — the obvious alternative, since it is just a prefix sum —
+    is how the two ends drift apart the first time a sensor is skipped.
+    """
+
+    var sensor_type: Int  # `mjtSensor`, e.g. SENS_TOUCH
+    var objtype: Int  # `mjtObj` — SENSOBJ_SITE or SENSOBJ_BODY
+    var objid: Int  # index INTO OUR arrays (site or body), already resolved
+    var dim: Int  # values written to `sensordata`
+    var adr: Int  # offset into `sensordata`
+    var datatype: Int  # `mjtDataType` — how `cutoff` clamps
+    var needstage: Int  # `mjtStage` — which eval pass computes it
+    var cutoff: Float64
+    """`<sensor cutoff>` — 0 (the default) DISABLES clamping, it does not clamp
+    to zero (`apply_cutoff`, engine_sensor.c:198-200: `if (cutoff <= 0) return`).
+    A negative value is equally inert, which is why this is not a `has_cutoff`
+    flag plus a value."""
+
+    var body_id: Int
+    """The body the sensor's site belongs to, or the subtree root for a
+    body-attached sensor. Carried because every kernel in `physics3d/sensors`
+    is addressed by `(body, site)` rather than by site alone, and resolving it
+    here means the eval pass does not need `m_sites` to find it.
+
+    `-1` on an unserved sensor, like `objid`."""
+
+    var served: Bool
+    """True when a kernel in `physics3d/sensors` computes this sensor.
+
+    ⚠⚠ ADDRESSED IS NOT SERVED. A False row still carries MuJoCo's exact
+    `dim`, `datatype`, `needstage` and `adr` — it holds its slot so that every
+    sensor declared AFTER it still reports the right offset — but `objid` and
+    `body_id` are `-1` and nothing fills its values. `_fill_sensors` explains
+    why the two alternatives (skip it, or refuse the model) are both worse.
+    The name lookups below raise on one of these rather than hand back an
+    index or an offset into values that were never computed."""
+
+    def __init__(
+        out self,
+        sensor_type: Int = 0,
+        objtype: Int = SENSOBJ_SITE,
+        objid: Int = 0,
+        dim: Int = 1,
+        adr: Int = 0,
+        datatype: Int = SENSDATA_REAL,
+        needstage: Int = SENSSTAGE_POS,
+        cutoff: Float64 = 0.0,
+        body_id: Int = 0,
+        served: Bool = False,
+    ):
+        self.sensor_type = sensor_type
+        self.objtype = objtype
+        self.objid = objid
+        self.dim = dim
+        self.adr = adr
+        self.datatype = datatype
+        self.needstage = needstage
+        self.cutoff = cutoff
+        self.body_id = body_id
+        self.served = served
+
+
 # =============================================================================
 # FlatModelDef
 # =============================================================================
@@ -1927,6 +2044,12 @@ struct FlatModelDef(Movable):
     var excludes: List[ExcludeData]
     var pairs: List[PairData]
     var tendons: List[TendonData]
+    var sensors: List[SensorData]
+    """`<sensor>` elements in DECLARATION ORDER, which is the order MuJoCo
+    lays `sensordata` out in and therefore the order `SensorData.adr` counts.
+    Types this loader does not model are not present: `_fill_sensors` refuses
+    them by name rather than leaving a hole, so `sensors[i].adr` is a true
+    prefix sum and never a gap."""
 
     # ── NAMES ─────────────────────────────────────────────────────────────
     # ⚠⚠ THE PARSER RESOLVES NAMES INTO INDICES AND USED TO DROP THE STRINGS,
@@ -1967,6 +2090,10 @@ struct FlatModelDef(Movable):
     var geom_names: List[String]
     var site_names: List[String]
     var actuator_names: List[String]
+    var sensor_names: List[String]
+    """Parallel to `sensors`. An unnamed `<sensor>` is `""`, as everywhere
+    else here — MuJoCo leaves it empty too rather than synthesising one, and
+    `sensor_index_by_name` will not match it."""
 
     var gravity_x: Float64
     var gravity_y: Float64
@@ -2282,6 +2409,19 @@ struct FlatModelDef(Movable):
     # Recorded so the gate can assert the count rather than watching for a
     # print — the substitution was SILENT until this existed.
     var unmodelled_geom_types: Int
+    # ── The scan-and-print list (docs/PHYSICS3D_MUJOCO_312_AUDIT.md §4, #1) ──
+    # Every attribute or element the loader accepts and does NOT read is
+    # counted at load by `_scan_silent_attrs`, one `print` per audit id, so
+    # a model that is silently not MuJoCo's says so. `silent_attr_ids`
+    # carries one entry per hit row (the gate asserts on it) and
+    # `silent_attrs` the declaration count. A row that lands is DELETED
+    # from the scan, and the gate's clean model keeps it honest.
+    var silent_attrs: Int
+    var silent_attr_ids: List[String]
+    # `<equality active="false">` (AUD-04): MuJoCo keeps the record with
+    # `eq_active0 = 0` and builds no rows; here the record is not appended
+    # (a tendon equality is not marked), so `neq` is MuJoCo's minus this.
+    var inactive_equalities: Int
     """Three per asset, parallel to `mesh_asset_names` — `<mesh scale>`.
 
     ⚠⚠ NOT COSMETIC AND NOT USUALLY 1. 19 Menagerie robots set it: 38
@@ -2359,10 +2499,12 @@ struct FlatModelDef(Movable):
         self.excludes = List[ExcludeData]()
         self.pairs = List[PairData]()
         self.tendons = List[TendonData]()
+        self.sensors = List[SensorData]()
         self.body_names = List[String]()
         self.joint_names = List[String]()
         self.geom_names = List[String]()
         self.site_names = List[String]()
+        self.sensor_names = List[String]()
         self.actuator_names = List[String]()
         self.gravity_x = Float64(0)
         self.gravity_y = Float64(0)
@@ -2405,6 +2547,9 @@ struct FlatModelDef(Movable):
         self.mesh_asset_maxhullvert = List[Int]()
         self.unhonoured_maxhullvert = 0
         self.unmodelled_geom_types = 0
+        self.silent_attrs = 0
+        self.silent_attr_ids = List[String]()
+        self.inactive_equalities = 0
         self.vis_znear = 0.01
         self.vis_fogstart = 3.0
         self.vis_fogend = 10.0
@@ -2418,3 +2563,116 @@ struct FlatModelDef(Movable):
     # `setup_model` (FlatModelDef -> legacy CPU `Model`) was deleted at the
     # G4 fields sunset — the spec-direct build is
     # `fields_build.build_model_fields_from_flat`.
+
+    # ── SENSORS, BY NAME ──────────────────────────────────────────────────
+    # ⚠⚠ THIS IS THE POINT OF THE SENSOR FRONT END. Before it, every reading
+    # in `envs/dm_control` was addressed by a HAND-COUNTED index — literals
+    # like `TOUCH_TOE_SITE_IDX = 0`, `TORSO_SITE_IDX = 24`, `ESCAPE_RF_SITE_0
+    # = 3`, and base-plus-stride arithmetic over them — each one derived by
+    # reading the MJCF and counting in worldbody DFS order, and each one
+    # pinned only by a parity test that looks the name up in MuJoCo. The
+    # parser's own comment on the site table says what the failure mode is:
+    # "sensors are addressed BY SITE INDEX, so a permuted site array reads the
+    # wrong sensor." A task fragment that inserts one site shifts twenty
+    # rangefinders and nothing raises.
+    #
+    # ⚠ THE LOOKUP IS RUNTIME, AND IT HAS TO BE. The MJCF is not readable at
+    # compile time in this tree — §10.2, "the comptime interpreter cannot
+    # `open()`" — so `ModelDefFromXML` takes hand-supplied COUNTS as
+    # parameters and the parse happens at runtime. A caller resolves once at
+    # init and keeps the index; what it no longer does is invent the index.
+
+    def sensor_index_by_name(self, name: String) -> Int:
+        """The sensor's index in `sensors`, or `-1` if no sensor has that name.
+
+        Linear, because the table is tens of entries at most and a caller is
+        expected to resolve once at init rather than per step. An empty `name`
+        never matches: unnamed sensors are `""` and are not addressable.
+        """
+        if name == "":
+            return -1
+        for i in range(len(self.sensor_names)):
+            if self.sensor_names[i] == name:
+                return i
+        return -1
+
+    def sensor_site_by_name(self, name: String) raises -> Int:
+        """The SITE index a named sensor reads — what the old literals held.
+
+        Raises rather than returning a sentinel, and that is the whole
+        difference from the constants this replaces: a typo or a renamed site
+        stops the model build instead of silently reading site 0. See
+        `_a_cap_that_returns_the_fallback_code`.
+        """
+        var i = self.sensor_index_by_name(name)
+        if i < 0:
+            raise Error(
+                "physics3d: no <sensor> named '" + name + "' in this model"
+            )
+        self._require_served(i, name)
+        if self.sensors[i].objtype != SENSOBJ_SITE:
+            raise Error(
+                "physics3d: sensor '" + name + "' is not attached to a site"
+                " (objtype " + String(self.sensors[i].objtype) + "); it has no"
+                " site index to give"
+            )
+        return self.sensors[i].objid
+
+    def sensor_body_by_name(self, name: String) raises -> Int:
+        """The BODY index a named sensor reads.
+
+        For a site-attached sensor this is the site's body — the second half
+        of the `(body, site)` pair every kernel in `physics3d/sensors` takes.
+        For `subtreelinvel` it is the subtree root.
+        """
+        var i = self.sensor_index_by_name(name)
+        if i < 0:
+            raise Error(
+                "physics3d: no <sensor> named '" + name + "' in this model"
+            )
+        self._require_served(i, name)
+        return self.sensors[i].body_id
+
+    def sensor_adr_by_name(self, name: String) raises -> Int:
+        """Offset of a named sensor's values in `sensordata`.
+
+        Raises for an unserved sensor even though its `adr` is correct: the
+        offset is right and the VALUES AT IT ARE NOT, which is the more
+        dangerous of the two answers to hand back.
+        """
+        var i = self.sensor_index_by_name(name)
+        if i < 0:
+            raise Error(
+                "physics3d: no <sensor> named '" + name + "' in this model"
+            )
+        self._require_served(i, name)
+        return self.sensors[i].adr
+
+    def _require_served(self, i: Int, name: String) raises:
+        """Raise unless sensor `i` is one this engine actually computes.
+
+        The message names the type number because that is what the audit entry
+        and `_sensor_spec_of_tag` are keyed on.
+        """
+        if not self.sensors[i].served:
+            raise Error(
+                "physics3d: <sensor> '"
+                + name
+                + "' (type "
+                + String(self.sensors[i].sensor_type)
+                + ") is addressed but NOT computed by this engine (AUD-23):"
+                + " it holds its sensordata slot so later sensors keep the"
+                + " right offset, but nothing fills it. Asking for its index"
+                + " or offset would hand back a location whose values were"
+                + " never written."
+            )
+
+    def nsensordata(self) -> Int:
+        """Total `sensordata` length — `sum(dim)`, MuJoCo's `m->nsensordata`.
+
+        Computed rather than stored so it cannot disagree with `sensors`.
+        """
+        var n = 0
+        for i in range(len(self.sensors)):
+            n += self.sensors[i].dim
+        return n

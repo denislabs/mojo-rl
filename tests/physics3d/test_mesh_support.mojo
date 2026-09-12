@@ -3,6 +3,12 @@
 from mojo_rl.physics3d.collision.gjk_support import support_mesh, support_box
 
 
+def _expect(got: Float64, want: Float64, label: String) raises:
+    """AUD-51: this file used to print its expectations and exit 0."""
+    if abs(got - want) > 1e-12:
+        raise Error(label + ": got " + String(got) + ", expected " + String(want))
+
+
 def test_mesh_support() raises:
     """Test that mesh support returns correct extremal points."""
     # Simple cube mesh: 8 vertices at (±0.5, ±0.5, ±0.5)
@@ -25,6 +31,7 @@ def test_mesh_support() raises:
         verts, 0, 8)
     print("  dir=(0,0,1) → support=", Float64(s1[0]), Float64(s1[1]), Float64(s1[2]),
           "(expected z=0.5)")
+    _expect(Float64(s1[2]), 0.5, "s1 z")
 
     # Support along -Z should return (*, *, -0.5)
     var s2 = support_mesh[DType.float64](
@@ -34,6 +41,7 @@ def test_mesh_support() raises:
         verts, 0, 8)
     print("  dir=(0,0,-1) → support=", Float64(s2[0]), Float64(s2[1]), Float64(s2[2]),
           "(expected z=-0.5)")
+    _expect(Float64(s2[2]), -0.5, "s2 z")
 
     # Support along +X
     var s3 = support_mesh[DType.float64](
@@ -43,6 +51,7 @@ def test_mesh_support() raises:
         verts, 0, 8)
     print("  dir=(1,0,0) → support=", Float64(s3[0]), Float64(s3[1]), Float64(s3[2]),
           "(expected x=0.5)")
+    _expect(Float64(s3[0]), 0.5, "s3 x")
 
     # Now with mesh translated to (0, 0, 3)
     print("\n=== Mesh support (cube at z=3) ===")
@@ -53,6 +62,7 @@ def test_mesh_support() raises:
         verts, 0, 8)
     print("  dir=(0,0,1) → support=", Float64(s4[0]), Float64(s4[1]), Float64(s4[2]),
           "(expected z=3.5)")
+    _expect(Float64(s4[2]), 3.5, "s4 z")
 
     var s5 = support_mesh[DType.float64](
         0.0, 0.0, -1.0,
@@ -61,6 +71,7 @@ def test_mesh_support() raises:
         verts, 0, 8)
     print("  dir=(0,0,-1) → support=", Float64(s5[0]), Float64(s5[1]), Float64(s5[2]),
           "(expected z=2.5)")
+    _expect(Float64(s5[2]), 2.5, "s5 z")
 
     # Compare with box support at same position
     print("\n=== Box support (same cube at z=3) ===")
@@ -78,6 +89,7 @@ def test_mesh_support() raises:
         0.5, 0.5, 0.5, corner1)
     print("  dir=(0,0,1) → support=", Float64(b1[0]), Float64(b1[1]), Float64(b1[2]),
           "(expected z=3.5)")
+    _expect(Float64(b1[2]), 3.5, "b1 z")
 
     var corner2 = 0
     var b2 = support_box[DType.float64](
@@ -87,6 +99,7 @@ def test_mesh_support() raises:
         0.5, 0.5, 0.5, corner2)
     print("  dir=(0,0,-1) → support=", Float64(b2[0]), Float64(b2[1]), Float64(b2[2]),
           "(expected z=2.5)")
+    _expect(Float64(b2[2]), 2.5, "b2 z")
 
 
 def main() raises:

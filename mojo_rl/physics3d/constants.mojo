@@ -98,3 +98,59 @@ def mj_geom_type_rank(t: Int) -> Int:
 # in radians, used to decide that two hull triangles are coplanar and belong to
 # the same polygon. Faces whose normals differ by less than this merge.
 comptime MESH_POLY_ANGLE_TOL: Float64 = 0.01
+
+
+# =============================================================================
+# Sensors — `mjtSensor`, `mjtObj`, `mjtDataType`, `mjtStage`
+# =============================================================================
+#
+# ⚠⚠ THESE MATCH MuJoCo'S NUMBERING EXACTLY, and that is a deliberate break
+# with `GEOM_*` above — which documents at `ray_geom` that "this tree's enum
+# and `mjtGeom` have never agreed", and pays for it with a translation at every
+# boundary. There is no such history here and no reason to invent one: the
+# sensor table is compared field-for-field against `m.sensor_type` /
+# `m.sensor_objtype` / `m.sensor_datatype` in the gate, so agreeing with the
+# oracle IS the design. Verified against the 3.12.0 runtime, not transcribed
+# from the header: `mjtype.h:328-397`, and `test_sensor_table_vs_mujoco`
+# re-reads every one of them off a live `MjModel`.
+#
+# Only the types this loader MODELS are named. The rest are refused by name in
+# `_fill_sensors` rather than given a constant they would never be compared
+# against — a named constant for an unimplemented type is exactly the
+# accept-and-ignore shape the AUD-23 scan exists to kill.
+comptime SENS_TOUCH: Int = 0
+comptime SENS_ACCELEROMETER: Int = 1
+comptime SENS_VELOCIMETER: Int = 2
+comptime SENS_GYRO: Int = 3
+comptime SENS_FORCE: Int = 4
+comptime SENS_TORQUE: Int = 5
+comptime SENS_RANGEFINDER: Int = 7
+comptime SENS_SUBTREELINVEL: Int = 36
+
+# `mjtObj` — the object a sensor is attached to. Only the two this loader
+# resolves; `mjOBJ_BODY` is 1 and `mjOBJ_SITE` is 6 (`mjtype.h`, re-read off
+# `mujoco.mjtObj` in the gate).
+comptime SENSOBJ_BODY: Int = 1
+comptime SENSOBJ_SITE: Int = 6
+
+# `mjtDataType` — decides how `cutoff` clamps (`engine_sensor.c:198-224`):
+# REAL clips to [-cutoff, +cutoff], POSITIVE takes `min(cutoff, x)`.
+#
+# ⚠ RANGEFINDER IS `REAL`, NOT `POSITIVE`, and the audit's AUD-47 said
+# otherwise. Checked in all three trees (`sensorDatatype`, user_objects.cc):
+# TOUCH and INSIDESITE are the ONLY positive types in 3.10, 3.11 and 3.12
+# alike, so this is not a release change that moved under the audit — it was
+# wrong when written. The two rules agree on a hit (both cap at `cutoff`) and
+# differ only on the `-1` miss when `cutoff < 1`, which is why it survived.
+comptime SENSDATA_REAL: Int = 0
+comptime SENSDATA_POSITIVE: Int = 1
+comptime SENSDATA_AXIS: Int = 2
+comptime SENSDATA_QUATERNION: Int = 3
+
+# `mjtStage` — which of `mj_sensorPos` / `mj_sensorVel` / `mj_sensorAcc`
+# evaluates the sensor (`engine_forward.c:1797, 1814, 1832`). The numbering is
+# MuJoCo's `mjSTAGE_*`, so NONE is 0 and POS is 1.
+comptime SENSSTAGE_NONE: Int = 0
+comptime SENSSTAGE_POS: Int = 1
+comptime SENSSTAGE_VEL: Int = 2
+comptime SENSSTAGE_ACC: Int = 3

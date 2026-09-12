@@ -341,7 +341,11 @@ def build_tendon_limit_rows[
                 continue
 
             var sign = -side
-            var pen = -dist
+            # ⚠ AUD-38: `margin - dist`, MuJoCo's `-(pos - margin)`
+            # (engine_core_constraint.c:2109, :3255). This was `-dist`: inside
+            # the band (0 < dist < margin) the impedance saturated at dmin and
+            # the reference acceleration pulled the tendon INTO the limit.
+            var pen = margin - dist
             var v_lim = sign * ten_vel
 
             var imp = _solimp[DTYPE](pen, dmin, dmax, width, midpt, power)

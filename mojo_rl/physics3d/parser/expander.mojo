@@ -62,8 +62,11 @@ and uncollidable, exactly the failure the nameless-`<mesh>` bug produced.
 
 from std.math import pi
 
+from .full_parser import _xyaxes_to_quat
+
 from .xml_parser import (
     _trim, _extract_attr, _extract_section_inner, _extract_section,
+    _parse_euler_to_quat, _parse_zaxis_to_quat, _parse_axisangle_to_quat,
     _strip_xml_comments, _strip_wrapper, _normalize_freejoint,
     _parse_float, _find_tag, _file_stem, resolve_includes, merge_mjcf,
     _rebase_files, _class_attr, _class_parent, _last_compiler_attr,
@@ -280,7 +283,112 @@ def element_end(xml: String, open_at: String, start: Int) -> Int:
     return pos
 
 
-def _apply_frame(inner: String, fpos: List[Float64], fq: List[Float64]) -> String:
+def _orient_wxyz(tag: String, deg: Float64, seq: String) -> List[Float64]:
+    """An opening tag's orientation as [w, x, y, z] — `quat` if stated, else
+    the one alternative MJCF allows (`axisangle`, `xyaxes`, `zaxis`,
+    `euler`), else identity. Mirrors `ResolveOrientation`
+    (user_objects.cc): `quat` wins outright. `deg` is the document's
+    `<compiler angle>` factor and `seq` its `eulerseq`.
+
+    ⚠ AUD-09 (docs/PHYSICS3D_MUJOCO_312_AUDIT.md). The frame fold read
+    `quat` alone: a `<frame euler="0 0 -45">` (apptronik_apollo's fingers)
+    folded as identity, and a child spelled with `euler` had its orientation
+    shadowed by the `quat=` written over it."""
+    var qs = _trim(_extract_attr(tag, "quat"))
+    if qs.byte_length() > 0:
+        return _quat4(qs)
+    var aa = _trim(_extract_attr(tag, "axisangle"))
+    var xy = _trim(_extract_attr(tag, "xyaxes"))
+    var za = _trim(_extract_attr(tag, "zaxis"))
+    var eu = _trim(_extract_attr(tag, "euler"))
+    var t: Tuple[Float64, Float64, Float64, Float64]
+    if aa.byte_length() > 0:
+        t = _parse_axisangle_to_quat(aa, deg)
+    elif xy.byte_length() > 0:
+        t = _xyaxes_to_quat(xy)
+    elif za.byte_length() > 0:
+        t = _parse_zaxis_to_quat(za)
+    elif eu.byte_length() > 0:
+        t = _parse_euler_to_quat(eu, deg, seq)
+    else:
+        return _quat4(String(""))
+    var out = List[Float64]()
+    out.append(t[3])
+    out.append(t[0])
+    out.append(t[1])
+    out.append(t[2])
+    return out^
+
+
+def _del_attr(tag: String, attr: String) -> String:
+    """Remove `attr="..."` (or single-quoted) from an opening tag, with the
+    whitespace before it. A no-op when absent."""
+    for q in range(2):
+        var needle = attr + (String('="') if q == 0 else String("='"))
+        var quote = String('"') if q == 0 else String("'")
+        var scan = 0
+        while True:
+            var f = tag.find(needle, scan)
+            if f == -1:
+                break
+            var ok = f == 0
+            if not ok:
+                var prev = String(tag[byte = f - 1 : f])
+                ok = prev == " " or prev == "\t" or prev == "\n"
+            if ok:
+                var ve = tag.find(quote, f + needle.byte_length())
+                if ve == -1:
+                    return tag
+                var s0 = f
+                while s0 > 0:
+                    var c = String(tag[byte = s0 - 1 : s0])
+                    if c == " " or c == "\t" or c == "\n":
+                        s0 -= 1
+                    else:
+                        break
+                return (
+                    String(tag[byte=0:s0])
+                    + String(tag[byte = ve + 1 : tag.byte_length()])
+                )
+            scan = f + 1
+    return tag
+
+
+def _vec6(s: String) -> List[Float64]:
+    """`fromto` as six floats (missing entries 0)."""
+    var out = List[Float64]()
+    for _ in range(6):
+        out.append(0.0)
+    var parts = List[String]()
+    var cur = String("")
+    for i in range(s.byte_length()):
+        var ch = String(s[byte = i : i + 1])
+        if ch == " " or ch == "\t" or ch == "\n":
+            if cur.byte_length() > 0:
+                parts.append(cur)
+                cur = String("")
+        else:
+            cur += ch
+    if cur.byte_length() > 0:
+        parts.append(cur)
+    for i in range(6):
+        if i < len(parts):
+            out[i] = _parse_float(parts[i])
+    return out^
+
+
+def _v3s(a: Float64, b: Float64, c: Float64) -> String:
+    return _f(a) + " " + _f(b) + " " + _f(c)
+
+
+def _apply_frame(
+    inner: String,
+    fpos: List[Float64],
+    fq: List[Float64],
+    fcc: String,
+    deg: Float64,
+    seq: String,
+) -> String:
     """Fold a frame's transform into each DIRECT CHILD element of `inner`.
 
     MuJoCo: "a pure coordinate transformation that can wrap any group of
@@ -292,6 +400,23 @@ def _apply_frame(inner: String, fpos: List[Float64], fq: List[Float64]) -> Strin
     parent, so touching it would apply the frame twice — the classic
     double-transform, which looks like a scaling error rather than a
     duplicated rotation.
+
+    What the fold touches, per child (AUD-09):
+      * every element: `pos` (rotated by the frame, then offset);
+      * body / geom / site / camera / nested frame: the orientation, read
+        through `_orient_wxyz` (so `euler`, `axisangle`, `xyaxes`, `zaxis`
+        count) and written back as `quat`, the alternatives DELETED so the
+        parser cannot see a stale one beside the new `quat`;
+      * joint: `axis` rotated (a joint has no orientation of its own);
+      * light: `dir` rotated;
+      * geom / site with `fromto`: BOTH endpoints through the frame instead
+        of pos/quat — the element's own frame is a function of them. ⚠ A
+        `fromto` BOX/ELLIPSOID's roll about its axis is the canonical
+        `mju_quatZ2Vec` of the rotated direction, where MuJoCo composes the
+        frame quat with the canonical roll of the LOCAL direction; the two
+        differ only in that roll, invisible to capsules and cylinders.
+      * `childclass` on the frame: a child body/frame without `childclass`
+        and a child element without `class` get it.
     """
     var out = String("")
     var scan = 0
@@ -314,20 +439,55 @@ def _apply_frame(inner: String, fpos: List[Float64], fq: List[Float64]) -> Strin
         var elem = String(inner[byte=lt:elem_end])
         var tag_end = elem.find(">")
         var tag = String(elem[byte = 0 : tag_end + 1]) if tag_end != -1 else elem
+        var new_tag = tag
 
-        var cp = _vec3(_trim(_extract_attr(tag, "pos")), 0.0, 0.0, 0.0)
-        var cq = _quat4(_trim(_extract_attr(tag, "quat")))
-        var rp = _qrot(fq[0], fq[1], fq[2], fq[3], cp[0], cp[1], cp[2])
-        var np0 = fpos[0] + rp[0]
-        var np1 = fpos[1] + rp[1]
-        var np2 = fpos[2] + rp[2]
-        var nq = _qmul(fq[0], fq[1], fq[2], fq[3], cq[0], cq[1], cq[2], cq[3])
+        var fromto_s = _trim(_extract_attr(tag, "fromto"))
+        if (ename == "geom" or ename == "site") and fromto_s.byte_length() > 0:
+            var ft = _vec6(fromto_s)
+            var a = _qrot(fq[0], fq[1], fq[2], fq[3], ft[0], ft[1], ft[2])
+            var b = _qrot(fq[0], fq[1], fq[2], fq[3], ft[3], ft[4], ft[5])
+            new_tag = _set_attr(
+                new_tag, "fromto",
+                _v3s(fpos[0] + a[0], fpos[1] + a[1], fpos[2] + a[2]) + " "
+                + _v3s(fpos[0] + b[0], fpos[1] + b[1], fpos[2] + b[2]),
+            )
+        else:
+            var cp = _vec3(_trim(_extract_attr(tag, "pos")), 0.0, 0.0, 0.0)
+            var rp = _qrot(fq[0], fq[1], fq[2], fq[3], cp[0], cp[1], cp[2])
+            new_tag = _set_attr(
+                new_tag, "pos",
+                _v3s(fpos[0] + rp[0], fpos[1] + rp[1], fpos[2] + rp[2]),
+            )
+            if ename == "joint":
+                var ax = _vec3(_trim(_extract_attr(tag, "axis")), 0.0, 0.0, 1.0)
+                var ra = _qrot(fq[0], fq[1], fq[2], fq[3], ax[0], ax[1], ax[2])
+                new_tag = _set_attr(new_tag, "axis", _v3s(ra[0], ra[1], ra[2]))
+            elif ename == "light":
+                var dr = _vec3(_trim(_extract_attr(tag, "dir")), 0.0, 0.0, -1.0)
+                var rd = _qrot(fq[0], fq[1], fq[2], fq[3], dr[0], dr[1], dr[2])
+                new_tag = _set_attr(new_tag, "dir", _v3s(rd[0], rd[1], rd[2]))
+            else:
+                var cq = _orient_wxyz(tag, deg, seq)
+                var nq = _qmul(
+                    fq[0], fq[1], fq[2], fq[3], cq[0], cq[1], cq[2], cq[3]
+                )
+                new_tag = _set_attr(
+                    new_tag, "quat",
+                    _f(nq[0]) + " " + _f(nq[1]) + " " + _f(nq[2]) + " "
+                    + _f(nq[3]),
+                )
+                new_tag = _del_attr(new_tag, "euler")
+                new_tag = _del_attr(new_tag, "axisangle")
+                new_tag = _del_attr(new_tag, "xyaxes")
+                new_tag = _del_attr(new_tag, "zaxis")
 
-        var new_tag = _set_attr(tag, "pos",
-                                _f(np0) + " " + _f(np1) + " " + _f(np2))
-        new_tag = _set_attr(new_tag, "quat",
-                            _f(nq[0]) + " " + _f(nq[1]) + " " + _f(nq[2])
-                            + " " + _f(nq[3]))
+        if fcc.byte_length() > 0:
+            if ename == "body" or ename == "frame":
+                if _trim(_extract_attr(tag, "childclass")).byte_length() == 0:
+                    new_tag = _set_attr(new_tag, "childclass", fcc)
+            elif _trim(_extract_attr(tag, "class")).byte_length() == 0:
+                new_tag = _set_attr(new_tag, "class", fcc)
+
         out += new_tag
         if tag_end != -1:
             out += String(elem[byte = tag_end + 1 : elem.byte_length()])
@@ -381,6 +541,17 @@ def expand_frames(xml: String) -> String:
     frame lands on a `<frame>` tag, which carries no pose of its own to
     accumulate into, and the inner transform is lost entirely.
     """
+    # The document's OWN units: a sub-model's frames are folded before its
+    # angles are converted into the host's (see `expand_attach`), which is
+    # what MuJoCo does too — each model compiles under its own `<compiler>`.
+    var deg = (
+        pi / 180.0
+        if _default_angle(_last_compiler_attr(xml, "angle")) == "degree"
+        else 1.0
+    )
+    var seq = _trim(_last_compiler_attr(xml, "eulerseq"))
+    if seq.byte_length() == 0:
+        seq = String("xyz")
     var out = xml
     var guard = 0
     while True:
@@ -408,7 +579,8 @@ def expand_frames(xml: String) -> String:
         var tag_end = elem.find(">")
         var tag = String(elem[byte = 0 : tag_end + 1]) if tag_end != -1 else elem
         var fpos = _vec3(_trim(_extract_attr(tag, "pos")), 0.0, 0.0, 0.0)
-        var fq = _quat4(_trim(_extract_attr(tag, "quat")))
+        var fq = _orient_wxyz(tag, deg, seq)
+        var fcc = _trim(_extract_attr(tag, "childclass"))
         var inner = String("")
         if tag_end != -1 and not (
             tag_end >= 1 and String(elem[byte = tag_end - 1 : tag_end]) == "/"
@@ -417,7 +589,7 @@ def expand_frames(xml: String) -> String:
             if close != -1:
                 inner = String(elem[byte = tag_end + 1 : close])
         out = (
-            String(out[byte=0:at]) + _apply_frame(inner, fpos, fq)
+            String(out[byte=0:at]) + _apply_frame(inner, fpos, fq, fcc, deg, seq)
             + String(out[byte = end : out.byte_length()])
         )
 
@@ -875,6 +1047,17 @@ def expand_attach(xml: String, base_dir: String, depth: Int = 0) raises -> Strin
         var mdl = _trim(_extract_attr(tag, "model"))
         var body = _trim(_extract_attr(tag, "body"))
         var prefix = _trim(_extract_attr(tag, "prefix"))
+        # ⚠ AUD-13 (docs/PHYSICS3D_MUJOCO_312_AUDIT.md). `frame=` attaches
+        # ONLY that frame's subtree (3.11); this splice has no notion of
+        # it and would bring the whole sub-worldbody in — extra bodies,
+        # not an approximation.
+        if _trim(_extract_attr(tag, "frame")).byte_length() > 0:
+            raise Error(
+                "physics3d: AUD-13 — <attach frame=\"...\"> is not modelled;"
+                " only <attach body=...> and a whole-model attach are."
+                " Attaching by frame would splice the entire sub-model."
+                " See docs/PHYSICS3D_MUJOCO_312_AUDIT.md."
+            )
 
         var file = String("")
         for i in range(len(mnames)):

@@ -242,6 +242,8 @@ from ..gpu.constants import (
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_RANGE_MIN,
     JOINT_IDX_RANGE_MAX,
+    JOINT_IDX_MARGIN,
+    NEWTON_312_CRITERIA,
     JOINT_IDX_FRICTIONLOSS,
     JOINT_IDX_SOLREF_LIMIT_0,
     JOINT_IDX_SOLREF_LIMIT_1,
@@ -1456,16 +1458,21 @@ def _newton_solve_env[
             )
             if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
                 continue
-            # Per-joint solref/solimp with model-level defaults fallback
+            # `jnt_margin` (AUD-03): row when `dist < margin`, downstream
+            # sees `dist - margin` (engine_core_constraint.c:1394-1425).
+            var jmargin = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_MARGIN])
+            # Per-joint solref/solimp with model-level defaults fallback.
+            # ⚠ `== 0` NOT `<= 0` (AUD-29): a NEGATIVE solref is the direct
+            # stiffness/damping form and must reach `solref_spring_damper`.
             var lr_tc = rebind[Scalar[DTYPE]](
                 joints[j, JOINT_IDX_SOLREF_LIMIT_0]
             )
             var lr_dr = rebind[Scalar[DTYPE]](
                 joints[j, JOINT_IDX_SOLREF_LIMIT_1]
             )
-            if lr_tc <= Scalar[DTYPE](0):
+            if lr_tc == Scalar[DTYPE](0):
                 lr_tc = lr_tc_def
-            if lr_dr <= Scalar[DTYPE](0):
+            if lr_dr == Scalar[DTYPE](0):
                 lr_dr = lr_dr_def
             var li_dmin = rebind[Scalar[DTYPE]](
                 joints[j, JOINT_IDX_SOLIMP_LIMIT_0]
@@ -1514,8 +1521,8 @@ def _newton_solve_env[
             )
 
             var pos = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])
-            # Lower limit: dist_lo = pos - rmin < 0 → violated
-            var dist_lo = pos - rmin
+            # Lower limit: dist_lo = pos - rmin - margin < 0 → active
+            var dist_lo = pos - rmin - jmargin
             if dist_lo < Scalar[DTYPE](0) and num_edges < me:
                 var sign = Scalar[DTYPE](1)
 # ⚠ NO `K = diag(M^-1)` HERE ANY MORE. MuJoCo's `mj_diagApprox`
@@ -1573,8 +1580,8 @@ def _newton_solve_env[
                 )
                 num_edges += 1
 
-            # Upper limit: dist_hi = rmax - pos < 0 → violated
-            var dist_hi = rmax - pos
+            # Upper limit: dist_hi = rmax - pos - margin < 0 → active
+            var dist_hi = rmax - pos - jmargin
             if dist_hi < Scalar[DTYPE](0) and num_edges < me:
                 var sign = Scalar[DTYPE](-1)
 # ⚠ NO `K = diag(M^-1)` HERE ANY MORE. MuJoCo's `mj_diagApprox`
@@ -2201,6 +2208,27 @@ def _newton_solve_env[
             for i in range(nv):
                 search[i] = -search[i]
 
+            # ⚠ 3.11 termination (AUD-39, `NEWTON_312_CRITERIA`): the Newton
+            # decrement `0.5*scale*grad'H^-1 grad` — the model's predicted
+            # improvement — ends the solve below tolerance; on the first pass
+            # it is the zero-iteration certificate, gated on the gradient
+            # criterion as well (engine_solver.c:2401-2418, 2473-2481).
+            comptime if NEWTON_312_CRITERIA:
+                var _decr: Scalar[DTYPE] = 0
+                for i in range(nv):
+                    _decr -= grad[i] * search[i]
+                _decr = Scalar[DTYPE](0.5) * scale * _decr
+                if _decr < Scalar[DTYPE](0):
+                    _decr = Scalar[DTYPE](0)
+                if iter_n > 0 and _decr < tol_rt:
+                    break
+                if (
+                    iter_n == 0
+                    and scale * sqrt(grad_norm) < tol_rt
+                    and _decr < tol_rt
+                ):
+                    break
+
             comptime if _CPU_PROBE:
                 var _p_now = Int(perf_counter_ns())
                 _p_chol += _p_now - _p_last
@@ -2245,8 +2273,15 @@ def _newton_solve_env[
                 _p_ls += _p_now - _p_last
                 _p_last = _p_now
                 _p_lsev += ls_evals
-            if alpha < Scalar[DTYPE](1e-10):
-                break
+            # `mj_solPrimal` breaks on `alpha == 0` exactly (engine_solver.c:
+            # 2432); a tiny nonzero step is taken. The 1e-10 floor is the
+            # pre-3.12 rule, kept behind the knob (AUD-39).
+            comptime if NEWTON_312_CRITERIA:
+                if alpha == Scalar[DTYPE](0):
+                    break
+            else:
+                if alpha < Scalar[DTYPE](1e-10):
+                    break
 
             # Save old state for cost revert (matching CPU solver)
             var old_qacc = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
@@ -2307,17 +2342,25 @@ def _newton_solve_env[
             comptime if _PYR_TRACE:
                 print("  [pyr]", iter_n, "alpha", alpha, "impr", improvement,
                       "tol", tol_rt, "lsev", ls_evals)
-            if improvement < tol_rt and iter_n > 0:
-                if improvement < Scalar[DTYPE](0):
-                    # Cost increased — revert to old state
-                    for i in range(nv):
-                        qacc[i] = old_qacc[i]
-                        Ma[i] = old_Ma[i]
-                        qfrc[i] = old_qfrc[i]
-                    for e_idx in range(num_edges):
-                        jar[e_idx] = old_jar[e_idx]
-                        force[e_idx] = old_force[e_idx]
-                break
+            # `mj_solPrimal`: `improvement > 0 && improvement < tolerance`,
+            # tested after EVERY line search (including the first) and never
+            # reverting — a zero or negative improvement keeps iterating
+            # until the gradient or decrement criterion ends it (AUD-39).
+            comptime if NEWTON_312_CRITERIA:
+                if improvement > Scalar[DTYPE](0) and improvement < tol_rt:
+                    break
+            else:
+                if improvement < tol_rt and iter_n > 0:
+                    if improvement < Scalar[DTYPE](0):
+                        # Cost increased — revert to old state
+                        for i in range(nv):
+                            qacc[i] = old_qacc[i]
+                            Ma[i] = old_Ma[i]
+                            qfrc[i] = old_qfrc[i]
+                        for e_idx in range(num_edges):
+                            jar[e_idx] = old_jar[e_idx]
+                            force[e_idx] = old_force[e_idx]
+                    break
 
         comptime if _CPU_PROBE:
             var _p_now = Int(perf_counter_ns())
@@ -3135,6 +3178,23 @@ def _newton_solve_env[
         if not search_ok_gpu:
             break
 
+        # 3.11 termination — see the pyramidal twin (AUD-39).
+        comptime if NEWTON_312_CRITERIA:
+            var _decr: Scalar[DTYPE] = 0
+            for i in range(nv):
+                _decr -= grad[i] * search[i]
+            _decr = Scalar[DTYPE](0.5) * scale * _decr
+            if _decr < Scalar[DTYPE](0):
+                _decr = Scalar[DTYPE](0)
+            if _iter > 0 and _decr < tol_rt:
+                break
+            if (
+                _iter == 0
+                and scale * sqrt(grad_norm_sq) < tol_rt
+                and _decr < tol_rt
+            ):
+                break
+
         comptime if _CPU_PROBE:
             var _p_now = Int(perf_counter_ns())
             _p_chol += _p_now - _p_last
@@ -3412,8 +3472,12 @@ def _newton_solve_env[
             var _p_now = Int(perf_counter_ns())
             _p_ls += _p_now - _p_last
             _p_last = _p_now
-        if alpha < Scalar[DTYPE](1e-12):
-            break
+        comptime if NEWTON_312_CRITERIA:
+            if alpha == Scalar[DTYPE](0):
+                break
+        else:
+            if alpha < Scalar[DTYPE](1e-12):
+                break
 
         # Update qacc and Ma
         for i in range(nv):
@@ -3538,8 +3602,13 @@ def _newton_solve_env[
         cost_prev = cost_new
         comptime if _ELL_TRACE:
             print("       impr", improvement)
-        if improvement < tol_rt:
-            break
+        comptime if NEWTON_312_CRITERIA:
+            # MuJoCo's rule (see the pyramidal twin, AUD-39)
+            if improvement > Scalar[DTYPE](0) and improvement < tol_rt:
+                break
+        else:
+            if improvement < tol_rt:
+                break
 
         var cone_live = False
         for c in range(nc):
@@ -4800,15 +4869,18 @@ def _newton_blocked_fields_kernel[
             var rmax = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_RANGE_MAX])
             if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
                 continue
+            # `jnt_margin` (AUD-03) and the `== 0` fallback (AUD-29) — see
+            # the per-env builder above; this kernel mirrors it.
+            var jmargin = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_MARGIN])
             var lr_tc = rebind[Scalar[DTYPE]](
                 joints[j, JOINT_IDX_SOLREF_LIMIT_0]
             )
             var lr_dr = rebind[Scalar[DTYPE]](
                 joints[j, JOINT_IDX_SOLREF_LIMIT_1]
             )
-            if lr_tc <= Scalar[DTYPE](0):
+            if lr_tc == Scalar[DTYPE](0):
                 lr_tc = lr_tc_def
-            if lr_dr <= Scalar[DTYPE](0):
+            if lr_dr == Scalar[DTYPE](0):
                 lr_dr = lr_dr_def
             var li_dmin = rebind[Scalar[DTYPE]](
                 joints[j, JOINT_IDX_SOLIMP_LIMIT_0]
@@ -4858,7 +4930,7 @@ def _newton_blocked_fields_kernel[
 
             var pos = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])
             # Lower limit
-            var dist_lo = pos - rmin
+            var dist_lo = pos - rmin - jmargin
             if dist_lo < Scalar[DTYPE](0) and num_edges < ME:
                 var sign = Scalar[DTYPE](1)
 # ⚠ NO `K = diag(M^-1)` HERE ANY MORE. MuJoCo's `mj_diagApprox`
@@ -4915,7 +4987,7 @@ def _newton_blocked_fields_kernel[
                 num_edges += 1
 
             # Upper limit
-            var dist_hi = rmax - pos
+            var dist_hi = rmax - pos - jmargin
             if dist_hi < Scalar[DTYPE](0) and num_edges < ME:
                 var sign = Scalar[DTYPE](-1)
 # ⚠ NO `K = diag(M^-1)` HERE ANY MORE. MuJoCo's `mj_diagApprox`
@@ -5345,6 +5417,13 @@ def _newton_blocked_fields_kernel[
     # === Newton iterations — ALL threads execute the loop ===
     var iters_done = 0
     var ls_evals = 0
+    # ⚠ THE GRADIENT CRITERION, CARRIED ACROSS THE ITERATION (AUD-39). 3.12's
+    # zero-iteration certificate is a CONJUNCTION — gap AND gradient — and the
+    # two halves are computed at opposite ends of this loop body: the gradient
+    # norm at the head (below), the decrement only once `search_sh` exists,
+    # some 200 lines further down. A thread-0 register carries it; it needs no
+    # shared slot and no barrier because both readers ARE thread 0.
+    var grad_below_tol = False
     for iter_n in range(NEWTON_ITER_GPU):
         # ⚠⚠ NO CONSTRAINT ROWS: MUJOCO RETURNS, AND WE USED TO SOLVE.
         # `mj_fwdConstraint` (engine_forward.c:884) is explicit —
@@ -5401,6 +5480,7 @@ def _newton_blocked_fields_kernel[
                 grad_norm += g * g
             # ⚠ NOT ON THE FIRST PASS — see the per-env twin. `mj_solPrimal`
             # tests `gradient` only after an update.
+            grad_below_tol = scale * sqrt(grad_norm) < tol_rt
             comptime if NEWTON_MIN_ITER == 0:
                 if iter_n > 0 and scale * sqrt(grad_norm) < tol_rt:
                     ctrl_sh[1] = Scalar[DTYPE](1)  # done
@@ -5656,6 +5736,50 @@ def _newton_blocked_fields_kernel[
 
         # --- Thread 0: gauss / p0 / line search / update / cost ---
         if valid_env and tid == 0:
+            # ⚠ 3.11 termination (AUD-39, `NEWTON_312_CRITERIA`), the block
+            # kernel's copy of the per-env twin at `:2216`. The Newton
+            # decrement `0.5*scale*grad'H^-1 grad` is the model's predicted
+            # improvement of the step about to be taken; below tolerance the
+            # solve is done. `search = -H^-1 grad` at this point, so the dot
+            # product is `-grad·search` — engine_solver.c:2473-2481 spells it
+            # `+dot(grad, Mgrad)` with `Mgrad = -search`, the same number.
+            #
+            # ⚠ AFTER THE MATVEC, WHERE THE PER-ENV LEG TESTS BEFORE IT. The
+            # block kernel cannot: `search_sh` is produced one block per
+            # thread and only becomes readable at the barrier that also feeds
+            # the cooperative `Mv`/`Jv` pass. So a converged final iteration
+            # pays one extra matvec here that the CPU leg skips. That is
+            # wasted work, not a different answer — `Mv_sh`/`Jv_e_sh` are read
+            # only by the line search this exit is about to skip.
+            #
+            # ⚠ THE EXIT IS SPELLED `alpha = 0`, NOT A `break`. Everything
+            # below — the qacc publish, the cooperative recompute, the tail's
+            # accept/revert — is already guarded on the `alpha` branch's
+            # `ctrl_sh[1]`, and that plumbing is what keeps the threadgroup's
+            # barriers matched. Breaking out of the tid-0 block directly would
+            # leave the other threads waiting at a barrier this one never
+            # reaches. `qacc` does not move, so the recompute is idempotent.
+            var decr_stop = False
+            comptime if NEWTON_312_CRITERIA:
+                var _decr: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    _decr -= rebind[Scalar[DTYPE]](grad_sh[i]) * search[i]
+                _decr = Scalar[DTYPE](0.5) * scale * _decr
+                if _decr < Scalar[DTYPE](0):
+                    _decr = Scalar[DTYPE](0)
+                # `iter_n > 0` is the decrement criterion proper; at
+                # `iter_n == 0` it is the zero-iteration certificate, which
+                # 3.12 gates on the gradient criterion as well (a Newton
+                # solution is force-accurate, and the gap bounds only the
+                # COST) — hence `grad_below_tol` from the loop head.
+                var _min_ok = iter_n >= NEWTON_MIN_ITER
+                if (
+                    _min_ok
+                    and _decr < tol_rt
+                    and (iter_n > 0 or grad_below_tol)
+                ):
+                    decr_stop = True
+
             var gauss_a: Scalar[DTYPE] = 0
             var gauss_b: Scalar[DTYPE] = 0
             for i in range(NV):
@@ -5751,7 +5875,7 @@ def _newton_blocked_fields_kernel[
             _bl_peval(Scalar[DTYPE](0), p0_c, p0_d0, p0_d1, lsiter_b)
 
             var alpha: Scalar[DTYPE] = 0
-            if snorm >= Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+            if not decr_stop and snorm >= Scalar[DTYPE](PRIMAL_MINVAL_GPU):
                 # Phase 1: always attempt one Newton step on the line.
                 var p1_a = -p0_d0 / p0_d1
                 var p1_c = Scalar[DTYPE](0)
@@ -5910,7 +6034,17 @@ def _newton_blocked_fields_kernel[
             # appears TWICE: the per-env solver carries the same guard.
             comptime if NEWTON_ITER_REPORT:
                 ls_evals += lsiter_b
-            if alpha < Scalar[DTYPE](1e-10):
+            # `mj_solPrimal` breaks on `alpha == 0` EXACTLY
+            # (engine_solver.c:2432) — a tiny nonzero step is taken, not
+            # discarded. The 1e-10 floor is the pre-3.12 rule, kept behind the
+            # knob (AUD-39). `decr_stop` forces 0, so it lands in this branch
+            # under either spelling.
+            var _no_step = False
+            comptime if NEWTON_312_CRITERIA:
+                _no_step = alpha == Scalar[DTYPE](0)
+            else:
+                _no_step = alpha < Scalar[DTYPE](1e-10)
+            if _no_step:
                 ctrl_sh[1] = Scalar[DTYPE](1)  # done (break next iter)
             else:
                 ctrl_sh[1] = Scalar[DTYPE](0)
@@ -5944,7 +6078,8 @@ def _newton_blocked_fields_kernel[
                     qacc[i] += alpha * search[i]
                     Ma[i] += alpha * Mv[i]
 
-            # Publish qacc unconditionally. When alpha<1e-10 qacc is unchanged,
+            # Publish qacc unconditionally. On the no-step branch (`alpha`
+            # below the floor, or the 3.12 decrement exit) qacc is unchanged,
             # so the cooperative recompute reproduces identical jar/force/qfrc.
             for i in range(NV):
                 qacc_sh[i] = qacc[i]
@@ -5992,22 +6127,40 @@ def _newton_blocked_fields_kernel[
                 # ⚠ DECLARED OUTSIDE THE `comptime if` — that construct opens
                 # a scope, so a `var` inside either branch is not visible here.
                 var _stop = False
-                comptime if NEWTON_MIN_ITER == 0:
-                    _stop = improvement < tol_rt and iter_n > 0
-                else:
+                comptime if NEWTON_312_CRITERIA:
+                    # `mj_solPrimal`: `improvement > 0 && improvement <
+                    # tolerance`, tested after EVERY line search — the first
+                    # one included — and NEVER reverting. A zero or negative
+                    # improvement no longer ends the solve; it keeps iterating
+                    # until the gradient or the decrement criterion does
+                    # (AUD-39). The revert is gone with it, so `old_qacc` /
+                    # `old_Ma` / `old_qfrc` / `old_jar` / `old_force` are
+                    # dead on this path — they stay saved because the knob's
+                    # other branch still reads them.
                     _stop = (
-                        improvement < tol_rt and iter_n >= NEWTON_MIN_ITER
+                        improvement > Scalar[DTYPE](0)
+                        and improvement < tol_rt
+                        and iter_n >= NEWTON_MIN_ITER
                     )
-                if _stop:
-                    if improvement < Scalar[DTYPE](0):
-                        for i in range(NV):
-                            qacc[i] = old_qacc[i]
-                            Ma[i] = old_Ma[i]
-                            qfrc[i] = old_qfrc[i]
-                        for e_idx in range(num_edges_b):
-                            jar[e_idx] = old_jar[e_idx]
-                            force_sh[e_idx] = old_force[e_idx]
-                    ctrl_sh[1] = Scalar[DTYPE](1)  # done
+                    if _stop:
+                        ctrl_sh[1] = Scalar[DTYPE](1)  # done
+                else:
+                    comptime if NEWTON_MIN_ITER == 0:
+                        _stop = improvement < tol_rt and iter_n > 0
+                    else:
+                        _stop = (
+                            improvement < tol_rt and iter_n >= NEWTON_MIN_ITER
+                        )
+                    if _stop:
+                        if improvement < Scalar[DTYPE](0):
+                            for i in range(NV):
+                                qacc[i] = old_qacc[i]
+                                Ma[i] = old_Ma[i]
+                                qfrc[i] = old_qfrc[i]
+                            for e_idx in range(num_edges_b):
+                                jar[e_idx] = old_jar[e_idx]
+                                force_sh[e_idx] = old_force[e_idx]
+                        ctrl_sh[1] = Scalar[DTYPE](1)  # done
 
         # force_sh updated; make visible for next assembly.
         barrier()

@@ -55,8 +55,11 @@ if [[ "$MODE" == "manifest" ]]; then
 else
     while IFS= read -r f; do
         case "$FILTER" in
-            --gpu-only) [[ "$f" == *_gpu.mojo ]] || continue ;;
-            --cpu-only) [[ "$f" == *_gpu.mojo ]] && continue ;;
+            # GPU tests end in `_gpu.mojo`, `_gpu_vs_cpu.mojo` or `_gpu_parity.mojo`
+            # (AUD-50: the first pattern alone matched 1 of 20 parity files and
+            # `--cpu-only` then ran the other 19 on CPU hosts).
+            --gpu-only) [[ "$f" == *_gpu.mojo || "$f" == *_gpu_vs_cpu.mojo || "$f" == *_gpu_parity.mojo ]] || continue ;;
+            --cpu-only) [[ "$f" == *_gpu.mojo || "$f" == *_gpu_vs_cpu.mojo || "$f" == *_gpu_parity.mojo ]] && continue ;;
         esac
         FILES+=("$f")
     done < <(find "$TARGET" -name "test_*.mojo" | sort)

@@ -170,7 +170,7 @@ def residual(x: List[Float64], nv: Int, off: Int) -> Float64:
     return w
 
 
-def main():
+def main() raises:
     print("=== cholesky: static leg vs heap leg ===")
     var t = Tally()
     var tol = 1e-12
@@ -259,3 +259,5 @@ def main():
         print("test_cholesky_both_legs: ALL PASS")
     else:
         print("test_cholesky_both_legs: FAILED")
+        # AUD-51: `run_tests.sh` reads the EXIT CODE; a printed FAILED is a pass.
+        raise Error("test_cholesky_both_legs: FAILED — see the tally above")

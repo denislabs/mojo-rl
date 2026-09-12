@@ -368,6 +368,54 @@ def quat_integrate[
     return quat_mul(q[0], q[1], q[2], q[3], rx, ry, rz, c)
 
 
+@always_inline
+def atan2_device[
+    DTYPE: DType
+](y: Scalar[DTYPE], x: Scalar[DTYPE]) -> Scalar[DTYPE]:
+    """`atan2(y, x)` from `sqrt` and arithmetic only — for code that runs in a
+    GPU kernel. `std.math.atan2` is a libm symbol that does not lower on the
+    device (ptxas: unresolved extern 'atan2f'; see
+    `_the_stdlibs_atan2_is_a_libm_symbol_on_the_device`), and the passive
+    ball-joint spring (AUD-43) needs the rotation angle inside
+    `_fnet_passive_env`, which is one body for the CPU path and the kernel.
+
+    Method: t = |y/x| reduced into [0, 1] (atan(t) = pi/2 - atan(1/t)), then
+    three halvings atan(t) = 2 atan(t / (1 + sqrt(1 + t^2))) bring it below
+    0.13, where a 10-term Taylor series is exact to double precision
+    (0.13^21 / 21 ~ 1e-19). Quadrants are restored by sign. Gated against
+    libm on the CPU in `test_ball_spring_and_tendon_damping_vs_mujoco`.
+    """
+    comptime PI = Scalar[DTYPE](3.141592653589793)
+    comptime HALF_PI = Scalar[DTYPE](1.5707963267948966)
+    var ax = abs(x)
+    var ay = abs(y)
+    if ax == Scalar[DTYPE](0) and ay == Scalar[DTYPE](0):
+        return Scalar[DTYPE](0)
+    var swap = ay > ax
+    var t = (ax / ay) if swap else (ay / ax)  # in [0, 1]
+    # three halvings
+    for _ in range(3):
+        t = t / (Scalar[DTYPE](1) + sqrt(Scalar[DTYPE](1) + t * t))
+    var t2 = t * t
+    var term = t
+    var acc = t
+    for k in range(1, 11):
+        term = term * t2
+        var den = Scalar[DTYPE](2 * k + 1)
+        if (k & 1) == 1:
+            acc = acc - term / den
+        else:
+            acc = acc + term / den
+    var a = acc * Scalar[DTYPE](8)  # undo the three halvings
+    if swap:
+        a = HALF_PI - a
+    if x < Scalar[DTYPE](0):
+        a = PI - a
+    if y < Scalar[DTYPE](0):
+        a = -a
+    return a
+
+
 def quat2vel[
     DTYPE: DType
 ](

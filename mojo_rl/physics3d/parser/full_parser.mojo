@@ -53,6 +53,25 @@ from .xml_parser import (
     _sqrt_f64,
 )
 from ..types import ConeType, SolverType, IntegratorType
+from ..constants import (
+    SENS_TOUCH,
+    SENS_ACCELEROMETER,
+    SENS_VELOCIMETER,
+    SENS_GYRO,
+    SENS_FORCE,
+    SENS_TORQUE,
+    SENS_RANGEFINDER,
+    SENS_SUBTREELINVEL,
+    SENSOBJ_BODY,
+    SENSOBJ_SITE,
+    SENSDATA_REAL,
+    SENSDATA_POSITIVE,
+    SENSDATA_AXIS,
+    SENSDATA_QUATERNION,
+    SENSSTAGE_POS,
+    SENSSTAGE_VEL,
+    SENSSTAGE_ACC,
+)
 from .hfield_loader import load_hfield_file
 from .flat_model import (
     BodyData,
@@ -74,6 +93,7 @@ from .flat_model import (
     EqualityData,
     ExcludeData,
     PairData,
+    SensorData,
     TendonData,
     _TENDON_KIND_FIXED,
     _TENDON_KIND_SPATIAL,
@@ -636,6 +656,9 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var arm_s = _extract_attr(jtag, "armature")
         if arm_s.byte_length() > 0:
             d.joint_armature = _parse_float(arm_s)
+        var jmg_s = _extract_attr(jtag, "margin")
+        if jmg_s.byte_length() > 0:
+            d.joint_margin = _parse_float(jmg_s)
 
         var damp_s = _extract_attr(jtag, "damping")
         if damp_s.byte_length() > 0:
@@ -661,6 +684,8 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
             d.joint_limited = True
         elif lim_s == "false":
             d.joint_limited = False
+        if lim_s.byte_length() > 0:
+            d.joint_limited_s = lim_s
 
         # `actuatorfrcrange` — see `_apply_actfrcrange`. Menagerie states it
         # in a class as often as on the element (aloha and berkeley_humanoid
@@ -725,6 +750,29 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var jp_s = _extract_attr(jtag, "pos")
         if jp_s.byte_length() > 0:
             d.joint_pos_s = jp_s
+
+    # `<pair>` in a class (AUD-05) — raw strings, resolved by `_fill_pairs`.
+    var ppos = defaults_sec.find("<pair")
+    if ppos != -1:
+        var ptag = _extract_opening_tag(defaults_sec, ppos)
+        var pc_s = _extract_attr(ptag, "condim")
+        if pc_s.byte_length() > 0:
+            d.pair_condim_s = pc_s
+        var pf_s = _extract_attr(ptag, "friction")
+        if pf_s.byte_length() > 0:
+            d.pair_friction_s = pf_s
+        var psr_s = _extract_attr(ptag, "solref")
+        if psr_s.byte_length() > 0:
+            d.pair_solref_s = psr_s
+        var psi_s = _extract_attr(ptag, "solimp")
+        if psi_s.byte_length() > 0:
+            d.pair_solimp_s = psi_s
+        var pm_s = _extract_attr(ptag, "margin")
+        if pm_s.byte_length() > 0:
+            d.pair_margin_s = pm_s
+        var pg_s = _extract_attr(ptag, "gap")
+        if pg_s.byte_length() > 0:
+            d.pair_gap_s = pg_s
 
     # Find default <geom
     var gpos = defaults_sec.find("<geom")
@@ -866,6 +914,9 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var tst_s = _extract_attr(ttag, "stiffness")
         if tst_s.byte_length() > 0:
             d.tendon_stiffness_s = tst_s
+        var tdp_s = _extract_attr(ttag, "damping")
+        if tdp_s.byte_length() > 0:
+            d.tendon_damping_s = tdp_s
         var tsl_s = _extract_attr(ttag, "springlength")
         if tsl_s.byte_length() > 0:
             d.tendon_springlength_s = tsl_s
@@ -2189,24 +2240,49 @@ def _parse_one_joint(
     var range_s = _extract_attr(tag, "range")
     if range_s.byte_length() == 0:
         range_s = jdef.joint_range_s
+    var has_range = False
+    var rmin = Float64(0)
+    var rmax = Float64(0)
     if range_s.byte_length() > 0:
         var angular = (
             jd.jnt_type == JNT_HINGE or jd.jnt_type == JNT_BALL
         )
         var rf = deg_factor if angular else Float64(1.0)
         var rv = _parse_vec3(range_s)
-        jd.range_min = rv[0] * rf
-        jd.range_max = rv[1] * rf
-        jd.is_limited = True
+        rmin = rv[0] * rf
+        rmax = rv[1] * rf
+        has_range = True
 
-    # limited (explicit override)
-    var lim_s = _extract_attr(tag, "limited")
-    if lim_s == "false":
+    # ⚠ AUD-01 (docs/PHYSICS3D_MUJOCO_312_AUDIT.md). `limited` resolves
+    # element -> class chain -> "auto", and "auto" is MuJoCo's
+    # `islimited()`: `range[0] < range[1]` (user_objects.cc:185-187).
+    # It used to be "any range present => limited, an ELEMENT `limited`
+    # overrides", which made dm_control fish's tail limited under its
+    # class `limited="false" range="-60 60"` and pinned nine fourier_n1
+    # joints on a class `range="0 0"`. A free joint is never limited
+    # (user_objects.cc:3196). `limited="true"` without a range is an
+    # error in MuJoCo; here it keeps the record's default range, as before.
+    var lim_s = _trim(_extract_attr(tag, "limited"))
+    if lim_s.byte_length() == 0:
+        lim_s = _trim(jdef.joint_limited_s)
+    var limited: Bool
+    if lim_s == "true":
+        limited = True
+    elif lim_s == "false":
+        limited = False
+    else:
+        limited = has_range and rmin < rmax
+    if jd.jnt_type == JNT_FREE:
+        limited = False
+    if limited:
+        jd.is_limited = True
+        if has_range:
+            jd.range_min = rmin
+            jd.range_max = rmax
+    else:
         jd.is_limited = False
         jd.range_min = Float64(-1e10)
         jd.range_max = Float64(1e10)
-    elif lim_s == "true":
-        jd.is_limited = True
 
     # `actuatorfrcrange` — start from the class chain, then let the element
     # override, the same 3-way order the actuator's `forcerange` uses.
@@ -2232,6 +2308,15 @@ def _parse_one_joint(
         jd.armature = _parse_float(arm_s)
     else:
         jd.armature = jdef.joint_armature
+
+    # margin — the limit's activation threshold (AUD-03). ⚠ NOT angle-
+    # converted: MuJoCo's compiler stores `jnt_margin` as written (measured:
+    # `margin="30"` under angle="degree" is 30.0 in `m.jnt_margin`).
+    var jmargin_s = _extract_attr(tag, "margin")
+    if jmargin_s.byte_length() > 0:
+        jd.margin = _parse_float(jmargin_s)
+    else:
+        jd.margin = jdef.joint_margin
 
     # damping
     var damp_s = _extract_attr(tag, "damping")
@@ -3767,9 +3852,13 @@ def _fill_actuators(
     # a plugin that is NOT reports itself from the scan below, where the
     # `plugin=` attribute is in hand — a blind count here would file every
     # `mujoco.pid` actuator as missing while it is being applied.
+    # ⚠ `<pid>` (3.12), `<dcmotor>` (3.7) and `<orientation>` (3.11) joined
+    # on 2026-09-12 (AUD-22): they matched neither this list nor the scan
+    # below, so a model carrying one shortened `nu` with NO print at all.
     var _unmodelled: List[String] = [
         String("<intvelocity"), String("<damper"), String("<cylinder"),
-        String("<muscle"),
+        String("<muscle"), String("<pid"), String("<dcmotor"),
+        String("<orientation"),
     ]
     for _u in range(len(_unmodelled)):
         var _n = 0
@@ -4379,10 +4468,20 @@ def _fill_actuators(
                 ad.dyn_tau = _parse_float(parts[0]) if len(parts) > 0 else 1.0
                 ad.act_adr = result.na
                 result.na += 1
-            # Any other dyntype is an unsupported transmission. The comptime
-            # twin records `bad_actuator_code = 4` and `init_fields` raises on
-            # it; this path leaves dyn_tau 0 / act_adr -1 and lets that
-            # existing guard stay the single place that refuses the model.
+            else:
+                # ⚠ AUD-02. This used to fall through to `act_adr = -1` —
+                # force from `ctrl` where MuJoCo applies it from `act` — on
+                # the belief that a comptime twin raised; the twin is gone
+                # and `bad_actuator_code` is set for gain/bias types only.
+                raise Error(
+                    "physics3d: AUD-02 — actuator #"
+                    + String(len(result.actuators)) + " declares dyntype=\""
+                    + dyntype + "\", which this engine does not model (only"
+                    " none/filter). MuJoCo integrates an activation state"
+                    " and applies force from it; loading this as a"
+                    " stateless actuator is wrong physics, not an"
+                    " approximation. See docs/PHYSICS3D_MUJOCO_312_AUDIT.md."
+                )
 
         result.actuators.append(ad)
         # ⚠ CAPTURED HERE, NOT BY A SECOND WALK. Actuators are the one family
@@ -4542,6 +4641,13 @@ def _fill_equality(
             break
 
         var tag = _extract_opening_tag(equality_sec, earliest)
+        # AUD-04: `active="false"` builds no rows in MuJoCo
+        # (engine_core_constraint.c:627). The record is dropped here.
+        if _trim(_extract_attr(tag, "active")) == "false":
+            result.inactive_equalities += 1
+            var a_end = equality_sec.find(">", earliest)
+            scan_pos = a_end + 1 if a_end != -1 else elen
+            continue
         var ed = EqualityData()
 
         # Determine type
@@ -5411,6 +5517,10 @@ def _fill_tendon_equalities(
         var tag = _extract_opening_tag(equality_sec, t)
         var tag_end = equality_sec.find(">", t)
         scan_pos = tag_end + 1 if tag_end != -1 else elen
+        # AUD-04: an inactive tendon equality marks nothing.
+        if _trim(_extract_attr(tag, "active")) == "false":
+            result.inactive_equalities += 1
+            continue
 
         var n2 = _trim(_extract_attr(tag, "tendon2"))
         if n2.byte_length() > 0:
@@ -5800,6 +5910,13 @@ def _fill_tendons(
             st_s = eff.tendon_stiffness_s
         if st_s.byte_length() > 0:
             td.stiffness = _parse_float(st_s)
+        # `damping` (AUD-08): `-damping * ten_velocity` in `qfrc_passive`
+        # (engine_passive.c:823-825), fixed and spatial alike.
+        var tdm_s = _extract_attr(open_tag, "damping")
+        if tdm_s.byte_length() == 0:
+            tdm_s = eff.tendon_damping_s
+        if tdm_s.byte_length() > 0:
+            td.damping = _parse_float(tdm_s)
 
         # ⚠ THE FIXED-TENDON REST LENGTH ONLY. `sum(coef * joint.ref)` is
         # `mjModel.tendon_length0` for a `<fixed>` tendon; for a `<spatial>`
@@ -5979,6 +6096,11 @@ def _fill_pairs(
 
     contact_sec: String,
     worldbody: String,
+    # The `<default>` chain (AUD-05): `mjs_addPair(spec, def)` copies the
+    # class's pair record before the element's own attributes are read, so
+    # `class=` (and the root `<default><pair>`) carry every attribute below.
+    named: NamedDefaultsList,
+    root_defaults: DefaultsData,
     mut result: FlatModelDef,
 ) raises:
     """Parse `<contact><pair>`: fill result.pairs[] with predefined geom pairs.
@@ -6045,6 +6167,11 @@ def _fill_pairs(
         # same one the loops iterate in.
         var pd = PairData(g1, g2) if g1 <= g2 else PairData(g2, g1)
 
+        var pcls = _trim(_extract_attr(tag, "class"))
+        var eff = root_defaults
+        if pcls.byte_length() > 0:
+            eff = named.find(pcls)
+
         # ⚠ `gap` USED TO BE REFUSED HERE, and the reason was version drift:
         # `includemargin` is `margin - gap` in 3.3.6/3.6.0/main, `margin` in
         # 3.10.0 and something else again in 3.11.0. It is modelled now,
@@ -6052,10 +6179,14 @@ def _fill_pairs(
         # `GEOM_IDX_GAP`. A pair's own `gap` overrides the geoms' sum exactly
         # as its `margin` does (`getGap`).
         var gap_s = _trim(_extract_attr(tag, "gap"))
+        if gap_s.byte_length() == 0:
+            gap_s = _trim(eff.pair_gap_s)
         if gap_s.byte_length() > 0:
             pd.gap = _parse_float(gap_s)
 
         var condim_s = _trim(_extract_attr(tag, "condim"))
+        if condim_s.byte_length() == 0:
+            condim_s = _trim(eff.pair_condim_s)
         if condim_s.byte_length() > 0:
             pd.condim = Int(_parse_float(condim_s))
             if (
@@ -6070,6 +6201,8 @@ def _fill_pairs(
                 )
 
         var fr_s = _extract_attr(tag, "friction")
+        if fr_s.byte_length() == 0:
+            fr_s = eff.pair_friction_s
         if fr_s.byte_length() > 0:
             # Positional fill over MuJoCo's five-vector
             # [slide1, slide2, spin, roll1, roll2]; anything not given keeps
@@ -6105,6 +6238,8 @@ def _fill_pairs(
             pd.friction_roll = f3
 
         var sr_s = _extract_attr(tag, "solref")
+        if sr_s.byte_length() == 0:
+            sr_s = eff.pair_solref_s
         if sr_s.byte_length() > 0:
             var sv = List[String]()
             _split_spaces(sr_s, sv)
@@ -6114,6 +6249,8 @@ def _fill_pairs(
                 pd.solref_1 = _parse_float(sv[1])
 
         var si_s = _extract_attr(tag, "solimp")
+        if si_s.byte_length() == 0:
+            si_s = eff.pair_solimp_s
         if si_s.byte_length() > 0:
             var iv = List[String]()
             _split_spaces(si_s, iv)
@@ -6129,6 +6266,8 @@ def _fill_pairs(
                 pd.solimp_4 = _parse_float(iv[4])
 
         var mg_s = _trim(_extract_attr(tag, "margin"))
+        if mg_s.byte_length() == 0:
+            mg_s = _trim(eff.pair_margin_s)
         if mg_s.byte_length() > 0:
             pd.margin = _parse_float(mg_s)
 
@@ -6252,6 +6391,768 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
                 result.vis_headlight_ambient_g = _parse_float(ap[1])
                 result.vis_headlight_ambient_b = _parse_float(ap[2])
                 result.vis_has_headlight = True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The scan-and-print list — docs/PHYSICS3D_MUJOCO_312_AUDIT.md, recommendation 1
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Every row of that audit marked MISSING-SILENT is an attribute (or element)
+# this loader accepts and never reads: the model loads, runs, and is quietly
+# not MuJoCo's. This is the one place that says so. Each row is counted over
+# the DOCUMENT — a `<default>` class is a legal spelling for every one of them,
+# and an element-only read is the exact mistake `maxhullvert` and `sdf` made —
+# and printed once per audit id with the count. Nothing here changes the
+# model. The rows that are WRONG PHYSICS on a model that loads today raise
+# instead (`_refuse_wrong_physics`, and AUD-02 inside `_fill_actuators`).
+#
+# ⚠ WHEN A ROW LANDS, DELETE IT HERE. A warning that outlives its gap teaches
+# people to ignore warnings (`test_unmodelled_geom_types_are_loud`), and the
+# clean model in `test_silent_attrs_are_loud` asserts zero hits.
+
+# =============================================================================
+# <sensor>
+# =============================================================================
+
+
+# The eight elements this loader models, and the kernel each one reaches.
+# Every other `<sensor>` child is refused BY NAME in `_fill_sensors` — see the
+# note there for why a silent skip is not on the table.
+#
+#   element          mjtSensor  attaches to  dim  datatype   stage  kernel
+#   touch            0          site          1   POSITIVE   ACC    touch.mojo
+#   accelerometer    1          site          3   REAL       ACC    site_acc
+#   velocimeter      2          site          3   REAL       VEL    frame_vel
+#   gyro             3          site          3   REAL       VEL    frame_vel
+#   force            4          site          3   REAL       ACC    site_acc
+#   torque           5          site          3   REAL       ACC    site_acc
+#   rangefinder      7          site          1   REAL       POS    rangefinder
+#   subtreelinvel    36         body          3   REAL       VEL    subtree
+#
+# ⚠⚠ EVERY COLUMN BUT THE LAST WAS READ OFF A LIVE 3.12.0 `MjModel`, not
+# transcribed from `user_objects.cc`. The table there is three functions deep
+# (`sensorDim`, `sensorDatatype`, `sensorNeedstage`) with fallthrough cases,
+# and one of them had already been mis-transcribed INTO THE AUDIT: AUD-47
+# records rangefinder as a POSITIVE datatype, and it is REAL in 3.10, 3.11 and
+# 3.12 alike. `test_sensor_table_vs_mujoco` re-reads all of it every run so a
+# release change moves the gate rather than the assumption.
+
+
+def _has_str(xs: List[String], want: String) -> Bool:
+    """Membership over a short `List[String]` — the unserved-tag set."""
+    for i in range(len(xs)):
+        if xs[i] == want:
+            return True
+    return False
+
+
+@fieldwise_init
+struct _SensorSpec(Copyable, ImplicitlyCopyable, Movable):
+    """What a `<sensor>` element name determines, before its attributes.
+
+    `sensor_type == -1` marks an element whose width is data-dependent, which
+    is the one case `_fill_sensors` refuses outright.
+    """
+
+    var sensor_type: Int
+    var dim: Int
+    var datatype: Int
+    var needstage: Int
+    var served: Bool
+
+
+def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
+    """The `_SensorSpec` for a `<sensor>` child element name.
+
+    `sensor_type` is `-1` when the element is not a sensor this loader can
+    even ADDRESS — see `_fill_sensors` for the difference between addressing
+    and serving, which is the whole shape of this function.
+
+    ⚠⚠ EVERY NUMBER HERE WAS READ OFF A LIVE 3.12.0 `MjModel`, one
+    fixture per element, not transcribed from `user_objects.cc`. That matters
+    twice over: the compiler-side table is three functions deep (`sensorDim`,
+    `sensorDatatype`, `sensorNeedstage`) with fallthrough cases, and the audit
+    ALREADY carried one mis-transcription from it — AUD-47 records the
+    rangefinder as a POSITIVE datatype and every release since 3.10 says REAL.
+    `test_sensor_table_vs_mujoco` re-reads the whole table every run.
+
+    ⚠ AN IF-CHAIN, NOT A DICTIONARY. This runs once per element at parse
+    time, the arms are string compares, and the tree's own rule against
+    runtime-indexed tables applies to anything that might reach a kernel.
+    """
+    # served == 1: a kernel in `physics3d/sensors` computes this.
+    if tag_name == "touch":
+        return _SensorSpec(SENS_TOUCH, 1, SENSDATA_POSITIVE, SENSSTAGE_ACC, True)
+    if tag_name == "accelerometer":
+        return _SensorSpec(SENS_ACCELEROMETER, 3, SENSDATA_REAL, SENSSTAGE_ACC, True)
+    if tag_name == "velocimeter":
+        return _SensorSpec(SENS_VELOCIMETER, 3, SENSDATA_REAL, SENSSTAGE_VEL, True)
+    if tag_name == "gyro":
+        return _SensorSpec(SENS_GYRO, 3, SENSDATA_REAL, SENSSTAGE_VEL, True)
+    if tag_name == "force":
+        return _SensorSpec(SENS_FORCE, 3, SENSDATA_REAL, SENSSTAGE_ACC, True)
+    if tag_name == "torque":
+        return _SensorSpec(SENS_TORQUE, 3, SENSDATA_REAL, SENSSTAGE_ACC, True)
+    if tag_name == "rangefinder":
+        return _SensorSpec(SENS_RANGEFINDER, 1, SENSDATA_REAL, SENSSTAGE_POS, True)
+    if tag_name == "subtreelinvel":
+        return _SensorSpec(SENS_SUBTREELINVEL, 3, SENSDATA_REAL, SENSSTAGE_VEL, True)
+
+    # served == 0: ADDRESSED ONLY. The row exists with MuJoCo's exact dim so
+    # that every LATER sensor's `adr` is still right; nothing computes it.
+    if tag_name == "magnetometer":
+        return _SensorSpec(6, 3, SENSDATA_REAL, SENSSTAGE_POS, False)
+    if tag_name == "camprojection":
+        return _SensorSpec(8, 2, SENSDATA_REAL, SENSSTAGE_POS, False)
+    if tag_name == "jointpos":
+        return _SensorSpec(9, 1, SENSDATA_REAL, SENSSTAGE_POS, False)
+    if tag_name == "jointvel":
+        return _SensorSpec(10, 1, SENSDATA_REAL, SENSSTAGE_VEL, False)
+    if tag_name == "tendonpos":
+        return _SensorSpec(11, 1, SENSDATA_REAL, SENSSTAGE_POS, False)
+    if tag_name == "tendonvel":
+        return _SensorSpec(12, 1, SENSDATA_REAL, SENSSTAGE_VEL, False)
+    if tag_name == "actuatorpos":
+        return _SensorSpec(13, 1, SENSDATA_REAL, SENSSTAGE_POS, False)
+    if tag_name == "actuatorvel":
+        return _SensorSpec(14, 1, SENSDATA_REAL, SENSSTAGE_VEL, False)
+    if tag_name == "actuatorfrc":
+        return _SensorSpec(15, 1, SENSDATA_REAL, SENSSTAGE_ACC, False)
+    if tag_name == "jointactuatorfrc":
+        return _SensorSpec(16, 1, SENSDATA_REAL, SENSSTAGE_ACC, False)
+    if tag_name == "tendonactuatorfrc":
+        return _SensorSpec(17, 1, SENSDATA_REAL, SENSSTAGE_ACC, False)
+    if tag_name == "ballquat":
+        return _SensorSpec(18, 4, SENSDATA_QUATERNION, SENSSTAGE_POS, False)
+    if tag_name == "ballangvel":
+        return _SensorSpec(19, 3, SENSDATA_REAL, SENSSTAGE_VEL, False)
+    if tag_name == "jointlimitpos":
+        return _SensorSpec(20, 1, SENSDATA_REAL, SENSSTAGE_POS, False)
+    if tag_name == "jointlimitvel":
+        return _SensorSpec(21, 1, SENSDATA_REAL, SENSSTAGE_VEL, False)
+    if tag_name == "jointlimitfrc":
+        return _SensorSpec(22, 1, SENSDATA_REAL, SENSSTAGE_ACC, False)
+    if tag_name == "tendonlimitpos":
+        return _SensorSpec(23, 1, SENSDATA_REAL, SENSSTAGE_POS, False)
+    if tag_name == "tendonlimitvel":
+        return _SensorSpec(24, 1, SENSDATA_REAL, SENSSTAGE_VEL, False)
+    if tag_name == "tendonlimitfrc":
+        return _SensorSpec(25, 1, SENSDATA_REAL, SENSSTAGE_ACC, False)
+    if tag_name == "framepos":
+        return _SensorSpec(26, 3, SENSDATA_REAL, SENSSTAGE_POS, False)
+    if tag_name == "framequat":
+        return _SensorSpec(27, 4, SENSDATA_QUATERNION, SENSSTAGE_POS, False)
+    if tag_name == "framexaxis":
+        return _SensorSpec(28, 3, SENSDATA_AXIS, SENSSTAGE_POS, False)
+    if tag_name == "frameyaxis":
+        return _SensorSpec(29, 3, SENSDATA_AXIS, SENSSTAGE_POS, False)
+    if tag_name == "framezaxis":
+        return _SensorSpec(30, 3, SENSDATA_AXIS, SENSSTAGE_POS, False)
+    if tag_name == "framelinvel":
+        return _SensorSpec(31, 3, SENSDATA_REAL, SENSSTAGE_VEL, False)
+    if tag_name == "frameangvel":
+        return _SensorSpec(32, 3, SENSDATA_REAL, SENSSTAGE_VEL, False)
+    if tag_name == "framelinacc":
+        return _SensorSpec(33, 3, SENSDATA_REAL, SENSSTAGE_ACC, False)
+    if tag_name == "frameangacc":
+        return _SensorSpec(34, 3, SENSDATA_REAL, SENSSTAGE_ACC, False)
+    if tag_name == "subtreecom":
+        return _SensorSpec(35, 3, SENSDATA_REAL, SENSSTAGE_POS, False)
+    if tag_name == "subtreeangmom":
+        return _SensorSpec(37, 3, SENSDATA_REAL, SENSSTAGE_VEL, False)
+    if tag_name == "insidesite":
+        return _SensorSpec(38, 1, SENSDATA_POSITIVE, SENSSTAGE_POS, False)
+    if tag_name == "distance":
+        return _SensorSpec(39, 1, SENSDATA_REAL, SENSSTAGE_POS, False)
+    if tag_name == "normal":
+        return _SensorSpec(40, 3, SENSDATA_AXIS, SENSSTAGE_POS, False)
+    if tag_name == "fromto":
+        return _SensorSpec(41, 6, SENSDATA_REAL, SENSSTAGE_POS, False)
+    if tag_name == "e_potential":
+        return _SensorSpec(43, 1, SENSDATA_REAL, SENSSTAGE_POS, False)
+    if tag_name == "e_kinetic":
+        return _SensorSpec(44, 1, SENSDATA_REAL, SENSSTAGE_POS, False)
+    if tag_name == "clock":
+        return _SensorSpec(45, 1, SENSDATA_REAL, SENSSTAGE_POS, False)
+
+    # ⚠ `contact`, `tactile`, `plugin` and `user` are NOT here, and that is
+    # the one place a refusal is still right: their `dim` is not a function of
+    # the element name. `contact`'s depends on its `num` and `data`
+    # attributes, `user`'s is an attribute outright, `plugin`'s comes from the
+    # plugin. Guessing one corrupts every later sensor's `adr` — exactly what
+    # this table exists to prevent — so the model refuses instead.
+    return _SensorSpec(-1, 0, 0, 0, False)
+
+
+def _fill_sensors(
+    sensor_sec: String,
+    worldbody: String,
+    mut result: FlatModelDef,
+) raises:
+    """Parse `<sensor>`: fill `result.sensors` + `result.sensor_names`.
+
+    Sensor order is XML declaration order, which is also the order MuJoCo lays
+    `sensordata` out in, so `adr` is the running sum of `dim` down this loop
+    and nothing needs to sort afterwards.
+
+    ⚠⚠ ADDRESSING IS NOT SERVING, AND THE SPLIT IS THE DESIGN. Every
+    recognised element gets a row carrying MuJoCo's exact `dim`, `datatype`,
+    `needstage` and `adr`, whether or not this engine can compute it. Only the
+    eight with a kernel behind them are marked `served`.
+
+    The alternative — skipping what we cannot compute — was written first and
+    is wrong: `adr` would be a prefix sum over a SUBSET, so every sensor after
+    the hole would report a slice that does not line up with the oracle's, and
+    the reading would still look plausible because it would be some other
+    sensor's real value. Refusing the whole model instead is also wrong, and
+    measurably so: `dog`, `swimmer`, `finger` and `quadruped` all load today
+    and all declare a sensor this engine has no kernel for (`subtreeangmom`,
+    `framepos`/`framexaxis`/`frameyaxis`, `jointpos`/`jointvel`,
+    `subtreecom`). Refusing them would trade a silent gap for a regression.
+
+    So an unserved sensor is ADDRESSED — it holds its slot, keeps every later
+    `adr` honest, and is reported once by audit id — and reading it BY NAME
+    raises. That is the AUD-23 gap made loud without breaking four models.
+
+    ⚠ `contact`, `tactile`, `plugin` and `user` still refuse the model. Their
+    `dim` is not a function of the element name (see `_sensor_spec_of_tag`),
+    so a row for one of them would have to GUESS the width, which corrupts
+    every later `adr` — the precise failure the split exists to avoid.
+
+    ⚠ THE 3.12 ADDITIONS REFUSE TOO, because they are silent-but-wrong rather
+    than unimplemented-and-obvious. `delay`, `interval`, `nsample` and
+    `interp` (changelog `6419534b`) push the reading through a history buffer,
+    so accepting one and ignoring it returns the UNDELAYED value — a number
+    of the right shape and the wrong age. The rangefinder's `camera`
+    (`9d646e65`) and `data` (`ed15493a`) change the sensor's DIM.
+    """
+    result.sensors = List[SensorData]()
+    result.sensor_names = List[String]()
+    if sensor_sec.byte_length() == 0:
+        return
+
+    var adr = 0
+    var n_unserved = 0
+    var unserved_tags = List[String]()
+    var pos = sensor_sec.find("<")
+    while pos != -1:
+        # Skip closing tags, comments and PIs; `<sensor>` itself is the
+        # section wrapper that `_extract_section_all` handed us.
+        var c = String(sensor_sec[byte = pos + 1 : pos + 2])
+        if c == "/" or c == "!" or c == "?":
+            pos = sensor_sec.find("<", pos + 1)
+            continue
+
+        var tag = _extract_opening_tag(sensor_sec, pos)
+        # The element name runs to the first space, '/' or '>'.
+        var nm_end = 1
+        while nm_end < tag.byte_length():
+            var ch = String(tag[byte = nm_end : nm_end + 1])
+            if ch == " " or ch == "\t" or ch == "\n" or ch == "/" or ch == ">":
+                break
+            nm_end += 1
+        var tag_name = String(tag[byte=1:nm_end])
+
+        if tag_name == "sensor":
+            pos = sensor_sec.find("<", pos + 1)
+            continue
+
+        var spec = _sensor_spec_of_tag(tag_name)
+        if spec.sensor_type < 0:
+            raise Error(
+                "physics3d: <sensor><"
+                + tag_name
+                + "> has a data-dependent width (AUD-23): its `dim` is set by"
+                + " its own attributes or by a plugin, not by the element"
+                + " name, so this loader cannot even reserve its slot in"
+                + " sensordata. Every sensor declared after it would report a"
+                + " wrong offset. Remove it to load this model."
+            )
+
+        var sd = SensorData()
+        sd.sensor_type = spec.sensor_type
+        sd.dim = spec.dim
+        sd.datatype = spec.datatype
+        sd.needstage = spec.needstage
+        sd.served = spec.served
+        sd.adr = adr
+
+        var s_name = _trim(_extract_attr(tag, "name"))
+
+        # ── the 3.12 additions, refused by name ───────────────────
+        var delay_attrs = ["delay", "interval", "nsample", "interp"]
+        for a in delay_attrs:
+            if _trim(_extract_attr(tag, a)).byte_length() > 0:
+                raise Error(
+                    "physics3d: <sensor><"
+                    + tag_name
+                    + " "
+                    + a
+                    + "=> is MuJoCo 3.12's delayed/interval sensor path"
+                    + " (changelog 6419534b), which needs an mjData.history"
+                    + " buffer this engine does not have. Accepting it would"
+                    + " return the UNDELAYED value."
+                )
+
+        if sd.sensor_type == SENS_RANGEFINDER:
+            if _trim(_extract_attr(tag, "camera")).byte_length() > 0:
+                raise Error(
+                    "physics3d: <sensor><rangefinder camera=> is MuJoCo 3.12's"
+                    + " camera-attached form (changelog 9d646e65), which casts"
+                    + " one ray per pixel and whose dim is the camera"
+                    + " resolution, not 1. Only the site form is modelled."
+                )
+            if _trim(_extract_attr(tag, "data")).byte_length() > 0:
+                raise Error(
+                    "physics3d: <sensor><rangefinder data=> is MuJoCo 3.12's"
+                    + " multi-value rangefinder (changelog ed15493a), which"
+                    + " changes the sensor's dim. Only the default distance"
+                    + " form is modelled."
+                )
+
+        # ── the object reference ────────────────────────────────
+        # ⚠ RESOLVED FOR SERVED SENSORS ONLY, and `objid` stays `-1`
+        # otherwise. An unserved row exists to hold `adr`; nothing reads its
+        # object, and resolving one would mean claiming an index no code
+        # consumes and no gate could meaningfully check. `-1` says "not
+        # resolved" out loud instead.
+        if not sd.served:
+            sd.objid = -1
+            sd.body_id = -1
+            n_unserved += 1
+            if not _has_str(unserved_tags, tag_name):
+                unserved_tags.append(tag_name)
+        elif sd.sensor_type == SENS_SUBTREELINVEL:
+            sd.objtype = SENSOBJ_BODY
+            var b_name = _trim(_extract_attr(tag, "body"))
+            if b_name.byte_length() == 0:
+                raise Error(
+                    "physics3d: <sensor><subtreelinvel> needs a body= attribute"
+                )
+            var bi = _find_body_index_by_name(worldbody, b_name)
+            if bi <= 0:
+                raise Error(
+                    "physics3d: <sensor><subtreelinvel body='"
+                    + b_name
+                    + "'> names no body in this model"
+                )
+            sd.objid = bi
+            sd.body_id = bi
+        else:
+            sd.objtype = SENSOBJ_SITE
+            var st_name = _trim(_extract_attr(tag, "site"))
+            if st_name.byte_length() == 0:
+                raise Error(
+                    "physics3d: <sensor><"
+                    + tag_name
+                    + "> needs a site= attribute"
+                )
+            var si = _find_site_index_by_name(worldbody, st_name)
+            if si < 0:
+                raise Error(
+                    "physics3d: <sensor><"
+                    + tag_name
+                    + " site='"
+                    + st_name
+                    + "'> names no site in this model"
+                )
+            sd.objid = si
+            # ⚠ THE SITE'S BODY, RESOLVED HERE. Every kernel in
+            # `physics3d/sensors` is addressed by `(body, site)`, and the site
+            # record already carries its body — so the eval pass never has to
+            # go back to `m_sites` for it, and the env configs stop carrying a
+            # SECOND hand-counted literal beside the site one.
+            if si < len(result.sites):
+                sd.body_id = result.sites[si].body_id
+
+        var cut_s = _trim(_extract_attr(tag, "cutoff"))
+        if cut_s.byte_length() > 0:
+            sd.cutoff = _parse_float(cut_s)
+
+        result.sensors.append(sd)
+        result.sensor_names.append(s_name)
+        adr += sd.dim
+
+        pos = sensor_sec.find("<", pos + 1)
+
+    # ⚠ ONE LINE PER MODEL, NAMING THE TYPES. AUD-23's old counter said only
+    # "N <sensor> elements not read"; this says WHICH, because the answer
+    # differs per model and the fix is per type. Reading one of these by name
+    # raises, so this is a notice about what is missing, not a warning about
+    # something that might silently mislead.
+    if n_unserved > 0:
+        var tags = String("")
+        for i in range(len(unserved_tags)):
+            if i > 0:
+                tags += ", "
+            tags += unserved_tags[i]
+        _silent(
+            result, "AUD-23", n_unserved, "`<sensor>` element(s) [" + tags + "]",
+            "addressed (their sensordata slot and offset are MuJoCo-exact) but"
+            " NOT computed — this engine has no kernel for them; reading one"
+            " by name raises",
+        )
+
+
+comptime _SA_PRESENT = 0  # stated at all
+comptime _SA_DISABLE = 1  # `<flag x="disable"/>` — the disable family
+comptime _SA_ENABLE = 2  # `<flag x="enable"/>` — the enable family
+comptime _SA_MULTI = 3  # more than one token (3.7 polynomial spellings)
+comptime _SA_NOT_NONE = 4  # stated and not "none"
+
+
+def _opening_tags(xml: String, name: String) -> List[String]:
+    """Every `<name ...>` opening tag in `xml`, wherever it sits — inside a
+    `<default>` block included. The character after the name must end it, so
+    `<flex` does not match `<flexcomp` and `<joint` does not match `<jointx`.
+    """
+    var tags = List[String]()
+    var needle = String("<") + name
+    var nl = needle.byte_length()
+    var n = xml.byte_length()
+    var at = xml.find(needle)
+    while at != -1:
+        var nx = at + nl
+        var c = String(xml[byte = nx : nx + 1]) if nx < n else String(">")
+        if (
+            c == " " or c == ">" or c == "/" or c == "\n" or c == "\t"
+            or c == "\r"
+        ):
+            tags.append(_extract_opening_tag(xml, at))
+        at = xml.find(needle, at + 1)
+    return tags^
+
+
+def _count_attr(tags: List[String], attr: String, mode: Int) -> Int:
+    """How many of `tags` state `attr` in the sense `mode` asks for."""
+    var n = 0
+    for i in range(len(tags)):
+        var v = _trim(_extract_attr(tags[i], attr))
+        if v.byte_length() == 0:
+            continue
+        if mode == _SA_PRESENT:
+            n += 1
+        elif mode == _SA_DISABLE:
+            if v == "disable":
+                n += 1
+        elif mode == _SA_ENABLE:
+            if v == "enable":
+                n += 1
+        elif mode == _SA_MULTI:
+            var parts = List[String]()
+            _split_spaces(v, parts)
+            if len(parts) > 1:
+                n += 1
+        elif mode == _SA_NOT_NONE:
+            if v != "none":
+                n += 1
+    return n
+
+
+def _silent(
+    mut result: FlatModelDef, aud: String, n: Int, what: String, why: String
+):
+    """Record and print one hit row. `what` names the spelling, `why` says
+    what the engine does instead — the sentence a reader needs to decide
+    whether their model still means what they think it means."""
+    if n <= 0:
+        return
+    result.silent_attrs += n
+    result.silent_attr_ids.append(aud)
+    print(
+        "physics3d: " + aud + " —", n, what + " NOT read by this loader: "
+        + why + " (docs/PHYSICS3D_MUJOCO_312_AUDIT.md)",
+    )
+
+
+def _scan_silent_attrs(xml: String, mut result: FlatModelDef) raises:
+    """Count and print every accepted-but-unread attribute; raise on the
+    `<equality active="false">` spelling (AUD-04), which is wrong physics."""
+    # ── <compiler> ─────────────────────────────────────────────────────────
+    var comp = _opening_tags(xml, "compiler")
+    _silent(
+        result, "AUD-28", _count_attr(comp, "alignfree", _SA_PRESENT),
+        "`<compiler alignfree>`",
+        "the body frame is not moved onto the inertial frame, so qpos0 and"
+        " geom_pos differ from MuJoCo's representation",
+    )
+    _silent(
+        result, "AUD-28", _count_attr(comp, "balanceinertia", _SA_PRESENT),
+        "`<compiler balanceinertia>`", "inertia moments are not averaged",
+    )
+    _silent(
+        result, "AUD-28", _count_attr(comp, "discardvisual", _SA_PRESENT),
+        "`<compiler discardvisual>`",
+        "visual geoms are kept, so ngeom and geom ids differ from MuJoCo's",
+    )
+    _silent(
+        result, "AUD-28", _count_attr(comp, "fusestatic", _SA_PRESENT),
+        "`<compiler fusestatic>`",
+        "static bodies are not fused, so nbody and geom_bodyid differ",
+    )
+
+    # ── <option> ───────────────────────────────────────────────────────────
+    var opt = _opening_tags(xml, "option")
+    _silent(
+        result, "AUD-27", _count_attr(opt, "wind", _SA_PRESENT),
+        "`<option wind>`", "fluid forces use the body velocity alone",
+    )
+    _silent(
+        result, "AUD-28", _count_attr(opt, "magnetic", _SA_PRESENT),
+        "`<option magnetic>`", "there is no magnetometer",
+    )
+    var n_o = (
+        _count_attr(opt, "o_margin", _SA_PRESENT)
+        + _count_attr(opt, "o_solref", _SA_PRESENT)
+        + _count_attr(opt, "o_solimp", _SA_PRESENT)
+        + _count_attr(opt, "o_friction", _SA_PRESENT)
+    )
+    _silent(
+        result, "AUD-28", n_o, "`<option o_*>` override value(s)",
+        "`<flag override>` is not modelled, so they are never applied",
+    )
+    _silent(
+        result, "AUD-28", _count_attr(opt, "sleep_tolerance", _SA_PRESENT),
+        "`<option sleep_tolerance>`", "nothing sleeps here",
+    )
+    _silent(
+        result, "AUD-28",
+        _count_attr(opt, "actuatorgroupdisable", _SA_PRESENT),
+        "`<option actuatorgroupdisable>`", "every actuator stays enabled",
+    )
+
+    # ── <flag> — only the flags no consumer reads; a disable-family flag
+    # counts when set to "disable", an enable-family one when set to "enable".
+    var flg = _opening_tags(xml, "flag")
+    _silent(
+        result, "AUD-28", _count_attr(flg, "clampctrl", _SA_DISABLE),
+        "`<flag clampctrl=\"disable\">`", "ctrl is still clamped to ctrlrange",
+    )
+    _silent(
+        result, "AUD-28", _count_attr(flg, "actuation", _SA_DISABLE),
+        "`<flag actuation=\"disable\">`", "actuators still apply force",
+    )
+    _silent(
+        result, "AUD-34", _count_attr(flg, "filterparent", _SA_DISABLE),
+        "`<flag filterparent=\"disable\">`",
+        "parent-child contacts are still filtered out",
+    )
+    _silent(
+        result, "AUD-28", _count_attr(flg, "refsafe", _SA_DISABLE),
+        "`<flag refsafe=\"disable\">`",
+        "solref time constants are still floored at 2*timestep",
+    )
+    _silent(
+        result, "AUD-28",
+        _count_attr(flg, "spring", _SA_DISABLE)
+        + _count_attr(flg, "damper", _SA_DISABLE),
+        "`<flag spring|damper=\"disable\">`",
+        "joint springs and dampers still act",
+    )
+    _silent(
+        result, "AUD-28", _count_attr(flg, "passive", _SA_PRESENT),
+        "`<flag passive>`",
+        "3.12 replaced it by spring/damper and REFUSES it; here it is ignored"
+        " and passive forces still act",
+    )
+    _silent(
+        result, "AUD-28",
+        _count_attr(flg, "autoreset", _SA_DISABLE)
+        + _count_attr(flg, "sensor", _SA_DISABLE)
+        + _count_attr(flg, "midphase", _SA_DISABLE)
+        + _count_attr(flg, "island", _SA_DISABLE),
+        "`<flag autoreset|sensor|midphase|island=\"disable\">`",
+        "none of these stages exists in a form the flag could switch off",
+    )
+    _silent(
+        result, "AUD-28", _count_attr(flg, "nativeccd", _SA_DISABLE),
+        "`<flag nativeccd=\"disable\">`",
+        "libccd is not implemented, the native GJK/EPA runs regardless",
+    )
+    _silent(
+        result, "AUD-28",
+        _count_attr(flg, "override", _SA_ENABLE)
+        + _count_attr(flg, "energy", _SA_ENABLE)
+        + _count_attr(flg, "fwdinv", _SA_ENABLE)
+        + _count_attr(flg, "invdiscrete", _SA_ENABLE)
+        + _count_attr(flg, "sleep", _SA_ENABLE)
+        + _count_attr(flg, "diagexact", _SA_ENABLE),
+        "enable-family `<flag ...=\"enable\">` value(s)",
+        "override, energy, fwdinv, invdiscrete, sleep and diagexact are not"
+        " modelled",
+    )
+
+    # ── <statistic> ────────────────────────────────────────────────────────
+    _silent(
+        result, "AUD-28",
+        _count_attr(_opening_tags(xml, "statistic"), "meaninertia",
+                    _SA_PRESENT),
+        "`<statistic meaninertia>`",
+        "the solver's regularisation scale is always the computed value",
+    )
+
+    # ── <asset> ────────────────────────────────────────────────────────────
+    var mesh = _opening_tags(xml, "mesh")
+    _silent(
+        result, "AUD-12",
+        _count_attr(mesh, "vertex", _SA_PRESENT)
+        + _count_attr(mesh, "builtin", _SA_PRESENT),
+        "inline/builtin `<mesh vertex|builtin>` asset(s)",
+        "a mesh without `file` is skipped, and every geom naming it gets no"
+        " geometry (invisible, non-colliding)",
+    )
+    _silent(
+        result, "AUD-14",
+        _count_attr(_opening_tags(xml, "hfield"), "elevation", _SA_PRESENT),
+        "`<hfield elevation>`", "inline elevation data is replaced by zeros",
+    )
+
+    # ── <joint> ────────────────────────────────────────────────────────────
+    var jnt = _opening_tags(xml, "joint")
+    _silent(
+        result, "AUD-15",
+        _count_attr(jnt, "stiffness", _SA_MULTI)
+        + _count_attr(jnt, "damping", _SA_MULTI),
+        "polynomial `<joint stiffness|damping>` spelling(s) (3.7)",
+        "the tokens are parsed as ONE concatenated number",
+    )
+
+    # ── <geom> ─────────────────────────────────────────────────────────────
+    var geo = _opening_tags(xml, "geom")
+    _silent(
+        result, "AUD-28", _count_attr(geo, "shellinertia", _SA_PRESENT),
+        "`<geom shellinertia>`", "inertia is computed as a solid",
+    )
+    _silent(
+        result, "AUD-26",
+        _count_attr(geo, "fluidshape", _SA_NOT_NONE)
+        + _count_attr(geo, "fluidcoef", _SA_PRESENT),
+        "`<geom fluidshape|fluidcoef>`",
+        "the ellipsoid fluid model is not implemented; the inertia-box model"
+        " is applied instead",
+    )
+    _silent(
+        result, "AUD-28", _count_attr(geo, "fitscale", _SA_PRESENT),
+        "`<geom fitscale>`", "fitted primitives are not scaled",
+    )
+    _silent(
+        result, "AUD-24", _count_attr(geo, "adhesion", _SA_PRESENT),
+        "`<geom adhesion>` (3.11)",
+        "contacts never pull; in-gap adhesive contacts are excluded",
+    )
+    _silent(
+        result, "AUD-25", _count_attr(geo, "surfacevel", _SA_PRESENT),
+        "`<geom surfacevel>` (3.11)", "the surface is static",
+    )
+
+    # ── <contact><pair> ────────────────────────────────────────────────────
+    var cpair = _opening_tags(_extract_section_all(xml, "contact"), "pair")
+    _silent(
+        result, "AUD-24", _count_attr(cpair, "adhesion", _SA_PRESENT),
+        "`<pair adhesion>` (3.11)", "contacts never pull",
+    )
+    _silent(
+        result, "AUD-28", _count_attr(cpair, "solreffriction", _SA_PRESENT),
+        "`<pair solreffriction>`",
+        "the tangential reference uses the pair's `solref`",
+    )
+
+    # ── <tendon> ───────────────────────────────────────────────────────────
+    var ten = _opening_tags(xml, "spatial")
+    var fixed = _opening_tags(xml, "fixed")
+    for i in range(len(fixed)):
+        ten.append(fixed[i])
+    _silent(
+        result, "AUD-08",
+        _count_attr(ten, "frictionloss", _SA_PRESENT)
+        + _count_attr(ten, "armature", _SA_PRESENT)
+        + _count_attr(ten, "solreffriction", _SA_PRESENT)
+        + _count_attr(ten, "solimpfriction", _SA_PRESENT)
+        + _count_attr(ten, "actuatorfrcrange", _SA_PRESENT)
+        + _count_attr(ten, "actuatorfrclimited", _SA_PRESENT),
+        "tendon frictionloss/armature/friction-solparam/actuatorfrc"
+        " attribute(s)",
+        "tendons carry a spring, a damper and a limit here, nothing else",
+    )
+
+    # ── actuators ──────────────────────────────────────────────────────────
+    var act = _opening_tags(xml, "general")
+    var more: List[String] = [
+        String("motor"), String("position"), String("velocity"),
+        String("adhesion"), String("plugin"),
+    ]
+    for i in range(len(more)):
+        var t = _opening_tags(xml, more[i])
+        for k in range(len(t)):
+            act.append(t[k])
+    _silent(
+        result, "AUD-02",
+        _count_attr(act, "actlimited", _SA_PRESENT)
+        + _count_attr(act, "actrange", _SA_PRESENT)
+        + _count_attr(act, "actearly", _SA_PRESENT),
+        "actuator actlimited/actrange/actearly attribute(s)",
+        "activation clamping and early application are not modelled",
+    )
+    _silent(
+        result, "AUD-28",
+        _count_attr(act, "delay", _SA_PRESENT)
+        + _count_attr(act, "nsample", _SA_PRESENT)
+        + _count_attr(act, "interp", _SA_PRESENT),
+        "actuator delay/nsample/interp attribute(s) (3.5)",
+        "there is no history buffer; controls apply immediately",
+    )
+    _silent(
+        result, "AUD-28",
+        _count_attr(act, "damping", _SA_PRESENT)
+        + _count_attr(act, "armature", _SA_PRESENT),
+        "actuator-inherited damping/armature attribute(s) (3.7)",
+        "no damping or armature reaches the joint through the actuator",
+    )
+    _silent(
+        result, "AUD-21",
+        _count_attr(_opening_tags(xml, "position"), "timeconst", _SA_PRESENT),
+        "`<position timeconst>` (3.12)",
+        "the servo is instantaneous; MuJoCo gives it filterexact dynamics",
+    )
+
+    # ── <deformable><flex> — whole elements ────────────────────────────────
+    # ⚠ AUD-23's `<sensor>` counter WAS HERE and is gone: `_fill_sensors` now
+    # parses the eight modelled elements and RAISES on every other one, so a
+    # sensor is either in `result.sensors` or the model failed to load. There
+    # is no third state left for a warning to describe. (The rule this follows
+    # is stated at the top of this function: when a row lands, delete it —
+    # `test_silent_attrs_are_loud`'s clean model asserts zero hits.)
+    _silent(
+        result, "AUD-28", len(_opening_tags(xml, "flex")),
+        "`<deformable><flex>` element(s)",
+        "deformables are not modelled; the model loads without its soft body",
+    )
+
+
+def _refuse_wrong_physics(mut result: FlatModelDef) raises:
+    """The rows whose absence is WRONG physics on a model that loads today,
+    checked on the RESOLVED records (so a `<default>` chain is seen)."""
+    var doc = String(" See docs/PHYSICS3D_MUJOCO_312_AUDIT.md.")
+    for j in range(len(result.joints)):
+        var jd = result.joints[j]
+        var nm = String("#") + String(j)
+        if j < len(result.joint_names):
+            nm = String("`") + result.joint_names[j] + "`"
+        if jd.jnt_type == JNT_FREE and jd.stiffness > 0.0:
+            raise Error(
+                "physics3d: AUD-43 — joint " + nm + " is a FREE joint with"
+                " stiffness > 0. MuJoCo springs it to its XML pose"
+                " (qpos_spring = qpos0); that pose is not available to the"
+                " passive routine, so the model is refused. (Ball-joint springs"
+                " landed 2026-09-12.)" + doc
+            )
+        if jd.jnt_type == JNT_BALL and jd.is_limited:
+            _silent(
+                result, "AUD-37", 1,
+                "limited ball joint " + nm,
+                "ball-joint limit rows are not built; the range is not"
+                " enforced",
+            )
 
 
 def parse_xml_full(
@@ -6756,7 +7657,15 @@ def parse_xml_full(
     _fill_excludes(contact_sec, worldbody, result)
     # Predefined contact pairs — resolved by GEOM name, so this must run
     # after the worldbody walk has grouped geoms by body.
-    _fill_pairs(contact_sec, worldbody, result)
+    _fill_pairs(contact_sec, worldbody, named_defaults, defaults, result)
+
+    # ⚠ AFTER THE SITE WALK, for the same reason `_fill_pairs` runs after the
+    # geom one: sensors are resolved by SITE and BODY name, and `result.sites`
+    # must already be grouped by body — `_stable_group_by_body_sites` is what
+    # makes `_find_site_index_by_name` agree with MuJoCo's ordering. Resolving
+    # a sensor against an ungrouped site array is the "reads the wrong sensor"
+    # failure the site name table's own comment warns about.
+    _fill_sensors(_extract_section_all(xml, "sensor"), worldbody, result)
 
     # ⚠⚠ AFTER `_fill_pairs`, NOT BEFORE. This block used to sit up beside the
     # geom walk, where `result.pairs` is still EMPTY — so adding the pair scan
@@ -6794,6 +7703,11 @@ def parse_xml_full(
     result.max_condim = mcd
     # Post-pass: resolve geom material="name" references
     _resolve_geom_materials(asset_sec, result)
+
+    # The scan-and-print list, on the RESOLVED records: every accepted but
+    # unread attribute says so, and the wrong-physics rows raise.
+    _scan_silent_attrs(xml, result)
+    _refuse_wrong_physics(result)
 
     # ⚠ LAST, because every list it clears is filled above it.
     _apply_disable_flags(xml, result)

@@ -2350,7 +2350,7 @@ def _sap_pair_narrow[
         # every dm_control manipulation model, at 185-431 geoms — with
         # the 4-point manifold the flag exists to switch off.
         if not multiccd_off and multi_ccd_pair_supported(
-            gi_type, gj_type
+            gi_type, gj_type, cm > Scalar[DTYPE](0)
         ):
             comptime if _COLL_PROBE:
                 pr._c_t0 = Int(perf_counter_ns())

@@ -40,6 +40,7 @@ from ..gpu.constants import (
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_RANGE_MIN,
     JOINT_IDX_RANGE_MAX,
+    JOINT_IDX_MARGIN,
     # ⚠ PER-JOINT limit solver params (defect 22). The `MODEL_META_IDX_SOL*
     # _LIMIT_*` slots are deliberately NOT imported any more: `fields_build`
     # fills them from JOINT 0 for the whole model, which is the free root on
@@ -134,8 +135,12 @@ def _limits_env[
         var rmax = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_RANGE_MAX])
         if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
             continue
+        # `jnt_margin` (AUD-03): the row is built when `dist < margin` and
+        # everything downstream sees `dist - margin` (MuJoCo's `pos - margin`,
+        # engine_core_constraint.c:1394-1425, :2109, :3255).
+        var jmargin = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_MARGIN])
         var pos = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])
-        var dist_lo = pos - rmin
+        var dist_lo = pos - rmin - jmargin
         if dist_lo < Scalar[DTYPE](0) and num_limits < 2 * njoint:
             limit_dof[num_limits] = dof
             limit_jnt[num_limits] = j
@@ -147,7 +152,7 @@ def _limits_env[
             if K_limit[num_limits] < Scalar[DTYPE](1e-10):
                 K_limit[num_limits] = Scalar[DTYPE](1e-10)
             num_limits += 1
-        var dist_hi = rmax - pos
+        var dist_hi = rmax - pos - jmargin
         if dist_hi < Scalar[DTYPE](0) and num_limits < 2 * njoint:
             limit_dof[num_limits] = dof
             limit_jnt[num_limits] = j
