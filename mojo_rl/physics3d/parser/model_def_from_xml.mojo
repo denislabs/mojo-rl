@@ -843,6 +843,31 @@ struct ModelDefFromXML[
                     len(fmd.geoms), ".",
                 )
             )
+        # ⚠⚠ AND `NQ`/`NV`, WHICH THE JOINT COUNT ABOVE DOES NOT COVER
+        # (AUD-19). The two paths can agree on HOW MANY joints there are and
+        # disagree on what they weigh: `parse_xml` reads a joint's `type` off
+        # the ELEMENT only (`xml_parser.mojo:2956-2961`), so a class-level
+        # `type="ball"` or `type="free"` counts as a 1-dof hinge there and as
+        # 4/3 or 7/6 here. njoint matches, NQ/NV do not, and every qpos index
+        # downstream is shifted — the quietest possible way to get a wrong
+        # model, because nothing is out of range.
+        var _nq = 0
+        var _nv = 0
+        for _ji in range(len(fmd.joints)):
+            _nq += fmd.joints[_ji].nq
+            _nv += fmd.joints[_ji].nv
+        if _nq != Self.NQ or _nv != Self.NV:
+            raise Error(
+                String(
+                    "physics3d: parser/dimension mismatch on NQ/NV — declared",
+                    " nq=", Self.NQ, " nv=", Self.NV,
+                    ", full_parser's joints sum to nq=", _nq, " nv=", _nv,
+                    ". The joint COUNT agrees, so this is a joint whose",
+                    " `type` the comptime scan could not see — it reads the",
+                    " element only, and a `type=\"ball\"` or `type=\"free\"`",
+                    " stated in a <default> class is invisible to it.",
+                )
+            )
         # ⚠⚠ `na`/`nkey` ARE HAND-SUPPLIED AND NOTHING ELSE CHECKS THEM.
         # `parse_xml` does not compute either, so they are the one pair of
         # dimensions with no automatic source — and both fail SILENTLY when
