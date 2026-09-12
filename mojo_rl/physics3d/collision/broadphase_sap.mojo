@@ -2627,7 +2627,18 @@ def _detect_contacts_sap_env[
     if n_pair_aabb > npair:
         n_pair_aabb = npair
     for p in range(n_pair_aabb):
-        var pm = rebind[Scalar[DTYPE]](pairs[p, PAIR_IDX_MARGIN])
+        # ⚠ `margin + gap`, THE SAME SUM THE GEOM AABB ABOVE USES (AUD-36).
+        # `filterCollisionPair` runs `mj_filterSphere(m, d, g1, g2,
+        # margin + gap)` for a predefined pair exactly as it does for a
+        # dynamic one (engine_collision_driver.c), so widening by `margin`
+        # alone dropped every in-gap pair contact before the narrow phase
+        # could see it — on the SAP path only, which is what made it invisible
+        # to the O(N^2) gates. And the GUARD has to be the sum too: a pair
+        # with `margin="0" gap="0.01"` skipped this loop entirely.
+        var pm = (
+            rebind[Scalar[DTYPE]](pairs[p, PAIR_IDX_MARGIN])
+            + rebind[Scalar[DTYPE]](pairs[p, PAIR_IDX_GAP])
+        )
         if pm <= Scalar[DTYPE](0):
             continue
         for side in range(2):
@@ -3326,7 +3337,11 @@ def _detect_contacts_sap_block_kernel[
         if n_pair_aabb > npair:
             n_pair_aabb = npair
         for p in range(n_pair_aabb):
-            var pm = rebind[Scalar[DTYPE]](pairs[p, PAIR_IDX_MARGIN])
+            # `margin + gap`, as in the per-env builder above (AUD-36).
+            var pm = (
+                rebind[Scalar[DTYPE]](pairs[p, PAIR_IDX_MARGIN])
+                + rebind[Scalar[DTYPE]](pairs[p, PAIR_IDX_GAP])
+            )
             if pm <= Scalar[DTYPE](0):
                 continue
             for side in range(2):

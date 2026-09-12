@@ -182,6 +182,70 @@ def compute_mesh_rbound_at[
     return sqrt(hx * hx + hy * hy + hz * hz)
 
 
+def compute_mesh_half_extents_at[
+    DTYPE: DType,
+](
+    verts: List[Scalar[DTYPE]],
+    vert_offset: Int,
+    num_verts: Int,
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """`geom_size` for a mesh geom — `mjCGeom::Compile`'s mesh case.
+
+        size[k] = max(|aamm[k]|, |aamm[k+3]|)      (user_objects.cc:4089-4093)
+
+    i.e. the half-extent of the smallest box CENTRED ON THE FRAME ORIGIN that
+    contains the mesh — not the half-size of its axis-aligned bounding box,
+    which is a different number whenever the mesh is off-centre in its own
+    frame.
+
+    ⚠⚠ MESH GEOMS CARRIED A 0.5 PLACEHOLDER HERE (AUD-46). `ray_mesh` and
+    `ray_mesh_bvh` both run MuJoCo's own `ray_box(geom_size)` reject before
+    touching a triangle (`engine_ray.c:894, :963`), so a 5 cm mesh whose
+    geom_size said 0.5 was harmless, and a mesh reaching further than 0.5 m
+    from its frame origin LOST every hit past that — silently, as a miss. On
+    the panda's own mesh geoms MuJoCo's sizes run from 0.002 to 0.039.
+
+    Three numbers are easy to confuse here and only one is MuJoCo's:
+
+        (max_k - min_k) / 2      <- the AABB half-size, centred on the mesh
+        max(|min_k|, |max_k|)    <- MuJoCo, centred on the FRAME ORIGIN
+        0.5                      <- what was there
+
+    Shares its bounds scan with `compute_mesh_rbound_at` above, which folds
+    the same three numbers into the AABB corner radius: two quantities, one
+    rule, so they cannot drift apart.
+    """
+    if num_verts == 0:
+        return (Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0))
+    var lo_x = verts[vert_offset + 0]
+    var lo_y = verts[vert_offset + 1]
+    var lo_z = verts[vert_offset + 2]
+    var hi_x = lo_x
+    var hi_y = lo_y
+    var hi_z = lo_z
+    for i in range(1, num_verts):
+        var vx = verts[vert_offset + i * 3 + 0]
+        var vy = verts[vert_offset + i * 3 + 1]
+        var vz = verts[vert_offset + i * 3 + 2]
+        if vx < lo_x:
+            lo_x = vx
+        if vy < lo_y:
+            lo_y = vy
+        if vz < lo_z:
+            lo_z = vz
+        if vx > hi_x:
+            hi_x = vx
+        if vy > hi_y:
+            hi_y = vy
+        if vz > hi_z:
+            hi_z = vz
+    return (
+        max(abs(lo_x), abs(hi_x)),
+        max(abs(lo_y), abs(hi_y)),
+        max(abs(lo_z), abs(hi_z)),
+    )
+
+
 # =============================================================================
 # 3D Incremental Convex Hull
 # =============================================================================

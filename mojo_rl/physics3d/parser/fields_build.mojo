@@ -58,6 +58,7 @@ from mojo_rl.physics3d.collision.native_multicontact import (
 from mojo_rl.physics3d.collision.convex_hull import (
     load_mesh_hull,
     compute_mesh_rbound_at,
+    compute_mesh_half_extents_at,
 )
 from mojo_rl.physics3d.model.inertia_from_geom import (
     geom_volume,
@@ -2083,6 +2084,17 @@ def build_model_fields_from_flat[
                         mesh_vert, mesh_vertadr[mid] * 3, mesh_vertnum[mid]
                     )
                 )
+                # ⚠ AND `geom_size`, WHICH USED TO BE A 0.5 PLACEHOLDER
+                # (AUD-46). `mj_ray`'s mesh path runs `ray_box(geom_size)`
+                # BEFORE any triangle (engine_ray.c:894, :963), so a mesh
+                # reaching further than 0.5 m from its frame origin lost
+                # every hit past that — silently, as a miss.
+                var _he = compute_mesh_half_extents_at[DTYPE](
+                    mesh_vert, mesh_vertadr[mid] * 3, mesh_vertnum[mid]
+                )
+                mf.geoms.data[o + GEOM_IDX_HALF_X] = _he[0]
+                mf.geoms.data[o + GEOM_IDX_HALF_Y] = _he[1]
+                mf.geoms.data[o + GEOM_IDX_HALF_Z] = _he[2]
             else:
                 try:
                     var result = load_mesh_hull[DTYPE](
@@ -2123,6 +2135,16 @@ def build_model_fields_from_flat[
                         mesh_id
                     )
                     mf.geoms.data[o + GEOM_IDX_RBOUND] = result[1]
+                    # `geom_size` from the mesh just loaded (AUD-46) — the
+                    # same call the already-loaded branch above makes.
+                    var _he2 = compute_mesh_half_extents_at[DTYPE](
+                        mesh_vert,
+                        mesh_vertadr[mesh_id] * 3,
+                        mesh_vertnum[mesh_id],
+                    )
+                    mf.geoms.data[o + GEOM_IDX_HALF_X] = _he2[0]
+                    mf.geoms.data[o + GEOM_IDX_HALF_Y] = _he2[1]
+                    mf.geoms.data[o + GEOM_IDX_HALF_Z] = _he2[2]
                     loaded_mesh_ids[gd.mesh_id] = mesh_id
                 except e:
                     # ⚠⚠ UNUSABLE, NOT WHATEVER WAS THERE. This used to print a
