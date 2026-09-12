@@ -48,6 +48,9 @@ from ..gpu.constants import (
     MODEL_META_SIZE,
     MODEL_META_IDX_DENSITY,
     MODEL_META_IDX_VISCOSITY,
+    MODEL_META_IDX_WIND_X,
+    MODEL_META_IDX_WIND_Y,
+    MODEL_META_IDX_WIND_Z,
     BODY_IDX_MASS,
     BODY_IDX_IXX,
     BODY_IDX_IYY,
@@ -110,8 +113,16 @@ def _fluid_forces_env[
     var njoint = dims.get_njoint()
     var rho = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_DENSITY])
     var mu = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_VISCOSITY])
+    var wind_x = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_WIND_X])
+    var wind_y = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_WIND_Y])
+    var wind_z = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_WIND_Z])
 
     # Early-out: no fluid forces when both density and viscosity are zero
+    # ⚠ AND THE WIND DOES NOT CHANGE THAT. `mj_passive` calls neither fluid
+    # model unless `density` or `viscosity` is non-zero
+    # (engine_passive.c), so `<option wind>` in a vacuum is inert in MuJoCo
+    # too — it is a fluid VELOCITY, and a fluid with no density and no
+    # viscosity exerts nothing however fast it moves.
     if rho <= Scalar[DTYPE](0) and mu <= Scalar[DTYPE](0):
         return
 
@@ -180,6 +191,34 @@ def _fluid_forces_env[
         var wx = wloc[0]
         var wy = wloc[1]
         var wz = wloc[2]
+
+        # --- 3b. Subtract the wind (AUD-27) --------------------------------
+        #
+        # ⚠ EVERY DRAG TERM BELOW IS A FUNCTION OF THE VELOCITY RELATIVE TO
+        # THE FLUID, and until now it was handed the velocity relative to the
+        # WORLD. MuJoCo builds a 6-vector `wind = [0, 0, 0, wx, wy, wz]`,
+        # rotates it into this same inertial frame and does
+        # `lvel[3..5] -= lwind[3..5]` (engine_passive.c:1167-1174, and the
+        # identical block at :1239-1248 in the ellipsoid model). The rotation
+        # is the SAME conjugate quaternion the velocity above just used, and
+        # `mju_transformSpatial`'s position terms drop out because the wind's
+        # angular half is zero — a pure rotation is the whole transform.
+        #
+        # ⚠ ANGULAR VELOCITY IS UNTOUCHED. A uniform wind is a translation of
+        # the fluid, so it shifts the linear velocity and leaves the spin
+        # alone; MuJoCo subtracts from `lvel+3` only. Subtracting it from
+        # `wx/wy/wz` here would be dimensionally wrong as well as wrong.
+        if (
+            wind_x != Scalar[DTYPE](0)
+            or wind_y != Scalar[DTYPE](0)
+            or wind_z != Scalar[DTYPE](0)
+        ):
+            var wnd = quat_rotate[DTYPE](
+                -qx, -qy, -qz, qw, wind_x, wind_y, wind_z
+            )
+            vx -= wnd[0]
+            vy -= wnd[1]
+            vz -= wnd[2]
 
         # --- 4. Equivalent sphere diameter for Stokes drag ---
         var diam = (bx + by + bz) / Scalar[DTYPE](3)

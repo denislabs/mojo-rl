@@ -2122,6 +2122,12 @@ struct FlatModelDef(Movable):
     var timestep: Float64
     var opt_density: Float64  # Fluid density (kg/m³), 0 = disabled
     var opt_viscosity: Float64  # Fluid dynamic viscosity (Pa·s), 0 = disabled
+    # `<option wind>` (AUD-27): the fluid's own velocity in WORLD coordinates.
+    # Subtracted from each body's linear velocity before any drag term, so a
+    # body at rest in a moving fluid feels drag.
+    var opt_wind_x: Float64
+    var opt_wind_y: Float64
+    var opt_wind_z: Float64
     # `<option noslip_tolerance>` — the improvement threshold `mj_solNoSlip`
     # stops on, NOT the primal solver's `tolerance`. MuJoCo's default is 1e-6;
     # dm_control's manipulation models set 0 ("run every iteration"). See
@@ -2533,6 +2539,9 @@ struct FlatModelDef(Movable):
         self.timestep = Float64(0.01)
         self.opt_density = Float64(0)
         self.opt_viscosity = Float64(0)
+        self.opt_wind_x = Float64(0)
+        self.opt_wind_y = Float64(0)
+        self.opt_wind_z = Float64(0)
         self.noslip_tolerance = Float64(1e-6)
         self.noslip_iterations = 0
         self.solver_iterations = MJ_SOLVER_ITERATIONS

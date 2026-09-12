@@ -271,7 +271,13 @@ def test_every_silent_row_reports_its_audit_id() raises:
         # AUD-23 is GONE from this list on purpose: `<sensor>` is parsed now,
         # and an element this engine does not model RAISES rather than being
         # counted. Its coverage moved to `test_sensor_table_vs_mujoco`.
-        String("AUD-24"), String("AUD-25"), String("AUD-26"), String("AUD-27"),
+        String("AUD-24"), String("AUD-25"), String("AUD-26"),
+        # ⚠ AUD-27 IS GONE FROM THIS LIST ON PURPOSE. `<option wind>` is
+        # READ as of 2026-09-13 — it reaches the fluid model, gated by
+        # `test_wind_vs_mujoco` — so a scan that still reported it would be
+        # naming a defect that no longer exists. The fixture below keeps its
+        # `wind=` attribute so that a regression which silently stopped
+        # reading it would have to come back through that gate.
         String("AUD-28"), String("AUD-34"), String("AUD-37"), String("AUD-02"),
         # AUD-54 — the 3.12 POLYNOMIAL stiffness/damping, which the fixture's
         # `<fixed damping="3 0.4" stiffness="2 0.7">` states. Unlike its

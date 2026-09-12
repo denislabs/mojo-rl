@@ -210,6 +210,31 @@ def _lower_ascii(s: String) -> String:
     return out
 
 
+def _parse_option_wind(xml: String) -> Tuple[Float64, Float64, Float64]:
+    """`<option wind>` — a world-frame fluid velocity, default (0, 0, 0).
+
+    ⚠ SEPARATE FROM `_parse_option` ONLY BECAUSE ITS TUPLE IS ALREADY
+    EIGHTEEN WIDE. Same rule: the FIRST `<option>` tag in the document, which
+    is the one MuJoCo's reader keeps.
+
+    Wind is not a force. `mj_inertiaBoxFluidModel` and
+    `mj_ellipsoidFluidModel` rotate it into the body's inertial frame and
+    subtract it from the body's linear velocity
+    (`engine_passive.c:1167-1174, :1239-1248`), so every drag term is
+    evaluated on the velocity RELATIVE TO THE FLUID. A body at rest in a
+    moving fluid feels drag; with `wind` unread it felt none (AUD-27).
+    """
+    var pos = xml.find("<option")
+    if pos == -1:
+        return (Float64(0), Float64(0), Float64(0))
+    var tag = _extract_opening_tag(xml, pos)
+    var w_s = _extract_attr(tag, "wind")
+    if w_s.byte_length() == 0:
+        return (Float64(0), Float64(0), Float64(0))
+    var wv = _parse_vec3(w_s)
+    return (wv[0], wv[1], wv[2])
+
+
 def _parse_option(
     xml: String,
 ) -> Tuple[
@@ -7012,10 +7037,13 @@ def _scan_silent_attrs(xml: String, mut result: FlatModelDef) raises:
 
     # ── <option> ───────────────────────────────────────────────────────────
     var opt = _opening_tags(xml, "option")
-    _silent(
-        result, "AUD-27", _count_attr(opt, "wind", _SA_PRESENT),
-        "`<option wind>`", "fluid forces use the body velocity alone",
-    )
+    # ⚠ NO AUD-27 ROW ANY MORE: `<option wind>` IS READ (2026-09-13). It
+    # reaches `meta[MODEL_META_IDX_WIND_*]` and
+    # `dynamics/fluid_forces` subtracts it from each body's linear velocity
+    # in the inertial frame, which is what MuJoCo's two fluid models do.
+    # Leaving the row in would report a defect that no longer exists — the
+    # opposite failure to the one this scan was built for, and just as
+    # misleading.
     _silent(
         result, "AUD-28", _count_attr(opt, "magnetic", _SA_PRESENT),
         "`<option magnetic>`", "there is no magnetometer",
@@ -7378,6 +7406,10 @@ def parse_xml_full(
     result.timestep = opt[3]
     result.opt_density = opt[4]
     result.opt_viscosity = opt[5]
+    var wind = _parse_option_wind(xml)
+    result.opt_wind_x = wind[0]
+    result.opt_wind_y = wind[1]
+    result.opt_wind_z = wind[2]
     result.noslip_tolerance = opt[6]
     result.ccd_tolerance = opt[7]
     result.ccd_iterations = opt[8]

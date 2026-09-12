@@ -502,7 +502,7 @@ comptime NEWTON_312_CRITERIA: Bool = True
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 47
+comptime MODEL_META_SIZE: Int = 50
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -744,6 +744,19 @@ comptime MODEL_META_IDX_WARMSTART_DISABLED: Int = 45
 # walks `NV` rows instead of this one reads zeroed padding as a tree at dof 0
 # of length 0 — legal-looking and wrong.
 comptime MODEL_META_IDX_NTREE: Int = 46
+
+# ⚠ `<option wind>` — A WORLD-FRAME FLUID VELOCITY, NOT A FORCE (AUD-27).
+# `mj_inertiaBoxFluidModel` and `mj_ellipsoidFluidModel` both rotate it into
+# the body's inertial frame and SUBTRACT it from the body's linear velocity
+# (`engine_passive.c:1167-1174, :1239-1248`), so every drag term downstream
+# sees the velocity RELATIVE TO THE FLUID. With no wind the two are the same,
+# which is why the whole fluid model could be ported without it. Three slots,
+# because wind is a 3-vector and `opt.wind` has no angular part — MuJoCo
+# builds a 6-vector with a zero rotation half purely to reuse
+# `mju_transformSpatial`.
+comptime MODEL_META_IDX_WIND_X: Int = 47
+comptime MODEL_META_IDX_WIND_Y: Int = 48
+comptime MODEL_META_IDX_WIND_Z: Int = 49
 
 comptime MJ_SOLVER_ITERATIONS: Int = 100
 comptime MJ_SOLVER_TOLERANCE: Float64 = 1e-8

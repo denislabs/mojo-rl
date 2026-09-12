@@ -189,6 +189,9 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_META_IDX_DENSITY,
     MODEL_META_IDX_VISCOSITY,
+    MODEL_META_IDX_WIND_X,
+    MODEL_META_IDX_WIND_Y,
+    MODEL_META_IDX_WIND_Z,
     MODEL_META_IDX_SOLREF_CONTACT_0,
     MODEL_META_IDX_SOLREF_CONTACT_1,
     MODEL_META_IDX_SOLIMP_CONTACT_0,
@@ -1252,6 +1255,9 @@ def build_model_fields_from_flat[
     mf.meta.data[MODEL_META_IDX_TIMESTEP] = Scalar[DTYPE](fmd.timestep)
     mf.meta.data[MODEL_META_IDX_DENSITY] = Scalar[DTYPE](fmd.opt_density)
     mf.meta.data[MODEL_META_IDX_VISCOSITY] = Scalar[DTYPE](fmd.opt_viscosity)
+    mf.meta.data[MODEL_META_IDX_WIND_X] = Scalar[DTYPE](fmd.opt_wind_x)
+    mf.meta.data[MODEL_META_IDX_WIND_Y] = Scalar[DTYPE](fmd.opt_wind_y)
+    mf.meta.data[MODEL_META_IDX_WIND_Z] = Scalar[DTYPE](fmd.opt_wind_z)
     # ⚠⚠ WAS HARDCODED `1.0`, AND FIVE SOLVERS READ THIS SLOT. `contact_solve`,
     # `newton_solve` (twice), `cg_solve` and `island_pgs_solve` all take
     # `impratio` from here, so `<option impratio>` was parsed by nothing and
