@@ -62,7 +62,7 @@ comptime SILENT_XML = String(
     <pair geom1="ga" geom2="gb" class="p" adhesion="2" solreffriction="0.01 1"/>
   </contact>
   <tendon>
-    <fixed name="t" damping="3" frictionloss="0.5" armature="0.1"
+    <fixed name="t" damping="3 0.4" stiffness="2 0.7" frictionloss="0.5" armature="0.1"
            solreffriction="0.02 1" solimpfriction="0.9 0.95 0.001" actuatorfrcrange="-1 1">
       <joint joint="j1" coef="1"/>
     </fixed>
@@ -273,6 +273,12 @@ def test_every_silent_row_reports_its_audit_id() raises:
         # counted. Its coverage moved to `test_sensor_table_vs_mujoco`.
         String("AUD-24"), String("AUD-25"), String("AUD-26"), String("AUD-27"),
         String("AUD-28"), String("AUD-34"), String("AUD-37"), String("AUD-02"),
+        # AUD-54 — the 3.12 POLYNOMIAL stiffness/damping, which the fixture's
+        # `<fixed damping="3 0.4" stiffness="2 0.7">` states. Unlike its
+        # neighbours in this list the ATTRIBUTE is read: what is dropped is
+        # the higher coefficient, so the row has to be counted separately
+        # from the AUD-08 "not read at all" family beside it.
+        String("AUD-54"),
     ]
     for i in range(len(want)):
         assert_true(

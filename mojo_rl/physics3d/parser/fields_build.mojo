@@ -2759,8 +2759,15 @@ def build_model_fields_from_flat[
         mf.equality.data[o + EQ_IDX_SOLIMP_0] = Scalar[DTYPE](ed.solimp_0)
         mf.equality.data[o + EQ_IDX_SOLIMP_1] = Scalar[DTYPE](ed.solimp_1)
         mf.equality.data[o + EQ_IDX_SOLIMP_2] = Scalar[DTYPE](ed.solimp_2)
-        mf.equality.data[o + EQ_IDX_SOLIMP_3] = Scalar[DTYPE](0.5)
-        mf.equality.data[o + EQ_IDX_SOLIMP_4] = Scalar[DTYPE](2.0)
+        # ⚠ THE PARSER READS ALL FIVE; THIS WROTE THE DEFAULTS FOR TWO
+        # (AUD-06). `_fill_equality_solparams` fills `solimp_3` (the width of
+        # the impedance ramp) and `solimp_4` (its power) from the element,
+        # the class and the root default, and both were then thrown away
+        # here. The existing equality gates all state `solimp="… 0.5 2"`, so
+        # every one of them agreed with the hardcode — the tendon equality
+        # writer four blocks up already passes its own two through.
+        mf.equality.data[o + EQ_IDX_SOLIMP_3] = Scalar[DTYPE](ed.solimp_3)
+        mf.equality.data[o + EQ_IDX_SOLIMP_4] = Scalar[DTYPE](ed.solimp_4)
         # Weld only (MuJoCo's eq_data[10]); connect has no orientation rows,
         # so 1 keeps the multiply a no-op rather than zeroing anything.
         mf.equality.data[o + EQ_IDX_TORQUESCALE] = Scalar[DTYPE](

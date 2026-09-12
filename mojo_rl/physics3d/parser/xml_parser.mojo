@@ -388,6 +388,29 @@ def _pow10(k: Int) -> Float64:
     return p
 
 
+def _first_token(s: String) -> String:
+    """The first whitespace-delimited token of an already-trimmed string.
+
+    ⚠ A SCALAR ATTRIBUTE HOLDING TWO TOKENS IS NOT THEIR CONCATENATION.
+    The digit loops below skip every character they do not recognise, so
+    `stiffness="1 2"` accumulated ONE mantissa across the space and returned
+    12 — a value the model never stated, three orders out, with no message
+    (AUD-15). MuJoCo tokenises on whitespace and reads at most `len` of them
+    (`mjXUtil::ReadAttrValues`, xml_util.cc:722), then REFUSES the model:
+    "attribute '%s' has too much data" (`mjXUtil::ReadAttr`). We take the
+    first token instead of refusing, because this helper is the leaf of 200+
+    call sites and is used at comptime; the first token is the value MuJoCo
+    would have read had the model been legal, and it is never the
+    concatenation, which is the value nothing could have meant.
+    """
+    var n = s.byte_length()
+    for i in range(n):
+        var c = s[byte = i : i + 1]
+        if c == " " or c == "\t" or c == "\n" or c == "\r":
+            return String(s[byte=0:i])
+    return s
+
+
 def _parse_float(s: String) -> Float64:
     """Parse a float string such as "0.7", "-3.14", "1e-3" to Float64.
 
@@ -406,7 +429,7 @@ def _parse_float(s: String) -> Float64:
     error on every float in every model, and it compounds over a rollout —
     which is exactly the regime the dm_control parity tests measure.
     """
-    var t = _trim(s)
+    var t = _first_token(_trim(s))
     if t.byte_length() == 0:
         return Float64(0)
 
@@ -503,8 +526,14 @@ def _parse_float(s: String) -> Float64:
 
 
 def _parse_int_str(s: String) -> Int:
-    """Parse "3", "-1" etc. to Int."""
-    var t = _trim(s)
+    """Parse "3", "-1" etc. to Int.
+
+    Same AUD-15 rule as `_parse_float`: one token, and it ends at the first
+    character that is not a digit. Skipping unrecognised characters instead
+    made `"1 2"` read as 12 and `"1.5"` as 15; `strtol`, which is what
+    MuJoCo's reader is built on, stops at the first non-digit.
+    """
+    var t = _first_token(_trim(s))
     if t.byte_length() == 0:
         return 0
     var neg = False
@@ -515,8 +544,9 @@ def _parse_int_str(s: String) -> Int:
     var val = 0
     for i in range(start, t.byte_length()):
         var d = _digit_value(String(t[byte = i : i + 1]))
-        if d >= 0:
-            val = val * 10 + d
+        if d < 0:
+            break
+        val = val * 10 + d
     if neg:
         return -val
     return val

@@ -4708,12 +4708,20 @@ def _fill_equality(
             if pc_s.byte_length() > 0:
                 var pc = List[String]()
                 _split_spaces(pc_s, pc)
+                # ⚠ A STATED PREFIX DOES NOT ZERO THE REST (AUD-16).
+                # MuJoCo's `ReadAttr(elem, "polycoef", 5, data, …,
+                # exact=false)` (xml_native_reader.cc:1095) copies only the
+                # tokens present and leaves the remaining slots at the
+                # element's defaults, which `mjs_defaultEquality`
+                # (user_init.c) set to `[0, 1, 0, 0, 0]`. So
+                # `polycoef="0.5"` is `[0.5, 1, 0, 0, 0]` — q1 still tracks
+                # q2 one-to-one, with an offset. Zeroing slot 1 here
+                # DECOUPLED the two joints instead: a constraint that looks
+                # active and pins q1 to a constant.
                 if len(pc) >= 1:
                     ed.anchor_a_x = _parse_float(pc[0])
                 if len(pc) >= 2:
                     ed.anchor_a_y = _parse_float(pc[1])
-                else:
-                    ed.anchor_a_y = 0.0
                 if len(pc) >= 3:
                     ed.anchor_a_z = _parse_float(pc[2])
                 if len(pc) >= 4:
@@ -5567,9 +5575,18 @@ def _fill_tendon_equalities(
         # `<default class="coupling"><equality .../></default>`.
         var cls = _trim(_extract_attr(tag, "class"))
         var cls_tag = _default_class_tag(xml, cls, "equality")
+        # ⚠ AND THEN THE ROOT `<default><equality>` (AUD-07). The
+        # body/joint branch of `_fill_equality` consults all three levels
+        # (`_fill_equality_solparams`); this one stopped at the named class,
+        # so a model that states its equality solparams ONCE at the root —
+        # the Cassie and apollo spelling — got the built-in defaults here
+        # and the stated ones everywhere else, in the same model.
+        var root_tag = _root_default_tag(xml, "equality")
         var sr = _trim(_extract_attr(tag, "solref"))
         if sr.byte_length() == 0:
             sr = _trim(_extract_attr(cls_tag, "solref"))
+        if sr.byte_length() == 0:
+            sr = _trim(_extract_attr(root_tag, "solref"))
         if sr.byte_length() > 0:
             # ⚠ THE MIRROR OF THE OTHERS: this one required BOTH
             # components and dropped a one-value `solref` on the floor.
@@ -5579,6 +5596,8 @@ def _fill_tendon_equalities(
         var si = _trim(_extract_attr(tag, "solimp"))
         if si.byte_length() == 0:
             si = _trim(_extract_attr(cls_tag, "solimp"))
+        if si.byte_length() == 0:
+            si = _trim(_extract_attr(root_tag, "solimp"))
         if si.byte_length() > 0:
             var ip = List[String]()
             _split_spaces(si, ip)
@@ -5856,11 +5875,19 @@ def _fill_tendons(
         if solref_s.byte_length() == 0:
             solref_s = eff.tendon_solreflimit_s
         if solref_s.byte_length() > 0:
-            var rp = List[String]()
-            _split_spaces(solref_s, rp)
-            if len(rp) >= 2:
-                td.solref_lim_0 = _parse_float(rp[0])
-                td.solref_lim_1 = _parse_float(rp[1])
+            # ⚠ ONE TOKEN IS A LEGAL `solref` AND IT IS NOT NOTHING
+            # (AUD-17). The `len(rp) >= 2` gate that stood here dropped
+            # `solreflimit="0.005"` ENTIRELY — the tendon kept the 0.02
+            # default, a timeconst four times too long — where MuJoCo reads
+            # the one token it was given and keeps the dampratio at 1.
+            # `_solref_into` is that rule, measured on the runtime and
+            # already used by the joint, geom and equality readers; this
+            # site was the one that had it written out by hand.
+            var sv = _solref_into(
+                solref_s, td.solref_lim_0, td.solref_lim_1
+            )
+            td.solref_lim_0 = sv[0]
+            td.solref_lim_1 = sv[1]
 
         var solimp_s = _extract_attr(open_tag, "solimplimit")
         if solimp_s.byte_length() == 0:
@@ -7013,9 +7040,30 @@ def _scan_silent_attrs(xml: String, mut result: FlatModelDef) raises:
         result, "AUD-15",
         _count_attr(jnt, "stiffness", _SA_MULTI)
         + _count_attr(jnt, "damping", _SA_MULTI),
-        "polynomial `<joint stiffness|damping>` spelling(s) (3.7)",
-        "the tokens are parsed as ONE concatenated number",
+        "polynomial `<joint stiffness|damping>` spelling(s)",
+        "only the LINEAR coefficient is read; the higher terms are dropped,"
+        " so the spring/damper stays linear where MuJoCo's is not",
     )
+
+    # ── polynomial stiffness/damping on the OTHER three elements ──────────
+    # ⚠ THE POLYNOMIAL IS A 3.12 FEATURE, NOT A LEGACY SPELLING, and it is
+    # not confined to `<joint>`. `mjNPOLY = 2` (mjmodel.h:44) and the MJCF
+    # tables give `stiffness`/`damping` mjNPOLY+1 slots on joints, on both
+    # tendon kinds and on actuators (mjcf_read_table.inc:336,344,535,536,
+    # 557,558,580), landing in `jnt_stiffnesspoly`, `dof_dampingpoly`,
+    # `tendon_stiffnesspoly`, `tendon_dampingpoly` and
+    # `actuator_dampingpoly`. `mj_springdamper` then evaluates
+    # `force = -x * mju_polyForce(linear, poly, x, mjNPOLY, odd)`
+    # (engine_passive.c:654-740), i.e. `linear + p0*x + p1*x^2` for a spring
+    # and the same in `|v|` for a damper. We have one scalar per site and no
+    # poly term anywhere, so a model that states one gets a LINEAR spring of
+    # the stated linear coefficient — right at the origin, increasingly
+    # wrong away from it.
+    # The tendon half of this is counted in the `<tendon>` block below.
+    # ⚠ THERE IS NO ACTUATOR ROW, AND THAT IS NOT AN OVERSIGHT. An
+    # actuator's `damping` is not read AT ALL — the AUD-28 row in the
+    # actuator block counts it whether it has one token or three — so a poly
+    # row would count the same model twice and claim the narrower defect.
 
     # ── <geom> ─────────────────────────────────────────────────────────────
     var geo = _opening_tags(xml, "geom")
@@ -7073,6 +7121,15 @@ def _scan_silent_attrs(xml: String, mut result: FlatModelDef) raises:
         "tendon frictionloss/armature/friction-solparam/actuatorfrc"
         " attribute(s)",
         "tendons carry a spring, a damper and a limit here, nothing else",
+    )
+    _silent(
+        result, "AUD-54",
+        _count_attr(ten, "stiffness", _SA_MULTI)
+        + _count_attr(ten, "damping", _SA_MULTI),
+        "polynomial `<spatial|fixed stiffness|damping>` spelling(s)",
+        "the tendon spring and damper keep the linear coefficient only —"
+        " unlike `frictionloss` above, these two ARE read, so the count"
+        " here is the poly terms alone and not the whole attribute",
     )
 
     # ── actuators ──────────────────────────────────────────────────────────
