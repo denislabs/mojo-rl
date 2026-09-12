@@ -176,7 +176,12 @@ def _fnet_passive_env[
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR])
         )
         var damp_d = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DAMPING])
-        if damp_d > Scalar[DTYPE](0):
+        # ⚠ `!= 0`, NOT `> 0` (AUD-42). `mj_springdamper` gates the damper on
+        # `damping != 0 || !mju_isZero(poly)` (engine_passive.c:722-735), so a
+        # NEGATIVE damping injects energy on purpose. `> 0` silently made such
+        # a joint undamped, which looks like a stable model and is a different
+        # one.
+        if damp_d != Scalar[DTYPE](0):
             var nd = 1
             if jnt_type_d == JNT_FREE:
                 nd = 6
@@ -404,11 +409,27 @@ def _finalize_damping_env[
     damping (engine_forward.c, `eulerdamp`). ONE spelling, shared by the dense
     and the tree-ordered finalize."""
     var nv = dims.get_nv()
+    # ⚠⚠ TWO PASSES, BECAUSE MuJoCo DETECTS AND APPLIES BY DIFFERENT TESTS
+    # (AUD-42). `mj_EulerSkip` (engine_forward.c) first scans for ANY dof with
+    # `dof_damping[i] > 0` — strictly positive — and takes the explicit branch
+    # if it finds none. Having found one, the `qH += h*diag(B)` loop that
+    # follows runs over EVERY dof with no test at all, so a negative damping
+    # in a model that also has a positive one IS added. A single `damp > 0`
+    # per joint collapses both tests into the wrong one and drops it.
+    var any_positive = False
+    for j in range(dims.get_njoint()):
+        if rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DAMPING]) > Scalar[
+            DTYPE
+        ](0):
+            any_positive = True
+            break
+    if not any_positive:
+        return
     for j in range(dims.get_njoint()):
         var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var dof_adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
         var damp = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DAMPING])
-        if damp > Scalar[DTYPE](0):
+        if damp != Scalar[DTYPE](0):
             var nd = 1
             if jnt_type == JNT_FREE:
                 nd = 6
@@ -718,11 +739,25 @@ def _finalize_rhs_kernel[
             ](qacc_constrained[env, j])
         fnet[env, i] = sum
     barrier()
+    # The same two tests as the per-env builder above (AUD-42): detect on
+    # `> 0` over ALL joints, then apply to every joint whose damping is
+    # non-zero. The scan is whole-array in each thread rather than strided —
+    # it is a read-only reduction over NJOINT scalars and the strided form
+    # would need a barrier to share its answer.
+    var any_positive = False
+    for j in range(NJOINT):
+        if rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DAMPING]) > Scalar[
+            DTYPE
+        ](0):
+            any_positive = True
+            break
     for j in range(i, NJOINT, NVn):
+        if not any_positive:
+            break
         var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var dof_adr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
         var damp = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DAMPING])
-        if damp > Scalar[DTYPE](0):
+        if damp != Scalar[DTYPE](0):
             var nd = 1
             if jnt_type == JNT_FREE:
                 nd = 6

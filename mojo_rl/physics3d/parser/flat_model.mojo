@@ -1431,6 +1431,14 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var motor_ctrl_min: Float64
     var motor_ctrl_max: Float64
     var motor_gear: Float64
+    # ⚠ AND THE RAW STRING BESIDE IT (AUD-18). `motor_gear` is one Float64,
+    # so a class stating `gear="0 0 1 0 0 -.0201"` — the Menagerie quadrotor
+    # spelling — collapsed to its FIRST token, which for those models is 0:
+    # an actuator that applies no force at all. The element-level reader has
+    # always read all six; only the class path lost them. Kept alongside
+    # rather than replacing the scalar, because `motor_gear` is passed
+    # positionally through this constructor by a dozen call sites.
+    var motor_gear_s: String
     # Phase 1a.1. Assignment-initialised like the structural attrs below.
     var motor_force_limited: Bool
     var motor_force_min: Float64
@@ -1467,6 +1475,16 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var motor_gain_set: Bool
     var motor_bias2: Float64
     var motor_bias2_set: Bool
+    # ⚠ `biasprm[1]`, WHICH IS WHAT MAKES A SERVO A SERVO (AUD-20). The pair
+    # above carried `gainprm[0]` and `biasprm[2]` only, so a class written as
+    # `<position kp kv>` handed a `<general class="...">` element NOTHING: no
+    # gain, no bias, no biastype — a gain-1 torque motor where MuJoCo has a
+    # PD servo. `mjs_setToPosition` (user_api.cc:1273) writes gainprm[0],
+    # biasprm[1] = -kp, gaintype FIXED and biastype AFFINE unconditionally,
+    # so all four have to be layered here for the `<general>` reader to find
+    # them.
+    var motor_bias1: Float64
+    var motor_bias1_set: Bool
     var motor_kp_s: String
     # `<position inheritrange>` — see `_fill_actuators`. Carried as raw text so
     # an absent attribute inherits the parent class rather than resetting it,
@@ -1670,6 +1688,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_ctrl_min = motor_ctrl_min
         self.motor_ctrl_max = motor_ctrl_max
         self.motor_gear = motor_gear
+        self.motor_gear_s = ""
         # Structural attrs are never passed positionally — a <default> block
         # sets them by assignment in `_parse_one_default_block`.
         self.motor_force_limited = False
@@ -1681,6 +1700,8 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_gain_set = False
         self.motor_bias2 = 0.0
         self.motor_bias2_set = False
+        self.motor_bias1 = 0.0
+        self.motor_bias1_set = False
         self.motor_kp_s = ""
         self.motor_inheritrange_s = ""
         self.motor_kv_s = ""

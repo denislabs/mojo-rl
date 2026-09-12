@@ -2890,11 +2890,26 @@ def build_model_fields_from_flat[
                     body_inertia[i * 3 + k] = bi
                     body_inv_inertia[i * 3 + k] = Scalar[DTYPE](1.0) / bi
 
-    # ⚠ `settotalmass` applies ONLY when inertiafromgeom is active, which is
-    # MuJoCo's legacy ordering. dm_control's cheetah relies on it: it declares
-    # `settotalmass="14"` and NO inertiafromgeom, so it takes the AUTO default
-    # and the rescale runs — 21.18 kg -> 14.0, confirmed against the runtime.
-    if ifg_mode > 0 and fmd.settotalmass > 0.0:
+    # ⚠ `settotalmass` IS UNCONDITIONAL (AUD-11). It used to be gated on
+    # `ifg_mode > 0` with a comment calling that "MuJoCo's legacy ordering";
+    # there is no such ordering. `mjCModel::Compile`
+    # (user_model.cc:5455-5458) runs `if (compiler.settotalmass > 0)
+    # mj_setTotalmass(m, ...)` after everything else, and `mj_setTotalmass`
+    # (engine_support.c) scales `body_mass` and all three `body_inertia`
+    # components for every body but the world. MEASURED on the 3.12 runtime,
+    # one two-body model with `settotalmass="14"` and explicit `<inertial>`
+    # tags, all four spellings of the compiler flag:
+    #
+    #     inertiafromgeom="false"  ->  [5.25, 8.75]   sum 14
+    #     inertiafromgeom="true"   ->  [7.00, 7.00]   sum 14
+    #     inertiafromgeom="auto"   ->  [5.25, 8.75]   sum 14
+    #     (absent)                 ->  [5.25, 8.75]   sum 14
+    #
+    # The flag changes WHAT the masses are, never WHETHER they are rescaled.
+    # The old gate made a model that states its inertias by hand and asks for
+    # a total mass keep the hand-written total — dm_control's cheetah passed
+    # only because it takes the AUTO default and so entered the branch.
+    if fmd.settotalmass > 0.0:
         var total_mass = Scalar[DTYPE](0)
         for i in range(1, mf.dims.get_nbody()):
             total_mass += body_mass[i]

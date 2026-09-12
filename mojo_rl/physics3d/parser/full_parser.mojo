@@ -1070,6 +1070,11 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var mg_s = _extract_attr(mtag, "gear")
         if mg_s.byte_length() > 0:
             d.motor_gear = _parse_float(mg_s)
+            # ⚠ AND THE WHOLE STRING (AUD-18). The scalar above is the first
+            # token; a `site=` transmission's gear is a SIX-VECTOR wrench and
+            # both Menagerie quadrotors state it in a class, where the first
+            # token is 0.
+            d.motor_gear_s = mg_s
 
         # ⚠ `<adhesion gain>` IS `gainprm[0]`, THE SAME SLOT `<general
         # gainprm>` WRITES (`mjs_setToAdhesion`, user_api.cc:1358). Layered
@@ -1145,13 +1150,36 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         # rby1's wheels inherit `kv = 4000` from a `<position kp="4000">`
         # tag: the position tag sets gain 4000, and the wheel elements —
         # which state no `kv` — take `kv = gain`.
+        # ⚠⚠ A SUGAR TAG IN A CLASS WRITES THE FULL `<general>` SHAPE
+        # (AUD-20). `mjs_setToPosition` / `mjs_setToVelocity`
+        # (user_api.cc:1273, :1340) do not set "kp" and "kv" — they write
+        # `gaintype = FIXED`, `biastype = AFFINE`, `gainprm[0]` and
+        # `biasprm[1]` UNCONDITIONALLY, plus `biasprm[2]` when the attribute
+        # is there. Recording only gainprm[0] and biasprm[2] left a
+        # `<general class="servo">` element reading an EMPTY biastype, so it
+        # became a gain-1 torque motor. MEASURED on 3.12, class `<position
+        # kp="100" kv="9"/>` + `<general class="srv" joint="j"/>`:
+        #
+        #     gaintype 0 (FIXED)   biastype 1 (AFFINE)
+        #     gainprm[0] 100       biasprm [0, -100, -9]
+        #
+        # and class `<velocity kv="7"/>`  ->  gainprm[0] 7, biasprm [0, 0, -7].
         if _which == 2:  # <position>
+            # `kp` SEEDS FROM THE INHERITED GAIN, not from 1: the reader
+            # writes `double kp = actuator->gainprm[0]` before `ReadAttr`
+            # (xml_native_reader.cc:1259), so `<position forcerange="…"/>` in
+            # a child class keeps the parent's kp and still rewrites
+            # biasprm[1] from it.
             if kp_s.byte_length() > 0:
                 d.motor_gain = _parse_float(kp_s)
-                d.motor_gain_set = True
+            d.motor_gain_set = True
+            d.motor_bias1 = -d.motor_gain
+            d.motor_bias1_set = True
             if kv_s.byte_length() > 0:
                 d.motor_bias2 = -_parse_float(kv_s)
                 d.motor_bias2_set = True
+            d.motor_gaintype_s = "fixed"
+            d.motor_biastype_s = "affine"
         elif _which == 3:  # <velocity>
             if kv_s.byte_length() > 0:
                 var _vk = _parse_float(kv_s)
@@ -1159,11 +1187,22 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
                 d.motor_gain_set = True
                 d.motor_bias2 = -_vk
                 d.motor_bias2_set = True
+            # `mjs_setToVelocity` ZEROES the whole biasprm before writing
+            # slot 2, so biasprm[1] is 0 — a velocity servo, not a position
+            # one. Stating it is what keeps a `<general>` element from
+            # inheriting a stale `-kp` from an earlier `<position>` in the
+            # same class.
+            d.motor_bias1 = 0.0
+            d.motor_bias1_set = True
+            d.motor_gaintype_s = "fixed"
+            d.motor_biastype_s = "affine"
         elif _which == 1:  # <general>
             if gp_s.byte_length() > 0:
                 d.motor_gain = _nth_float(gp_s, 0, 1.0)
                 d.motor_gain_set = True
             if bp_s.byte_length() > 0:
+                d.motor_bias1 = _nth_float(bp_s, 1, 0.0)
+                d.motor_bias1_set = True
                 d.motor_bias2 = _nth_float(bp_s, 2, 0.0)
                 d.motor_bias2_set = True
 
@@ -2655,7 +2694,25 @@ def _parse_one_geom(
             gd.half_x = s0
             gd.half_y = s1
             gd.half_z = s2
-            gd.radius = _sqrt_f64(s0 * s0 + s1 * s1 + s2 * s2)
+            if fromto_s.byte_length() > 0:
+                # ⚠ `fromto` RESHAPES A BOX, IT DOES NOT JUST POSE IT
+                # (AUD-10). MuJoCo's `mjCGeom::Compile`
+                # (user_objects.cc:4004-4013) puts half the segment length in
+                # `size[1]`, then for a box or an ellipsoid shifts it up —
+                # `size[2] = size[1]; size[1] = size[0]` — so the solid is
+                # `[s0, s0, half_length]`, square in cross-section and as long
+                # as the segment. Reading half_y and half_z off `size` alone
+                # left them at ZERO, because a fromto box states one size
+                # token: a flat, zero-thickness box that collides with
+                # nothing. The site reader 900 lines down already had this
+                # rule; the geom reader did not.
+                gd.half_y = s0
+                gd.half_z = gd.half_length
+            gd.radius = _sqrt_f64(
+                gd.half_x * gd.half_x
+                + gd.half_y * gd.half_y
+                + gd.half_z * gd.half_z
+            )
         elif gd.geom_type == _GEOM_CYLINDER:
             gd.radius = s0
             if fromto_s.byte_length() == 0:
@@ -2668,6 +2725,19 @@ def _parse_one_geom(
             gd.half_y = s1
             gd.half_z = s2
             gd.radius = s0
+            if fromto_s.byte_length() > 0:
+                # Same shift as the box branch above (AUD-10).
+                gd.half_y = s0
+                gd.half_z = gd.half_length
+                # ⚠ AND THE BOUNDING RADIUS HAS TO FOLLOW IT HERE, only
+                # here. `radius` is the broad phase's conservative bound; a
+                # fromto ellipsoid's long axis is the SEGMENT, which is
+                # routinely many times `size[0]`, so leaving the bound at s0
+                # would drop pairs. Non-fromto ellipsoids keep s0 exactly as
+                # before — widening their bound is a separate question with
+                # its own gates, and not this fix.
+                if gd.half_z > gd.radius:
+                    gd.radius = gd.half_z
         elif gd.geom_type == _GEOM_PLANE:
             gd.half_x = s0
             gd.half_y = s1
@@ -4034,7 +4104,14 @@ def _fill_actuators(
         # a gear of **0** — a second, quieter defect underneath the missing
         # transmission. The tail defaults to 0, which is what MuJoCo stores
         # for an unspecified component.
+        # ⚠ THE CLASS SUPPLIES ALL SIX TOO (AUD-18). This fell through to
+        # `eff.motor_gear`, ONE Float64, so a class-level six-vector lost its
+        # tail — and for a `site=` transmission the tail IS the wrench. One
+        # spelling for both sources rather than a scalar branch beside a
+        # vector one, because that is how the two drifted apart.
         var gear_s = _extract_attr(tag, "gear")
+        if gear_s.byte_length() == 0:
+            gear_s = eff.motor_gear_s
         if gear_s.byte_length() > 0:
             var gparts = List[String]()
             _split_spaces(gear_s, gparts)
@@ -4376,6 +4453,21 @@ def _fill_actuators(
             var b0 = _nth_float(bp, 0, 0.0)
             var b1 = _nth_float(bp, 1, 0.0)
             var b2 = _nth_float(bp, 2, 0.0)
+            # ⚠ THE CLASS'S LAYERED VALUES WIN OVER THE BUILT-IN DEFAULTS
+            # (AUD-20). `eff.motor_gain` / `motor_bias1` / `motor_bias2` are
+            # the LAST-WINS result over every actuator tag in the class chain
+            # — `<general gainprm>`, `<position kp>` and `<velocity kv>` all
+            # write them — so they strictly dominate the raw `gainprm=` /
+            # `biasprm=` strings, which only a `<general>` tag ever sets.
+            # They apply only where the ELEMENT itself said nothing.
+            if _extract_attr(tag, "gainprm").byte_length() == 0:
+                if eff.motor_gain_set:
+                    gain = eff.motor_gain
+            if _extract_attr(tag, "biasprm").byte_length() == 0:
+                if eff.motor_bias1_set:
+                    b1 = eff.motor_bias1
+                if eff.motor_bias2_set:
+                    b2 = eff.motor_bias2
             var no_bias = bt.byte_length() == 0 or bt == "none"
 
             # Shapes we do not model. First offender wins, as in the twin.
