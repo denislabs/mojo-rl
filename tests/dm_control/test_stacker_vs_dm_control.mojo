@@ -1295,7 +1295,7 @@ def test_stacker_observation_matches_mujoco() raises:
     var ref_obs = builder.observation(mj[1], mj[2], 2)
 
     var obs = List[Scalar[DTYPE]]()
-    _ = CFG2.custom_extract_obs_cpu[DTYPE, NQ2, NV2, NBODY2, MAXC2, NSITE2](
+    _ = CFG2.custom_extract_obs_cpu[DTYPE](
         d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
         List[Scalar[DTYPE]](), obs,
     )
@@ -1394,7 +1394,7 @@ def test_stacker4_observation_matches_mujoco() raises:
     var ref_obs = builder.observation(mj[1], mj[2], 4)
 
     var obs = List[Scalar[DTYPE]]()
-    _ = CFG4.custom_extract_obs_cpu[DTYPE, NQ4, NV4, NBODY4, MAXC4, NSITE4](
+    _ = CFG4.custom_extract_obs_cpu[DTYPE](
         d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
         List[Scalar[DTYPE]](), obs,
     )
@@ -1499,9 +1499,7 @@ def test_stacker_reward_matches_mujoco() raises:
                            txs[k], tzs[k])
         var mj = _mj_at2(states[k], _zero_ctrl(NACT2), txs[k], tzs[k])
         var ref_r = Float64(py=builder.reward(mj[1], mj[2], 2))
-        var got = CFG2.compute_reward_and_done_cpu[
-            DTYPE, NQ2, NV2, NBODY2, MAXC2, NSITE2
-        ](
+        var got = CFG2.compute_reward_and_done_cpu[DTYPE](
             d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
             Scalar[DTYPE](0), _zero_ctrl(NACT2), 0, 1,
         )
@@ -1539,9 +1537,7 @@ def test_stacker_reward_matches_mujoco() raises:
     _set_state_and_fk4(d4, mf4, integ4, s4, _zero_ctrl(NACT4), 0.2, 0.022)
     var mj4 = _mj_at4(s4, _zero_ctrl(NACT4), 0.2, 0.022)
     var ref_r4 = Float64(py=builder.reward(mj4[1], mj4[2], 4))
-    var got4 = CFG4.compute_reward_and_done_cpu[
-        DTYPE, NQ4, NV4, NBODY4, MAXC4, NSITE4
-    ](
+    var got4 = CFG4.compute_reward_and_done_cpu[DTYPE](
         d4, mf4.bodies.data, mf4.joints.data, mf4.geoms.data, mf4.sites.data,
         Scalar[DTYPE](0), _zero_ctrl(NACT4), 0, 1,
     )
