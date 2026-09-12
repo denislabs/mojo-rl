@@ -147,6 +147,7 @@ from ..gpu.constants import (
     mesh_max_poly,
     mesh_max_polyvert,
     mesh_max_edge,
+    MODEL_META_IDX_FILTERPARENT_DISABLED,
 )
 from .contact_order import sort_contacts_mujoco_order
 from .plane_frame import (
@@ -761,7 +762,20 @@ def pair_body_filtered[
     # Weld-parent. Guarded on both being non-world, as MuJoCo guards it: a
     # non-world weld body always has a parent >= 0, so `bodies[wp, ...]` is in
     # range only under this test.
-    if weld_i != 0 and weld_j != 0:
+    #
+    # ⚠ AND ON `<flag filterparent="disable">` (AUD-34), WHICH GATES THIS
+    # CLAUSE AND ONLY THIS ONE. MuJoCo's whole test is
+    # `(!dsbl_filterparent && weldbody1 != 0 && weldbody2 != 0) && (…)`
+    # (engine_collision_driver.c:311-314): same-weldbody, both-dof-less and
+    # the `<exclude>` scan below stay unconditional. A model that disables it
+    # WANTS a body to collide with the one it hangs from — a gripper pad
+    # against its own hand — and reading the flag as "no filtering at all"
+    # would instead let every geom collide with its own body's other geoms,
+    # which MuJoCo never does.
+    var filterparent_off = rebind[Scalar[DTYPE]](
+        mmeta[MODEL_META_IDX_FILTERPARENT_DISABLED]
+    ) != Scalar[DTYPE](0)
+    if not filterparent_off and weld_i != 0 and weld_j != 0:
         var wp_i = Int(rebind[Scalar[DTYPE]](bodies[weld_i, BODY_IDX_PARENT]))
         var wp_j = Int(rebind[Scalar[DTYPE]](bodies[weld_j, BODY_IDX_PARENT]))
         var weld_parent_i = Int(

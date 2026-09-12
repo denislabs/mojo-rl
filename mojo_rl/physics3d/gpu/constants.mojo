@@ -502,7 +502,7 @@ comptime NEWTON_312_CRITERIA: Bool = True
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 50
+comptime MODEL_META_SIZE: Int = 51
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -757,6 +757,16 @@ comptime MODEL_META_IDX_NTREE: Int = 46
 comptime MODEL_META_IDX_WIND_X: Int = 47
 comptime MODEL_META_IDX_WIND_Y: Int = 48
 comptime MODEL_META_IDX_WIND_Z: Int = 49
+
+# ⚠ `<flag filterparent="disable">` (AUD-34). DISABLE-SENSE like
+# `MODEL_META_IDX_EULERDAMP_DISABLED`: 0 is MuJoCo's default, which is that
+# the filter is ON. It gates exactly one clause of `pair_body_filtered` — the
+# weld-parent one — and nothing else: same-weldbody, both-dof-less and
+# `<exclude>` all stay unconditional (`filterBodyPair`,
+# engine_collision_driver.c:288-317). A model that disables it WANTS a body to
+# collide with its own parent, which is how a gripper pad is made to touch the
+# hand it hangs from.
+comptime MODEL_META_IDX_FILTERPARENT_DISABLED: Int = 50
 
 comptime MJ_SOLVER_ITERATIONS: Int = 100
 comptime MJ_SOLVER_TOLERANCE: Float64 = 1e-8

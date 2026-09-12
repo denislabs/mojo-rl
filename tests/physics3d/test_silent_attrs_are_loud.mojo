@@ -278,7 +278,12 @@ def test_every_silent_row_reports_its_audit_id() raises:
         # naming a defect that no longer exists. The fixture below keeps its
         # `wind=` attribute so that a regression which silently stopped
         # reading it would have to come back through that gate.
-        String("AUD-28"), String("AUD-34"), String("AUD-37"), String("AUD-02"),
+        String("AUD-28"), String("AUD-37"), String("AUD-02"),
+        # ⚠ AUD-34 IS GONE FROM THIS LIST ON PURPOSE, like AUD-27 above:
+        # `<flag filterparent="disable">` is READ as of 2026-09-13 and gated
+        # by `test_filterparent_vs_mujoco`. The fixture keeps the attribute
+        # so a regression that stopped reading it has to come back through
+        # that gate.
         # AUD-54 — the 3.12 POLYNOMIAL stiffness/damping, which the fixture's
         # `<fixed damping="3 0.4" stiffness="2 0.7">` states. Unlike its
         # neighbours in this list the ATTRIBUTE is read: what is dropped is

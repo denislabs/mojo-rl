@@ -2204,6 +2204,9 @@ struct FlatModelDef(Movable):
     # model's velocity — see `MODEL_META_IDX_EULERDAMP_DISABLED`.
     var eulerdamp_disabled: Bool
     var multiccd_disabled: Bool
+    # `<flag filterparent="disable">` (AUD-34): drop MuJoCo's parent-child
+    # contact skip, so a body can collide with the body it hangs from.
+    var filterparent_disabled: Bool
     var nativeccd_disabled: Bool
     # `<option><flag warmstart="disable"/></option>` — mjDSBL_WARMSTART. Read
     # by the primal solvers (Newton, CG), which otherwise start each solve at
@@ -2559,6 +2562,7 @@ struct FlatModelDef(Movable):
         # disables them.
         self.eulerdamp_disabled = False
         self.multiccd_disabled = False
+        self.filterparent_disabled = False
         self.nativeccd_disabled = False
         self.warmstart_disabled = False
         self.hfield_names = List[String]()

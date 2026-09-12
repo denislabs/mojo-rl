@@ -228,6 +228,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_CTRL_MIN,
     MODEL_META_IDX_CTRL_MAX,
     MODEL_META_IDX_MULTICCD_DISABLED,
+    MODEL_META_IDX_FILTERPARENT_DISABLED,
     MODEL_META_IDX_WARMSTART_DISABLED,
     MODEL_PAIR_SIZE,
     PAIR_IDX_GEOM1,
@@ -1362,6 +1363,9 @@ def build_model_fields_from_flat[
     # what an unwritten slot already means.
     mf.meta.data[MODEL_META_IDX_MULTICCD_DISABLED] = Scalar[DTYPE](
         1.0 if fmd.multiccd_disabled else 0.0
+    )
+    mf.meta.data[MODEL_META_IDX_FILTERPARENT_DISABLED] = Scalar[DTYPE](
+        1.0 if fmd.filterparent_disabled else 0.0
     )
     # `<flag warmstart="disable"/>` — same disable-sense, same unconditional
     # write.

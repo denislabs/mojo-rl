@@ -7079,11 +7079,10 @@ def _scan_silent_attrs(xml: String, mut result: FlatModelDef) raises:
         result, "AUD-28", _count_attr(flg, "actuation", _SA_DISABLE),
         "`<flag actuation=\"disable\">`", "actuators still apply force",
     )
-    _silent(
-        result, "AUD-34", _count_attr(flg, "filterparent", _SA_DISABLE),
-        "`<flag filterparent=\"disable\">`",
-        "parent-child contacts are still filtered out",
-    )
+    # ⚠ NO AUD-34 ROW ANY MORE: `<flag filterparent="disable">` IS READ
+    # (2026-09-13). It reaches `meta[MODEL_META_IDX_FILTERPARENT_DISABLED]`
+    # and gates the weld-parent clause of `pair_body_filtered`, which is the
+    # one clause MuJoCo gates on it.
     _silent(
         result, "AUD-28", _count_attr(flg, "refsafe", _SA_DISABLE),
         "`<flag refsafe=\"disable\">`",
@@ -7440,6 +7439,8 @@ def parse_xml_full(
     # new velocity; MuJoCo integrates it explicitly when this is set.
     result.eulerdamp_disabled = _option_flag_disabled(xml, "eulerdamp")
     result.multiccd_disabled = _option_flag_disabled(xml, "multiccd")
+    # `<flag filterparent="disable"/>` — `mjDSBL_FILTERPARENT` (AUD-34).
+    result.filterparent_disabled = _option_flag_disabled(xml, "filterparent")
     result.nativeccd_disabled = _option_flag_disabled(xml, "nativeccd")
     # <flag warmstart="disable"/> — mjDSBL_WARMSTART. Read by the primal
     # solvers; see `MODEL_META_IDX_WARMSTART_DISABLED`.
