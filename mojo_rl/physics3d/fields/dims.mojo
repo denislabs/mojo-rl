@@ -192,6 +192,20 @@ trait DimsLike(Copyable, Movable, ImplicitlyCopyable, Deinitable):
     def get_nsite(self) -> Int:
         ...
 
+    def get_nsensor(self) -> Int:
+        """`<sensor>` element count — MuJoCo's `m->nsensor`."""
+        ...
+
+    def get_nsensordata(self) -> Int:
+        """`sensordata` length — MuJoCo's `m->nsensordata`, `sum(sensor_dim)`.
+
+        ⚠ NOT `nsensor`. A sensor is 1, 3, 4 or 6 wide depending on its type,
+        so the two counts differ on almost every model that has any. They are
+        separate parameters because both are needed: `nsensor` sizes the record
+        table, `nsensordata` sizes the value buffer.
+        """
+        ...
+
     def get_max_contacts(self) -> Int:
         ...
 
@@ -252,6 +266,8 @@ struct Dims[
     nten: Int = 0,
     nkey: Int = 0,
     nhfield_data: Int = 0,
+    nsensor: Int = 0,
+    nsensordata: Int = 0,
 ](DimsLike):
     """Dimensions spelled out directly — for models with no `ModelDefLike`.
 
@@ -284,6 +300,8 @@ struct Dims[
     comptime NACT = Self.nact
     comptime NTEN = Self.nten
     comptime NKEY = Self.nkey
+    comptime NSENSOR = Self.nsensor
+    comptime NSENSORDATA = Self.nsensordata
 
     # Cap == exact. Every `Array[T, D.CAP_NV]` on the static leg is
     # therefore the allocation that ships today, to the byte.
@@ -293,6 +311,8 @@ struct Dims[
     comptime CAP_NJOINT = Self.njoint
     comptime CAP_NGEOM = Self.ngeom
     comptime CAP_NSITE = Self.nsite
+    comptime CAP_NSENSOR = Self.nsensor
+    comptime CAP_NSENSORDATA = Self.nsensordata
     comptime CAP_MAX_CONTACTS = Self.max_contacts
     comptime CAP_NEQUALITY = Self.nequality
     comptime CAP_NTENDON = Self.ntendon
@@ -338,6 +358,14 @@ struct Dims[
     @always_inline
     def get_nsite(self) -> Int:
         return Self.nsite
+
+    @always_inline
+    def get_nsensor(self) -> Int:
+        return Self.nsensor
+
+    @always_inline
+    def get_nsensordata(self) -> Int:
+        return Self.nsensordata
 
     @always_inline
     def get_max_contacts(self) -> Int:
@@ -391,6 +419,8 @@ comptime AsStatic[D: DimsLike] = Dims[
     njoint=D.NJOINT,
     ngeom=D.NGEOM,
     nsite=D.NSITE,
+    nsensor=D.NSENSOR,
+    nsensordata=D.NSENSORDATA,
     max_contacts=D.MAX_CONTACTS,
     nequality=D.NEQUALITY,
     ntendon=D.NTENDON,
@@ -509,6 +539,8 @@ struct DynDims(DimsLike):
     var _njoint: Int
     var _ngeom: Int
     var _nsite: Int
+    var _nsensor: Int
+    var _nsensordata: Int
     var _max_contacts: Int
     var _nequality: Int
     var _ntendon: Int
@@ -576,6 +608,8 @@ struct DynDims(DimsLike):
         nten: Int = 0,
         nkey: Int = 0,
         nhfield_data: Int = 0,
+        nsensor: Int = 0,
+        nsensordata: Int = 0,
     ):
         """Keyword-only, for the reason `Dims`'s docstring gives: fifteen
         `Int`s in a row is the positional hazard this type exists to kill."""
@@ -585,6 +619,8 @@ struct DynDims(DimsLike):
         self._njoint = njoint
         self._ngeom = ngeom
         self._nsite = nsite
+        self._nsensor = nsensor
+        self._nsensordata = nsensordata
         self._max_contacts = max_contacts
         self._nequality = nequality
         self._ntendon = ntendon
@@ -632,6 +668,14 @@ struct DynDims(DimsLike):
     @always_inline
     def get_nsite(self) -> Int:
         return self._nsite
+
+    @always_inline
+    def get_nsensor(self) -> Int:
+        return self._nsensor
+
+    @always_inline
+    def get_nsensordata(self) -> Int:
+        return self._nsensordata
 
     @always_inline
     def get_max_contacts(self) -> Int:

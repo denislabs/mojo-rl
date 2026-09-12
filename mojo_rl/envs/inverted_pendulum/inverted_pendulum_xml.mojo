@@ -19,6 +19,7 @@ comptime InvertedPendulumModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     obs_qpos_skip=0,  # full qpos in obs: [cart_x, pole_angle] + qvel → OBS_DIM=4
     max_contacts=5,
     timestep=pm.TIMESTEP,

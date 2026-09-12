@@ -176,6 +176,19 @@ struct Data[
     # the substep, so they are already the pre-integration values. These two
     # are the whole inconsistency.
     var site_xpos_acc: TensorImpl[Self.DTYPE]  # [BATCH, NSITE*3]
+    var sensordata: TensorImpl[Self.DTYPE]  # [BATCH, NSENSORDATA]
+    """MuJoCo's `d->sensordata`, one contiguous run per env.
+
+    ⚠ INDEXED BY `sensor_adr`, NOT BY SENSOR. A sensor is 1, 3, 4 or 6 wide,
+    so `sensordata[adr .. adr+dim]` is the slice and `sensordata[i]` is NOT
+    sensor `i` — the mistake `test_rangefinder_vs_mujoco` already warns about
+    from the other direction ("`d.sensordata[i]` is indexed by SENSOR, and
+    `rangefinder_site` by SITE").
+
+    ⚠ A SENSOR THIS ENGINE DOES NOT SERVE LEAVES ITS SLICE AT ZERO. The slot
+    is still reserved so later offsets are right; nothing writes it. Ask for it
+    by name and `FlatModelDef.sensor_adr_by_name` raises rather than handing
+    back an offset into values that were never computed."""
     var xquat_acc: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*4]
     var subtree_com: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*3]
     var qfrc_actuator: TensorImpl[Self.DTYPE]  # [BATCH, NV]
@@ -271,6 +284,13 @@ struct Data[
         # zero-extent guard: a model with NSITE == 0 never reaches a site
         # sensor, and diverging from the field it shadows would be its own bug.
         self.site_xpos_acc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nsite() * 3)
+        # Same rule as `hfield_data` above, spelled the same way: a model with
+        # no sensors must still allocate, because `alloc(0)` is not a valid
+        # buffer and every kernel binds this tensor regardless.
+        var _nsd = dims.get_nsensordata()
+        if _nsd < 1:
+            _nsd = 1
+        self.sensordata = TensorImpl[Self.DTYPE].alloc(B * _nsd)
         self.xquat_acc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 4)
         self.subtree_com = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
         self.qfrc_actuator = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
@@ -308,6 +328,7 @@ struct Data[
         self.cinert.upload(ctx)
         self.cacc.upload(ctx)
         self.site_xpos_acc.upload(ctx)
+        self.sensordata.upload(ctx)
         self.xquat_acc.upload(ctx)
         self.cfrc_int.upload(ctx)
         self.subtree_com.upload(ctx)
@@ -336,6 +357,7 @@ struct Data[
         self.cinert.download(ctx)
         self.cacc.download(ctx)
         self.site_xpos_acc.download(ctx)
+        self.sensordata.download(ctx)
         self.xquat_acc.download(ctx)
         self.cfrc_int.download(ctx)
         self.subtree_com.download(ctx)

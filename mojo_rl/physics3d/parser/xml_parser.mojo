@@ -59,6 +59,14 @@ struct ParsedModel:
     var NEXCLUDE: Int  # number of <exclude> entries in <contact>
     var NPAIR: Int  # number of <pair> entries in <contact>
     var NTENDON: Int  # number of <fixed> + <spatial> entries in <tendon>
+    var NSENSOR: Int  # number of <sensor> children (served or merely addressed)
+    var NSENSORDATA: Int  # sum(sensor_dim) — NOT NSENSOR; see the note below
+    """⚠ TWO NUMBERS, AND THEY ARE NOT INTERCHANGEABLE. A sensor is 1, 3, 4 or
+    6 wide by type, so `NSENSORDATA` exceeds `NSENSOR` on almost every model
+    that declares any. `nsensor` sizes the record table; `nsensordata` sizes
+    `d.sensordata`. Both come straight off `mujoco.MjModel` through
+    `tools/gen_model_dims.py`, so neither is a count this tree maintains by
+    hand."""
     # ⚠ NO `ANGLE_DEG`. It was carried here and READ NOWHERE, and it is the
     # one field `mjModel` does not retain — MuJoCo's compiler converts angles
     # to radians and discards the unit. Phase 1b generates this struct from
@@ -105,6 +113,22 @@ struct ParsedModel:
         cone: Int = ConeType.PYRAMIDAL,
         solver: Int = SolverType.NEWTON,
         integrator: Int = IntegratorType.EULER,
+        # ⚠⚠ APPENDED, AND THEY MUST STAY LAST. `parse_xml` builds this
+        # struct POSITIONALLY (24 arguments), so a parameter inserted mid-list
+        # silently shifts every one after it — which is exactly what happened
+        # on the first attempt here: putting these after `ntendon` moved
+        # `timestep` into `nsensor` and the build failed on the arity. The
+        # same warning is on `ModelDefFromXML`'s parameter list.
+        #
+        # ⚠ `parse_xml` LEAVES BOTH AT 0. The comptime scanner does not read
+        # `<sensor>`, and it must not start: the per-type width table lives in
+        # `full_parser._sensor_spec_of_tag` and a second copy here is the
+        # drift shape this tree names as its most common defect. Shipped
+        # models get real values from `tools/gen_model_dims.py`, which reads a
+        # live `MjModel`; an inline FIXTURE that declares sensors spells the
+        # two numbers itself.
+        nsensor: Int = 0,
+        nsensordata: Int = 0,
     ):
         self.NBODY = nbody
         self.NJOINT = njoint
@@ -121,6 +145,8 @@ struct ParsedModel:
         self.NEXCLUDE = nexclude
         self.NPAIR = npair
         self.NTENDON = ntendon
+        self.NSENSOR = nsensor
+        self.NSENSORDATA = nsensordata
         self.TIMESTEP = timestep
         self.MAX_CONDIM = max_condim
         self.NOSLIP_ITER = noslip_iter

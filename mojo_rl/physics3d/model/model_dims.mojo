@@ -79,6 +79,8 @@ comptime ModelDims[
     njoint = MD.NJOINT,
     ngeom = MD.NGEOM,
     nsite = MD.NSITE,
+    nsensor = MD.NSENSOR,
+    nsensordata = MD.NSENSORDATA,
     max_contacts = MD.MAX_CONTACTS,
     nequality = MD.MAX_EQUALITY,
     ntendon = MD.MAX_TENDON,

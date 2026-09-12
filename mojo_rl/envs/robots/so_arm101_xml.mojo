@@ -95,6 +95,7 @@ comptime SoArm101Model = ModelDefFromXML[
     nlight=_pm.NLIGHT,
     ncam=_pm.NCAM,
     nsite=_pm.NSITE,
+    nsensor=_pm.NSENSOR, nsensordata=_pm.NSENSORDATA,
     neq=_pm.NEQ,
     # ⚠⚠ `nexclude` AND `npair` DEFAULT TO 0, AND THE DROP IS SILENT. Omitting
     # `nexclude` here left SO-100's `<exclude body1="Base"

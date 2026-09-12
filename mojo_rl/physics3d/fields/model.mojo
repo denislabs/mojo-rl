@@ -41,6 +41,7 @@ from ..gpu.constants import (
     MODEL_EQ_SIZE,
     MODEL_TENDON_SIZE,
     MODEL_SITE_SIZE,
+    MODEL_SENSOR_SIZE,
     MODEL_PAIR_SIZE,
     ACTDAMP_TRN_SIZE,
     MODEL_MESH_META_SIZE,
@@ -162,6 +163,7 @@ struct Model[
     var equality: TensorImpl[Self.DTYPE]  # [NEQUALITY, MODEL_EQ_SIZE]
     var tendons: TensorImpl[Self.DTYPE]  # [NTENDON, MODEL_TENDON_SIZE]
     var sites: TensorImpl[Self.DTYPE]  # [NSITE, MODEL_SITE_SIZE]
+    var sensors: TensorImpl[Self.DTYPE]  # [NSENSOR, MODEL_SENSOR_SIZE]
     var body_invweight0: TensorImpl[Self.DTYPE]  # [NBODY, 2]
     var dof_invweight0: TensorImpl[Self.DTYPE]  # [NV]
     var dof_M0: TensorImpl[Self.DTYPE]  # [NV]
@@ -420,6 +422,9 @@ struct Model[
             _at_least_one(dims.get_ntendon() * MODEL_TENDON_SIZE)
         )
         self.sites = TensorImpl[Self.DTYPE].alloc(_at_least_one(dims.get_nsite() * MODEL_SITE_SIZE))
+        self.sensors = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(dims.get_nsensor() * MODEL_SENSOR_SIZE)
+        )
         self.body_invweight0 = TensorImpl[Self.DTYPE].alloc(dims.get_nbody() * 2)
         self.dof_invweight0 = TensorImpl[Self.DTYPE].alloc(dims.get_nv())
         self.dof_M0 = TensorImpl[Self.DTYPE].alloc(dims.get_nv())
@@ -521,6 +526,7 @@ struct Model[
         self.equality.upload(ctx)
         self.tendons.upload(ctx)
         self.sites.upload(ctx)
+        self.sensors.upload(ctx)
         self.body_invweight0.upload(ctx)
         self.dof_invweight0.upload(ctx)
         self.dof_M0.upload(ctx)

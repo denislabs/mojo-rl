@@ -63,6 +63,7 @@ comptime DMHumanoidCMUModel = ModelDefFromXML[
     nbody=pmhc.NBODY, njoint=pmhc.NJOINT, nq=pmhc.NQ, nv=pmhc.NV,
     ngeom=pmhc.NGEOM, nact=pmhc.NACT, ntex=pmhc.NTEX, nmat=pmhc.NMAT,
     nlight=pmhc.NLIGHT, ncam=pmhc.NCAM, nsite=pmhc.NSITE,
+    nsensor=pmhc.NSENSOR, nsensordata=pmhc.NSENSORDATA,
     # `<contact><exclude>` x5. ⚠ THIS PARAMETER DEFAULTS TO 0 AND NOTHING
     # CHECKS IT. Omitting it builds a model with no exclusions at all, which
     # simulates fine and quietly collides the five body pairs MuJoCo never

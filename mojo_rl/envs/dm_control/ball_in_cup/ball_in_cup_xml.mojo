@@ -53,6 +53,7 @@ comptime DMBallInCupModel = ModelDefFromXML[
     nbody=bicp.NBODY, njoint=bicp.NJOINT, nq=bicp.NQ, nv=bicp.NV,
     ngeom=bicp.NGEOM, nact=bicp.NACT, ntex=bicp.NTEX, nmat=bicp.NMAT,
     nlight=bicp.NLIGHT, ncam=bicp.NCAM, nsite=bicp.NSITE,
+    nsensor=bicp.NSENSOR, nsensordata=bicp.NSENSORDATA,
     max_tendon=bicp.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     # The ball can touch several cup capsules at once while it settles; 8 is

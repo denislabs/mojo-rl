@@ -66,6 +66,7 @@ comptime UnitreeG1Model = ModelDefFromXML[
     nlight=_pm.NLIGHT,
     ncam=_pm.NCAM,
     nsite=_pm.NSITE,
+    nsensor=_pm.NSENSOR, nsensordata=_pm.NSENSORDATA,
     neq=_pm.NEQ,
     # ⚠ Both 0 here and measured so — and both default to 0 when omitted, so
     # a future `<contact>` section would be dropped silently. Passed through

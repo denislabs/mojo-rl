@@ -41,6 +41,7 @@ comptime Stack2of3Model = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     neq=pm.NEQ,
     nexclude=pm.NEXCLUDE,
     npair=pm.NPAIR,

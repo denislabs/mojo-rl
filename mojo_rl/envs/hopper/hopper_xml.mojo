@@ -17,6 +17,7 @@ comptime HopperModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     obs_qpos_skip=1,
     max_contacts=20,
     timestep=pm.TIMESTEP,

@@ -44,6 +44,17 @@ trait ModelDefLike:
     comptime MAX_CONTACTS: Int
     comptime MAX_TENDON: Int
     comptime NSITE: Int
+    # `<sensor>` count and `sensordata` length — MuJoCo's `m->nsensor` and
+    # `m->nsensordata`. ⚠ TWO NUMBERS, NOT ONE: a sensor is 1, 3, 4 or 6 wide
+    # by type, so they differ on almost every model that declares any.
+    #
+    # ⚠ ON THE TRAIT FOR THE REASON `NPAIR` GIVES ABOVE. The env forwards
+    # these into the integrator, and a dimension the trait does not expose is
+    # one the env can quietly forget — the model would still build and
+    # `sensordata` would simply stay empty. Declaring them here makes omitting
+    # them a compile error.
+    comptime NSENSOR: Int
+    comptime NSENSORDATA: Int
     # MuJoCo `m->na`: ACTIVATION variables, not `nu`.
     comptime NA: Int
     comptime NA_F: Int

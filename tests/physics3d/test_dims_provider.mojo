@@ -162,6 +162,8 @@ def main() raises:
         njoint = DMDogStandWalkModel.NJOINT,
         ngeom = DMDogStandWalkModel.NGEOM,
         nsite = DMDogStandWalkModel.NSITE,
+        nsensor = DMDogStandWalkModel.NSENSOR,
+        nsensordata = DMDogStandWalkModel.NSENSORDATA,
         max_contacts = DMDogStandWalkModel.MAX_CONTACTS,
         nequality = DMDogStandWalkModel.MAX_EQUALITY,
         ntendon = DMDogStandWalkModel.MAX_TENDON,

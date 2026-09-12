@@ -129,6 +129,7 @@ comptime DMQuadrupedWalkModel = ModelDefFromXML[
     nbody=qwp.NBODY, njoint=qwp.NJOINT, nq=qwp.NQ, nv=qwp.NV,
     ngeom=qwp.NGEOM, nact=qwp.NACT, ntex=qwp.NTEX, nmat=qwp.NMAT,
     nlight=qwp.NLIGHT, ncam=qwp.NCAM, nsite=qwp.NSITE,
+    nsensor=qwp.NSENSOR, nsensordata=qwp.NSENSORDATA,
     max_tendon=qwp.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     # Four toes on the floor, plus the torso ellipsoid when it falls over.
@@ -153,6 +154,7 @@ comptime DMQuadrupedEscapeModel = ModelDefFromXML[
     nbody=qep.NBODY, njoint=qep.NJOINT, nq=qep.NQ, nv=qep.NV,
     ngeom=qep.NGEOM, nact=qep.NACT, ntex=qep.NTEX, nmat=qep.NMAT,
     nlight=qep.NLIGHT, ncam=qep.NCAM, nsite=qep.NSITE,
+    nsensor=qep.NSENSOR, nsensordata=qep.NSENSORDATA,
     max_tendon=qep.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     # ⚠ MORE THAN WALK'S 16. The floor is still there but the robot stands on
@@ -173,6 +175,7 @@ comptime DMQuadrupedRunModel = ModelDefFromXML[
     nbody=qrp.NBODY, njoint=qrp.NJOINT, nq=qrp.NQ, nv=qrp.NV,
     ngeom=qrp.NGEOM, nact=qrp.NACT, ntex=qrp.NTEX, nmat=qrp.NMAT,
     nlight=qrp.NLIGHT, ncam=qrp.NCAM, nsite=qrp.NSITE,
+    nsensor=qrp.NSENSOR, nsensordata=qrp.NSENSORDATA,
     max_tendon=qrp.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=16,
@@ -222,6 +225,7 @@ comptime DMQuadrupedFetchModel = ModelDefFromXML[
     nbody=qfp.NBODY, njoint=qfp.NJOINT, nq=qfp.NQ, nv=qfp.NV,
     ngeom=qfp.NGEOM, nact=qfp.NACT, ntex=qfp.NTEX, nmat=qfp.NMAT,
     nlight=qfp.NLIGHT, ncam=qfp.NCAM, nsite=qfp.NSITE,
+    nsensor=qfp.NSENSOR, nsensordata=qfp.NSENSORDATA,
     max_tendon=qfp.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     # Four toes and the torso ellipsoid as in walk/run, plus the ball against

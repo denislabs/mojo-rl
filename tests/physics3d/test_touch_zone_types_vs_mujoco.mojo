@@ -109,6 +109,12 @@ comptime TM = ModelDefFromXML[
     nbody=tp.NBODY, njoint=tp.NJOINT, nq=tp.NQ, nv=tp.NV,
     ngeom=tp.NGEOM, nact=tp.NACT, ntex=tp.NTEX, nmat=tp.NMAT,
     nlight=tp.NLIGHT, ncam=tp.NCAM, nsite=tp.NSITE,
+    # ⚠ SPELLED OUT, NOT `tp.NSENSOR`. `parse_xml` is the lightweight
+    # comptime scanner and does not count `<sensor>` — only
+    # `tools/gen_model_dims.py`, which reads a real `MjModel`, produces these,
+    # and it runs over the SHIPPED assets, not over an inline fixture. Six
+    # touch sensors, one value each.
+    nsensor=6, nsensordata=6,
     max_tendon=tp.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=8,

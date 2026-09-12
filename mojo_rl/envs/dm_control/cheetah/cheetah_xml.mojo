@@ -38,6 +38,7 @@ comptime DMCheetahModel = ModelDefFromXML[
     nbody=pmc.NBODY, njoint=pmc.NJOINT, nq=pmc.NQ, nv=pmc.NV,
     ngeom=pmc.NGEOM, nact=pmc.NACT, ntex=pmc.NTEX, nmat=pmc.NMAT,
     nlight=pmc.NLIGHT, ncam=pmc.NCAM, nsite=pmc.NSITE,
+    nsensor=pmc.NSENSOR, nsensordata=pmc.NSENSORDATA,
     max_contacts=16,
     obs_dim_override=17,
     timestep=pmc.TIMESTEP,

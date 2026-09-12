@@ -38,6 +38,7 @@ comptime DMWalkerModel = ModelDefFromXML[
     nbody=pmw.NBODY, njoint=pmw.NJOINT, nq=pmw.NQ, nv=pmw.NV,
     ngeom=pmw.NGEOM, nact=pmw.NACT, ntex=pmw.NTEX, nmat=pmw.NMAT,
     nlight=pmw.NLIGHT, ncam=pmw.NCAM, nsite=pmw.NSITE,
+    nsensor=pmw.NSENSOR, nsensordata=pmw.NSENSORDATA,
     max_contacts=16,
     obs_dim_override=24,
     timestep=pmw.TIMESTEP,

@@ -226,7 +226,8 @@ def dims_from_mujoco(xml_path: str) -> dict:
         nbody=m.nbody, njoint=m.njnt, nq=m.nq, nv=m.nv, ngeom=m.ngeom,
         nact=m.nu, ntex=m.ntex, nmat=m.nmat, nlight=m.nlight, ncam=m.ncam,
         nsite=m.nsite, neq=neq_slab, nexclude=m.nexclude, npair=m.npair,
-        ntendon=m.ntendon, timestep=m.opt.timestep, max_condim=max_condim,
+        ntendon=m.ntendon, nsensor=m.nsensor, nsensordata=m.nsensordata,
+        timestep=m.opt.timestep, max_condim=max_condim,
         noslip_iter=m.opt.noslip_iterations, ccd_tol=m.opt.ccd_tolerance,
         ccd_iter=m.opt.ccd_iterations,
     )
@@ -259,7 +260,7 @@ def render(module: str, syms: list) -> str:
         out.append("comptime %s = ParsedModel(\n" % const_name(sym))
         for k in ("nbody", "njoint", "nq", "nv", "ngeom", "nact", "ntex",
                   "nmat", "nlight", "ncam", "nsite", "neq", "nexclude",
-                  "npair", "ntendon"):
+                  "npair", "ntendon", "nsensor", "nsensordata"):
             out.append("    %s=%d,\n" % (k, int(d[k])))
         out.append("    timestep=%s,\n" % fmt_float(d["timestep"]))
         out.append("    max_condim=%d,\n" % int(d["max_condim"]))

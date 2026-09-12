@@ -53,6 +53,7 @@ comptime DMPointMassModel = ModelDefFromXML[
     nbody=pmp.NBODY, njoint=pmp.NJOINT, nq=pmp.NQ, nv=pmp.NV,
     ngeom=pmp.NGEOM, nact=pmp.NACT, ntex=pmp.NTEX, nmat=pmp.NMAT,
     nlight=pmp.NLIGHT, ncam=pmp.NCAM, nsite=pmp.NSITE,
+    nsensor=pmp.NSENSOR, nsensordata=pmp.NSENSORDATA,
     max_contacts=1,
     max_tendon=pmp.NTENDON,
     obs_dim_override=4,

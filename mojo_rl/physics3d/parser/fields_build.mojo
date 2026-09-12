@@ -79,6 +79,17 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     MODEL_EQ_SIZE,
     MODEL_SITE_SIZE,
+    MODEL_SENSOR_SIZE,
+    SENSOR_IDX_TYPE,
+    SENSOR_IDX_OBJTYPE,
+    SENSOR_IDX_OBJID,
+    SENSOR_IDX_DIM,
+    SENSOR_IDX_ADR,
+    SENSOR_IDX_DATATYPE,
+    SENSOR_IDX_NEEDSTAGE,
+    SENSOR_IDX_CUTOFF,
+    SENSOR_IDX_BODY,
+    SENSOR_IDX_SERVED,
     MODEL_MESH_META_SIZE,
     MESH_ARENA_FLOATS_PER_TRI,
     MESH_META_IDX_BVHADR,
@@ -2585,6 +2596,37 @@ def build_model_fields_from_flat[
         mf.sites.data[o + SITE_IDX_QUAT_Y] = Scalar[DTYPE](sd.quat_y)
         mf.sites.data[o + SITE_IDX_QUAT_Z] = Scalar[DTYPE](sd.quat_z)
         mf.sites.data[o + SITE_IDX_QUAT_W] = Scalar[DTYPE](sd.quat_w)
+
+    # ── sensors ──────────────────────────────────────────────────────────
+    # ⚠ CAPACITY-GUARDED LIKE TENDONS, NOT EXACT LIKE SITES. `NSENSOR` is a
+    # hand-supplied parameter of `ModelDefFromXML` (the MJCF is not readable at
+    # compile time in this tree), so a model can declare more `<sensor>`
+    # elements than the caller reserved room for. The guard below stops the
+    # write; the RAISE that makes that loud lives in `init_fields`, beside the
+    # other declared-vs-parsed checks.
+    #
+    # ⚠ EVERY ROW IS WRITTEN, SERVED OR NOT. An unserved sensor's row carries
+    # its real `dim` and `adr` and an `objid` of -1 — it holds its slot so the
+    # sensors after it keep the right offset. See `_fill_sensors`.
+    for i in range(len(fmd.sensors)):
+        if i >= mf.dims.get_nsensor():
+            break
+        var se = fmd.sensors[i]
+        var so = i * MODEL_SENSOR_SIZE
+        mf.sensors.data[so + SENSOR_IDX_TYPE] = Scalar[DTYPE](se.sensor_type)
+        mf.sensors.data[so + SENSOR_IDX_OBJTYPE] = Scalar[DTYPE](se.objtype)
+        mf.sensors.data[so + SENSOR_IDX_OBJID] = Scalar[DTYPE](se.objid)
+        mf.sensors.data[so + SENSOR_IDX_DIM] = Scalar[DTYPE](se.dim)
+        mf.sensors.data[so + SENSOR_IDX_ADR] = Scalar[DTYPE](se.adr)
+        mf.sensors.data[so + SENSOR_IDX_DATATYPE] = Scalar[DTYPE](se.datatype)
+        mf.sensors.data[so + SENSOR_IDX_NEEDSTAGE] = Scalar[DTYPE](
+            se.needstage
+        )
+        mf.sensors.data[so + SENSOR_IDX_CUTOFF] = Scalar[DTYPE](se.cutoff)
+        mf.sensors.data[so + SENSOR_IDX_BODY] = Scalar[DTYPE](se.body_id)
+        mf.sensors.data[so + SENSOR_IDX_SERVED] = Scalar[DTYPE](
+            1.0 if se.served else 0.0
+        )
 
     # ── tendons ──────────────────────────────────────────────────────────
     #

@@ -86,6 +86,7 @@ comptime DMFishUprightModel = ModelDefFromXML[
     nbody = pf.NBODY, njoint = pf.NJOINT, nq = pf.NQ, nv = pf.NV,
     ngeom = pf.NGEOM, nact = pf.NACT, ntex = pf.NTEX, nmat = pf.NMAT,
     nlight = pf.NLIGHT, ncam = pf.NCAM, nsite = pf.NSITE,
+    nsensor=pf.NSENSOR, nsensordata=pf.NSENSORDATA,
     max_contacts=1,
     # ⚠ REQUIRED, not optional. `max_tendon` sizes `_acd`'s tendon arrays;
     # unset it defaults to 0, which rounds up to one slot and silently drops
@@ -104,6 +105,7 @@ comptime DMFishSwimModel = ModelDefFromXML[
     nbody = pf.NBODY, njoint = pf.NJOINT, nq = pf.NQ, nv = pf.NV,
     ngeom = pf.NGEOM, nact = pf.NACT, ntex = pf.NTEX, nmat = pf.NMAT,
     nlight = pf.NLIGHT, ncam = pf.NCAM, nsite = pf.NSITE,
+    nsensor=pf.NSENSOR, nsensordata=pf.NSENSORDATA,
     max_contacts=1,
     # See the note on DMFishUprightModel above.
     max_tendon = pf.NTENDON,

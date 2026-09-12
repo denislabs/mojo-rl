@@ -38,6 +38,7 @@ comptime DMPendulumModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     max_contacts=4,
     # obs = [xmat_zz, xmat_xz, qvel] — orientation is a rotation-matrix
     # column pair, not qpos, so the default nq-skip+nv formula does not apply.

@@ -20,6 +20,7 @@ comptime SwimmerModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     # Skip qpos[0]=slider1(x) and qpos[1]=slider2(y) from obs.
     # Obs = [free_body_rot, motor1_rot, motor2_rot] + qvel[0:5] → OBS_DIM=8
     obs_qpos_skip=2,

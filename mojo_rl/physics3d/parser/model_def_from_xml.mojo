@@ -327,6 +327,23 @@ struct ModelDefFromXML[
     # Exactly one of `xml_path` / `xml` must be set; `xml_text()` raises if
     # neither is.
     xml: String = "",
+    # ⚠⚠ APPENDED AFTER `xml`, WHICH THE DOCSTRING BELOW CALLS THE LAST TWO
+    # PARAMETERS. That sentence is now stale by two, and these still go at the
+    # END for the reason the `na`/`nkey` block gives: inserting mid-list
+    # silently shifts every positional instantiation. They are keyword-only in
+    # practice — nothing spells 30 parameters positionally.
+    #
+    # MuJoCo's `m->nsensor` and `m->nsensordata`. Like `na` and `nkey`, they
+    # are HAND-SUPPLIED and checked against the parse: `init_fields` raises if
+    # the model declares more sensors than were declared here, so an
+    # under-declared count fails loudly instead of truncating `sensordata`.
+    #
+    # ⚠ DEFAULT 0 IS THE HONEST DEFAULT, not a placeholder. A model whose
+    # sensors this engine does not serve still parses; leaving these at 0 just
+    # means no `sensordata` is allocated for it, which is exactly right for
+    # the 50-odd fixtures and models with no `<sensor>` block at all.
+    nsensor: Int = 0,
+    nsensordata: Int = 0,
 ](ModelDefLike):
     """`ModelDefLike` driven entirely from an MJCF document.
 
@@ -492,6 +509,12 @@ struct ModelDefFromXML[
     # PARAMETER in the same phase, which is what finally lets `_acd` go.
     comptime NKEY: Int = Self.nkey
     """Number of `<keyframe><key>` entries, in XML order (MuJoCo's `nkey`)."""
+    comptime NSENSOR: Int = Self.nsensor
+    """`<sensor>` element count (MuJoCo's `nsensor`) — served or merely
+    addressed; both hold a row."""
+    comptime NSENSORDATA: Int = Self.nsensordata
+    """`sensordata` length (MuJoCo's `nsensordata`) — `sum(sensor_dim)`, NOT
+    `NSENSOR`."""
     comptime NQ_F: Int = Self.nq if Self.nq > 0 else 1
 
     # Precomputed rendering data — evaluated once at struct level.
@@ -854,6 +877,42 @@ struct ModelDefFromXML[
                     " nsite=", Self.NSITE, ", full_parser found ",
                     len(fmd.sites), ". Sensors are addressed BY SITE INDEX, so",
                     " a mismatch here reads the wrong sensor.",
+                )
+            )
+
+        # ⚠⚠ EXACT, NOT A CEILING, AND FOR A SHARPER REASON THAN SITES. An
+        # UNDER-declared `nsensor` makes `fields_build` stop writing rows
+        # partway, so the sensors past the cut keep whatever was in the buffer
+        # — and an OVER-declared one leaves trailing rows of zeros, which read
+        # as `type 0` (touch) on `site 0` with `dim 0`. Both are silent. The
+        # same holds for `nsensordata`: it sizes `d.sensordata`, so declaring
+        # it short truncates the values of the LAST sensors only, which is the
+        # hardest shape of this bug to see.
+        #
+        # ⚠ BOTH NUMBERS ARE CHECKED, because they are independent — a sensor
+        # is 1, 3, 4 or 6 wide, so getting `nsensor` right says nothing about
+        # `nsensordata`. `FlatModelDef.nsensordata()` recomputes the sum rather
+        # than trusting a stored field, so this compares the parse against the
+        # declaration and not against itself.
+        if len(fmd.sensors) != Self.NSENSOR:
+            raise Error(
+                String(
+                    "physics3d: parser/dimension mismatch on SENSORS —",
+                    " declared nsensor=", Self.NSENSOR,
+                    ", full_parser found ", len(fmd.sensors),
+                    ". Pass `nsensor = <that number>`; a short count leaves",
+                    " later sensor rows unwritten and a long one leaves rows",
+                    " of zeros that read as a touch sensor on site 0.",
+                )
+            )
+        if fmd.nsensordata() != Self.NSENSORDATA:
+            raise Error(
+                String(
+                    "physics3d: parser/dimension mismatch on SENSORDATA —",
+                    " declared nsensordata=", Self.NSENSORDATA,
+                    ", the model's sensors sum to ", fmd.nsensordata(),
+                    ". This is sum(sensor_dim), NOT nsensor (a sensor is 1,",
+                    " 3, 4 or 6 wide). Pass `nsensordata = <that number>`.",
                 )
             )
 

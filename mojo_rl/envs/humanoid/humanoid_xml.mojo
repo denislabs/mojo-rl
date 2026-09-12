@@ -23,6 +23,7 @@ comptime HumanoidModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     nexclude=pm.NEXCLUDE,
     obs_qpos_skip=2,  # skip free joint x/y translation from obs
     max_contacts=50,  # feet + body contacts with ground

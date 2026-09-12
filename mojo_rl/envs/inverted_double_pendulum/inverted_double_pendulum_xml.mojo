@@ -24,6 +24,7 @@ comptime InvertedDoublePendulumModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     obs_qpos_skip=0,
     obs_dim_override=9,  # custom obs: [cart_x, sin(q1), sin(q2), cos(q1), cos(q2), qvel*3, 0]
     max_contacts=5,  # contype=0 on geoms → minimal contacts

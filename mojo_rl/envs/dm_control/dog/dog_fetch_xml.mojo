@@ -77,6 +77,7 @@ comptime DMDogFetchModel = ModelDefFromXML[
     nbody=dfp.NBODY, njoint=dfp.NJOINT, nq=dfp.NQ, nv=dfp.NV,
     ngeom=dfp.NGEOM, nact=dfp.NACT, ntex=dfp.NTEX, nmat=dfp.NMAT,
     nlight=dfp.NLIGHT, ncam=dfp.NCAM, nsite=dfp.NSITE,
+    nsensor=dfp.NSENSOR, nsensordata=dfp.NSENSORDATA,
     max_tendon=dfp.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     # dog's own four feet plus the ball against the floor, the walls, and

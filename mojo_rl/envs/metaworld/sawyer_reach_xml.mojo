@@ -37,6 +37,7 @@ comptime SawyerReachModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     neq=pm.NEQ,
     max_contacts=30,
     max_equality=6,  # 1 weld = 6 rows

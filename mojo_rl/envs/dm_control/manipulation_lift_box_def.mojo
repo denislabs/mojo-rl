@@ -50,6 +50,7 @@ comptime LiftLargeBoxModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     neq=pm.NEQ,
     # ⚠ Every one of these is taken from `pm`, not defaulted — each default
     # silently disables a feature rather than failing. See

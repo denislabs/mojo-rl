@@ -19,6 +19,7 @@ comptime HalfCheetahModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     max_contacts=20,
     obs_qpos_skip=1,
     timestep=pm.TIMESTEP,

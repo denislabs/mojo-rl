@@ -134,6 +134,7 @@ comptime ReachSiteFeaturesModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     neq=pm.NEQ,
     # ⚠ EVERY ONE OF THESE IS TAKEN FROM `pm`, NOT DEFAULTED. Each has a
     # default that silently disables a feature rather than failing:

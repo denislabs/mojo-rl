@@ -17,6 +17,7 @@ comptime Walker2dModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     obs_qpos_skip=1,  # skip rootx=qpos[0]; obs = qpos[1:9] + qvel[0:9] → OBS_DIM=17
     max_contacts=20,
     timestep=pm.TIMESTEP,

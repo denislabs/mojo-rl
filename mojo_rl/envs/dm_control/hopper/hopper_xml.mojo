@@ -38,6 +38,7 @@ comptime DMHopperModel = ModelDefFromXML[
     nbody=pmh.NBODY, njoint=pmh.NJOINT, nq=pmh.NQ, nv=pmh.NV,
     ngeom=pmh.NGEOM, nact=pmh.NACT, ntex=pmh.NTEX, nmat=pmh.NMAT,
     nlight=pmh.NLIGHT, ncam=pmh.NCAM, nsite=pmh.NSITE,
+    nsensor=pmh.NSENSOR, nsensordata=pmh.NSENSORDATA,
     max_contacts=16,
     obs_dim_override=15,
     timestep=pmh.TIMESTEP,

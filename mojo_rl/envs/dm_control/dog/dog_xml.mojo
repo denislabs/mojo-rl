@@ -129,6 +129,7 @@ comptime DMDogStandWalkModel = ModelDefFromXML[
     nbody=dsp.NBODY, njoint=dsp.NJOINT, nq=dsp.NQ, nv=dsp.NV,
     ngeom=dsp.NGEOM, nact=dsp.NACT, ntex=dsp.NTEX, nmat=dsp.NMAT,
     nlight=dsp.NLIGHT, ncam=dsp.NCAM, nsite=dsp.NSITE,
+    nsensor=dsp.NSENSOR, nsensordata=dsp.NSENSORDATA,
     # ⚠ BOTH OF THESE DEFAULT TO 0 AND NOTHING CHECKS THEM.
     # Omitting nexclude builds an exclusion-free model silently —
     # dog declares THIRTY <exclude> pairs, so 30 body pairs would
@@ -155,6 +156,7 @@ comptime DMDogTrotModel = ModelDefFromXML[
     nbody=dtp.NBODY, njoint=dtp.NJOINT, nq=dtp.NQ, nv=dtp.NV,
     ngeom=dtp.NGEOM, nact=dtp.NACT, ntex=dtp.NTEX, nmat=dtp.NMAT,
     nlight=dtp.NLIGHT, ncam=dtp.NCAM, nsite=dtp.NSITE,
+    nsensor=dtp.NSENSOR, nsensordata=dtp.NSENSORDATA,
     # ⚠ BOTH OF THESE DEFAULT TO 0 AND NOTHING CHECKS THEM.
     # Omitting nexclude builds an exclusion-free model silently —
     # dog declares THIRTY <exclude> pairs, so 30 body pairs would
@@ -181,6 +183,7 @@ comptime DMDogRunModel = ModelDefFromXML[
     nbody=drp.NBODY, njoint=drp.NJOINT, nq=drp.NQ, nv=drp.NV,
     ngeom=drp.NGEOM, nact=drp.NACT, ntex=drp.NTEX, nmat=drp.NMAT,
     nlight=drp.NLIGHT, ncam=drp.NCAM, nsite=drp.NSITE,
+    nsensor=drp.NSENSOR, nsensordata=drp.NSENSORDATA,
     # ⚠ BOTH OF THESE DEFAULT TO 0 AND NOTHING CHECKS THEM.
     # Omitting nexclude builds an exclusion-free model silently —
     # dog declares THIRTY <exclude> pairs, so 30 body pairs would

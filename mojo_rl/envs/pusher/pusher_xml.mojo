@@ -43,6 +43,7 @@ comptime PusherModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     obs_qpos_skip=0,
     obs_dim_override=23,  # custom obs: qpos[:7] + qvel[:7] + 3 body positions
     max_contacts=20,

@@ -1140,6 +1140,35 @@ comptime SITE_IDX_QUAT_Z: Int = 10
 comptime SITE_IDX_QUAT_W: Int = 11
 
 
+# =============================================================================
+# Sensor records — `[NSENSOR, MODEL_SENSOR_SIZE]`
+# =============================================================================
+#
+# One row per `<sensor>` element, in DECLARATION ORDER, which is also the order
+# `sensordata` is laid out in. The columns are MuJoCo's `m->sensor_*` arrays
+# and carry its numbering exactly (`physics3d/constants.mojo` names the enums);
+# `test_sensor_table_vs_mujoco` compares every one of them against a live
+# `MjModel`.
+#
+# ⚠ A ROW EXISTS FOR A SENSOR THIS ENGINE DOES NOT COMPUTE. `SENSOR_IDX_SERVED`
+# is 0 for those. They are here so that `SENSOR_IDX_ADR` stays a true prefix
+# sum — drop one and every sensor after it reports an offset pointing at some
+# other sensor's values, which is a plausible wrong number rather than an
+# error. See `_fill_sensors` for why neither skipping nor refusing is right.
+comptime MODEL_SENSOR_SIZE: Int = 10  # ⚠ COUNT THE IDX LINES BELOW: 0..9
+
+comptime SENSOR_IDX_TYPE: Int = 0  # `mjtSensor`, e.g. SENS_TOUCH
+comptime SENSOR_IDX_OBJTYPE: Int = 1  # `mjtObj` — SENSOBJ_SITE / SENSOBJ_BODY
+comptime SENSOR_IDX_OBJID: Int = 2  # site or body index; -1 when unserved
+comptime SENSOR_IDX_DIM: Int = 3  # values written to sensordata
+comptime SENSOR_IDX_ADR: Int = 4  # offset into sensordata
+comptime SENSOR_IDX_DATATYPE: Int = 5  # `mjtDataType` — how cutoff clamps
+comptime SENSOR_IDX_NEEDSTAGE: Int = 6  # `mjtStage` — which eval pass
+comptime SENSOR_IDX_CUTOFF: Int = 7
+comptime SENSOR_IDX_BODY: Int = 8  # the site's body, or the subtree root
+comptime SENSOR_IDX_SERVED: Int = 9  # 1 if a kernel computes it, else 0
+
+
 comptime MODEL_EXCLUDE_PAIR_SIZE: Int = 2  # body1, body2
 
 

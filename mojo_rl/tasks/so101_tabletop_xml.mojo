@@ -110,6 +110,7 @@ comptime So101TabletopModel = ModelDefFromXML[
     nlight=_pm.NLIGHT,
     ncam=_pm.NCAM,
     nsite=_pm.NSITE,
+    nsensor=_pm.NSENSOR, nsensordata=_pm.NSENSORDATA,
     neq=_pm.NEQ,
     nexclude=_pm.NEXCLUDE,
     npair=_pm.NPAIR,

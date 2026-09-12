@@ -27,6 +27,7 @@ comptime AntModel = ModelDefFromXML[
     nlight=pm.NLIGHT,
     ncam=pm.NCAM,
     nsite=pm.NSITE,
+    nsensor=pm.NSENSOR, nsensordata=pm.NSENSORDATA,
     obs_qpos_skip=2,  # skip x, y from free-joint qpos; obs = qpos[2:15] + qvel[0:14] → OBS_DIM=27
     max_contacts=40,
     timestep=pm.TIMESTEP,

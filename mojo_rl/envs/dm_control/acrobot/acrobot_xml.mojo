@@ -36,6 +36,7 @@ comptime DMAcrobotModel = ModelDefFromXML[
     nbody=pma.NBODY, njoint=pma.NJOINT, nq=pma.NQ, nv=pma.NV,
     ngeom=pma.NGEOM, nact=pma.NACT, ntex=pma.NTEX, nmat=pma.NMAT,
     nlight=pma.NLIGHT, ncam=pma.NCAM, nsite=pma.NSITE,
+    nsensor=pma.NSENSOR, nsensordata=pma.NSENSORDATA,
     max_contacts=1,
     obs_dim_override=6,
     timestep=pma.TIMESTEP,

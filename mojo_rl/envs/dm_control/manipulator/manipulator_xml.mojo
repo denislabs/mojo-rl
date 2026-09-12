@@ -282,6 +282,7 @@ comptime DMManipulatorBringBallModel = ModelDefFromXML[
     nbody=mbp.NBODY, njoint=mbp.NJOINT, nq=mbp.NQ, nv=mbp.NV,
     ngeom=mbp.NGEOM, nact=mbp.NACT, ntex=mbp.NTEX, nmat=mbp.NMAT,
     nlight=mbp.NLIGHT, ncam=mbp.NCAM, nsite=mbp.NSITE,
+    nsensor=mbp.NSENSOR, nsensordata=mbp.NSENSORDATA,
     max_tendon=mbp.NTENDON,
     cone_type=ConeType.ELLIPTIC,
     # A grasped ball touches both palm capsules, both finger links and both
@@ -297,6 +298,7 @@ comptime DMManipulatorBringPegModel = ModelDefFromXML[
     nbody=mbpg.NBODY, njoint=mbpg.NJOINT, nq=mbpg.NQ, nv=mbpg.NV,
     ngeom=mbpg.NGEOM, nact=mbpg.NACT, ntex=mbpg.NTEX, nmat=mbpg.NMAT,
     nlight=mbpg.NLIGHT, ncam=mbpg.NCAM, nsite=mbpg.NSITE,
+    nsensor=mbpg.NSENSOR, nsensordata=mbpg.NSENSORDATA,
     max_tendon=mbpg.NTENDON,
     cone_type=ConeType.ELLIPTIC,
     # The peg is THREE colliding geoms (blade, guard, pommel) against the same
@@ -317,6 +319,7 @@ comptime DMManipulatorInsertBallModel = ModelDefFromXML[
     nbody=mib.NBODY, njoint=mib.NJOINT, nq=mib.NQ, nv=mib.NV,
     ngeom=mib.NGEOM, nact=mib.NACT, ntex=mib.NTEX, nmat=mib.NMAT,
     nlight=mib.NLIGHT, ncam=mib.NCAM, nsite=mib.NSITE,
+    nsensor=mib.NSENSOR, nsensordata=mib.NSENSORDATA,
     max_tendon=mib.NTENDON,
     cone_type=ConeType.ELLIPTIC,
     # bring_ball's 16 plus the four `cup` capsules, which the ball can touch
@@ -332,6 +335,7 @@ comptime DMManipulatorInsertPegModel = ModelDefFromXML[
     nbody=mip.NBODY, njoint=mip.NJOINT, nq=mip.NQ, nv=mip.NV,
     ngeom=mip.NGEOM, nact=mip.NACT, ntex=mip.NTEX, nmat=mip.NMAT,
     nlight=mip.NLIGHT, ncam=mip.NCAM, nsite=mip.NSITE,
+    nsensor=mip.NSENSOR, nsensordata=mip.NSENSORDATA,
     max_tendon=mip.NTENDON,
     cone_type=ConeType.ELLIPTIC,
     # The worst case in the port: three peg geoms against three `slot` boxes is

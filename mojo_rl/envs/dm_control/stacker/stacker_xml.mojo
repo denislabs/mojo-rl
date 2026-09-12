@@ -184,6 +184,7 @@ comptime DMStacker2Model = ModelDefFromXML[
     nbody=s2.NBODY, njoint=s2.NJOINT, nq=s2.NQ, nv=s2.NV,
     ngeom=s2.NGEOM, nact=s2.NACT, ntex=s2.NTEX, nmat=s2.NMAT,
     nlight=s2.NLIGHT, ncam=s2.NCAM, nsite=s2.NSITE,
+    nsensor=s2.NSENSOR, nsensordata=s2.NSENSORDATA,
     max_tendon=s2.NTENDON,
     cone_type=ConeType.ELLIPTIC,
     # A cube resting on the floor is four points on its own (`box_plane` reports
@@ -203,6 +204,7 @@ comptime DMStacker4Model = ModelDefFromXML[
     nbody=s4.NBODY, njoint=s4.NJOINT, nq=s4.NQ, nv=s4.NV,
     ngeom=s4.NGEOM, nact=s4.NACT, ntex=s4.NTEX, nmat=s4.NMAT,
     nlight=s4.NLIGHT, ncam=s4.NCAM, nsite=s4.NSITE,
+    nsensor=s4.NSENSOR, nsensordata=s4.NSENSORDATA,
     max_tendon=s4.NTENDON,
     cone_type=ConeType.ELLIPTIC,
     # Four boxes flat on the floor is sixteen points before anything else
