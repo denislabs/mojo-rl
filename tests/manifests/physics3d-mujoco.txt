@@ -39,3 +39,4 @@ tests/physics3d/test_ray_model_vs_mujoco.mojo
 tests/physics3d/test_rangefinder_vs_mujoco.mojo
 tests/physics3d/test_touch_zone_types_vs_mujoco.mojo
 tests/physics3d/test_sensordata_vs_mujoco.mojo
+tests/physics3d/test_env_site_literals_match_sensors.mojo

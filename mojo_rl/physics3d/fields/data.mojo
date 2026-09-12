@@ -188,7 +188,18 @@ struct Data[
     ⚠ A SENSOR THIS ENGINE DOES NOT SERVE LEAVES ITS SLICE AT ZERO. The slot
     is still reserved so later offsets are right; nothing writes it. Ask for it
     by name and `FlatModelDef.sensor_adr_by_name` raises rather than handing
-    back an offset into values that were never computed."""
+    back an offset into values that were never computed.
+
+    ⚠⚠ FILLED ONLY ON THE CPU, BATCH=1 LEG (AUD-53). `EulerIntegrator.step`
+    runs the three passes under `comptime if target == "cpu" and BATCH == 1`;
+    `sensors/eval.mojo` takes host `List`s and one env, and on the device the
+    values live in `LayoutTensor`s the host copy does not see. A batched or GPU
+    model therefore has this buffer allocated and EMPTY — which is safe today
+    only because nothing reads it there: the GPU env configs compute their
+    observations by calling the `*_gpu` kernels directly, the way every config
+    did before the framework existed. `assert_sensors_are_served` cannot help
+    here, since it runs on the same CPU leg. Read this buffer on a batched
+    model and you get zeros that look like readings."""
     var xquat_acc: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*4]
     var subtree_com: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*3]
     var qfrc_actuator: TensorImpl[Self.DTYPE]  # [BATCH, NV]
