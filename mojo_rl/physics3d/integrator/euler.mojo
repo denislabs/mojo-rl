@@ -31,9 +31,7 @@ from ..sensors.eval import (
     sensor_pos,
     sensor_vel,
     sensor_acc,
-    assert_sensors_are_served,
 )
-from ..constants import SENSSTAGE_POS, SENSSTAGE_VEL, SENSSTAGE_ACC
 from ..kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -877,19 +875,15 @@ struct EulerIntegrator[
             # that flag is what writes `cacc`/`cfrc_int`. A model declaring an
             # accelerometer on an integrator without it fails here instead of
             # reporting 0.0 forever.
-            # All three stages run on this leg; `RNE_POST` is a SEPARATE
-            # axis, and only the three sensors that read `cacc`/`cfrc_int`
-            # care about it. Folding it into the stage mask is what broke
-            # hopper's touch sensors.
-            comptime _STAGES = (
-                (1 << SENSSTAGE_POS) | (1 << SENSSTAGE_VEL)
-                | (1 << SENSSTAGE_ACC)
-            )
-            assert_sensors_are_served[Self.DTYPE, Self.D](
-                m, _STAGES, Self.RNE_POST,
-                String("EulerIntegrator[RNE_POST=")
-                + String(Self.RNE_POST) + String("]"),
-            )
+            # ⚠ NO GUARD HERE. All three stages run on this leg, but
+            # `RNE_POST` is a SEPARATE axis and the three sensors that read
+            # `cacc`/`cfrc_int` go uncomputed when it is off. That used to
+            # RAISE from inside `step`, which broke the seven manipulation
+            # envs: Jaco declares force/torque sensors, they run
+            # `RNE_POST=False`, and the raise aborted their reset hook.
+            # `Data` now fills `sensordata` with NaN instead, so an
+            # uncomputed slot is loud where it is READ and inert where it is
+            # not — see that field's docstring.
             sensor_pos[Self.DTYPE, Self.D](
                     rebind[Data[Self.DTYPE, Self.D, 1]](d), m
                 )

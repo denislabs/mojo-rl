@@ -149,8 +149,9 @@ def _eval_stage[
         var st = Int(m.sensors.data[o + SENSOR_IDX_TYPE])
         # The three that genuinely read `cacc` / `cfrc_int`. Without the
         # post-constraint RNE they would report whatever those buffers hold,
-        # so they are skipped and `assert_sensors_are_served` has already
-        # refused the model if any is declared.
+        # so they are skipped and their slots keep the NaN `Data` filled them
+        # with — loud to a reader, inert to the seven manipulation envs that
+        # declare force/torque sensors and never read `sensordata`.
         if not have_rne_post and _needs_rne_post(st):
             continue
         var objid = Int(m.sensors.data[o + SENSOR_IDX_OBJID])
@@ -276,66 +277,6 @@ def _needs_rne_post(sensor_type: Int) -> Bool:
         or sensor_type == SENS_FORCE
         or sensor_type == SENS_TORQUE
     )
-
-
-def assert_sensors_are_served[
-    DTYPE: DType, D: DimsLike
-](
-    m: Model[DTYPE, D], stages_run: Int, have_rne_post: Bool, what: String
-) raises:
-    """Raise if the model declares SERVED sensors no pass will evaluate.
-
-    ⚠⚠ THE POINT IS THAT A SKIPPED PASS LOOKS EXACTLY LIKE A SENSOR READING
-    ZERO. `d.sensordata` is zero-initialised, so a model whose acceleration
-    stage never runs reports 0.0 for its accelerometer, its force and torque
-    sensors and its touch pads — all of which are legitimately 0.0 in free
-    flight. There is no value to inspect that would tell you the pass did not
-    happen; only this check can.
-
-    `stages_run` is a bitmask of the `SENSSTAGE_*` values the caller actually
-    evaluates. `what` names the caller in the message, because the fix differs:
-    an `RNE_POST=False` integrator needs the flag flipped, a batched or GPU
-    model needs the pass that does not exist yet.
-    """
-    var nsensor = m.dims.get_nsensor()
-    if nsensor == 0:
-        return
-    for i in range(nsensor):
-        var o = i * MODEL_SENSOR_SIZE
-        if Int(m.sensors.data[o + SENSOR_IDX_SERVED]) != 1:
-            continue
-        var need = Int(m.sensors.data[o + SENSOR_IDX_NEEDSTAGE])
-        var stype = Int(m.sensors.data[o + SENSOR_IDX_TYPE])
-        # ⚠ TWO SEPARATE REASONS A SENSOR GOES UNCOMPUTED, and they need
-        # different messages: the caller runs no pass for its stage at all, or
-        # the stage runs but this particular sensor needs `cacc`/`cfrc_int`
-        # that `RNE_POST=False` never wrote.
-        if (stages_run & (1 << need)) != 0 and not (
-            _needs_rne_post(stype) and not have_rne_post
-        ):
-            continue
-        var why = String(" stage, which ") + what + String(
-            " does not run."
-        )
-        if _needs_rne_post(stype) and not have_rne_post:
-            why = String(
-                " stage AND the post-constraint RNE that writes cacc /"
-                " cfrc_int, which "
-            ) + what + String(
-                " does not run. Pass RNE_POST=True to the integrator."
-            )
-        raise Error(
-            "physics3d: sensor "
-            + String(i)
-            + " (type "
-            + String(stype)
-            + ") needs the "
-            + ("position" if need == SENSSTAGE_POS else (
-                "velocity" if need == SENSSTAGE_VEL else "acceleration"))
-            + why
-            + " Its sensordata would stay 0.0, which is indistinguishable"
-            + " from a real reading of zero."
-        )
 
 
 @always_inline

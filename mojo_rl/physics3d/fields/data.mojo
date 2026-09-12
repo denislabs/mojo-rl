@@ -26,6 +26,8 @@ upgrades happen after the code stops round-tripping through slabs.
 from max.gpu.host import DeviceContext
 from layout import Layout
 
+from std.math import nan
+
 from mojo_rl.nn.core.tensor import TensorImpl
 
 from .dims import DimsLike
@@ -185,10 +187,24 @@ struct Data[
     from the other direction ("`d.sensordata[i]` is indexed by SENSOR, and
     `rangefinder_site` by SITE").
 
-    ⚠ A SENSOR THIS ENGINE DOES NOT SERVE LEAVES ITS SLICE AT ZERO. The slot
-    is still reserved so later offsets are right; nothing writes it. Ask for it
-    by name and `FlatModelDef.sensor_adr_by_name` raises rather than handing
-    back an offset into values that were never computed.
+    ⚠ A SLOT NOTHING COMPUTES READS BACK NaN, NOT ZERO. The slot is still
+    reserved so later offsets are right, and the constructor fills the whole
+    buffer with NaN so an unwritten one cannot pass for a measurement — 0.0 is
+    an ordinary reading for a touch or force sensor, NaN is not a reading at
+    all. Three ways a slot stays unwritten: the sensor's TYPE is one this
+    engine does not serve (ask for it by name and
+    `FlatModelDef.sensor_adr_by_name` raises rather than handing back the
+    offset); its stage is one the caller runs no pass for; or it needs the
+    post-constraint RNE and the integrator has `RNE_POST=False`.
+
+    ⚠ THE LAST OF THOSE USED TO RAISE FROM INSIDE `step`, AND THAT WAS WORSE
+    THAN THE HOLE IT CLOSED. Jaco declares force/torque sensors and the seven
+    manipulation envs run `EulerIntegrator[RNE_POST=False]`, so the guard fired
+    during `custom_reset_full_cpu` — whose failure `Phyics3dEnv` PRINTS rather
+    than propagates. The reset aborted after the prop placer and before the TCP
+    initializer, leaving the arm at qpos0 and the target height unwritten, and
+    seven `*_vs_dm_control` gates failed their reset leg while every other leg
+    passed. A value that is loud when READ costs nothing when it is not.
 
     ⚠⚠ FILLED ONLY ON THE CPU, BATCH=1 LEG (AUD-53). `EulerIntegrator.step`
     runs the three passes under `comptime if target == "cpu" and BATCH == 1`;
@@ -197,9 +213,9 @@ struct Data[
     model therefore has this buffer allocated and EMPTY — which is safe today
     only because nothing reads it there: the GPU env configs compute their
     observations by calling the `*_gpu` kernels directly, the way every config
-    did before the framework existed. `assert_sensors_are_served` cannot help
-    here, since it runs on the same CPU leg. Read this buffer on a batched
-    model and you get zeros that look like readings."""
+    did before the framework existed. The NaN fill is what covers this case
+    too: read this buffer on a batched or GPU model and you get NaN, not
+    zeros that look like readings."""
     var xquat_acc: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*4]
     var subtree_com: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*3]
     var qfrc_actuator: TensorImpl[Self.DTYPE]  # [BATCH, NV]
@@ -302,6 +318,16 @@ struct Data[
         if _nsd < 1:
             _nsd = 1
         self.sensordata = TensorImpl[Self.DTYPE].alloc(B * _nsd)
+        # ⚠ NaN, NOT ZERO, AND THAT IS THE WHOLE SAFETY STORY FOR THIS BUFFER.
+        # A slot nothing computes must not be readable as a measurement, and
+        # 0.0 is a perfectly ordinary reading for a touch or force sensor. The
+        # passes overwrite every slot they serve, so what survives to a reader
+        # is exactly what this engine did not compute — see the field's
+        # docstring for the three ways a slot can stay unwritten.
+        comptime if Self.DTYPE.is_floating_point():
+            var _qnan = nan[Self.DTYPE]()
+            for _i in range(B * _nsd):
+                self.sensordata.data[_i] = _qnan
         self.xquat_acc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 4)
         self.subtree_com = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
         self.qfrc_actuator = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())

@@ -25,5 +25,4 @@ from .eval import (
     sensor_pos,
     sensor_vel,
     sensor_acc,
-    assert_sensors_are_served,
 )

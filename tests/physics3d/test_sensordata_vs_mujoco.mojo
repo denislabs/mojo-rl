@@ -29,7 +29,7 @@ Run with:
     pixi run mojo run -I . tests/physics3d/test_sensordata_vs_mujoco.mojo
 """
 
-from std.math import abs
+from std.math import abs, isnan
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
@@ -39,7 +39,17 @@ from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.sensors import assert_sensors_are_served
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_SENSOR_SIZE,
+    SENSOR_IDX_ADR,
+    SENSOR_IDX_DIM,
+    SENSOR_IDX_TYPE,
+)
+from mojo_rl.physics3d.constants import (
+    SENS_ACCELEROMETER,
+    SENS_FORCE,
+    SENS_TORQUE,
+)
 
 comptime DTYPE = DType.float64
 
@@ -429,17 +439,22 @@ def test_cutoff_clamps_like_mujoco() raises:
 def test_a_stage_that_never_runs_is_loud() raises:
     """An acceleration-stage sensor on an integrator without `RNE_POST`.
 
-    ⚠⚠ THE FAILURE THIS PREVENTS HAS NO FINGERPRINT. `d.sensordata` is
-    zero-initialised, so a model whose acceleration stage never runs reports
-    0.0 for its accelerometer, its force and torque sensors and its touch pads
-    — every one of which is legitimately 0.0 in free flight. There is no value
-    an observer could inspect to tell the two apart, which is why the check has
-    to live at the wiring and not in the data.
+    ⚠⚠ THE FAILURE THIS PREVENTS HAS NO FINGERPRINT IF THE BUFFER IS ZEROED.
+    A model whose acceleration stage never runs would report 0.0 for its
+    accelerometer, its force and torque sensors and its touch pads — every one
+    of which is legitimately 0.0 in free flight. There is no value an observer
+    could inspect to tell the two apart. `Data` therefore fills `sensordata`
+    with NaN, and the passes overwrite only what they serve, so what survives
+    to a reader is exactly what was never computed.
 
-    `EulerIntegrator` sets the acceleration bit of its stage mask only under
-    `RNE_POST`, because that flag is what writes `cacc`/`cfrc_int`.
+    ⚠ IT USED TO RAISE FROM `step`, AND THAT WAS THE WRONG PLACE. Jaco
+    declares force/torque sensors and the seven manipulation envs run
+    `RNE_POST=False`; the raise landed inside `custom_reset_full_cpu`, whose
+    failure `Phyics3dEnv` prints rather than propagates, so their reset
+    silently aborted before the TCP initializer and left the arm at qpos0.
+    Loud when READ costs nothing when it is not read.
     """
-    print("=== a sensor whose stage never runs refuses to step ===")
+    print("=== an uncomputed acceleration-stage sensor reads NaN ===")
     var ctx = DeviceContext()
     var mf = Mod()
     var d = Dat()
@@ -447,33 +462,67 @@ def test_a_stage_that_never_runs_is_loud() raises:
     SM.init_fields[DTYPE](ctx, mf)
     SM.reset_data(sf, d)
 
-    # The same model on an integrator WITHOUT the acceleration stage. Our
-    # fixture declares accelerometer, force, torque and touch, so four served
-    # sensors have nowhere to be computed.
+    # The same model on an integrator WITHOUT the post-constraint RNE. Our
+    # fixture declares accelerometer, force and torque, which read
+    # `cacc`/`cfrc_int` and so cannot be computed here.
     comptime IntegNoRne = EulerIntegrator[
         DTYPE, SMD, SM.CONE_TYPE, 1, SOLVER="newton", RNE_POST=False
     ]
     var integ = IntegNoRne()
-    var raised = False
-    var msg = String("")
-    try:
-        integ.step["cpu"](d, mf)
-    except e:
-        raised = True
-        msg = String(e)
-    print("  raised:", raised)
-    if raised:
-        print("  message:", msg)
+    # ⚠ IT MUST STEP. The whole point of the change is that it no longer
+    # refuses.
+    integ.step["cpu"](d, mf)
+    print("  RNE_POST=False steps cleanly")
+
+    # Every sensor that needs the post-constraint RNE must read back NaN, and
+    # every sensor that does not must read back a real number.
+    var n_nan = 0
+    var n_real = 0
+    for i in range(SMD.NSENSOR):
+        var o = i * MODEL_SENSOR_SIZE
+        var st = Int(mf.sensors.data[o + SENSOR_IDX_TYPE])
+        var adr = Int(mf.sensors.data[o + SENSOR_IDX_ADR])
+        var dim = Int(mf.sensors.data[o + SENSOR_IDX_DIM])
+        var needs_rne = (
+            st == SENS_ACCELEROMETER or st == SENS_FORCE or st == SENS_TORQUE
+        )
+        for k in range(dim):
+            var v = Float64(d.sensordata.data[adr + k])
+            if needs_rne:
+                assert_true(
+                    isnan(v),
+                    "sensor " + String(i) + " (type " + String(st) + ") needs"
+                    " the post-constraint RNE, which this integrator does not"
+                    " run — its slot must read NaN, not " + String(v),
+                )
+                n_nan += 1
+            else:
+                assert_true(
+                    not isnan(v),
+                    "sensor " + String(i) + " (type " + String(st) + ") does"
+                    " NOT need the post-constraint RNE and must have been"
+                    " computed, but its slot is NaN",
+                )
+                n_real += 1
+    print("  slots NaN (uncomputed):", n_nan,
+          "  slots computed:", n_real)
+
+    # ⚠ NON-VACUITY, BOTH WAYS. If every slot were NaN the first assertion
+    # would pass while the engine computed nothing; if none were, the test
+    # would be checking an empty set.
     assert_true(
-        raised,
-        "an acceleration-stage sensor on an RNE_POST=False integrator must"
-        " refuse to step — otherwise its sensordata stays 0.0, which is"
-        " indistinguishable from a real reading of zero",
+        n_nan > 0,
+        "no slot came back NaN — the fixture no longer declares a sensor that"
+        " needs the post-constraint RNE, so this test proves nothing",
+    )
+    assert_true(
+        n_real > 0,
+        "every slot came back NaN — the passes computed nothing at all, so the"
+        " NaN above is not evidence about RNE_POST",
     )
 
-    # ⚠ NON-VACUITY: the SAME model on the RNE_POST=True integrator must step
-    # cleanly. Without this the test would pass if `step` raised for any
-    # reason at all.
+    # ⚠ AND THE SAME MODEL ON `RNE_POST=True` MUST FILL THOSE SAME SLOTS.
+    # Without this the NaN could be a sensor we never serve on any integrator.
     var mf2 = Mod()
     var d2 = Dat()
     var sf2 = SM.make_spec_fields[DTYPE]()
@@ -481,7 +530,24 @@ def test_a_stage_that_never_runs_is_loud() raises:
     SM.reset_data(sf2, d2)
     var integ_ok = Integ()
     integ_ok.step["cpu"](d2, mf2)
-    print("  the same model with RNE_POST=True steps cleanly — not vacuous")
+    var n_filled = 0
+    for i in range(SMD.NSENSOR):
+        var o = i * MODEL_SENSOR_SIZE
+        var st = Int(mf2.sensors.data[o + SENSOR_IDX_TYPE])
+        if not (
+            st == SENS_ACCELEROMETER or st == SENS_FORCE or st == SENS_TORQUE
+        ):
+            continue
+        var adr = Int(mf2.sensors.data[o + SENSOR_IDX_ADR])
+        var dim = Int(mf2.sensors.data[o + SENSOR_IDX_DIM])
+        for k in range(dim):
+            assert_true(
+                not isnan(Float64(d2.sensordata.data[adr + k])),
+                "sensor " + String(i) + " stayed NaN with RNE_POST=True — the"
+                " NaN on the other leg was not about RNE_POST at all",
+            )
+            n_filled += 1
+    print("  with RNE_POST=True those same", n_filled, "slots are computed")
 
 
 def main() raises:
