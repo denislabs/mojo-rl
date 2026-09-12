@@ -37,3 +37,4 @@ tests/physics3d/test_newton_warmstart_vs_mujoco.mojo
 # Ray + sensors
 tests/physics3d/test_ray_model_vs_mujoco.mojo
 tests/physics3d/test_rangefinder_vs_mujoco.mojo
+tests/physics3d/test_touch_zone_types_vs_mujoco.mojo

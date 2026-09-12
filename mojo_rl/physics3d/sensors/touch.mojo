@@ -46,11 +46,11 @@ is zero before that, so a hook that reads it too early gets a silent all-zero
 sensor rather than an error.
 """
 
-from std.math import sqrt
 from layout import Layout, LayoutTensor
 
 from ..fields import Data, Dims, DimsLike
-from ..constants import GEOM_SPHERE, GEOM_ELLIPSOID, GEOM_BOX
+from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
+from ..ray import ray_geom
 from ..kinematics.quat_math import gpu_quat_mul, gpu_quat_rotate
 from ..gpu.constants import (
     CONTACT_SIZE,
@@ -93,39 +93,33 @@ def touch_sphere_site[DTYPE: DType, D: DimsLike](
     """
     var sbase = site * MODEL_SITE_SIZE
     var stype = Int(m_sites[sbase + SITE_IDX_TYPE])
-    # ELLIPSOID is measured as a SPHERE of radius size[0]. That is an
-    # approximation, and it is deliberate: it is what this sensor has always
-    # done for finger's `touchtop`/`touchbottom`, which are
-    # `type="ellipsoid" size=".025 .03 .025"` and used to reach here as
-    # GEOM_SPHERE because `_geom_type_from_str` had no `ellipsoid` case and
-    # silently defaulted to sphere. Making ellipsoid a real geom type (bug 26)
-    # turned that silence into a raise, which would have made finger's
-    # observation extraction fail rather than be slightly approximate — so the
-    # approximation is now EXPLICIT, and the condition under which it is exact
-    # stays pinned by `test_finger_vs_dm_control::
-    # test_touch_site_sphere_approximation_is_exact` (equal in-plane semi-axes,
-    # planar model). A zone that needs the real ellipsoid needs its own
-    # narrow phase; box zones landed 2026-08-01 for manipulator.
-    if stype != GEOM_SPHERE and stype != GEOM_ELLIPSOID and stype != GEOM_BOX:
-        raise Error(
-            String(
-                "physics3d touch sensor: site ",
-                site,
-                " has type ",
-                stype,
-                "; only sphere zones (type ",
-                GEOM_SPHERE,
-                "), box zones (type ",
-                GEOM_BOX,
-                (
-                    ") and ellipsoid zones measured as a sphere of radius"
-                    " size[0] (type "
-                ),
-                GEOM_ELLIPSOID,
-                ") are implemented. A capsule zone needs its own ray test —",
-                " see sensors/touch.mojo.",
-            )
-        )
+    # ⚠⚠ ALL SIX ZONE TYPES, THROUGH `ray_geom` (AUD-45). This block used to
+    # RAISE on a capsule or cylinder zone and measure an ellipsoid one as a
+    # sphere of radius `size[0]`, because the zone test was two private ray
+    # routines living in this file — `_ray_hits_box` and `_ray_hits_sphere`.
+    #
+    # They are gone. MuJoCo's touch sensor tests the zone with
+    # `mju_rayGeom(site_xpos, site_xmat, site_size, con->pos, conray,
+    # site_type, NULL) >= 0` (engine_sensor.c, `case mjSENS_TOUCH`), and
+    # `ray/geom.ray_geom` IS `mju_rayGeom` — swept against it over all six
+    # types by `test_ray_geom_vs_mujoco`, which asserts both the residual and
+    # the hit/miss SPLIT at zero. So this is not a new implementation to be
+    # gated; it is the removal of a second spelling of a rule the tree already
+    # states once, which is the defect shape that put the flipped ray below
+    # into four domains before anyone saw it.
+    #
+    # ⚠ THE ELLIPSOID APPROXIMATION IS GONE WITH THEM, and that is a BEHAVIOUR
+    # CHANGE on finger, whose `touchtop`/`touchbottom` are
+    # `type="ellipsoid" size=".025 .03 .025"`. It should be invisible there:
+    # `test_finger_vs_dm_control::test_touch_site_sphere_approximation_is_exact`
+    # pins the case where sphere and ellipsoid agree (equal in-plane
+    # semi-axes, planar model), so the two answers coincide on that model and
+    # the ellipsoid one is right on every other.
+    #
+    # ⚠ MESH and HFIELD still have no zone test — `ray_geom` returns NO HIT
+    # for them rather than raising, so a site declared with one would silently
+    # read zero force. MuJoCo does not allow either as a site type, so the
+    # model cannot reach here; the parser is what would have to change first.
 
     var sbody = Int(m_sites[sbase + SITE_IDX_BODY])
     var radius = Float64(m_sites[sbase + SITE_IDX_SIZE_0])
@@ -202,244 +196,29 @@ def touch_sphere_site[DTYPE: DType, D: DimsLike](
         var py = Float64(d.contacts.data[base + CONTACT_IDX_POS_Y])
         var pz = Float64(d.contacts.data[base + CONTACT_IDX_POS_Z])
 
-        var hit: Bool
-        if stype == GEOM_BOX:
-            hit = _ray_hits_box(
-                sx,
-                sy,
-                sz,
-                wq[0],
-                wq[1],
-                wq[2],
-                wq[3],
-                hx,
-                hy,
-                hz,
-                px,
-                py,
-                pz,
-                nx,
-                ny,
-                nz,
-            )
-        else:
-            hit = _ray_hits_sphere(sx, sy, sz, radius, px, py, pz, nx, ny, nz)
-        if hit:
+        # `mju_rayGeom(...) >= 0` — a contact point INSIDE the zone always
+        # hits, because `ray_quad` returns the smallest NON-NEGATIVE root and
+        # an interior origin makes `c < 0`, so the exit root is the answer.
+        var zt = ray_geom[DType.float64](
+            Vec3Generic[DType.float64](sx, sy, sz),
+            QuatGeneric[DType.float64](wq[3], wq[0], wq[1], wq[2]),
+            Vec3Generic[DType.float64](hx, hy, hz),
+            Vec3Generic[DType.float64](px, py, pz),
+            Vec3Generic[DType.float64](nx, ny, nz),
+            stype,
+        )
+        if zt[0] >= 0.0:
             total += f_normal
 
     return total
 
 
-def _ray_hits_box(
-    cx: Float64,
-    cy: Float64,
-    cz: Float64,
-    qx: Float64,
-    qy: Float64,
-    qz: Float64,
-    qw: Float64,
-    hx: Float64,
-    hy: Float64,
-    hz: Float64,
-    px: Float64,
-    py: Float64,
-    pz: Float64,
-    dx: Float64,
-    dy: Float64,
-    dz: Float64,
-) -> Bool:
-    """`mju_rayGeom(..., mjGEOM_BOX) >= 0` — port of `ray_box`
-    (`engine_ray.c:389`).
-
-    `(c, q)` is the box's WORLD pose and `(hx, hy, hz)` its half-extents;
-    `(p, d)` is the ray. MuJoCo maps both into the box frame (`ray_map`), then
-    for each axis with a non-degenerate direction component solves
-    `lpnt[i] + x*lvec[i] = ±size[i]` and accepts the root when the crossing
-    point falls inside that face's rectangle. Returns whether ANY accepted
-    root exists — the sensor only needs the sign, not the distance.
-
-    A ray ORIGINATING INSIDE the box hits: the exit face gives a positive
-    root. That matters more than the entry case here, because a contact point
-    on a grasped object usually lies within the touch zone rather than outside
-    it. MuJoCo's bounding-sphere early-out is skipped — it is a pure
-    performance guard, redundant with the face loop.
-    """
-    # ray_map: into the box frame, i.e. rotate by the conjugate.
-    var lp = gpu_quat_rotate[DType.float64](
-        -qx, -qy, -qz, qw, px - cx, py - cy, pz - cz
-    )
-    var lv = gpu_quat_rotate[DType.float64](-qx, -qy, -qz, qw, dx, dy, dz)
-
-    var size = Array[Float64, 3](fill=0.0)
-    size[0] = hx
-    size[1] = hy
-    size[2] = hz
-    # `iface[i]` = the two axes spanning the face normal to axis i:
-    # {1,2}, {0,2}, {0,1}.
-    var iface0 = Array[Int, 3](fill=0)
-    var iface1 = Array[Int, 3](fill=0)
-    iface0[0] = 1
-    iface1[0] = 2
-    iface0[1] = 0
-    iface1[1] = 2
-    iface0[2] = 0
-    iface1[2] = 1
-
-    for i in range(3):
-        if abs(lv[i]) <= 1e-15:  # mjMINVAL
-            continue
-        for k in range(2):
-            var side = Float64(-1.0) if k == 0 else Float64(1.0)
-            var sol = (side * size[i] - lp[i]) / lv[i]
-            if sol < 0.0:
-                continue
-            var a0 = iface0[i]
-            var a1 = iface1[i]
-            var p0 = lp[a0] + sol * lv[a0]
-            var p1 = lp[a1] + sol * lv[a1]
-            if abs(p0) <= size[a0] and abs(p1) <= size[a1]:
-                return True
-    return False
-
-
-def _ray_hits_sphere(
-    cx: Float64,
-    cy: Float64,
-    cz: Float64,
-    radius: Float64,
-    px: Float64,
-    py: Float64,
-    pz: Float64,
-    dx: Float64,
-    dy: Float64,
-    dz: Float64,
-) -> Bool:
-    """`mju_rayGeom(..., mjGEOM_SPHERE) >= 0` for a unit-ish direction.
-
-    Ray origin (p) to sphere (c, radius). MuJoCo returns the distance to the
-    first intersection at NON-NEGATIVE range, so a ray starting inside the
-    sphere counts (the origin itself is at distance 0).
-    """
-    var ox = px - cx
-    var oy = py - cy
-    var oz = pz - cz
-    var oo = ox * ox + oy * oy + oz * oz
-    if oo <= radius * radius:
-        return True  # origin inside the zone
-
-    var dd = dx * dx + dy * dy + dz * dz
-    if dd < 1e-18:
-        return False
-    var od = ox * dx + oy * dy + oz * dz
-    if od >= 0.0:
-        return False  # sphere is behind the ray
-    var disc = od * od - dd * (oo - radius * radius)
-    if disc < 0.0:
-        return False
-    # Both roots are positive here (od < 0 and the origin is outside), so the
-    # nearer one is a valid non-negative hit.
-    _ = sqrt(disc)
-    return True
-
-
-# =============================================================================
-# GPU-batched counterpart
-# =============================================================================
-
-
-@always_inline
-def _ray_hits_box_gpu[
-    DTYPE: DType
-](
-    cx: Scalar[DTYPE], cy: Scalar[DTYPE], cz: Scalar[DTYPE],
-    qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE],
-    qw: Scalar[DTYPE],
-    hx: Scalar[DTYPE], hy: Scalar[DTYPE], hz: Scalar[DTYPE],
-    px: Scalar[DTYPE], py: Scalar[DTYPE], pz: Scalar[DTYPE],
-    dx: Scalar[DTYPE], dy: Scalar[DTYPE], dz: Scalar[DTYPE],
-) -> Bool:
-    """`mju_rayGeom(..., mjGEOM_BOX) >= 0`, batched twin of `_ray_hits_box`.
-
-    Transcribed from the CPU function expression for expression — same face
-    loop, same `mjMINVAL` guard, same acceptance test — so the two agree to
-    float32 rounding and a divergence here reads as a port bug rather than a
-    physics one. See the CPU version for why the bounding-sphere early-out is
-    skipped and why a ray originating INSIDE the box must hit.
-    """
-    comptime ZERO = Scalar[DTYPE](0)
-    comptime MINVAL = Scalar[DTYPE](1e-15)
-
-    # ray_map: into the box frame, i.e. rotate by the conjugate.
-    var lp = gpu_quat_rotate[DTYPE](
-        -qx, -qy, -qz, qw, px - cx, py - cy, pz - cz
-    )
-    var lv = gpu_quat_rotate[DTYPE](-qx, -qy, -qz, qw, dx, dy, dz)
-
-    var size = Array[Scalar[DTYPE], 3](fill=ZERO)
-    size[0] = hx
-    size[1] = hy
-    size[2] = hz
-    # `iface[i]` = the two axes spanning the face normal to axis i.
-    var iface0 = Array[Int, 3](fill=0)
-    var iface1 = Array[Int, 3](fill=0)
-    iface0[0] = 1
-    iface1[0] = 2
-    iface0[1] = 0
-    iface1[1] = 2
-    iface0[2] = 0
-    iface1[2] = 1
-
-    for i in range(3):
-        if abs(lv[i]) <= MINVAL:
-            continue
-        for k in range(2):
-            var side = Scalar[DTYPE](-1.0) if k == 0 else Scalar[DTYPE](1.0)
-            var sol = (side * size[i] - lp[i]) / lv[i]
-            if sol < ZERO:
-                continue
-            var a0 = iface0[i]
-            var a1 = iface1[i]
-            var p0 = lp[a0] + sol * lv[a0]
-            var p1 = lp[a1] + sol * lv[a1]
-            if abs(p0) <= size[a0] and abs(p1) <= size[a1]:
-                return True
-    return False
-
-
-@always_inline
-def _ray_hits_sphere_gpu[
-    DTYPE: DType
-](
-    cx: Scalar[DTYPE], cy: Scalar[DTYPE], cz: Scalar[DTYPE],
-    radius: Scalar[DTYPE],
-    px: Scalar[DTYPE], py: Scalar[DTYPE], pz: Scalar[DTYPE],
-    dx: Scalar[DTYPE], dy: Scalar[DTYPE], dz: Scalar[DTYPE],
-) -> Bool:
-    """`_ray_hits_sphere` in `DTYPE`. Same branches, same order."""
-    comptime ZERO = Scalar[DTYPE](0)
-    var ox = px - cx
-    var oy = py - cy
-    var oz = pz - cz
-    var oo = ox * ox + oy * oy + oz * oz
-    if oo <= radius * radius:
-        return True  # origin inside the zone
-    var dd = dx * dx + dy * dy + dz * dz
-    if dd < Scalar[DTYPE](1e-18):
-        return False
-    var od = ox * dx + oy * dy + oz * dz
-    if od >= ZERO:
-        return False  # sphere is behind the ray
-    var disc = od * od - dd * (oo - radius * radius)
-    if disc < ZERO:
-        return False
-    return True
-
-
-# Returned instead of a force sum when the site's zone type is one the GPU
-# path does not implement. A touch reading is a sum of NON-NEGATIVE normal
-# forces, so a negative value cannot be produced legitimately — it is a
-# sentinel that shows up immediately in any obs diff, rather than a silent 0
-# that reads as "nothing is touching".
+# ⚠ NO LONGER REACHABLE FROM A SITE TYPE (AUD-45). Every zone this sensor can
+# be handed now goes through `ray_geom`, which covers all six. The constant
+# stays because callers test for it — dog's batched obs used to come back a
+# constant -1.0 here, and that sentinel is what made the diagnosis one line
+# (`test_dog_gpu_vs_cpu`, obs[181], cpu 0.0 vs gpu -1.0). Removing it would
+# turn any future unsupported zone back into a plausible 0.0.
 comptime TOUCH_UNSUPPORTED_ZONE: Float64 = -1.0
 
 
@@ -482,9 +261,10 @@ def touch_sphere_site_gpu[
 ) -> Scalar[DTYPE]:
     """`sensordata` for one `<touch>` sensor, one lane of the batched path.
 
-    SPHERE, ELLIPSOID and BOX zones. ⚠ A CAPSULE zone returns
-    `TOUCH_UNSUPPORTED_ZONE` rather than a wrong number — it needs its own ray
-    test, and no ported model has one.
+    ALL SIX zone types, through `ray_geom` — the same routine the CPU twin
+    calls, which IS `mju_rayGeom` (AUD-45). `TOUCH_UNSUPPORTED_ZONE` is no
+    longer reachable from a site type; it is kept only so a caller that still
+    tests for it keeps compiling.
 
     ⚠ THE BOX BRANCH LANDED BECAUSE dog NEEDED IT, not manipulator/stacker.
     This function used to reject box zones with a note saying tranche 4 would
@@ -494,9 +274,9 @@ def touch_sphere_site_gpu[
     obs[181], cpu 0.0 vs gpu -1.0. A sentinel rather than a plausible number
     is what made that a one-line diagnosis.
 
-    ELLIPSOID is measured as a SPHERE of radius `size[0]`, exactly as the CPU
-    version does — see its docstring for why that approximation is explicit
-    rather than accidental, and what pins the case where it is exact.
+    ELLIPSOID is now a REAL ellipsoid, as on the CPU side — the shared
+    `ray_geom` has no sphere approximation in it. The two paths therefore
+    still agree, which is what `test_dog_gpu_vs_cpu` checks.
 
     ⚠⚠ THE RAY FLIP IS ON `body_a`, NOT `body_b`. MuJoCo flips when the
     sensorized body carries `geom2`; our normal points BODY_B -> BODY_A, so
@@ -509,12 +289,6 @@ def touch_sphere_site_gpu[
     comptime ZERO = Scalar[DTYPE](0)
     var sbase = site * MODEL_SITE_SIZE
     var stype = Int(rebind[Scalar[DTYPE]](sites[site, SITE_IDX_TYPE]))
-    if (
-        stype != GEOM_SPHERE
-        and stype != GEOM_ELLIPSOID
-        and stype != GEOM_BOX
-    ):
-        return Scalar[DTYPE](TOUCH_UNSUPPORTED_ZONE)
 
     var sbody = Int(rebind[Scalar[DTYPE]](sites[site, SITE_IDX_BODY]))
     var radius = rebind[Scalar[DTYPE]](sites[site, SITE_IDX_SIZE_0])
@@ -573,19 +347,69 @@ def touch_sphere_site_gpu[
         var py = rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_POS_Y])
         var pz = rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_POS_Z])
 
-        var hit: Bool
-        if stype == GEOM_BOX:
-            hit = _ray_hits_box_gpu[DTYPE](
-                sx, sy, sz,
-                wq[0], wq[1], wq[2], wq[3],
-                hx, hy, hz,
-                px, py, pz,
-                nx, ny, nz,
+        # `mju_rayGeom(...) >= 0`, the same call the CPU twin makes.
+        #
+        # ⚠⚠ SPLIT BY DTYPE AT COMPTIME, AND NOT BY CHOICE. `ray_geom`
+        # carries `where DTYPE.is_floating_point()`, and this function cannot:
+        # it is reached through the env-config trait's `custom_extract_obs_gpu`,
+        # whose signature every environment in the tree implements. Adding the
+        # constraint here propagates to that trait method, and the compiler
+        # then rejects the WHOLE conformance —
+        #   "method 'init_qpos_gpu' has constraints that cannot be proven or
+        #    disproven from conformance constraint"
+        # — so proving it properly means widening the trait for every env.
+        # Naming the two concrete types supplies the evidence locally instead,
+        # and keeps ONE spelling of the zone test across CPU and GPU, which is
+        # the entire point of routing through `ray_geom` (AUD-45).
+        #
+        # ⚠ A NON-FLOAT `DTYPE` FALLS THROUGH AS NO HIT rather than silently
+        # summing every contact. Physics `DTYPE` is always float32 or float64,
+        # so this is unreachable; it is written down because the alternative
+        # default would be a plausible wrong number.
+        var hit = False
+        comptime if DTYPE == DType.float32:
+            var t32 = ray_geom[DType.float32](
+                Vec3Generic[DType.float32](
+                    Float32(sx), Float32(sy), Float32(sz)
+                ),
+                QuatGeneric[DType.float32](
+                    Float32(wq[3]), Float32(wq[0]),
+                    Float32(wq[1]), Float32(wq[2]),
+                ),
+                Vec3Generic[DType.float32](
+                    Float32(hx), Float32(hy), Float32(hz)
+                ),
+                Vec3Generic[DType.float32](
+                    Float32(px), Float32(py), Float32(pz)
+                ),
+                Vec3Generic[DType.float32](
+                    Float32(nx), Float32(ny), Float32(nz)
+                ),
+                stype,
             )
+            hit = t32[0] >= Float32(0)
         else:
-            hit = _ray_hits_sphere_gpu[DTYPE](
-                sx, sy, sz, radius, px, py, pz, nx, ny, nz
-            )
+            comptime if DTYPE == DType.float64:
+                var t64 = ray_geom[DType.float64](
+                    Vec3Generic[DType.float64](
+                        Float64(sx), Float64(sy), Float64(sz)
+                    ),
+                    QuatGeneric[DType.float64](
+                        Float64(wq[3]), Float64(wq[0]),
+                        Float64(wq[1]), Float64(wq[2]),
+                    ),
+                    Vec3Generic[DType.float64](
+                        Float64(hx), Float64(hy), Float64(hz)
+                    ),
+                    Vec3Generic[DType.float64](
+                        Float64(px), Float64(py), Float64(pz)
+                    ),
+                    Vec3Generic[DType.float64](
+                        Float64(nx), Float64(ny), Float64(nz)
+                    ),
+                    stype,
+                )
+                hit = t64[0] >= Float64(0)
         if hit:
             total += f_normal
     _ = sbase
