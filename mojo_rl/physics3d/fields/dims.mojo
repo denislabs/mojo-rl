@@ -123,6 +123,8 @@ trait DimsLike(Copyable, Movable, ImplicitlyCopyable, Deinitable):
     comptime NJOINT: Int
     comptime NGEOM: Int
     comptime NSITE: Int
+    comptime NSENSOR: Int
+    comptime NSENSORDATA: Int
     comptime MAX_CONTACTS: Int
     comptime NEQUALITY: Int
     comptime NTENDON: Int
@@ -141,6 +143,8 @@ trait DimsLike(Copyable, Movable, ImplicitlyCopyable, Deinitable):
     comptime CAP_NJOINT: Int
     comptime CAP_NGEOM: Int
     comptime CAP_NSITE: Int
+    comptime CAP_NSENSOR: Int
+    comptime CAP_NSENSORDATA: Int
     comptime CAP_MAX_CONTACTS: Int
     comptime CAP_NEQUALITY: Int
     comptime CAP_NTENDON: Int
@@ -559,6 +563,8 @@ struct DynDims(DimsLike):
     comptime NJOINT = DIM_POISON
     comptime NGEOM = DIM_POISON
     comptime NSITE = DIM_POISON
+    comptime NSENSOR = DIM_POISON
+    comptime NSENSORDATA = DIM_POISON
     comptime MAX_CONTACTS = DIM_POISON
     comptime NEQUALITY = DIM_POISON
     comptime NTENDON = DIM_POISON
@@ -577,6 +583,8 @@ struct DynDims(DimsLike):
     comptime CAP_NJOINT = 0
     comptime CAP_NGEOM = 0
     comptime CAP_NSITE = 0
+    comptime CAP_NSENSOR = 0
+    comptime CAP_NSENSORDATA = 0
     comptime CAP_MAX_CONTACTS = 0
     comptime CAP_NEQUALITY = 0
     comptime CAP_NTENDON = 0

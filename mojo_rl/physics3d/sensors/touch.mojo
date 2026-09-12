@@ -122,7 +122,6 @@ def touch_sphere_site[DTYPE: DType, D: DimsLike](
     # model cannot reach here; the parser is what would have to change first.
 
     var sbody = Int(m_sites[sbase + SITE_IDX_BODY])
-    var radius = Float64(m_sites[sbase + SITE_IDX_SIZE_0])
     var sx = Float64(d.site_xpos.data[site * 3 + 0])
     var sy = Float64(d.site_xpos.data[site * 3 + 1])
     var sz = Float64(d.site_xpos.data[site * 3 + 2])

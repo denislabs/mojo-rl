@@ -314,29 +314,28 @@ def assert_sensors_are_served[
             _needs_rne_post(stype) and not have_rne_post
         ):
             continue
-        if True:
-            var why = String(" stage, which ") + what + String(
-                " does not run."
+        var why = String(" stage, which ") + what + String(
+            " does not run."
+        )
+        if _needs_rne_post(stype) and not have_rne_post:
+            why = String(
+                " stage AND the post-constraint RNE that writes cacc /"
+                " cfrc_int, which "
+            ) + what + String(
+                " does not run. Pass RNE_POST=True to the integrator."
             )
-            if _needs_rne_post(stype) and not have_rne_post:
-                why = String(
-                    " stage AND the post-constraint RNE that writes cacc /"
-                    " cfrc_int, which "
-                ) + what + String(
-                    " does not run. Pass RNE_POST=True to the integrator."
-                )
-            raise Error(
-                "physics3d: sensor "
-                + String(i)
-                + " (type "
-                + String(stype)
-                + ") needs the "
-                + ("position" if need == SENSSTAGE_POS else (
-                    "velocity" if need == SENSSTAGE_VEL else "acceleration"))
-                + why
-                + " Its sensordata would stay 0.0, which is indistinguishable"
-                + " from a real reading of zero."
-            )
+        raise Error(
+            "physics3d: sensor "
+            + String(i)
+            + " (type "
+            + String(stype)
+            + ") needs the "
+            + ("position" if need == SENSSTAGE_POS else (
+                "velocity" if need == SENSSTAGE_VEL else "acceleration"))
+            + why
+            + " Its sensordata would stay 0.0, which is indistinguishable"
+            + " from a real reading of zero."
+        )
 
 
 @always_inline
