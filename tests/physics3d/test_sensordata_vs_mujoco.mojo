@@ -39,7 +39,7 @@ from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.sensors import sensor_pos, sensor_vel, sensor_acc
+from mojo_rl.physics3d.sensors import assert_sensors_are_served
 
 comptime DTYPE = DType.float64
 
@@ -225,10 +225,12 @@ def _run_plain(
         qvel.append(Float64(d.qvel.data[i]))
 
     var integ = Integ()
+    # ⚠⚠ NO EXPLICIT `sensor_*` CALLS. `EulerIntegrator.step` runs the three
+    # passes itself, at MuJoCo's own stage points, and this gate exists to
+    # prove that. The first version called them here as well — which is
+    # idempotent and therefore would have passed even with the hook removed,
+    # testing the passes while claiming to test the wiring.
     integ.step["cpu"](d, mf)
-    sensor_pos[DTYPE, SMD](d, mf)
-    sensor_vel[DTYPE, SMD](d, mf)
-    sensor_acc[DTYPE, SMD](d, mf)
     return (qpos^, qvel^)
 
 
@@ -274,10 +276,12 @@ def _run_cut(
         qvel.append(Float64(d.qvel.data[i]))
 
     var integ = IntegC()
+    # ⚠⚠ NO EXPLICIT `sensor_*` CALLS. `EulerIntegrator.step` runs the three
+    # passes itself, at MuJoCo's own stage points, and this gate exists to
+    # prove that. The first version called them here as well — which is
+    # idempotent and therefore would have passed even with the hook removed,
+    # testing the passes while claiming to test the wiring.
     integ.step["cpu"](d, mf)
-    sensor_pos[DTYPE, SMCD](d, mf)
-    sensor_vel[DTYPE, SMCD](d, mf)
-    sensor_acc[DTYPE, SMCD](d, mf)
     return (qpos^, qvel^)
 
 
@@ -422,8 +426,67 @@ def test_cutoff_clamps_like_mujoco() raises:
     print("  our clamped sensordata matches MuJoCo's, all 20 values")
 
 
+def test_a_stage_that_never_runs_is_loud() raises:
+    """An acceleration-stage sensor on an integrator without `RNE_POST`.
+
+    ⚠⚠ THE FAILURE THIS PREVENTS HAS NO FINGERPRINT. `d.sensordata` is
+    zero-initialised, so a model whose acceleration stage never runs reports
+    0.0 for its accelerometer, its force and torque sensors and its touch pads
+    — every one of which is legitimately 0.0 in free flight. There is no value
+    an observer could inspect to tell the two apart, which is why the check has
+    to live at the wiring and not in the data.
+
+    `EulerIntegrator` sets the acceleration bit of its stage mask only under
+    `RNE_POST`, because that flag is what writes `cacc`/`cfrc_int`.
+    """
+    print("=== a sensor whose stage never runs refuses to step ===")
+    var ctx = DeviceContext()
+    var mf = Mod()
+    var d = Dat()
+    var sf = SM.make_spec_fields[DTYPE]()
+    SM.init_fields[DTYPE](ctx, mf)
+    SM.reset_data(sf, d)
+
+    # The same model on an integrator WITHOUT the acceleration stage. Our
+    # fixture declares accelerometer, force, torque and touch, so four served
+    # sensors have nowhere to be computed.
+    comptime IntegNoRne = EulerIntegrator[
+        DTYPE, SMD, SM.CONE_TYPE, 1, SOLVER="newton", RNE_POST=False
+    ]
+    var integ = IntegNoRne()
+    var raised = False
+    var msg = String("")
+    try:
+        integ.step["cpu"](d, mf)
+    except e:
+        raised = True
+        msg = String(e)
+    print("  raised:", raised)
+    if raised:
+        print("  message:", msg)
+    assert_true(
+        raised,
+        "an acceleration-stage sensor on an RNE_POST=False integrator must"
+        " refuse to step — otherwise its sensordata stays 0.0, which is"
+        " indistinguishable from a real reading of zero",
+    )
+
+    # ⚠ NON-VACUITY: the SAME model on the RNE_POST=True integrator must step
+    # cleanly. Without this the test would pass if `step` raised for any
+    # reason at all.
+    var mf2 = Mod()
+    var d2 = Dat()
+    var sf2 = SM.make_spec_fields[DTYPE]()
+    SM.init_fields[DTYPE](ctx, mf2)
+    SM.reset_data(sf2, d2)
+    var integ_ok = Integ()
+    integ_ok.step["cpu"](d2, mf2)
+    print("  the same model with RNE_POST=True steps cleanly — not vacuous")
+
+
 def main() raises:
     var suite = TestSuite()
     suite.test[test_sensordata_matches_mujoco]()
     suite.test[test_cutoff_clamps_like_mujoco]()
+    suite.test[test_a_stage_that_never_runs_is_loud]()
     suite^.run()

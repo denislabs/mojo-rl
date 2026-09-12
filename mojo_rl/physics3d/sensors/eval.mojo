@@ -110,12 +110,22 @@ def _eval_stage[
     mut d: Data[DTYPE, D, 1],
     mut m: Model[DTYPE, D],
     stage: Int,
-) raises where DTYPE.is_floating_point():
+    have_rne_post: Bool = True,
+) raises:
     """Evaluate every SERVED sensor whose `needstage` is `stage`.
 
     One function rather than three near-identical ones: the stage is a filter
     over the same table, and the three public entry points below name the
     stages so a caller reads like `mj_sensorPos` and cannot pass a number.
+
+    ⚠⚠ `have_rne_post` IS NOT THE SAME AS "THE ACCELERATION STAGE RUNS", and
+    conflating them was a real bug. MuJoCo classes TOUCH as an acceleration
+    sensor, so the first version of this gated the whole stage on `RNE_POST`
+    and hopper — which declares two touch sensors and runs `RNE_POST=False` —
+    stopped stepping. Touch reads CONTACTS and the live `site_xpos`; it never
+    touches `cacc` or `cfrc_int`. Only the accelerometer and the force/torque
+    pair need the post-constraint RNE, and only those are skipped when it has
+    not run.
     """
     var nsensor = m.dims.get_nsensor()
     if nsensor == 0:
@@ -137,15 +147,44 @@ def _eval_stage[
             continue
 
         var st = Int(m.sensors.data[o + SENSOR_IDX_TYPE])
+        # The three that genuinely read `cacc` / `cfrc_int`. Without the
+        # post-constraint RNE they would report whatever those buffers hold,
+        # so they are skipped and `assert_sensors_are_served` has already
+        # refused the model if any is declared.
+        if not have_rne_post and _needs_rne_post(st):
+            continue
         var objid = Int(m.sensors.data[o + SENSOR_IDX_OBJID])
         var body = Int(m.sensors.data[o + SENSOR_IDX_BODY])
         var adr = Int(m.sensors.data[o + SENSOR_IDX_ADR])
         var dim = Int(m.sensors.data[o + SENSOR_IDX_DIM])
 
         if st == SENS_RANGEFINDER:
-            d.sensordata.data[adr] = Scalar[DTYPE](
-                rangefinder_site[DTYPE, D, 1](d, m, objid, 0)
-            )
+            # ⚠⚠ A COMPTIME DType SPLIT, AND NOT BY PREFERENCE. Only
+            # `rangefinder_site` among the six carries
+            # `where DTYPE.is_floating_point()` (it reaches `ray_model`), and
+            # this pass cannot: it is called from `EulerIntegrator.step`,
+            # whose `DTYPE` is unconstrained because the env-config trait that
+            # reaches it is. Adding the constraint upward makes the compiler
+            # reject the whole conformance — the same wall `touch.mojo`'s GPU
+            # twin hit, and the same fix: name the two concrete float types
+            # here rather than widen a trait every environment implements.
+            comptime if DTYPE == DType.float32:
+                d.sensordata.data[adr] = Scalar[DTYPE](
+                    rangefinder_site[DType.float32, D, 1](
+                        rebind[Data[DType.float32, D, 1]](d),
+                        rebind[Model[DType.float32, D]](m),
+                        objid, 0,
+                    )
+                )
+            else:
+                comptime if DTYPE == DType.float64:
+                    d.sensordata.data[adr] = Scalar[DTYPE](
+                        rangefinder_site[DType.float64, D, 1](
+                            rebind[Data[DType.float64, D, 1]](d),
+                            rebind[Model[DType.float64, D]](m),
+                            objid, 0,
+                        )
+                    )
 
         elif st == SENS_VELOCIMETER or st == SENS_GYRO:
             # ⚠ ONE KERNEL, TWO SENSORS, AND IT RETURNS LINEAR FIRST.
@@ -224,11 +263,86 @@ def _eval_stage[
 
 
 @always_inline
+def _needs_rne_post(sensor_type: Int) -> Bool:
+    """Does this sensor read `cacc` / `cfrc_int`?
+
+    ⚠ TOUCH IS AN ACCELERATION-STAGE SENSOR AND IS NOT ONE OF THESE. It sums
+    contact normal forces over a zone — contacts and `site_xpos`, both valid
+    without the post-constraint RNE. Putting it in this set is what broke
+    hopper.
+    """
+    return (
+        sensor_type == SENS_ACCELEROMETER
+        or sensor_type == SENS_FORCE
+        or sensor_type == SENS_TORQUE
+    )
+
+
+def assert_sensors_are_served[
+    DTYPE: DType, D: DimsLike
+](
+    m: Model[DTYPE, D], stages_run: Int, have_rne_post: Bool, what: String
+) raises:
+    """Raise if the model declares SERVED sensors no pass will evaluate.
+
+    ⚠⚠ THE POINT IS THAT A SKIPPED PASS LOOKS EXACTLY LIKE A SENSOR READING
+    ZERO. `d.sensordata` is zero-initialised, so a model whose acceleration
+    stage never runs reports 0.0 for its accelerometer, its force and torque
+    sensors and its touch pads — all of which are legitimately 0.0 in free
+    flight. There is no value to inspect that would tell you the pass did not
+    happen; only this check can.
+
+    `stages_run` is a bitmask of the `SENSSTAGE_*` values the caller actually
+    evaluates. `what` names the caller in the message, because the fix differs:
+    an `RNE_POST=False` integrator needs the flag flipped, a batched or GPU
+    model needs the pass that does not exist yet.
+    """
+    var nsensor = m.dims.get_nsensor()
+    if nsensor == 0:
+        return
+    for i in range(nsensor):
+        var o = i * MODEL_SENSOR_SIZE
+        if Int(m.sensors.data[o + SENSOR_IDX_SERVED]) != 1:
+            continue
+        var need = Int(m.sensors.data[o + SENSOR_IDX_NEEDSTAGE])
+        var stype = Int(m.sensors.data[o + SENSOR_IDX_TYPE])
+        # ⚠ TWO SEPARATE REASONS A SENSOR GOES UNCOMPUTED, and they need
+        # different messages: the caller runs no pass for its stage at all, or
+        # the stage runs but this particular sensor needs `cacc`/`cfrc_int`
+        # that `RNE_POST=False` never wrote.
+        if (stages_run & (1 << need)) != 0 and not (
+            _needs_rne_post(stype) and not have_rne_post
+        ):
+            continue
+        if True:
+            var why = String(" stage, which ") + what + String(
+                " does not run."
+            )
+            if _needs_rne_post(stype) and not have_rne_post:
+                why = String(
+                    " stage AND the post-constraint RNE that writes cacc /"
+                    " cfrc_int, which "
+                ) + what + String(
+                    " does not run. Pass RNE_POST=True to the integrator."
+                )
+            raise Error(
+                "physics3d: sensor "
+                + String(i)
+                + " (type "
+                + String(stype)
+                + ") needs the "
+                + ("position" if need == SENSSTAGE_POS else (
+                    "velocity" if need == SENSSTAGE_VEL else "acceleration"))
+                + why
+                + " Its sensordata would stay 0.0, which is indistinguishable"
+                + " from a real reading of zero."
+            )
+
+
+@always_inline
 def sensor_pos[
     DTYPE: DType, D: DimsLike
-](mut d: Data[DTYPE, D, 1], mut m: Model[DTYPE, D]) raises where (
-    DTYPE.is_floating_point()
-):
+](mut d: Data[DTYPE, D, 1], mut m: Model[DTYPE, D]) raises:
     """`mj_sensorPos` — the position stage. Call after forward kinematics."""
     _eval_stage[DTYPE, D](d, m, SENSSTAGE_POS)
 
@@ -236,9 +350,7 @@ def sensor_pos[
 @always_inline
 def sensor_vel[
     DTYPE: DType, D: DimsLike
-](mut d: Data[DTYPE, D, 1], mut m: Model[DTYPE, D]) raises where (
-    DTYPE.is_floating_point()
-):
+](mut d: Data[DTYPE, D, 1], mut m: Model[DTYPE, D]) raises:
     """`mj_sensorVel` — the velocity stage. Call after body velocities."""
     _eval_stage[DTYPE, D](d, m, SENSSTAGE_VEL)
 
@@ -246,13 +358,15 @@ def sensor_vel[
 @always_inline
 def sensor_acc[
     DTYPE: DType, D: DimsLike
-](mut d: Data[DTYPE, D, 1], mut m: Model[DTYPE, D]) raises where (
-    DTYPE.is_floating_point()
-):
+](
+    mut d: Data[DTYPE, D, 1],
+    mut m: Model[DTYPE, D],
+    have_rne_post: Bool = True,
+) raises:
     """`mj_sensorAcc` — the acceleration stage.
 
     Call after the constraint solve and after `rne_post` has filled `cacc` /
     `cfrc_int`, at the point `EulerIntegrator.step` already evaluates the
     hand-written acceleration-stage hooks.
     """
-    _eval_stage[DTYPE, D](d, m, SENSSTAGE_ACC)
+    _eval_stage[DTYPE, D](d, m, SENSSTAGE_ACC, have_rne_post)

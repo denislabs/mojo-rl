@@ -27,6 +27,13 @@ from layout import Layout, LayoutTensor
 
 from std.math import sqrt
 from ..kinematics.quat_math import quat_integrate, quat_normalize, atan2_device
+from ..sensors.eval import (
+    sensor_pos,
+    sensor_vel,
+    sensor_acc,
+    assert_sensors_are_served,
+)
+from ..constants import SENSSTAGE_POS, SENSSTAGE_VEL, SENSSTAGE_ACC
 from ..kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -854,11 +861,51 @@ struct EulerIntegrator[
         comptime if _EULER_PROBE:
             _e_last = Int(perf_counter_ns())
         forward_kinematics[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, ctx)
+        # ── mj_sensorPos ──────────────────────────────────────────────────
+        # MuJoCo evaluates the position-stage sensors here, immediately after
+        # `mj_fwdPosition` (engine_forward.c:1797). Rangefinders are the only
+        # served one today.
+        #
+        # ⚠ CPU, BATCH=1, AND THE GUARD IS COMPTIME. `sensors/eval.mojo` takes
+        # host `List`s and one env; on GPU the values live on the device and
+        # the host copy is stale, so a batched or device model gets NO
+        # sensordata rather than wrong sensordata. `_sensors_need_a_pass`
+        # below makes that omission loud instead of silent.
+        comptime if target == "cpu" and Self.BATCH == 1:
+            # ⚠ THE STAGE MASK IS BUILT FROM WHAT THIS INSTANTIATION ACTUALLY
+            # RUNS. The acceleration bit is set only under `RNE_POST`, because
+            # that flag is what writes `cacc`/`cfrc_int`. A model declaring an
+            # accelerometer on an integrator without it fails here instead of
+            # reporting 0.0 forever.
+            # All three stages run on this leg; `RNE_POST` is a SEPARATE
+            # axis, and only the three sensors that read `cacc`/`cfrc_int`
+            # care about it. Folding it into the stage mask is what broke
+            # hopper's touch sensors.
+            comptime _STAGES = (
+                (1 << SENSSTAGE_POS) | (1 << SENSSTAGE_VEL)
+                | (1 << SENSSTAGE_ACC)
+            )
+            assert_sensors_are_served[Self.DTYPE, Self.D](
+                m, _STAGES, Self.RNE_POST,
+                String("EulerIntegrator[RNE_POST=")
+                + String(Self.RNE_POST) + String("]"),
+            )
+            sensor_pos[Self.DTYPE, Self.D](
+                    rebind[Data[Self.DTYPE, Self.D, 1]](d), m
+                )
         comptime if _EULER_PROBE:
             var _e_now = Int(perf_counter_ns())
             _e_fk += _e_now - _e_last
             _e_last = _e_now
         compute_body_velocities[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, ctx)
+        # ── mj_sensorVel ──────────────────────────────────────────────────
+        # `mj_fwdVelocity`'s point (engine_forward.c:1814). velocimeter, gyro
+        # and subtreelinvel read `xvel`/`xangvel`, which exist as of the line
+        # above and are overwritten on the next step.
+        comptime if target == "cpu" and Self.BATCH == 1:
+            sensor_vel[Self.DTYPE, Self.D](
+                    rebind[Data[Self.DTYPE, Self.D, 1]](d), m
+                )
         comptime if _EULER_PROBE:
             var _e_now = Int(perf_counter_ns())
             _e_bodyvel += _e_now - _e_last
@@ -1146,6 +1193,43 @@ struct EulerIntegrator[
                     d.xquat.dev.value().unsafe_ptr().as_unsafe_any_origin(),
                     N_QUAT_ACC,
                 )
+
+            # ── mj_sensorAcc ──────────────────────────────────────────────
+            # ⚠⚠ THIS IS WHAT THE COMMENT ABOVE SAID WE COULD NOT DO. It reads
+            # "MuJoCo never has this problem because it evaluates the stage
+            # HERE and stores the finished sensor value. We cannot do that
+            # generically — the sensor set is per-CONFIG, not per-engine."
+            # That stopped being true when `<sensor>` became part of the
+            # model (AUD-23): the sensor set now IS per-engine, so the stage
+            # is evaluated here like MuJoCo's and `d.sensordata` holds the
+            # answer.
+            #
+            # The `*_acc` snapshot above is still needed and is not dead: the
+            # hand-written env hooks that predate the framework read it, and
+            # they are what the framework is replacing rather than what it has
+            # already replaced.
+            #
+            # ⚠ INSIDE THE `RNE_POST` GATE, because `cacc`/`cfrc_int` are what
+            # this stage reads and only that gate writes them. A model with
+            # acceleration-stage sensors and `RNE_POST=False` would otherwise
+            # read zeros — see `_sensors_need_a_pass`.
+
+        # ── mj_sensorAcc ──────────────────────────────────────────────────
+        # ⚠⚠ OUTSIDE THE `RNE_POST` BLOCK, AND THAT IS THE FIX FOR A REAL
+        # BREAKAGE. MuJoCo classes TOUCH as an acceleration-stage sensor, so
+        # the first version put this inside the gate — and hopper, which
+        # declares two touch sensors and runs `RNE_POST=False`, stopped
+        # stepping entirely. Touch reads contacts and the live `site_xpos`;
+        # only the accelerometer and the force/torque pair read `cacc` /
+        # `cfrc_int`. The flag is passed down so the pass skips exactly those
+        # three when the RNE has not run, and computes the rest.
+        #
+        # This still sits at MuJoCo's point (engine_forward.c:1832): after the
+        # constraint solve, before `_finalize_env` moves qpos/qvel on.
+        comptime if target == "cpu" and Self.BATCH == 1:
+            sensor_acc[Self.DTYPE, Self.D](
+                rebind[Data[Self.DTYPE, Self.D, 1]](d), m, Self.RNE_POST
+            )
 
         comptime if target == "cpu":
             var dm = d.dims

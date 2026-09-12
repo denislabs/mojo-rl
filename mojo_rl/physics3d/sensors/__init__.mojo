@@ -21,4 +21,9 @@ from .site_acc import (
 from .subtree import subtree_linvel, subtree_linvel_gpu, walk_to_root
 from .touch import touch_sphere_site, touch_sphere_site_gpu
 from .rangefinder import rangefinder_site
-from .eval import sensor_pos, sensor_vel, sensor_acc
+from .eval import (
+    sensor_pos,
+    sensor_vel,
+    sensor_acc,
+    assert_sensors_are_served,
+)
