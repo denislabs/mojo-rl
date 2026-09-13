@@ -81,6 +81,14 @@ from ..kinematics.quat_math import gpu_quat_mul
 
 
 # ── shapes ─────────────────────────────────────────────────────────────────
+comptime OSC_ACTION_DIM: Int = 7
+"""LIBERO's action: six pose deltas then the gripper.
+
+⚠ IT LIVES HERE, BESIDE THE KERNEL THAT INDEXES BY IT. `osc_gripper_gpu` reads
+`actions[ACT_DIM - 1]`, so this width is part of the kernel ABI; it used to be
+declared in `osc_pose.mojo` (which re-exports it) and a batched caller needed
+the same number without wanting the host controller."""
+
 comptime OSC_ARM: Int = 7
 """The arm's dof count. OSC_POSE is a 6-dof task on a 7-dof arm — the
 nullspace term is what the seventh buys, so this is not a free parameter."""

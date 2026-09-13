@@ -71,6 +71,7 @@ from ..gpu.constants import (
     MODEL_BODY_SIZE, MODEL_JOINT_SIZE, MODEL_META_SIZE, MODEL_SITE_SIZE,
 )
 from .osc_pose_gpu import (
+    OSC_ACTION_DIM,
     OSC_ARM, OSC_WRENCH, OSC_REF_WORDS, OSC_STATE_WORDS, OSC_WORK_WORDS,
     OSC_IDX_GOAL_POS, OSC_IDX_GOAL_MAT, OSC_IDX_Q0, OSC_IDX_SINGULAR,
     OSC_IDX_READY, OSC_IDX_GRIP0, OSC_IDX_GRIP1, OSC_REF_SITE,
@@ -82,9 +83,8 @@ from .osc_pose_gpu import (
 
 comptime DT = DType.float64
 comptime ARM_DOF: Int = OSC_ARM
-comptime OSC_ACTION_DIM: Int = 7
-"""LIBERO's action: six pose deltas then the gripper. `osc_gripper_gpu`
-reads `actions[ACT_DIM - 1]`, so this width is part of the ABI."""
+# `OSC_ACTION_DIM` is re-exported from `osc_pose_gpu`, where it sits beside the
+# kernel that indexes by it. Importers of this module keep working.
 
 
 struct OscPoseConfig(Copyable, ImplicitlyCopyable, Movable):

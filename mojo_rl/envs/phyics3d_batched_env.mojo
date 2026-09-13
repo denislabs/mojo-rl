@@ -44,7 +44,17 @@ from mojo_rl.nn.core.target_storage import require_ctx
 from mojo_rl.deep_agents.training.batched_env import BatchedEnv
 
 from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims, DimsLike, AsStatic
+from mojo_rl.nn.core.tensor import TensorImpl
+from mojo_rl.physics3d.fields import (
+    Data, Model, SpecFields, Dims, DimsLike, AsStatic, DynamicsScratch,
+)
+from mojo_rl.physics3d.dynamics.osc_control import (
+    osc_control_step, osc_reset_batch,
+)
+from mojo_rl.physics3d.dynamics.osc_pose_gpu import (
+    OSC_ACTION_DIM, OSC_IDX_SINGULAR, OSC_REF_WORDS, OSC_STATE_WORDS,
+    OSC_WORK_WORDS,
+)
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
@@ -295,6 +305,34 @@ struct Phyics3dBatchedEnv[
 
     comptime L_ACT_HOOK = Layout.row_major(Self.N_ENVS, Self.NA_F)
     var _act: DeviceBuffer[DT]
+
+    # ── OSC_POSE, when CONFIG.HAS_OSC_CONTROLLER ──────────────────────────
+    #
+    # ⚠⚠ THE SCRATCH IS A LIST OF 0 OR 1, NOT A FOLDED BATCH PARAMETER. A
+    # struct field cannot be conditionally absent, and a full-batch
+    # `DynamicsScratch` allocates three NV*NV host slabs — ~50 MB at 1024 lanes
+    # and nv = 37 — which every env that does NOT use OSC would pay.
+    #
+    # The obvious fix, `BATCH = N_ENVS if HAS_OSC else 1`, does not compile:
+    # inside the `comptime if` the two are equal but the parameter is still an
+    # unfolded conditional at parse time, and `osc_control_step` then sees a
+    # `Data[.., N_ENVS]` beside a `DynamicsScratch[.., OSC_LANES]` and refuses
+    # ("types parameters include unfolded expression"). An empty `List` of the
+    # N_ENVS-typed scratch costs nothing, keeps ONE type, and `[0]` inside the
+    # branch is a `mut` reference of exactly the type the call wants.
+    comptime OSC_NACT: Int = Self.MODEL_DEF.NACT_F
+    var _osc_scratch: List[DynamicsScratch[DT, Self.MD, Self.N_ENVS]]
+    var _osc_state: TensorImpl[DT]
+    var _osc_work: TensorImpl[DT]
+    var _osc_refs: TensorImpl[DT]
+    var _osc_ctrl: TensorImpl[DT]
+    var _osc_action: TensorImpl[DT]
+    var _osc_ready: Bool
+    """False until `set_osc_refs`. See `Phyics3dEnvConfig.HAS_OSC_CONTROLLER`:
+    the record is a property of the composed scene and a comptime config cannot
+    read it, so `step_batch` refuses rather than driving an all-zero record —
+    which is a controller commanding joint 0 with gain 0, i.e. an arm that
+    falls over slowly and a training curve that looks merely bad."""
     # 1.0 for a lane the last reset touched, 0.0 otherwise. Written by BOTH
     # reset kernels because `selective_reset_kernel` CLEARS `dones[i]` as it
     # resets, so afterwards nothing else records which lanes moved — and
@@ -360,6 +398,41 @@ struct Phyics3dBatchedEnv[
 
         self.d = type_of(self.d)()
         self.d.upload_all(ctx)
+
+        # ── OSC_POSE staging ──────────────────────────────────────────────
+        # Allocated at OSC_LANES, which is 1 unless the controller is on.
+        self._osc_scratch = List[
+            DynamicsScratch[DT, Self.MD, Self.N_ENVS]
+        ]()
+        # ⚠ ONE ELEMENT, NOT ZERO, WHEN THE CONTROLLER IS OFF — a `TensorImpl`
+        # of length zero is not a buffer, and these are allocated (never
+        # uploaded) either way. The scratch above is the one that is skipped.
+        var _osc_n = Self.N_ENVS if Self.CONFIG.HAS_OSC_CONTROLLER else 1
+        self._osc_state = TensorImpl[DT].alloc(_osc_n * OSC_STATE_WORDS)
+        self._osc_work = TensorImpl[DT].alloc(_osc_n * OSC_WORK_WORDS)
+        self._osc_refs = TensorImpl[DT].alloc(OSC_REF_WORDS)
+        self._osc_ctrl = TensorImpl[DT].alloc(_osc_n * Self.OSC_NACT)
+        self._osc_action = TensorImpl[DT].alloc(_osc_n * OSC_ACTION_DIM)
+        self._osc_ready = False
+        comptime if Self.CONFIG.HAS_OSC_CONTROLLER:
+            # ⚠ THE ACTION WIDTH IS PART OF THE CONTRACT, CHECKED HERE. A model
+            # def that left `action_dim_override` at `nact` would hand the
+            # controller nine numbers and read the gripper word out of the
+            # middle of the arm's deltas — an arm that moves plausibly and
+            # never closes its hand.
+            comptime assert Self.ACT_DIM == OSC_ACTION_DIM, (
+                "HAS_OSC_CONTROLLER needs ACTION_DIM == 7 (six pose deltas and"
+                " the gripper); set `action_dim_override=7` on the model def."
+            )
+            self._osc_scratch.append(
+                DynamicsScratch[DT, Self.MD, Self.N_ENVS]()
+            )
+            self._osc_scratch[0].upload_all(ctx)
+            self._osc_state.upload(ctx)
+            self._osc_work.upload(ctx)
+            self._osc_refs.upload(ctx)
+            self._osc_ctrl.upload(ctx)
+            self._osc_action.upload(ctx)
         # Construct both (host scratch); prepare only the selected integrator so
         # the unused one allocates no device buffers.
         self.integ_rk4 = Self.IntegRK4()
@@ -626,6 +699,144 @@ struct Phyics3dBatchedEnv[
                     break
             if all_done:
                 return
+
+    def set_osc_refs(
+        mut self, refs: List[Float64], ctx: DeviceContext
+    ) raises:
+        """Give the controller its model record — see `HAS_OSC_CONTROLLER`.
+
+        `refs` is what `dynamics.osc_pose_gpu.build_osc_refs` returns from the
+        parsed scene: the seven arm joints' velocity indices, qpos addresses,
+        joint indices, torque limits and actuators, the grip site and its body,
+        the two finger actuators with their ctrl ranges, and the six gains.
+
+        ⚠ IT IS SHARED ACROSS LANES, deliberately. Every lane of a batched env
+        is the same model; a per-lane record would be a per-lane ROBOT, which
+        is not what a batch is.
+        """
+        comptime if not Self.CONFIG.HAS_OSC_CONTROLLER:
+            raise Error(
+                "set_osc_refs: this env's config has HAS_OSC_CONTROLLER False,"
+                " so nothing would read the record. Set it on the config."
+            )
+        if len(refs) != OSC_REF_WORDS:
+            raise Error(
+                "set_osc_refs: the record is " + String(len(refs))
+                + " words and OSC_REF_WORDS is " + String(OSC_REF_WORDS)
+                + " — it must come from `build_osc_refs`, not be assembled by"
+                " hand."
+            )
+        for k in range(OSC_REF_WORDS):
+            self._osc_refs.data[k] = Scalar[DT](refs[k])
+        self._osc_refs.upload(ctx)
+        self._osc_ready = True
+
+    def osc_singular_lanes(mut self, c: DeviceContext) raises -> Int:
+        """How many lanes reported a singular operational-space inertia.
+
+        ⚠⚠ A DRIVER MUST READ THIS. `osc_run_gpu` leaves a flagged lane's
+        torques at ZERO and carries on — a limp arm, not an error, because a
+        kernel cannot raise and a batch has no single answer to raise about.
+        `OscPose.run` raises for exactly this condition on one lane. A training
+        run that never reads it reports a curve for a batch in which some lanes
+        were not being controlled at all, which looks like a hard task.
+
+        It costs a device-to-host copy and a synchronize, so call it per
+        control step at most — not per substep.
+        """
+        comptime if not Self.CONFIG.HAS_OSC_CONTROLLER:
+            return 0
+        self._osc_state.download(c)
+        var n = 0
+        for e in range(Self.N_ENVS):
+            if self._osc_state.data[
+                e * OSC_STATE_WORDS + OSC_IDX_SINGULAR
+            ] != Scalar[DT](0):
+                n += 1
+        return n
+
+    def _osc_anchor(mut self, c: DeviceContext) raises:
+        """`OscPose.reset` for every lane — after a reset writes the state.
+
+        ⚠ NOT ONLY AFTER A FULL RESET. `q0` and the held goal are per EPISODE,
+        so a SELECTIVE reset that restarts four lanes of a thousand must
+        re-anchor those four. This re-anchors all of them, which is correct for
+        the four and a no-op for the rest ONLY because it reads the current
+        pose: a lane mid-episode is re-anchored on where it is now, which
+        moves its nullspace target. So it is called from the full reset alone,
+        and `reset_done_batch` re-anchors too — the alternative is a per-lane
+        mask through the kernel, which is the right shape once a driver
+        actually resets subsets under OSC.
+        """
+        osc_reset_batch["gpu", DT, Self.MD, Self.N_ENVS](
+            self.d, self.mf, self._osc_scratch[0], self._osc_refs,
+            self._osc_state, self._osc_work, c,
+        )
+
+    def _osc_substep(mut self, c: DeviceContext, policy_step: Bool) raises:
+        """One control step for every lane, then the ordinary actuation path.
+
+        ⚠ THE ACTION IS COPIED INTO THE CONTROLLER'S OWN BUFFER rather than
+        binding `self._action`. The driver's action buffer carries
+        `origin_of(self._action)` and handing that to a `mut self` method is an
+        exclusivity violation — the same trap `_apply_actions_custom` records
+        one method down.
+        """
+        c.enqueue_copy(self._osc_action.dev.value(), self._action)
+        osc_control_step["gpu", DT, Self.MD, Self.N_ENVS](
+            self.d, self.mf, self._osc_scratch[0], self._osc_refs,
+            self._osc_state, self._osc_work, self._osc_ctrl, self._osc_action,
+            Self.OSC_NACT, policy_step, c,
+        )
+        Self.MODEL_DEF.apply_actions_kernel_gpu[
+            DT, Self.N_ENVS, Self.OSC_NACT, NORMALIZED=False
+        ](
+            c,
+            self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
+            self._osc_ctrl.lt[
+                "gpu", Layout.row_major(Self.N_ENVS, Self.OSC_NACT)
+            ](),
+            self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
+            self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
+            rebind[
+                LayoutTensor[
+                    DT,
+                    Layout.row_major(Self.N_ENVS, Self.MODEL_DEF.NA_F),
+                    MutAnyOrigin,
+                ]
+            ](
+                LayoutTensor[
+                    DT, Layout.row_major(Self.N_ENVS, Self.MODEL_DEF.NA_F)
+                ](self._act)
+            ),
+            self.sf.actuators.lt[
+                "gpu",
+                Layout.row_major(
+                    Self.MODEL_DEF.NACT_F * MODEL_ACTUATOR_SIZE
+                ),
+            ](),
+            # ⚠ `MODEL_DEF.NTEN_F`, NOT `Self.NTENDON_F`. The two are the same
+            # number and NOT the same comptime expression, and
+            # `apply_actions_kernel_gpu` declares its parameter with the former
+            # — the layouts then fail to unify ("unfolded expression at parser
+            # time"). The model-default call site above spells it the same way.
+            self.sf.act_tendons.lt[
+                "gpu",
+                Layout.row_major(
+                    Self.MODEL_DEF.NTEN_F * MODEL_ACT_TENDON_SIZE
+                ),
+            ](),
+            self.sf.joint_limits.lt[
+                "gpu",
+                Layout.row_major(Self.MODEL_DEF.NJOINT * JLIM_SIZE),
+            ](),
+            self.d.dof_actdamp.lt["gpu", type_of(self.d).L_NV](),
+            self.d.actdamp_act.lt[
+                "gpu",
+                Layout.row_major(Self.N_ENVS, Self.MODEL_DEF.NACT_F),
+            ](),
+            self.d.meta.lt["gpu", type_of(self.d).L_META](),
+        )
 
     def _apply_actions_custom(mut self, c: DeviceContext) raises:
         """Launch `CONFIG.custom_apply_actions_gpu` over the batch.
@@ -1349,6 +1560,14 @@ struct Phyics3dBatchedEnv[
         comptime if Self.CONFIG.USES_MOCAP:
             self._sync_mocap_batch(c)
         self._run_fields_fk(c)
+        # ⚠ THE CONTROLLER IS ANCHORED HERE, AFTER FK AND BEFORE THE FIRST
+        # STEP. `q0` and the held goal are per EPISODE and are read off the
+        # CURRENT pose, so anchoring before the reset writes `qpos` would pull
+        # every arm toward the previous episode's configuration — a plausible
+        # drift with no error anywhere.
+        comptime if Self.CONFIG.HAS_OSC_CONTROLLER:
+            if self._osc_ready:
+                self._osc_anchor(c)
         self._extract_obs_only(c)
 
     def step_batch[
@@ -1471,13 +1690,33 @@ struct Phyics3dBatchedEnv[
         # this cadence; the asserts are gone now that the cadence matches.
         # quadruped needs all three at once (`<general biastype="affine"
         # dyntype="filter">` on tendon transmissions).
-        for _ in range(Self.CONFIG.FRAME_SKIP):
+        comptime if Self.CONFIG.HAS_OSC_CONTROLLER:
+            if not self._osc_ready:
+                raise Error(
+                    "this env is configured for OSC_POSE but `set_osc_refs` was"
+                    " never called, so the controller's model record is all"
+                    " zeros: joint 0 for every arm joint, gain 0, no grip site."
+                    " That does not fail — it commands nothing and the arm"
+                    " sags. See Phyics3dEnvConfig.HAS_OSC_CONTROLLER."
+                )
+        for _substep in range(Self.CONFIG.FRAME_SKIP):
             # A config whose transmission is randomized PER EPISODE cannot be
             # driven from the comptime actuator tables, which are baked from
             # the XML — see `CONFIG.HAS_CUSTOM_ACTUATION_GPU`. The choice is
             # comptime because it is a choice between kernel launches, not a
             # per-lane `if` like the CPU path's.
-            comptime if Self.CONFIG.HAS_CUSTOM_ACTUATION_GPU:
+            comptime if Self.CONFIG.HAS_OSC_CONTROLLER:
+                # ⚠⚠ `policy_step` IS THE FIRST SUBSTEP ONLY. robosuite's
+                # `Robot.control(action, policy_step)` gates `set_goal` on it
+                # while running the torque law every substep, and the two
+                # cadences are not interchangeable: `set_goal` adds the
+                # action's delta to the CURRENT end-effector pose, so calling
+                # it every substep applies a 5 cm command twenty-five times.
+                # `tests/tasks/test_osc_control_batched.mojo` measures what
+                # that costs (0.387 N·m against a 1.7e-14 agreement) precisely
+                # so this line cannot be changed silently.
+                self._osc_substep(c, _substep == 0)
+            elif Self.CONFIG.HAS_CUSTOM_ACTUATION_GPU:
                 self._apply_actions_custom(c)
             else:
                 Self.MODEL_DEF.apply_actions_kernel_gpu[

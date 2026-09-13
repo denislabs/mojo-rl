@@ -32,9 +32,18 @@ comptime _pm = LIBERO_GOAL_DIMS
 comptime LIBERO_GOAL_MAX_CONTACTS: Int = 64
 comptime LIBERO_GOAL_N_FREE_SLOTS: Int = 4
 comptime LIBERO_GOAL_N_GOAL_WORDS: Int = 9
-comptime LIBERO_GOAL_OBS_DIM: Int = (
-    _pm.NQ + _pm.NV + LIBERO_GOAL_N_FREE_SLOTS + LIBERO_GOAL_N_GOAL_WORDS
-)
+comptime LIBERO_GOAL_OBS_DIM: Int = _pm.NQ + _pm.NV
+"""The plain state, and NOT YET the task layer's words.
+
+⚠⚠ THIS WAS `NQ + NV + N_FREE_SLOTS + N_GOAL_WORDS` AND NOTHING WROTE THE
+EXTRA THIRTEEN. The model default writes `qpos ++ qvel` and stops, so an env
+built on the wider figure would have reported thirteen constant zeros as
+observation — a policy input that is always the same number, which trains
+without error and cannot be told from a feature that happens not to matter.
+`So101TabletopConfig.custom_extract_obs_gpu` is what fills those words for its
+family (the per-slot active flag and pose, then the goal's own coordinates);
+the LIBERO equivalent lands with the task hooks, and this constant grows again
+in the same commit. Declaring a width nothing fills is the trap."""
 
 comptime LiberoGoalModel = ModelDefFromXML[
     xml_path="mojo_rl/tasks/scenes/libero_goal.xml",
@@ -57,5 +66,11 @@ comptime LiberoGoalModel = ModelDefFromXML[
     cone_type=ConeType.ELLIPTIC,
     max_contacts=LIBERO_GOAL_MAX_CONTACTS,
     obs_dim_override=LIBERO_GOAL_OBS_DIM,
-    action_dim_override=9,
+    # ⚠⚠ SEVEN, NOT THE NINE ACTUATORS. LIBERO's policy emits OSC_POSE's
+    # action — six end-effector pose deltas and one gripper word — and
+    # `Phyics3dEnvConfig.HAS_OSC_CONTROLLER` maps it onto the model's nine
+    # actuator commands. This said 9 while nothing drove the model; a config
+    # with the controller on `constrained`s on it being 7, so the two cannot
+    # drift apart silently.
+    action_dim_override=7,
 ]

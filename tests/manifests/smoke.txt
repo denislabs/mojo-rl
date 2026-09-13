@@ -83,6 +83,8 @@ tests/tasks/test_osc_pose.mojo
 # same eight inside a Metal/CUDA kernel at float32. The kernel keeps every
 # matrix in a global buffer; compiling it is half of what this proves.
 tests/tasks/test_osc_pose_gpu.mojo
+tests/tasks/test_osc_control_batched.mojo
+tests/tasks/test_libero_osc_env.mojo
 # The LIBERO viewer's HEADLESS path — reset, one policy step under the hold
 # action, and the goal read through the full L3 language. It is the only
 # check that runs the family's reset, the controller and the predicate in

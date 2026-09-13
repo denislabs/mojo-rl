@@ -244,6 +244,37 @@ trait Phyics3dEnvConfig:
     ⚠ CHANGING THIS INVALIDATES CHECKPOINTS. The action means something
     different on each side of the flag."""
     comptime HAS_CUSTOM_ACTUATION_GPU: Bool = False
+
+    comptime HAS_OSC_CONTROLLER: Bool = False
+    """Drive the model through OSC_POSE instead of feeding actions to the
+    actuators — robosuite's `OSC_POSE`, which is what LIBERO's demonstrations
+    and every LIBERO policy speak.
+
+    ⚠⚠ THIS IS A CONTROLLER, NOT AN ACTUATION HOOK, AND THE DIFFERENCE IS THE
+    WHOLE REASON IT IS NOT `HAS_CUSTOM_ACTUATION_GPU`. That hook REPLACES
+    actuation, `qfrc` zeroing included, so using it here would mean
+    re-implementing every `<motor>` and `<position>` in the model. OSC maps a
+    SEVEN-word policy action onto the model's `nact` actuator commands, and the
+    ordinary actuation path then turns those into forces exactly as it does for
+    any other env. The batched env therefore runs the controller BEFORE
+    `apply_actions_kernel_gpu` and feeds it the `ctrl` vector.
+
+    ⚠ SO `ACTION_DIM` IS 7 AND NOT `nact`. A model def for an OSC family must
+    say `action_dim_override=7`; the actuator count is read from the model.
+
+    ⚠ AND THE ENV NEEDS ITS `refs` BEFORE IT CAN STEP. Which velocity index,
+    qpos address, joint and actuator each of the seven arm joints is — plus the
+    grip site and the two finger actuators — are properties of the COMPOSED
+    scene, which a comptime config cannot read. `Phyics3dBatchedEnv.set_osc_refs`
+    takes the record `build_osc_refs` makes from the parse, and `step_batch`
+    RAISES if it was never called. A controller silently driving zeros is an
+    arm that falls over slowly.
+
+    ⚠ IT COSTS A SECOND DYNAMICS PASS PER SUBSTEP. `osc_control_step` refreshes
+    FK, `subtree_com`, `cdof`, CRBA and RNE at the current state and the
+    integrator then recomputes all of it — robosuite pays the same
+    (`sim.forward()` then `mj_step`). See `dynamics/osc_control.mojo`."""
+
     comptime CUSTOM_ACTIONS_EVERY_SUBSTEP: Bool = False
     """Call `custom_apply_actions_cpu` at the top of EVERY substep, not once
     per control step.
