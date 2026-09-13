@@ -36,13 +36,21 @@ re-solve. Ours is `scratch.qacc_constrained`; `Data.qacc` is the damped one
 silently wrong on any model with joint damping — which is every model that
 wants these sensors.
 
-EQUALITY CONSTRAINTS ARE NOT MAPPED INTO `cfrc_ext`. MuJoCo walks the
-equality rows and adds `connect`/`weld` forces (`mjEQ_JOINT` and
+EQUALITY CONSTRAINTS ARE NOT MAPPED INTO `cfrc_ext` (AUD-48). MuJoCo walks
+the equality rows and adds `connect`/`weld` forces (`mjEQ_JOINT` and
 `mjEQ_TENDON` contribute nothing — they only advance the row cursor).
 quadruped's four equalities are all `<equality><tendon>`, so the walk is a
-no-op for it; a model with `connect`/`weld` equalities plus a force/torque
-sensor would read low here. `compute_rne_post` raises on that combination
-rather than returning a plausible wrong number.
+no-op for it, which is why this stage could be written against that model and
+be exact. A model with `connect`/`weld` equalities plus an acceleration-stage
+sensor would read LOW by the whole loop-closure load.
+
+⚠⚠ THIS PARAGRAPH USED TO SAY `compute_rne_post` RAISED ON THAT COMBINATION.
+It did not — there was no raise anywhere in this file, and a stale claim in a
+docstring is worse than no claim, because it is what a reader checks INSTEAD
+of the code. The refusal is real as of 2026-09-13 and lives at LOAD, in
+`full_parser._refuse_wrong_physics`, where both halves of the condition are in
+hand and it costs nothing per step. What blocks the implementation is that
+those rows' `efc_force` is not retained past the solve.
 
 `xfrc_applied` is likewise absent: we have no such field.
 """

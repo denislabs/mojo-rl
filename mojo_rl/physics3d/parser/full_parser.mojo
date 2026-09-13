@@ -7330,6 +7330,72 @@ def _refuse_wrong_physics(mut result: FlatModelDef) raises:
                 " enforced",
             )
 
+    # ── AUD-48: an acceleration-stage sensor under a connect/weld equality ──
+    #
+    # ⚠⚠ `rne_post.mojo`'s HEADER CLAIMED THIS ALREADY RAISED AND IT DID NOT.
+    # "a model with connect/weld equalities plus a force/torque sensor would
+    # read low here. `compute_rne_post` raises on that combination rather than
+    # returning a plausible wrong number" — there was no raise anywhere in the
+    # file. A stale claim in a docstring is worse than no claim: it is the
+    # thing a reader checks INSTEAD of the code.
+    #
+    # What is actually missing: `mj_rnePostConstraint` walks the equality rows
+    # and adds each connect/weld's constraint force into `cfrc_ext`
+    # (engine_core_smooth.c, "cfrc_ext += connect, weld, flex constraints"),
+    # which needs those rows' `efc_force` — a quantity our solvers do not
+    # retain past the solve. `mjEQ_JOINT` and `mjEQ_TENDON` contribute
+    # nothing, only advancing the cursor, which is why quadruped (four tendon
+    # equalities) is exact and was the model this stage was written on.
+    #
+    # The reading is LOW, not noisy: the whole constraint force is absent, so
+    # a force sensor below a closed loop reports the fraction of the load that
+    # happens to travel through the joint chain. Refused at load, where the
+    # message can name both halves.
+    var n_cw = 0
+    for e in range(len(result.equalities)):
+        var et = result.equalities[e].eq_type
+        if et == _EQ_CONNECT or et == _EQ_WELD:
+            n_cw += 1
+    if n_cw > 0:
+        var n_unserved = 0
+        for si in range(len(result.sensors)):
+            var sd = result.sensors[si]
+            if not sd.served:
+                continue
+            if (
+                sd.sensor_type == SENS_ACCELEROMETER
+                or sd.sensor_type == SENS_FORCE
+                or sd.sensor_type == SENS_TORQUE
+            ):
+                # ⚠⚠ UNSERVED, NOT REFUSED, AND THE DIFFERENCE IS cassie.
+                # Menagerie's agility_cassie has four `<connect>` rows AND a
+                # pelvis accelerometer, and seven gates in this tree load it
+                # for its equalities, its ball joints and its `<default>`
+                # chain — none of them reads that sensor. Refusing the whole
+                # model would take a model that is correct for everything
+                # else and make it unloadable, which is a worse failure than
+                # the one being prevented.
+                #
+                # `served = False` is the framework's own answer for a sensor it
+                # cannot compute: the row keeps its MuJoCo-exact `adr`/`dim`
+                # so every later offset stays right, `sensor_adr_by_name`
+                # RAISES on it, and `Data.sensordata` leaves the slot at the
+                # NaN it was filled with. A reader gets a NaN or an
+                # exception, never a plausible low number.
+                sd.served = False
+                result.sensors[si] = sd
+                n_unserved += 1
+        _silent(
+            result, "AUD-48", n_unserved,
+            "acceleration-stage sensor(s) under " + String(n_cw)
+            + " connect/weld equality row(s)",
+            "`mj_rnePostConstraint` adds each connect/weld row's constraint"
+            " force into `cfrc_ext` and we do not retain those forces, so"
+            " these would read LOW by the whole loop-closure load — they are"
+            " left UNCOMPUTED (NaN) instead. Joint and tendon equalities are"
+            " unaffected: they contribute nothing to `cfrc_ext`",
+        )
+
 
 def parse_xml_full(
     xml_in: String, base_dir: String = ""

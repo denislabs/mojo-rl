@@ -333,6 +333,31 @@ def test_a_clean_model_reports_nothing() raises:
     )
 
 
+comptime RAISE_EQ_ACCEL_SENSOR = String(
+    """<mujoco model="eq_plus_accel_sensor">
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b1" pos="0 0 1">
+      <joint name="j1" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" density="1000"/>
+      <site name="s" pos="0.2 0 0"/>
+    </body>
+    <body name="b2" pos="0 0.4 1">
+      <joint name="j2" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" density="1000"/>
+    </body>
+  </worldbody>
+  <equality>
+    <connect body1="b1" body2="b2" anchor="0 0 0"/>
+  </equality>
+  <sensor>
+    <force name="f" site="s"/>
+  </sensor>
+</mujoco>
+"""
+)
+
+
 def test_wrong_physics_rows_raise() raises:
     print("=== the wrong-physics spellings refuse to load, by audit id ===")
     assert_true(
@@ -384,6 +409,77 @@ def test_wrong_physics_rows_raise() raises:
         if not attach_raised:
             print("  attach raised without AUD-13:", String(e))
     assert_true(attach_raised, "<attach frame=...> was spliced whole")
+
+
+def test_a_sensor_under_a_closed_loop_is_unserved_not_refused() raises:
+    """AUD-48. `mj_rnePostConstraint` adds each connect/weld row's constraint
+    force into `cfrc_ext`; those forces are not retained past our solve, so an
+    accelerometer / force / torque sensor on such a model would read LOW by
+    the whole loop-closure load — not by a rounding.
+
+    ⚠⚠ UNSERVED, NOT REFUSED, AND cassie IS WHY. Menagerie's agility_cassie
+    has four `<connect>` rows AND a pelvis accelerometer, and seven gates in
+    this tree load it for its equalities, its ball joints and its `<default>`
+    chain — none of them reads that sensor. Refusing the model would take one
+    that is correct for everything else and make it unloadable.
+
+    `served = False` is the sensor framework's own answer: the row keeps its
+    MuJoCo-exact `adr`/`dim` so every later offset stays right,
+    `sensor_adr_by_name` raises on it, and `Data.sensordata` leaves the slot
+    at the NaN it was filled with. A reader gets a NaN or an exception, never
+    a plausible low number.
+
+    ⚠ TWO CONTROLS, because a rule that fired on either half alone would pass
+    the first check: a connect with NO acceleration-stage sensor must leave
+    everything served, and an acceleration-stage sensor under a JOINT equality
+    must too — `mjEQ_JOINT` contributes nothing to `cfrc_ext`, only connect
+    and weld do.
+    """
+    print("=== AUD-48: force sensor under a <connect> ===")
+    var fmd = parse_xml_full(RAISE_EQ_ACCEL_SENSOR, String("."))
+    assert_true(len(fmd.sensors) == 1, "expected one sensor")
+    print("  sensor served =", fmd.sensors[0].served, " (want 0)")
+    assert_true(
+        not fmd.sensors[0].served,
+        "the force sensor is still SERVED under a connect equality: it would"
+        " read low by the whole loop-closure load",
+    )
+    assert_true(
+        _has(fmd.silent_attr_ids, String("AUD-48")),
+        "the sensor was unserved without a word",
+    )
+
+    print("  control: the same connect with NO acceleration-stage sensor")
+    var no_sensor = parse_xml_full(
+        RAISE_EQ_ACCEL_SENSOR.replace(
+            String("<force name=\"f\" site=\"s\"/>"),
+            String("<velocimeter name=\"v\" site=\"s\"/>"),
+        ),
+        String("."),
+    )
+    assert_true(
+        len(no_sensor.sensors) == 1 and no_sensor.sensors[0].served,
+        "a velocimeter is a VELOCITY-stage sensor and reads nothing from"
+        " `cfrc_ext`; unserving it is over-firing",
+    )
+
+    print("  control: the same sensor under a JOINT equality")
+    var joint_eq = parse_xml_full(
+        RAISE_EQ_ACCEL_SENSOR.replace(
+            String("<connect body1=\"b1\" body2=\"b2\" anchor=\"0 0 0\"/>"),
+            String("<joint joint1=\"j1\" joint2=\"j2\"/>"),
+        ),
+        String("."),
+    )
+    assert_true(
+        len(joint_eq.equalities) == 1,
+        "the joint-equality control did not parse its equality",
+    )
+    assert_true(
+        joint_eq.sensors[0].served,
+        "a JOINT equality contributes nothing to `cfrc_ext`, so the sensor"
+        " under it is exact and must stay served",
+    )
 
 
 def test_jnt_limited_resolves_like_mujoco() raises:
