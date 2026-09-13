@@ -182,6 +182,28 @@ def main() raises:
         String("schema_version=1\ntask=t\nfamily=f\ngoal=g\nthis line has no equals\n"),
         "a line with no '='",
     )
+    # L2 keys: written only when non-default, parsed back exactly
+    var l2 = String(
+        "schema_version=1\nfamily=f\nbase=b\nhorizon=1\ncontrol_freq=20\n"
+        "park=10.0,0.0,50.0\nbase_pos=-0.66,0.0,0.912\nfloor=0\n"
+        "base_qpos=0.0,-0.161037389,0.0,-2.44459747,0.0,2.2267522,0.7853981633974483,0.020833,-0.020833\n"
+        "inherit_option=1\nslot=arena:static:a.xml:0.0,0.0,0.0\n"
+        "slot=cab:static:c.xml:0.03,-0.24,0.905,3.141592653589793\n"
+        "slot=bowl:free:d.xml\n"
+    )
+    var lf = parse_family(l2)
+    ta.check(lf.base_z == 0.912 and not lf.floor and lf.inherit_option
+             and len(lf.base_qpos) == 9 and lf.slots[1].yaw == 3.141592653589793,
+             "L2 keys parse (base_pos, floor, base_qpos, inherit_option, yaw)")
+    ta.check(lf.encode() == l2, "L2 family is a fixed point of encode")
+    ta.refuses(
+        String("schema_version=1\nfamily=f\nbase=b\nhorizon=1\nfloor=yes\n"),
+        "floor= that is not 0 or 1", is_family=True,
+    )
+    ta.refuses(
+        String("schema_version=1\nfamily=f\nbase=b\nhorizon=1\nbase_pos=1,2\n"),
+        "a base_pos with two numbers", is_family=True,
+    )
     ta.refuses(
         String("schema_version=1\nfamily=f\nbase=b\nhorizon=1\n"
                "slot=brick:floaty:a.xml\n"),

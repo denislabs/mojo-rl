@@ -71,3 +71,8 @@ from .libero_import import (
     GAP_NONE, GAP_OBJECT_TARGET, GAP_FIXTURE_REGION, GAP_ARTICULATION,
     GAP_UNKNOWN_PRED, GAP_ARITY,
 )
+from .libero_categories import (
+    LiberoTable, LiberoCategory, LiberoProblem, Threshold,
+    load_libero_table, parse_libero_table, threshold_holds,
+)
+from .libero_import import resolve_family, site_pos, FIXTURE_YAW_TOLERANCE

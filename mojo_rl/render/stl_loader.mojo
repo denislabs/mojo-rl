@@ -11,6 +11,7 @@ from std.memory import Pointer
 from std.math import abs as math_abs, sqrt
 from .gpu_types import GPUVertex, MeshData
 from .obj_loader import load_obj
+from .msh_loader import load_msh, _is_msh
 
 
 def _is_obj(path: String) -> Bool:
@@ -108,6 +109,14 @@ def load_stl(
         var om = load_obj(path)
         _scale_mesh(om, sx, sy, sz)
         return om^
+    # ⚠ `.msh` IS DISPATCHED HERE FOR THE SAME REASON `.obj` IS: one place,
+    # three callers. LIBERO's 138 visual meshes are this format
+    # (`render/msh_loader.mojo`); read as STL they would fail the byte-80
+    # triangle-count check with a size that means nothing.
+    if _is_msh(path):
+        var mm = load_msh(path)
+        _scale_mesh(mm, sx, sy, sz)
+        return mm^
     var f = open(path, "r")
     var content = f.read_bytes()
     f.close()

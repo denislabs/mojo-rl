@@ -1,0 +1,44 @@
+<mujoco model="libero_goal">
+  <compiler angle="radian" inertiagrouprange="0 0" autolimits="true"/>
+  <option timestep="0.002" impratio="20" cone="elliptic" density="1.2" viscosity="0.00002" />
+  <asset>
+    <model name="panda_robosuite" file="../../envs/robots/assets/panda_robosuite.xml"/>
+    <model name="libero_tabletop_manipulation_arena" file="../libero/scenes/libero_tabletop_manipulation_arena.xml"/>
+    <model name="wooden_cabinet" file="../libero/objects/wooden_cabinet.xml"/>
+    <model name="flat_stove" file="../libero/objects/flat_stove.xml"/>
+    <model name="wine_rack" file="../libero/objects/wine_rack.xml"/>
+    <model name="akita_black_bowl_free" file="../libero/objects/akita_black_bowl_free.xml"/>
+    <model name="cream_cheese_free" file="../libero/objects/cream_cheese_free.xml"/>
+    <model name="wine_bottle_free" file="../libero/objects/wine_bottle_free.xml"/>
+    <model name="plate_free" file="../libero/objects/plate_free.xml"/>
+  </asset>
+  <worldbody>
+    <frame pos="-0.66 0.0 0.912" quat="1.0 0.0 0.0 0.0">
+      <attach model="panda_robosuite" prefix="robot_"/>
+    </frame>
+    <frame pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="libero_tabletop_manipulation_arena" prefix="arena_"/>
+    </frame>
+    <frame pos="0.03 -0.24 0.905" quat="6.123233995736766e-17 0.0 0.0 1.0">
+      <attach model="wooden_cabinet" prefix="wooden_cabinet_1_"/>
+    </frame>
+    <frame pos="-0.41000000000000003 0.21000000000000002 0.905" quat="1.0 0.0 0.0 0.0">
+      <attach model="flat_stove" prefix="flat_stove_1_"/>
+    </frame>
+    <frame pos="-0.26 -0.26 0.9199999999999999" quat="6.123233995736766e-17 0.0 0.0 1.0">
+      <attach model="wine_rack" prefix="wine_rack_1_"/>
+    </frame>
+    <frame pos="12.0 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="akita_black_bowl_free" prefix="akita_black_bowl_1_"/>
+    </frame>
+    <frame pos="12.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="cream_cheese_free" prefix="cream_cheese_1_"/>
+    </frame>
+    <frame pos="13.0 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="wine_bottle_free" prefix="wine_bottle_1_"/>
+    </frame>
+    <frame pos="13.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="plate_free" prefix="plate_1_"/>
+    </frame>
+  </worldbody>
+</mujoco>

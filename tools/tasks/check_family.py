@@ -30,7 +30,7 @@ def read_family(path: str) -> dict:
     (`feedback_a_gate_that_shares_its_reference_implementation_is_blind`).
     It is four lines and only ever reads `base=` and `slot=`.
     """
-    base, slots = None, []
+    base, slots, floor, base_qpos = None, [], True, []
     for line in open(path, encoding="utf-8"):
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -40,7 +40,11 @@ def read_family(path: str) -> dict:
             base = v.strip()
         elif k.strip() == "slot":
             slots.append(v.strip().split(":"))
-    return {"base": base, "slots": slots}
+        elif k.strip() == "floor":
+            floor = v.strip() == "1"
+        elif k.strip() == "base_qpos":
+            base_qpos = [float(x) for x in v.split(",")]
+    return {"base": base, "slots": slots, "floor": floor, "base_qpos": base_qpos}
 
 
 def main() -> int:
@@ -48,6 +52,16 @@ def main() -> int:
     fam = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_FAMILY
     m = mujoco.MjModel.from_xml_path(path)
     d = mujoco.MjData(m)
+    fam_d = read_family(fam)
+    # ⚠ "AT REST" IS THE FAMILY's base_qpos, NOT ALL-ZEROS. The base is
+    # attached first, so its joints are the first len(base_qpos) of the
+    # scene's qpos; a Panda at zeros folds link 5 onto link 7 and would
+    # report 18 self-contacts that LIBERO never sees.
+    bq = fam_d["base_qpos"]
+    if bq:
+        for j, q in enumerate(bq):
+            d.qpos[m.jnt_qposadr[j]] = q
+        print(f"  base_qpos applied to the first {len(bq)} joints")
     mujoco.mj_forward(m, d)
 
     print(f"  mujoco : nbody {m.nbody}  njnt {m.njnt}  nq {m.nq}  "
@@ -74,7 +88,6 @@ def main() -> int:
     # parser's answer, so the two halves of this gate can only agree by both
     # being right. `nbody` sums as `1 + sum(nbody-1)` because every model
     # counts a world body and the composed scene has exactly one.
-    fam_d = read_family(fam)
     exp = {"nbody": 1, "njnt": 0, "nq": 0, "nv": 0, "ngeom": 0}
     parts = [fam_d["base"]] + [s[2] for s in fam_d["slots"]]
     for a in parts:
@@ -84,7 +97,8 @@ def main() -> int:
         exp["nq"] += am.nq
         exp["nv"] += am.nv
         exp["ngeom"] += am.ngeom
-    exp["ngeom"] += 1  # the scene's own floor, added by scene_from_base
+    if fam_d["floor"]:
+        exp["ngeom"] += 1  # the scene's own floor, added by scene_from_base
 
     print(f"  expect : nbody {exp['nbody']}  njnt {exp['njnt']}  "
           f"nq {exp['nq']}  nv {exp['nv']}  ngeom {exp['ngeom']}"
@@ -133,9 +147,24 @@ def main() -> int:
             print(f"    {name}: NO BODY — scene stale?")
             floating += 1
             continue
+        # every body of the slot (a cabinet has drawers; the root may hold
+        # no geom at all), lowest geom face across them
+        bodies = {i for i in range(m.nbody)
+                  if (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, i) or "")
+                  .startswith(name + "_")}
         zs = [d.geom_xpos[gi][2] - m.geom_size[gi][2]
-              for gi in range(m.ngeom) if m.geom_bodyid[gi] == b]
+              for gi in range(m.ngeom) if m.geom_bodyid[gi] in bodies]
         bottom = min(zs) if zs else None
+        if not fam_d["floor"]:
+            if bottom is None:
+                print(f"    {name}: no geoms")
+                continue
+            # ⚠ NO FLOOR OF OUR OWN: the arena slot brings the ground and the
+            # tables, and a fixture rests on a TABLE, not at z 0. The bottom
+            # is printed so a 50-m park pose is still visible; the rest test
+            # is the composed scene having no contact, above.
+            print(f"    {name}: bottom face z = {bottom:+.3f}   (arena-supported)")
+            continue
         ok = bottom is not None and abs(bottom) < 0.011
         print(f"    {name}: bottom face z = {bottom:+.3f}"
               f"   {'rests on the floor' if ok else 'FLOATING'}")

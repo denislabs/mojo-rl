@@ -46,6 +46,7 @@ other, which is `k*(k-1)/2` contact pairs from objects that are supposed to be
 absent. `PARK_SPACING` is 25x a 2 cm prop's half-extent.
 """
 
+from std.math import cos, sin
 from mojo_rl.physics3d.studio.scene import SceneDoc, Instance, scene_from_base
 from mojo_rl.physics3d.parser.expander import compiler_attr
 from .spec import FamilySpec, SLOT_FREE, SLOT_STATIC
@@ -99,6 +100,36 @@ def _relative_to(path: String, dir: String) -> String:
         if i + 1 < len(pp):
             out += "/"
     return out^
+
+
+def _whole_tag(xml: String, open_at: String) -> String:
+    """The first `<open_at ... />` opening tag, verbatim, or "".
+
+    ⚠ ONE TAG, COPIED WHOLE, NEVER PARSED. `<option>` has ~30 attributes and
+    this must not become a second reader of them; the composed scene is
+    loaded by MuJoCo and by our parser, and both read the tag themselves.
+    """
+    var i = xml.find(open_at)
+    if i < 0:
+        return String("")
+    var j = xml.find(">", i)
+    if j < 0:
+        return String("")
+    return String(xml[byte=i : j + 1])
+
+
+def _tag_attr(xml: String, open_at: String, attr: String) -> String:
+    """`attr="..."` from the first `<open_at ...>` tag, or ""."""
+    var tag = _whole_tag(xml, open_at)
+    var needle = String(" ") + attr + '="'
+    var k = tag.find(needle)
+    if k < 0:
+        return String("")
+    var start = k + needle.byte_length()
+    var end = tag.find('"', start)
+    if end < 0:
+        return String("")
+    return String(tag[byte=start:end])
 
 
 def _asset_key(path: String) -> String:
@@ -162,7 +193,7 @@ def compose_family(f: FamilySpec, scene_dir: String) raises -> String:
     #
     # Calling it with "" rather than writing the floor by hand is what keeps
     # this file free of MJCF text (§7).
-    var d = scene_from_base(String(""), floor=True)
+    var d = scene_from_base(String(""), floor=f.floor)
 
     # ⚠⚠ THE HOST MUST RESTATE THE BASE'S ANGLE UNIT, AND OMITTING IT FROZE
     # THE ARM. MuJoCo's default for `<compiler angle>` is **degree**, so a
@@ -187,13 +218,55 @@ def compose_family(f: FamilySpec, scene_dir: String) raises -> String:
     var base_xml_text: String
     with open(f.base, "r") as bf:
         base_xml_text = bf.read()
+    # ⚠ THE COMPILER SETTINGS ARE GLOBAL ONCE SPLICED. `<attach>` compiles
+    # the child under the PARENT's compiler, so whatever the base asset
+    # relies on has to be restated here. `angle` always was; with
+    # `inherit_option=1` L2 also carries `inertiagrouprange` and
+    # `autolimits`, which robosuite's base.xml sets and LIBERO's objects
+    # depend on (a visual `.msh` with `density=` would otherwise enter the
+    # inertia).
+    var header = String("")
+    var ctag = String("  <compiler")
+    var any_attr = False
     var base_angle = compiler_attr(base_xml_text, "angle")
     if base_angle.byte_length() > 0:
-        d.base_xml = String('  <compiler angle="') + base_angle + '"/>'
+        ctag += ' angle="' + base_angle + '"'
+        any_attr = True
+    if f.inherit_option:
+        # ⚠ GATED WITH THE OPTION, NOT ALWAYS: `so_arm101.xml` carries
+        # `autolimits="true"` too, and copying it unconditionally rewrote
+        # `scenes/so101_tabletop.xml` for no physical change (it is
+        # MuJoCo's default). A family that predates L2 stays byte-identical.
+        var igr = _tag_attr(base_xml_text, "<compiler", "inertiagrouprange")
+        if igr.byte_length() > 0:
+            ctag += ' inertiagrouprange="' + igr + '"'
+            any_attr = True
+        var al = _tag_attr(base_xml_text, "<compiler", "autolimits")
+        if al.byte_length() > 0:
+            ctag += ' autolimits="' + al + '"'
+            any_attr = True
+    if any_attr:
+        header += ctag + "/>"
+    if f.inherit_option:
+        # ⚠ COPIED WHOLE, NEVER PARSED — see `_whole_tag`. MuJoCo ignores an
+        # attached child's <option>, so a base authored with one runs under
+        # the composed scene's defaults unless it is restated here.
+        var opt = _whole_tag(base_xml_text, "<option")
+        if opt.byte_length() == 0:
+            raise Error(
+                "tasks: family '" + f.name + "' sets inherit_option=1 but its"
+                " base '" + f.base + "' has no <option> tag to inherit"
+            )
+        if header.byte_length() > 0:
+            header += "\n"
+        header += "  " + opt
+    d.base_xml = header
 
     var base_key = _asset_key(f.base)
     d.add_asset(base_key, _relative_to(f.base, scene_dir))
-    d.instances.append(Instance(base_key, BASE_PREFIX, 0.0, 0.0, 0.0))
+    d.instances.append(
+        Instance(base_key, BASE_PREFIX, f.base_x, f.base_y, f.base_z)
+    )
 
     for i in range(len(f.slots)):
         ref s = f.slots[i]
@@ -237,7 +310,16 @@ def compose_family(f: FamilySpec, scene_dir: String) raises -> String:
             px = p[0]
             py = p[1]
             pz = p[2]
-        d.instances.append(Instance(key, s.name + "_", px, py, pz))
+        var inst = Instance(key, s.name + "_", px, py, pz)
+        if s.has_pose and s.yaw != 0.0:
+            # A static slot's yaw, as the frame's quat about +z. `Instance`
+            # already carries a unit quaternion; only the z-rotation is set,
+            # which is all `slot=` can express.
+            inst.qw = cos(0.5 * s.yaw)
+            inst.qx = 0.0
+            inst.qy = 0.0
+            inst.qz = sin(0.5 * s.yaw)
+        d.instances.append(inst^)
 
     return d.to_mjcf(f.name)
 

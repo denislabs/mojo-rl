@@ -40,12 +40,20 @@ from std.sys import argv
 from mojo_rl.tasks.bddl import parse_bddl, BddlProblem
 from mojo_rl.tasks.libero_import import (
     translate_family, translate_task, GoalGap, classify_goal,
+    resolve_family, family_todo_count,
     GAP_NONE, GAP_OBJECT_TARGET, GAP_FIXTURE_REGION, GAP_ARTICULATION,
     GAP_UNKNOWN_PRED, GAP_ARITY, gap_name,
 )
+from mojo_rl.tasks.libero_categories import load_libero_table, DEFAULT_TABLE_PATH
 
 
 comptime DEFAULT_ROOT = "references/LIBERO-master/libero/libero/bddl_files"
+# ⚠ THE PACK, IF PULLED, ELSE THE UPSTREAM TREE. `assets-pull` materialises
+# the LIBERO pack at the first path; the second is the same files where the
+# reference checkout keeps them. Same bytes either way (the pack is cut from
+# that tree), so the survey's answer does not depend on which one it found.
+comptime PACK_DIR = "mojo_rl/tasks/libero/assets"
+comptime UPSTREAM_ASSETS = "references/LIBERO-master/libero/libero/assets"
 
 
 def _bddl_files(root: String) raises -> List[String]:
@@ -112,9 +120,19 @@ def main() raises:
             " corpus reports 0 failures, which is the shape of a vacuous run."
         )
 
+    var table = load_libero_table(DEFAULT_TABLE_PATH)
+    var pack_dir = String(PACK_DIR)
+    if not Path(pack_dir).is_dir():
+        pack_dir = String(UPSTREAM_ASSETS)
+    var have_assets = Path(pack_dir).is_dir()
+
     var parsed = 0
     var fam_ok = 0
     var task_ok = 0
+    var res_ok = 0
+    var res_todo = 0
+    var res_narrowed = 0
+    var res_errors = List[String]()
     var gap_counts = List[Int]()
     for _ in range(6):
         gap_counts.append(0)
@@ -164,6 +182,15 @@ def main() raises:
         except e:
             _ = e
 
+        # L1: the RESOLVED family — every slot a file, every fixture a pose.
+        if have_assets:
+            try:
+                var rf = resolve_family(p, table, pack_dir, res_narrowed)
+                res_ok += 1
+                res_todo += family_todo_count(rf)
+            except e:
+                res_errors.append(path + ": " + String(e))
+
         var gap = classify_goal(p)
         gap_counts[gap.kind] += 1
         if gap.kind == GAP_NONE:
@@ -176,6 +203,15 @@ def main() raises:
           "translate to a .family (slots + regions)")
     print("  task    :", task_ok, "of", len(files),
           "have a goal our language can express")
+    if have_assets:
+        print("  resolved:", res_ok, "of", len(files),
+              "translate with REAL asset paths and fixture poses (L1);"
+              " TODO placeholders left:", res_todo)
+        print("            fixture yaws taken at a narrow band's midpoint:",
+              res_narrowed, "(libero_spatial's cabinet, 3.6 deg)")
+    else:
+        print("  resolved: SKIPPED — no LIBERO assets at", PACK_DIR, "or",
+              UPSTREAM_ASSETS, "(run `pixi run assets-pull libero`)")
     print()
     print("  per suite (goals we can express):")
     for i in range(len(suite_names)):
@@ -208,6 +244,31 @@ def main() raises:
             " are separate columns for exactly this reason."
         )
     print("  ok: every file in the corpus parses")
+
+    # ⚠⚠ L1's GATE: with the assets present, EVERY file resolves and NO
+    # placeholder survives. A `TODO:` path composes to nothing at the first
+    # `<attach>`; counting them here is what turns that into a number.
+    if have_assets:
+        if len(res_errors) > 0:
+            print()
+            print("  ⚠ RESOLUTION FAILURES —", len(res_errors), ":")
+            for i in range(len(res_errors)):
+                if i >= 8:
+                    print("      ... and", len(res_errors) - 8, "more")
+                    break
+                print("      ", res_errors[i])
+            raise Error(
+                "libero survey: " + String(len(res_errors)) + " of "
+                + String(len(files)) + " files did not RESOLVE against "
+                + DEFAULT_TABLE_PATH + " — a missing category, a fixture"
+                " with no ranged init, or a ranged fixture yaw. See above."
+            )
+        if res_todo != 0:
+            raise Error(
+                "libero survey: " + String(res_todo) + " TODO asset"
+                " placeholders survived resolution"
+            )
+        print("  ok: all", res_ok, "files resolve to real assets, 0 TODO")
 
     # ⚠ ANTI-VACUITY. "0 gaps" is also what a classifier that returns
     # GAP_NONE unconditionally reports, and "0 translated" is what one that

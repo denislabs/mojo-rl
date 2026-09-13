@@ -78,7 +78,7 @@ def slot_kind_name(k: Int) -> String:
 
 
 struct SlotSpec(Copyable, ImplicitlyCopyable, Movable):
-    """`slot=<name>:<kind>:<asset>[:x,y,z]` — one object in the family.
+    """`slot=<name>:<kind>:<asset>[:x,y,z[,yaw]]` — one object in the family.
 
     ⚠⚠ THE POSE IS FOR STATIC SLOTS AND IS REQUIRED ON THEM. A `static` slot
     has NO JOINT, so it cannot be moved after composition — parking is by
@@ -104,6 +104,15 @@ struct SlotSpec(Copyable, ImplicitlyCopyable, Movable):
     var px: Float64
     var py: Float64
     var pz: Float64
+    var yaw: Float64
+    """Rotation about +z, RADIANS, optional fourth number of the pose.
+
+    ⚠ RADIANS REGARDLESS OF THE BASE'S `<compiler angle>`, because the
+    composer writes it as a `quat` on the `<frame>`, which MuJoCo never
+    interprets through the angle setting. LIBERO places 78 of its fixtures at
+    yaw pi (`docs/LIBERO_PORT_ASSESSMENT_2026_09_13.md` G3), which is why a
+    static slot needs one at all; the SO-101 families leave it 0 and their
+    `.family` text is unchanged."""
 
     def __init__(out self, name: String, kind: Int, asset: String):
         self.name = name
@@ -113,10 +122,11 @@ struct SlotSpec(Copyable, ImplicitlyCopyable, Movable):
         self.px = 0.0
         self.py = 0.0
         self.pz = 0.0
+        self.yaw = 0.0
 
     def __init__(
         out self, name: String, kind: Int, asset: String,
-        px: Float64, py: Float64, pz: Float64,
+        px: Float64, py: Float64, pz: Float64, yaw: Float64 = 0.0,
     ):
         self.name = name
         self.kind = kind
@@ -125,6 +135,7 @@ struct SlotSpec(Copyable, ImplicitlyCopyable, Movable):
         self.px = px
         self.py = py
         self.pz = pz
+        self.yaw = yaw
 
     def describe(self) -> String:
         var s = self.name + ":" + slot_kind_name(self.kind) + ":" + self.asset
@@ -133,6 +144,10 @@ struct SlotSpec(Copyable, ImplicitlyCopyable, Movable):
                 ":" + String(self.px) + "," + String(self.py)
                 + "," + String(self.pz)
             )
+            # ⚠ WRITTEN ONLY WHEN NON-ZERO so every existing .family
+            # round-trips byte-for-byte; a fourth number is an opt-in.
+            if self.yaw != 0.0:
+                s += "," + String(self.yaw)
         return s^
 
 
@@ -275,6 +290,33 @@ struct FamilySpec(Movable & Deinitable):
     var park_x: Float64
     var park_y: Float64
     var park_z: Float64
+    var base_x: Float64
+    var base_y: Float64
+    var base_z: Float64
+    """`base_pos=x,y,z` — where the base asset's root frame is composed.
+    Default the origin, which is every SO-101 family. LIBERO stands its
+    Panda at `(-0.66, 0, 0.912)` (`libero/categories.kv`), and a robot
+    cannot be moved after composition any more than a fixture can."""
+    var floor: Bool
+    """`floor=0|1` — whether the composer adds its own floor plane and
+    light. Default 1. A base whose ARENA slot brings the floor sets 0, or
+    the scene has two ground planes."""
+    var base_qpos: List[Float64]
+    """`base_qpos=q1,q2,...` — the base asset's joint positions at REST, in
+    its joint order. Optional; empty means MuJoCo's qpos0 (zeros). The
+    composer does not write a keyframe from it (an attached model carries
+    none); it is what the MuJoCo oracle and the env's default init read.
+    A Panda at all-zeros folds link 5 onto link 7 and reports 18 self
+    contacts "at rest" — LIBERO never runs it there, and neither must a
+    gate."""
+    var inherit_option: Bool
+    """`inherit_option=0|1` — copy the base asset's `<option>` tag, and its
+    `inertiagrouprange` / `autolimits` compiler attributes, into the
+    composed scene. Default 0, which leaves every existing family
+    byte-identical. LIBERO's physics is `impratio=20 cone=elliptic
+    density=1.2 viscosity=2e-5 timestep=0.002`, authored once in the vendored
+    Panda; MuJoCo's `<attach>` ignores a child's `<option>`, so without this
+    the composed scene would run robosuite's robot under our defaults."""
 
     def __init__(out self):
         self.schema_version = SCHEMA_VERSION
@@ -301,6 +343,12 @@ struct FamilySpec(Movable & Deinitable):
         self.park_x = 10.0
         self.park_y = 0.0
         self.park_z = 50.0
+        self.base_x = 0.0
+        self.base_y = 0.0
+        self.base_z = 0.0
+        self.floor = True
+        self.base_qpos = List[Float64]()
+        self.inherit_option = False
 
     def __init__(out self, *, deinit move: Self):
         self.schema_version = move.schema_version
@@ -313,6 +361,12 @@ struct FamilySpec(Movable & Deinitable):
         self.park_x = move.park_x
         self.park_y = move.park_y
         self.park_z = move.park_z
+        self.base_x = move.base_x
+        self.base_y = move.base_y
+        self.base_z = move.base_z
+        self.floor = move.floor
+        self.base_qpos = move.base_qpos^
+        self.inherit_option = move.inherit_option
 
     def slot_index(self, name: String) -> Int:
         """Index of the named slot, or -1. Slot ORDER is the observation
@@ -352,6 +406,24 @@ struct FamilySpec(Movable & Deinitable):
             "park=" + String(self.park_x) + "," + String(self.park_y)
             + "," + String(self.park_z) + "\n"
         )
+        # ⚠ THE THREE L2 KEYS ARE WRITTEN ONLY WHEN NON-DEFAULT, so every
+        # family that predates them round-trips byte-for-byte.
+        if self.base_x != 0.0 or self.base_y != 0.0 or self.base_z != 0.0:
+            s += (
+                "base_pos=" + String(self.base_x) + "," + String(self.base_y)
+                + "," + String(self.base_z) + "\n"
+            )
+        if not self.floor:
+            s += "floor=0\n"
+        if len(self.base_qpos) > 0:
+            s += "base_qpos="
+            for i in range(len(self.base_qpos)):
+                if i > 0:
+                    s += ","
+                s += String(self.base_qpos[i])
+            s += "\n"
+        if self.inherit_option:
+            s += "inherit_option=1\n"
         for i in range(len(self.slots)):
             s += "slot=" + self.slots[i].describe() + "\n"
         for i in range(len(self.regions)):
@@ -475,16 +547,20 @@ def parse_slot(spec: String) raises -> SlotSpec:
             " make the slot static."
         )
     var n = split_on(String(String(parts[3]).strip()), String(","))
-    if len(n) != 3:
+    if len(n) != 3 and len(n) != 4:
         raise Error(
-            "tasks: slot '" + name + "' pose needs three numbers 'x,y,z', got"
-            " '" + String(parts[3]) + "'"
+            "tasks: slot '" + name + "' pose needs 'x,y,z' or 'x,y,z,yaw'"
+            " (yaw in radians about +z), got '" + String(parts[3]) + "'"
         )
+    var yaw = 0.0
+    if len(n) == 4:
+        yaw = Float64(String(String(n[3]).strip()))
     return SlotSpec(
         name^, kind, asset^,
         Float64(String(String(n[0]).strip())),
         Float64(String(String(n[1]).strip())),
         Float64(String(String(n[2]).strip())),
+        yaw,
     )
 
 
@@ -573,6 +649,15 @@ def parse_init(spec: String) raises -> InitSpec:
     return InitSpec(slot^, region^)
 
 
+def _parse_flag(val: String, what: String) raises -> Bool:
+    """`0` or `1`, nothing else — a `yes` that read as False would be silent."""
+    if val == "1":
+        return True
+    if val == "0":
+        return False
+    raise Error("family spec: " + what + " must be 0 or 1, got '" + val + "'")
+
+
 def parse_family(text: String) raises -> FamilySpec:
     var f = FamilySpec()
     var saw_version = False
@@ -603,6 +688,27 @@ def parse_family(text: String) raises -> FamilySpec:
             f.park_x = Float64(String(String(p[0]).strip()))
             f.park_y = Float64(String(String(p[1]).strip()))
             f.park_z = Float64(String(String(p[2]).strip()))
+        elif key == "base_pos":
+            var b = split_on(val, String(","))
+            if len(b) != 3:
+                raise Error(
+                    "family spec: base_pos needs three numbers 'x,y,z', got '"
+                    + val + "'"
+                )
+            f.base_x = Float64(String(String(b[0]).strip()))
+            f.base_y = Float64(String(String(b[1]).strip()))
+            f.base_z = Float64(String(String(b[2]).strip()))
+        elif key == "floor":
+            f.floor = _parse_flag(val, String("floor"))
+        elif key == "base_qpos":
+            var q = split_on(val, String(","))
+            f.base_qpos = List[Float64]()
+            for k in range(len(q)):
+                f.base_qpos.append(Float64(String(String(q[k]).strip())))
+            if len(f.base_qpos) == 0:
+                raise Error("family spec: base_qpos is empty")
+        elif key == "inherit_option":
+            f.inherit_option = _parse_flag(val, String("inherit_option"))
         elif key == "slot":
             f.slots.append(parse_slot(val))
         elif key == "region":
@@ -611,7 +717,8 @@ def parse_family(text: String) raises -> FamilySpec:
             _unknown_key(
                 key, lines[i].lineno, String("family spec"),
                 String("schema_version, family, base, horizon, control_freq,"
-                       " park, slot, region"),
+                       " park, base_pos, floor, base_qpos, inherit_option, slot,"
+                       " region"),
             )
 
     if not saw_version:

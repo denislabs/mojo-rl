@@ -43,6 +43,7 @@ predicate that is exactly backwards on half the cabinets.
 """
 
 from .bddl import BddlProblem, BddlAtom, BddlRegion
+from .libero_categories import LiberoTable, LiberoCategory, LiberoProblem
 from .spec import (
     FamilySpec, TaskSpec, SlotSpec, RegionSpec, InitSpec,
     SLOT_FREE, SLOT_STATIC, SCHEMA_VERSION,
@@ -233,6 +234,16 @@ def translate_task(p: BddlProblem, f: FamilySpec) raises -> TaskSpec:
         if not is_free:
             continue
         t.inits.append(InitSpec(slot, p.regions[ri].composed_name()))
+    # ⚠ FAMILY SLOT ORDER, NOT `:init` ORDER. `validate_task_against_family`
+    # refuses any other order because the host and device samplers walk
+    # different lists and rejection sampling is order-dependent. A `.bddl`
+    # lists its `:init` in authoring order, which is neither.
+    var ordered = List[InitSpec]()
+    for si in range(len(f.slots)):
+        for k in range(len(t.inits)):
+            if t.inits[k].slot == f.slots[si].name:
+                ordered.append(t.inits[k])
+    t.inits = ordered^
     return t^
 
 
@@ -250,3 +261,282 @@ def family_todo_count(f: FamilySpec) -> Int:
         if f.slots[i].asset.startswith("TODO:"):
             n += 1
     return n
+
+
+# ── L1: the resolved family — real assets, real fixture poses ──────────────
+
+
+def _tag_attr(tag: String, name: String) -> String:
+    """`name="..."` inside one opening tag, or "" if absent."""
+    var needle = String(" ") + name + '="'
+    var i = tag.find(needle)
+    if i < 0:
+        return String("")
+    var start = i + needle.byte_length()
+    var end = tag.find('"', start)
+    if end < 0:
+        return String("")
+    return String(tag[byte=start:end])
+
+
+def site_pos(xml: String, site: String) raises -> List[Float64]:
+    """The `pos` of `<site ... name="<site>" .../>` in an asset XML.
+
+    ⚠ A TEXT SCAN, NOT A PARSE, on purpose: the three robosuite bookkeeping
+    sites (`bottom_site`, `top_site`, `horizontal_radius_site`) sit on the
+    wrapper body of every LIBERO object and this is the only thing the
+    importer reads out of an asset. `MujocoXMLObject.bottom_offset` reads the
+    same attribute the same way (`string_to_array(site.get("pos"))`).
+    RAISES if the site is absent — an object without one cannot be placed by
+    LIBERO either.
+    """
+    var pos = 0
+    while True:
+        var i = xml.find("<site", pos)
+        if i < 0:
+            break
+        var j = xml.find(">", i)
+        if j < 0:
+            break
+        var tag = String(xml[byte=i:j])
+        if _tag_attr(tag, String("name")) == site:
+            var ps = _tag_attr(tag, String("pos"))
+            if ps.byte_length() == 0:
+                ps = String("0 0 0")
+            var out = List[Float64]()
+            var toks = ps.split(" ")
+            for k in range(len(toks)):
+                var t = String(String(toks[k]).strip())
+                if t.byte_length() > 0:
+                    out.append(Float64(t))
+            if len(out) != 3:
+                raise Error(
+                    "libero: site '" + site + "' has a pos with "
+                    + String(len(out)) + " numbers"
+                )
+            return out^
+        pos = j + 1
+    raise Error(
+        "libero: no <site name=\"" + site + "\"> in the asset — LIBERO"
+        " places every object by this site and so must we"
+    )
+
+
+# ⚠ A FIXTURE YAW RANGE NARROWER THAN THIS IS TAKEN AT ITS MIDPOINT. Measured
+# on the corpus: 475 of 501 yaw blocks are a point; the only RANGED fixture is
+# `libero_spatial`'s wooden cabinet, [2.6614, 2.7242] rad — a 3.6 degree band.
+# LIBERO itself re-draws that yaw at EVERY reset, frozen init or not (a
+# fixture's pose is `model.body_pos`, which `sim.get_state()` does not carry),
+# so the band is reset NOISE in the benchmark, not part of a task's identity.
+# A static slot has one pose; the midpoint is the mean of what LIBERO draws
+# and the deviation is at most 1.8 degrees. Wider than this and it is a
+# distribution the family cannot express, so it RAISES.
+comptime FIXTURE_YAW_TOLERANCE: Float64 = 0.1
+
+
+# ⚠ THE ROBOT AND THE ARENA ARE L2's HALF OF THE FAMILY. With `robot_xml`
+# empty (`robot_dir`) the family's base is the raw arena scene (L1's shape, kept for the
+# survey and the tests); with it set, the base is the vendored Panda placed
+# at the problem's `base_pos`, the styled arena from `arena_dir` is the
+# first static slot at the origin, the composer's own floor is off, and the
+# Panda's `<option>` is inherited. Regions then anchor on the arena's
+# `workspace` site, which `gen_libero_arenas.py` places at LIBERO's
+# `workspace_offset` — the point every region rect is measured from.
+comptime LIBERO_ARENA_DIR: String = "mojo_rl/tasks/libero/scenes"
+# ⚠ IN ROBOT MODE THE OBJECTS ARE THE GENERATED COPIES, NOT THE PACK'S.
+# `tools/tasks/gen_libero_objects.py` writes one attachable XML per category:
+# the pack's files are byte-identical to upstream, and upstream never loads
+# them directly — robosuite's `merge_assets` drops a repeated (tag, name)
+# asset declaration, which `flat_stove.xml` relies on and which MuJoCo's
+# `<attach>` refuses. Without the robot (L1's survey shape) the pack path is
+# still emitted, so the survey needs no generated files.
+comptime LIBERO_OBJECT_DIR: String = "mojo_rl/tasks/libero/objects"
+comptime LIBERO_ROBOT_DIR: String = "mojo_rl/envs/robots/assets"
+comptime ARENA_SLOT: String = "arena"
+
+
+# LIBERO `MountedPanda.init_qpos` / `OnTheGroundPanda.init_qpos` (identical),
+# `envs/robots/*_panda.py`, plus `PandaGripper.init_qpos` (0.020833,
+# -0.020833). The family's `base_qpos=`; the oracle and the env read it.
+comptime PANDA_INIT_QPOS: String = (
+    "0,-0.161037389,0,-2.44459747,0,2.2267522,0.7853981633974483,"
+    "0.020833,-0.020833"
+)
+
+
+def robot_path(prob: LiberoProblem, robot_dir: String) -> String:
+    """`panda_robosuite.xml` for `robot=mounted`, `panda_robosuite_nomount.xml`
+    for `robot=on_the_ground` — both written by
+    `tools/robots/vendor_panda_robosuite.py`."""
+    if prob.robot == "on_the_ground":
+        return robot_dir + "/panda_robosuite_nomount.xml"
+    return robot_dir + "/panda_robosuite.xml"
+
+
+def arena_path(prob: LiberoProblem, arena_dir: String) -> String:
+    """`<arena_dir>/<problem, lowercased>_arena.xml` — ONE spelling, shared
+    with `tools/tasks/gen_libero_arenas.py`."""
+    return arena_dir + "/" + prob.name.lower() + "_arena.xml"
+
+
+def resolve_family(
+    p: BddlProblem, table: LiberoTable, pack_dir: String,
+) raises -> FamilySpec:
+    var narrowed = 0
+    return resolve_family(p, table, pack_dir, narrowed, String(""), String(""))
+
+
+def resolve_family(
+    p: BddlProblem, table: LiberoTable, pack_dir: String, mut narrowed: Int,
+) raises -> FamilySpec:
+    return resolve_family(p, table, pack_dir, narrowed, String(""), String(""))
+
+
+def resolve_family(
+    p: BddlProblem, table: LiberoTable, pack_dir: String, mut narrowed: Int,
+    robot_dir: String, arena_dir: String,
+) raises -> FamilySpec:
+    """`translate_family` with the registry: every slot names a FILE under
+    `pack_dir`, every fixture carries the pose LIBERO computes for it, and
+    the workspace (`main_table - table`) is the base scene rather than a slot.
+
+    ## The fixture pose, quoted from LIBERO
+
+    `bddl_base_domain._add_placement_initializer` places a fixture with a
+    `MultiRegionRandomSampler(z_offset=self.z_offset, rotation=yaw_rotation,
+    rotation_axis="z", reference_pos=self.workspace_offset)`, and
+    `base_region_sampler.sample` then does
+
+        object_x = sample_x + reference_pos[0]
+        object_y = sample_y + reference_pos[1]
+        object_z = z_offset + reference_pos[2] - bottom_offset[2]
+
+    A static slot cannot sample, so x,y are the rect's CENTRE — the mean of
+    what LIBERO draws — and the yaw is the range's MIDPOINT when the range
+    is narrower than `FIXTURE_YAW_TOLERANCE` (see it for why), counted in
+    `narrowed`, and REFUSED when wider.
+
+    ⚠ THE REGION SITE IS AN OBLIGATION ON L2. Table regions are emitted
+    anchored on `robot_<workspace>_top`, i.e. a site named `<workspace>_top`
+    in the base scene at `workspace_offset`; robosuite's `TableArena`
+    re-poses the arena's `table_top` site there at load time, and the styled
+    base scene L2 generates must do the same. Until then the family composes
+    but its table regions bind to nothing — `family_todo_count` does not
+    count that, `validate_task_against_family` does.
+    """
+    var prob = table.problem(p.problem)
+    var f = FamilySpec()
+    f.schema_version = SCHEMA_VERSION
+    f.name = String(p.problem)
+    f.horizon = 600
+    f.control_freq = 20
+    var with_robot = robot_dir.byte_length() > 0
+    var anchor = String("robot_") + prob.workspace + "_top"
+    if with_robot:
+        f.base = robot_path(prob, robot_dir)
+        f.base_x = prob.base_x
+        f.base_y = prob.base_y
+        f.base_z = prob.base_z
+        f.floor = False
+        f.inherit_option = True
+        var q = PANDA_INIT_QPOS.split(",")
+        for k in range(len(q)):
+            f.base_qpos.append(Float64(String(q[k])))
+        f.slots.append(
+            SlotSpec(
+                String(ARENA_SLOT), SLOT_STATIC, arena_path(prob, arena_dir),
+                0.0, 0.0, 0.0,
+            )
+        )
+        anchor = String(ARENA_SLOT) + "_workspace"
+    else:
+        f.base = pack_dir + "/" + prob.scene
+
+    for i in range(len(p.fixtures)):
+        var cat = table.category(String(p.fixtures[i].category))
+        if cat.is_workspace():
+            if cat.name != prob.workspace:
+                raise Error(
+                    "libero: task '" + p.problem + "' declares workspace"
+                    " fixture '" + p.fixtures[i].name + " - " + cat.name
+                    + "' but its problem class works on '" + prob.workspace
+                    + "'"
+                )
+            continue
+        var asset = pack_dir + "/" + cat.asset
+        if with_robot:
+            asset = String(LIBERO_OBJECT_DIR) + "/" + cat.name + ".xml"
+        # the init line that places it, and its region
+        var ri = -1
+        for k in range(len(p.init)):
+            ref a = p.init[k]
+            if a.pred == "On" and len(a.args) == 2 and a.args[0] == p.fixtures[i].name:
+                ri = p.region_index(String(a.args[1]))
+        if ri < 0 or not p.regions[ri].has_ranges:
+            raise Error(
+                "libero: fixture '" + p.fixtures[i].name + "' in task '"
+                + p.problem + "' has no `(On <fixture> <ranged region>)`"
+                " init, so it has no pose"
+            )
+        ref r = p.regions[ri]
+        var yaw = 0.0
+        if r.has_yaw:
+            var band = r.yaw_hi - r.yaw_lo
+            if band < 0.0:
+                band = -band
+            if band > FIXTURE_YAW_TOLERANCE:
+                raise Error(
+                    "libero: fixture '" + p.fixtures[i].name + "' in task '"
+                    + p.problem + "' samples its yaw in ["
+                    + String(r.yaw_lo) + ", " + String(r.yaw_hi) + "], a "
+                    + String(band) + " rad band; a static slot has ONE pose"
+                    " and only a band under " + String(FIXTURE_YAW_TOLERANCE)
+                    + " rad is taken at its midpoint. Not approximated."
+                )
+            if band > 0.0:
+                narrowed += 1
+            yaw = 0.5 * (r.yaw_lo + r.yaw_hi)
+        # ⚠ THE BOOKKEEPING SITE IS READ FROM THE PACK'S FILE, never from the
+        # generated copy: robosuite reads `bottom_site` off the wrapper body
+        # and then discards the wrapper, and the generated copy does the same.
+        var xml: String
+        with open(pack_dir + "/" + cat.asset, "r") as fh:
+            xml = fh.read()
+        var bottom = site_pos(xml, String("bottom_site"))
+        var s = SlotSpec(
+            String(p.fixtures[i].name), SLOT_STATIC, asset,
+            0.5 * (r.x0 + r.x1) + prob.off_x,
+            0.5 * (r.y0 + r.y1) + prob.off_y,
+            prob.z_offset + prob.off_z - bottom[2],
+            yaw,
+        )
+        f.slots.append(s^)
+
+    for i in range(len(p.objects)):
+        var cat2 = table.category(String(p.objects[i].category))
+        if cat2.is_workspace():
+            raise Error(
+                "libero: '" + p.objects[i].name + "' is declared as an OBJECT"
+                " but its category '" + cat2.name + "' is a workspace"
+            )
+        var asset2 = pack_dir + "/" + cat2.asset
+        if with_robot:
+            # ⚠ `_free`: the generated copy WITH robosuite's free joint. The
+            # pack's XML has none — robosuite injects it at load for
+            # `:objects` and not for `:fixtures` — so a free slot on the
+            # plain copy would be welded to the world and never move.
+            asset2 = String(LIBERO_OBJECT_DIR) + "/" + cat2.name + "_free.xml"
+        f.slots.append(SlotSpec(String(p.objects[i].name), SLOT_FREE, asset2))
+
+    for i in range(len(p.regions)):
+        ref r2 = p.regions[i]
+        if not r2.has_ranges:
+            continue
+        var rs = RegionSpec(r2.composed_name(), anchor)
+        rs.has_rect = True
+        rs.x_min = r2.x0
+        rs.y_min = r2.y0
+        rs.x_max = r2.x1
+        rs.y_max = r2.y1
+        f.regions.append(rs^)
+    return f^

@@ -57,6 +57,22 @@ tests/physics3d/test_expand_identity.mojo
 # path alone would pass while accepting all of them.
 tests/tasks/test_spec_roundtrip.mojo
 
+# ── mojo_rl/tasks: LIBERO's registry as data + the resolved import (L1) ──
+# The category table (38 corpus categories, 5 problem classes, the four
+# articulation directions QUOTED from LIBERO's Python), the `slot=` yaw
+# extension, and `resolve_family` against an inline fixture. No assets.
+tests/tasks/test_libero_categories.mojo
+
+# ── mojo_rl/tasks: libero_goal composes and our parser carries every slot (L2)
+# SKIPS LOUDLY without the pulled pack (`pixi run assets-pull libero`). The
+# oracle half is `tools/tasks/check_family.py` on the composed scene.
+tests/tasks/test_libero_goal_compose.mojo
+
+# ── mojo_rl/render: the .msh reader (L1) ─────────────────────────────
+# Hermetic: writes a .msh from the format's definition and reads it back;
+# header-checks all 88 corpus files when references/ is present.
+tests/render/test_msh_loader.mojo
+
 # ── mojo_rl/tasks: a .family composes to a scene MuJoCo loads (P1c) ──
 # ⚠ THE MOJO HALF ONLY. The ORACLE half is `pixi run python
 # tools/tasks/check_family.py`, which loads the same file through MuJoCo and

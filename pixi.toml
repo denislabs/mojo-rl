@@ -280,6 +280,19 @@ soarm-torque-off = { cmd = "mojo run -I . tools/soarm/so101_torque_off.mojo", de
 assets-status = { cmd = "mojo run -I . tools/assets/assets_cli.mojo status", description = "Which env asset packs are on this box, and which are not" }
 assets-pull = { cmd = "mojo run -I . tools/assets/assets_cli.mojo pull", description = "Fetch env asset packs BEFORE a run starts (see PROJECT_LAYER_PLAN.md §9)" }
 assets-where = { cmd = "mojo run -I . tools/assets/assets_cli.mojo where", description = "Where a pack would be fetched from, and which credential it would use" }
+libero-pack = { cmd = "python tools/assets/build_libero_pack.py", description = "Cut the LIBERO asset pack from references/LIBERO-master and write mojo_rl/tasks/libero/assets.kv (does NOT upload)" }
+# ── LIBERO (docs/LIBERO_PORT_ASSESSMENT_2026_09_13.md) ───────────────────
+# Regenerate in this order after `assets-pull libero`: robot, arenas, objects,
+# family, then `gen-family-scenes` and `gen-dims`. Each has a --check.
+vendor-panda = { cmd = "python tools/robots/vendor_panda_robosuite.py", description = "Vendor robosuite's Panda+gripper+mount as flat MJCF (both variants) into envs/robots/assets" }
+vendor-panda-check = { cmd = "python tools/robots/vendor_panda_robosuite.py --check", description = "CI: the vendored Panda XMLs match what the tool generates" }
+libero-arenas = { cmd = "python tools/tasks/gen_libero_arenas.py", description = "Generate the styled, re-posed LIBERO arena per problem class (needs the libero pack)" }
+libero-arenas-check = { cmd = "python tools/tasks/gen_libero_arenas.py --check", description = "CI: generated LIBERO arenas are up to date" }
+libero-objects = { cmd = "python tools/tasks/gen_libero_objects.py", description = "Generate the attachable copy (+_free variant) of every LIBERO object (needs the libero pack)" }
+libero-objects-check = { cmd = "python tools/tasks/gen_libero_objects.py --check", description = "CI: generated LIBERO object XMLs are up to date" }
+libero-family = { cmd = "mojo run -I . tools/tasks/gen_libero_family.mojo", description = "One LIBERO suite -> .family + .task files, e.g. `pixi run libero-family libero_goal`" }
+libero-survey = { cmd = "mojo run -I . examples/tasks/libero_survey.mojo", description = "LIBERO's 130 files against the task layer: parsed / family / task / resolved" }
+libero-onestep = { cmd = "python tools/tasks/libero_onestep_vs_mujoco.py mojo_rl/tasks/scenes/libero_goal.xml mojo_rl/tasks/families/libero_goal.family", description = "One-step board row for the composed libero_goal scene vs MuJoCo (build /tmp/mfh/drive first, see docs/menagerie_fidelity_harnesses/README.md); args: N ctrl_scale" }
 project-init = { cmd = "mojo run -I . tools/project/project_cli.mojo init", description = "Create projects/<name>/ + project.kv. Pass the name, then --description" }
 project-list = { cmd = "mojo run -I . tools/project/project_cli.mojo list", description = "Every project, with its run count" }
 # Refs, their drift against `git log -1 -- <path>`, and every run's status/outcome/tag.
