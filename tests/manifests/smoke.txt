@@ -73,6 +73,11 @@ tests/tasks/test_libero_goal_compose.mojo
 # accelerator — ten lanes in a kernel agree with the host at float32.
 # Skips (loudly) without the pack.
 tests/tasks/test_libero_goal_eval.mojo
+# L4's unit gate: OSC_POSE (robosuite 1.4.0, transcribed) on the composed
+# libero_goal scene — algebra, gripper ramp, hold (2.5e-12 m over 1 s) and
+# track. The decisive gate is `tools/tasks/libero_demo_replay.py` on a
+# recorded demo (needs the 426 MB HDF5; see its header).
+tests/tasks/test_osc_pose.mojo
 
 # ── mojo_rl/render: the .msh reader (L1) ─────────────────────────────
 # Hermetic: writes a .msh from the format's definition and reads it back;

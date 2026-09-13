@@ -19,8 +19,22 @@ XMLs, and writes what MuJoCo would have seen — minus what LIBERO never uses.
   `base_offset - mount.top_offset = (0,0,0) - (0,0,-0.01) = (0,0,0.01)` and
   merged under the robot's root `base`. ⚠ Both roots are named `base`; the
   mount's is renamed `mount` here (robosuite would prefix it `mount0_`).
-* Joint damping `(0.1 x5, 0.01 x2)` — already in the arm XML, and
-  `MountedPanda.set_joint_attribute` writes the same values.
+* `RobotModel.__init__` (1.4.0 `models/robots/robot_model.py:70-75`), the
+  THREE joint attributes it writes at load with `force=False` (only where
+  the XML is silent):
+
+      self.set_joint_attribute(attrib="frictionloss", values=0.1 * np.ones(self.dof), force=False)
+      self.set_joint_attribute(attrib="damping", values=0.1 * np.ones(self.dof), force=False)
+      self.set_joint_attribute(attrib="armature", values=np.array([5.0 / (i + 1) for i in range(self.dof)]), force=False)
+
+  Damping is already in the arm XML `(0.1 x5, 0.01 x2)`, so that line is a
+  no-op; `frictionloss=0.1` and `armature=5/(i+1)` are NOT in the XML and
+  are applied here. ⚠⚠ L2 SHIPPED WITHOUT THEM, and every L2 gate was
+  blind to it: the MuJoCo oracle loaded OUR XML, so both sides lacked the
+  same two attributes and agreed to 1e-16. L4's demo replay — the file's
+  own merged model beside ours — printed armature 5.0 vs 0.0 on joint 1
+  and a 0.29 rad joint-space gap over 80 steps. The recorded data has
+  them; a model without them is not the benchmark's.
 * Where the robot STANDS is NOT here: `set_base_xpos` moves the root body,
   and the family's `base_pos=` does that (root pos = xpos - bottom_offset,
   bottom_offset = (mount.bottom_offset - mount.top_offset) = (0,0,-0.912)).
@@ -85,6 +99,21 @@ def strip_visual_obj(arm):
     return keep_mesh
 
 
+def apply_robot_model_defaults(arm):
+    """`RobotModel.__init__`'s `set_joint_attribute(..., force=False)` trio on
+    the seven arm joints, in joint order — see the header."""
+    joints = [j for j in arm.find("worldbody").iter("joint")]
+    if len(joints) != 7:
+        sys.exit(f"expected 7 arm joints, found {len(joints)}")
+    for i, j in enumerate(joints):
+        if j.get("frictionloss") is None:
+            j.set("frictionloss", "0.1")
+        if j.get("damping") is None:
+            j.set("damping", "0.1")
+        if j.get("armature") is None:
+            j.set("armature", repr(5.0 / (i + 1)))
+
+
 def build(mounted):
     """The flat MJCF text and the (src, dst) mesh copies, for one variant."""
     arm = ET.parse(os.path.join(RS, "robots/panda/robot.xml")).getroot()
@@ -92,6 +121,7 @@ def build(mounted):
     mount = ET.parse(os.path.join(RS, "bases/rethink_mount.xml")).getroot()
 
     strip_visual_obj(arm)
+    apply_robot_model_defaults(arm)
 
     root = ET.Element("mujoco", model="panda_robosuite" if mounted else "panda_robosuite_nomount")
     ET.SubElement(root, "compiler", angle="radian", inertiagrouprange="0 0", autolimits="true")
