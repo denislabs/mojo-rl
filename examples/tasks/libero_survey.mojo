@@ -42,7 +42,7 @@ from mojo_rl.tasks.libero_import import (
     translate_family, translate_task, GoalGap, classify_goal,
     resolve_family, family_todo_count,
     GAP_NONE, GAP_OBJECT_TARGET, GAP_FIXTURE_REGION, GAP_ARTICULATION,
-    GAP_UNKNOWN_PRED, GAP_ARITY, gap_name,
+    GAP_UNKNOWN_PRED, GAP_ARITY, GAP_TAPE_TERMS, gap_name,
 )
 from mojo_rl.tasks.libero_categories import load_libero_table, DEFAULT_TABLE_PATH
 
@@ -140,7 +140,7 @@ def main() raises:
     var xl_ok = 0
     var xl_errors = List[String]()
     var gap_counts = List[Int]()
-    for _ in range(6):
+    for _ in range(7):
         gap_counts.append(0)
     var parse_errors = List[String]()
 
@@ -232,7 +232,7 @@ def main() raises:
               suite_files[i])
     print()
     print("  why the rest do not translate:")
-    for k in range(6):
+    for k in range(7):
         if gap_counts[k] > 0 and k != GAP_NONE:
             print("     ", gap_counts[k], "x", gap_name(k))
 
@@ -301,14 +301,14 @@ def main() raises:
             " our language does express — so zero means `classify_goal` is"
             " rejecting everything."
         )
-    # ⚠ THE ANTI-VACUITY CHECK CHANGED SHAPE AT L3. Before it, the corpus
-    # had both expressible and refused goals and both had to appear; after
-    # it the language spans the corpus, so "130 of 130" is the EXPECTED
-    # answer and vacuity is guarded the other way: every refusal path is
-    # exercised by `tests/tasks/test_bddl.mojo` / `test_libero_goal_eval`
-    # on hand-written inputs, and the WRITTEN column below must equal the
-    # expressible one — a classifier that accepted everything while the
-    # translator refused half would show there.
+    # ⚠⚠ THE TWO COLUMNS MUST AGREE, AND THAT IS THE WHOLE CHECK. L3's
+    # commit claimed "130 of 130 written" from a survey run taken BEFORE the
+    # tape-capacity refusal was added minutes later; the number was stale by
+    # one and nothing caught it, because `classify_goal` said 130 and
+    # nobody re-ran the column that disagreed. The classifier now counts
+    # tape terms too (`GAP_TAPE_TERMS`), so expressible == written == 129
+    # and the one exception is NAMED in the gap table above rather than
+    # being a silent difference between two numbers.
     if have_assets and xl_ok != task_ok:
         raise Error(
             "libero survey: " + String(task_ok) + " goals classify as"

@@ -103,6 +103,7 @@ MODELS = [
     # .family, so a stale scene would freeze stale dimensions.
     ("mojo_rl/tasks/so101_tabletop_xml.mojo", ["SO101_TABLETOP_XML"]),
     ("mojo_rl/tasks/libero_goal_xml.mojo", ["LIBERO_GOAL_XML"]),
+    ("mojo_rl/tasks/libero_spatial_xml.mojo", ["LIBERO_SPATIAL_XML"]),
     ("mojo_rl/envs/dm_control/acrobot/acrobot_xml.mojo", ["dm_acrobot_xml"]),
     ("mojo_rl/envs/dm_control/ball_in_cup/ball_in_cup_xml.mojo",
      ["dm_ball_in_cup_xml"]),

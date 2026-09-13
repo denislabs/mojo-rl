@@ -77,7 +77,7 @@ from .libero_import import (
     classify_goal, translate_family, translate_task, family_todo_count,
     GoalGap, gap_name,
     GAP_NONE, GAP_OBJECT_TARGET, GAP_FIXTURE_REGION, GAP_ARTICULATION,
-    GAP_UNKNOWN_PRED, GAP_ARITY,
+    GAP_UNKNOWN_PRED, GAP_ARITY, GAP_TAPE_TERMS,
 )
 from .libero_categories import (
     LiberoTable, LiberoCategory, LiberoProblem, Threshold,

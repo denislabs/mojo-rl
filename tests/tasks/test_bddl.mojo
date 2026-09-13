@@ -32,6 +32,7 @@ from mojo_rl.tasks.bddl import parse_bddl, tokenize_bddl
 from mojo_rl.tasks.libero_import import (
     classify_goal, translate_family, translate_task, family_todo_count,
     GAP_NONE, GAP_ARTICULATION, GAP_FIXTURE_REGION, GAP_OBJECT_TARGET,
+    GAP_TAPE_TERMS,
 )
 from mojo_rl.tasks.spec import SLOT_FREE, SLOT_STATIC
 
@@ -233,14 +234,24 @@ def main() raises:
              "every asset is a visible TODO (1 base + 4 slots), not a guess")
 
     var gap = classify_goal(p)
-    # ⚠ THIS GOAL IS `(On .. cook_region) (On .. cook_region) (Turnon ..)`.
-    # Before L3 it was refused at its FIRST term (the unranged fixture-site
-    # region) and this check pinned "first, not most interesting". L3 closed
-    # both gaps — box regions read off the asset, Turnon as a Joint term
-    # from the table — so it classifies as expressible; the FIRST-gap rule is
-    # pinned below on a goal that is still refused.
-    ta.check(gap.kind == GAP_NONE,
-             "On(obj, fixture site) + Turnon(fixture) classify as expressible (L3)")
+    # ⚠⚠ THIS FIXTURE'S GOAL IS THE ONE THE CORPUS CANNOT FIT, and that is
+    # not a coincidence — it was copied from
+    # `KITCHEN_SCENE8_put_both_moka_pots_on_the_stove`, the single file of
+    # 130 with THREE goal atoms. `(On .. cook_region) (On .. cook_region)
+    # (Turnon ..)` left-folds into three leaves and two `And`s, and the
+    # device tape holds three terms in twelve `meta` words.
+    #
+    # Its history is the point. Before L3 it was refused at its FIRST term
+    # (an unranged fixture-site region) and this check pinned "the first
+    # gap, not the most interesting one". L3 closed both of those gaps — box
+    # regions read off the asset, `Turnon` as a `Joint` term — and the check
+    # was updated to GAP_NONE from a survey run taken BEFORE the tape
+    # capacity was classified. That number went into a commit message as
+    # "130 of 130 written" and was stale by one. The classifier counts tape
+    # terms now, so this file and the survey agree at 129.
+    ta.check(gap.kind == GAP_TAPE_TERMS,
+             "three goal atoms are five tape terms, and the tape holds three:"
+             " " + gap.term)
     # the pre-L3 `translate_task(p, f)` has no table and no assets, so the
     # articulation term still RAISES there rather than being approximated
     var refused = False

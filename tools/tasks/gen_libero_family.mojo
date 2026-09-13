@@ -190,15 +190,21 @@ def main() raises:
         # after the earlier files' placement regions in the union; the
         # device table is `MAX_CURRICULUM_REGIONS` deep and a goal must
         # index it, so the union is re-sorted below before any task binds.
+        # ⚠ TRANSLATION *AND* VALIDATION ARE BOTH REFUSALS, NOT CRASHES. A
+        # task the family cannot validate — a free slot with no `init=`,
+        # say, because its `:init` places it on a fixture site or on another
+        # object — is one task the suite cannot express, and the suite's
+        # other nine are still worth writing. Letting it escape aborted the
+        # whole run and printed nothing about the other files.
         var t: TaskSpec
         try:
             t = translate_task(p, fam, table, String(PACK_DIR))
+            t.name = suite + "__" + _stem(files[i])
+            t.family = suite
+            validate_task_against_family(t, fam)
         except e:
             refused.append(_stem(files[i]) + ": " + String(e))
             continue
-        t.name = suite + "__" + _stem(files[i])
-        t.family = suite
-        validate_task_against_family(t, fam)
         tasks.append(t.name)
         task_texts.append(t.encode())
 

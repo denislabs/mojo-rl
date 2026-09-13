@@ -75,6 +75,7 @@ comptime GAP_FIXTURE_REGION: Int = 2
 comptime GAP_ARTICULATION: Int = 3
 comptime GAP_UNKNOWN_PRED: Int = 4
 comptime GAP_ARITY: Int = 5
+comptime GAP_TAPE_TERMS: Int = 6
 
 
 def gap_name(kind: Int) -> String:
@@ -97,6 +98,11 @@ def gap_name(kind: Int) -> String:
         )
     if kind == GAP_UNKNOWN_PRED:
         return String("a predicate outside the measured seven")
+    if kind == GAP_TAPE_TERMS:
+        return String(
+            "a goal with more terms than the device tape holds (three, in"
+            " twelve `meta` words)"
+        )
     return String("a predicate with an argument count we do not expect")
 
 
@@ -164,6 +170,21 @@ def classify_goal(p: BddlProblem) raises -> GoalGap:
             var t2 = String(p.regions[ri].target)
             if not (p.is_fixture(t2) or p.is_object(t2)):
                 return GoalGap(GAP_FIXTURE_REGION, g.show())
+    # ⚠⚠ THE DEVICE TAPE'S CAPACITY IS A LIMIT ON WHAT CAN BE EXPRESSED, so
+    # it is classified here and not left to surface as a translation error.
+    # `n` goal atoms left-fold into `n` leaves and `n - 1` `And`s; the tape
+    # holds `MAX_TAPE_TERMS`. This is a LOWER bound — an articulation atom
+    # expands to one Joint term per joint, which needs the asset — so
+    # `translate_task` refuses the rest. Measured on the corpus: 110 files
+    # have one goal atom, 19 have two (three terms, exactly the tape), and
+    # ONE has three (`KITCHEN_SCENE8_put_both_moka_pots_on_the_stove`: two
+    # `On`s and a `Turnon`, five terms).
+    if 2 * len(p.goal) - 1 > MAX_TAPE_TERMS:
+        var terms = String(2 * len(p.goal) - 1)
+        return GoalGap(
+            GAP_TAPE_TERMS,
+            String(len(p.goal)) + " goal atoms -> " + terms + " tape terms",
+        )
     return GoalGap(GAP_NONE, String(""))
 
 
