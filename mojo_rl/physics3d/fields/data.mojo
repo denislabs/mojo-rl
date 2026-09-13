@@ -218,6 +218,24 @@ struct Data[
     zeros that look like readings."""
     var xquat_acc: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*4]
     var subtree_com: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*3]
+    var efc_eq_force: TensorImpl[Self.DTYPE]  # [BATCH, 6*NEQUALITY]
+    """MuJoCo's `d->efc_force` for the connect/weld equality rows, retained.
+
+    ⚠⚠ THE ONLY REASON THIS EXISTS IS `mj_rnePostConstraint`, which adds each
+    such row's force into `cfrc_ext` (engine_core_smooth.c:2464) — the term a
+    `force` or `torque` sensor below a closed loop is missing without it. The
+    solve computes these forces and, before 2026-09-13, threw them away with
+    the rest of its scratch.
+
+    ROW ORDER IS MuJoCo'S: equalities in declaration order, THREE rows for a
+    connect and SIX for a weld (translation first, then orientation), joint
+    and tendon equalities contributing none. `_cfrc_ext_env` walks
+    `m.equality` with the same rule — `i += (type == WELD ? 6 : 3)`, which is
+    the reference's own cursor — rather than carrying a row-to-equality map.
+
+    ⚠ `META_IDX_EQ_FORCE_LIVE` SAYS WHETHER IT WAS FILLED. Only the Newton
+    path writes it. See that constant."""
+
     var actuator_length: TensorImpl[Self.DTYPE]  # [BATCH, NACT]
     """MuJoCo's `d->actuator_length` — each actuator's transmission length.
 
@@ -368,6 +386,15 @@ struct Data[
         if _na < 1:
             _na = 1
         self.actuator_length = TensorImpl[Self.DTYPE].alloc(B * _na)
+        # 6 per equality is the WELD row count and therefore the bound; a
+        # connect uses 3 of its 6. Floored at 1 like every other optional
+        # table — `alloc(0)` is not a valid buffer.
+        var _neq6 = dims.get_nequality() * 6
+        if _neq6 < 1:
+            _neq6 = 1
+        self.efc_eq_force = TensorImpl[Self.DTYPE].alloc(B * _neq6)
+        for _i in range(B * _neq6):
+            self.efc_eq_force.data[_i] = Scalar[Self.DTYPE](0)
         # NaN for the same reason `sensordata` is NaN: this array is filled
         # only where something asked for it, and 0.0 is a plausible length.
         comptime if Self.DTYPE.is_floating_point():
@@ -414,6 +441,7 @@ struct Data[
         self.sensordata.upload(ctx)
         self.ten_length.upload(ctx)
         self.actuator_length.upload(ctx)
+        self.efc_eq_force.upload(ctx)
         self.xquat_acc.upload(ctx)
         self.cfrc_int.upload(ctx)
         self.subtree_com.upload(ctx)
@@ -445,6 +473,7 @@ struct Data[
         self.sensordata.download(ctx)
         self.ten_length.download(ctx)
         self.actuator_length.download(ctx)
+        self.efc_eq_force.download(ctx)
         self.xquat_acc.download(ctx)
         self.cfrc_int.download(ctx)
         self.subtree_com.download(ctx)

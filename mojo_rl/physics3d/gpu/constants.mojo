@@ -22,7 +22,8 @@ Model buffer (static, same for all environments):
     ntendon, nexclude, meaninertia, npair, noslip_tolerance, ccd_tolerance, ccd_iterations,
     ctrl_min, ctrl_max, multiccd_disabled, noslip_iterations,
     solver_iterations, solver_tolerance, ls_iterations, ls_tolerance]
-  Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
+  Curriculum (MODEL_CURRICULUM_SIZE=128): [curriculum parameters / the task
+    layer's region table, 8 words a region — tasks/gpu_eval.mojo]
   Per geom (MODEL_GEOM_SIZE=29): [type, body, pos(3), quat(4), radius, half_length,
     half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll,
     rbound, solref(2), solimp(5), margin]
@@ -122,7 +123,7 @@ comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime METADATA_SIZE: Int = 27
+comptime METADATA_SIZE: Int = 28
 """Per-env metadata words: 4 fixed slots, `META_IDX_TASK_PARAM_0..11`,
 `META_IDX_ACTDAMP_LIVE`, `META_IDX_SIM_TIME`, `META_IDX_TASK_ACTIVE`,
 `META_IDX_INIT_REGION_0..2`, `META_IDX_GOAL_HELD` and the four shaping words.
@@ -337,6 +338,29 @@ comptime META_IDX_SHAPE_W_GOAL: Int = 23
 comptime META_IDX_SHAPE_W_REACH: Int = 24
 comptime META_IDX_GOAL_MARGIN: Int = 25
 comptime META_IDX_REACH_MARGIN: Int = 26
+
+# ⚠⚠ HOW MANY EQUALITY ROWS THIS STEP'S SOLVER RETAINED in `Data.efc_eq_force`.
+# 0 means none — either the model has none, or this solver does not keep them —
+# and 0 is what a fresh `Data` holds, so a step that never solved reads as
+# not-live rather than as zero forces.
+#
+# ⚠ IT IS A COUNT AND NOT A BOOLEAN BECAUSE THE READER CHECKS IT. `cfrc_ext`'s
+# equality walk recomputes the row layout from `m.equality` — 1 row per joint
+# equality, 3 per connect, 6 per weld, which is MuJoCo's own cursor
+# (engine_core_smooth.c:2522) — and a builder that skipped a malformed row
+# would leave the two out of step with no symptom but a wrong force. They must
+# agree exactly or the walk refuses to run.
+#
+# `mj_rnePostConstraint` adds each connect/weld row's force into `cfrc_ext`
+# (engine_core_smooth.c:2464), which is what the `force`/`torque` sensors read
+# through `cfrc_int`. Only the Newton path keeps those forces; PGS, CG and the
+# island solver discard them, and a GPU step does not run this stage at all.
+# Without a flag the difference is SILENT — a force sensor below a closed loop
+# would report the fraction of the load that happens to travel through the
+# joint chain — so `_cfrc_ext_env` writes NaN on the two bodies of every
+# connect/weld when this is 0. Loud on the sensors that would be wrong, inert
+# on every other body.
+comptime META_IDX_EQ_FORCE_LIVE: Int = 27
 
 
 # =============================================================================
@@ -1113,7 +1137,15 @@ comptime TENDON_IDX_SOLIMP_LIM_4: Int = TENDON_IDX_LIMITED + 11
 # =============================================================================
 
 # Fixed-size curriculum section (environments use what they need)
-comptime MODEL_CURRICULUM_SIZE: Int = 8  # Up to 8 curriculum parameters
+# ⚠ WIDENED FROM 8 TO 128 FOR THE TASK LAYER'S REGION TABLE (L3). A region
+# costs `tasks/gpu_eval.REGION_WORDS` = 8 words (site, rect, half-height,
+# box flag, contact body) and LIBERO's `libero_goal` family declares twelve;
+# eight words held exactly one. The buffer is ONE row for the whole batch
+# (`fields/model.mojo` allocates MODEL_CURRICULUM_SIZE floats), so this
+# costs 480 bytes once, not per lane. Every reader indexes by name and the
+# first eight words keep their meaning, so the dm_control/Gym configs that
+# read `curriculum[0, 0..7]` are unchanged.
+comptime MODEL_CURRICULUM_SIZE: Int = 128
 
 # Generic curriculum parameter indices (environments define their own semantics)
 comptime CURRICULUM_IDX_PARAM_0: Int = 0

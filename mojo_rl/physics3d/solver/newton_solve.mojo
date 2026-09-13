@@ -214,6 +214,7 @@ from ..gpu.constants import (
     CONTACT_IDX_FORCE_ROLL1,
     CONTACT_IDX_FORCE_ROLL2,
     META_IDX_NUM_CONTACTS,
+    META_IDX_EQ_FORCE_LIVE,
     MODEL_META_IDX_MEANINERTIA,
     MODEL_META_IDX_NOSLIP_TOLERANCE,
     MODEL_META_IDX_NOSLIP_ITERATIONS,
@@ -890,6 +891,7 @@ def _newton_solve_env[
     L_CDOF: Layout,
     L_M: Layout,
     L_SOLVER: Layout,
+    L_EQFORCE: Layout,
     MAX_CONDIM: Int = 3,
     NOSLIP_ITER: Int = 0,
     # ⚠ CPU ONLY (the per-env dispatcher passes True). Under it the PYRAMIDAL
@@ -980,6 +982,12 @@ def _newton_solve_env[
     ],
     solver: LayoutTensor[
         DTYPE, L_SOLVER, MutAnyOrigin
+    ],
+    # `mjData.efc_force` for the connect/weld equality rows, kept past the
+    # solve so `mj_rnePostConstraint` can put them into `cfrc_ext` (AUD-48).
+    # Written at the very end of this function; see the note there.
+    eq_force: LayoutTensor[
+        DTYPE, L_EQFORCE, MutAnyOrigin
     ],
 ):
     """Full primal Newton contact solve for one env (verbatim from
@@ -1680,6 +1688,14 @@ def _newton_solve_env[
         # 7.86 mm on the first attempt at the elliptic conversion, and it looks
         # exactly like an iteration-budget problem while being nothing of the
         # kind.
+        # ⚠ THE BASE IS RECORDED BECAUSE THE FORCES ARE RETAINED (AUD-48).
+        # The edge list already holds contacts, tendon equalities, tendon
+        # limits and joint limits; only the connect/weld tail maps onto
+        # `d.efc_eq_force`. Same reasoning as the ELLIPTIC path's
+        # `eq_weld_base`, and it has to be here TOO because the two paths
+        # build their rows into different structures.
+        var pyr_weld_base = num_edges
+        var pyr_weld_n = 0
         comptime if may_exist[D.NEQUALITY]():
             comptime WR = 6 * cap[D.NEQUALITY]()
             comptime WJ = 6 * cap[D.NEQUALITY]() * cap[D.NV]()
@@ -1708,6 +1724,7 @@ def _newton_solve_env[
                 bias_e[num_edges] = w_bias[r]
                 kind_e[num_edges] = SROW_EQ_BILATERAL
                 num_edges += 1
+                pyr_weld_n += 1
 
         # Dry-friction dof rows (MuJoCo mjCNSTR_FRICTION_DOF). These were
         # MISSING from the pyramidal path entirely — `_friction_env` was only
@@ -2489,6 +2506,21 @@ def _newton_solve_env[
             qacc_constrained[env, i] = qacc[i]
 
         # Write forces to state: reconstruct per-contact N/T1/T2
+        # ── the equality row forces, RETAINED (AUD-48) ───────────────────
+        # `force` is the edge-row force vector `pyramidal_edge_forces` left;
+        # for a BILATERAL row it is `-D*jar`, the same quantity the ELLIPTIC
+        # path calls `eq_f`. See `Data.efc_eq_force` for what reads it and
+        # `META_IDX_EQ_FORCE_LIVE` for why the COUNT is stored rather than a
+        # flag.
+        var n_eqf_p = eq_force.dim[1]() if BATCH > 0 else 0
+        for r in range(n_eqf_p):
+            eq_force[env, r] = Scalar[DTYPE](0)
+        for r in range(pyr_weld_n):
+            if r >= n_eqf_p:
+                break
+            eq_force[env, r] = force[pyr_weld_base + r]
+        smeta[env, META_IDX_EQ_FORCE_LIVE] = Scalar[DTYPE](pyr_weld_n)
+
         for c in range(nc):
             var fn_c: Scalar[DTYPE] = 0
             var ft1_c: Scalar[DTYPE] = 0
@@ -2759,6 +2791,14 @@ def _newton_solve_env[
         )
 
     # === connect/weld EQUALITY rows (dense J) — defect 29a ===
+    #
+    # ⚠ THE BASE IS RECORDED BECAUSE THE FORCES ARE RETAINED. `eq_*` is a
+    # MIXED list — tendon equalities and tendon limits are appended above —
+    # and only the connect/weld tail maps onto `d.efc_eq_force`. Recomputing
+    # the offset at the write-back would be a second spelling of the order
+    # these three builders run in.
+    var eq_weld_base = neq_rows
+    var eq_weld_n = 0
     comptime if may_exist[D.NEQUALITY]():
         comptime EQR = 6 * cap[D.NEQUALITY]()
         comptime EQJ = 6 * cap[D.NEQUALITY]() * cap[D.NV]()
@@ -2793,6 +2833,7 @@ def _newton_solve_env[
             eq_bias[neq_rows] = we_bias[r]
             eq_kind[neq_rows] = SROW_EQ_BILATERAL
             neq_rows += 1
+            eq_weld_n += 1
 
     comptime if _CPU_PROBE:
         var _p_now = Int(perf_counter_ns())
@@ -3749,6 +3790,33 @@ def _newton_solve_env[
                 slot = CONTACT_IDX_FORCE_TORSION + (t - 2)
             contacts[env, c_off + slot] = ft_arr[c * NT + t]
 
+    # ── the equality row forces, RETAINED (AUD-48) ───────────────────────
+    #
+    # ⚠⚠ MuJoCo KEEPS `efc_force` IN `mjData` AND WE THREW IT AWAY. It is what
+    # `mj_rnePostConstraint` adds into `cfrc_ext` for every connect/weld row
+    # (engine_core_smooth.c:2464), and therefore what a `force` or `torque`
+    # sensor below a closed loop was missing — not by a rounding, by the whole
+    # loop-closure load. `eq_f` holds exactly that, has done since the row
+    # kinds were unified, and was local scratch.
+    #
+    # ⚠ THE TAIL ONLY. `eq_*` is a mixed list: tendon equalities and tendon
+    # limits come first. `eq_weld_base` was recorded where the connect/weld
+    # rows were appended.
+    #
+    # ⚠ THE COUNT IS SET HERE AND NOWHERE ELSE, which is what makes the other
+    # solvers' silence loud: PGS, CG and the island solver leave it at 0 and
+    # `_cfrc_ext_env` then writes NaN on the bodies a connect/weld touches.
+    # It is the ROW COUNT, not a flag: the reader recomputes the same layout
+    # from `m.equality` and refuses to walk unless the two agree.
+    var n_eqf = eq_force.dim[1]() if BATCH > 0 else 0
+    for r in range(n_eqf):
+        eq_force[env, r] = Scalar[DTYPE](0)
+    for r in range(eq_weld_n):
+        if r >= n_eqf:
+            break
+        eq_force[env, r] = eq_f[eq_weld_base + r]
+    smeta[env, META_IDX_EQ_FORCE_LIVE] = Scalar[DTYPE](eq_weld_n)
+
     # NOTHING RUNS AFTER THE SOLVE ON THIS PATH ANY MORE. Joint limits,
     # dry-friction dofs, tendon equalities (`build_scalar_rows` /
     # `build_tendon_equality_rows`) and connect/weld (defect 29a,
@@ -3843,6 +3911,9 @@ def _newton_solve_fields_kernel[
     solver: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, SOLVER_WS), MutAnyOrigin
     ],
+    eq_force: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, _max_one[6 * NEQUALITY]()), MutAnyOrigin
+    ],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
@@ -3855,7 +3926,7 @@ def _newton_solve_fields_kernel[
         env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
         bodies, mmeta, trees, equality, tendons, sites, geoms_w, body_invweight0,
         dof_invweight0, cdof, M, m_inv, ldl_L, ldl_D, dof_parent, qacc_constrained, qacc_warmstart,
-        solver,
+        solver, eq_force,
     )
 
 
@@ -3913,6 +3984,7 @@ def solve_newton[
     comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
     comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
     comptime L_SOLVER = Layout.row_major(BATCH, SOLVER_WS)
+    comptime L_EQF = Layout.row_major(BATCH, _max_one[6 * D.NEQUALITY]())
 
     comptime L_QPOS = Layout.row_major(BATCH, D.NQ)
     comptime L_DW = Layout.row_major(D.NV)
@@ -3971,6 +4043,9 @@ def solve_newton[
         var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
         var qw_v = d.qacc_warmstart.lt_dyn["cpu", DYN2](rl_NV)
         var sol_v = cscratch.solver.lt_dyn["cpu", DYN2](rl_SOLVER)
+        var eqf_v = d.efc_eq_force.lt_dyn["cpu", DYN2](
+            rl2(BATCH, _max_one_rt(dm.get_nequality() * 6))
+        )
         for e in range(BATCH):
             _newton_solve_env[
                 DTYPE,
@@ -3980,7 +4055,7 @@ def solve_newton[
                 TREE_AWARE=True](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, trees_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
-                cdof_v, M_v, mi_v, L_v, D_v, P_v, qc_v, qw_v, sol_v,
+                cdof_v, M_v, mi_v, L_v, D_v, P_v, qc_v, qw_v, sol_v, eqf_v,
             )
     else:
         # GPU. PYRAMIDAL (the production default cone) on NVIDIA uses the
@@ -4048,6 +4123,7 @@ def solve_newton[
                 scratch.qacc_constrained.lt["gpu", L_NV](),
                 d.qacc_warmstart.lt["gpu", L_NV](),
                 cscratch.solver.lt["gpu", L_SOLVER](),
+                d.efc_eq_force.lt["gpu", L_EQF](),
                 grid_dim=(BLOCKS,),
                 block_dim=(NS_TPB,),
             )
@@ -6391,6 +6467,7 @@ def solve_newton_blocked[
     comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
     comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
     comptime L_SOLVER = Layout.row_major(BATCH, SOLVER_WS)
+    comptime L_EQF = Layout.row_major(BATCH, _max_one[6 * D.NEQUALITY]())
 
     # ⚠ FLOORED AT 1 to match ContactScratch.JE_ELEMS — a zero-extent
     # operand segfaults instead of being an empty tensor.
@@ -6453,12 +6530,15 @@ def solve_newton_blocked[
         var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
         var qw_v = d.qacc_warmstart.lt_dyn["cpu", DYN2](rl_NV)
         var sol_v = cscratch.solver.lt_dyn["cpu", DYN2](rl_SOLVER)
+        var eqf_v = d.efc_eq_force.lt_dyn["cpu", DYN2](
+            rl2(BATCH, _max_one_rt(dm.get_nequality() * 6))
+        )
         for e in range(BATCH):
             _newton_solve_env[
                 DTYPE, CONE_TYPE, BATCH, SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
                 e, dm, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, trees_v, eq_v, ten_v, site_v, geomw_v, bw_v, dw_v,
-                cdof_v, M_v, mi_v, L_v, D_v, P_v, qc_v, qw_v, sol_v,
+                cdof_v, M_v, mi_v, L_v, D_v, P_v, qc_v, qw_v, sol_v, eqf_v,
             )
     else:
         var c = ctx.value()

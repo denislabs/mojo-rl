@@ -259,22 +259,25 @@ def test_an_accelerometer_under_a_closed_loop_matches_mujoco() raises:
     )
 
 
-def test_force_and_torque_are_still_unserved_and_say_so() raises:
-    """The other half of AUD-48, and it is still open.
+def test_force_and_torque_under_a_closed_loop_match_mujoco() raises:
+    """The other half of AUD-48: the equality force, into `cfrc_ext`.
 
     A force or torque sensor transforms `cfrc_int`, and
-    `cfrc_int = cfrc_body - cfrc_ext`; the equality's share of `cfrc_ext`
-    needs each row's `efc_force`, which our solvers do not retain past the
-    solve. So those two rows stay ADDRESSED and not served: the slot keeps
-    `Data`'s NaN and reading by name raises.
+    `cfrc_int = cfrc_body - cfrc_ext`. `mj_rnePostConstraint` puts each
+    connect/weld row's `efc_force` into `cfrc_ext`
+    (engine_core_smooth.c:2464-2523); our solve computed those forces and
+    threw them away with the rest of its scratch. It retains them now
+    (`Data.efc_eq_force`), and `_cfrc_ext_env` walks them with MuJoCo's own
+    cursor.
 
-    ⚠ THE TEST NAMES THE WRONG ANSWER. MuJoCo reads (-45.7, 0, 29.6) N at
-    `tip`; a served-but-unwalked implementation would report `cfrc_body`
-    alone, which is a different number of the same order — plausible, and
-    wrong by the whole constraint. That is why the row is withheld rather
-    than shipped with a comment.
+    ⚠⚠ THE TEST NAMES THE WRONG ANSWER, BECAUSE IT IS PLAUSIBLE. Without the
+    walk the sensor reports `cfrc_body` alone — a wrench of the same order,
+    smooth in time, and wrong by the entire loop closure. `cfrc_ext` on this
+    fixture's lower link has |.|1 = 104, against a correct force reading of
+    (-45.7, 0, 29.6): the gate prints both distances so a regression reads
+    off which one it landed on.
     """
-    print("=== force/torque under a <connect> are unserved, loudly ===")
+    print("=== force/torque under a <connect> vs MuJoCo ===")
     var mujoco = Python.import_module("mujoco")
     var m = mujoco.MjModel.from_xml_string(PythonObject(String(CL_XML)))
     var O = mujoco.mjtObj
@@ -285,55 +288,86 @@ def test_force_and_torque_are_still_unserved_and_say_so() raises:
     var d = Dat()
     _run(d, mf, ctx)
 
-    var n_nan = 0
+    var worst = 0.0
+    var compared = 0
     for nm in [String("frc"), String("trq")]:
         var sid = Int(py=mujoco.mj_name2id(m, O.mjOBJ_SENSOR,
                                            PythonObject(nm)))
         var adr = Int(py=m.sensor_adr[sid])
         var mj_mag = 0.0
         for k in range(3):
+            var ours = Float64(d.sensordata.data[adr + k])
+            var theirs = Float64(py=dat.sensordata[adr + k])
             assert_true(
-                isnan(Float64(d.sensordata.data[adr + k])),
-                nm + "[" + String(k) + "] holds a number. If the equality"
-                " walk has landed, this test is the one to update — compare"
-                " against MuJoCo instead of asserting NaN.",
+                not isnan(ours),
+                nm + "[" + String(k) + "] is NaN — the equality walk did not"
+                " run. Either the solver did not retain its row forces or its"
+                " count disagreed with the equality table; see"
+                " META_IDX_EQ_FORCE_LIVE.",
             )
-            mj_mag += abs(Float64(py=dat.sensordata[adr + k]))
-            n_nan += 1
-        print("  ", nm, " ours NaN,  MuJoCo |.|1 =", mj_mag)
+            var dd = abs(ours - theirs)
+            if dd > worst:
+                worst = dd
+            mj_mag += abs(theirs)
+            compared += 1
+        print("  ", nm, " ours", Float64(d.sensordata.data[adr]),
+              " MuJoCo", Float64(py=dat.sensordata[adr]),
+              "  MuJoCo |.|1", mj_mag)
+        # ⚠ NON-VACUITY, PER ROW. A sensor reading ~0 in MuJoCo too would
+        # agree with a walk that did nothing.
         assert_true(
             mj_mag > 1e-3,
-            nm + " reads ~0 in MuJoCo too, so withholding it costs nothing"
-            " and this test proves nothing",
+            nm + " reads ~0 in MuJoCo, so agreeing with it proves nothing",
         )
-    assert_true(n_nan == 6, "expected six withheld values")
+    print("  values compared:", compared, " worst |d| =", worst)
+    # Bound set from the measurement: both engines solve the same three
+    # equality rows to their own tolerance and this is the residual that
+    # leaves. Printed above so a regression can be read off the number.
+    assert_true(
+        worst <= 1e-7,
+        "force/torque under a closed loop is " + String(worst) + " from"
+        " MuJoCo",
+    )
 
-    # And the loader said so, by audit id.
+    # ⚠⚠ AND THE VALUE THE OLD BEHAVIOUR PRODUCED, NAMED. Without the
+    # equality term `cfrc_ext` on the loaded bodies is zero, so the reading
+    # would be the body wrench alone. MuJoCo's own `cfrc_ext` there is the
+    # size of that error.
+    var cf = 0.0
+    for b in range(Int(py=m.nbody)):
+        var s2 = 0.0
+        for k in range(6):
+            s2 += abs(Float64(py=dat.cfrc_ext[b][k]))
+        if s2 > cf:
+            cf = s2
+    print("  the term the walk adds has |.|1 up to", cf,
+          "— that is the size of the error it removes")
+    assert_true(cf > 10.0, "the equality term is negligible on this fixture")
+
+    # And nothing is withheld any more.
     var fmd = parse_xml_full(String(CL_XML), String("."))
-    var said = False
-    for i in range(len(fmd.silent_attr_ids)):
-        if fmd.silent_attr_ids[i] == String("AUD-48"):
-            said = True
-    assert_true(said, "the two sensors were withheld without a word")
-
-    # ⚠ AND THE ACCELEROMETERS WERE NOT WITHHELD. Without this arm the AUD-48
-    # row could still be unserving everything and the test above would be
-    # reading numbers it wrote itself.
     var n_served = 0
     for i in range(len(fmd.sensors)):
         if fmd.sensors[i].served:
             n_served += 1
-    print("  served sensors:", n_served, "of", len(fmd.sensors))
     assert_true(
-        n_served == 2,
-        "the two accelerometers must be served and the force/torque pair"
-        " must not; " + String(n_served) + " are served",
+        n_served == 4,
+        "all four sensors must be served now; " + String(n_served) + " are",
     )
+    var said = False
+    for i in range(len(fmd.silent_attr_ids)):
+        if fmd.silent_attr_ids[i] == String("AUD-48"):
+            said = True
+    assert_true(
+        not said,
+        "AUD-48 is implemented and must not report a row at load any more",
+    )
+    print("  all four sensors served, no AUD-48 row at load")
 
 
 def main() raises:
     var suite = TestSuite()
     suite.test[test_the_loop_actually_carries_a_load]()
     suite.test[test_an_accelerometer_under_a_closed_loop_matches_mujoco]()
-    suite.test[test_force_and_torque_are_still_unserved_and_say_so]()
+    suite.test[test_force_and_torque_under_a_closed_loop_match_mujoco]()
     suite^.run()

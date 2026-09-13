@@ -414,66 +414,53 @@ def test_wrong_physics_rows_raise() raises:
     assert_true(attach_raised, "<attach frame=...> was spliced whole")
 
 
-def test_a_sensor_under_a_closed_loop_is_unserved_not_refused() raises:
-    """AUD-48. `mj_rnePostConstraint` adds each connect/weld row's constraint
-    force into `cfrc_ext`; those forces are not retained past our solve, so a
-    FORCE or TORQUE sensor on such a model would read LOW by the whole
-    loop-closure load — not by a rounding.
+def test_a_sensor_under_a_closed_loop_is_served_now() raises:
+    """AUD-48, CLOSED. Every sensor under a connect/weld is served.
 
-    ⚠⚠ AN ACCELEROMETER IS NOT IN THAT SET, AND THIS ROW USED TO UNSERVE ONE.
-    `mjSENS_ACCELEROMETER` is `mj_objectAcceleration` (engine_sensor.c:1273 ->
-    engine_core_util.c:909): `cacc` and `cvel`, nothing else. `cfrc_ext` never
-    enters it — only `mjSENS_FORCE` and `mjSENS_TORQUE` transform `cfrc_int`,
-    and `cfrc_int = cfrc_body - cfrc_ext` is where the equality force lands.
-    The constrained `qacc` the accelerometer rides on already carries that
-    force, because the solver put it there. cassie's pelvis accelerometer was
-    correct all along and was being withheld; the third control below is what
-    pins that.
+    ⚠⚠ THIS TEST USED TO ASSERT THE OPPOSITE, AND BOTH HALVES OF THAT WERE
+    WRONG FOR DIFFERENT REASONS:
 
-    ⚠⚠ UNSERVED, NOT REFUSED, AND cassie IS WHY. Menagerie's agility_cassie
-    has four `<connect>` rows AND a pelvis accelerometer, and seven gates in
-    this tree load it for its equalities, its ball joints and its `<default>`
-    chain — none of them reads that sensor. Refusing the model would take one
-    that is correct for everything else and make it unloadable.
+      * the ACCELEROMETER never read `cfrc_ext` at all
+        (`mj_objectAcceleration`, engine_core_util.c:909), so unserving it was
+        over-firing;
+      * the FORCE and TORQUE sensors do read it, through `cfrc_int`, and the
+        term they were missing is now computed — the Newton solver retains its
+        equality row forces in `Data.efc_eq_force` and `_cfrc_ext_env` walks
+        them with MuJoCo's own cursor.
 
-    `served = False` is the sensor framework's own answer: the row keeps its
-    MuJoCo-exact `adr`/`dim` so every later offset stays right,
-    `sensor_adr_by_name` raises on it, and `Data.sensordata` leaves the slot
-    at the NaN it was filled with. A reader gets a NaN or an exception, never
-    a plausible low number.
-
-    ⚠ TWO CONTROLS, because a rule that fired on either half alone would pass
-    the first check: a connect with NO acceleration-stage sensor must leave
-    everything served, and an acceleration-stage sensor under a JOINT equality
-    must too — `mjEQ_JOINT` contributes nothing to `cfrc_ext`, only connect
-    and weld do.
+    ⚠ THE DECISION IS NO LONGER AT LOAD, AND COULD NOT HAVE BEEN. PGS, CG and
+    the island solver still discard those forces, and a parser cannot see
+    which solver an integrator will be instantiated with. `_cfrc_ext_env`
+    compares the row count the step's solver retained
+    (`META_IDX_EQ_FORCE_LIVE`) against what the equality table implies and
+    NaNs the affected bodies when they disagree — loud on exactly the sensors
+    that would be wrong. `test_closed_loop_sensors_vs_mujoco` is where the
+    values are checked against MuJoCo.
     """
-    print("=== AUD-48: force sensor under a <connect> ===")
+    print("=== AUD-48: everything under a <connect> is served ===")
     var fmd = parse_xml_full(RAISE_EQ_ACCEL_SENSOR, String("."))
     assert_true(len(fmd.sensors) == 1, "expected one sensor")
-    print("  sensor served =", fmd.sensors[0].served, " (want 0)")
+    print("  force sensor served =", fmd.sensors[0].served, " (want 1)")
     assert_true(
-        not fmd.sensors[0].served,
-        "the force sensor is still SERVED under a connect equality: it would"
-        " read low by the whole loop-closure load",
+        fmd.sensors[0].served,
+        "the force sensor under a connect is computed now and must be served",
     )
     assert_true(
-        _has(fmd.silent_attr_ids, String("AUD-48")),
-        "the sensor was unserved without a word",
+        not _has(fmd.silent_attr_ids, String("AUD-48")),
+        "AUD-48 is implemented; the loader must not report a row for it",
     )
 
-    print("  control: the same connect with NO acceleration-stage sensor")
-    var no_sensor = parse_xml_full(
+    print("  control: the same connect with an ACCELEROMETER")
+    var accel = parse_xml_full(
         RAISE_EQ_ACCEL_SENSOR.replace(
             String("<force name=\"f\" site=\"s\"/>"),
-            String("<velocimeter name=\"v\" site=\"s\"/>"),
+            String("<accelerometer name=\"a\" site=\"s\"/>"),
         ),
         String("."),
     )
     assert_true(
-        len(no_sensor.sensors) == 1 and no_sensor.sensors[0].served,
-        "a velocimeter is a VELOCITY-stage sensor and reads nothing from"
-        " `cfrc_ext`; unserving it is over-firing",
+        len(accel.sensors) == 1 and accel.sensors[0].served,
+        "an accelerometer under a connect must be served",
     )
 
     print("  control: the same sensor under a JOINT equality")
@@ -490,28 +477,8 @@ def test_a_sensor_under_a_closed_loop_is_unserved_not_refused() raises:
     )
     assert_true(
         joint_eq.sensors[0].served,
-        "a JOINT equality contributes nothing to `cfrc_ext`, so the sensor"
-        " under it is exact and must stay served",
-    )
-
-    print("  control: an ACCELEROMETER under the same connect stays served")
-    var accel = parse_xml_full(
-        RAISE_EQ_ACCEL_SENSOR.replace(
-            String("<force name=\"f\" site=\"s\"/>"),
-            String("<accelerometer name=\"a\" site=\"s\"/>"),
-        ),
-        String("."),
-    )
-    assert_true(
-        len(accel.sensors) == 1 and accel.sensors[0].served,
-        "an accelerometer reads `cacc`/`cvel` and never `cfrc_ext`"
-        " (mj_objectAcceleration, engine_core_util.c:909) — unserving it is"
-        " over-firing, and it is what this row did until 2026-09-13",
-    )
-    assert_true(
-        not _has(accel.silent_attr_ids, String("AUD-48")),
-        "a model whose only acceleration-stage sensor is an accelerometer"
-        " must not report an AUD-48 row at all",
+        "a JOINT equality contributes nothing to `cfrc_ext` and never did;"
+        " the sensor under it must stay served",
     )
 
 

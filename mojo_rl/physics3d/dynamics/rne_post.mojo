@@ -83,6 +83,10 @@ from .rne import (
     _rne_cfrc_body,
     _rne_backward_env,
 )
+from std.math import nan
+from ..constraints.solver_ws import _max_one_rt
+from ..types import EQ_CONNECT, EQ_WELD, EQ_JOINT
+from ..kinematics.quat_math import gpu_quat_rotate
 from ..gpu.constants import (
     CONTACT_SIZE,
     METADATA_SIZE,
@@ -95,6 +99,18 @@ from ..gpu.constants import (
     MODEL_META_IDX_GRAVITY_Z,
     BODY_IDX_PARENT,
     BODY_IDX_ROOTID,
+    MODEL_META_IDX_NEQUALITY,
+    MODEL_EQ_SIZE,
+    EQ_IDX_TYPE,
+    EQ_IDX_BODY_A,
+    EQ_IDX_BODY_B,
+    EQ_IDX_ANCHOR_AX,
+    EQ_IDX_ANCHOR_AY,
+    EQ_IDX_ANCHOR_AZ,
+    EQ_IDX_ANCHOR_BX,
+    EQ_IDX_ANCHOR_BY,
+    EQ_IDX_ANCHOR_BZ,
+    META_IDX_EQ_FORCE_LIVE,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_DOF_ADR,
@@ -129,6 +145,10 @@ def _cfrc_ext_env[
     L_SUBTREE_COM: Layout,
     L_BODIES: Layout,
     L_CFRC_EXT: Layout,
+    L_XQUAT_E: Layout,
+    L_EQUALITY: Layout,
+    L_EQFORCE: Layout,
+    L_MMETA_E: Layout,
 ](
     env: Int,
     dims: D,
@@ -147,6 +167,21 @@ def _cfrc_ext_env[
     ],
     cfrc_ext: LayoutTensor[
         DTYPE, L_CFRC_EXT, MutAnyOrigin
+    ],
+    xpos: LayoutTensor[
+        DTYPE, L_SUBTREE_COM, MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, L_XQUAT_E, MutAnyOrigin
+    ],
+    equality: LayoutTensor[
+        DTYPE, L_EQUALITY, MutAnyOrigin
+    ],
+    eq_force: LayoutTensor[
+        DTYPE, L_EQFORCE, MutAnyOrigin
+    ],
+    mmeta: LayoutTensor[
+        DTYPE, L_MMETA_E, MutAnyOrigin
     ],
 ):
     """Contact forces accumulated per body at the root's subtree CoM.
@@ -261,6 +296,185 @@ def _cfrc_ext_env[
                 rebind[Scalar[DTYPE]](cfrc_ext[env, o + 5]) + s * fw_z
             )
 
+    # ── cfrc_ext += connect / weld equality forces (AUD-48) ───────────────
+    #
+    # `mj_rnePostConstraint`'s third block (engine_core_smooth.c:2464-2523).
+    # `mjEQ_JOINT` and `mjEQ_TENDON` contribute NOTHING — they only advance
+    # the row cursor — which is why quadruped, whose four equalities are all
+    # tendons, was exact before this landed and is unchanged by it.
+    #
+    #   cfrc = (torque, force),  force = efc_force[i..i+3]
+    #                            torque = efc_force[i+3..i+6] for a WELD, else 0
+    #   body1: pos = xpos[b1] + R(xquat[b1]) * anchor_a ;  cfrc_ext[b1] += T(cfrc)
+    #   body2: pos = xpos[b2] + R(xquat[b2]) * anchor_b ;  cfrc_ext[b2] -= T(cfrc)
+    #
+    # with `T` the force-transform to the body root's subtree CoM — the same
+    # `torque -= (newpos - oldpos) x force` the contact block above applies.
+    #
+    # ⚠ THE ANCHORS ARE ALREADY NORMALISED. MuJoCo swaps which half of
+    # `eq_data` belongs to which body between connect and weld, and reduces a
+    # site-based equality to `site_xpos`; `_fill_equality` and
+    # `compute_invweight0` between them leave `ANCHOR_A` as body1's local
+    # anchor and `ANCHOR_B` as body2's for BOTH types and BOTH semantics. So
+    # this walk needs neither the swap nor a site branch.
+    # ⚠⚠ THE LIVE COUNT, NOT THE TABLE SIZE. `NEQUALITY` is a CAPACITY — a
+    # model with one connect routinely declares 3 or 6 so the ROW budget fits
+    # — and the unused slots are zero-filled. `EQ_IDX_TYPE == 0` is
+    # `EQ_CONNECT`, so a loop bounded by the capacity reads every empty slot
+    # as a connect between body 0 and body 0. Measured on this file's own
+    # fixture before the fix: one connect, `n_cw = 3`, `want_rows = 9`
+    # against the solver's 3, and the walk refused itself.
+    # `build_weld_equality_rows` reads the same word for the same reason.
+    var nequality = dims.get_nequality()
+    var neq_live = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NEQUALITY]))
+    if neq_live < nequality:
+        nequality = neq_live
+    if nequality > 0:
+        # ⚠⚠ THE CURSOR IS RECOMPUTED HERE AND CHECKED AGAINST THE SOLVER'S
+        # OWN COUNT. `build_weld_equality_rows` emits 1 row per joint
+        # equality, 3 per connect and 6 per weld — MuJoCo's own advance
+        # (`i += type == mjEQ_WELD ? 6 : 3`, with `i++` for joint/tendon) —
+        # but it also has malformed-model `continue`s that emit none. If the
+        # two disagree the rows are off by an unknown amount and every force
+        # after the gap belongs to another constraint, so the walk REFUSES
+        # and NaNs the bodies instead. A silent desync here is a force sensor
+        # reading another equality's load.
+        var want_rows = 0
+        var n_cw = 0
+        for e in range(nequality):
+            var t = Int(rebind[Scalar[DTYPE]](equality[e, EQ_IDX_TYPE]))
+            if t == EQ_CONNECT:
+                want_rows += 3
+                n_cw += 1
+            elif t == EQ_WELD:
+                want_rows += 6
+                n_cw += 1
+            elif t == EQ_JOINT:
+                want_rows += 1
+        if n_cw > 0:
+            var live = Int(
+                rebind[Scalar[DTYPE]](dmeta[env, META_IDX_EQ_FORCE_LIVE])
+            )
+            if live != want_rows:
+                # The solver that ran this step did not retain the equality
+                # forces (PGS, CG, the island path) or emitted a different
+                # row set. Poison exactly the bodies whose `cfrc_int` would
+                # be short the constraint; `cfrc_int` sums leaves to root, so
+                # this reaches every force sensor above them and no other.
+                var qnan = nan[DTYPE]()
+                for e in range(nequality):
+                    var t2 = Int(
+                        rebind[Scalar[DTYPE]](equality[e, EQ_IDX_TYPE])
+                    )
+                    if t2 != EQ_CONNECT and t2 != EQ_WELD:
+                        continue
+                    for side in range(2):
+                        var kk = Int(rebind[Scalar[DTYPE]](
+                            equality[e, EQ_IDX_BODY_A if side == 0
+                                     else EQ_IDX_BODY_B]
+                        ))
+                        if kk <= 0 or kk >= nbody:
+                            continue
+                        for c in range(6):
+                            cfrc_ext[env, kk * 6 + c] = qnan
+            else:
+                var row = 0
+                for e in range(nequality):
+                    var t2 = Int(
+                        rebind[Scalar[DTYPE]](equality[e, EQ_IDX_TYPE])
+                    )
+                    if t2 == EQ_JOINT:
+                        row += 1
+                        continue
+                    if t2 != EQ_CONNECT and t2 != EQ_WELD:
+                        continue
+
+                    var efx = rebind[Scalar[DTYPE]](eq_force[env, row + 0])
+                    var efy = rebind[Scalar[DTYPE]](eq_force[env, row + 1])
+                    var efz = rebind[Scalar[DTYPE]](eq_force[env, row + 2])
+                    var etx = Scalar[DTYPE](0)
+                    var ety = Scalar[DTYPE](0)
+                    var etz = Scalar[DTYPE](0)
+                    if t2 == EQ_WELD:
+                        etx = rebind[Scalar[DTYPE]](eq_force[env, row + 3])
+                        ety = rebind[Scalar[DTYPE]](eq_force[env, row + 4])
+                        etz = rebind[Scalar[DTYPE]](eq_force[env, row + 5])
+                    row += 6 if t2 == EQ_WELD else 3
+
+                    for side in range(2):
+                        var kk = Int(rebind[Scalar[DTYPE]](
+                            equality[e, EQ_IDX_BODY_A if side == 0
+                                     else EQ_IDX_BODY_B]
+                        ))
+                        if kk <= 0 or kk >= nbody:
+                            continue
+                        var ax = rebind[Scalar[DTYPE]](
+                            equality[e, EQ_IDX_ANCHOR_AX if side == 0
+                                     else EQ_IDX_ANCHOR_BX]
+                        )
+                        var ay = rebind[Scalar[DTYPE]](
+                            equality[e, EQ_IDX_ANCHOR_AY if side == 0
+                                     else EQ_IDX_ANCHOR_BY]
+                        )
+                        var az = rebind[Scalar[DTYPE]](
+                            equality[e, EQ_IDX_ANCHOR_AZ if side == 0
+                                     else EQ_IDX_ANCHOR_BZ]
+                        )
+                        var rot = gpu_quat_rotate[DTYPE](
+                            rebind[Scalar[DTYPE]](xquat[env, kk * 4 + 0]),
+                            rebind[Scalar[DTYPE]](xquat[env, kk * 4 + 1]),
+                            rebind[Scalar[DTYPE]](xquat[env, kk * 4 + 2]),
+                            rebind[Scalar[DTYPE]](xquat[env, kk * 4 + 3]),
+                            ax, ay, az,
+                        )
+                        var px2 = rebind[Scalar[DTYPE]](
+                            xpos[env, kk * 3 + 0]
+                        ) + rot[0]
+                        var py2 = rebind[Scalar[DTYPE]](
+                            xpos[env, kk * 3 + 1]
+                        ) + rot[1]
+                        var pz2 = rebind[Scalar[DTYPE]](
+                            xpos[env, kk * 3 + 2]
+                        ) + rot[2]
+
+                        var rid2 = Int(rebind[Scalar[DTYPE]](
+                            bodies[kk, BODY_IDX_ROOTID]
+                        ))
+                        var ddx = rebind[Scalar[DTYPE]](
+                            subtree_com[env, rid2 * 3 + 0]
+                        ) - px2
+                        var ddy = rebind[Scalar[DTYPE]](
+                            subtree_com[env, rid2 * 3 + 1]
+                        ) - py2
+                        var ddz = rebind[Scalar[DTYPE]](
+                            subtree_com[env, rid2 * 3 + 2]
+                        ) - pz2
+                        var tx2 = etx - (ddy * efz - ddz * efy)
+                        var ty2 = ety - (ddz * efx - ddx * efz)
+                        var tz2 = etz - (ddx * efy - ddy * efx)
+
+                        # ⚠ BODY 1 ADDS AND BODY 2 SUBTRACTS. The reference's
+                        # own comment on the body-1 branch says "opposite for
+                        # body 1" and the code there is `mju_addTo`
+                        # (engine_core_smooth.c:2503); the comment is stale
+                        # and the code is the contract. It is the OPPOSITE
+                        # sign convention to the contact block above, where
+                        # our stored force is the force on A.
+                        var sg = Scalar[DTYPE](1) if side == 0 else Scalar[DTYPE](-1)
+                        var oo = kk * 6
+                        cfrc_ext[env, oo + 0] = rebind[Scalar[DTYPE]](
+                            cfrc_ext[env, oo + 0]) + sg * tx2
+                        cfrc_ext[env, oo + 1] = rebind[Scalar[DTYPE]](
+                            cfrc_ext[env, oo + 1]) + sg * ty2
+                        cfrc_ext[env, oo + 2] = rebind[Scalar[DTYPE]](
+                            cfrc_ext[env, oo + 2]) + sg * tz2
+                        cfrc_ext[env, oo + 3] = rebind[Scalar[DTYPE]](
+                            cfrc_ext[env, oo + 3]) + sg * efx
+                        cfrc_ext[env, oo + 4] = rebind[Scalar[DTYPE]](
+                            cfrc_ext[env, oo + 4]) + sg * efy
+                        cfrc_ext[env, oo + 5] = rebind[Scalar[DTYPE]](
+                            cfrc_ext[env, oo + 5]) + sg * efz
+
 
 @always_inline
 def _rne_post_env[
@@ -277,6 +491,8 @@ def _rne_post_env[
     L_CDOF: Layout,
     L_CRB: Layout,
     L_CVEL: Layout,
+    L_EQUALITY: Layout,
+    L_EQFORCE: Layout,
     # CPU dispatcher only — see `_rne_env`.
     JMAP: Bool = False,
 ](
@@ -324,6 +540,18 @@ def _rne_post_env[
     ],
     cfrc_int: LayoutTensor[
         DTYPE, L_CVEL, MutAnyOrigin
+    ],
+    # The three operands the equality walk needs on top of the contact one:
+    # the body poses the anchors are expressed against, the equality records,
+    # and the row forces the solver retained. See `_cfrc_ext_env`.
+    xpos: LayoutTensor[
+        DTYPE, L_XIPOS, MutAnyOrigin
+    ],
+    equality: LayoutTensor[
+        DTYPE, L_EQUALITY, MutAnyOrigin
+    ],
+    eq_force: LayoutTensor[
+        DTYPE, L_EQFORCE, MutAnyOrigin
     ],
 ):
     """One env's `mj_rnePostConstraint`. See the module docstring."""
@@ -416,7 +644,8 @@ def _rne_post_env[
 
     # 3. External (contact) forces per body.
     _cfrc_ext_env[DTYPE](
-        env, dims, contacts, dmeta, subtree_com, bodies, cfrc_ext
+        env, dims, contacts, dmeta, subtree_com, bodies, cfrc_ext,
+        xpos, xquat, equality, eq_force, mmeta,
     )
 
     # 4. cfrc_int = cfrc_body - cfrc_ext, then accumulate leaves -> root.
@@ -448,6 +677,7 @@ def _rne_post_kernel[
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
+    NEQUALITY: Int,
     BATCH: Int,
 ](
     qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
@@ -493,13 +723,24 @@ def _rne_post_kernel[
     cfrc_int: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NBODY * 6), MutAnyOrigin
     ],
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    equality: LayoutTensor[
+        DTYPE, Layout.row_major(_max_one[NEQUALITY](), MODEL_EQ_SIZE),
+        MutAnyOrigin,
+    ],
+    eq_force: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, _max_one[6 * NEQUALITY]()), MutAnyOrigin
+    ],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
     _rne_post_env[DTYPE](
-        env, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS](), qvel, qacc, xquat, xipos, subtree_com, contacts, dmeta, bodies,
+        env, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, nequality=NEQUALITY](), qvel, qacc, xquat, xipos, subtree_com, contacts, dmeta, bodies,
         joints, mmeta, cdof, crb, cvel, cacc, cfrc_ext, cfrc_int,
+        xpos, equality, eq_force,
     )
 
 
@@ -526,6 +767,8 @@ def compute_rne_post[
     comptime L_B6 = Layout.row_major(BATCH, D.NBODY * 6)
     comptime L_B10 = Layout.row_major(BATCH, D.NBODY * 10)
     comptime L_CON = Layout.row_major(BATCH, D.MAX_CONTACTS * CONTACT_SIZE)
+    comptime L_EQ_RP = Layout.row_major(_max_one[D.NEQUALITY](), MODEL_EQ_SIZE)
+    comptime L_EQF_RP = Layout.row_major(BATCH, _max_one[6 * D.NEQUALITY]())
     comptime L_DMETA = Layout.row_major(BATCH, METADATA_SIZE)
     comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
     comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
@@ -561,18 +804,26 @@ def compute_rne_post[
         var cacc_v = d.cacc.lt_dyn["cpu", DYN2](rl_B6)
         var cfrc_ext_v = d.cfrc_ext.lt_dyn["cpu", DYN2](rl_B6)
         var cfrc_int_v = d.cfrc_int.lt_dyn["cpu", DYN2](rl_B6)
+        var xpos_v = d.xpos.lt_dyn["cpu", DYN2](rl_B3)
+        var eq_v = m.equality.lt_dyn["cpu", DYN2](
+            rl2(_max_one_rt(dm.get_nequality()), MODEL_EQ_SIZE)
+        )
+        var eqf_v = d.efc_eq_force.lt_dyn["cpu", DYN2](
+            rl2(BATCH, _max_one_rt(dm.get_nequality() * 6))
+        )
         for e in range(BATCH):
             _rne_post_env[DTYPE, JMAP=True](
                 e, dm, qvel_v, qacc_v, xquat_v, xipos_v, stcom_v, con_v, dmeta_v,
                 bodies_v, joints_v, mmeta_v, cdof_v, crb_v, cvel_v, cacc_v,
-                cfrc_ext_v, cfrc_int_v,
+                cfrc_ext_v, cfrc_int_v, xpos_v, eq_v, eqf_v,
             )
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + RNE_POST_TPB - 1) // RNE_POST_TPB
         c.enqueue_function[
             _rne_post_kernel[
-                DTYPE, D.NV, D.NBODY, D.NJOINT, D.MAX_CONTACTS, BATCH
+                DTYPE, D.NV, D.NBODY, D.NJOINT, D.MAX_CONTACTS, D.NEQUALITY,
+                BATCH,
             ]
         ](
             d.qvel.lt["gpu", L_NV](),
@@ -591,6 +842,9 @@ def compute_rne_post[
             d.cacc.lt["gpu", L_B6](),
             d.cfrc_ext.lt["gpu", L_B6](),
             d.cfrc_int.lt["gpu", L_B6](),
+            d.xpos.lt["gpu", L_B3](),
+            m.equality.lt["gpu", L_EQ_RP](),
+            d.efc_eq_force.lt["gpu", L_EQF_RP](),
             grid_dim=(BLOCKS,),
             block_dim=(RNE_POST_TPB,),
         )
