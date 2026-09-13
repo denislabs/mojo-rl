@@ -39,12 +39,39 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_HALF_LENGTH,
 )
 from mojo_rl.physics3d.parser.flat_model import TEX_2D, TEX_CUBE
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    GEOM_IDX_BODY,
+    GEOM_IDX_POS_X,
+    GEOM_IDX_QUAT_W,
+    GEOM_IDX_RAY_VISIBLE,
+)
 from mojo_rl.physics3d.raytrace.appearance import (
     geom_uv,
     sample_texture,
 )
+from mojo_rl.physics3d.raytrace.camera import CameraFrame
+from mojo_rl.physics3d.raytrace.render import render_pixel
 from mojo_rl.physics3d.raytrace.visual_records import (
+    APP_IDX_A,
+    APP_IDX_B,
+    APP_IDX_G,
+    APP_IDX_MATID,
+    APP_IDX_R,
+    APP_IDX_REFLECT,
+    APP_IDX_UVADR,
     LIGHT_BODY_HEADLIGHT,
+    LIGHT_IDX_ACTIVE,
+    LIGHT_IDX_AMBIENT_R,
+    LIGHT_IDX_CUTOFF,
+    LIGHT_IDX_DIFFUSE_R,
+    LIGHT_IDX_DIRECTIONAL,
+    LIGHT_IDX_DIR_Z,
+    MAX_VIS_LIGHTS,
+    MAX_VIS_MATERIALS,
+    VIS_GEOM_APPEARANCE,
+    VIS_LIGHT_WORDS,
+    VIS_MAT_WORDS,
     MAX_VIS_TEXTURES,
     TEX_IDX_ACTIVE,
     TEX_IDX_ADR,
@@ -111,6 +138,54 @@ def _tex_tables(
             px.data[o + 0] = UInt8(255 * x // max(1, w - 1))
             px.data[o + 1] = UInt8(255 * y // max(1, h - 1))
             px.data[o + 2] = UInt8(0)
+
+
+def _look(fx: Float64, fy: Float64, fz: Float64) -> CameraFrame[DT]:
+    """A 1x1 camera at (0, -0.8, 0.8) whose only ray is `(fx, fy, fz)`.
+
+    At width = height = 1 the single pixel's ray is exactly `-zaxis`
+    (`camera_pixel_ray`'s `u = v = 0.5` puts both frustum offsets at 0), so
+    the other two axes reach the shading only through `gaze` — and the one
+    light in this scene is not the headlight, so they cannot change the
+    answer.
+    """
+    var f = Vec3[DT](fx, fy, fz)
+    var n = f / f.length()
+    var xa = Vec3[DT](1, 0, 0)
+    var ya = (-n).cross(xa)
+    return CameraFrame[DT](
+        Vec3[DT](0, -0.8, 0.8), xa, ya, -n, 45.0, 0.41421356237309503
+    )
+
+
+def _shoot[
+    REFLECT: Bool
+](
+    geoms: LayoutTensor[DT, DYN2, MutAnyOrigin],
+    app: LayoutTensor[DT, DYN1, MutAnyOrigin],
+    bodies: LayoutTensor[DT, DYN2, MutAnyOrigin],
+    xpos: LayoutTensor[DT, DYN2, MutAnyOrigin],
+    xquat: LayoutTensor[DT, DYN2, MutAnyOrigin],
+    empty: LayoutTensor[DT, DYN1, MutAnyOrigin],
+    texels: LayoutTensor[DType.uint8, DYN1, MutAnyOrigin],
+    mats: LayoutTensor[DT, DYN1, MutAnyOrigin],
+    texs: LayoutTensor[DT, DYN1, MutAnyOrigin],
+    lights: LayoutTensor[DT, DYN1, MutAnyOrigin],
+    frame: CameraFrame[DT],
+    bg: Vec3[DT],
+) raises -> Float64:
+    """The red channel of the one pixel this camera has.
+
+    ⚠ TOP LEVEL, NOT NESTED. A nested `def` closing over these views fails
+    with "Could not infer capture convention of the captured value" — the
+    same footgun the LIBERO viewer hit; the fix is the same one.
+    """
+    var h = render_pixel[DT, False, REFLECT](
+        geoms, 2, app, bodies, xpos, xquat, 0,
+        empty, empty, empty, empty, empty, 1,
+        mats, texs, texels, lights, 1, frame, 1, 1, 0, 0, bg,
+    )
+    return Float64(h.rgb.x)
 
 
 def main() raises:
@@ -281,6 +356,111 @@ def main() raises:
     )
     t.near(Float64(mu.u), 0.5, 1e-12, "mesh u = bv * u1")
     t.near(Float64(mu.v), 0.25, 1e-12, "mesh v = (1 - bu - bv) * v2")
+
+    # ── the reflection pass ───────────────────────────────────────────────
+    #
+    # Two boxes and one light, so the answer is a product of three numbers.
+    #   geom 0  the MIRROR: half (0.2, 0.2, 0.1) at the origin, rgba 0.4,
+    #           reflectance 0.5
+    #   geom 1  a white lid, half (4, 4, 0.1) at z = 2 — what the mirror sees
+    #   light   DIRECTIONAL travelling +z (so it shines from BELOW), ambient
+    #           0.2, diffuse 1, specular 0
+    #
+    # The lid's UNDERSIDE faces the light, so `ndotl` is 1 there; the mirror's
+    # top face is turned away from it and gets ambient only. That separates
+    # the mirror's own colour from what it reflects with no overlap.
+    var rg = TensorImpl[DT].alloc(2 * MODEL_GEOM_SIZE)
+    for gi in range(2):
+        var o = gi * MODEL_GEOM_SIZE
+        rg.data[o + GEOM_IDX_TYPE] = Scalar[DT](GEOM_BOX)
+        rg.data[o + GEOM_IDX_BODY] = 0
+        rg.data[o + GEOM_IDX_QUAT_W] = 1
+        rg.data[o + GEOM_IDX_RAY_VISIBLE] = 1
+    rg.data[GEOM_IDX_HALF_X] = 0.2
+    rg.data[GEOM_IDX_HALF_Y] = 0.2
+    rg.data[GEOM_IDX_HALF_Z] = 0.1
+    var o1 = MODEL_GEOM_SIZE
+    rg.data[o1 + GEOM_IDX_POS_X + 2] = 2.0
+    rg.data[o1 + GEOM_IDX_HALF_X] = 4.0
+    rg.data[o1 + GEOM_IDX_HALF_Y] = 4.0
+    rg.data[o1 + GEOM_IDX_HALF_Z] = 0.1
+
+    var ra = TensorImpl[DT].alloc(2 * VIS_GEOM_APPEARANCE)
+    for gi in range(2):
+        var o = gi * VIS_GEOM_APPEARANCE
+        var c = Scalar[DT](0.4) if gi == 0 else Scalar[DT](1.0)
+        ra.data[o + APP_IDX_R] = c
+        ra.data[o + APP_IDX_G] = c
+        ra.data[o + APP_IDX_B] = c
+        ra.data[o + APP_IDX_A] = 1
+        ra.data[o + APP_IDX_MATID] = -1
+        ra.data[o + APP_IDX_UVADR] = -1
+    ra.data[APP_IDX_REFLECT] = 0.5
+
+    var rl = TensorImpl[DT].alloc(MAX_VIS_LIGHTS * VIS_LIGHT_WORDS)
+    rl.data[LIGHT_IDX_DIRECTIONAL] = 1
+    rl.data[LIGHT_IDX_CUTOFF] = 180
+    rl.data[LIGHT_IDX_DIR_Z] = 1.0
+    rl.data[LIGHT_IDX_AMBIENT_R + 0] = 0.2
+    rl.data[LIGHT_IDX_AMBIENT_R + 1] = 0.2
+    rl.data[LIGHT_IDX_AMBIENT_R + 2] = 0.2
+    rl.data[LIGHT_IDX_DIFFUSE_R + 0] = 1.0
+    rl.data[LIGHT_IDX_DIFFUSE_R + 1] = 1.0
+    rl.data[LIGHT_IDX_DIFFUSE_R + 2] = 1.0
+    rl.data[LIGHT_IDX_ACTIVE] = 1
+
+    var rb = TensorImpl[DT].alloc(MODEL_BODY_SIZE)
+    var rx = TensorImpl[DT].alloc(3)
+    var rq = TensorImpl[DT].alloc(4)
+    rq.data[3] = 1
+    var one_f = TensorImpl[DT].alloc(1)
+    var one_u8 = TensorImpl[DType.uint8].alloc(1)
+    var rmat = TensorImpl[DT].alloc(MAX_VIS_MATERIALS * VIS_MAT_WORDS)
+    var rtex = TensorImpl[DT].alloc(MAX_VIS_TEXTURES * VIS_TEX_WORDS)
+
+    var gv3 = rg.lt_dyn["cpu", DYN2](rl2(2, MODEL_GEOM_SIZE))
+    var av = ra.lt_dyn["cpu", DYN1](rl1(ra.n))
+    var bv = rb.lt_dyn["cpu", DYN2](rl2(1, MODEL_BODY_SIZE))
+    var xv = rx.lt_dyn["cpu", DYN2](rl2(1, 3))
+    var qv = rq.lt_dyn["cpu", DYN2](rl2(1, 4))
+    var e1 = one_f.lt_dyn["cpu", DYN1](rl1(1))
+    var eu = one_u8.lt_dyn["cpu", DYN1](rl1(1))
+    var mtv = rmat.lt_dyn["cpu", DYN1](rl1(rmat.n))
+    var ttv = rtex.lt_dyn["cpu", DYN1](rl1(rtex.n))
+    var ltv = rl.lt_dyn["cpu", DYN1](rl1(rl.n))
+    var bg = Vec3[DT](0, 0, 0)
+
+    # The top face: ambient on the mirror (0.2 * 0.4) plus HALF the lid's own
+    # colour (ambient 0.2 + diffuse 1.0, times its white 1.0, times 0.5).
+    var top = _look(0.0, 0.8, -0.75)
+    t.near(
+        _shoot[True](gv3, av, bv, xv, qv, e1, eu, mtv, ttv, ltv, top, bg), 0.2 * 0.4 + 0.5 * (0.2 + 1.0) * 1.0, 1e-9,
+        "the reflection is ADDED to the mirror's own colour",
+    )
+    # ⚠ AND NOT BLENDED. `mjr_render` draws the mirror with
+    # `glBlendFunc(GL_ONE, GL_ONE)` over the mirrored scene, so a lerp — the
+    # reflex a ray tracer reaches for — is a DIFFERENT and dimmer answer.
+    t.check(
+        abs(_shoot[True](gv3, av, bv, xv, qv, e1, eu, mtv, ttv, ltv, top, bg)
+            - (0.5 * 0.2 * 0.4 + 0.5 * (0.2 + 1.0))) > 1e-6,
+        "the reflection is not a lerp between the two",
+    )
+    t.near(
+        _shoot[False](gv3, av, bv, xv, qv, e1, eu, mtv, ttv, ltv, top, bg), 0.2 * 0.4, 1e-9,
+        "REFLECT=False leaves the mirror's own colour alone",
+    )
+
+    # A SIDE face of the same box gets no reflection at all: the reference's
+    # stencil is the +Z face's silhouette, not the box's.
+    var side = _look(0.0, 0.6, -0.85)
+    t.near(
+        _shoot[True](gv3, av, bv, xv, qv, e1, eu, mtv, ttv, ltv, side, bg), 0.2 * 0.4, 1e-9,
+        "a side face of the mirror geom reflects NOTHING",
+    )
+    t.check(
+        abs(_shoot[True](gv3, av, bv, xv, qv, e1, eu, mtv, ttv, ltv, side, bg) - _shoot[True](gv3, av, bv, xv, qv, e1, eu, mtv, ttv, ltv, top, bg)) > 0.1,
+        "the two rays land on different faces (anti-vacuity)",
+    )
 
     print()
     print(t.n, "checks,", t.bad, "failed")

@@ -120,6 +120,29 @@ table: 29 buffers is a SILENT metallib failure in this tree and 27 ships
 (`_metals_limit_is_the_argument_table_not_the_stack`). Folding the material id
 into the colour row the kernel already binds costs three unused floats per
 visual geom and buys a whole operand back."""
+comptime APP_IDX_REFLECT: Int = 6
+"""`mat_reflectance`, but **zero on every reflective geom but the first**.
+
+⚠⚠ THAT IS NOT A SIMPLIFICATION, IT IS THE REFERENCE. `mjr_render` runs
+
+    // allow only one reflective geom
+    int j = 0;
+    for (int i=0; i < ngeom; i++) {
+      if (j) { scn->geoms[i].reflectance = 0; }
+      else if (isReflective(scn->geoms + i)) { j = 1; }
+    }
+
+before it draws anything — "more would result in weird transparency" — and
+`isReflective` is `(PLANE or BOX) and not transparent and reflectance > 0`,
+so a reflective MESH or CYLINDER is not reflective at all. Storing the rule's
+OUTPUT per geom is what lets the shader ask one question (`is my reflectance
+positive`) instead of re-deriving a scene-wide precedence per pixel.
+
+On `libero_goal` exactly one geom survives it: `flat_stove_1_base_vis`, a box
+with `reflectance="0.5"`. The cabinet's and the objects' materials carry 0.5
+too and none of them qualifies — they are meshes.
+"""
+
 comptime APP_IDX_UVADR: Int = 5
 """Where this geom's mesh UVs start, in TRIANGLES, or -1 when it has none.
 A duplicate of `MESH_META_IDX_TRIADR` for the geom's mesh, hoisted so the

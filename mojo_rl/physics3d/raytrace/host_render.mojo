@@ -44,7 +44,8 @@ comptime RGB_CHANNELS_HOST: Int = 3
 
 
 def render_lane_cpu[
-    DTYPE: DType, D: DimsLike, BATCH: Int, SHADOWS: Bool = False
+    DTYPE: DType, D: DimsLike, BATCH: Int, SHADOWS: Bool = False,
+    REFLECT: Bool = True
 ](
     mut d: Data[DTYPE, D, BATCH],
     mut m: Model[DTYPE, D],
@@ -57,8 +58,10 @@ def render_lane_cpu[
     mut rgb: List[Scalar[DTYPE]],
     mut depth: List[Scalar[DTYPE]],
     mut seg: List[Scalar[DTYPE]],
+    mut refl: List[Scalar[DTYPE]],
 ) raises:
-    """`[height*width*3]` RGB in [0, 1], plus planar depth and the geom id.
+    """`[height*width*3]` RGB in [0, 1], plus planar depth, the geom id and
+    what the mirror shows (`PixelHit.refl_geom`).
 
     ⚠ ROW 0 IS THE TOP OF THE IMAGE, as `camera_pixel_ray` writes it.
     """
@@ -68,6 +71,7 @@ def render_lane_cpu[
     )
     depth = List[Scalar[DTYPE]](length=npix, fill=Scalar[DTYPE](0))
     seg = List[Scalar[DTYPE]](length=npix, fill=Scalar[DTYPE](0))
+    refl = List[Scalar[DTYPE]](length=npix, fill=Scalar[DTYPE](0))
 
     comptime if DTYPE.is_floating_point():
         var nb = m.dims.get_nbody()
@@ -101,7 +105,7 @@ def render_lane_cpu[
         )
         for py in range(height):
             for px in range(width):
-                var hit = render_pixel[DTYPE, SHADOWS](
+                var hit = render_pixel[DTYPE, SHADOWS, REFLECT](
                     geoms_c,
                     nvg,
                     app_c,
@@ -133,3 +137,4 @@ def render_lane_cpu[
                 rgb[b * RGB_CHANNELS_HOST + 2] = hit.rgb.z
                 depth[b] = hit.depth
                 seg[b] = Scalar[DTYPE](hit.geom)
+                refl[b] = Scalar[DTYPE](hit.refl_geom)

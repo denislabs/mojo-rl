@@ -4,6 +4,12 @@ One thread per `(env, pixel)`. No shared memory, no per-thread array, no
 window, no swapchain, no draw command — the whole scene is the batched `Data`
 the physics already wrote, read in place.
 
+⚠ `SHADOWS` AND `REFLECT` ARE COMPTIME PARAMETERS BECAUSE EACH IS A SECOND
+FULL `ray_model` PER PIXEL. `REFLECT` defaults to TRUE because
+`mjRND_REFLECTION` does; the runtime cost on a scene with no reflective geom
+is one compare against a zero in the appearance row, but the CODE is in the
+kernel, so a caller that knows it has no mirror can compile it out.
+
 ⚠ `SHADOWS` IS A COMPTIME PARAMETER BECAUSE THE SHADOW RAY IS A SECOND FULL
 `ray_model` PER PIXEL. A runtime flag would leave that code in the kernel and
 still pay for it on every miss; as a parameter, `BatchedCameraRenderer[...,
@@ -104,6 +110,7 @@ struct BatchedCameraRenderer[
     WIDTH: Int,
     HEIGHT: Int,
     SHADOWS: Bool = True,
+    REFLECT: Bool = True,
 ](Movable):
     """RGB + depth + segmentation for one camera, over every lane.
 
@@ -369,7 +376,9 @@ struct BatchedCameraRenderer[
                 var frame = camera_world_frame[Self.DTYPE](
                     cameras, xpos, xquat, subtree_com, env, Int(cam)
                 )
-                var hit = render_pixel[Self.DTYPE, Self.SHADOWS](
+                var hit = render_pixel[
+                    Self.DTYPE, Self.SHADOWS, Self.REFLECT
+                ](
                     geoms,
                     Int(ng),
                     appearance,
@@ -590,7 +599,9 @@ struct BatchedCameraRenderer[
                 for py in range(Self.HEIGHT):
                     for pxx in range(Self.WIDTH):
                         var pix = py * Self.WIDTH + pxx
-                        var hit = render_pixel[Self.DTYPE, Self.SHADOWS](
+                        var hit = render_pixel[
+                            Self.DTYPE, Self.SHADOWS, Self.REFLECT
+                        ](
                             geoms_c,
                             nvg,
                             app_c,

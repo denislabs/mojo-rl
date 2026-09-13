@@ -239,6 +239,7 @@ def main() raises:
     var sum_mj = 0.0
     var sum_mj_w = 0.0
     var sum_seg = 0.0
+    var sum_refl = 0.0
     var worst = 1e30
     var worst_name = String("")
     for ti in range(len(names)):
@@ -298,9 +299,10 @@ def main() raises:
         var rgb = List[Scalar[DT]]()
         var depth = List[Scalar[DT]]()
         var seg = List[Scalar[DT]]()
-        render_lane_cpu[DT, DynDims, 1, False](
+        var refl = List[Scalar[DT]]()
+        render_lane_cpu[DT, DynDims, 1, False, True](
             d, m, vis, cam, 0, width, height,
-            Vec3[DT](0.60, 0.72, 0.90), rgb, depth, seg,
+            Vec3[DT](0.60, 0.72, 0.90), rgb, depth, seg, refl,
         )
         var npix = width * height
         var recorded = _read_bytes(ref_path)
@@ -333,6 +335,20 @@ def main() raises:
             sraw[i] = UInt8(0 if g < 0 else (g + 1) % 256)
         with open(stem + ".ours.seg", "w") as fh:
             fh.write_bytes(sraw)
+        # ⚠ WHAT THE MIRROR SHOWS, per pixel — the colour-blind check for the
+        # SECOND ray. The reflection pass is additive, so a mirror that
+        # reflects the wrong surface reads as a brightness error and nothing
+        # else; this says which surface it was.
+        var rraw = List[UInt8](length=npix, fill=UInt8(0))
+        var filled = 0
+        for i in range(npix):
+            var g = Int(Float64(refl[i]))
+            rraw[i] = UInt8(0 if g < 0 else (g + 1) % 256)
+            if g >= 0:
+                filled += 1
+        sum_refl += Float64(filled)
+        with open(stem + ".ours.refl", "w") as fh:
+            fh.write_bytes(rraw)
 
         # ⚠⚠ THE COLOUR-BLIND COLUMN, AND THE ONE THAT DECIDES WHERE A GAP
         # LIVES. A PSNR folds geometry and shading into one scalar. The geom
@@ -373,6 +389,17 @@ def main() raises:
           sum_mj / n, sum_mj_w / n)
     print("  worst vs the recording:", worst, "dB —", worst_name)
     print("  segmentation agreement vs MuJoCo on OUR scene:", sum_seg / n)
+    print("  pixels the mirror fills, mean per frame:", sum_refl / n,
+          "(mirror geom", vis.mirror, ")")
+    if vis.mirror >= 0 and sum_refl <= 0.0:
+        raise Error(
+            "the scene declares a reflective geom (visual index "
+            + String(vis.mirror) + ") and the mirror reflected NOTHING in any"
+            " frame. The reflection pass is dead — a `REFLECT=False`"
+            " instantiation, an `isBehind` test with the wrong sign, or a"
+            " +Z face nothing hits. It would read as a uniformly dark geom"
+            " and not as an error."
+        )
     if sum_seg / n < 0.99:
         raise Error(
             "the tracer and MuJoCo disagree about WHICH GEOM is at "

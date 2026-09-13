@@ -72,7 +72,7 @@ from ..gpu.constants import (
     MESH_META_IDX_BVHNUM,
     MESH_ARENA_RECORD,
 )
-from ..constants import GEOM_MESH
+from ..constants import GEOM_BOX, GEOM_MESH, GEOM_PLANE
 from ..fields import Model
 from ..fields.dims import DimsLike
 from ..parser.flat_model import (
@@ -109,6 +109,8 @@ struct VisualModel[DTYPE: DType](Movable):
     var ntex: Int
     var nlight: Int
     var ntexel_bytes: Int
+    var mirror: Int
+    """The one geom `mjr_render` lets reflect, or -1. See `APP_IDX_REFLECT`."""
 
     var geoms: TensorImpl[Self.DTYPE]
     """`[ngeom, MODEL_GEOM_SIZE]` — the solver's own record layout, so
@@ -142,6 +144,7 @@ struct VisualModel[DTYPE: DType](Movable):
         self.ntex = 0
         self.nlight = 0
         self.ntexel_bytes = 0
+        self.mirror = -1
         self.geoms = TensorImpl[Self.DTYPE]()
         self.appearance = TensorImpl[Self.DTYPE]()
         self.mesh_meta = TensorImpl[Self.DTYPE]()
@@ -171,7 +174,8 @@ struct VisualModel[DTYPE: DType](Movable):
             + " tris, " + String(self.nmat) + " materials, "
             + String(self.ntex) + " textures ("
             + String(self.ntexel_bytes // 1000000) + " MB), "
-            + String(self.nlight) + " lights"
+            + String(self.nlight) + " lights, mirror "
+            + (String(self.mirror) if self.mirror >= 0 else String("none"))
         )
 
 
@@ -548,6 +552,33 @@ def build_visual_model[
         light_rows[o + LIGHT_IDX_ACTIVE] = Scalar[DTYPE](1)
     vis.nlight = nlight
 
+    # ── 6b. WHICH geom reflects — at most one ────────────────────────────
+    #
+    # `mjr_render`'s own precedence, applied once here rather than re-derived
+    # per pixel: the FIRST geom that is a plane or a box, opaque, and carries
+    # a positive `mat_reflectance` is the mirror, and every later candidate
+    # has its reflectance zeroed. See `APP_IDX_REFLECT`.
+    var refl_of = List[Float64](length=vis.ngeom, fill=0.0)
+    var mirror = -1
+    for k in range(vis.ngeom):
+        var gd = fmd.geoms[keep[k]]
+        if gd.geom_type != GEOM_PLANE and gd.geom_type != GEOM_BOX:
+            continue
+        var mid = gd.material_id
+        if mid < 0 or mid >= len(fmd.materials):
+            continue
+        var md3 = fmd.materials[mid]
+        if md3.reflectance <= 0:
+            continue
+        # `!geom->transparent` — MuJoCo marks a geom transparent from its
+        # alpha, and a see-through mirror is not one.
+        if Float64(m.geom_rgba.data[keep[k] * 4 + 3]) < 1.0:
+            continue
+        if mirror < 0:
+            mirror = k
+            refl_of[k] = md3.reflectance
+        # every later candidate keeps 0
+
     # ── 7. the geom records ──────────────────────────────────────────────
     var grows = List[Scalar[DTYPE]](
         length=vis.ngeom * MODEL_GEOM_SIZE, fill=Scalar[DTYPE](0)
@@ -593,6 +624,7 @@ def build_visual_model[
         arows[ao + APP_IDX_UVADR] = Scalar[DTYPE](
             triadr[vm] if vm >= 0 else -1
         )
+        arows[ao + APP_IDX_REFLECT] = Scalar[DTYPE](refl_of[k])
 
     # ── 8. the mesh table ────────────────────────────────────────────────
     var mrows = List[Scalar[DTYPE]](
@@ -624,6 +656,7 @@ def build_visual_model[
         tt.data[i] = texels[i]
     vis.texels = tt^
 
+    vis.mirror = mirror
     if verbose:
         print("  " + vis.describe())
     return vis^
