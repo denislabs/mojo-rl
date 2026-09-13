@@ -104,8 +104,19 @@ struct SampleReport(Copyable, ImplicitlyCopyable, Movable):
 
     var attempts: Int
     var accepted: Int
+    var clamped: Int
+    """How many axes collapsed to a point because the object does not fit the
+    region it was asked to start in.
+
+    ⚠ COUNTED, NOT SILENT. LIBERO lets the inset range INVERT and draws the
+    reversed interval — wider than the region and partly outside it. We clamp to
+    the centre instead, which keeps the object inside its region but removes the
+    randomisation on that axis; a caller that never looks would report a
+    per-episode distribution that is a single point. `libero_spatial`'s top
+    drawer is the case: a 3.5 cm bowl in a 3.0 x 7.6 cm interior."""
 
     def __init__(out self):
+        self.clamped = 0
         self.attempts = 0
         self.accepted = 0
 
@@ -139,6 +150,45 @@ def _uniform01(seed: UInt64, lane: Int, axis: Int, attempt: Int) -> Float64:
     return Float64(v[0])
 
 
+comptime JOINT_AXIS_BASE: Int = 0x8000
+"""Where a `jinit=` draw's Philox axis starts, clear of every placement axis.
+
+⚠ `_uniform01` packs `subsequence = (lane << 16) | axis`, and a placement uses
+axis `si * 2` / `si * 2 + 1` — so the placement axes are bounded by twice the
+family's slot count. Starting the joint draws at 0x8000 cannot collide with any
+of them for any family a scene could hold, and a collision would not be an
+error: it would silently correlate a drawer's opening with an object's x.
+
+⚠ It must stay BELOW 0x10000 or it would carry into the lane bits and give two
+lanes one stream — which is the same failure a shared seed would cause, and the
+reason `_uniform01` uses the counter axes at all."""
+
+
+def sample_joint_inits(
+    t: TaskSpec, seed: UInt64, lane: Int
+) raises -> List[Float64]:
+    """One uniform draw per `jinit=`, in task order. Deterministic in
+    `(seed, lane)`.
+
+    ⚠⚠ A DRAW, BECAUSE LIBERO DRAWS. `bddl_base_domain._reset_internal` builds
+    an `OpenCloseSampler` over the class's `default_open_ranges` and calls
+    `np.random.uniform(low, high)` on it every reset — so a drawer does NOT
+    start at its threshold, it starts somewhere in [-0.16, -0.14]. A constant
+    would make every episode of every seed open it identically, which is the
+    degeneracy `init=` exists to avoid one axis over.
+
+    ⚠ NO REJECTION, AND NONE IS WANTED. A placement is rejected against the
+    objects already placed; a joint value has nothing to overlap. So this takes
+    `attempt = 0` always, and the draw is a pure function of `(seed, lane, k)`.
+    """
+    var out = List[Float64]()
+    for k in range(len(t.joint_inits)):
+        ref j = t.joint_inits[k]
+        var u = _uniform01(seed, lane, JOINT_AXIS_BASE + k, 0)
+        out.append(j.lo + u * (j.hi - j.lo))
+    return out^
+
+
 def sample_placements(
     t: TaskSpec,
     f: FamilySpec,
@@ -170,6 +220,11 @@ def sample_placements(
         )
 
     var out = List[Placement]()
+    # ⚠ WHICH REGION EACH ACCEPTED PLACEMENT CAME FROM, parallel to `out`.
+    # `Placement` is the device twin's contract too (`family_config`'s reset
+    # hook builds the same four numbers), so the region index is kept beside it
+    # rather than added to it.
+    var of_region = List[Int]()
     for i in range(len(t.inits)):
         var si = f.slot_index(t.inits[i].slot)
         var ri = f.region_index(t.inits[i].region)
@@ -187,29 +242,137 @@ def sample_placements(
         var placed = False
         for attempt in range(MAX_PLACE_ATTEMPTS):
             report.attempts += 1
+            # ⚠ BEFORE THE DRAW: the inset above needs the radius.
+            ref sl = f.slots[si]
+            var rest = -sl.bottom_z if sl.has_geom else radii[si]
+            var rad_i = sl.h_radius if sl.has_geom else radii[si]
             var x = fr.x
             var y = fr.y
             if reg.has_rect:
                 var u = _uniform01(seed, lane, si * 2, attempt)
                 var v = _uniform01(seed, lane, si * 2 + 1, attempt)
-                x = fr.x + reg.x_min + u * (reg.x_max - reg.x_min)
-                y = fr.y + reg.y_min + v * (reg.y_max - reg.y_min)
+                # ⚠⚠ A FIXTURE-ANCHORED REGION SAMPLES HALF ITS RECT, AND THEN
+                # SHRINKS BY THE OBJECT'S RADIUS. LIBERO builds a DIFFERENT
+                # sampler for `(On obj <fixture>_<region>)` than for a table
+                # region — `bddl_base_domain._add_placement_initializer` routes
+                # it to `conditioned_initial_place_state_on_sites` with
+                #
+                #     x_ranges=[[-size[0] / 2, size[0] / 2]]
+                #     ensure_object_boundary_in_range=True
+                #
+                # where `size` is MuJoCo's HALF-size. So the draw spans half the
+                # site's half-extent, further inset by the object's
+                # `horizontal_radius`. A table region is the bddl's own
+                # `:ranges` and is used whole.
+                #
+                # ⚠ IT IS WHAT MADE THE DRAWER TASK SEED-DEPENDENT. On the full
+                # rect the bowl could land against the top drawer's inner wall:
+                # 0 contacts at the viewer's seed and 19 at the gate's, which is
+                # the worst kind of bug to find later.
+                #
+                # ⚠ AND WE CLAMP WHERE LIBERO INVERTS. With a 3.5 cm bowl in a
+                # 3.0 x 7.6 cm drawer the inset range crosses over, and
+                # `np.random.uniform(low=hi, high=lo)` happily draws the
+                # reversed interval — WIDER than the region it names, and partly
+                # outside it. Collapsing to the centre keeps the object inside
+                # the region it was asked to start in; `SampleReport.clamped`
+                # counts it so a family whose slots do not fit is visible
+                # instead of silently un-randomised.
+                var x0 = reg.x_min
+                var x1 = reg.x_max
+                var y0 = reg.y_min
+                var y1 = reg.y_max
+                if reg.contact.byte_length() > 0:
+                    x0 *= 0.5
+                    x1 *= 0.5
+                    y0 *= 0.5
+                    y1 *= 0.5
+                    x0 += rad_i
+                    x1 -= rad_i
+                    y0 += rad_i
+                    y1 -= rad_i
+                    if x1 < x0:
+                        var xc = 0.5 * (x0 + x1)
+                        x0 = xc
+                        x1 = xc
+                        report.clamped += 1
+                    if y1 < y0:
+                        var yc = 0.5 * (y0 + y1)
+                        y0 = yc
+                        y1 = yc
+                        report.clamped += 1
+                x = fr.x + x0 + u * (x1 - x0)
+                y = fr.y + y0 + v * (y1 - y0)
             # ⚠ RESTING ON THE SURFACE, not centred in it. The site is on the
             # face a region describes, so an object's CENTRE sits one radius
             # above it. Placing it AT the site starts every episode with the
             # prop half inside the table, which the solver resolves by
             # ejecting it — a scene that looks sampled and is not.
-            var z = fr.z + radii[si]
+            #
+            # ⚠⚠ THE HEIGHT AND THE REJECTION RADIUS ARE TWO DIFFERENT NUMBERS,
+            # AND THEY USED TO BE ONE. `z = fr.z + radii[si]` treated the
+            # caller's radius as a resting half-height, and twelve call sites
+            # supplied `0.02` or a config constant. robosuite reads them
+            # separately: `SiteRegionRandomSampler.sample` puts the ORIGIN at
+            # `site_z - bottom_offset[-1]` (the asset's `bottom_site`) and
+            # rejects within `other.horizontal_radius + horizontal_radius` (its
+            # `horizontal_radius_site`). MEASURED across the pack: 93 assets,
+            # 10 distinct triples, radius spanning 0.005 to 0.3 — so one
+            # constant was wrong by up to 15x. And `akita_black_bowl`'s
+            # `bottom_site` is -0.06 against the hard-coded 0.02, i.e. 4 cm too
+            # low: on a table an overlap the solver absorbs, on the stove's
+            # `cook_region` (whose site is at the vertical CENTRE of a 4 cm base
+            # box) 136 contacts and a wedged bowl.
+            #
+            # ⚠ `has_geom` FALSE FALLS BACK TO THE CALLER'S RADIUS, unchanged —
+            # `so101_tabletop` and the hand-built test families declare no
+            # robosuite sites and their numbers must not move.
+            var z = fr.z + rest
 
             var clash = False
             for j in range(len(out)):
                 var dx = out[j].x - x
                 var dy = out[j].y - y
-                var rr = radii[si] + radii[out[j].slot]
+                ref sj = f.slots[out[j].slot]
+                var rad_j = sj.h_radius if sj.has_geom else radii[out[j].slot]
+                var rr = rad_i + rad_j
                 if dx * dx + dy * dy < rr * rr:
+                    # ⚠⚠ TWO OBJECTS IN DIFFERENT FIXTURE REGIONS DO NOT CLASH,
+                    # AND THE HORIZONTAL TEST ALONE SAYS THEY DO. The drawer
+                    # task puts one bowl INSIDE the cabinet's top drawer and
+                    # another ON its roof: horizontally almost coincident, and
+                    # separated by a shelf. The 2-D test refused the scene after
+                    # 64 attempts — correct arithmetic, wrong question.
+                    #
+                    # ⚠ AND A VERTICAL EXTENT TEST DOES NOT FIX IT, which is
+                    # worth recording because it is the obvious next move.
+                    # `bottom_site`/`top_site` are generous MARGINS (the bowl
+                    # claims 10 cm against 6.5 cm of real geometry) and the
+                    # drawer's interior box is 20 cm tall, so a bowl placed at
+                    # that region's site floats in the middle of it and falls to
+                    # the drawer floor during the settle. Comparing pre-settle
+                    # extents has the two bowls overlapping by 6 cm when the
+                    # settled scene has them 7 cm apart with a shelf between.
+                    #
+                    # So the question is WHICH REGION each object is in: two
+                    # objects in the SAME region can collide and must reject;
+                    # two in different regions where either is anchored to a
+                    # fixture are separated by that fixture's own geometry, and
+                    # whether they fit is the benchmark's business. Two
+                    # unanchored (table) regions still reject, which is what
+                    # keeps several props on one workspace from overlapping —
+                    # the behaviour every existing family has.
+                    var ri_j = of_region[j]
+                    if ri_j != ri:
+                        if (
+                            reg.contact.byte_length() > 0
+                            or f.regions[ri_j].contact.byte_length() > 0
+                        ):
+                            continue
                     clash = True
             if not clash:
                 out.append(Placement(si, x, y, z))
+                of_region.append(ri)
                 report.accepted += 1
                 placed = True
                 break

@@ -295,8 +295,23 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     # Every free slot in this family is `assets/props/cube.xml`, a 1.2 cm
     # half-size box, so one constant serves all three. `sampler.
     # sample_placements` takes it as `radii[si]` and uses it for BOTH the
-    # pairwise clash test and the resting height (`z = site_z + radius`), so a
-    # per-asset table would have to feed both.
+    # pairwise clash test and the resting height, so a per-asset table would
+    # have to feed both.
+    #
+    # ⚠⚠ AND A FAMILY WHOSE SLOTS CARRY `slot_geom=` DOES NOT COME THROUGH HERE
+    # AT ALL. `SlotSpec.has_geom` — set by `resolve_family` from the asset's own
+    # robosuite `bottom_site` / `top_site` / `horizontal_radius_site` — makes
+    # the HOST sampler ignore `radii[si]` and use those two separate numbers
+    # instead. Every LIBERO family has them (93 assets, 10 distinct triples,
+    # radius spanning 0.005 to 0.3).
+    #
+    # ⚠ SO A DEVICE TWIN FOR A LIBERO FAMILY MUST READ THEM TOO. This one is
+    # correct because `so101_tabletop`'s cube declares no such sites and the
+    # host falls back to `radii[si]`; a config that copied this shape for a
+    # family that DOES declare them would place every object at the wrong
+    # height and `tests/tasks/test_device_placement.mojo` — which today runs
+    # only on this family — would not be looking. Extend that gate in the same
+    # commit as the first LIBERO device reset.
     #
     # ⚠⚠ IT TRACKS `cube.xml`'s `size` AND THERE IS NOTHING TO ENFORCE THAT.
     # A radius larger than the prop spawns it FLOATING — it drops at reset,

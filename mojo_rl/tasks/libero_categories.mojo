@@ -56,6 +56,35 @@ def threshold_holds(op: Int, qpos: Float64, thr: Float64) -> Bool:
     return False
 
 
+struct JointRange(Copyable, ImplicitlyCopyable, Movable):
+    """`[lo, hi]`, uniformly sampled. `present()` is False for an absent row.
+
+    LIBERO's `default_open_ranges` / `default_close_ranges` /
+    `default_turnon_ranges` / `default_turnoff_ranges`, verbatim."""
+
+    var lo: Float64
+    var hi: Float64
+    var has: Bool
+
+    def __init__(out self):
+        self.lo = 0.0
+        self.hi = 0.0
+        self.has = False
+
+    def __init__(out self, lo: Float64, hi: Float64):
+        self.lo = lo
+        self.hi = hi
+        self.has = True
+
+    def present(self) -> Bool:
+        return self.has
+
+    def describe(self) -> String:
+        if not self.has:
+            return String("-")
+        return String(self.lo) + ".." + String(self.hi)
+
+
 struct Threshold(Copyable, ImplicitlyCopyable, Movable):
     """One `open=lt:-0.14` line: a comparison and a bound."""
 
@@ -93,6 +122,20 @@ struct LiberoCategory(Copyable, ImplicitlyCopyable, Movable):
     var on: Threshold
     var off: Threshold
 
+    var open_range: JointRange
+    var close_range: JointRange
+    var on_range: JointRange
+    var off_range: JointRange
+    """LIBERO's `default_*_ranges`, the list ITSELF and not the threshold.
+
+    ⚠⚠ THE THRESHOLD AND THE RANGE ANSWER DIFFERENT QUESTIONS, and only one of
+    them can be derived from the other. `open=lt:-0.14` is `is_open` — a
+    PREDICATE, and it is `max(default_open_ranges)`. `open_range=-0.16,-0.14`
+    is where an episode STARTS the joint: `bddl_base_domain._reset_internal`
+    builds an `OpenCloseSampler` and calls `np.random.uniform` over it. Going
+    range -> threshold is a max; going threshold -> range is a guess, because
+    `lt:-0.14` says nothing whatever about -0.16."""
+
     def __init__(out self, name: String):
         self.name = name
         self.kind = KIND_ASSET
@@ -104,6 +147,10 @@ struct LiberoCategory(Copyable, ImplicitlyCopyable, Movable):
         self.close = Threshold()
         self.on = Threshold()
         self.off = Threshold()
+        self.open_range = JointRange()
+        self.close_range = JointRange()
+        self.on_range = JointRange()
+        self.off_range = JointRange()
 
     def is_workspace(self) -> Bool:
         return self.kind == KIND_WORKSPACE
@@ -231,6 +278,28 @@ def _parse_threshold(val: String, what: String) raises -> Threshold:
     )
 
 
+def _parse_range(val: String, what: String) raises -> JointRange:
+    """`lo,hi` — one of LIBERO's `default_*_ranges` lists.
+
+    ⚠ REFUSES `hi < lo`, which `OpenCloseSampler.__init__` asserts too
+    (`joint_ranges[0] <= joint_ranges[1]`). A reversed pair makes
+    `np.random.uniform(low=hi, high=lo)` draw outside the interval on every
+    call, which is a scene that looks sampled and is not."""
+    var n = split_on(val, String(","))
+    if len(n) != 2:
+        raise Error(
+            "libero table: " + what + " needs 'lo,hi', got '" + val + "'"
+        )
+    var lo = Float64(String(String(n[0]).strip()))
+    var hi = Float64(String(String(n[1]).strip()))
+    if hi < lo:
+        raise Error(
+            "libero table: " + what + " is '" + val + "' — hi < lo. LIBERO's"
+            " OpenCloseSampler asserts joint_ranges[0] <= joint_ranges[1]."
+        )
+    return JointRange(lo, hi)
+
+
 def _parse_three(val: String, what: String) raises -> List[Float64]:
     var n = split_on(val, String(","))
     if len(n) != 3:
@@ -340,12 +409,21 @@ def parse_libero_table(text: String) raises -> LiberoTable:
                 cat.on = _parse_threshold(val, String("on"))
             elif key == "off":
                 cat.off = _parse_threshold(val, String("off"))
+            elif key == "open_range":
+                cat.open_range = _parse_range(val, String("open_range"))
+            elif key == "close_range":
+                cat.close_range = _parse_range(val, String("close_range"))
+            elif key == "on_range":
+                cat.on_range = _parse_range(val, String("on_range"))
+            elif key == "off_range":
+                cat.off_range = _parse_range(val, String("off_range"))
             else:
                 raise Error(
                     "libero table: unknown key '" + key + "' at line "
                     + String(lines[i].lineno) + " inside category '"
                     + cat.name + "'. Known: kind, asset, rotation, axis,"
-                    " open, close, on, off."
+                    " open, close, on, off, open_range, close_range,"
+                    " on_range, off_range."
                 )
         elif in_prob:
             if key == "scene":

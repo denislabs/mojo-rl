@@ -52,11 +52,14 @@ region)` therefore translates to `On(plate_1, main_table_stove_front_region_zone
 """
 
 from .bddl import BddlProblem, BddlAtom, BddlRegion
+from std.math import sqrt
+
+from mojo_rl.core.kv import split_on
 from .libero_categories import (
-    LiberoTable, LiberoCategory, LiberoProblem, Threshold, cmp_name,
+    LiberoTable, LiberoCategory, LiberoProblem, Threshold, JointRange, cmp_name,
 )
 from .spec import (
-    FamilySpec, TaskSpec, SlotSpec, RegionSpec, InitSpec,
+    FamilySpec, TaskSpec, SlotSpec, RegionSpec, InitSpec, JointInitSpec,
     SLOT_FREE, SLOT_STATIC, SCHEMA_VERSION,
 )
 from .predicates import parse_goal
@@ -385,6 +388,93 @@ def _scan_joints(
     return found
 
 
+def asset_placement_geom(
+    xml: String, asset_path: String
+) raises -> Tuple[Float64, Float64, Float64]:
+    """`(bottom_z, top_z, h_radius)` from the asset's own robosuite sites.
+
+    Every robosuite `MujocoXMLObject` declares three sites, and all 93 of
+    LIBERO's object assets have them:
+
+        bottom_site             z  -> `bottom_offset[-1]`
+        top_site                z  -> `top_offset[-1]`
+        horizontal_radius_site  sqrt(x^2 + y^2) -> `horizontal_radius`
+
+    ⚠⚠ THESE ARE THE NUMBERS THE SAMPLER NEEDS AND THEY ARE NOT INTERCHANGEABLE
+    WITH EACH OTHER, LET ALONE WITH ONE CONSTANT.
+    `SiteRegionRandomSampler.sample` places an object's ORIGIN at
+    `site_z - bottom_offset[-1]` and rejects a draw within
+    `other.horizontal_radius + horizontal_radius` — a height and a distance.
+    `sample_placements` used one caller-supplied `radius` for both.
+
+    ⚠ `bottom_site` IS DELIBERATELY BELOW THE COLLISION GEOMETRY.
+    `akita_black_bowl` puts it at z = -0.06 while its collision boxes reach
+    -0.012, so LIBERO starts the bowl 4.8 cm clear of the surface and lets it
+    fall — which is the same protocol §6k measured in the recorded states
+    (a 2.6-7.2 cm settle over five zero-action steps). Reading the collision
+    extent instead would place it flush and change every episode's first
+    moments.
+
+    ⚠ RAISES ON A MISSING SITE rather than defaulting. A default here is a
+    made-up resting height, which is exactly what this function exists to
+    remove.
+    """
+    var have = List[Bool](length=3, fill=False)
+    var bottom_z = 0.0
+    var top_z = 0.0
+    var h_radius = 0.0
+    var pos = 0
+    while True:
+        var i = xml.find("<site", pos)
+        if i < 0:
+            break
+        var j = xml.find(">", i)
+        if j < 0:
+            break
+        var tag = String(xml[byte=i:j])
+        pos = j + 1
+        var nm = _tag_attr(tag, String("name"))
+        if nm != "bottom_site" and nm != "top_site" and nm != "horizontal_radius_site":
+            continue
+        var pv = _tag_attr(tag, String("pos"))
+        var n = split_on(pv, String(" "))
+        var xyz = List[Float64]()
+        for k in range(len(n)):
+            var t = String(String(n[k]).strip())
+            if t.byte_length() > 0:
+                xyz.append(Float64(t))
+        if len(xyz) != 3:
+            raise Error(
+                "libero: <site name=\"" + nm + "\"> in " + asset_path
+                + " has pos='" + pv + "', which is not three numbers"
+            )
+        if nm == "bottom_site":
+            bottom_z = xyz[2]
+            have[0] = True
+        elif nm == "top_site":
+            top_z = xyz[2]
+            have[1] = True
+        else:
+            # ⚠ `sqrt`, NOT `** 0.5`. The exponent form goes through exp/log
+            # and returned 0.049999999998 for hypot(0.03, 0.04) — 2.2e-12 off,
+            # and this number is written into a checked-in `.family` file where
+            # it becomes the exact value every later comparison uses.
+            h_radius = sqrt(xyz[0] * xyz[0] + xyz[1] * xyz[1])
+            have[2] = True
+    if not (have[0] and have[1] and have[2]):
+        raise Error(
+            "libero: " + asset_path + " declares "
+            + ("bottom_site " if not have[0] else "")
+            + ("top_site " if not have[1] else "")
+            + ("horizontal_radius_site " if not have[2] else "")
+            + "nowhere. Every robosuite MujocoXMLObject has all three and the"
+            " sampler needs them: the resting height, the stacking height and"
+            " the rejection radius. Refused rather than defaulted — a default"
+            " is a made-up resting height."
+        )
+    return (bottom_z, top_z, h_radius)
+
+
 def site_joints(xml: String, site: String) raises -> List[String]:
     """The joints `Open(<site region>)` reads — see the module header."""
     var of_site = List[String]()
@@ -403,12 +493,18 @@ def asset_joints(xml: String) raises -> List[String]:
     return all^
 
 
-def _articulation_terms(
-    p: BddlProblem, f: FamilySpec, table: LiberoTable, pred: String,
-    x: String, pack_dir: String,
-) raises -> String:
-    """`Open/Close/Turnon/Turnoff(x)` as Joint terms over the right joints,
-    Or-joined for ANY (Open, Turnon), And-joined for ALL (Close, Turnoff)."""
+def _articulation_joints(
+    p: BddlProblem, table: LiberoTable, pred: String, x: String,
+    pack_dir: String,
+) raises -> Tuple[String, String, List[String]]:
+    """`(fixture, category, joints)` for an articulation term's argument.
+
+    ⚠ ONE RESOLUTION, TWO CALLERS. `_articulation_terms` builds a GOAL out of
+    these joints and `translate_task` builds an INIT draw out of the same ones;
+    written twice they would drift on exactly the case that is hard — a term
+    naming a REGION (`Open(wooden_cabinet_1_top_region)`), where the joints are
+    the ones on that region's site's body and NOT the asset's whole set.
+    """
     var fixture = x
     var site = String("")
     if not (p.is_fixture(x) or p.is_object(x)):
@@ -425,6 +521,34 @@ def _articulation_terms(
         if p.objects[i].name == fixture:
             cat_name = String(p.objects[i].category)
     var cat = table.category(cat_name)
+    var xml: String
+    with open(pack_dir + "/" + cat.asset, "r") as fh:
+        xml = fh.read()
+    var joints: List[String]
+    if site.byte_length() > 0:
+        joints = site_joints(xml, site)
+    else:
+        joints = asset_joints(xml)
+    if len(joints) == 0:
+        raise Error(
+            "libero: " + pred + "(" + x + ") reads no joint — the site's body"
+            " (or the asset) declares none, so LIBERO's is_open would loop"
+            " over nothing and return "
+            + ("False" if pred == "Open" or pred == "Turnon" else "True")
+        )
+    return (fixture^, cat_name^, joints^)
+
+
+def _articulation_terms(
+    p: BddlProblem, f: FamilySpec, table: LiberoTable, pred: String,
+    x: String, pack_dir: String,
+) raises -> String:
+    """`Open/Close/Turnon/Turnoff(x)` as Joint terms over the right joints,
+    Or-joined for ANY (Open, Turnon), And-joined for ALL (Close, Turnoff)."""
+    var res = _articulation_joints(p, table, pred, x, pack_dir)
+    var fixture = String(res[0])
+    var cat = table.category(String(res[1]))
+    var joints = res[2].copy()
     var thr: Threshold
     if pred == "Open":
         thr = cat.open
@@ -440,20 +564,6 @@ def _articulation_terms(
             " no " + pred.lower() + "= threshold in categories.kv; LIBERO's"
             " class defines the comparison and it must be quoted there, not"
             " guessed from the joint range"
-        )
-    var xml: String
-    with open(pack_dir + "/" + cat.asset, "r") as fh:
-        xml = fh.read()
-    var joints: List[String]
-    if site.byte_length() > 0:
-        joints = site_joints(xml, site)
-    else:
-        joints = asset_joints(xml)
-    if len(joints) == 0:
-        raise Error(
-            "libero: " + pred + "(" + x + ") reads no joint — the site's body"
-            " (or the asset) declares none, so LIBERO's is_open would loop"
-            " over nothing and return " + ("False" if pred == "Open" or pred == "Turnon" else "True")
         )
     var any_ = pred == "Open" or pred == "Turnon"
     var out = String("")
@@ -545,13 +655,51 @@ def translate_task(
     for i in range(len(f.slots)):
         t.active.append(String(f.slots[i].name))
 
+    # ── `:init` -> `init=`, and the extent comes from the FAMILY ──────────
+    #
+    # ⚠⚠ THE OLD TEST WAS `p.regions[ri].has_ranges`, AND IT ASKED THE WRONG
+    # FILE. A `.bddl` gives `:ranges` only for a region on the TABLE; a region
+    # on a fixture is `(cook_region (:target flat_stove_1))` with no extent at
+    # all, because the extent is the `<site>` inside the fixture's asset XML —
+    # which `resolve_family` has already read into the family's own `region=`
+    # line as a box rect. So the bddl's silence meant "no init here" and the
+    # placement was dropped, silently, for every object LIBERO starts on a
+    # stove, a cabinet top or inside a drawer.
+    #
+    # It surfaced one step later as `gen_libero_family` refusing the task —
+    # "free slot X is active but has no init=" — which named the symptom and
+    # not this line. Six of `libero_spatial`'s ten tasks, and it is why the
+    # suite sat at 4.
+    #
+    # ⚠ `In` IS ACCEPTED BESIDE `On`. `(In akita_black_bowl_1
+    # wooden_cabinet_1_top_region)` is a bowl INSIDE a drawer, and the
+    # placement is the same question — where in that region does it start. The
+    # difference between resting on a surface and sitting in a box is the
+    # drawer's own joint value, which is a separate `:init` term (`Open`) and a
+    # separate feature; a task needing it is refused by name below rather than
+    # placed into a shut drawer.
     for k in range(len(p.init)):
         ref a = p.init[k]
-        if a.pred != "On" or len(a.args) != 2:
+        if len(a.args) != 2:
+            continue
+        if a.pred != "On" and a.pred != "In":
             continue
         var slot = String(a.args[0])
-        var ri = p.region_index(String(a.args[1]))
-        if ri < 0 or not p.regions[ri].has_ranges:
+        var target = String(a.args[1])
+        var ri = p.region_index(target)
+        if ri < 0:
+            # Not a region at all — `(On bowl cookies_1)`, a stack on another
+            # free object. `validate_init_coverage` names it; it is not a
+            # placement this sampler can express, because the surface moves.
+            continue
+        var fam_name = p.regions[ri].composed_name()
+        var fri = f.region_index(fam_name)
+        if fri < 0:
+            continue
+        # ⚠ THE FAMILY MUST CARRY A RECT. A region with none is a bare site,
+        # and every draw would land on the same point — an "init" that
+        # randomises nothing, which is the degeneracy `init=` exists to avoid.
+        if not f.regions[fri].has_rect:
             continue
         # only FREE slots take an init; a fixture's placement is its pose
         var is_free = False
@@ -560,7 +708,73 @@ def translate_task(
                 is_free = True
         if not is_free:
             continue
-        t.inits.append(InitSpec(slot, p.regions[ri].composed_name()))
+        t.inits.append(InitSpec(slot, fam_name^))
+    # ── `(Open X)` / `(Turnon X)` in `:init` -> `jinit=` ──────────────────
+    #
+    # ⚠⚠ THIS IS A DRAW, NOT A JUMP TO THE THRESHOLD.
+    # `bddl_base_domain._reset_internal` builds an `OpenCloseSampler` from the
+    # class's `default_open_ranges` and calls `np.random.uniform` on it every
+    # reset, so a drawer starts SOMEWHERE in [-0.16, -0.14] and not at -0.14.
+    # `categories.kv` carries the range beside the threshold for exactly this;
+    # the two are different questions and only range -> threshold is derivable.
+    #
+    # ⚠ DROPPING THESE WAS NOT HARMLESS. `(In akita_black_bowl_1
+    # wooden_cabinet_1_top_region)` places a bowl INSIDE the top drawer, and
+    # `(Open wooden_cabinet_1_top_region)` is what makes that drawer open
+    # enough to hold it. Emitting the placement without the opening puts the
+    # bowl inside a SHUT cabinet — a scene MuJoCo resolves by ejecting it, one
+    # step in, far from the cause. 28 of the corpus' 130 tasks carry one.
+    for k in range(len(p.init)):
+        ref a = p.init[k]
+        if len(a.args) != 1:
+            continue
+        var ap = String(a.pred)
+        if ap != "Open" and ap != "Close" and ap != "Turnon" and ap != "Turnoff":
+            continue
+        if pack_dir.byte_length() == 0:
+            raise Error(
+                "libero: " + a.show() + " in `:init` needs the category table"
+                " and the asset pack — call translate_task(p, f, table,"
+                " pack_dir)"
+            )
+        var res = _articulation_joints(p, table, ap, String(a.args[0]), pack_dir)
+        var jfixture = String(res[0])
+        var jcat = table.category(String(res[1]))
+        var jjoints = res[2].copy()
+        var rng: JointRange
+        if ap == "Open":
+            rng = jcat.open_range
+        elif ap == "Close":
+            rng = jcat.close_range
+        elif ap == "Turnon":
+            rng = jcat.on_range
+        else:
+            rng = jcat.off_range
+        if not rng.present():
+            raise Error(
+                "libero: " + a.show() + " in `:init` — category '" + jcat.name
+                + "' has no " + ap.lower() + "_range= in categories.kv."
+                " LIBERO's class defines `default_" + ap.lower()
+                + "_ranges` and it must be QUOTED there; the threshold does"
+                " not determine it (open=lt:-0.14 says nothing about -0.16)."
+            )
+        # ⚠ ONE JOINT, ASSERTED. `set_joint(qpos)` gives every joint of the
+        # object THE SAME draw, and a `.task` carries one `jinit=` per joint —
+        # so several joints would be drawn INDEPENDENTLY here and the scene
+        # would differ from LIBERO's in a way nothing downstream could see.
+        # Every articulation init in the corpus resolves to exactly one; this
+        # refuses rather than diverging if that ever stops being true.
+        if len(jjoints) != 1:
+            raise Error(
+                "libero: " + a.show() + " in `:init` resolves to "
+                + String(len(jjoints)) + " joints. LIBERO's `set_joint` gives"
+                " them ONE shared draw; a `jinit=` per joint would draw each"
+                " independently. Refused — see the note above this check."
+            )
+        t.joint_inits.append(
+            JointInitSpec(jfixture + "_" + jjoints[0], rng.lo, rng.hi)
+        )
+
     # ⚠ FAMILY SLOT ORDER, NOT `:init` ORDER. `validate_task_against_family`
     # refuses any other order because the host and device samplers walk
     # different lists and rejection sampling is order-dependent. A `.bddl`
@@ -853,7 +1067,19 @@ def resolve_family(
             # `:objects` and not for `:fixtures` — so a free slot on the
             # plain copy would be welded to the world and never move.
             asset2 = String(LIBERO_OBJECT_DIR) + "/" + cat2.name + "_free.xml"
-        f.slots.append(SlotSpec(String(p.objects[i].name), SLOT_FREE, asset2))
+        var slot2 = SlotSpec(String(p.objects[i].name), SLOT_FREE, asset2)
+        # ⚠⚠ THE PLACEMENT GEOMETRY, READ FROM THE PACK'S OWN ASSET, NOT THE
+        # GENERATED `_free` COPY. `asset2` points at the copy when
+        # `with_robot`, and the copy adds a free joint and nothing else — but
+        # the three sites live in the pack XML either way and reading the one
+        # we KNOW has them is what makes this unconditional. See
+        # `SlotSpec.has_geom` for what the alternative cost.
+        var geom_xml: String
+        with open(pack_dir + "/" + cat2.asset, "r") as gh:
+            geom_xml = gh.read()
+        var g3 = asset_placement_geom(geom_xml, String(cat2.asset))
+        slot2.set_geom(g3[0], g3[1], g3[2])
+        f.slots.append(slot2^)
 
     # ── regions: GOAL regions first (the device table is 16 deep and a
     # goal must index it; `init=` regions are sampled on the host) ────────

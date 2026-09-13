@@ -144,6 +144,107 @@ def write_free_vel_zero(mut qvel: List[Float64], dadr: Int):
         qvel[dadr + k] = 0.0
 
 
+def joint_init_addresses(
+    t: TaskSpec,
+    joint_names: List[String],
+    joint_nq: List[Int],
+) raises -> List[Int]:
+    """Each `jinit=`'s qpos address, in task order. RAISES on a joint the scene
+    does not have, or one that is not single-DOF.
+
+    ⚠⚠ THE REFUSAL IS THE POINT, AND IT CANNOT LIVE IN `spec.mojo`.
+    `validate_task_against_family` sees the FAMILY, which names slots and
+    regions and no joints at all — joint names come from the composed SCENE. So
+    a mistyped `jinit=` would otherwise be silently skipped and the episode
+    would start with a shut drawer holding a bowl, which MuJoCo resolves by
+    ejecting it one step in.
+
+    ⚠ SINGLE-DOF ONLY. A `jinit=` writes ONE number; a ball or free joint takes
+    four or seven, and writing one would leave the rest at whatever the last
+    episode ended with — a partially-restored pose that is not any pose.
+    """
+    var adr = List[Int]()
+    for k in range(len(t.joint_inits)):
+        ref j = t.joint_inits[k]
+        var qa = 0
+        var found = -1
+        for i in range(len(joint_names)):
+            if joint_names[i] == j.joint:
+                found = i
+                break
+            qa += joint_nq[i]
+        if found < 0:
+            raise Error(
+                "tasks: jinit names joint '" + j.joint + "', which the composed"
+                " scene does not have. The importer resolved it from the"
+                " asset's own `<site>` through categories.kv, so either the"
+                " family's slot is named differently or the asset changed."
+            )
+        if joint_nq[found] != 1:
+            raise Error(
+                "tasks: jinit names joint '" + j.joint + "', which has "
+                + String(joint_nq[found]) + " qpos words. A jinit writes ONE"
+                " number; the rest would keep the previous episode's values."
+            )
+        adr.append(qa)
+    return adr^
+
+
+def apply_joint_inits(
+    t: TaskSpec,
+    adr: List[Int],
+    values: List[Float64],
+    mut qpos: List[Float64],
+    mut qvel: List[Float64],
+    dadr: List[Int],
+) raises:
+    """Write each drawn joint value, and ZERO its velocity.
+
+    ⚠ THE VELOCITY TOO. `set_joint_qpos` alone leaves whatever the previous
+    episode's drawer was doing in `qvel`, so an episode would start with a
+    drawer already sliding — reproducible only until the episode order changes.
+    """
+    if len(adr) != len(t.joint_inits) or len(values) != len(t.joint_inits):
+        raise Error(
+            "tasks: apply_joint_inits got " + String(len(adr)) + " addresses"
+            " and " + String(len(values)) + " values for "
+            + String(len(t.joint_inits)) + " jinit lines"
+        )
+    if len(dadr) != len(t.joint_inits):
+        raise Error(
+            "tasks: apply_joint_inits needs one qvel address per jinit"
+        )
+    for k in range(len(t.joint_inits)):
+        qpos[adr[k]] = values[k]
+        qvel[dadr[k]] = 0.0
+
+
+def joint_init_dof_addresses(
+    t: TaskSpec,
+    joint_names: List[String],
+    joint_nv: List[Int],
+) raises -> List[Int]:
+    """Each `jinit=`'s qvel address, in task order. The `qvel` twin of
+    `joint_init_addresses`; separate because `nq` and `nv` differ per joint
+    type and a single walk would have to carry both."""
+    var adr = List[Int]()
+    for k in range(len(t.joint_inits)):
+        ref j = t.joint_inits[k]
+        var da = 0
+        var found = -1
+        for i in range(len(joint_names)):
+            if joint_names[i] == j.joint:
+                found = i
+                break
+            da += joint_nv[i]
+        if found < 0:
+            raise Error(
+                "tasks: jinit names joint '" + j.joint + "', not in the scene"
+            )
+        adr.append(da)
+    return adr^
+
+
 def reset_slots(
     t: TaskSpec,
     f: FamilySpec,

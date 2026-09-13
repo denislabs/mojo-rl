@@ -85,6 +85,7 @@ tests/tasks/test_osc_pose.mojo
 tests/tasks/test_osc_pose_gpu.mojo
 tests/tasks/test_osc_control_batched.mojo
 tests/tasks/test_libero_osc_env.mojo
+tests/tasks/test_libero_placement.mojo
 # The LIBERO viewer's HEADLESS path — reset, one policy step under the hold
 # action, and the goal read through the full L3 language. It is the only
 # check that runs the family's reset, the controller and the predicate in

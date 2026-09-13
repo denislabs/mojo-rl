@@ -133,6 +133,7 @@ comptime ASSET_XML = """<mujoco model="fake">
       </body>
       <site rgba="0 0 0 0" size="0.005" pos="0 0 -0.123" name="bottom_site" />
       <site rgba="0 0 0 0" size="0.005" pos="0 0 0.2" name="top_site" />
+      <site rgba="0 0 0 0" size="0.005" pos="0.03 0.04 0" name="horizontal_radius_site" />
     </body>
   </worldbody>
 </mujoco>
@@ -289,6 +290,23 @@ def main() raises:
     ta.check(family_todo_count(fam) == 0, "no TODO placeholder survives")
     ta.check(fam.base == work + "/scenes/libero_tabletop_base_style.xml",
           "base is the problem's arena; got " + fam.base)
+    # ⚠ THE THIRD SITE IS IN THE FIXTURE BECAUSE `resolve_family` NOW REQUIRES
+    # IT. `asset_placement_geom` refuses an asset missing any of the three
+    # robosuite sites rather than defaulting a resting height, and this fixture
+    # is meant to stand in for a real one — all 93 pack assets declare them.
+    var fslot = -1
+    for i in range(len(fam.slots)):
+        if fam.slots[i].kind == SLOT_FREE:
+            fslot = i
+    ta.check(fslot >= 0 and fam.slots[fslot].has_geom,
+             "the free slot carries the asset's placement geometry")
+    ta.check(
+        fslot >= 0 and fam.slots[fslot].bottom_z == -0.123
+        and fam.slots[fslot].top_z == 0.2
+        and abs(fam.slots[fslot].h_radius - 0.05) < 1e-12,
+        "bottom_z -0.123, top_z 0.2, h_radius hypot(0.03, 0.04) = 0.05; got "
+        + (fam.slots[fslot].geom_describe() if fslot >= 0 else String("none")),
+    )
     ta.check(len(fam.slots) == 2, "workspace fixture is NOT a slot: 2 slots, got "
           + String(len(fam.slots)))
     ta.check(fam.slots[0].name == "wooden_cabinet_1" and fam.slots[0].kind == SLOT_STATIC,

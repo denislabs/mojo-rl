@@ -99,8 +99,13 @@ from mojo_rl.tasks.predicates import (
 from mojo_rl.tasks.eval import (
     eval_goal, HostState, region_sites, region_contact_bodies,
 )
-from mojo_rl.tasks.sampler import sample_placements, RegionFrame, SampleReport
-from mojo_rl.tasks.reset import free_slot_addresses, reset_slots, SlotAddress
+from mojo_rl.tasks.sampler import (
+    sample_placements, sample_joint_inits, RegionFrame, SampleReport,
+)
+from mojo_rl.tasks.reset import (
+    free_slot_addresses, reset_slots, SlotAddress,
+    joint_init_addresses, joint_init_dof_addresses, apply_joint_inits,
+)
 from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
@@ -151,6 +156,7 @@ def do_reset(
     mut scratch: DynamicsScratch[DT, DynDims, 1],
     t: TaskSpec, f: FamilySpec,
     addrs: List[SlotAddress], rsites: List[Int],
+    jq: List[Int], jv: List[Int],
     nq: Int, nv: Int, ns: Int, run_seed: UInt64, lane: Int,
 ) raises -> SampleReport:
     """One episode's reset: the family's base pose, a sampled placement per
@@ -169,6 +175,19 @@ def do_reset(
         d.qvel.data[i] = Scalar[DT](0)
     for i in range(len(f.base_qpos)):
         d.qpos.data[i] = Scalar[DT](f.base_qpos[i])
+    # ⚠⚠ THE JOINT INITS COME FIRST, BEFORE FK AND BEFORE THE REGION FRAMES.
+    # Opening a drawer MOVES the region an object is placed into: the top
+    # drawer's interior site rides the sliding body. Sampling first and opening
+    # afterwards leaves the bowl at the CLOSED drawer's interior position and
+    # the drawer slides out from under it — 32 contacts, and only at some seeds.
+    #
+    # `bddl_base_domain._reset_internal` does exactly this and says why: it runs
+    # every `OpenCloseSampler`, then calls `mujoco.mj_step1` — "we manually do
+    # this stepping" — and only then `placement_initializer.sample()`.
+    var jvals0 = sample_joint_inits(t, run_seed, lane)
+    for k in range(len(jvals0)):
+        d.qpos.data[jq[k]] = Scalar[DT](jvals0[k])
+        d.qvel.data[jv[k]] = Scalar[DT](0)
     forward_kinematics["cpu", DT, DynDims, 1](d, m)
     var sp = List[Float64]()
     for i in range(ns * 3):
@@ -191,6 +210,9 @@ def do_reset(
     for _ in range(nv):
         qvel.append(0.0)
     reset_slots(t, f, placed, addrs, qpos, qvel)
+    # ⚠ RE-APPLIED, because `reset_slots` rebuilt `qpos` from `d` BEFORE the
+    # placements and the joint values must survive into the vector it returns.
+    apply_joint_inits(t, jq, jvals0, qpos, qvel, jv)
     for i in range(nq):
         d.qpos.data[i] = Scalar[DT](qpos[i])
     for i in range(nv):
@@ -349,6 +371,11 @@ def main() raises:
         jq.append(fmd.joints[i].nq)
         jv.append(fmd.joints[i].nv)
     var addrs = free_slot_addresses(f, fmd.joint_names, jt, jq, jv)
+    # ⚠ RESOLVED ONCE, AND IT RAISES HERE rather than at the first reset: a
+    # `jinit=` naming a joint the scene does not have is a shut drawer with a
+    # bowl in it, and the cause is nowhere near the symptom.
+    var jq_adr = joint_init_addresses(t, fmd.joint_names, jq)
+    var jv_adr = joint_init_dof_addresses(t, fmd.joint_names, jv)
 
     # ── the controller ────────────────────────────────────────────────────
     var qadr_all = List[Int]()
@@ -392,7 +419,7 @@ def main() raises:
 
     # ── headless smoke: reset, one policy step, the goal ──────────────────
     if check_only:
-        var rep = do_reset(d, m, osc, scratch, t, f, addrs, rsites, nq, nv, ns, run_seed, 0)
+        var rep = do_reset(d, m, osc, scratch, t, f, addrs, rsites, jq_adr, jv_adr, nq, nv, ns, run_seed, 0)
         print("  reset  :", rep.accepted, "placed in", rep.attempts, "draws")
         for i in range(len(f.slots)):
             if f.slots[i].kind != SLOT_FREE:
@@ -421,8 +448,29 @@ def main() raises:
         for k in range(3):
             drift += (p1[k] - p0[k]) * (p1[k] - p0[k])
         print("  one policy step under the HOLD action:")
-        print("           grip site moved", drift ** 0.5, "m;",
-              Int(d.meta.data[META_IDX_NUM_CONTACTS]), "contacts")
+        var ncon = Int(d.meta.data[META_IDX_NUM_CONTACTS])
+        print("           grip site moved", drift ** 0.5, "m;", ncon, "contacts")
+        # ⚠ THE PAIRS, NOT JUST THE COUNT, AND FROM THE FIRST ONE. A count
+        # tells you a reset is contact-heavy and not WHY: when the
+        # fixture-region inits first landed, two tasks jumped from 4 contacts to
+        # 56 and 64 (the cap) and only the pair list said which body was buried
+        # in which. MuJoCo reports ZERO for both composed scenes with the arm at
+        # base_qpos and the props parked, so any contact here is worth a name.
+        if ncon > 0:
+            print("           contact pairs (first 12):")
+            for ci in range(ncon if ncon < 12 else 12):
+                var ba = Int(d.contacts.data[ci * CONTACT_SIZE + CONTACT_IDX_BODY_A])
+                var bb = Int(d.contacts.data[ci * CONTACT_SIZE + CONTACT_IDX_BODY_B])
+                # ⚠ NO OFF-BY-ONE. `fmd.body_names` INCLUDES the worldbody at
+                # index 0 (`body_names_in_order`: "index 0 is the worldbody"),
+                # so a contact's body id indexes it DIRECTLY. Subtracting one —
+                # which the first version of this did, by analogy with
+                # `body_parent_tab` — names the body before the real one, and
+                # every pair reads plausibly: it blamed a fingertip and a stove
+                # knob for contacts that were somewhere else entirely.
+                var na = String(fmd.body_names[ba]) if ba < len(fmd.body_names) else String("?")
+                var nb = String(fmd.body_names[bb]) if bb < len(fmd.body_names) else String("?")
+                print("             ", na, "<->", nb)
         var st = read_state(d, nb, ns, nq, site_body_tab, site_quat_tab, body_parent_tab)
         print("  goal   ->", eval_goal(g, f, st, rsites, rcontact))
         print("  ok: the family resets, the controller holds, the goal reads")
@@ -461,7 +509,7 @@ def main() raises:
     var drive = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
     var ever_held = False
 
-    _ = do_reset(d, m, osc, scratch, t, f, addrs, rsites, nq, nv, ns, run_seed, lane)
+    _ = do_reset(d, m, osc, scratch, t, f, addrs, rsites, jq_adr, jv_adr, nq, nv, ns, run_seed, lane)
     episode = 1
 
     while renderer.is_open():
@@ -616,7 +664,7 @@ def main() raises:
             require_tier_a(g, t.name)
             print("  -> task:", t.name, "|", t.goal)
             lane += 1
-            _ = do_reset(d, m, osc, scratch, t, f, addrs, rsites, nq, nv, ns, run_seed, lane)
+            _ = do_reset(d, m, osc, scratch, t, f, addrs, rsites, jq_adr, jv_adr, nq, nv, ns, run_seed, lane)
             step = 0
             episode += 1
             held = 0
@@ -625,7 +673,7 @@ def main() raises:
             grip_close = False
         elif want_reset or step >= f.horizon:
             lane += 1
-            _ = do_reset(d, m, osc, scratch, t, f, addrs, rsites, nq, nv, ns, run_seed, lane)
+            _ = do_reset(d, m, osc, scratch, t, f, addrs, rsites, jq_adr, jv_adr, nq, nv, ns, run_seed, lane)
             step = 0
             episode += 1
             held = 0

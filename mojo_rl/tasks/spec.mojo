@@ -114,6 +114,38 @@ struct SlotSpec(Copyable, ImplicitlyCopyable, Movable):
     static slot needs one at all; the SO-101 families leave it 0 and their
     `.family` text is unchanged."""
 
+    var has_geom: Bool
+    """Whether `bottom_z` / `top_z` / `h_radius` were read off the asset.
+
+    ⚠⚠ THE PLACEMENT GEOMETRY IS THE ASSET'S, NOT A CONSTANT, AND IT USED TO BE
+    A CONSTANT TWELVE TIMES OVER. `sample_placements` took a `radii` list and
+    every caller invented one — `0.02` in five drivers, `CFG.SLOT_RADIUS` in
+    four — and the sampler used that ONE number for two different physical
+    quantities: the rejection distance between objects AND the height at which
+    an object rests (`z = site_z + radius`).
+
+    robosuite objects declare all three, and every one of the 93 LIBERO assets
+    has them: `bottom_site` (how far the object's resting bottom is below its
+    origin), `top_site` (how far its supporting top is above), and
+    `horizontal_radius_site` (whose `sqrt(x^2 + y^2)` is robosuite's
+    `horizontal_radius`). `SiteRegionRandomSampler` uses `-bottom_offset[-1]`
+    for the height and `horizontal_radius` for the rejection — two numbers, not
+    one.
+
+    MEASURED, on `akita_black_bowl`: `bottom_site` is at z = -0.06 while the
+    collision geoms reach only -0.012, so LIBERO starts the bowl 4.8 cm higher
+    than its own geometry needs and lets it fall. With the hard-coded 0.02 the
+    bowl was placed 4 cm LOWER — which on a table is a small interpenetration
+    the solver absorbs, and on the stove's `cook_region` (whose site sits at the
+    vertical CENTRE of a 4 cm base box) is 136 contacts and a wedged bowl.
+
+    ⚠ FALSE FOR A SLOT WHOSE ASSET DECLARES NONE, and then the caller's `radii`
+    entry is used exactly as before — which is what keeps `so101_tabletop` and
+    the hand-built test families working unchanged."""
+    var bottom_z: Float64
+    var top_z: Float64
+    var h_radius: Float64
+
     def __init__(out self, name: String, kind: Int, asset: String):
         self.name = name
         self.kind = kind
@@ -123,6 +155,24 @@ struct SlotSpec(Copyable, ImplicitlyCopyable, Movable):
         self.py = 0.0
         self.pz = 0.0
         self.yaw = 0.0
+        self.has_geom = False
+        self.bottom_z = 0.0
+        self.top_z = 0.0
+        self.h_radius = 0.0
+
+    def set_geom(mut self, bottom_z: Float64, top_z: Float64, h_radius: Float64):
+        """Record the asset's own `bottom_site` / `top_site` /
+        `horizontal_radius_site`. See `has_geom`."""
+        self.has_geom = True
+        self.bottom_z = bottom_z
+        self.top_z = top_z
+        self.h_radius = h_radius
+
+    def geom_describe(self) -> String:
+        return (
+            self.name + ":" + String(self.bottom_z) + "," + String(self.top_z)
+            + "," + String(self.h_radius)
+        )
 
     def __init__(
         out self, name: String, kind: Int, asset: String,
@@ -136,6 +186,10 @@ struct SlotSpec(Copyable, ImplicitlyCopyable, Movable):
         self.py = py
         self.pz = pz
         self.yaw = yaw
+        self.has_geom = False
+        self.bottom_z = 0.0
+        self.top_z = 0.0
+        self.h_radius = 0.0
 
     def describe(self) -> String:
         var s = self.name + ":" + slot_kind_name(self.kind) + ":" + self.asset
@@ -314,6 +368,37 @@ struct InitSpec(Copyable, ImplicitlyCopyable, Movable):
         return self.slot + "@" + self.region
 
 
+struct JointInitSpec(Copyable, ImplicitlyCopyable, Movable):
+    """`jinit=<joint>@<lo>,<hi>` — a joint's starting value, UNIFORMLY DRAWN.
+
+    ⚠⚠ A RANGE, NOT A VALUE, AND THAT IS LIBERO'S OWN SHAPE. A `(Open X)` in a
+    `.bddl`'s `:init` builds an `OpenCloseSampler` over the class's
+    `default_open_ranges` and `bddl_base_domain._reset_internal` calls
+    `np.random.uniform` on it every reset. Writing one number here would make
+    every episode start the drawer at exactly the same opening — the same
+    degeneracy `init=` exists to avoid for a placement, and the reason that
+    line is a region rather than a pose.
+
+    ⚠ IT IS A JOINT, NOT A SLOT. The `.bddl` says `(Open
+    wooden_cabinet_1_top_region)` — a REGION — and the importer resolves that
+    to the drawer's joint through `categories.kv` and the asset's own `<site>`.
+    Doing that resolution here would need the asset XML at load time, which a
+    `.task` reader has no business opening.
+    """
+
+    var joint: String
+    var lo: Float64
+    var hi: Float64
+
+    def __init__(out self, joint: String, lo: Float64, hi: Float64):
+        self.joint = joint
+        self.lo = lo
+        self.hi = hi
+
+    def describe(self) -> String:
+        return self.joint + "@" + String(self.lo) + "," + String(self.hi)
+
+
 struct FamilySpec(Movable & Deinitable):
     """The compile unit. Every task in the family instantiates EVERY slot."""
 
@@ -463,6 +548,14 @@ struct FamilySpec(Movable & Deinitable):
             s += "inherit_option=1\n"
         for i in range(len(self.slots)):
             s += "slot=" + self.slots[i].describe() + "\n"
+        # ⚠ A SEPARATE LINE, NOT A FIFTH FIELD ON `slot=`. The pose field is
+        # the fourth and a FREE slot is refused if it carries one — so the
+        # placement geometry cannot ride there without making the pose
+        # optional-in-the-middle. Written only for slots that have it, so every
+        # `.family` that predates this round-trips byte for byte.
+        for i in range(len(self.slots)):
+            if self.slots[i].has_geom:
+                s += "slot_geom=" + self.slots[i].geom_describe() + "\n"
         for i in range(len(self.regions)):
             s += "region=" + self.regions[i].describe() + "\n"
         return s^
@@ -477,6 +570,11 @@ struct TaskSpec(Movable & Deinitable):
     var language: String
     var active: List[String]
     var inits: List[InitSpec]
+    var joint_inits: List[JointInitSpec]
+    """`jinit=` lines: a joint's starting value, drawn per episode.
+
+    ⚠ EMPTY FOR EVERY TASK THAT PREDATES THEM, and `encode` writes nothing when
+    the list is empty — so every existing `.task` round-trips byte for byte."""
     var goal: String
     """The success predicate, as TEXT. Parsed in P2, not here — see the module
     header. Empty is refused by `parse_task`: a task with no goal always
@@ -490,6 +588,7 @@ struct TaskSpec(Movable & Deinitable):
         self.language = String("")
         self.active = List[String]()
         self.inits = List[InitSpec]()
+        self.joint_inits = List[JointInitSpec]()
         self.goal = String("")
 
     def __init__(out self, *, deinit move: Self):
@@ -499,6 +598,7 @@ struct TaskSpec(Movable & Deinitable):
         self.language = move.language^
         self.active = move.active^
         self.inits = move.inits^
+        self.joint_inits = move.joint_inits^
         self.goal = move.goal^
 
     def is_active(self, slot: String) -> Bool:
@@ -518,6 +618,8 @@ struct TaskSpec(Movable & Deinitable):
             s += "active=" + self.active[i] + "\n"
         for i in range(len(self.inits)):
             s += "init=" + self.inits[i].describe() + "\n"
+        for i in range(len(self.joint_inits)):
+            s += "jinit=" + self.joint_inits[i].describe() + "\n"
         return s^
 
 
@@ -708,6 +810,33 @@ def parse_init(spec: String) raises -> InitSpec:
     return InitSpec(slot^, region^)
 
 
+def parse_joint_init(spec: String) raises -> JointInitSpec:
+    """`<joint>@<lo>,<hi>`."""
+    var parts = split_once(spec, String("@"))
+    if len(parts) != 2:
+        raise Error(
+            "tasks: malformed jinit '" + spec + "' — expected"
+            " '<joint>@<lo>,<hi>', e.g."
+            " 'wooden_cabinet_1_top_level@-0.16,-0.14'"
+        )
+    var joint = String(String(parts[0]).strip())
+    var r = split_on(String(parts[1]), String(","))
+    if joint.byte_length() == 0 or len(r) != 2:
+        raise Error(
+            "tasks: jinit '" + spec + "' needs a joint and a 'lo,hi' range"
+        )
+    var lo = Float64(String(String(r[0]).strip()))
+    var hi = Float64(String(String(r[1]).strip()))
+    # ⚠ `OpenCloseSampler.__init__` asserts the same thing. Reversed, every
+    # `np.random.uniform(low=hi, high=lo)` draws OUTSIDE the interval.
+    if hi < lo:
+        raise Error(
+            "tasks: jinit '" + spec + "' has hi < lo — a range that samples"
+            " outside itself"
+        )
+    return JointInitSpec(joint^, lo, hi)
+
+
 def _parse_flag(val: String, what: String) raises -> Bool:
     """`0` or `1`, nothing else — a `yes` that read as False would be silent."""
     if val == "1":
@@ -770,6 +899,38 @@ def parse_family(text: String) raises -> FamilySpec:
             f.inherit_option = _parse_flag(val, String("inherit_option"))
         elif key == "slot":
             f.slots.append(parse_slot(val))
+        elif key == "slot_geom":
+            # ⚠ RESOLVED AGAINST THE SLOTS SEEN SO FAR, so a `slot_geom=` for a
+            # slot declared LATER raises rather than being silently dropped —
+            # which would restore the hard-coded radius for that one object and
+            # nothing would report it.
+            var g = split_on(val, String(":"))
+            if len(g) != 2:
+                raise Error(
+                    "tasks: malformed slot_geom '" + val + "' — expected"
+                    " '<slot>:<bottom_z>,<top_z>,<h_radius>'"
+                )
+            var gname = String(String(g[0]).strip())
+            var gn = split_on(String(String(g[1]).strip()), String(","))
+            if len(gn) != 3:
+                raise Error(
+                    "tasks: slot_geom '" + val + "' needs three numbers:"
+                    " bottom_z, top_z, h_radius"
+                )
+            var gi = -1
+            for si in range(len(f.slots)):
+                if f.slots[si].name == gname:
+                    gi = si
+            if gi < 0:
+                raise Error(
+                    "tasks: slot_geom names slot '" + gname + "', which no"
+                    " earlier slot= line declares"
+                )
+            f.slots[gi].set_geom(
+                Float64(String(String(gn[0]).strip())),
+                Float64(String(String(gn[1]).strip())),
+                Float64(String(String(gn[2]).strip())),
+            )
         elif key == "region":
             f.regions.append(parse_region(val))
         else:
@@ -777,7 +938,7 @@ def parse_family(text: String) raises -> FamilySpec:
                 key, lines[i].lineno, String("family spec"),
                 String("schema_version, family, base, horizon, control_freq,"
                        " park, base_pos, floor, base_qpos, inherit_option, slot,"
-                       " region"),
+                       " slot_geom, region"),
             )
 
     if not saw_version:
@@ -845,11 +1006,13 @@ def parse_task(text: String) raises -> TaskSpec:
             t.active.append(val)
         elif key == "init":
             t.inits.append(parse_init(val))
+        elif key == "jinit":
+            t.joint_inits.append(parse_joint_init(val))
         else:
             _unknown_key(
                 key, lines[i].lineno, String("task spec"),
                 String("schema_version, task, family, language, goal, active,"
-                       " init"),
+                       " init, jinit"),
             )
 
     if not saw_version:

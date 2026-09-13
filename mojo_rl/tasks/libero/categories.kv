@@ -18,6 +18,19 @@
 #     FlatStove.turn_on     : qpos >= min([0.5, 2.1])      ->  on=ge:0.5
 #     FlatStove.turn_off    : qpos <  max([-0.005, 0.0])   ->  off=lt:0.0
 #
+# ⚠⚠ `*_range=` IS THE *_ranges LIST ITSELF, NOT THE THRESHOLD DERIVED FROM IT.
+# The two answer different questions and both are needed:
+#
+#     open=lt:-0.14        is the drawer OPEN?   (`is_open`, a PREDICATE)
+#     open_range=-0.16,-0.14  where does an episode START it?  (a DRAW)
+#
+# `bddl_base_domain._reset_internal` builds an `OpenCloseSampler` from
+# `default_open_ranges` and calls `np.random.uniform(low, high)` on it, so a
+# `(Open X)` in a `:init` is a UNIFORM DRAW over the range, not a jump to the
+# threshold. 28 of the corpus' 130 tasks carry one. Deriving the range from the
+# threshold would be a guess in the one direction the data does not determine:
+# `open=lt:-0.14` says nothing about -0.16.
+#
 # ⚠⚠ THE DIRECTION IS PER CLASS AND IS NOT THE SIGN OF THE RANGE. `ShortCabinet`
 # (unused by any task, kept as the counter-example) opens POSITIVE:
 # `qpos > min([0.10, 0.16])`. A reader that inferred `<` from a negative range
@@ -164,7 +177,9 @@ asset=articulated_objects/wooden_cabinet.xml
 rotation=0.7853981633974483,1.5707963267948966
 axis=x
 open=lt:-0.14
+open_range=-0.16,-0.14
 close=gt:0.0
+close_range=0.0,0.005
 
 category=white_cabinet
 kind=asset
@@ -172,7 +187,9 @@ asset=articulated_objects/white_cabinet.xml
 rotation=0.7853981633974483,1.5707963267948966
 axis=x
 open=lt:-0.14
+open_range=-0.16,-0.14
 close=gt:0.0
+close_range=0.0,0.005
 
 category=microwave
 kind=asset
@@ -180,7 +197,9 @@ asset=articulated_objects/microwave.xml
 rotation=0.7853981633974483,1.5707963267948966
 axis=x
 open=lt:-1.3
+open_range=-2.094,-1.3
 close=gt:-0.005
+close_range=-0.005,0.0
 
 category=flat_stove
 kind=asset
@@ -188,7 +207,9 @@ asset=articulated_objects/flat_stove.xml
 rotation=0,0
 axis=y
 on=ge:0.5
+on_range=0.5,2.1
 off=lt:0.0
+off_range=-0.005,0.0
 
 # unused by any task; the counter-example for the direction rule
 category=short_cabinet
@@ -197,7 +218,9 @@ asset=articulated_objects/short_cabinet.xml
 rotation=0.7853981633974483,1.5707963267948966
 axis=x
 open=gt:0.10
+open_range=0.10,0.16
 close=lt:0.0
+close_range=-0.005,0.0
 
 # ── google scanned (envs/objects/google_scanned_objects.py) ───────────────
 category=akita_black_bowl
