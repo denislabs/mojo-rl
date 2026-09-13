@@ -72,7 +72,7 @@ from ..constants import (
     SENSSTAGE_VEL,
     SENSSTAGE_ACC,
 )
-from .hfield_loader import load_hfield_file
+from .hfield_loader import load_hfield_file, normalize_hfield
 from .flat_model import (
     BodyData,
     JointData,
@@ -2007,6 +2007,15 @@ def _fill_assets(
             )
         result.hfield_names.append(hname)
         result.hfield_files.append(hfile)
+        # ⚠ THE INLINE GRID (AUD-14). `<hfield elevation="…">` is MuJoCo's
+        # `userdata` spelling: nrow*ncol values in the XML instead of a file.
+        # Kept as the raw STRING and decoded beside the file decode at the end
+        # of `parse_xml_full`, so the two paths land in `hfield_data` through
+        # the same normalisation — which is the whole reason this is not
+        # parsed here, where the file is not decoded either.
+        result.hfield_elevation_s.append(
+            _trim(_extract_attr(tag, "elevation"))
+        )
         for k in range(4):
             result.hfield_size.append(_parse_float(sp[k]))
         var nr_s = _trim(_extract_attr(tag, "nrow"))
@@ -7147,11 +7156,10 @@ def _scan_silent_attrs(xml: String, mut result: FlatModelDef) raises:
         "a mesh without `file` is skipped, and every geom naming it gets no"
         " geometry (invisible, non-colliding)",
     )
-    _silent(
-        result, "AUD-14",
-        _count_attr(_opening_tags(xml, "hfield"), "elevation", _SA_PRESENT),
-        "`<hfield elevation>`", "inline elevation data is replaced by zeros",
-    )
+    # ⚠ NO AUD-14 ROW ANY MORE: `<hfield elevation>` IS READ (2026-09-13).
+    # The grid is decoded beside the file decode and goes through the same
+    # normalisation; a length that disagrees with nrow*ncol raises, as MuJoCo
+    # does.
 
     # ── <joint> ────────────────────────────────────────────────────────────
     var jnt = _opening_tags(xml, "joint")
@@ -7824,17 +7832,67 @@ def parse_xml_full(
             for k in range(len(loaded[2])):
                 result.hfield_data.append(loaded[2][k])
         else:
-            # No file: MuJoCo takes `nrow`/`ncol` with `userdata`, and a field
-            # with neither is an error there. `userdata` is not parsed, so an
-            # explicit grid is a FLAT one rather than a silent zero-size.
+            # ⚠ NO FILE MEANS THE GRID IS IN THE XML (AUD-14), and it used to
+            # be replaced by ZEROS — a flat plate where the model declares
+            # terrain, with no message. `<hfield elevation="…">` is MuJoCo's
+            # `userdata` spelling: `mjCHField::Compile` copies it into `data`
+            # and requires `nrow*ncol == userdata.size()`
+            # (user_objects.cc:4785-4794), then runs the SAME min-max
+            # normalisation to [0, 1] that a decoded file gets
+            # (:4881-4895) — which is why this shares `normalize_hfield`
+            # with the loader rather than spelling the scaling again.
             var n = result.hfield_nrow[i] * result.hfield_ncol[i]
             if n < 1:
                 raise Error(
                     "physics3d: <hfield name='" + result.hfield_names[i]
                     + "'> has no `file` and no positive nrow/ncol."
                 )
-            for _k in range(n):
-                result.hfield_data.append(0.0)
+            var ev = String("")
+            if i < len(result.hfield_elevation_s):
+                ev = result.hfield_elevation_s[i]
+            var grid = List[Float64]()
+            if ev.byte_length() == 0:
+                # MuJoCo fills zeros when neither a file nor `elevation` is
+                # given (xml_native_reader.cc:2296-2300) — so a flat field
+                # here matches, and this is the ONE case where the old
+                # behaviour was right.
+                for _k in range(n):
+                    grid.append(0.0)
+            else:
+                var parts = List[String]()
+                _split_spaces(ev, parts)
+                if len(parts) != n:
+                    raise Error(
+                        "physics3d: <hfield name='" + result.hfield_names[i]
+                        + "'> has " + String(len(parts)) + " `elevation`"
+                        " values but nrow*ncol = " + String(n)
+                        + ". MuJoCo: 'elevation data length must match"
+                        " nrow*ncol'."
+                    )
+                # ⚠⚠ REVERSE ROW ORDER, AND IT IS NOT COSMETIC. The reader
+                # flips the rows on the way in — "copy in reverse row order,
+                # so XML string is top-to-bottom"
+                # (xml_native_reader.cc:2285-2292) — because `hfield_data`
+                # row 0 is the field's MINUS-Y edge while a human writing the
+                # grid in XML puts the far edge on the first line. Reading it
+                # straight through mirrors the terrain about y, which is a
+                # perfectly plausible heightfield and the wrong one.
+                var nrow = result.hfield_nrow[i]
+                var ncol = result.hfield_ncol[i]
+                for _k in range(n):
+                    grid.append(0.0)
+                for r in range(nrow):
+                    var flip = nrow - 1 - r
+                    for c in range(ncol):
+                        grid[flip * ncol + c] = _parse_float(
+                            parts[r * ncol + c]
+                        )
+            # The SAME min-max rescale to [0, 1] a decoded file gets
+            # (`mjCHField::Compile`, user_objects.cc:4881-4895) — shared with
+            # the loader rather than spelled again here.
+            normalize_hfield(grid)
+            for k in range(n):
+                result.hfield_data.append(grid[k])
 
     # Single DFS pass: bodies + joints + geoms + lights + cameras + sites
     _fill_model(worldbody, defaults, named_defaults, result, deg_factor, eulerseq)

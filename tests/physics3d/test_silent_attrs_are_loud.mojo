@@ -267,7 +267,10 @@ def test_every_silent_row_reports_its_audit_id() raises:
     print("  silent_attrs =", fmd.silent_attrs, " ids =", len(fmd.silent_attr_ids))
     var want: List[String] = [
         String("AUD-08"), String("AUD-12"),
-        String("AUD-14"), String("AUD-15"), String("AUD-21"),
+        String("AUD-15"), String("AUD-21"),
+        # ⚠ AUD-14 IS GONE FROM THIS LIST ON PURPOSE, like AUD-27 and AUD-34:
+        # `<hfield elevation>` is READ as of 2026-09-13 and gated by
+        # `test_hfield_elevation_vs_mujoco`.
         # AUD-23 is GONE from this list on purpose: `<sensor>` is parsed now,
         # and an element this engine does not model RAISES rather than being
         # counted. Its coverage moved to `test_sensor_table_vs_mujoco`.

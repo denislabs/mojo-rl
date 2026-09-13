@@ -43,7 +43,7 @@ def load_hfield_file(path: String) raises -> Tuple[Int, Int, List[Float64]]:
     return _load_custom_hfield(path)
 
 
-def _normalize(mut d: List[Float64]) raises:
+def normalize_hfield(mut d: List[Float64]) raises:
     """`mjCHField::Compile`'s tail — min-max to [0, 1], in place."""
     if len(d) == 0:
         raise Error("physics3d: <hfield> has no elevation data")
@@ -77,7 +77,7 @@ def _load_png_hfield(path: String) raises -> Tuple[Int, Int, List[Float64]]:
         for c in range(ncol):
             # RED, and rows reversed — see the header.
             d.append(Float64(Int(tex.pixels[(src_row * ncol + c) * 4])))
-    _normalize(d)
+    normalize_hfield(d)
     return (nrow, ncol, d^)
 
 
@@ -115,5 +115,5 @@ def _load_custom_hfield(path: String) raises -> Tuple[Int, Int, List[Float64]]:
         var o = 8 + i * 4
         var bits = UInt32(_u32(o))
         d.append(Float64(bitcast[DType.float32, 1](bits)))
-    _normalize(d)
+    normalize_hfield(d)
     return (nrow, ncol, d^)

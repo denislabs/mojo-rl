@@ -2384,6 +2384,10 @@ struct FlatModelDef(Movable):
     # `hfield_adr` / (nrow * ncol), the same arrangement `mesh_vert` uses.
     var hfield_names: List[String]
     var hfield_files: List[String]
+    # `<hfield elevation>` (AUD-14): the inline grid, kept as its raw string
+    # and decoded beside the FILE decode at the end of `parse_xml_full`, so
+    # both paths reach `hfield_data` through one normalisation.
+    var hfield_elevation_s: List[String]
     var hfield_size: List[Float64]  # 4 per field: rx, ry, elevation, base
     var hfield_nrow: List[Int]
     var hfield_ncol: List[Int]
@@ -2567,6 +2571,7 @@ struct FlatModelDef(Movable):
         self.warmstart_disabled = False
         self.hfield_names = List[String]()
         self.hfield_files = List[String]()
+        self.hfield_elevation_s = List[String]()
         self.hfield_size = List[Float64]()
         self.hfield_nrow = List[Int]()
         self.hfield_ncol = List[Int]()
