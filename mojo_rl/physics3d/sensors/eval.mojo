@@ -50,6 +50,7 @@ from mojo_rl.physics3d.constants import (
     SENS_RANGEFINDER,
     SENS_JOINTPOS,
     SENS_JOINTVEL,
+    SENS_JOINTACTFRC,
     SENS_FRAMEPOS,
     SENS_FRAMEQUAT,
     SENS_FRAMEXAXIS,
@@ -367,6 +368,27 @@ def _eval_stage[
                 d.sensordata.data[adr + 0] = Scalar[DTYPE](v[0])
                 d.sensordata.data[adr + 1] = Scalar[DTYPE](v[1])
                 d.sensordata.data[adr + 2] = Scalar[DTYPE](v[2])
+
+        elif st == SENS_JOINTACTFRC:
+            # `mjSENS_JOINTACTFRC` (engine_sensor.c:1309):
+            # `sensordata[0] = d->qfrc_actuator[m->jnt_dofadr[objid]]`.
+            #
+            # ⚠⚠ `d.qfrc` IS THIS TREE'S `qfrc_actuator`, AND `d.qfrc_actuator`
+            # IS NOT. The field of that name in `Data` is allocated, uploaded,
+            # downloaded and never written by anything in `physics3d`. What
+            # `apply_actions_fields` fills — and what
+            # `_clamp_joint_actfrc` clamps against `jnt_actfrcrange`, exactly
+            # as `mj_fwdActuation` clamps `qfrc_actuator`
+            # (engine_forward.c:722-738) — is `d.qfrc`. Reading the
+            # same-named buffer would have returned zeros forever.
+            #
+            # ⚠ IT IS SHORT `actuatorgravcomp` (AUD-30). MuJoCo routes a
+            # gravcomp body's share into `qfrc_actuator` when the actuator
+            # asks for it; this engine leaves it in the passive term. No model
+            # in this tree declares both, and the audit tracks it separately.
+            d.sensordata.data[adr] = d.qfrc.data[
+                Int(m.joints.data[objid * MODEL_JOINT_SIZE + JOINT_IDX_DOF_ADR])
+            ]
 
         elif st == SENS_SUBTREECOM:
             # `mjSENS_SUBTREECOM` (engine_sensor.c:737):

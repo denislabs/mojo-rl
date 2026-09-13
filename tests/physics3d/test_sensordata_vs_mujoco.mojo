@@ -1,6 +1,6 @@
 """`sensors/eval.mojo` vs MuJoCo's `d.sensordata` (AUD-23, AUD-47).
 
-Eleven sensors, twenty-five values, all three stages. `jointpos`/`jointvel` joined
+Twelve sensors, twenty-six values, all three stages. `jointpos`/`jointvel` joined
 on 2026-09-13 (audit §6 phase 1a) and sit BEHIND A FREEJOINT deliberately —
 see `test_the_joint_sensors_read_their_own_joints_address` for why a model of
 hinges alone cannot tell the two address tables apart.
@@ -45,6 +45,7 @@ from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_QPOS_ADR,
@@ -61,6 +62,11 @@ from mojo_rl.physics3d.constants import (
 )
 
 comptime DTYPE = DType.float64
+
+# ⚠ NONZERO ON PURPOSE. `jointactuatorfrc` reads the actuator force at a
+# joint's dof; at `ctrl = 0` it is 0.0, which is also what an unwritten slot
+# and a wrong dof address both return. `gear="2"` times this is 1.6.
+comptime EL_CTRL: Float64 = 0.8
 
 # A free body with a hinged child, in the air. `force`/`torque` are on the
 # CHILD's site so they measure a real interaction force rather than zero, and
@@ -96,7 +102,11 @@ comptime SD_XML = """
     <force name="frc" site="wrist"/>
     <torque name="trq" site="wrist"/>
     <touch name="tch" site="pad"/>
+    <jointactuatorfrc name="jaf" joint="el"/>
   </sensor>
+  <actuator>
+    <motor name="m" joint="el" gear="2"/>
+  </actuator>
 </mujoco>
 """
 
@@ -106,9 +116,9 @@ comptime SM = ModelDefFromXML[
     nbody=sp.NBODY, njoint=sp.NJOINT, nq=sp.NQ, nv=sp.NV,
     ngeom=sp.NGEOM, nact=sp.NACT, ntex=sp.NTEX, nmat=sp.NMAT,
     nlight=sp.NLIGHT, ncam=sp.NCAM, nsite=sp.NSITE,
-    # `parse_xml` does not count sensors — see its constructor note. Eleven
-    # sensors; 1+1+3+3+1+3+3+3+3+3+1 = 25 values.
-    nsensor=11, nsensordata=25,
+    # `parse_xml` does not count sensors — see its constructor note. Twelve
+    # sensors; 1+1+3+3+1+3+3+3+3+3+1+1 = 26 values.
+    nsensor=12, nsensordata=26,
     max_tendon=sp.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=8,
@@ -153,7 +163,11 @@ comptime SD_XML_CUT = """
     <force name="frc" site="wrist"/>
     <torque name="trq" site="wrist"/>
     <touch name="tch" site="pad" cutoff="5"/>
+    <jointactuatorfrc name="jaf" joint="el" cutoff="1.0"/>
   </sensor>
+  <actuator>
+    <motor name="m" joint="el" gear="2"/>
+  </actuator>
 </mujoco>
 """
 
@@ -163,7 +177,7 @@ comptime SMC = ModelDefFromXML[
     nbody=spc.NBODY, njoint=spc.NJOINT, nq=spc.NQ, nv=spc.NV,
     ngeom=spc.NGEOM, nact=spc.NACT, ntex=spc.NTEX, nmat=spc.NMAT,
     nlight=spc.NLIGHT, ncam=spc.NCAM, nsite=spc.NSITE,
-    nsensor=11, nsensordata=25,
+    nsensor=12, nsensordata=26,
     max_tendon=spc.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=8,
@@ -201,6 +215,7 @@ def _names() -> List[String]:
         String("rf"), String("jp"), String("vel"), String("gyr"),
         String("jv"), String("scm"), String("slv"),
         String("acc"), String("frc"), String("trq"), String("tch"),
+        String("jaf"),
     ]
 
 
@@ -249,6 +264,16 @@ def _run_plain(
         qpos.append(Float64(d.qpos.data[i]))
     for i in range(SM.NV):
         qvel.append(Float64(d.qvel.data[i]))
+
+    # ⚠ THE ACTUATOR FORCE IS APPLIED HERE, NOT BY `step`. `d.qfrc` — which
+    # IS this tree's `qfrc_actuator`, whatever the identically named `Data`
+    # field suggests — has exactly two writers: `reset_data`, which zeroes it,
+    # and `apply_actions_fields`, which the env calls once per substep. A
+    # harness that skipped this would leave `jointactuatorfrc` reading 0.0,
+    # which is indistinguishable from a broken one.
+    var act = List[Scalar[DTYPE]]()
+    var ctrl: List[Float64] = [EL_CTRL]
+    apply_actions_fields[DTYPE](sf, d, ctrl, act, SM.TIMESTEP)
 
     var integ = Integ()
     # ⚠⚠ NO EXPLICIT `sensor_*` CALLS. `EulerIntegrator.step` runs the three
@@ -301,6 +326,10 @@ def _run_cut(
     for i in range(SMC.NV):
         qvel.append(Float64(d.qvel.data[i]))
 
+    var act = List[Scalar[DTYPE]]()
+    var ctrl: List[Float64] = [EL_CTRL]
+    apply_actions_fields[DTYPE](sf, d, ctrl, act, SMC.TIMESTEP)
+
     var integ = IntegC()
     # ⚠⚠ NO EXPLICIT `sensor_*` CALLS. `EulerIntegrator.step` runs the three
     # passes itself, at MuJoCo's own stage points, and this gate exists to
@@ -327,6 +356,12 @@ def _mj_at(
         dat.qpos[i] = qpos[i]
     for i in range(len(qvel)):
         dat.qvel[i] = qvel[i]
+    # ⚠ THE SAME CONTROL OURS WAS DRIVEN WITH. Leaving it at 0 here would
+    # compare a driven engine against an undriven one, and the first thing to
+    # disagree would be `jointactuatorfrc` — which is exactly the row this
+    # fixture added, so the failure would look like the new code.
+    for i in range(Int(py=m.nu)):
+        dat.ctrl[i] = EL_CTRL
     mujoco.mj_forward(m, dat)
     return dat^
 
@@ -401,7 +436,7 @@ def test_sensordata_matches_mujoco() raises:
         ours.append(Float64(d.sensordata.data[i]))
 
     var n = _compare(String(SD_XML), String("plain"), 1e-9, ours, qpos, qvel)
-    assert_true(n == 25, "expected 25 values, compared " + String(n))
+    assert_true(n == 26, "expected 26 values, compared " + String(n))
 
 
 def test_cutoff_clamps_like_mujoco() raises:
@@ -431,13 +466,13 @@ def test_cutoff_clamps_like_mujoco() raises:
     var dat_plain = _mj_at(mujoco, String(SD_XML), qpos, qvel)
     var dat_cut = _mj_at(mujoco, String(SD_XML_CUT), qpos, qvel)
     var bound = 0
-    for k in range(25):
+    for k in range(26):
         if abs(
             Float64(py=dat_plain.sensordata[k])
             - Float64(py=dat_cut.sensordata[k])
         ) > 1e-12:
             bound += 1
-    print("  values MuJoCo's own cutoffs changed:", bound, "/ 25")
+    print("  values MuJoCo's own cutoffs changed:", bound, "/ 26")
     assert_true(
         bound >= 3,
         "the declared cutoffs do not bind on MuJoCo's side (only "
@@ -448,8 +483,8 @@ def test_cutoff_clamps_like_mujoco() raises:
     var n = _compare(
         String(SD_XML_CUT), String("cutoff"), 1e-9, ours, qpos, qvel
     )
-    assert_true(n == 25, "expected 25 values, compared " + String(n))
-    print("  our clamped sensordata matches MuJoCo's, all 25 values")
+    assert_true(n == 26, "expected 26 values, compared " + String(n))
+    print("  our clamped sensordata matches MuJoCo's, all 26 values")
 
 
 def test_a_stage_that_never_runs_is_loud() raises:
@@ -785,6 +820,57 @@ def test_subtreecom_is_this_steps_com_not_last_steps() raises:
     print("  the stale reading is", d_stale, "away and would have failed")
 
 
+def test_jointactuatorfrc_reads_the_actuator_force_at_the_dof() raises:
+    """`jointactuatorfrc` is `qfrc_actuator[jnt_dofadr]`, and names its buffer.
+
+    ⚠⚠ THE BUFFER IS `d.qfrc`, NOT `d.qfrc_actuator`. `Data` carries a field
+    spelled `qfrc_actuator` that is allocated, uploaded, downloaded and never
+    written by anything in `physics3d`; what `apply_actions_fields` fills, and
+    what the `jnt_actfrcrange` clamp clamps, is `d.qfrc`. A sensor reading the
+    identically named field would have returned 0.0 on every model forever —
+    and 0.0 is also the correct answer at `ctrl = 0`, which is why the fixture
+    drives the joint.
+
+    The expected value is arithmetic anyone can check: `gear=2`, `ctrl=0.8`,
+    so the force at `el`'s dof is 1.6.
+    """
+    print("=== jointactuatorfrc reads d.qfrc at the joint's dof ===")
+    var mujoco = Python.import_module("mujoco")
+    var m = mujoco.MjModel.from_xml_string(PythonObject(String(SD_XML)))
+    var O = mujoco.mjtObj
+    var sid = Int(py=mujoco.mj_name2id(m, O.mjOBJ_SENSOR, PythonObject("jaf")))
+    var adr = Int(py=m.sensor_adr[sid])
+
+    var ctx = DeviceContext()
+    var mf = Mod()
+    var d = Dat()
+    var st = _run_plain(d, mf, ctx)
+    var dat = _mj_at(mujoco, String(SD_XML), st[0].copy(), st[1].copy())
+
+    var ours = Float64(d.sensordata.data[adr])
+    var theirs = Float64(py=dat.sensordata[adr])
+    print("  ours", ours, " MuJoCo", theirs, " (gear 2 x ctrl", EL_CTRL, ")")
+    assert_true(
+        abs(ours - theirs) <= 1e-12,
+        "jointactuatorfrc: ours " + String(ours) + " vs MuJoCo "
+        + String(theirs),
+    )
+    # ⚠ NON-VACUITY, AND IT IS THE WHOLE POINT HERE. At `ctrl = 0` every
+    # candidate implementation — the right one, the wrong buffer, a wrong dof
+    # address on a model of hinges — returns 0.0 and agrees.
+    assert_true(
+        abs(theirs) > 1e-6,
+        "MuJoCo reports " + String(theirs) + " for jointactuatorfrc — the"
+        " fixture has stopped driving the actuator and every wrong"
+        " implementation would pass",
+    )
+    assert_true(
+        abs(ours - 2.0 * EL_CTRL) <= 1e-12,
+        "the force should be gear x ctrl = " + String(2.0 * EL_CTRL)
+        + "; got " + String(ours),
+    )
+
+
 def main() raises:
     var suite = TestSuite()
     suite.test[test_sensordata_matches_mujoco]()
@@ -793,4 +879,5 @@ def main() raises:
     suite.test[test_the_joint_sensors_read_their_own_joints_address]()
     suite.test[test_a_joint_sensor_on_a_multi_dof_joint_refuses]()
     suite.test[test_subtreecom_is_this_steps_com_not_last_steps]()
+    suite.test[test_jointactuatorfrc_reads_the_actuator_force_at_the_dof]()
     suite^.run()

@@ -127,6 +127,7 @@ comptime SENS_TORQUE: Int = 5
 comptime SENS_RANGEFINDER: Int = 7
 comptime SENS_JOINTPOS: Int = 9
 comptime SENS_JOINTVEL: Int = 10
+comptime SENS_JOINTACTFRC: Int = 16
 comptime SENS_FRAMEPOS: Int = 26
 comptime SENS_FRAMEQUAT: Int = 27
 comptime SENS_FRAMEXAXIS: Int = 28

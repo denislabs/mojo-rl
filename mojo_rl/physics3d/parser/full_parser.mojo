@@ -63,6 +63,7 @@ from ..constants import (
     SENS_RANGEFINDER,
     SENS_JOINTPOS,
     SENS_JOINTVEL,
+    SENS_JOINTACTFRC,
     SENS_FRAMEPOS,
     SENS_FRAMEQUAT,
     SENS_FRAMEXAXIS,
@@ -6583,7 +6584,7 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 # =============================================================================
 
 
-# The eighteen elements this loader models, and the kernel each one reaches.
+# The nineteen elements this loader models, and the kernel each one reaches.
 # Every other `<sensor>` child is refused BY NAME in `_fill_sensors` — see the
 # note there for why a silent skip is not on the table.
 #
@@ -6597,6 +6598,7 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 #   rangefinder      7          site          1   REAL       POS    rangefinder
 #   jointpos         9          joint         1   REAL       POS    eval (qpos)
 #   jointvel         10         joint         1   REAL       VEL    eval (qvel)
+#   jointactuatorfrc 16         joint         1   REAL       ACC    eval (qfrc)
 #   framepos         26         obj*          3   REAL       POS    frame.mojo
 #   framequat        27         obj*          4   QUATERNION POS    frame.mojo
 #   framexaxis       28         obj*          3   AXIS       POS    frame.mojo
@@ -6693,6 +6695,10 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(SENS_JOINTPOS, 1, SENSDATA_REAL, SENSSTAGE_POS, True)
     if tag_name == "jointvel":
         return _SensorSpec(SENS_JOINTVEL, 1, SENSDATA_REAL, SENSSTAGE_VEL, True)
+    if tag_name == "jointactuatorfrc":
+        return _SensorSpec(
+            SENS_JOINTACTFRC, 1, SENSDATA_REAL, SENSSTAGE_ACC, True
+        )
     # ⚠ SERVED HERE, AND POSSIBLY UNSERVED LATER. These five are the only
     # elements whose `served` depends on an ATTRIBUTE: `objtype="camera"` has
     # no name lookup in this parser, so `_fill_sensors` clears the flag on
@@ -6731,8 +6737,6 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(14, 1, SENSDATA_REAL, SENSSTAGE_VEL, False)
     if tag_name == "actuatorfrc":
         return _SensorSpec(15, 1, SENSDATA_REAL, SENSSTAGE_ACC, False)
-    if tag_name == "jointactuatorfrc":
-        return _SensorSpec(16, 1, SENSDATA_REAL, SENSSTAGE_ACC, False)
     if tag_name == "tendonactuatorfrc":
         return _SensorSpec(17, 1, SENSDATA_REAL, SENSSTAGE_ACC, False)
     if tag_name == "ballquat":
@@ -6875,7 +6879,7 @@ def _fill_sensors(
     ⚠⚠ ADDRESSING IS NOT SERVING, AND THE SPLIT IS THE DESIGN. Every
     recognised element gets a row carrying MuJoCo's exact `dim`, `datatype`,
     `needstage` and `adr`, whether or not this engine can compute it. Only the
-    eighteen with a kernel behind them are marked `served` — and one family,
+    nineteen with a kernel behind them are marked `served` — and one family,
     the frame sensors, is served only for the four object types this parser
     can resolve a name for.
 
@@ -7095,6 +7099,7 @@ def _fill_sensors(
         elif (
             sd.sensor_type == SENS_JOINTPOS
             or sd.sensor_type == SENS_JOINTVEL
+            or sd.sensor_type == SENS_JOINTACTFRC
         ):
             # ⚠ `mjOBJ_JOINT`, AND THE JOINT MUST BE SLIDE OR HINGE.
             # MuJoCo's compiler refuses any other type outright
