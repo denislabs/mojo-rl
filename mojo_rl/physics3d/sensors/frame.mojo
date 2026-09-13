@@ -111,7 +111,7 @@ def frame_object_pose[
     env: Int,
     objtype: Int,
     objid: Int,
-) -> Tuple[Float64, Float64, Float64, Float64, Float64, Float64, Float64]:
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """World (pos, quat) of a frame-sensor object. Quaternion is (x, y, z, w).
 
     MuJoCo's `get_xpos_xmat` + `get_xquat`, merged: this tree does not
@@ -127,32 +127,32 @@ def frame_object_pose[
     if objtype == SENSOBJ_XBODY:
         # The body's own frame — `d->xpos` / `d->xquat`, unmodified.
         return (
-            Float64(rebind[Scalar[DTYPE]](xpos[env, objid * 3 + 0])),
-            Float64(rebind[Scalar[DTYPE]](xpos[env, objid * 3 + 1])),
-            Float64(rebind[Scalar[DTYPE]](xpos[env, objid * 3 + 2])),
-            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 0])),
-            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 1])),
-            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 2])),
-            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 3])),
+            rebind[Scalar[DTYPE]](xpos[env, objid * 3 + 0]),
+            rebind[Scalar[DTYPE]](xpos[env, objid * 3 + 1]),
+            rebind[Scalar[DTYPE]](xpos[env, objid * 3 + 2]),
+            rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 0]),
+            rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 1]),
+            rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 2]),
+            rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 3]),
         )
 
     if objtype == SENSOBJ_BODY:
         # ⚠ THE INERTIAL FRAME. `d->xipos` is already the CoM in world
         # coordinates (the FK writes it), so only the orientation composes.
         var q = gpu_quat_mul(
-            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 0])),
-            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 1])),
-            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 2])),
-            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 3])),
-            Float64(rebind[Scalar[DTYPE]](bodies[objid, BODY_IDX_IQUAT_X])),
-            Float64(rebind[Scalar[DTYPE]](bodies[objid, BODY_IDX_IQUAT_Y])),
-            Float64(rebind[Scalar[DTYPE]](bodies[objid, BODY_IDX_IQUAT_Z])),
-            Float64(rebind[Scalar[DTYPE]](bodies[objid, BODY_IDX_IQUAT_W])),
+            rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 0]),
+            rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 1]),
+            rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 2]),
+            rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 3]),
+            rebind[Scalar[DTYPE]](bodies[objid, BODY_IDX_IQUAT_X]),
+            rebind[Scalar[DTYPE]](bodies[objid, BODY_IDX_IQUAT_Y]),
+            rebind[Scalar[DTYPE]](bodies[objid, BODY_IDX_IQUAT_Z]),
+            rebind[Scalar[DTYPE]](bodies[objid, BODY_IDX_IQUAT_W]),
         )
         return (
-            Float64(rebind[Scalar[DTYPE]](xipos[env, objid * 3 + 0])),
-            Float64(rebind[Scalar[DTYPE]](xipos[env, objid * 3 + 1])),
-            Float64(rebind[Scalar[DTYPE]](xipos[env, objid * 3 + 2])),
+            rebind[Scalar[DTYPE]](xipos[env, objid * 3 + 0]),
+            rebind[Scalar[DTYPE]](xipos[env, objid * 3 + 1]),
+            rebind[Scalar[DTYPE]](xipos[env, objid * 3 + 2]),
             q[0], q[1], q[2], q[3],
         )
 
@@ -161,25 +161,25 @@ def frame_object_pose[
         # two reads share one `base`. The `body == 0` shortcut is the one
         # those two take: the worldbody frame is the identity.
         var b = Int(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_BODY]))
-        var lx = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_POS_X]))
-        var ly = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_POS_Y]))
-        var lz = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_POS_Z]))
-        var gx = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_QUAT_X]))
-        var gy = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_QUAT_Y]))
-        var gz = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_QUAT_Z]))
-        var gw = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_QUAT_W]))
+        var lx = rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_POS_X])
+        var ly = rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_POS_Y])
+        var lz = rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_POS_Z])
+        var gx = rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_QUAT_X])
+        var gy = rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_QUAT_Y])
+        var gz = rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_QUAT_Z])
+        var gw = rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_QUAT_W])
         if b == 0:
             return (lx, ly, lz, gx, gy, gz, gw)
-        var bx = Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 0]))
-        var by = Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 1]))
-        var bz = Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 2]))
-        var bw = Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 3]))
+        var bx = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 0])
+        var by = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 1])
+        var bz = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 2])
+        var bw = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 3])
         var rot = gpu_quat_rotate(bx, by, bz, bw, lx, ly, lz)
         var q = gpu_quat_mul(bx, by, bz, bw, gx, gy, gz, gw)
         return (
-            Float64(rebind[Scalar[DTYPE]](xpos[env, b * 3 + 0])) + rot[0],
-            Float64(rebind[Scalar[DTYPE]](xpos[env, b * 3 + 1])) + rot[1],
-            Float64(rebind[Scalar[DTYPE]](xpos[env, b * 3 + 2])) + rot[2],
+            rebind[Scalar[DTYPE]](xpos[env, b * 3 + 0]) + rot[0],
+            rebind[Scalar[DTYPE]](xpos[env, b * 3 + 1]) + rot[1],
+            rebind[Scalar[DTYPE]](xpos[env, b * 3 + 2]) + rot[2],
             q[0], q[1], q[2], q[3],
         )
 
@@ -189,19 +189,19 @@ def frame_object_pose[
         # is a read and the orientation is a compose.
         var b = Int(rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_BODY]))
         var q = gpu_quat_mul(
-            Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 0])),
-            Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 1])),
-            Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 2])),
-            Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 3])),
-            Float64(rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_X])),
-            Float64(rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_Y])),
-            Float64(rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_Z])),
-            Float64(rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_W])),
+            rebind[Scalar[DTYPE]](xquat[env, b * 4 + 0]),
+            rebind[Scalar[DTYPE]](xquat[env, b * 4 + 1]),
+            rebind[Scalar[DTYPE]](xquat[env, b * 4 + 2]),
+            rebind[Scalar[DTYPE]](xquat[env, b * 4 + 3]),
+            rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_X]),
+            rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_Y]),
+            rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_Z]),
+            rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_W]),
         )
         return (
-            Float64(rebind[Scalar[DTYPE]](site_xpos[env, objid * 3 + 0])),
-            Float64(rebind[Scalar[DTYPE]](site_xpos[env, objid * 3 + 1])),
-            Float64(rebind[Scalar[DTYPE]](site_xpos[env, objid * 3 + 2])),
+            rebind[Scalar[DTYPE]](site_xpos[env, objid * 3 + 0]),
+            rebind[Scalar[DTYPE]](site_xpos[env, objid * 3 + 1]),
+            rebind[Scalar[DTYPE]](site_xpos[env, objid * 3 + 2]),
             q[0], q[1], q[2], q[3],
         )
 
@@ -247,8 +247,8 @@ def _point_vel_world_lt[
     xipos: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
     env: Int,
     body: Int,
-    px: Float64, py: Float64, pz: Float64,
-) -> Tuple[Float64, Float64, Float64]:
+    px: Scalar[DTYPE], py: Scalar[DTYPE], pz: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """`frame_vel.point_velocity_world` over the batched tensors.
 
     ⚠ SAME EXPRESSIONS, SAME ORDER, SAME ASSOCIATION as the `List` original —
@@ -259,18 +259,18 @@ def _point_vel_world_lt[
     the inner loop; `test_batched_sensordata_vs_mujoco` compares the two legs
     value for value, which is what keeps them honest.
     """
-    var wx = Float64(rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 0]))
-    var wy = Float64(rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 1]))
-    var wz = Float64(rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 2]))
-    var rx = px - Float64(rebind[Scalar[DTYPE]](xipos[env, body * 3 + 0]))
-    var ry = py - Float64(rebind[Scalar[DTYPE]](xipos[env, body * 3 + 1]))
-    var rz = pz - Float64(rebind[Scalar[DTYPE]](xipos[env, body * 3 + 2]))
+    var wx = rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 0])
+    var wy = rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 1])
+    var wz = rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 2])
+    var rx = px - rebind[Scalar[DTYPE]](xipos[env, body * 3 + 0])
+    var ry = py - rebind[Scalar[DTYPE]](xipos[env, body * 3 + 1])
+    var rz = pz - rebind[Scalar[DTYPE]](xipos[env, body * 3 + 2])
     return (
-        Float64(rebind[Scalar[DTYPE]](xvel[env, body * 3 + 0]))
+        rebind[Scalar[DTYPE]](xvel[env, body * 3 + 0])
         + (wy * rz - wz * ry),
-        Float64(rebind[Scalar[DTYPE]](xvel[env, body * 3 + 1]))
+        rebind[Scalar[DTYPE]](xvel[env, body * 3 + 1])
         + (wz * rx - wx * rz),
-        Float64(rebind[Scalar[DTYPE]](xvel[env, body * 3 + 2]))
+        rebind[Scalar[DTYPE]](xvel[env, body * 3 + 2])
         + (wx * ry - wy * rx),
     )
 
@@ -284,12 +284,13 @@ def frame_vel_sensor[
     xipos: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
     env: Int,
     body: Int,
-    px: Float64, py: Float64, pz: Float64,
+    px: Scalar[DTYPE], py: Scalar[DTYPE], pz: Scalar[DTYPE],
     has_ref: Bool,
     ref_body: Int,
-    rpx: Float64, rpy: Float64, rpz: Float64,
-    rqx: Float64, rqy: Float64, rqz: Float64, rqw: Float64,
-) -> Tuple[Float64, Float64, Float64, Float64, Float64, Float64]:
+    rpx: Scalar[DTYPE], rpy: Scalar[DTYPE], rpz: Scalar[DTYPE],
+    rqx: Scalar[DTYPE], rqy: Scalar[DTYPE], rqz: Scalar[DTYPE],
+    rqw: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """`mj_objectVelocity(..., flg_local=0)` at `(px,py,pz)`, as (ang, lin).
 
     Returns MuJoCo's packed order — angular first, then linear — because that
@@ -306,9 +307,9 @@ def frame_vel_sensor[
     is its ANGULAR half). Omitting it is silent whenever the reference frame
     happens not to be rotating, which is most of the time.
     """
-    var ax = Float64(rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 0]))
-    var ay = Float64(rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 1]))
-    var az = Float64(rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 2]))
+    var ax = rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 0])
+    var ay = rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 1])
+    var az = rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 2])
     var v = _point_vel_world_lt[DTYPE](
         xvel, xangvel, xipos, env, body, px, py, pz
     )
@@ -319,9 +320,9 @@ def frame_vel_sensor[
         return (ax, ay, az, lx, ly, lz)
 
     var rw = (
-        Float64(rebind[Scalar[DTYPE]](xangvel[env, ref_body * 3 + 0])),
-        Float64(rebind[Scalar[DTYPE]](xangvel[env, ref_body * 3 + 1])),
-        Float64(rebind[Scalar[DTYPE]](xangvel[env, ref_body * 3 + 2])),
+        rebind[Scalar[DTYPE]](xangvel[env, ref_body * 3 + 0]),
+        rebind[Scalar[DTYPE]](xangvel[env, ref_body * 3 + 1]),
+        rebind[Scalar[DTYPE]](xangvel[env, ref_body * 3 + 2]),
     )
     var rv = _point_vel_world_lt[DTYPE](
         xvel, xangvel, xipos, env, ref_body, rpx, rpy, rpz
@@ -341,16 +342,19 @@ def frame_vel_sensor[
     dly += rz * rw[0] - rx * rw[2]
     dlz += rx * rw[1] - ry * rw[0]
 
-    var a = _rot_transpose_mul(rqx, rqy, rqz, rqw, dax, day, daz)
-    var l = _rot_transpose_mul(rqx, rqy, rqz, rqw, dlx, dly, dlz)
+    var a = _rot_transpose_mul[DTYPE](rqx, rqy, rqz, rqw, dax, day, daz)
+    var l = _rot_transpose_mul[DTYPE](rqx, rqy, rqz, rqw, dlx, dly, dlz)
     return (a[0], a[1], a[2], l[0], l[1], l[2])
 
 
 @always_inline
-def _rot_transpose_mul(
-    qx: Float64, qy: Float64, qz: Float64, qw: Float64,
-    vx: Float64, vy: Float64, vz: Float64,
-) -> Tuple[Float64, Float64, Float64]:
+def _rot_transpose_mul[
+    DTYPE: DType
+](
+    qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+    vx: Scalar[DTYPE], vy: Scalar[DTYPE], vz: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """`R(q)^T v` — MuJoCo's `mju_mulMatTVec3(res, xmat_ref, v)`.
 
     Written as a rotation by the CONJUGATE rather than as three dot products
@@ -363,12 +367,15 @@ def _rot_transpose_mul(
 
 
 @always_inline
-def frame_pos_sensor(
-    px: Float64, py: Float64, pz: Float64,
+def frame_pos_sensor[
+    DTYPE: DType
+](
+    px: Scalar[DTYPE], py: Scalar[DTYPE], pz: Scalar[DTYPE],
     has_ref: Bool,
-    rpx: Float64, rpy: Float64, rpz: Float64,
-    rqx: Float64, rqy: Float64, rqz: Float64, rqw: Float64,
-) -> Tuple[Float64, Float64, Float64]:
+    rpx: Scalar[DTYPE], rpy: Scalar[DTYPE], rpz: Scalar[DTYPE],
+    rqx: Scalar[DTYPE], rqy: Scalar[DTYPE], rqz: Scalar[DTYPE],
+    rqw: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """`mjSENS_FRAMEPOS` (engine_sensor.c:688-706).
 
     Global when there is no reference frame; otherwise the offset from the
@@ -378,16 +385,22 @@ def frame_pos_sensor(
     """
     if not has_ref:
         return (px, py, pz)
-    return _rot_transpose_mul(rqx, rqy, rqz, rqw, px - rpx, py - rpy, pz - rpz)
+    return _rot_transpose_mul[DTYPE](
+        rqx, rqy, rqz, rqw, px - rpx, py - rpy, pz - rpz
+    )
 
 
 @always_inline
-def frame_axis_sensor(
-    qx: Float64, qy: Float64, qz: Float64, qw: Float64,
+def frame_axis_sensor[
+    DTYPE: DType
+](
+    qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
     axis: Int,
     has_ref: Bool,
-    rqx: Float64, rqy: Float64, rqz: Float64, rqw: Float64,
-) -> Tuple[Float64, Float64, Float64]:
+    rqx: Scalar[DTYPE], rqy: Scalar[DTYPE], rqz: Scalar[DTYPE],
+    rqw: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """`mjSENS_FRAME{X,Y,Z}AXIS`. `axis` is 0, 1 or 2.
 
     The object frame's own `axis`-th unit vector, in world coordinates — i.e.
@@ -399,15 +412,19 @@ def frame_axis_sensor(
     var az = quat_xmat_elem(qx, qy, qz, qw, axis + 6)
     if not has_ref:
         return (ax, ay, az)
-    return _rot_transpose_mul(rqx, rqy, rqz, rqw, ax, ay, az)
+    return _rot_transpose_mul[DTYPE](rqx, rqy, rqz, rqw, ax, ay, az)
 
 
 @always_inline
-def frame_quat_sensor(
-    qx: Float64, qy: Float64, qz: Float64, qw: Float64,
+def frame_quat_sensor[
+    DTYPE: DType
+](
+    qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
     has_ref: Bool,
-    rqx: Float64, rqy: Float64, rqz: Float64, rqw: Float64,
-) -> Tuple[Float64, Float64, Float64, Float64]:
+    rqx: Scalar[DTYPE], rqy: Scalar[DTYPE], rqz: Scalar[DTYPE],
+    rqw: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """`mjSENS_FRAMEQUAT` (engine_sensor.c:716-735). Returns (w, x, y, z).
 
     ⚠ THE RETURN IS IN MuJoCo'S ORDER, NOT THE TREE'S. Everything above this

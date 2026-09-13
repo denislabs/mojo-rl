@@ -52,6 +52,8 @@ non-mutating constructor. Nothing here writes; see `core/env.mojo` on why the
 trait carries the marker anyway.
 """
 
+from layout import Layout, LayoutTensor
+
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 
 from ..fields import Data, Model, DYN1, DYN2, rl1, rl2
@@ -67,13 +69,76 @@ from ..gpu.constants import (
     MODEL_HFIELD_META_SIZE,
     MAX_GPU_HFIELDS,
 )
-from ..kinematics.site_frame import site_world_quat_list
+from ..kinematics.site_frame import site_world_quat
 from ..ray.model import ray_model
 
 @always_inline
 def _pos(n: Int) -> Int:
     """`_at_least_one` — every tensor allocates one element even when unused."""
     return n if n > 0 else 1
+
+
+def rangefinder_ray[
+    DTYPE: DType,
+    L_SITES: Layout,
+    L_S3: Layout,
+    L_B3: Layout,
+    L_B4: Layout,
+    L_GEOMS: Layout,
+    L_BODIES: Layout,
+    L_MESH_META: Layout,
+    L_TRI: Layout,
+    L_HF_META: Layout,
+    L_HF: Layout,
+](
+    sites: LayoutTensor[DTYPE, L_SITES, MutAnyOrigin],
+    site_xpos: LayoutTensor[DTYPE, L_S3, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    xquat: LayoutTensor[DTYPE, L_B4, MutAnyOrigin],
+    geoms: LayoutTensor[DTYPE, L_GEOMS, MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    mesh_meta: LayoutTensor[DTYPE, L_MESH_META, MutAnyOrigin],
+    mesh_tris: LayoutTensor[DTYPE, L_TRI, MutAnyOrigin],
+    hfield_meta: LayoutTensor[DTYPE, L_HF_META, MutAnyOrigin],
+    hfield_data: LayoutTensor[DTYPE, L_HF, MutAnyOrigin],
+    ngeom: Int,
+    hf_stride: Int,
+    env: Int,
+    site: Int,
+) -> Scalar[DTYPE] where DTYPE.is_floating_point():
+    """One site-attached `<rangefinder>`, over the batched tensors.
+
+    ⚠⚠ THIS IS THE WHOLE SENSOR, AND `rangefinder_site` BELOW IS NOW A
+    WRAPPER. It used to bind these ten views itself from `Data`/`Model`, which
+    made it unusable from a GPU kernel — a kernel is handed tensors, not
+    structs, and cannot manufacture one. Everything the sensor does is here;
+    the wrapper exists for the CPU config hooks that hold a `Data`.
+
+    -1.0 means the ray hit nothing. ⚠ A SENTINEL, not a distance:
+    `dm_control`'s `Physics.rangefinder` replaces it with 1.0 BEFORE the
+    `tanh`, so a miss reads as MAXIMUM range. Applying that is the caller's
+    job — returning -1 is what makes it possible.
+    """
+    var body = Int(rebind[Scalar[DTYPE]](sites[site, SITE_IDX_BODY]))
+    var origin = Vec3Generic[DTYPE](
+        rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 0]),
+        rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 1]),
+        rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 2]),
+    )
+    # `xquat[body] * site_quat` — the site's own world frame. `site_xmat` is
+    # not materialised; see `kinematics/site_frame.mojo`.
+    var q4 = site_world_quat[DTYPE](env, site, sites, xquat)
+    var sq = QuatGeneric[DTYPE](q4[3], q4[0], q4[1], q4[2])
+    # ⚠ +Z. A rangefinder fires along the site's own +Z; a CAMERA looks down
+    # its -Z. See the module docstring.
+    var rvec = sq.rotate_vec(Vec3Generic[DTYPE](0, 0, 1))
+
+    var hit = ray_model[DTYPE](
+        geoms, ngeom, bodies, xpos, xquat, env,
+        mesh_meta, mesh_tris, hfield_meta, hfield_data, hf_stride,
+        origin, rvec, body,
+    )
+    return hit.t
 
 
 def rangefinder_site[
@@ -84,56 +149,37 @@ def rangefinder_site[
     site: Int,
     env: Int = 0,
 ) raises -> Float64 where DTYPE.is_floating_point():
-    """`sensordata` for one site-attached `<rangefinder>`, in METRES.
+    """`rangefinder_ray` over a `Data`/`Model` pair, in METRES.
 
-    -1.0 means the ray hit nothing. ⚠ A SENTINEL, not a distance:
-    `dm_control`'s `Physics.rangefinder` replaces it with 1.0 BEFORE the
-    `tanh`, so a miss reads as MAXIMUM range. Applying that is the caller's
-    job — returning -1 is what makes it possible.
+    The views this binds are the ten the sensor needs; the arithmetic all
+    lives in `rangefinder_ray`. Kept because the env config hooks that predate
+    the sensor framework hold a `Data` and call this directly.
     """
-    var sb = site * MODEL_SITE_SIZE
-    var body = Int(m.sites.data[sb + SITE_IDX_BODY])
     var nb = m.dims.get_nbody()
-    var origin = Vec3Generic[DTYPE](
-        d.site_xpos.data[env * m.dims.get_nsite() * 3 + site * 3 + 0],
-        d.site_xpos.data[env * m.dims.get_nsite() * 3 + site * 3 + 1],
-        d.site_xpos.data[env * m.dims.get_nsite() * 3 + site * 3 + 2],
-    )
-    var q4 = site_world_quat_list[DTYPE](
-        m.sites.data, d.xquat.data, body, site
-    )
-    var sq = QuatGeneric[DTYPE](
-        Scalar[DTYPE](q4[3]),
-        Scalar[DTYPE](q4[0]),
-        Scalar[DTYPE](q4[1]),
-        Scalar[DTYPE](q4[2]),
-    )
-    # ⚠ +Z. A rangefinder fires along the site's own +Z; a CAMERA looks down
-    # its -Z. See the module docstring.
-    var rvec = sq.rotate_vec(Vec3Generic[DTYPE](0, 0, 1))
-
+    var ns = _pos(m.dims.get_nsite())
     var ng = m.dims.get_ngeom()
     var hfn = _pos(m.dims.get_nhfield_data())
-    var hit = ray_model[DTYPE](
-        m.geoms.lt_dyn["cpu", DYN2](rl2(ng, MODEL_GEOM_SIZE)),
-        ng,
-        m.bodies.lt_dyn["cpu", DYN2](rl2(nb, MODEL_BODY_SIZE)),
-        d.xpos.lt_dyn["cpu", DYN2](rl2(BATCH, nb * 3)),
-        d.xquat.lt_dyn["cpu", DYN2](rl2(BATCH, nb * 4)),
-        env,
-        m.mesh_meta.lt_dyn["cpu", DYN1](
-            rl1(MAX_GPU_MESHES * MODEL_MESH_META_SIZE)
-        ),
-        m.mesh_tris.lt_dyn["cpu", DYN1](
-            rl1(_pos(m.dims.get_nmesh_tri() * MESH_ARENA_FLOATS_PER_TRI))
-        ),
-        m.hfield_meta.lt_dyn["cpu", DYN1](
-            rl1(MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE)
-        ),
-        d.hfield_data.lt_dyn["cpu", DYN1](rl1(BATCH * hfn)),
-        m.dims.get_nhfield_data(),
-        origin,
-        rvec,
-        body,
+    return Float64(
+        rangefinder_ray[DTYPE](
+            m.sites.lt_dyn["cpu", DYN2](rl2(ns, MODEL_SITE_SIZE)),
+            d.site_xpos.lt_dyn["cpu", DYN2](rl2(BATCH, ns * 3)),
+            d.xpos.lt_dyn["cpu", DYN2](rl2(BATCH, nb * 3)),
+            d.xquat.lt_dyn["cpu", DYN2](rl2(BATCH, nb * 4)),
+            m.geoms.lt_dyn["cpu", DYN2](rl2(ng, MODEL_GEOM_SIZE)),
+            m.bodies.lt_dyn["cpu", DYN2](rl2(nb, MODEL_BODY_SIZE)),
+            m.mesh_meta.lt_dyn["cpu", DYN1](
+                rl1(MAX_GPU_MESHES * MODEL_MESH_META_SIZE)
+            ),
+            m.mesh_tris.lt_dyn["cpu", DYN1](
+                rl1(_pos(m.dims.get_nmesh_tri() * MESH_ARENA_FLOATS_PER_TRI))
+            ),
+            m.hfield_meta.lt_dyn["cpu", DYN1](
+                rl1(MAX_GPU_HFIELDS * MODEL_HFIELD_META_SIZE)
+            ),
+            d.hfield_data.lt_dyn["cpu", DYN1](rl1(BATCH * hfn)),
+            ng,
+            m.dims.get_nhfield_data(),
+            env,
+            site,
+        )
     )
-    return Float64(hit.t)

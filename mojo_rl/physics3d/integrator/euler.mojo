@@ -938,29 +938,20 @@ struct EulerIntegrator[
         # MuJoCo evaluates the position-stage sensors here, immediately after
         # `mj_fwdPosition` (engine_forward.c:1797).
         #
-        # ⚠ CPU AT ANY BATCH, AND THE GUARD IS COMPTIME. `sensors/eval.mojo`
-        # walks the table through the `_gpu` kernels — the ones that take
-        # `(tensor..., env)` — so the batched CPU leg fills `sensordata` for
-        # every env (AUD-53). On GPU the values live on the device and the
-        # host copy is stale, so a device model still gets NO sensordata
-        # rather than wrong sensordata; `_sensors_need_a_pass` below makes
-        # that omission loud instead of silent.
-        comptime if target == "cpu":
-            # ⚠ THE STAGE MASK IS BUILT FROM WHAT THIS INSTANTIATION ACTUALLY
-            # RUNS. The acceleration bit is set only under `RNE_POST`, because
-            # that flag is what writes `cacc`/`cfrc_int`. A model declaring an
-            # accelerometer on an integrator without it fails here instead of
-            # reporting 0.0 forever.
-            # ⚠ NO GUARD HERE. All three stages run on this leg, but
-            # `RNE_POST` is a SEPARATE axis and the three sensors that read
-            # `cacc`/`cfrc_int` go uncomputed when it is off. That used to
-            # RAISE from inside `step`, which broke the seven manipulation
-            # envs: Jaco declares force/torque sensors, they run
-            # `RNE_POST=False`, and the raise aborted their reset hook.
-            # `Data` now fills `sensordata` with NaN instead, so an
-            # uncomputed slot is loud where it is READ and inert where it is
-            # not — see that field's docstring.
-            sensor_pos[Self.DTYPE, Self.D, Self.BATCH](d, m)
+        # ⚠ BOTH TARGETS, ANY BATCH, AND THE DISPATCH IS INSIDE THE PASS.
+        # `sensors/eval.mojo` walks the table through kernels that take
+        # `(tensor..., env)`; the CPU leg loops envs and the GPU leg launches
+        # one thread per env (AUD-53).
+        #
+        # ⚠ NO `RNE_POST` GUARD HERE, AND THAT IS DELIBERATE. `RNE_POST` is a
+        # SEPARATE axis from the stage: the three sensors that read
+        # `cacc`/`cfrc_int` go uncomputed when it is off, and everything else
+        # still runs. It used to RAISE from inside `step`, which broke the
+        # seven manipulation envs — Jaco declares force/torque sensors and
+        # runs `RNE_POST=False`, and the raise aborted their reset hook.
+        # `Data` fills `sensordata` with NaN instead, so an uncomputed slot is
+        # loud where it is READ and inert where it is not.
+        sensor_pos[target, Self.DTYPE, Self.D, Self.BATCH](d, m, ctx)
         comptime if _EULER_PROBE:
             var _e_now = Int(perf_counter_ns())
             _e_fk += _e_now - _e_last
@@ -970,8 +961,7 @@ struct EulerIntegrator[
         # `mj_fwdVelocity`'s point (engine_forward.c:1814). velocimeter, gyro
         # and subtreelinvel read `xvel`/`xangvel`, which exist as of the line
         # above and are overwritten on the next step.
-        comptime if target == "cpu":
-            sensor_vel[Self.DTYPE, Self.D, Self.BATCH](d, m)
+        sensor_vel[target, Self.DTYPE, Self.D, Self.BATCH](d, m, ctx)
         comptime if _EULER_PROBE:
             var _e_now = Int(perf_counter_ns())
             _e_bodyvel += _e_now - _e_last
@@ -1287,8 +1277,9 @@ struct EulerIntegrator[
         #
         # This still sits at MuJoCo's point (engine_forward.c:1832): after the
         # constraint solve, before `_finalize_env` moves qpos/qvel on.
-        comptime if target == "cpu":
-            sensor_acc[Self.DTYPE, Self.D, Self.BATCH](d, m, Self.RNE_POST)
+        sensor_acc[target, Self.DTYPE, Self.D, Self.BATCH](
+            d, m, Self.RNE_POST, ctx
+        )
 
         comptime if target == "cpu":
             var dm = d.dims
