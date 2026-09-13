@@ -40,6 +40,16 @@ own x/y/z axis expressed in world coordinates. Reading the row would give the
 world axis in object coordinates, which is the INVERSE rotation and agrees
 with the right answer exactly when the rotation is symmetric.
 
+⚠ LAYOUTTENSORS AND AN `env`, NOT HOST `List`s, AND THAT IS WHAT MAKES THE
+BATCHED LEG POSSIBLE. Every other sensor kernel in this directory ships two
+forms — a `List` one for the config hooks that predate the framework and a
+`_gpu` twin taking `(tensor..., env)` — and `sensors/eval.mojo` now walks the
+table through the SECOND form for every kind, so a model with BATCH > 1 gets
+its `sensordata` filled instead of left at NaN (AUD-53). This family was
+written after that decision and therefore has ONE form. Do not add a `List`
+twin: it would be a second spelling of an objtype dispatch that is already
+the subtlest thing in the file.
+
 ⚠ CAMERAS ARE NOT SERVED. The four resolvable object types are body, xbody,
 geom and site; `<camera>` has no name lookup in this parser, so a frame
 sensor naming one stays ADDRESSED and is counted under AUD-23 like any other
@@ -75,22 +85,30 @@ from ..gpu.constants import (
     SITE_IDX_QUAT_Z,
     SITE_IDX_QUAT_W,
 )
+from layout import Layout, LayoutTensor
+
 from ..kinematics.quat_math import gpu_quat_mul, gpu_quat_rotate
 from ..kinematics.xmat import quat_xmat_elem
-from .frame_vel import point_velocity_world
 
 
 @always_inline
 def frame_object_pose[
-    DTYPE: DType
+    DTYPE: DType,
+    L_B3: Layout,
+    L_B4: Layout,
+    L_S3: Layout,
+    L_BODIES: Layout,
+    L_GEOMS: Layout,
+    L_SITES: Layout,
 ](
-    xpos: List[Scalar[DTYPE]],
-    xquat: List[Scalar[DTYPE]],
-    xipos: List[Scalar[DTYPE]],
-    site_xpos: List[Scalar[DTYPE]],
-    m_bodies: List[Scalar[DTYPE]],
-    m_geoms: List[Scalar[DTYPE]],
-    m_sites: List[Scalar[DTYPE]],
+    xpos: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    xquat: LayoutTensor[DTYPE, L_B4, MutAnyOrigin],
+    xipos: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    site_xpos: LayoutTensor[DTYPE, L_S3, MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    geoms: LayoutTensor[DTYPE, L_GEOMS, MutAnyOrigin],
+    sites: LayoutTensor[DTYPE, L_SITES, MutAnyOrigin],
+    env: Int,
     objtype: Int,
     objid: Int,
 ) -> Tuple[Float64, Float64, Float64, Float64, Float64, Float64, Float64]:
@@ -109,33 +127,32 @@ def frame_object_pose[
     if objtype == SENSOBJ_XBODY:
         # The body's own frame — `d->xpos` / `d->xquat`, unmodified.
         return (
-            Float64(xpos[objid * 3 + 0]),
-            Float64(xpos[objid * 3 + 1]),
-            Float64(xpos[objid * 3 + 2]),
-            Float64(xquat[objid * 4 + 0]),
-            Float64(xquat[objid * 4 + 1]),
-            Float64(xquat[objid * 4 + 2]),
-            Float64(xquat[objid * 4 + 3]),
+            Float64(rebind[Scalar[DTYPE]](xpos[env, objid * 3 + 0])),
+            Float64(rebind[Scalar[DTYPE]](xpos[env, objid * 3 + 1])),
+            Float64(rebind[Scalar[DTYPE]](xpos[env, objid * 3 + 2])),
+            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 0])),
+            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 1])),
+            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 2])),
+            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 3])),
         )
 
     if objtype == SENSOBJ_BODY:
         # ⚠ THE INERTIAL FRAME. `d->xipos` is already the CoM in world
         # coordinates (the FK writes it), so only the orientation composes.
-        var bb = objid * MODEL_BODY_SIZE
         var q = gpu_quat_mul(
-            Float64(xquat[objid * 4 + 0]),
-            Float64(xquat[objid * 4 + 1]),
-            Float64(xquat[objid * 4 + 2]),
-            Float64(xquat[objid * 4 + 3]),
-            Float64(m_bodies[bb + BODY_IDX_IQUAT_X]),
-            Float64(m_bodies[bb + BODY_IDX_IQUAT_Y]),
-            Float64(m_bodies[bb + BODY_IDX_IQUAT_Z]),
-            Float64(m_bodies[bb + BODY_IDX_IQUAT_W]),
+            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 0])),
+            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 1])),
+            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 2])),
+            Float64(rebind[Scalar[DTYPE]](xquat[env, objid * 4 + 3])),
+            Float64(rebind[Scalar[DTYPE]](bodies[objid, BODY_IDX_IQUAT_X])),
+            Float64(rebind[Scalar[DTYPE]](bodies[objid, BODY_IDX_IQUAT_Y])),
+            Float64(rebind[Scalar[DTYPE]](bodies[objid, BODY_IDX_IQUAT_Z])),
+            Float64(rebind[Scalar[DTYPE]](bodies[objid, BODY_IDX_IQUAT_W])),
         )
         return (
-            Float64(xipos[objid * 3 + 0]),
-            Float64(xipos[objid * 3 + 1]),
-            Float64(xipos[objid * 3 + 2]),
+            Float64(rebind[Scalar[DTYPE]](xipos[env, objid * 3 + 0])),
+            Float64(rebind[Scalar[DTYPE]](xipos[env, objid * 3 + 1])),
+            Float64(rebind[Scalar[DTYPE]](xipos[env, objid * 3 + 2])),
             q[0], q[1], q[2], q[3],
         )
 
@@ -143,27 +160,26 @@ def frame_object_pose[
         # `geom_xpos` / `geom_xquat`, composed here rather than called so the
         # two reads share one `base`. The `body == 0` shortcut is the one
         # those two take: the worldbody frame is the identity.
-        var gb = objid * MODEL_GEOM_SIZE
-        var b = Int(m_geoms[gb + GEOM_IDX_BODY])
-        var lx = Float64(m_geoms[gb + GEOM_IDX_POS_X])
-        var ly = Float64(m_geoms[gb + GEOM_IDX_POS_Y])
-        var lz = Float64(m_geoms[gb + GEOM_IDX_POS_Z])
-        var gx = Float64(m_geoms[gb + GEOM_IDX_QUAT_X])
-        var gy = Float64(m_geoms[gb + GEOM_IDX_QUAT_Y])
-        var gz = Float64(m_geoms[gb + GEOM_IDX_QUAT_Z])
-        var gw = Float64(m_geoms[gb + GEOM_IDX_QUAT_W])
+        var b = Int(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_BODY]))
+        var lx = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_POS_X]))
+        var ly = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_POS_Y]))
+        var lz = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_POS_Z]))
+        var gx = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_QUAT_X]))
+        var gy = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_QUAT_Y]))
+        var gz = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_QUAT_Z]))
+        var gw = Float64(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_QUAT_W]))
         if b == 0:
             return (lx, ly, lz, gx, gy, gz, gw)
-        var bx = Float64(xquat[b * 4 + 0])
-        var by = Float64(xquat[b * 4 + 1])
-        var bz = Float64(xquat[b * 4 + 2])
-        var bw = Float64(xquat[b * 4 + 3])
+        var bx = Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 0]))
+        var by = Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 1]))
+        var bz = Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 2]))
+        var bw = Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 3]))
         var rot = gpu_quat_rotate(bx, by, bz, bw, lx, ly, lz)
         var q = gpu_quat_mul(bx, by, bz, bw, gx, gy, gz, gw)
         return (
-            Float64(xpos[b * 3 + 0]) + rot[0],
-            Float64(xpos[b * 3 + 1]) + rot[1],
-            Float64(xpos[b * 3 + 2]) + rot[2],
+            Float64(rebind[Scalar[DTYPE]](xpos[env, b * 3 + 0])) + rot[0],
+            Float64(rebind[Scalar[DTYPE]](xpos[env, b * 3 + 1])) + rot[1],
+            Float64(rebind[Scalar[DTYPE]](xpos[env, b * 3 + 2])) + rot[2],
             q[0], q[1], q[2], q[3],
         )
 
@@ -171,22 +187,21 @@ def frame_object_pose[
         # ⚠ `site_xpos` IS MATERIALISED AND `site_xmat` IS NOT — the
         # asymmetry `kinematics/site_frame.mojo` documents. So the position
         # is a read and the orientation is a compose.
-        var sb = objid * MODEL_SITE_SIZE
-        var b = Int(m_sites[sb + SITE_IDX_BODY])
+        var b = Int(rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_BODY]))
         var q = gpu_quat_mul(
-            Float64(xquat[b * 4 + 0]),
-            Float64(xquat[b * 4 + 1]),
-            Float64(xquat[b * 4 + 2]),
-            Float64(xquat[b * 4 + 3]),
-            Float64(m_sites[sb + SITE_IDX_QUAT_X]),
-            Float64(m_sites[sb + SITE_IDX_QUAT_Y]),
-            Float64(m_sites[sb + SITE_IDX_QUAT_Z]),
-            Float64(m_sites[sb + SITE_IDX_QUAT_W]),
+            Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 0])),
+            Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 1])),
+            Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 2])),
+            Float64(rebind[Scalar[DTYPE]](xquat[env, b * 4 + 3])),
+            Float64(rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_X])),
+            Float64(rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_Y])),
+            Float64(rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_Z])),
+            Float64(rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_W])),
         )
         return (
-            Float64(site_xpos[objid * 3 + 0]),
-            Float64(site_xpos[objid * 3 + 1]),
-            Float64(site_xpos[objid * 3 + 2]),
+            Float64(rebind[Scalar[DTYPE]](site_xpos[env, objid * 3 + 0])),
+            Float64(rebind[Scalar[DTYPE]](site_xpos[env, objid * 3 + 1])),
+            Float64(rebind[Scalar[DTYPE]](site_xpos[env, objid * 3 + 2])),
             q[0], q[1], q[2], q[3],
         )
 
@@ -196,10 +211,12 @@ def frame_object_pose[
 
 @always_inline
 def frame_object_body[
-    DTYPE: DType
+    DTYPE: DType,
+    L_GEOMS: Layout,
+    L_SITES: Layout,
 ](
-    m_geoms: List[Scalar[DTYPE]],
-    m_sites: List[Scalar[DTYPE]],
+    geoms: LayoutTensor[DTYPE, L_GEOMS, MutAnyOrigin],
+    sites: LayoutTensor[DTYPE, L_SITES, MutAnyOrigin],
     objtype: Int,
     objid: Int,
 ) -> Int:
@@ -214,20 +231,58 @@ def frame_object_body[
     accumulated differently, not because the answer differs.
     """
     if objtype == SENSOBJ_GEOM:
-        return Int(m_geoms[objid * MODEL_GEOM_SIZE + GEOM_IDX_BODY])
+        return Int(rebind[Scalar[DTYPE]](geoms[objid, GEOM_IDX_BODY]))
     if objtype == SENSOBJ_SITE:
-        return Int(m_sites[objid * MODEL_SITE_SIZE + SITE_IDX_BODY])
+        return Int(rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_BODY]))
     # BODY and XBODY are the same body in two frames.
     return objid
 
 
 @always_inline
-def frame_vel_sensor[
-    DTYPE: DType
+def _point_vel_world_lt[
+    DTYPE: DType, L_B3: Layout
 ](
-    xvel: List[Scalar[DTYPE]],
-    xangvel: List[Scalar[DTYPE]],
-    xipos: List[Scalar[DTYPE]],
+    xvel: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    xangvel: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    xipos: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    env: Int,
+    body: Int,
+    px: Float64, py: Float64, pz: Float64,
+) -> Tuple[Float64, Float64, Float64]:
+    """`frame_vel.point_velocity_world` over the batched tensors.
+
+    ⚠ SAME EXPRESSIONS, SAME ORDER, SAME ASSOCIATION as the `List` original —
+    that one is gated exact on dog (2.66e-15 across the observation) and on
+    swimmer, so a reassociation here would be a silent regression in a passing
+    gate. It is spelled twice because the two take different buffer types and
+    Mojo has no abstraction over that which does not cost a call boundary in
+    the inner loop; `test_batched_sensordata_vs_mujoco` compares the two legs
+    value for value, which is what keeps them honest.
+    """
+    var wx = Float64(rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 0]))
+    var wy = Float64(rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 1]))
+    var wz = Float64(rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 2]))
+    var rx = px - Float64(rebind[Scalar[DTYPE]](xipos[env, body * 3 + 0]))
+    var ry = py - Float64(rebind[Scalar[DTYPE]](xipos[env, body * 3 + 1]))
+    var rz = pz - Float64(rebind[Scalar[DTYPE]](xipos[env, body * 3 + 2]))
+    return (
+        Float64(rebind[Scalar[DTYPE]](xvel[env, body * 3 + 0]))
+        + (wy * rz - wz * ry),
+        Float64(rebind[Scalar[DTYPE]](xvel[env, body * 3 + 1]))
+        + (wz * rx - wx * rz),
+        Float64(rebind[Scalar[DTYPE]](xvel[env, body * 3 + 2]))
+        + (wx * ry - wy * rx),
+    )
+
+
+@always_inline
+def frame_vel_sensor[
+    DTYPE: DType, L_B3: Layout
+](
+    xvel: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    xangvel: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    xipos: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    env: Int,
     body: Int,
     px: Float64, py: Float64, pz: Float64,
     has_ref: Bool,
@@ -251,39 +306,32 @@ def frame_vel_sensor[
     is its ANGULAR half). Omitting it is silent whenever the reference frame
     happens not to be rotating, which is most of the time.
     """
-    var w = (
-        Float64(xangvel[body * 3 + 0]),
-        Float64(xangvel[body * 3 + 1]),
-        Float64(xangvel[body * 3 + 2]),
+    var ax = Float64(rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 0]))
+    var ay = Float64(rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 1]))
+    var az = Float64(rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 2]))
+    var v = _point_vel_world_lt[DTYPE](
+        xvel, xangvel, xipos, env, body, px, py, pz
     )
-    var v = point_velocity_world[DTYPE](
-        xvel, xangvel, xipos, body,
-        Scalar[DTYPE](px), Scalar[DTYPE](py), Scalar[DTYPE](pz),
-    )
-    var ax = w[0]
-    var ay = w[1]
-    var az = w[2]
-    var lx = Float64(v[0])
-    var ly = Float64(v[1])
-    var lz = Float64(v[2])
+    var lx = v[0]
+    var ly = v[1]
+    var lz = v[2]
     if not has_ref:
         return (ax, ay, az, lx, ly, lz)
 
     var rw = (
-        Float64(xangvel[ref_body * 3 + 0]),
-        Float64(xangvel[ref_body * 3 + 1]),
-        Float64(xangvel[ref_body * 3 + 2]),
+        Float64(rebind[Scalar[DTYPE]](xangvel[env, ref_body * 3 + 0])),
+        Float64(rebind[Scalar[DTYPE]](xangvel[env, ref_body * 3 + 1])),
+        Float64(rebind[Scalar[DTYPE]](xangvel[env, ref_body * 3 + 2])),
     )
-    var rv = point_velocity_world[DTYPE](
-        xvel, xangvel, xipos, ref_body,
-        Scalar[DTYPE](rpx), Scalar[DTYPE](rpy), Scalar[DTYPE](rpz),
+    var rv = _point_vel_world_lt[DTYPE](
+        xvel, xangvel, xipos, env, ref_body, rpx, rpy, rpz
     )
     var dax = ax - rw[0]
     var day = ay - rw[1]
     var daz = az - rw[2]
-    var dlx = lx - Float64(rv[0])
-    var dly = ly - Float64(rv[1])
-    var dlz = lz - Float64(rv[2])
+    var dlx = lx - rv[0]
+    var dly = ly - rv[1]
+    var dlz = lz - rv[2]
 
     # `rvec x w_ref`, added to the linear half.
     var rx = px - rpx

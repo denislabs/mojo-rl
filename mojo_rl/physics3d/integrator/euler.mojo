@@ -922,6 +922,12 @@ struct EulerIntegrator[
         # Filling `d.ten_length` unconditionally would be a second polyline
         # walk per tendon per step — 700 of them on ms_human_700 — for a
         # quantity the dynamics already computes where it needs it.
+        # ⚠ STILL BATCH=1, UNLIKE THE SENSOR PASSES BESIDE IT.
+        # `compute_tendon_lengths` calls `spatial_tendon_length_jac`, whose
+        # per-env form the tendon builders share with the solvers; giving it
+        # an env loop is a separate change and no batched model in this tree
+        # declares a `<tendonpos>`. A batched model that does gets NaN there,
+        # which is the same contract every other unfilled slot has.
         comptime if target == "cpu" and Self.BATCH == 1:
             compute_tendon_lengths[Self.DTYPE, Self.D](
                 rebind[Data[Self.DTYPE, Self.D, 1]](d),
@@ -932,12 +938,14 @@ struct EulerIntegrator[
         # MuJoCo evaluates the position-stage sensors here, immediately after
         # `mj_fwdPosition` (engine_forward.c:1797).
         #
-        # ⚠ CPU, BATCH=1, AND THE GUARD IS COMPTIME. `sensors/eval.mojo` takes
-        # host `List`s and one env; on GPU the values live on the device and
-        # the host copy is stale, so a batched or device model gets NO
-        # sensordata rather than wrong sensordata. `_sensors_need_a_pass`
-        # below makes that omission loud instead of silent.
-        comptime if target == "cpu" and Self.BATCH == 1:
+        # ⚠ CPU AT ANY BATCH, AND THE GUARD IS COMPTIME. `sensors/eval.mojo`
+        # walks the table through the `_gpu` kernels — the ones that take
+        # `(tensor..., env)` — so the batched CPU leg fills `sensordata` for
+        # every env (AUD-53). On GPU the values live on the device and the
+        # host copy is stale, so a device model still gets NO sensordata
+        # rather than wrong sensordata; `_sensors_need_a_pass` below makes
+        # that omission loud instead of silent.
+        comptime if target == "cpu":
             # ⚠ THE STAGE MASK IS BUILT FROM WHAT THIS INSTANTIATION ACTUALLY
             # RUNS. The acceleration bit is set only under `RNE_POST`, because
             # that flag is what writes `cacc`/`cfrc_int`. A model declaring an
@@ -952,9 +960,7 @@ struct EulerIntegrator[
             # `Data` now fills `sensordata` with NaN instead, so an
             # uncomputed slot is loud where it is READ and inert where it is
             # not — see that field's docstring.
-            sensor_pos[Self.DTYPE, Self.D](
-                    rebind[Data[Self.DTYPE, Self.D, 1]](d), m
-                )
+            sensor_pos[Self.DTYPE, Self.D, Self.BATCH](d, m)
         comptime if _EULER_PROBE:
             var _e_now = Int(perf_counter_ns())
             _e_fk += _e_now - _e_last
@@ -964,10 +970,8 @@ struct EulerIntegrator[
         # `mj_fwdVelocity`'s point (engine_forward.c:1814). velocimeter, gyro
         # and subtreelinvel read `xvel`/`xangvel`, which exist as of the line
         # above and are overwritten on the next step.
-        comptime if target == "cpu" and Self.BATCH == 1:
-            sensor_vel[Self.DTYPE, Self.D](
-                    rebind[Data[Self.DTYPE, Self.D, 1]](d), m
-                )
+        comptime if target == "cpu":
+            sensor_vel[Self.DTYPE, Self.D, Self.BATCH](d, m)
         comptime if _EULER_PROBE:
             var _e_now = Int(perf_counter_ns())
             _e_bodyvel += _e_now - _e_last
@@ -1283,10 +1287,8 @@ struct EulerIntegrator[
         #
         # This still sits at MuJoCo's point (engine_forward.c:1832): after the
         # constraint solve, before `_finalize_env` moves qpos/qvel on.
-        comptime if target == "cpu" and Self.BATCH == 1:
-            sensor_acc[Self.DTYPE, Self.D](
-                rebind[Data[Self.DTYPE, Self.D, 1]](d), m, Self.RNE_POST
-            )
+        comptime if target == "cpu":
+            sensor_acc[Self.DTYPE, Self.D, Self.BATCH](d, m, Self.RNE_POST)
 
         comptime if target == "cpu":
             var dm = d.dims
