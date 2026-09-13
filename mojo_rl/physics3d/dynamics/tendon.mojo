@@ -39,8 +39,11 @@ THREE THINGS THAT LOOK LIKE DETAILS AND ARE NOT:
 `<pulley>` is not supported; `full_parser` rejects it at parse time, so
 nothing here has to guess.
 
-FIXED tendons are not handled here — they are `length = sum coef_i * qpos_i`
-with a trivial Jacobian, and live in `constraints/equality_tendon.mojo`.
+FIXED tendons get `fixed_tendon_length_jac` below — `length = sum coef_i *
+qpos_i`, Jacobian `coef_i` at each joint's dof. It lives here so the two
+kinds are one import apart and so the formula has ONE spelling; it had three
+(`tendon_limit.mojo` twice, `equality_tendon.mojo` once) before the
+`<tendonpos>` sensor needed a fourth.
 """
 
 from std.collections import Array
@@ -49,6 +52,12 @@ from layout import Layout, LayoutTensor
 from ..fields.scratch import Scratch
 
 from ..gpu.constants import (
+    JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_DOF_ADR,
+    TENDON_IDX_NUM_JOINTS,
+    TENDON_IDX_JOINT_0,
+    TENDON_IDX_COEF_0,
+    TENDON_MAX_WRAPS,
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
@@ -233,6 +242,66 @@ def _geom_world_frame[
     return f^
 
 
+def fixed_tendon_length_jac[
+    DTYPE: DType,
+    V_CAP: Int,
+    D: DimsLike,
+    L_TENDONS: Layout,
+    L_JOINTS: Layout,
+    L_QPOS: Layout,
+](
+    env: Int,
+    t_i: Int,
+    dims: D,
+    tendons: LayoutTensor[DTYPE, L_TENDONS, MutAnyOrigin],
+    joints: LayoutTensor[DTYPE, L_JOINTS, MutAnyOrigin],
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    mut J_row: Scratch[Scalar[DTYPE], V_CAP],
+) -> Scalar[DTYPE]:
+    """`length = sum_k coef_k * qpos[joint_k]`, moment arm `coef_k` per dof.
+
+    The FIXED half of MuJoCo's `mj_tendon`, with the same contract as
+    `spatial_tendon_length_jac` above: `J_row` is zeroed here, then
+    accumulated, and the length is returned.
+
+    ⚠ ACCUMULATE INTO `J_row`, DO NOT ASSIGN. A fixed tendon naming the same
+    joint twice must get the SUM of its coefficients; a bare `=` keeps only
+    the last. No model in this tree does that, and one of the three copies
+    this function replaces had the bug until 2026-09-06.
+
+    ⚠ THE WIDTH CAP IS `TENDON_MAX_WRAPS`, WHICH IS ALSO THE JOINT CAP FOR A
+    FIXED TENDON. `constraints/tendon_limit.mojo` spells the same number
+    `TENDON_MAX_JOINTS`; they are one constant with two names because the
+    record packs joints and waypoints into arrays of one length. Do not
+    "correct" this to the spatial cap — that is a THIRD, larger number
+    (`TENDON_MAX_SPATIAL_WRAPS`) and reading past `num_joints` is what the
+    `k >= njnt` break is for anyway.
+    """
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
+    for i in range(nv):
+        J_row[i] = Scalar[DTYPE](0)
+
+    var length = Scalar[DTYPE](0)
+    var njnt = Int(
+        rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_NUM_JOINTS])
+    )
+    for k in range(TENDON_MAX_WRAPS):
+        if k >= njnt:
+            break
+        var j = Int(
+            rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_JOINT_0 + k])
+        )
+        if j < 0 or j >= njoint:
+            continue
+        var coef = rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_COEF_0 + k])
+        var qadr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_QPOS_ADR]))
+        var dadr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
+        length += coef * rebind[Scalar[DTYPE]](qpos[env, qadr])
+        J_row[dadr] = J_row[dadr] + coef
+    return length
+
+
 @always_inline
 def _sqrt_pos[DTYPE: DType](v: Scalar[DTYPE]) -> Scalar[DTYPE]:
     """sqrt clamped at 0 — the argument is a squared norm, so a tiny negative
@@ -302,10 +371,21 @@ def spatial_tendon_length_jac[
         DTYPE, L_XQUAT, MutAnyOrigin
     ],
     mut J_row: Scratch[Scalar[DTYPE], V_CAP],
+    flg_jac: Bool = True,
 ) -> Scalar[DTYPE]:
     """Length of spatial tendon `t_i`, with its dense moment arm in `J_row`.
 
     `J_row` is zeroed here, then accumulated over segments.
+
+    ⚠ `flg_jac=False` RETURNS THE LENGTH AND LEAVES `J_row` ZERO, and it is
+    the reason `cdof` may be handed in stale by such a caller. The length is
+    `sum |p_{k+1} - p_k|` over world points — `xpos`, `xquat`, the site and
+    geom records, nothing else. `cdof` and `subtree_com` enter ONLY through
+    `_contact_jacobian_row`, which the flag skips, and those two calls per
+    sub-segment are also the expensive half. `compute_tendon_lengths` (the
+    `<tendonpos>` sensor's pass) runs before `compute_cdof` in the step and
+    takes this path; every other caller wants the moment arm and leaves the
+    flag alone.
     """
     var nv = dims.get_nv()
     for i in range(nv):
@@ -484,6 +564,12 @@ def spatial_tendon_length_jac[
             var ux = dx * inv
             var uy = dy * inv
             var uz = dz * inv
+
+            # ⚠ THE ONLY READS OF `cdof` AND `subtree_com` IN THIS FUNCTION.
+            # A length-only caller skips them and may therefore hand in a
+            # stale `cdof` — see `flg_jac` in the docstring.
+            if not flg_jac:
+                continue
 
             _contact_jacobian_row[DTYPE, V_CAP](
                 env, subtree_com, joints, bodies, mmeta, cdof,

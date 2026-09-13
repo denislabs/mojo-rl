@@ -63,6 +63,7 @@ from ..constants import (
     SENS_RANGEFINDER,
     SENS_JOINTPOS,
     SENS_JOINTVEL,
+    SENS_TENDONPOS,
     SENS_JOINTACTFRC,
     SENS_FRAMEPOS,
     SENS_FRAMEQUAT,
@@ -80,6 +81,7 @@ from ..constants import (
     SENSOBJ_GEOM,
     SENSOBJ_SITE,
     SENSOBJ_CAMERA,
+    SENSOBJ_TENDON,
     SENSDATA_REAL,
     SENSDATA_POSITIVE,
     SENSDATA_AXIS,
@@ -6584,7 +6586,7 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 # =============================================================================
 
 
-# The nineteen elements this loader models, and the kernel each one reaches.
+# The twenty elements this loader models, and the kernel each one reaches.
 # Every other `<sensor>` child is refused BY NAME in `_fill_sensors` — see the
 # note there for why a silent skip is not on the table.
 #
@@ -6598,6 +6600,7 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 #   rangefinder      7          site          1   REAL       POS    rangefinder
 #   jointpos         9          joint         1   REAL       POS    eval (qpos)
 #   jointvel         10         joint         1   REAL       VEL    eval (qvel)
+#   tendonpos        11         tendon        1   REAL       POS    eval (ten_length)
 #   jointactuatorfrc 16         joint         1   REAL       ACC    eval (qfrc)
 #   framepos         26         obj*          3   REAL       POS    frame.mojo
 #   framequat        27         obj*          4   QUATERNION POS    frame.mojo
@@ -6699,6 +6702,8 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(
             SENS_JOINTACTFRC, 1, SENSDATA_REAL, SENSSTAGE_ACC, True
         )
+    if tag_name == "tendonpos":
+        return _SensorSpec(SENS_TENDONPOS, 1, SENSDATA_REAL, SENSSTAGE_POS, True)
     # ⚠ SERVED HERE, AND POSSIBLY UNSERVED LATER. These five are the only
     # elements whose `served` depends on an ATTRIBUTE: `objtype="camera"` has
     # no name lookup in this parser, so `_fill_sensors` clears the flag on
@@ -6727,8 +6732,6 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(6, 3, SENSDATA_REAL, SENSSTAGE_POS, False)
     if tag_name == "camprojection":
         return _SensorSpec(8, 2, SENSDATA_REAL, SENSSTAGE_POS, False)
-    if tag_name == "tendonpos":
-        return _SensorSpec(11, 1, SENSDATA_REAL, SENSSTAGE_POS, False)
     if tag_name == "tendonvel":
         return _SensorSpec(12, 1, SENSDATA_REAL, SENSSTAGE_VEL, False)
     if tag_name == "actuatorpos":
@@ -6868,6 +6871,7 @@ def _resolve_frameobj(
 def _fill_sensors(
     sensor_sec: String,
     worldbody: String,
+    tendon_sec: String,
     mut result: FlatModelDef,
 ) raises:
     """Parse `<sensor>`: fill `result.sensors` + `result.sensor_names`.
@@ -6879,7 +6883,7 @@ def _fill_sensors(
     ⚠⚠ ADDRESSING IS NOT SERVING, AND THE SPLIT IS THE DESIGN. Every
     recognised element gets a row carrying MuJoCo's exact `dim`, `datatype`,
     `needstage` and `adr`, whether or not this engine can compute it. Only the
-    nineteen with a kernel behind them are marked `served` — and one family,
+    twenty with a kernel behind them are marked `served` — and one family,
     the frame sensors, is served only for the four object types this parser
     can resolve a name for.
 
@@ -7096,6 +7100,41 @@ def _fill_sensors(
                 n_unserved += 1
                 if not _has_str(unserved_tags, tag_name):
                     unserved_tags.append(tag_name)
+        elif sd.sensor_type == SENS_TENDONPOS:
+            # ⚠ `mjOBJ_TENDON`, AND THE INDEX COMES FROM THE `<tendon>`
+            # SECTION, NOT THE WORLDBODY. Every other resolver in this
+            # function walks `worldbody`; a tendon is declared outside it, so
+            # `_tendon_index_by_name` scans `tendon_sec` — the same two
+            # markers in the same order `_fill_tendons` numbered them by.
+            sd.objtype = SENSOBJ_TENDON
+            var tname = _trim(_extract_attr(tag, "tendon"))
+            if tname.byte_length() == 0:
+                raise Error(
+                    "physics3d: <sensor><tendonpos> needs a tendon= attribute"
+                )
+            var ti = _tendon_index_by_name(tendon_sec, tname)
+            if ti < 0:
+                raise Error(
+                    "physics3d: <sensor><tendonpos tendon='"
+                    + tname
+                    + "'> names no tendon in this model"
+                )
+            # A hard bound for the same reason the joint branch has one:
+            # `sensors/eval.mojo` indexes `d.ten_length` with this directly.
+            if ti >= len(result.tendons):
+                raise Error(
+                    "physics3d: <sensor><tendonpos tendon='"
+                    + tname
+                    + "'> resolved to tendon index "
+                    + String(ti)
+                    + " but only "
+                    + String(len(result.tendons))
+                    + " tendons were built — the name lookup and the tendon"
+                    " table disagree"
+                )
+            sd.objid = ti
+            # No body owns a tendon; `-1` says so rather than naming body 0.
+            sd.body_id = -1
         elif (
             sd.sensor_type == SENS_JOINTPOS
             or sd.sensor_type == SENS_JOINTVEL
@@ -8269,7 +8308,17 @@ def parse_xml_full(
     # makes `_find_site_index_by_name` agree with MuJoCo's ordering. Resolving
     # a sensor against an ungrouped site array is the "reads the wrong sensor"
     # failure the site name table's own comment warns about.
-    _fill_sensors(_extract_section_all(xml, "sensor"), worldbody, result)
+    # ⚠ `tendon_sec` IS `_extract_section_all`, NOT `_extract_section`. A
+    # model may declare several `<tendon>` blocks (an `<include>` composition
+    # routinely does) and MuJoCo merges them; `_fill_tendons` twelve lines
+    # above already takes the merged form, and `_tendon_index_by_name` has to
+    # number against the SAME string or a sensor resolves to another tendon.
+    _fill_sensors(
+        _extract_section_all(xml, "sensor"),
+        worldbody,
+        _extract_section_all(xml, "tendon"),
+        result,
+    )
 
     # ⚠⚠ AFTER `_fill_pairs`, NOT BEFORE. This block used to sit up beside the
     # geom walk, where `result.pairs` is still EMPTY — so adding the pair scan

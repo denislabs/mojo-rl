@@ -127,6 +127,7 @@ comptime SENS_TORQUE: Int = 5
 comptime SENS_RANGEFINDER: Int = 7
 comptime SENS_JOINTPOS: Int = 9
 comptime SENS_JOINTVEL: Int = 10
+comptime SENS_TENDONPOS: Int = 11
 comptime SENS_JOINTACTFRC: Int = 16
 comptime SENS_FRAMEPOS: Int = 26
 comptime SENS_FRAMEQUAT: Int = 27
@@ -156,6 +157,7 @@ comptime SENSOBJ_JOINT: Int = 3
 comptime SENSOBJ_GEOM: Int = 5
 comptime SENSOBJ_SITE: Int = 6
 comptime SENSOBJ_CAMERA: Int = 7
+comptime SENSOBJ_TENDON: Int = 18
 
 # `mjtDataType` — decides how `cutoff` clamps (`engine_sensor.c:198-224`):
 # REAL clips to [-cutoff, +cutoff], POSITIVE takes `min(cutoff, x)`.

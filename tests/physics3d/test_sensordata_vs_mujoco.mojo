@@ -1,6 +1,6 @@
 """`sensors/eval.mojo` vs MuJoCo's `d.sensordata` (AUD-23, AUD-47).
 
-Twelve sensors, twenty-six values, all three stages. `jointpos`/`jointvel` joined
+Fourteen sensors, twenty-eight values, all three stages. `jointpos`/`jointvel` joined
 on 2026-09-13 (audit §6 phase 1a) and sit BEHIND A FREEJOINT deliberately —
 see `test_the_joint_sensors_read_their_own_joints_address` for why a model of
 hinges alone cannot tell the two address tables apart.
@@ -39,10 +39,14 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, DynDims
 from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
+from mojo_rl.physics3d.parser.runtime_load import (
+    dims_from_flat, build_model_runtime,
+)
+from mojo_rl.physics3d.dynamics.tendon_lengths import model_reads_tendon_length
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
@@ -103,7 +107,18 @@ comptime SD_XML = """
     <torque name="trq" site="wrist"/>
     <touch name="tch" site="pad"/>
     <jointactuatorfrc name="jaf" joint="el"/>
+    <tendonpos name="tpf" tendon="tf"/>
+    <tendonpos name="tps" tendon="ts"/>
   </sensor>
+  <tendon>
+    <fixed name="tf">
+      <joint joint="el" coef="0.5"/>
+    </fixed>
+    <spatial name="ts">
+      <site site="imu"/>
+      <site site="wrist"/>
+    </spatial>
+  </tendon>
   <actuator>
     <motor name="m" joint="el" gear="2"/>
   </actuator>
@@ -116,9 +131,9 @@ comptime SM = ModelDefFromXML[
     nbody=sp.NBODY, njoint=sp.NJOINT, nq=sp.NQ, nv=sp.NV,
     ngeom=sp.NGEOM, nact=sp.NACT, ntex=sp.NTEX, nmat=sp.NMAT,
     nlight=sp.NLIGHT, ncam=sp.NCAM, nsite=sp.NSITE,
-    # `parse_xml` does not count sensors — see its constructor note. Twelve
-    # sensors; 1+1+3+3+1+3+3+3+3+3+1+1 = 26 values.
-    nsensor=12, nsensordata=26,
+    # `parse_xml` does not count sensors — see its constructor note. Fourteen
+    # sensors; 1+1+3+3+1+3+3+3+3+3+1+1+1+1 = 28 values.
+    nsensor=14, nsensordata=28,
     max_tendon=sp.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=8,
@@ -164,7 +179,18 @@ comptime SD_XML_CUT = """
     <torque name="trq" site="wrist"/>
     <touch name="tch" site="pad" cutoff="5"/>
     <jointactuatorfrc name="jaf" joint="el" cutoff="1.0"/>
+    <tendonpos name="tpf" tendon="tf"/>
+    <tendonpos name="tps" tendon="ts" cutoff="0.2"/>
   </sensor>
+  <tendon>
+    <fixed name="tf">
+      <joint joint="el" coef="0.5"/>
+    </fixed>
+    <spatial name="ts">
+      <site site="imu"/>
+      <site site="wrist"/>
+    </spatial>
+  </tendon>
   <actuator>
     <motor name="m" joint="el" gear="2"/>
   </actuator>
@@ -177,7 +203,7 @@ comptime SMC = ModelDefFromXML[
     nbody=spc.NBODY, njoint=spc.NJOINT, nq=spc.NQ, nv=spc.NV,
     ngeom=spc.NGEOM, nact=spc.NACT, ntex=spc.NTEX, nmat=spc.NMAT,
     nlight=spc.NLIGHT, ncam=spc.NCAM, nsite=spc.NSITE,
-    nsensor=12, nsensordata=26,
+    nsensor=14, nsensordata=28,
     max_tendon=spc.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=8,
@@ -215,7 +241,7 @@ def _names() -> List[String]:
         String("rf"), String("jp"), String("vel"), String("gyr"),
         String("jv"), String("scm"), String("slv"),
         String("acc"), String("frc"), String("trq"), String("tch"),
-        String("jaf"),
+        String("jaf"), String("tpf"), String("tps"),
     ]
 
 
@@ -436,7 +462,7 @@ def test_sensordata_matches_mujoco() raises:
         ours.append(Float64(d.sensordata.data[i]))
 
     var n = _compare(String(SD_XML), String("plain"), 1e-9, ours, qpos, qvel)
-    assert_true(n == 26, "expected 26 values, compared " + String(n))
+    assert_true(n == 28, "expected 28 values, compared " + String(n))
 
 
 def test_cutoff_clamps_like_mujoco() raises:
@@ -466,13 +492,13 @@ def test_cutoff_clamps_like_mujoco() raises:
     var dat_plain = _mj_at(mujoco, String(SD_XML), qpos, qvel)
     var dat_cut = _mj_at(mujoco, String(SD_XML_CUT), qpos, qvel)
     var bound = 0
-    for k in range(26):
+    for k in range(28):
         if abs(
             Float64(py=dat_plain.sensordata[k])
             - Float64(py=dat_cut.sensordata[k])
         ) > 1e-12:
             bound += 1
-    print("  values MuJoCo's own cutoffs changed:", bound, "/ 26")
+    print("  values MuJoCo's own cutoffs changed:", bound, "/ 28")
     assert_true(
         bound >= 3,
         "the declared cutoffs do not bind on MuJoCo's side (only "
@@ -483,8 +509,8 @@ def test_cutoff_clamps_like_mujoco() raises:
     var n = _compare(
         String(SD_XML_CUT), String("cutoff"), 1e-9, ours, qpos, qvel
     )
-    assert_true(n == 26, "expected 26 values, compared " + String(n))
-    print("  our clamped sensordata matches MuJoCo's, all 26 values")
+    assert_true(n == 28, "expected 28 values, compared " + String(n))
+    print("  our clamped sensordata matches MuJoCo's, all 28 values")
 
 
 def test_a_stage_that_never_runs_is_loud() raises:
@@ -871,6 +897,115 @@ def test_jointactuatorfrc_reads_the_actuator_force_at_the_dof() raises:
     )
 
 
+def test_tendonpos_reads_ten_length_and_the_pass_is_guarded_on_it() raises:
+    """`tendonpos` is `d.ten_length[objid]`, and that array is filled ON DEMAND.
+
+    ⚠⚠ `d.ten_length` IS NOT MuJoCo'S: MuJoCo fills `ten_length` for every
+    tendon inside every `mj_fwdPosition`; this engine fills it only when a
+    served `<tendonpos>` row exists, because a spatial tendon's length is a
+    polyline walk over its wrap geoms and the dynamics already computes the
+    ones IT needs where it needs them. Filling all of them every step would be
+    a second walk per tendon — 700 of them on ms_human_700 — for a sensor
+    almost nothing declares.
+
+    That makes the GUARD part of the contract, so this pins both directions:
+
+      * the fixture, which declares two `<tendonpos>` rows, gets numbers (the
+        comparison above already proves they are MuJoCo's);
+      * a model with tendons and NO such sensor must leave the array at the
+        NaN `Data` allocated it with, not at 0.0 — which is a plausible
+        length and is what a zero fill would have handed a reader.
+
+    The second model is loaded at RUN TIME rather than as a third
+    `ModelDefFromXML`, because nothing here has to step it and a comptime
+    model costs minutes of compile for one boolean.
+    """
+    print("=== tendonpos reads ten_length; the pass is guarded on it ===")
+    var mujoco = Python.import_module("mujoco")
+    var m = mujoco.MjModel.from_xml_string(PythonObject(String(SD_XML)))
+    var O = mujoco.mjtObj
+
+    var ctx = DeviceContext()
+    var mf = Mod()
+    var d = Dat()
+    var st = _run_plain(d, mf, ctx)
+    var dat = _mj_at(mujoco, String(SD_XML), st[0].copy(), st[1].copy())
+
+    assert_true(
+        model_reads_tendon_length[DTYPE, SMD](mf),
+        "the fixture declares two <tendonpos> rows and the guard says no",
+    )
+
+    # ⚠ THE TWO KINDS TAKE DIFFERENT BRANCHES AND BOTH ARE HERE. `tf` is
+    # FIXED (`sum coef*qpos`, 0.5 x 0.6) and `ts` is SPATIAL (a site
+    # polyline). A pass that handled only one would still match on the other.
+    var n_checked = 0
+    for nm in [String("tpf"), String("tps")]:
+        var sid = Int(py=mujoco.mj_name2id(m, O.mjOBJ_SENSOR,
+                                           PythonObject(nm)))
+        var adr = Int(py=m.sensor_adr[sid])
+        var tid = Int(py=m.sensor_objid[sid])
+        var ours = Float64(d.sensordata.data[adr])
+        var theirs = Float64(py=dat.sensordata[adr])
+        var mj_len = Float64(py=dat.ten_length[tid])
+        print("  ", nm, " tendon", tid, " ours", ours,
+              " MuJoCo sensordata", theirs, " MuJoCo ten_length", mj_len)
+        assert_true(
+            abs(ours - theirs) <= 1e-12,
+            nm + ": ours " + String(ours) + " vs MuJoCo " + String(theirs),
+        )
+        # ⚠ AND AGAINST `d->ten_length` DIRECTLY, not just the sensor slice —
+        # so a wrong `objid` that happened to land on the other tendon shows
+        # up as a value mismatch rather than as agreement.
+        assert_true(
+            abs(Float64(d.ten_length.data[tid]) - mj_len) <= 1e-12,
+            nm + ": our ten_length[" + String(tid) + "] = "
+            + String(Float64(d.ten_length.data[tid])) + " vs MuJoCo "
+            + String(mj_len),
+        )
+        assert_true(
+            abs(theirs) > 1e-6,
+            nm + " reads " + String(theirs) + " in MuJoCo — the fixture has"
+            " stopped stretching this tendon and a null pass would pass",
+        )
+        n_checked += 1
+    assert_true(n_checked == 2, "both tendon kinds must be checked")
+
+    # ── the other direction: no sensor, no pass, NaN kept ────────────────
+    var quiet = String(
+        "<mujoco><worldbody>"
+        "<body name='b' pos='0 0 1'>"
+        "<joint name='h' type='hinge' axis='0 1 0'/>"
+        "<geom name='g' type='sphere' size='0.1'/>"
+        "<site name='s' pos='0.1 0 0' size='0.01'/>"
+        "</body></worldbody>"
+        "<tendon><fixed name='tq'><joint joint='h' coef='0.5'/></fixed>"
+        "</tendon>"
+        "<sensor><jointpos name='jp' joint='h'/></sensor></mujoco>"
+    )
+    var fmd = parse_xml_full(quiet, String("."))
+    var qdims = dims_from_flat(fmd)
+    var qm = Model[DTYPE, DynDims](qdims)
+    build_model_runtime[DTYPE](fmd, qdims, qm)
+    assert_true(
+        qdims.get_ntendon() >= 1,
+        "the control model must actually declare a tendon, or the NaN below"
+        " is about the absence of tendons and not about the guard",
+    )
+    assert_true(
+        not model_reads_tendon_length[DTYPE, DynDims](qm),
+        "a model with a tendon and no <tendonpos> must not trip the guard",
+    )
+    var qd = Data[DTYPE, DynDims, 1](qdims)
+    assert_true(
+        isnan(Float64(qd.ten_length.data[0])),
+        "an unasked tendon's ten_length must read NaN, not "
+        + String(Float64(qd.ten_length.data[0])) + " — 0.0 is a plausible"
+        " length and would read as a measurement",
+    )
+    print("  a tendon nobody sensors keeps its NaN; the guard says no")
+
+
 def main() raises:
     var suite = TestSuite()
     suite.test[test_sensordata_matches_mujoco]()
@@ -880,4 +1015,5 @@ def main() raises:
     suite.test[test_a_joint_sensor_on_a_multi_dof_joint_refuses]()
     suite.test[test_subtreecom_is_this_steps_com_not_last_steps]()
     suite.test[test_jointactuatorfrc_reads_the_actuator_force_at_the_dof]()
+    suite.test[test_tendonpos_reads_ten_length_and_the_pass_is_guarded_on_it]()
     suite^.run()

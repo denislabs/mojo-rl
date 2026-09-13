@@ -37,6 +37,7 @@ from ..kinematics.forward_kinematics import (
     compute_body_velocities,
 )
 from ..dynamics.subtree_com import compute_subtree_com
+from ..dynamics.tendon_lengths import compute_tendon_lengths
 from ..dynamics.cdof import compute_cdof
 from ..dynamics.mass_matrix import compute_mass_matrix
 from std.time import perf_counter_ns
@@ -913,6 +914,20 @@ struct EulerIntegrator[
             var _e_now0 = Int(perf_counter_ns())
             _e_subtree += _e_now0 - _e_last
             _e_last = _e_now0
+        # ── mj_tendon, for the sensors only ───────────────────────────────
+        # ⚠ INSIDE THE SAME CPU/BATCH=1 GUARD AS THE SENSOR PASSES, AND
+        # GUARDED AGAIN ON A CONSUMER. `compute_tendon_lengths` returns at its
+        # first lines unless a served `<tendonpos>` row exists, so the cost is
+        # zero on every model in this tree but the two hands that declare one.
+        # Filling `d.ten_length` unconditionally would be a second polyline
+        # walk per tendon per step — 700 of them on ms_human_700 — for a
+        # quantity the dynamics already computes where it needs it.
+        comptime if target == "cpu" and Self.BATCH == 1:
+            compute_tendon_lengths[Self.DTYPE, Self.D](
+                rebind[Data[Self.DTYPE, Self.D, 1]](d),
+                m,
+                rebind[DynamicsScratch[Self.DTYPE, Self.D, 1]](self.scratch),
+            )
         # ── mj_sensorPos ──────────────────────────────────────────────────
         # MuJoCo evaluates the position-stage sensors here, immediately after
         # `mj_fwdPosition` (engine_forward.c:1797).

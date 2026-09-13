@@ -50,6 +50,7 @@ from mojo_rl.physics3d.constants import (
     SENS_RANGEFINDER,
     SENS_JOINTPOS,
     SENS_JOINTVEL,
+    SENS_TENDONPOS,
     SENS_JOINTACTFRC,
     SENS_FRAMEPOS,
     SENS_FRAMEQUAT,
@@ -368,6 +369,17 @@ def _eval_stage[
                 d.sensordata.data[adr + 0] = Scalar[DTYPE](v[0])
                 d.sensordata.data[adr + 1] = Scalar[DTYPE](v[1])
                 d.sensordata.data[adr + 2] = Scalar[DTYPE](v[2])
+
+        elif st == SENS_TENDONPOS:
+            # `mjSENS_TENDONPOS` (engine_sensor.c:648):
+            # `sensordata[0] = d->ten_length[objid]`.
+            #
+            # ⚠ `d.ten_length` IS FILLED ONLY WHEN A SENSOR ASKS, by
+            # `dynamics/tendon_lengths.compute_tendon_lengths`, which runs at
+            # MuJoCo's `mj_tendon` point in the step. Its guard is THIS row's
+            # existence, so the two cannot drift: no `<tendonpos>`, no pass,
+            # and the array keeps the NaN `Data` allocated it with.
+            d.sensordata.data[adr] = d.ten_length.data[objid]
 
         elif st == SENS_JOINTACTFRC:
             # `mjSENS_JOINTACTFRC` (engine_sensor.c:1309):

@@ -172,6 +172,37 @@ def _tendon_lengths(
             0, t, dims, ten_v, site_v, geom_v, body_v, joint_v, meta_v,
             stcom_v, cdof_v, xpos_v, xquat_v, J,
         )
+        # ⚠⚠ THE LENGTH-ONLY PATH MUST RETURN THE SAME NUMBER, BIT FOR BIT.
+        # `flg_jac=False` skips the two `_contact_jacobian_row` calls per
+        # sub-segment — and nothing else. It is the path
+        # `dynamics/tendon_lengths.compute_tendon_lengths` takes for the
+        # `<tendonpos>` sensor, and it is the reason that pass may hand in a
+        # STALE `cdof`: if the flag ever started changing the length, a
+        # sensor would silently report a tendon measured against last step's
+        # dof frames. Checked HERE rather than in the sensor gate because
+        # this file is the one that routes tendons round geoms — softfoot's
+        # five 39-waypoint tendons included — where the two paths have the
+        # most sub-segments to disagree over.
+        var Jf = Scratch[Scalar[DTYPE], 0](nv, fill=Scalar[DTYPE](0))
+        var Lf = spatial_tendon_length_jac[DTYPE, 0, 1](
+            0, t, dims, ten_v, site_v, geom_v, body_v, joint_v, meta_v,
+            stcom_v, cdof_v, xpos_v, xquat_v, Jf,
+            flg_jac=False,
+        )
+        if Lf != L:
+            raise Error(
+                "flg_jac=False changed tendon " + String(t) + "'s length: "
+                + String(Float64(Lf)) + " vs " + String(Float64(L))
+                + " — the length-only path is not the same walk"
+            )
+        # And it must leave the moment arm alone, or a caller that reused a
+        # scratch would pick up a half-built row.
+        for i in range(nv):
+            if Jf[i] != Scalar[DTYPE](0):
+                raise Error(
+                    "flg_jac=False wrote J_row[" + String(i) + "] = "
+                    + String(Float64(Jf[i])) + "; it must leave it zero"
+                )
         out.append(Float64(L))
 
 

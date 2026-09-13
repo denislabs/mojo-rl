@@ -218,6 +218,24 @@ struct Data[
     zeros that look like readings."""
     var xquat_acc: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*4]
     var subtree_com: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*3]
+    var ten_length: TensorImpl[Self.DTYPE]  # [BATCH, NTENDON]
+    """MuJoCo's `d->ten_length` — the scalar length of each tendon.
+
+    ⚠⚠ FILLED ON DEMAND, NOT EVERY STEP, AND THE NaN FILL IS WHY THAT IS SAFE.
+    MuJoCo's `mj_tendon` runs inside every `mj_fwdPosition`. This engine does
+    not: a spatial tendon's length is a polyline walk over its wrap geoms, and
+    the three places that need one (`constraints/tendon_limit`,
+    `constraints/equality_tendon`, `dynamics/pose_transmission`) each compute
+    it for the tendons THEY care about, at the point they care. Filling this
+    array unconditionally would add a second walk per tendon per step — 700 of
+    them on `ms_human_700` — to serve a sensor almost no model declares.
+
+    So `compute_tendon_lengths` fills it only when the model declares a
+    `<tendonpos>` sensor, and allocation leaves NaN everywhere else. A reader
+    that gets a number got a computed one; a reader that gets NaN is looking at
+    a model nothing asked this of. 0.0 would have been a plausible length.
+
+    Same rule as `sensordata`: see that field for the reasoning in full."""
     var qfrc_actuator: TensorImpl[Self.DTYPE]  # [BATCH, NV]
     # Mocap body targets (world frame; hook-written, FK skips mocap bodies —
     # the facades preset the mocap body pose from these before each step)
@@ -330,6 +348,18 @@ struct Data[
                 self.sensordata.data[_i] = _qnan
         self.xquat_acc = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 4)
         self.subtree_com = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
+        # `alloc(0)` is not a valid buffer and most models have no tendons, so
+        # the floor is the same one `sensordata` and `hfield_data` take.
+        var _nt = dims.get_ntendon()
+        if _nt < 1:
+            _nt = 1
+        self.ten_length = TensorImpl[Self.DTYPE].alloc(B * _nt)
+        # NaN for the same reason `sensordata` is NaN: this array is filled
+        # only where something asked for it, and 0.0 is a plausible length.
+        comptime if Self.DTYPE.is_floating_point():
+            var _tnan = nan[Self.DTYPE]()
+            for _i in range(B * _nt):
+                self.ten_length.data[_i] = _tnan
         self.qfrc_actuator = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
         self.mocap_pos = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
         self.mocap_quat = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 4)
@@ -366,6 +396,7 @@ struct Data[
         self.cacc.upload(ctx)
         self.site_xpos_acc.upload(ctx)
         self.sensordata.upload(ctx)
+        self.ten_length.upload(ctx)
         self.xquat_acc.upload(ctx)
         self.cfrc_int.upload(ctx)
         self.subtree_com.upload(ctx)
@@ -395,6 +426,7 @@ struct Data[
         self.cacc.download(ctx)
         self.site_xpos_acc.download(ctx)
         self.sensordata.download(ctx)
+        self.ten_length.download(ctx)
         self.xquat_acc.download(ctx)
         self.cfrc_int.download(ctx)
         self.subtree_com.download(ctx)
