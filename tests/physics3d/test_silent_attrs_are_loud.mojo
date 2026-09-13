@@ -416,9 +416,19 @@ def test_wrong_physics_rows_raise() raises:
 
 def test_a_sensor_under_a_closed_loop_is_unserved_not_refused() raises:
     """AUD-48. `mj_rnePostConstraint` adds each connect/weld row's constraint
-    force into `cfrc_ext`; those forces are not retained past our solve, so an
-    accelerometer / force / torque sensor on such a model would read LOW by
-    the whole loop-closure load — not by a rounding.
+    force into `cfrc_ext`; those forces are not retained past our solve, so a
+    FORCE or TORQUE sensor on such a model would read LOW by the whole
+    loop-closure load — not by a rounding.
+
+    ⚠⚠ AN ACCELEROMETER IS NOT IN THAT SET, AND THIS ROW USED TO UNSERVE ONE.
+    `mjSENS_ACCELEROMETER` is `mj_objectAcceleration` (engine_sensor.c:1273 ->
+    engine_core_util.c:909): `cacc` and `cvel`, nothing else. `cfrc_ext` never
+    enters it — only `mjSENS_FORCE` and `mjSENS_TORQUE` transform `cfrc_int`,
+    and `cfrc_int = cfrc_body - cfrc_ext` is where the equality force lands.
+    The constrained `qacc` the accelerometer rides on already carries that
+    force, because the solver put it there. cassie's pelvis accelerometer was
+    correct all along and was being withheld; the third control below is what
+    pins that.
 
     ⚠⚠ UNSERVED, NOT REFUSED, AND cassie IS WHY. Menagerie's agility_cassie
     has four `<connect>` rows AND a pelvis accelerometer, and seven gates in
@@ -482,6 +492,26 @@ def test_a_sensor_under_a_closed_loop_is_unserved_not_refused() raises:
         joint_eq.sensors[0].served,
         "a JOINT equality contributes nothing to `cfrc_ext`, so the sensor"
         " under it is exact and must stay served",
+    )
+
+    print("  control: an ACCELEROMETER under the same connect stays served")
+    var accel = parse_xml_full(
+        RAISE_EQ_ACCEL_SENSOR.replace(
+            String("<force name=\"f\" site=\"s\"/>"),
+            String("<accelerometer name=\"a\" site=\"s\"/>"),
+        ),
+        String("."),
+    )
+    assert_true(
+        len(accel.sensors) == 1 and accel.sensors[0].served,
+        "an accelerometer reads `cacc`/`cvel` and never `cfrc_ext`"
+        " (mj_objectAcceleration, engine_core_util.c:909) — unserving it is"
+        " over-firing, and it is what this row did until 2026-09-13",
+    )
+    assert_true(
+        not _has(accel.silent_attr_ids, String("AUD-48")),
+        "a model whose only acceleration-stage sensor is an accelerometer"
+        " must not report an AUD-48 row at all",
     )
 
 

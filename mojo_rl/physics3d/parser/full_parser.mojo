@@ -7742,7 +7742,20 @@ def _refuse_wrong_physics(mut result: FlatModelDef) raises:
                 " enforced",
             )
 
-    # ── AUD-48: an acceleration-stage sensor under a connect/weld equality ──
+    # ── AUD-48: a FORCE or TORQUE sensor under a connect/weld equality ─────
+    #
+    # ⚠⚠ AND NOT AN ACCELEROMETER — THIS ROW USED TO UNSERVE ONE AND THAT WAS
+    # OVER-BROAD. `mjSENS_ACCELEROMETER` is `mj_objectAcceleration`
+    # (engine_sensor.c:1273 -> engine_core_util.c:909), which reads `cacc` and
+    # `cvel` and NOTHING ELSE; `cfrc_ext` never enters it. Only `mjSENS_FORCE`
+    # and `mjSENS_TORQUE` transform `cfrc_int`, and `cfrc_int = cfrc_body -
+    # cfrc_ext` is the only place the equality force lands. The constrained
+    # `qacc` the accelerometer rides on ALREADY carries that force — the
+    # solver put it there — so cassie's pelvis accelerometer was correct all
+    # along and was being withheld.
+    #
+    # Measured before narrowing: the unserve set was
+    # {ACCELEROMETER, FORCE, TORQUE}; it is now {FORCE, TORQUE}.
     #
     # ⚠⚠ `rne_post.mojo`'s HEADER CLAIMED THIS ALREADY RAISED AND IT DID NOT.
     # "a model with connect/weld equalities plus a force/torque sensor would
@@ -7775,8 +7788,7 @@ def _refuse_wrong_physics(mut result: FlatModelDef) raises:
             if not sd.served:
                 continue
             if (
-                sd.sensor_type == SENS_ACCELEROMETER
-                or sd.sensor_type == SENS_FORCE
+                sd.sensor_type == SENS_FORCE
                 or sd.sensor_type == SENS_TORQUE
             ):
                 # ⚠⚠ UNSERVED, NOT REFUSED, AND THE DIFFERENCE IS cassie.
@@ -7799,7 +7811,7 @@ def _refuse_wrong_physics(mut result: FlatModelDef) raises:
                 n_unserved += 1
         _silent(
             result, "AUD-48", n_unserved,
-            "acceleration-stage sensor(s) under " + String(n_cw)
+            "force/torque sensor(s) under " + String(n_cw)
             + " connect/weld equality row(s)",
             "`mj_rnePostConstraint` adds each connect/weld row's constraint"
             " force into `cfrc_ext` and we do not retain those forces, so"
