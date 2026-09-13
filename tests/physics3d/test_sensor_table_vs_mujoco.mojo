@@ -404,10 +404,17 @@ def test_unserved_sensors_are_addressed_not_dropped() raises:
     """An unserved sensor holds its slot, so later `adr`s stay MuJoCo-exact.
 
     ⚠ THIS IS THE TEST THAT DISTINGUISHES THE THREE POSSIBLE DESIGNS. Dropping
-    an unserved sensor would leave `touch`'s `adr` at 4 instead of 8 and
-    `velocimeter`'s at 8 instead of 16 — plausible numbers pointing at another
-    sensor's values. Refusing the model would regress four dm_control models.
-    Addressing it keeps every offset right and makes the READ raise instead.
+    the unserved `subtreeangmom` would leave `framexaxis`'s `adr` at 9 instead
+    of 12 and `velocimeter`'s at 12 instead of 15 — plausible numbers pointing
+    at another sensor's values. Refusing the model would regress four
+    dm_control models. Addressing it keeps every offset right and makes the
+    READ raise instead.
+
+    ⚠ THE COUNTS BELOW MOVE AS THE TAIL LANDS, AND THEY ARE PINNED ANYWAY.
+    `jointpos` was served on 2026-09-13 and the frame family the same day
+    (audit §6 phases 1a/1b), taking the split from 3/4 to 6/1. Pinning the
+    numbers is what makes those moves visible; the two NON-VACUITY arms are
+    what keep the test meaningful whichever way they move.
     """
     print("=== unserved sensors hold their sensordata slots ===")
     var mujoco = Python.import_module("mujoco")
@@ -458,14 +465,16 @@ def test_unserved_sensors_are_addressed_not_dropped() raises:
 
     print("  served:", served_seen, " unserved (addressed only):",
           unserved_seen)
-    # ⚠ THESE MOVE WHEN A SENSOR IS SERVED, AND THAT IS THE POINT OF PINNING
-    # THEM. `jp` was unserved until 2026-09-13 (audit §6 phase 1a); the split
-    # is 4/3 now. Both halves must stay NONZERO or the test below is checking
-    # an empty set.
-    assert_true(served_seen == 4, "expected 4 served, got "
+    assert_true(served_seen == 6, "expected 6 served, got "
                 + String(served_seen))
-    assert_true(unserved_seen == 3, "expected 3 unserved, got "
+    assert_true(unserved_seen == 1, "expected 1 unserved, got "
                 + String(unserved_seen))
+    # ⚠ NON-VACUITY, BOTH HALVES. The whole test is about the BOUNDARY between
+    # served and addressed; with either side empty there is no boundary and
+    # every assertion above holds trivially.
+    assert_true(served_seen > 0 and unserved_seen > 0,
+                "the fixture must declare both a served and an unserved"
+                " sensor, or this test has nothing to distinguish")
     assert_true(
         fmd.nsensordata() == Int(py=m.nsensordata),
         "nsensordata: ours " + String(fmd.nsensordata()) + " vs MuJoCo "
@@ -479,7 +488,7 @@ def test_unserved_sensors_are_addressed_not_dropped() raises:
                 "a served sensor must still resolve by name")
     # ...and the unserved ones raise on every read, including `adr`, whose
     # value is CORRECT but points at values nothing wrote.
-    for nm in [String("fq"), String("sam"), String("fx")]:
+    for nm in [String("sam")]:
         var raised = False
         try:
             _ = fmd.sensor_adr_by_name(nm)
@@ -490,20 +499,24 @@ def test_unserved_sensors_are_addressed_not_dropped() raises:
             "reading unserved sensor '" + nm + "' by name must raise — its"
             " offset is right and its values were never written",
         )
-    print("  all 3 unserved names raise on read: ok")
+    print("  the unserved name raises on read: ok")
 
     # ⚠ AND A SERVED JOINT SENSOR DOES NOT RAISE. Without this arm the loop
     # above would still pass if `jointpos` had been dropped from the table
     # altogether rather than served.
-    assert_true(
-        fmd.sensor_adr_by_name(String("jp")) == 7,
-        "`jp` is served now and must read back its adr, 7; got "
-        + String(fmd.sensor_adr_by_name(String("jp"))),
-    )
+    for nm_adr in [
+        (String("jp"), 7), (String("fq"), 3), (String("fx"), 12)
+    ]:
+        assert_true(
+            fmd.sensor_adr_by_name(nm_adr[0]) == nm_adr[1],
+            "`" + nm_adr[0] + "` is served now and must read back its adr, "
+            + String(nm_adr[1]) + "; got "
+            + String(fmd.sensor_adr_by_name(nm_adr[0])),
+        )
 
     # And the model said so once, by audit id.
     assert_true(
-        fmd.silent_attrs >= 3,
+        fmd.silent_attrs >= 1,
         "the unserved sensors must be reported under AUD-23; silent_attrs = "
         + String(fmd.silent_attrs),
     )

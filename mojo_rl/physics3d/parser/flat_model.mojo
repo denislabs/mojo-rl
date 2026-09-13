@@ -18,6 +18,7 @@ from mojo_rl.physics3d.joint_types import (
 # and the packed field layout must agree, so both read it from here.
 from mojo_rl.physics3d.constants import (
     SENSOBJ_SITE,
+    SENSOBJ_UNKNOWN,
     SENSDATA_REAL,
     SENSSTAGE_POS,
 )
@@ -1967,6 +1968,14 @@ struct SensorData(Copyable, ImplicitlyCopyable, Movable):
 
     `-1` on an unserved sensor, like `objid`."""
 
+    var reftype: Int
+    """`<sensor reftype=>` — `mjtObj` of the RELATIVE frame, or
+    `SENSOBJ_UNKNOWN` when absent. Only the frame sensors take one."""
+
+    var refid: Int
+    """Index of the reference object, or `-1` when absent — MuJoCo's own
+    sentinel, and the value `engine_sensor.c:692` branches on."""
+
     var served: Bool
     """True when a kernel in `physics3d/sensors` computes this sensor.
 
@@ -1989,6 +1998,8 @@ struct SensorData(Copyable, ImplicitlyCopyable, Movable):
         needstage: Int = SENSSTAGE_POS,
         cutoff: Float64 = 0.0,
         body_id: Int = 0,
+        reftype: Int = SENSOBJ_UNKNOWN,
+        refid: Int = -1,
         served: Bool = False,
     ):
         self.sensor_type = sensor_type
@@ -2000,6 +2011,8 @@ struct SensorData(Copyable, ImplicitlyCopyable, Movable):
         self.needstage = needstage
         self.cutoff = cutoff
         self.body_id = body_id
+        self.reftype = reftype
+        self.refid = refid
         self.served = served
 
 

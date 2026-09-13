@@ -91,6 +91,8 @@ from mojo_rl.physics3d.gpu.constants import (
     SENSOR_IDX_CUTOFF,
     SENSOR_IDX_BODY,
     SENSOR_IDX_SERVED,
+    SENSOR_IDX_REFTYPE,
+    SENSOR_IDX_REFID,
     MODEL_MESH_META_SIZE,
     MESH_ARENA_FLOATS_PER_TRI,
     MESH_META_IDX_BVHADR,
@@ -2659,6 +2661,8 @@ def build_model_fields_from_flat[
         mf.sensors.data[so + SENSOR_IDX_SERVED] = Scalar[DTYPE](
             1.0 if se.served else 0.0
         )
+        mf.sensors.data[so + SENSOR_IDX_REFTYPE] = Scalar[DTYPE](se.reftype)
+        mf.sensors.data[so + SENSOR_IDX_REFID] = Scalar[DTYPE](se.refid)
 
     # ── tendons ──────────────────────────────────────────────────────────
     #

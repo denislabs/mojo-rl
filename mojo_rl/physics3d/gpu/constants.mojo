@@ -1178,11 +1178,11 @@ comptime SITE_IDX_QUAT_W: Int = 11
 # sum — drop one and every sensor after it reports an offset pointing at some
 # other sensor's values, which is a plausible wrong number rather than an
 # error. See `_fill_sensors` for why neither skipping nor refusing is right.
-comptime MODEL_SENSOR_SIZE: Int = 10  # ⚠ COUNT THE IDX LINES BELOW: 0..9
+comptime MODEL_SENSOR_SIZE: Int = 12  # ⚠ COUNT THE IDX LINES BELOW: 0..11
 
 comptime SENSOR_IDX_TYPE: Int = 0  # `mjtSensor`, e.g. SENS_TOUCH
-comptime SENSOR_IDX_OBJTYPE: Int = 1  # `mjtObj` — SENSOBJ_SITE / SENSOBJ_BODY
-comptime SENSOR_IDX_OBJID: Int = 2  # site or body index; -1 when unserved
+comptime SENSOR_IDX_OBJTYPE: Int = 1  # `mjtObj` — SENSOBJ_SITE / BODY / GEOM …
+comptime SENSOR_IDX_OBJID: Int = 2  # index into THAT objtype's table; -1 unserved
 comptime SENSOR_IDX_DIM: Int = 3  # values written to sensordata
 comptime SENSOR_IDX_ADR: Int = 4  # offset into sensordata
 comptime SENSOR_IDX_DATATYPE: Int = 5  # `mjtDataType` — how cutoff clamps
@@ -1190,6 +1190,15 @@ comptime SENSOR_IDX_NEEDSTAGE: Int = 6  # `mjtStage` — which eval pass
 comptime SENSOR_IDX_CUTOFF: Int = 7
 comptime SENSOR_IDX_BODY: Int = 8  # the site's body, or the subtree root
 comptime SENSOR_IDX_SERVED: Int = 9  # 1 if a kernel computes it, else 0
+# `<sensor reftype= refname=>` — the frame sensors' optional RELATIVE form
+# (`m->sensor_reftype` / `sensor_refid`). `SENSOBJ_UNKNOWN` / `-1` is MuJoCo's
+# own "absent", and `engine_sensor.c:692` branches on `refid == -1` exactly.
+#
+# ⚠ IGNORING THESE IS NOT A SMALL ERROR. A `framepos` with a reference frame
+# reports a position IN THAT FRAME; served without it, the sensor would hand
+# back the global position — right units, right magnitude, wrong frame.
+comptime SENSOR_IDX_REFTYPE: Int = 10  # `mjtObj` of the reference, or UNKNOWN
+comptime SENSOR_IDX_REFID: Int = 11  # index of the reference object, or -1
 
 
 comptime MODEL_EXCLUDE_PAIR_SIZE: Int = 2  # body1, body2

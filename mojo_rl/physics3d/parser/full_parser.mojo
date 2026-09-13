@@ -63,10 +63,19 @@ from ..constants import (
     SENS_RANGEFINDER,
     SENS_JOINTPOS,
     SENS_JOINTVEL,
+    SENS_FRAMEPOS,
+    SENS_FRAMEQUAT,
+    SENS_FRAMEXAXIS,
+    SENS_FRAMEYAXIS,
+    SENS_FRAMEZAXIS,
     SENS_SUBTREELINVEL,
+    SENSOBJ_UNKNOWN,
     SENSOBJ_BODY,
+    SENSOBJ_XBODY,
     SENSOBJ_JOINT,
+    SENSOBJ_GEOM,
     SENSOBJ_SITE,
+    SENSOBJ_CAMERA,
     SENSDATA_REAL,
     SENSDATA_POSITIVE,
     SENSDATA_AXIS,
@@ -6571,7 +6580,7 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 # =============================================================================
 
 
-# The ten elements this loader models, and the kernel each one reaches.
+# The fifteen elements this loader models, and the kernel each one reaches.
 # Every other `<sensor>` child is refused BY NAME in `_fill_sensors` — see the
 # note there for why a silent skip is not on the table.
 #
@@ -6585,7 +6594,17 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 #   rangefinder      7          site          1   REAL       POS    rangefinder
 #   jointpos         9          joint         1   REAL       POS    eval (qpos)
 #   jointvel         10         joint         1   REAL       VEL    eval (qvel)
+#   framepos         26         obj*          3   REAL       POS    frame.mojo
+#   framequat        27         obj*          4   QUATERNION POS    frame.mojo
+#   framexaxis       28         obj*          3   AXIS       POS    frame.mojo
+#   frameyaxis       29         obj*          3   AXIS       POS    frame.mojo
+#   framezaxis       30         obj*          3   AXIS       POS    frame.mojo
 #   subtreelinvel    36         body          3   REAL       VEL    subtree
+#
+# * `obj` = whatever `objtype=` names: body, xbody, geom or site. A frame
+#   sensor on a CAMERA is addressed and not served — this parser has no camera
+#   name table — so for that family alone `served` is a property of the ROW,
+#   not of the element name.
 #
 # ⚠ THE LAST TWO HAVE NO KERNEL FILE AND THAT IS NOT AN OVERSIGHT.
 # `d->qpos[m->jnt_qposadr[objid]]` and `d->qvel[m->jnt_dofadr[objid]]` are the
@@ -6666,6 +6685,23 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(SENS_JOINTPOS, 1, SENSDATA_REAL, SENSSTAGE_POS, True)
     if tag_name == "jointvel":
         return _SensorSpec(SENS_JOINTVEL, 1, SENSDATA_REAL, SENSSTAGE_VEL, True)
+    # ⚠ SERVED HERE, AND POSSIBLY UNSERVED LATER. These five are the only
+    # elements whose `served` depends on an ATTRIBUTE: `objtype="camera"` has
+    # no name lookup in this parser, so `_fill_sensors` clears the flag on
+    # that row alone. This table answers "is there a kernel for the element",
+    # and for the frame family the answer is yes for four object types.
+    if tag_name == "framepos":
+        return _SensorSpec(SENS_FRAMEPOS, 3, SENSDATA_REAL, SENSSTAGE_POS, True)
+    if tag_name == "framequat":
+        return _SensorSpec(
+            SENS_FRAMEQUAT, 4, SENSDATA_QUATERNION, SENSSTAGE_POS, True
+        )
+    if tag_name == "framexaxis":
+        return _SensorSpec(SENS_FRAMEXAXIS, 3, SENSDATA_AXIS, SENSSTAGE_POS, True)
+    if tag_name == "frameyaxis":
+        return _SensorSpec(SENS_FRAMEYAXIS, 3, SENSDATA_AXIS, SENSSTAGE_POS, True)
+    if tag_name == "framezaxis":
+        return _SensorSpec(SENS_FRAMEZAXIS, 3, SENSDATA_AXIS, SENSSTAGE_POS, True)
 
     # served == 0: ADDRESSED ONLY. The row exists with MuJoCo's exact dim so
     # that every LATER sensor's `adr` is still right; nothing computes it.
@@ -6703,16 +6739,6 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(24, 1, SENSDATA_REAL, SENSSTAGE_VEL, False)
     if tag_name == "tendonlimitfrc":
         return _SensorSpec(25, 1, SENSDATA_REAL, SENSSTAGE_ACC, False)
-    if tag_name == "framepos":
-        return _SensorSpec(26, 3, SENSDATA_REAL, SENSSTAGE_POS, False)
-    if tag_name == "framequat":
-        return _SensorSpec(27, 4, SENSDATA_QUATERNION, SENSSTAGE_POS, False)
-    if tag_name == "framexaxis":
-        return _SensorSpec(28, 3, SENSDATA_AXIS, SENSSTAGE_POS, False)
-    if tag_name == "frameyaxis":
-        return _SensorSpec(29, 3, SENSDATA_AXIS, SENSSTAGE_POS, False)
-    if tag_name == "framezaxis":
-        return _SensorSpec(30, 3, SENSDATA_AXIS, SENSSTAGE_POS, False)
     if tag_name == "framelinvel":
         return _SensorSpec(31, 3, SENSDATA_REAL, SENSSTAGE_VEL, False)
     if tag_name == "frameangvel":
@@ -6749,6 +6775,86 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
     return _SensorSpec(-1, 0, 0, 0, False)
 
 
+def _frameobj_code(spelling: String) -> Int:
+    """`<sensor objtype=>` / `reftype=` -> `mjtObj`, MuJoCo's `frameobj_map`.
+
+    Exactly the five keys that map admits (xml/generated/mjcf_map.h:318-325);
+    anything else is `SENSOBJ_UNKNOWN`, which the caller turns into a refusal
+    naming the five. ⚠ "body" IS THE INERTIAL FRAME AND "xbody" IS THE BODY
+    FRAME — the spelling reads backwards and is the reference's; see
+    `sensors/frame.mojo`.
+    """
+    if spelling == "body":
+        return SENSOBJ_BODY
+    if spelling == "xbody":
+        return SENSOBJ_XBODY
+    if spelling == "geom":
+        return SENSOBJ_GEOM
+    if spelling == "site":
+        return SENSOBJ_SITE
+    if spelling == "camera":
+        return SENSOBJ_CAMERA
+    return SENSOBJ_UNKNOWN
+
+
+def _resolve_frameobj(
+    worldbody: String,
+    result: FlatModelDef,
+    tag_name: String,
+    what: String,
+    code: Int,
+    name: String,
+) raises -> Int:
+    """Index of `name` in the table `code` selects, or `-1` for a camera.
+
+    ⚠ `-1` MEANS "NOT RESOLVABLE HERE", NOT "NOT FOUND". A name that does not
+    exist RAISES; only `objtype="camera"` returns -1, because this parser has
+    no camera name table and the row must stay ADDRESSED rather than claim an
+    index. The caller clears `served` on that row and the AUD-23 counter
+    reports it.
+
+    ⚠ `_find_body_index_by_name` RETURNS 0 FOR BOTH THE WORLDBODY AND A MISS,
+    which is why the body arms check `body_names` first instead of testing the
+    return value. A typo'd body name would otherwise resolve to the world and
+    report a frame that is exactly the identity — the most plausible-looking
+    wrong answer available.
+    """
+    if code == SENSOBJ_CAMERA:
+        return -1
+
+    if code == SENSOBJ_BODY or code == SENSOBJ_XBODY:
+        var found = False
+        for i in range(len(result.body_names)):
+            if result.body_names[i] == name:
+                found = True
+                break
+        if not found:
+            raise Error(
+                "physics3d: <sensor><" + tag_name + " " + what + "type='"
+                + ("body" if code == SENSOBJ_BODY else "xbody") + "' "
+                + what + "name='" + name + "'> names no body in this model"
+            )
+        return _find_body_index_by_name(worldbody, name)
+
+    if code == SENSOBJ_GEOM:
+        var gi = _find_geom_index_by_name(worldbody, name)
+        if gi < 0:
+            raise Error(
+                "physics3d: <sensor><" + tag_name + " " + what
+                + "type='geom' " + what + "name='" + name
+                + "'> names no geom in this model"
+            )
+        return gi
+
+    var si = _find_site_index_by_name(worldbody, name)
+    if si < 0:
+        raise Error(
+            "physics3d: <sensor><" + tag_name + " " + what + "type='site' "
+            + what + "name='" + name + "'> names no site in this model"
+        )
+    return si
+
+
 def _fill_sensors(
     sensor_sec: String,
     worldbody: String,
@@ -6763,7 +6869,9 @@ def _fill_sensors(
     ⚠⚠ ADDRESSING IS NOT SERVING, AND THE SPLIT IS THE DESIGN. Every
     recognised element gets a row carrying MuJoCo's exact `dim`, `datatype`,
     `needstage` and `adr`, whether or not this engine can compute it. Only the
-    ten with a kernel behind them are marked `served`.
+    fifteen with a kernel behind them are marked `served` — and one family,
+    the frame sensors, is served only for the four object types this parser
+    can resolve a name for.
 
     The alternative — skipping what we cannot compute — was written first and
     is wrong: `adr` would be a prefix sum over a SUBSET, so every sensor after
@@ -6772,9 +6880,9 @@ def _fill_sensors(
     sensor's real value. Refusing the whole model instead is also wrong, and
     measurably so: `dog`, `swimmer`, `finger` and `quadruped` all load today
     and all declare a sensor this engine has no kernel for (`subtreeangmom`,
-    `framepos`/`framexaxis`/`frameyaxis`, `subtreecom` — `jointpos` and
-    `jointvel` were on that list until 2026-09-13 and are served now).
-    Refusing them would trade a silent gap for a regression.
+    `subtreecom` — `jointpos`, `jointvel` and the five frame sensors were on
+    that list until 2026-09-13 and are served now). Refusing them would trade
+    a silent gap for a regression.
 
     So an unserved sensor is ADDRESSED — it holds its slot, keeps every later
     `adr` honest, and is reported once by audit id — and reading it BY NAME
@@ -6888,6 +6996,94 @@ def _fill_sensors(
             n_unserved += 1
             if not _has_str(unserved_tags, tag_name):
                 unserved_tags.append(tag_name)
+        elif (
+            sd.sensor_type == SENS_FRAMEPOS
+            or sd.sensor_type == SENS_FRAMEQUAT
+            or sd.sensor_type == SENS_FRAMEXAXIS
+            or sd.sensor_type == SENS_FRAMEYAXIS
+            or sd.sensor_type == SENS_FRAMEZAXIS
+        ):
+            # ⚠⚠ `objtype` AND `objname` ARE BOTH REQUIRED, AND MuJoCo SAYS SO
+            # IN BOTH DIRECTIONS (xml_native_reader.cc:3045-3049): naming one
+            # without the other is an error there, not a default. The frame
+            # family is the only one in this element set whose object is not
+            # implied by the element name.
+            var ot_s = _trim(_extract_attr(tag, "objtype"))
+            var on_s = _trim(_extract_attr(tag, "objname"))
+            if ot_s.byte_length() == 0 or on_s.byte_length() == 0:
+                raise Error(
+                    "physics3d: <sensor><"
+                    + tag_name
+                    + "> needs BOTH objtype= and objname= (MuJoCo refuses"
+                    " either one alone, xml_native_reader.cc:3045)"
+                )
+            var ot = _frameobj_code(ot_s)
+            if ot == SENSOBJ_UNKNOWN:
+                raise Error(
+                    "physics3d: <sensor><"
+                    + tag_name
+                    + " objtype='"
+                    + ot_s
+                    + "'> is not one of MuJoCo's five frame object types"
+                    " (body, xbody, geom, site, camera)"
+                )
+            sd.objtype = ot
+            sd.objid = _resolve_frameobj(
+                worldbody, result, tag_name, String("obj"), ot, on_s
+            )
+            # ⚠ `-1`, NOT 0. `body_id` answers "which body owns this sensor's
+            # site", and a frame sensor has no site — its object may BE a
+            # body, a geom or a site. Leaving the field at its 0 default would
+            # put a valid body index in a column nothing here fills.
+            sd.body_id = -1
+
+            # ⚠ THE ONE PLACE `served` DEPENDS ON AN ATTRIBUTE. A camera has
+            # no name table in this parser, so the row keeps MuJoCo's `dim`
+            # and `adr` — every later sensor stays addressed correctly — and
+            # is reported under AUD-23 like any other gap. Serving it with a
+            # guessed index would be the accept-and-ignore shape this whole
+            # split exists to kill.
+            if sd.objid < 0:
+                sd.served = False
+
+            # The optional relative form. Same both-or-neither rule.
+            var rt_s = _trim(_extract_attr(tag, "reftype"))
+            var rn_s = _trim(_extract_attr(tag, "refname"))
+            if rt_s.byte_length() > 0 or rn_s.byte_length() > 0:
+                if rt_s.byte_length() == 0 or rn_s.byte_length() == 0:
+                    raise Error(
+                        "physics3d: <sensor><"
+                        + tag_name
+                        + "> states one of reftype=/refname= without the"
+                        " other; MuJoCo refuses that"
+                        " (xml_native_reader.cc:3055)"
+                    )
+                var rt = _frameobj_code(rt_s)
+                if rt == SENSOBJ_UNKNOWN:
+                    raise Error(
+                        "physics3d: <sensor><"
+                        + tag_name
+                        + " reftype='"
+                        + rt_s
+                        + "'> is not one of MuJoCo's five frame object types"
+                        " (body, xbody, geom, site, camera)"
+                    )
+                var rid = _resolve_frameobj(
+                    worldbody, result, tag_name, String("ref"), rt, rn_s
+                )
+                if rid < 0:
+                    # A camera REFERENCE, same reasoning as above.
+                    sd.served = False
+                else:
+                    sd.reftype = rt
+                    sd.refid = rid
+
+            if not sd.served:
+                sd.objid = -1
+                sd.body_id = -1
+                n_unserved += 1
+                if not _has_str(unserved_tags, tag_name):
+                    unserved_tags.append(tag_name)
         elif (
             sd.sensor_type == SENS_JOINTPOS
             or sd.sensor_type == SENS_JOINTVEL

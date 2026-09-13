@@ -11,6 +11,12 @@ a config hook can still call one directly — the env hooks that predate the
 framework do exactly that, and they are what the framework is replacing.
 """
 
+from .frame import (
+    frame_object_pose,
+    frame_pos_sensor,
+    frame_axis_sensor,
+    frame_quat_sensor,
+)
 from .frame_vel import site_frame_velocity, site_frame_velocity_gpu
 from .site_acc import (
     site_accelerometer,

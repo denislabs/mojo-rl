@@ -50,6 +50,12 @@ from mojo_rl.physics3d.constants import (
     SENS_RANGEFINDER,
     SENS_JOINTPOS,
     SENS_JOINTVEL,
+    SENS_FRAMEPOS,
+    SENS_FRAMEQUAT,
+    SENS_FRAMEXAXIS,
+    SENS_FRAMEYAXIS,
+    SENS_FRAMEZAXIS,
+    SENSOBJ_UNKNOWN,
     SENS_SUBTREELINVEL,
     SENSDATA_REAL,
     SENSDATA_POSITIVE,
@@ -63,6 +69,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_DOF_ADR,
     MODEL_SENSOR_SIZE,
     SENSOR_IDX_TYPE,
+    SENSOR_IDX_OBJTYPE,
     SENSOR_IDX_OBJID,
     SENSOR_IDX_DIM,
     SENSOR_IDX_ADR,
@@ -71,6 +78,14 @@ from mojo_rl.physics3d.gpu.constants import (
     SENSOR_IDX_CUTOFF,
     SENSOR_IDX_BODY,
     SENSOR_IDX_SERVED,
+    SENSOR_IDX_REFTYPE,
+    SENSOR_IDX_REFID,
+)
+from .frame import (
+    frame_object_pose,
+    frame_pos_sensor,
+    frame_axis_sensor,
+    frame_quat_sensor,
 )
 from .frame_vel import site_frame_velocity
 from .site_acc import site_accelerometer, site_force_torque
@@ -247,6 +262,72 @@ def _eval_stage[
             d.sensordata.data[adr] = d.qvel.data[
                 Int(m.joints.data[objid * MODEL_JOINT_SIZE + JOINT_IDX_DOF_ADR])
             ]
+
+        elif (
+            st == SENS_FRAMEPOS
+            or st == SENS_FRAMEQUAT
+            or st == SENS_FRAMEXAXIS
+            or st == SENS_FRAMEYAXIS
+            or st == SENS_FRAMEZAXIS
+        ):
+            # ⚠ FIVE SENSORS, ONE POSE LOOKUP, AND THE REFERENCE FRAME IS
+            # PART OF IT. `objtype` selects among body / xbody / geom / site
+            # (the four this loader resolves); `reftype`/`refid` are MuJoCo's
+            # optional relative form and `-1` is its own "absent". A frame
+            # sensor whose reference were ignored would report the GLOBAL
+            # quantity — right units, right magnitude, wrong frame — so the
+            # branch is here rather than in the parser.
+            var otype = Int(m.sensors.data[o + SENSOR_IDX_OBJTYPE])
+            var op = frame_object_pose[DTYPE](
+                d.xpos.data, d.xquat.data, d.xipos.data, d.site_xpos.data,
+                m.bodies.data, m.geoms.data, m.sites.data, otype, objid,
+            )
+            var rtype = Int(m.sensors.data[o + SENSOR_IDX_REFTYPE])
+            var refid = Int(m.sensors.data[o + SENSOR_IDX_REFID])
+            var has_ref = refid >= 0 and rtype != SENSOBJ_UNKNOWN
+            # ⚠ THE REFERENCE POSE IS FETCHED UNCONDITIONALLY and ignored
+            # when absent. `frame_object_pose` is total (its own docstring
+            # says so) and a `Tuple` cannot be declared and filled later in
+            # two branches without the compiler losing track of it; the cost
+            # is one pose lookup on models that declare no reference, which
+            # is every model in this tree today.
+            var rp = frame_object_pose[DTYPE](
+                d.xpos.data, d.xquat.data, d.xipos.data, d.site_xpos.data,
+                m.bodies.data, m.geoms.data, m.sites.data,
+                rtype if has_ref else SENSOBJ_UNKNOWN,
+                refid if has_ref else 0,
+            )
+
+            if st == SENS_FRAMEPOS:
+                var v = frame_pos_sensor(
+                    op[0], op[1], op[2], has_ref,
+                    rp[0], rp[1], rp[2], rp[3], rp[4], rp[5], rp[6],
+                )
+                d.sensordata.data[adr + 0] = Scalar[DTYPE](v[0])
+                d.sensordata.data[adr + 1] = Scalar[DTYPE](v[1])
+                d.sensordata.data[adr + 2] = Scalar[DTYPE](v[2])
+            elif st == SENS_FRAMEQUAT:
+                # ⚠ (w, x, y, z) COMES BACK, because that is what
+                # `sensordata` holds. See `frame.mojo`'s module note.
+                var q = frame_quat_sensor(
+                    op[3], op[4], op[5], op[6], has_ref,
+                    rp[3], rp[4], rp[5], rp[6],
+                )
+                d.sensordata.data[adr + 0] = Scalar[DTYPE](q[0])
+                d.sensordata.data[adr + 1] = Scalar[DTYPE](q[1])
+                d.sensordata.data[adr + 2] = Scalar[DTYPE](q[2])
+                d.sensordata.data[adr + 3] = Scalar[DTYPE](q[3])
+            else:
+                # `mjSENS_FRAMEXAXIS` is 28 and the three are consecutive, so
+                # the axis index is the type offset — MuJoCo's own
+                # `type - mjSENS_FRAMEXAXIS` (engine_sensor.c:694).
+                var v = frame_axis_sensor(
+                    op[3], op[4], op[5], op[6], st - SENS_FRAMEXAXIS,
+                    has_ref, rp[3], rp[4], rp[5], rp[6],
+                )
+                d.sensordata.data[adr + 0] = Scalar[DTYPE](v[0])
+                d.sensordata.data[adr + 1] = Scalar[DTYPE](v[1])
+                d.sensordata.data[adr + 2] = Scalar[DTYPE](v[2])
 
         elif st == SENS_SUBTREELINVEL:
             var vx = 0.0

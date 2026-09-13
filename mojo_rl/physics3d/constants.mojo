@@ -127,14 +127,31 @@ comptime SENS_TORQUE: Int = 5
 comptime SENS_RANGEFINDER: Int = 7
 comptime SENS_JOINTPOS: Int = 9
 comptime SENS_JOINTVEL: Int = 10
+comptime SENS_FRAMEPOS: Int = 26
+comptime SENS_FRAMEQUAT: Int = 27
+comptime SENS_FRAMEXAXIS: Int = 28
+comptime SENS_FRAMEYAXIS: Int = 29
+comptime SENS_FRAMEZAXIS: Int = 30
 comptime SENS_SUBTREELINVEL: Int = 36
 
-# `mjtObj` — the object a sensor is attached to. Only the three this loader
-# resolves; `mjOBJ_BODY` is 1, `mjOBJ_JOINT` is 3 and `mjOBJ_SITE` is 6
-# (`mjtype.h:292-297`, re-read off `mujoco.mjtObj` in the gate).
+# `mjtObj` — the object a sensor is attached to (`mjtype.h:291-298`, re-read
+# off `mujoco.mjtObj` in the gate).
+#
+# ⚠⚠ `BODY` AND `XBODY` ARE DIFFERENT FRAMES OF THE SAME BODY, and mixing
+# them is silent. `mjOBJ_XBODY` is the body's own frame (`xpos`/`xquat`);
+# `mjOBJ_BODY` is its INERTIAL frame (`xipos`, and `xquat * body_iquat`). They
+# coincide only when the body's centre of mass sits at its origin with the
+# principal axes aligned — true of a centred sphere, false of most links. The
+# `<sensor objtype=>` keyword for the first is the string "xbody" and for the
+# second "body", which reads backwards and is MuJoCo's spelling all the same
+# (`frameobj_map`, xml/generated/mjcf_map.h:318).
+comptime SENSOBJ_UNKNOWN: Int = 0
 comptime SENSOBJ_BODY: Int = 1
+comptime SENSOBJ_XBODY: Int = 2
 comptime SENSOBJ_JOINT: Int = 3
+comptime SENSOBJ_GEOM: Int = 5
 comptime SENSOBJ_SITE: Int = 6
+comptime SENSOBJ_CAMERA: Int = 7
 
 # `mjtDataType` — decides how `cutoff` clamps (`engine_sensor.c:198-224`):
 # REAL clips to [-cutoff, +cutoff], POSITIVE takes `min(cutoff, x)`.
