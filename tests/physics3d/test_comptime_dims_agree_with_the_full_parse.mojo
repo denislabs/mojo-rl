@@ -1,4 +1,4 @@
-"""The two MJCF paths must agree on NQ and NV, not just on the joint COUNT.
+"""The two MJCF paths must agree on NQ/NV and on the ACTUATOR COUNT.
 
     pixi run mojo run -I . tests/physics3d/test_comptime_dims_agree_with_the_full_parse.mojo
 
@@ -7,6 +7,15 @@ supplies the DIMENSIONS a `ModelDefFromXML` is instantiated with; `full_parser`
 runs at load and produces the actual records. `init_fields` already cross-checks
 nbody, njoint, ngeom, na and nkey, and raises naming the element type that
 disagreed.
+
+⚠ THE ACTUATOR HALF (2026-09-13) IS A FIX, NOT A GUARD, AND IT CARRIES ONE.
+`parse_xml` counted `motor`/`position`/`velocity`/`general` where
+`full_parser` also builds an actuator for `<adhesion>` and for a `<plugin>`
+actuator, so `NACT` came out SHORT: the control vector was shorter than
+MuJoCo's `nu` and every actuator past the uncounted one read the previous
+one's control. `nact` was also the ONE dimension `init_fields` did not
+cross-check, so nothing said so. Both tags are counted now, and the count is
+checked — the two parsers are separate code and will drift again.
 
 NQ and NV were not checked, and they are the pair that can differ while every
 count above agrees. `parse_xml` reads a joint's `type` off the ELEMENT ONLY
@@ -147,6 +156,74 @@ def _build[M: ModelDefFromXML]() raises:
     M.init_fields[DTYPE](ctx, mf)
 
 
+# ⚠ `<adhesion>` AND A `<plugin>` ACTUATOR TOGETHER: the two elements the
+# comptime scan used to miss. MuJoCo gives this model `nu == 3`.
+comptime MIXED_ACT_XML = String(
+    """<mujoco model="mixed_actuators">
+  <compiler angle="radian"/>
+  <extension>
+    <plugin plugin="mujoco.pid">
+      <instance name="pid0">
+        <config key="kp" value="10"/>
+        <config key="ki" value="1"/>
+        <config key="kd" value="0.1"/>
+      </instance>
+    </plugin>
+  </extension>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1"/>
+    <body name="b0" pos="0 0 1">
+      <joint name="j0" type="hinge" axis="0 1 0"/>
+      <geom name="g0" type="capsule" fromto="0 0 0 0.2 0 0" size="0.02"/>
+      <body name="b1" pos="0.2 0 0">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom name="g1" type="box" size="0.03 0.03 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="m" joint="j0" gear="2"/>
+    <plugin name="p" joint="j1" plugin="mujoco.pid" instance="pid0"/>
+    <adhesion name="a" body="b1" ctrlrange="0 1" gain="5"/>
+  </actuator>
+</mujoco>
+"""
+)
+
+comptime CP_MIXED = parse_xml(MIXED_ACT_XML)
+
+
+def test_the_comptime_scan_counts_every_actuator_element() raises:
+    """AUD-19's actuator half. ⚠ THE NAMED WRONG ANSWER IS 1.
+
+    Before the fix `parse_xml` counted `<motor>` alone on this model — the
+    `<plugin>` and `<adhesion>` elements were invisible to it — so `NACT` was
+    1 against `full_parser`'s 3 and MuJoCo's `nu` of 3. Nothing compared the
+    two, because `nact` was the one dimension `init_fields` did not check.
+    """
+    print("=== parse_xml counts <adhesion> and <plugin> actuators ===")
+    var fmd = parse_xml_full(MIXED_ACT_XML, String("."))
+    print("  parse_xml NACT =", CP_MIXED.NACT,
+          "  full_parser actuators =", len(fmd.actuators))
+    assert_true(
+        len(fmd.actuators) == 3,
+        "the fixture no longer builds three actuators (full_parser found "
+        + String(len(fmd.actuators)) + ") — it is not testing what it claims",
+    )
+    assert_true(
+        CP_MIXED.NACT == len(fmd.actuators),
+        "parse_xml counts " + String(CP_MIXED.NACT) + " actuators where"
+        " full_parser builds " + String(len(fmd.actuators))
+        + ". A short NACT sizes the control vector short and shifts every"
+        " actuator past the uncounted one",
+    )
+    assert_true(
+        CP_MIXED.NACT != 1,
+        "parse_xml counts 1 — the <motor> only. That is exactly the value"
+        " the AUD-19 defect produced",
+    )
+
+
 def test_the_two_readers_really_do_disagree() raises:
     """⚠⚠ THE PREMISE, BEFORE ANY GUARD. If `parse_xml` ever learns to
     resolve a joint's class, this fixture stops testing the guard and starts
@@ -228,6 +305,7 @@ def test_the_same_model_spelled_on_the_element_still_builds() raises:
 
 def main() raises:
     var suite = TestSuite()
+    suite.test[test_the_comptime_scan_counts_every_actuator_element]()
     suite.test[test_the_two_readers_really_do_disagree]()
     suite.test[test_a_shifted_model_raises_instead_of_loading]()
     suite.test[test_the_same_model_spelled_on_the_element_still_builds]()

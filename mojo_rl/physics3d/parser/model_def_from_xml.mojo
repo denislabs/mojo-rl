@@ -891,6 +891,29 @@ struct ModelDefFromXML[
                     " the ModelDefFromXML declaration.",
                 )
             )
+        # ⚠⚠ AND THE ACTUATOR COUNT, WHICH WAS THE ONE DIMENSION WITH NO
+        # CHECK AT ALL (AUD-19 tail). `parse_xml` counted four actuator tags
+        # where `full_parser` builds six — `<adhesion>` and a `<plugin>`
+        # actuator were invisible to it — so `NACT` came out short, the
+        # control vector was shorter than MuJoCo's `nu`, and every actuator
+        # past the uncounted one read the previous one's control. Silently:
+        # njoint, nbody, ngeom, na and nkey all still agreed.
+        #
+        # The count is fixed at the source now; this is the guard that makes
+        # the NEXT divergence loud, and it is the same shape as the NQ/NV one
+        # above — the two parsers are separate code and will drift again.
+        if len(fmd.actuators) != Self.NACT:
+            raise Error(
+                String(
+                    "physics3d: parser/dimension mismatch on ACTUATORS —",
+                    " declared nact=", Self.NACT, ", full_parser found ",
+                    len(fmd.actuators),
+                    ". The control vector is sized by the declaration, so a",
+                    " short count silently shifts every actuator past the",
+                    " one the comptime scan could not see (`<adhesion>` and",
+                    " `<plugin>` were the two it missed).",
+                )
+            )
         if fmd.nkey != Self.nkey:
             raise Error(
                 String(

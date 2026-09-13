@@ -3020,11 +3020,31 @@ def parse_xml(xml: String) -> ParsedModel:
     var ngeom = _count_tag(worldbody, "geom")
 
     # ---- Actuators ----------------------------------------------------------
+    # ⚠⚠ `adhesion` AND `plugin` ARE HERE BECAUSE THEY WERE MISSING (AUD-19).
+    # This scan supplies the comptime `NACT`; `full_parser` produces the
+    # actual records, and it builds an actuator for both of those elements.
+    # Counting four tags where it builds six made `NACT` SHORT, so the control
+    # vector was shorter than MuJoCo's `nu` and every actuator past the
+    # uncounted one was addressed one slot early — with no message, because
+    # nothing compared the two numbers. `init_fields` cross-checks the count
+    # now as well; the check is the guard and this line is the fix.
+    #
+    # ⚠ `plugin` IS COUNTED IN THE `<actuator>` SECTION ONLY. The same element
+    # name appears under `<extension>`, where it declares the plugin rather
+    # than an actuator; `actuator_sec` is already narrowed to the former.
+    #
+    # ⚠ THE UNMODELLED ELEMENTS (`intvelocity`, `damper`, `cylinder`,
+    # `muscle`, `pid`, `dcmotor`, `orientation`) ARE DELIBERATELY ABSENT.
+    # `full_parser` counts-and-refuses them (AUD-22) rather than building a
+    # record, so counting them here would make the two paths disagree in the
+    # other direction.
     var nact = (
         _count_tag(actuator_sec, "motor")
         + _count_tag(actuator_sec, "position")
         + _count_tag(actuator_sec, "velocity")
         + _count_tag(actuator_sec, "general")
+        + _count_tag(actuator_sec, "adhesion")
+        + _count_tag(actuator_sec, "plugin")
     )
 
     # ---- Assets (<asset> section) -------------------------------------------
