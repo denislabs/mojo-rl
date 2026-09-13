@@ -55,7 +55,9 @@ from std.pathlib import Path
 from std.sys import argv
 
 from mojo_rl.tasks.bddl import parse_bddl, BddlProblem
-from mojo_rl.tasks.libero_categories import load_libero_table, DEFAULT_TABLE_PATH
+from mojo_rl.tasks.libero_categories import (
+    load_libero_table, DEFAULT_TABLE_PATH, LiberoTable,
+)
 from mojo_rl.tasks.libero_import import (
     resolve_family, translate_task, classify_goal, gap_name, GAP_NONE,
     LIBERO_ROBOT_DIR, LIBERO_ARENA_DIR, RegionAlias,
@@ -144,6 +146,59 @@ def _union_slots(mut fam: FamilySpec, f: FamilySpec, what: String) raises:
             )
 
 
+def _scene_prefix(stem: String) raises -> String:
+    """`KITCHEN_SCENE10_close_the_top_drawer` -> `KITCHEN_SCENE10`.
+
+    ⚠ THE SCENE IS THE COMPILE UNIT, AND ONLY THE FILENAME NAMES IT. Every
+    `libero_10` / `libero_90` file declares the problem class
+    (`LIBERO_Kitchen_Tabletop_Manipulation`) and NOT which of the ten kitchens
+    it is; the scene number lives in the filename alone. Measured over the 100
+    files: 20 scenes, and within each one every file declares the same props at
+    the same poses — so a scene is one family without a slot union, unlike
+    `libero_object`.
+    """
+    var at = stem.find("_SCENE")
+    if at < 0:
+        raise Error(
+            "libero: '" + stem + "' has no `_SCENE<n>` in its name, so"
+            " --by-scene cannot say which compile unit it belongs to. Only"
+            " libero_10 and libero_90 are named that way."
+        )
+    var i = at + 6
+    var n = 0
+    while i < stem.byte_length():
+        var ch = String(stem[byte = i : i + 1])
+        if String("0123456789").find(ch) < 0:
+            break
+        i += 1
+        n += 1
+    if n == 0:
+        raise Error(
+            "libero: '" + stem + "' has `_SCENE` with no number after it"
+        )
+    return String(stem[byte=0:i])
+
+
+def _scene_family(stem: String) raises -> String:
+    """The family name for a scene: `libero_kitchen_scene10`."""
+    return String("libero_") + _scene_prefix(stem).lower()
+
+
+def _task_stem(stem: String, by_scene: Bool) raises -> String:
+    """What follows the family name in a `.task`.
+
+    ⚠ THE SCENE PREFIX IS DROPPED, because the family already carries it and
+    `libero_kitchen_scene1__KITCHEN_SCENE1_open_the_top_drawer` says it twice.
+    The gate maps back by prepending it. Measured: no two files of one scene
+    share the remainder, across BOTH suites, and the longest name this makes is
+    119 bytes.
+    """
+    if not by_scene:
+        return String(stem)
+    var pre = _scene_prefix(stem)
+    return String(stem[byte = pre.byte_length() + 1 : stem.byte_length()])
+
+
 def _same_geom(a: RegionSpec, b: RegionSpec) -> Bool:
     """Every field of a region EXCEPT its name — see the module header."""
     return (
@@ -205,26 +260,19 @@ def _write_if_changed(path: String, text: String, check: Bool) raises -> Int:
     return 0
 
 
-def main() raises:
-    var a = argv()
-    if len(a) < 2:
-        raise Error("usage: gen_libero_family.mojo <suite> [--check]")
-    var suite = String(a[1])
-    var check = False
-    for i in range(2, len(a)):
-        if String(a[i]) == "--check":
-            check = True
-    var dir = String(BDDL_ROOT) + "/" + suite
-    if not Path(dir).is_dir():
-        raise Error("no suite directory " + dir)
-    if not Path(String(PACK_DIR)).is_dir():
-        raise Error("no LIBERO pack at " + PACK_DIR + " — run `pixi run assets-pull libero`")
+def _build_group(
+    name: String,
+    files: List[String],
+    file_suite: List[String],
+    table: LiberoTable,
+    check: Bool,
+    by_scene: Bool,
+) raises -> Int:
+    """One family and its tasks. Returns the number of STALE files.
 
-    var table = load_libero_table(DEFAULT_TABLE_PATH)
-    var files = _sorted_bddl(dir)
-    if len(files) == 0:
-        raise Error("no .bddl in " + dir)
-
+    `files[i]` came from suite `file_suite[i]` — a scene family draws from both
+    LIBERO-10 and LIBERO-90, and each task records which with `suite=`.
+    """
     var fam = FamilySpec()
     var have_fam = False
     var narrowed = 0
@@ -240,9 +288,9 @@ def main() raises:
             p, table, String(PACK_DIR), narrowed, String(LIBERO_ROBOT_DIR),
             String(LIBERO_ARENA_DIR),
         )
-        f.name = suite
-        var what = suite + ": " + _stem(files[i])
-        # ⚠ THE FIRST FILE GOES THROUGH THE SAME MERGE as the other nine. Its
+        f.name = name
+        var what = name + ": " + _stem(files[i])
+        # ⚠ THE FIRST FILE GOES THROUGH THE SAME MERGE as the others. Its
         # regions are re-merged into an empty table so that two names for one
         # rectangle INSIDE one file dedup too, and so that the rule that
         # produces the union is written once.
@@ -272,21 +320,16 @@ def main() raises:
         if gap.kind != GAP_NONE:
             refused.append(_stem(files[i]) + ": " + gap_name(gap.kind))
             continue
-        # ⚠ GOAL REGIONS FIRST. A `_zone` box added by a LATER file lands
-        # after the earlier files' placement regions in the union; the
-        # device table is `MAX_CURRICULUM_REGIONS` deep and a goal must
-        # index it, so the union is re-sorted below before any task binds.
         # ⚠ TRANSLATION *AND* VALIDATION ARE BOTH REFUSALS, NOT CRASHES. A
-        # task the family cannot validate — a free slot with no `init=`,
-        # say, because its `:init` places it on a fixture site or on another
-        # object — is one task the suite cannot express, and the suite's
-        # other nine are still worth writing. Letting it escape aborted the
-        # whole run and printed nothing about the other files.
+        # task the family cannot validate is one task the suite cannot
+        # express, and its siblings are still worth writing. Letting it escape
+        # aborted the whole run and printed nothing about the other files.
         var t: TaskSpec
         try:
             t = translate_task(p, fam, table, String(PACK_DIR), region_alias)
-            t.name = suite + "__" + _stem(files[i])
-            t.family = suite
+            t.name = name + "__" + _task_stem(_stem(files[i]), by_scene)
+            t.family = name
+            t.suite = String(file_suite[i])
             validate_task_against_family(t, fam)
         except e:
             refused.append(_stem(files[i]) + ": " + String(e))
@@ -294,7 +337,9 @@ def main() raises:
         tasks.append(t.name)
         task_texts.append(t.encode())
 
-    # goal (box) regions first, placement regions after — see above
+    # ⚠ GOAL REGIONS FIRST. A `_zone` box added by a LATER file lands after the
+    # earlier files' placement regions in the union; the device table is
+    # `MAX_CURRICULUM_REGIONS` deep and a goal must index it.
     var sorted_regions = List[RegionSpec]()
     for r in range(len(fam.regions)):
         if fam.regions[r].is_box:
@@ -303,14 +348,23 @@ def main() raises:
         if not fam.regions[r].is_box:
             sorted_regions.append(fam.regions[r])
     fam.regions = sorted_regions^
-    for i in range(len(task_texts)):
-        # re-validate against the final region order (indices are by name,
-        # so the text is unchanged; this only re-checks it binds)
-        _ = i
 
+    var from_ = String("")
+    for i in range(len(files)):
+        var already = False
+        for j in range(i):
+            if file_suite[j] == file_suite[i]:
+                already = True
+        if not already:
+            from_ += (", " if from_.byte_length() > 0 else "") + file_suite[i]
+    # ⚠ BRACES ONLY WHEN THERE IS MORE THAN ONE. A scene family draws from two
+    # suite directories and must say so; writing `{libero_goal}` for the
+    # single-suite families would rewrite three checked-in headers for nothing.
+    if from_.find(",") >= 0:
+        from_ = String("{") + from_ + "}"
     var header = String(
-        "# GENERATED by tools/tasks/gen_libero_family.mojo " + suite + "\n"
-        "# from references/LIBERO-master/libero/libero/bddl_files/" + suite
+        "# GENERATED by tools/tasks/gen_libero_family.mojo " + name + "\n"
+        "# from references/LIBERO-master/libero/libero/bddl_files/" + from_
         + " (" + String(len(files)) + " files), the libero asset pack, the\n"
         "# generated arenas and the vendored Panda. Do not edit; re-run the tool.\n"
         "# Fixture yaws taken at a narrow band's midpoint: " + String(narrowed)
@@ -318,22 +372,107 @@ def main() raises:
     )
     var stale = 0
     stale += _write_if_changed(
-        String(FAMILY_DIR) + "/" + suite + ".family", header + fam.encode(), check
+        String(FAMILY_DIR) + "/" + name + ".family", header + fam.encode(), check
     )
     for i in range(len(tasks)):
         var th = String(
-            "# GENERATED by tools/tasks/gen_libero_family.mojo " + suite
+            "# GENERATED by tools/tasks/gen_libero_family.mojo " + name
             + " — do not edit.\n"
         )
         stale += _write_if_changed(
             String(TASK_DIR) + "/" + tasks[i] + ".task", th + task_texts[i], check
         )
     print()
-    print("  suite", suite + ":", len(files), "files ->", len(fam.slots),
+    print("  family", name + ":", len(files), "files ->", len(fam.slots),
           "slots (" + String(fam.n_free_slots()) + " free),",
           len(fam.regions), "regions;", len(tasks), "tasks written,",
           len(refused), "goals refused")
     for i in range(len(refused)):
         print("     refused:", refused[i])
+    return stale
+
+
+def main() raises:
+    var a = argv()
+    var check = False
+    var by_scene = False
+    var suites = List[String]()
+    for i in range(1, len(a)):
+        var s = String(a[i])
+        if s == "--check":
+            check = True
+        elif s == "--by-scene":
+            by_scene = True
+        elif s.startswith("--"):
+            raise Error("unknown flag " + s)
+        else:
+            suites.append(s)
+    if len(suites) == 0:
+        raise Error(
+            "usage: gen_libero_family.mojo <suite> [--check]\n"
+            "       gen_libero_family.mojo libero_10 libero_90 --by-scene"
+            " [--check]"
+        )
+    if not by_scene and len(suites) != 1:
+        raise Error(
+            "several suites make sense only with --by-scene: without it the"
+            " family IS the suite and two suites would write one family twice."
+        )
+    if not Path(String(PACK_DIR)).is_dir():
+        raise Error("no LIBERO pack at " + PACK_DIR + " — run `pixi run assets-pull libero`")
+    var table = load_libero_table(DEFAULT_TABLE_PATH)
+
+    # ── group the files: one group per family ─────────────────────────────
+    var g_names = List[String]()
+    var g_files = List[List[String]]()
+    var g_suites = List[List[String]]()
+    for si in range(len(suites)):
+        var dir = String(BDDL_ROOT) + "/" + suites[si]
+        if not Path(dir).is_dir():
+            raise Error("no suite directory " + dir)
+        var files = _sorted_bddl(dir)
+        if len(files) == 0:
+            raise Error("no .bddl in " + dir)
+        for i in range(len(files)):
+            var key = (
+                _scene_family(_stem(files[i])) if by_scene else suites[si]
+            )
+            var gi = -1
+            for k in range(len(g_names)):
+                if g_names[k] == key:
+                    gi = k
+            if gi < 0:
+                g_names.append(key)
+                g_files.append(List[String]())
+                g_suites.append(List[String]())
+                gi = len(g_names) - 1
+            g_files[gi].append(files[i])
+            g_suites[gi].append(suites[si])
+    # ⚠ SORTED BY FAMILY NAME. The groups must be built in an order that does
+    # not depend on which suite was listed first, or one run's `--check` would
+    # disagree with another's on nothing but the argument order.
+    # ⚠ A PERMUTATION, NOT A SWAP. `List[List[String]]` elements do not move
+    # by assignment (the compiler asks for an explicit `.copy()`), and copying
+    # the file lists to sort them would be the one place a group could lose a
+    # file. The order is applied by indexing instead.
+    var order = List[Int]()
+    for i in range(len(g_names)):
+        order.append(i)
+    for i in range(len(order)):
+        for j in range(i + 1, len(order)):
+            if g_names[order[j]] < g_names[order[i]]:
+                order[i], order[j] = order[j], order[i]
+
+    var stale = 0
+    var n_tasks = 0
+    for k in range(len(order)):
+        var gi = order[k]
+        stale += _build_group(
+            g_names[gi], g_files[gi], g_suites[gi], table, check, by_scene
+        )
+        n_tasks += len(g_files[gi])
+    if len(g_names) > 1:
+        print()
+        print("  ", len(g_names), "families over", n_tasks, "files")
     if check and stale > 0:
         raise Error(String(stale) + " generated file(s) stale")

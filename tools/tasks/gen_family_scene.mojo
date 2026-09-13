@@ -17,24 +17,39 @@ so the family's dimensions stay a CI assertion against MuJoCo rather than a
 comment (`TASK_LAYER_IMPLEMENTATION.md` Gap B).
 """
 
+from std.os import listdir
 from std.sys import argv
 from mojo_rl.tasks.spec import load_family
 from mojo_rl.tasks.family import compose_family, scene_path, SCENE_DIR
 
+comptime FAMILY_DIR = "mojo_rl/tasks/families"
 
-def families() -> List[String]:
-    """Every checked-in `.family`.
 
-    ⚠ A FUNCTION, NOT A COMPTIME ARRAY. `Array[String, N]` is not
-    `ImplicitlyCopyable`, so a comptime table cannot be indexed at runtime and
-    the error names materialisation rather than the lookup —
-    `studio/scene.mojo`'s `_prop_mjcf_type` records the same trap.
+def families() raises -> List[String]:
+    """Every checked-in `.family`, sorted.
+
+    ⚠⚠ ENUMERATED, NOT LISTED. It was an explicit list of three so that adding
+    a family was a deliberate act; `libero_10` + `libero_90` are TWENTY scene
+    families at once (one compile unit per scene — see
+    `gen_libero_family._scene_prefix`), and a hand-kept list of twenty-three is
+    a list that goes stale silently. What made the explicit list safe survives
+    anyway: this is a GENERATOR with a `--check`, so a family whose scene is
+    missing or out of date fails CI either way.
+
+    ⚠ SORTED, because `listdir` order is a filesystem detail and the printed
+    report should not depend on it.
     """
     var out = List[String]()
-    out.append(String("mojo_rl/tasks/families/so101_tabletop.family"))
-    out.append(String("mojo_rl/tasks/families/libero_goal.family"))
-    out.append(String("mojo_rl/tasks/families/libero_spatial.family"))
-    out.append(String("mojo_rl/tasks/families/libero_object.family"))
+    for e in listdir(FAMILY_DIR):
+        var n = String(e)
+        if n.endswith(".family"):
+            out.append(String(FAMILY_DIR) + "/" + n)
+    for i in range(len(out)):
+        for j in range(i + 1, len(out)):
+            if out[j] < out[i]:
+                out[i], out[j] = out[j], out[i]
+    if len(out) == 0:
+        raise Error("no .family under " + FAMILY_DIR)
     return out^
 
 

@@ -2,6 +2,7 @@
 schema_version=1
 task=libero_goal__open_the_middle_drawer_of_the_cabinet
 family=libero_goal
+suite=libero_goal
 language=Open the middle layer of the drawer
 goal=Joint(wooden_cabinet_1_middle_level, lt, -0.14)
 active=arena

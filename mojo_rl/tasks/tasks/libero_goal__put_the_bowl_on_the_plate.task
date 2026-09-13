@@ -2,6 +2,7 @@
 schema_version=1
 task=libero_goal__put_the_bowl_on_the_plate
 family=libero_goal
+suite=libero_goal
 language=Put the bowl on the plate
 goal=On(akita_black_bowl_1, plate_1)
 active=arena

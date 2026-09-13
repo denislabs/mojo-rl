@@ -1,0 +1,32 @@
+<mujoco model="libero_kitchen_scene9">
+  <compiler angle="radian" inertiagrouprange="0 0" autolimits="true"/>
+  <option timestep="0.002" impratio="20" cone="elliptic" density="1.2" viscosity="0.00002" />
+  <asset>
+    <model name="panda_robosuite" file="../../envs/robots/assets/panda_robosuite.xml"/>
+    <model name="libero_kitchen_tabletop_manipulation_arena" file="../libero/scenes/libero_kitchen_tabletop_manipulation_arena.xml"/>
+    <model name="flat_stove" file="../libero/objects/flat_stove.xml"/>
+    <model name="wooden_two_layer_shelf" file="../libero/objects/wooden_two_layer_shelf.xml"/>
+    <model name="white_bowl_free" file="../libero/objects/white_bowl_free.xml"/>
+    <model name="chefmate_8_frypan_free" file="../libero/objects/chefmate_8_frypan_free.xml"/>
+  </asset>
+  <worldbody>
+    <frame pos="-0.66 0.0 0.912" quat="1.0 0.0 0.0 0.0">
+      <attach model="panda_robosuite" prefix="robot_"/>
+    </frame>
+    <frame pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="libero_kitchen_tabletop_manipulation_arena" prefix="arena_"/>
+    </frame>
+    <frame pos="-0.2 0.3 0.905" quat="1.0 0.0 0.0 0.0">
+      <attach model="flat_stove" prefix="flat_stove_1_"/>
+    </frame>
+    <frame pos="0.0 -0.25 0.9199999999999999" quat="6.123233995736766e-17 0.0 0.0 1.0">
+      <attach model="wooden_two_layer_shelf" prefix="wooden_two_layer_shelf_1_"/>
+    </frame>
+    <frame pos="11.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="white_bowl_free" prefix="white_bowl_1_"/>
+    </frame>
+    <frame pos="12.0 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="chefmate_8_frypan_free" prefix="chefmate_8_frypan_1_"/>
+    </frame>
+  </worldbody>
+</mujoco>

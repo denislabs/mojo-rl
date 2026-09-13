@@ -73,6 +73,8 @@ from mojo_rl.tasks.reset import (
     joint_init_addresses, joint_init_dof_addresses, apply_joint_inits,
 )
 from mojo_rl.tasks.libero_spatial_xml import LIBERO_SPATIAL_MAX_CONTACTS
+from mojo_rl.tasks.libero_init_z import load_init_z
+from mojo_rl.tasks.bddl import parse_bddl
 
 
 comptime DT = DType.float64
@@ -80,6 +82,12 @@ comptime SUITE = "libero_spatial"
 comptime FAMILY = "mojo_rl/tasks/families/libero_spatial.family"
 comptime TASK_DIR = "mojo_rl/tasks/tasks/"
 comptime PACK = "mojo_rl/tasks/libero/assets"
+comptime BDDL_DIR = (
+    "references/LIBERO-master/libero/libero/bddl_files/libero_spatial"
+)
+comptime Z_TOL: Float64 = 1.0e-12
+"""The reference is a decimal STRING and ours is binary arithmetic — see
+`test_libero_object`'s note. A picometre is far below anything that matters."""
 comptime OLD_RADIUS: Float64 = 0.02
 """What the caller used to pass, and what check 3 lowers an object back to."""
 
@@ -190,9 +198,37 @@ def main() raises:
     var n_stacks = 0
     var bad_con = 0
     var n_tasks = 0
+    var zt = load_init_z(String(SUITE))
+    var n_z = 0
+    var n_z_bad = 0
+    var worst_frozen = 0.0
     for ti in range(len(names)):
         var t = load_task(TASK_DIR + String(names[ti]) + ".task")
         validate_task_against_family(t, f)
+        # ⚠ THE CORPUS' OWN NAMES. `init_z_*.kv` is keyed by the `.bddl`'s
+        # region (or, for a stack, the other prop), never by the family's.
+        var btext: String
+        with open(String(BDDL_DIR) + "/" + String(names[ti])[
+                byte = String(SUITE).byte_length() + 2
+                : String(names[ti]).byte_length()] + ".bddl", "r") as bh:
+            btext = bh.read()
+        var bp = parse_bddl(btext)
+        var frozen = List[Float64](length=len(f.slots), fill=0.0)
+        var has_frozen = List[Bool](length=len(f.slots), fill=False)
+        for k in range(len(bp.init)):
+            ref ia = bp.init[k]
+            if len(ia.args) != 2 or (ia.pred != "On" and ia.pred != "In"):
+                continue
+            var fsi = f.slot_index(String(ia.args[0]))
+            if fsi < 0 or f.slots[fsi].kind != SLOT_FREE:
+                continue
+            frozen[fsi] = zt.height(String(ia.args[0]), String(ia.args[1]))
+            has_frozen[fsi] = True
+        var inits_inside = List[Bool](length=len(f.slots), fill=False)
+        for k in range(len(t.inits)):
+            var isi = f.slot_index(t.inits[k].slot)
+            if isi >= 0:
+                inits_inside[isi] = t.inits[k].inside
         var jq_adr = joint_init_addresses(t, fmd.joint_names, jqn)
         var jv_adr = joint_init_dof_addresses(t, fmd.joint_names, jvn)
 
@@ -281,13 +317,29 @@ def main() raises:
                 # settled it. The discriminator is whether the region names a
                 # contact slot, i.e. whether it is anchored to a fixture.
                 var ri = f.region_index(tgt)
-                var zo = (
-                    TABLE_Z_OFFSET
-                    if f.slots[si3].has_geom
-                    and f.regions[ri].contact.byte_length() == 0
-                    else 0.0
-                )
+                var zo = 0.0
+                if f.slots[si3].has_geom:
+                    if f.regions[ri].contact.byte_length() == 0:
+                        zo = TABLE_Z_OFFSET
+                    elif not inits_inside[si3]:
+                        # ⚠ `On` A FIXTURE ADDS THE FIXTURE'S OWN `top_site`
+                        # and `In` does not — one line, commented out in
+                        # `InSiteRegionRandomSampler`. See `InitSpec.inside`.
+                        zo = f.slots[f.slot_index(f.regions[ri].contact)].top_z
                 want_z = frames[ri].z + zo - f.slots[si3].bottom_z
+            # ⚠⚠ AND AGAINST LIBERO'S OWN FROZEN STATE. The rule above is
+            # recomputed from the family; this is the height the benchmark
+            # actually restores at reset, for all three shapes at once — a
+            # table region (0.9700), a fixture one (1.0100 on the stove,
+            # 1.1506 inside the drawer, 1.2315 on its roof) and a STACK
+            # (1.0800 on the cookie box). Nothing of ours is consulted.
+            if has_frozen[si3]:
+                var ef = abs(placed[pi].z - frozen[si3])
+                n_z += 1
+                if ef > Z_TOL:
+                    n_z_bad += 1
+                if ef > worst_frozen:
+                    worst_frozen = ef
             var e = abs(placed[pi].z - want_z)
             var ex = abs(placed[pi].x - want_x)
             var ey = abs(placed[pi].y - want_y)
@@ -309,11 +361,18 @@ def main() raises:
               + "      " + String(ncon))
     ta.check(n_tasks >= 8, String(n_tasks) + " tasks checked")
     ta.check(worst_z == 0.0,
-             "every placement is exactly its rule — region_site_z +"
-             " TABLE_Z_OFFSET (a table region) or + 0 (a fixture one), less"
+             "every placement is exactly its rule — region_site_z, plus"
+             " TABLE_Z_OFFSET on a table region or the FIXTURE's top_site on"
+             " an `On` fixture one (and nothing on an `In`), less"
              " slot.bottom_z; or the reference's x/y and top for a stack")
     # ⚠ ANTI-VACUITY: without a stack in the suite, the branch above is dead and
     # the check says nothing about `init=x@y`.
+    print("     against LIBERO's own frozen states:", n_z, "placements, worst",
+          worst_frozen, "m")
+    ta.check(n_z >= 40 and n_z_bad == 0,
+             "every placement is the height LIBERO's `.pruned_init` holds for"
+             " that (prop, region) — the table, the stove, the drawer, the"
+             " cabinet roof and the stack, all from its own states")
     ta.check(n_stacks > 0,
              String(n_stacks) + " stacked placements were checked (init= onto"
              " another free slot)")
@@ -370,13 +429,26 @@ def main() raises:
     var qvel2 = List[Float64](length=nv, fill=0.0)
     reset_slots(t2, f, placed2, addrs, qpos2, qvel2)
     apply_joint_inits(t2, jq2, jvals2, qpos2, qvel2, jv2)
-    # ⚠ LOWER EVERY PLACED SLOT BACK TO THE OLD RULE, in place. The drop is
-    # `-bottom_z - 0.02` per slot, which for these assets is 4 cm.
+    # ⚠⚠ THE OLD RULE, WRITTEN OUT — NOT A FIXED DROP. It used to lower each
+    # prop by `-bottom_z - 0.02`, which stopped discriminating the moment the
+    # fixture's `top_site` was added to the correct height: the stove bowl rose
+    # 4.5 cm, so a 4 cm drop left it ABOVE where it had been and the control
+    # reported 0. The rule this is a control for is `region_site_z + a
+    # caller-supplied radius`, so it is recomputed from the frame each time and
+    # cannot drift behind the real one again.
     var dropped = 0.0
     for pi in range(len(placed2)):
         var si5 = placed2[pi].slot
-        var drop = -f.slots[si5].bottom_z - OLD_RADIUS
-        qpos2[addrs[si5].qadr + 2] -= drop
+        var tgt2 = String("")
+        for k in range(len(t2.inits)):
+            if t2.inits[k].slot == f.slots[si5].name:
+                tgt2 = String(t2.inits[k].region)
+        var ri2 = f.region_index(tgt2)
+        if ri2 < 0:
+            continue          # a stack: the old rule had no stacking at all
+        var old_z = frames2[ri2].z + OLD_RADIUS
+        var drop = qpos2[addrs[si5].qadr + 2] - old_z
+        qpos2[addrs[si5].qadr + 2] = old_z
         if drop > dropped:
             dropped = drop
     for i in range(nq):

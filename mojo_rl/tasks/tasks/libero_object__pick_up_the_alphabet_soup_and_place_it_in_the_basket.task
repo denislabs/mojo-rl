@@ -2,6 +2,7 @@
 schema_version=1
 task=libero_object__pick_up_the_alphabet_soup_and_place_it_in_the_basket
 family=libero_object
+suite=libero_object
 language=Pick the alphabet soup and place it in the basket
 goal=In(alphabet_soup_1, basket_1_contain_region)
 active=arena

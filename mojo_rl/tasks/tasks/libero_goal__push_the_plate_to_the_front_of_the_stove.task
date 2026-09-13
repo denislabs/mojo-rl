@@ -2,6 +2,7 @@
 schema_version=1
 task=libero_goal__push_the_plate_to_the_front_of_the_stove
 family=libero_goal
+suite=libero_goal
 language=Push the plate to the front of the stove
 goal=On(plate_1, main_table_stove_front_region_zone)
 active=arena

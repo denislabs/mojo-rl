@@ -2,6 +2,7 @@
 schema_version=1
 task=libero_goal__put_the_wine_bottle_on_the_rack
 family=libero_goal
+suite=libero_goal
 language=Put the wine bottle on the rack
 goal=On(wine_bottle_1, wine_rack_1_top_region)
 active=arena

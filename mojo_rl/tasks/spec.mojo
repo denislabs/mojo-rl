@@ -420,13 +420,49 @@ struct InitSpec(Copyable, ImplicitlyCopyable, Movable):
     var slot: String
     var region: String
     """The target: a region name, or another slot's name. See the header."""
+    var inside: Bool
+    """`:in` — the `.bddl` said `In`, not `On`.
+
+    ## ⚠⚠ A 4.5 cm DIFFERENCE, AND IT IS ONE COMMENTED-OUT LINE IN LIBERO
+
+    `bddl_base_domain` routes `(On obj <fixture>_<region>)` to
+    `SiteRegionRandomSampler` and `(In obj <fixture>_<region>)` to
+    `InSiteRegionRandomSampler`. The two `sample()` bodies are the same
+    arithmetic with one difference, and it is literally commented out in the
+    `In` one:
+
+        #  if on_top:
+        #      base_offset += np.array((0, 0, ref_obj.top_offset[-1]))
+
+    So `On` adds the FIXTURE's own `top_site` and `In` does not. Every LIBERO
+    fixture declares that site at 0.045, and this tree emitted the same
+    placement for both — putting a bowl 4.5 cm into the stove and into the
+    cabinet's roof, while the bowl INSIDE the top drawer (an `In`) was right.
+    MEASURED against LIBERO's frozen states, which is what found it:
+    `akita_black_bowl_1` on `flat_stove_1_cook_region` is 1.0100 and in
+    `wooden_cabinet_1_top_region` is 1.15063.
+
+    ⚠ IT IS A PROPERTY OF THE INIT, NOT OF THE REGION, because that is how
+    LIBERO decides — on the predicate in `:init`. In the corpus the two never
+    name the same region (a drawer's interior is only ever `In`), so keying on
+    the region would give the same answer today; keying on the predicate cannot
+    drift from the benchmark if that ever changes.
+
+    ⚠ FALSE IS THE DEFAULT AND WRITES NOTHING, so every `.task` that predates
+    this round-trips byte for byte."""
 
     def __init__(out self, slot: String, region: String):
         self.slot = slot
         self.region = region
+        self.inside = False
+
+    def __init__(out self, slot: String, region: String, inside: Bool):
+        self.slot = slot
+        self.region = region
+        self.inside = inside
 
     def describe(self) -> String:
-        return self.slot + "@" + self.region
+        return self.slot + "@" + self.region + (":in" if self.inside else "")
 
 
 struct JointInitSpec(Copyable, ImplicitlyCopyable, Movable):
@@ -654,6 +690,21 @@ struct TaskSpec(Movable & Deinitable):
     var schema_version: Int
     var name: String
     var family: String
+    var suite: String
+    """Which BENCHMARK this task belongs to, when it belongs to one.
+
+    ⚠⚠ NOT DERIVABLE FROM `family` ANY MORE, WHICH IS WHY IT IS A FIELD.
+    `libero_goal` and `libero_object` are a suite and a family at once, so the
+    two names coincided and nothing needed this. LIBERO-10 and LIBERO-90 are
+    two published benchmarks sharing TWENTY SCENES: `KITCHEN_SCENE3`'s five
+    tasks are one compile unit and one family, and one of them is scored as
+    LIBERO-10 while the other four are LIBERO-90. Reporting a success rate for
+    either without this would mean re-reading the corpus, or guessing from a
+    name.
+
+    Empty for a task that is not part of a published suite (every SO-101 one),
+    and `encode` writes nothing then — so every existing `.task` round-trips
+    byte for byte."""
     var language: String
     var active: List[String]
     var inits: List[InitSpec]
@@ -672,6 +723,7 @@ struct TaskSpec(Movable & Deinitable):
         self.schema_version = SCHEMA_VERSION
         self.name = String("")
         self.family = String("")
+        self.suite = String("")
         self.language = String("")
         self.active = List[String]()
         self.inits = List[InitSpec]()
@@ -682,6 +734,7 @@ struct TaskSpec(Movable & Deinitable):
         self.schema_version = move.schema_version
         self.name = move.name^
         self.family = move.family^
+        self.suite = move.suite^
         self.language = move.language^
         self.active = move.active^
         self.inits = move.inits^
@@ -699,6 +752,8 @@ struct TaskSpec(Movable & Deinitable):
         s += "schema_version=" + String(self.schema_version) + "\n"
         s += "task=" + self.name + "\n"
         s += "family=" + self.family + "\n"
+        if self.suite.byte_length() > 0:
+            s += "suite=" + self.suite + "\n"
         s += "language=" + self.language + "\n"
         s += "goal=" + self.goal + "\n"
         for i in range(len(self.active)):
@@ -883,18 +938,37 @@ def parse_region(spec: String) raises -> RegionSpec:
 
 
 def parse_init(spec: String) raises -> InitSpec:
-    """`<slot>@<region>`."""
+    """`<slot>@<region>[:in]` — see `InitSpec.inside` for the suffix."""
     var parts = split_once(spec, String("@"))
     if len(parts) != 2:
         raise Error(
-            "tasks: malformed init '" + spec + "' — expected '<slot>@<region>',"
-            " e.g. 'brick@table'"
+            "tasks: malformed init '" + spec + "' — expected"
+            " '<slot>@<region>[:in]', e.g. 'brick@table'"
         )
     var slot = String(String(parts[0]).strip())
-    var region = String(String(parts[1]).strip())
-    if slot.byte_length() == 0 or region.byte_length() == 0:
+    var rest = String(String(parts[1]).strip())
+    var inside = False
+    var colon = rest.rfind(":")
+    if colon >= 0:
+        var tail = String(rest[byte = colon + 1 : rest.byte_length()])
+        # ⚠ ONLY `in` AND `on` ARE ACCEPTED. A region name cannot contain a
+        # colon, so anything else here is a typo and must not be read as part
+        # of the name — a silently mangled target resolves to nothing and the
+        # error would name the region, not the line.
+        if tail == "in" or tail == "on":
+            inside = tail == "in"
+            # ⚠ A TEMPORARY: assigning `String(rest[...])` back into `rest`
+            # aliases the argument the initialiser is reading.
+            var head = String(rest[byte=0:colon])
+            rest = head^
+        else:
+            raise Error(
+                "tasks: init '" + spec + "' ends in ':" + tail + "'; the only"
+                " suffixes are ':in' and ':on' (see InitSpec.inside)"
+            )
+    if slot.byte_length() == 0 or rest.byte_length() == 0:
         raise Error("tasks: init has an empty slot or region: '" + spec + "'")
-    return InitSpec(slot^, region^)
+    return InitSpec(slot^, rest^, inside)
 
 
 def parse_joint_init(spec: String) raises -> JointInitSpec:
@@ -1085,6 +1159,8 @@ def parse_task(text: String) raises -> TaskSpec:
             t.name = val
         elif key == "family":
             t.family = val
+        elif key == "suite":
+            t.suite = val
         elif key == "language":
             t.language = val
         elif key == "goal":
@@ -1098,8 +1174,8 @@ def parse_task(text: String) raises -> TaskSpec:
         else:
             _unknown_key(
                 key, lines[i].lineno, String("task spec"),
-                String("schema_version, task, family, language, goal, active,"
-                       " init, jinit"),
+                String("schema_version, task, family, suite, language, goal,"
+                       " active, init, jinit"),
             )
 
     if not saw_version:

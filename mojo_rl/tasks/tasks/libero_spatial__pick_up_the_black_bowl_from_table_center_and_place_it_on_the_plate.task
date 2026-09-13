@@ -2,6 +2,7 @@
 schema_version=1
 task=libero_spatial__pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate
 family=libero_spatial
+suite=libero_spatial
 language=Pick the akita black bowl from table center and place it on the plate
 goal=On(akita_black_bowl_1, plate_1)
 active=arena

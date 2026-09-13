@@ -2,6 +2,7 @@
 schema_version=1
 task=libero_goal__put_the_cream_cheese_in_the_bowl
 family=libero_goal
+suite=libero_goal
 language=Put the cream cheese on the bowl
 goal=On(cream_cheese_1, akita_black_bowl_1)
 active=arena

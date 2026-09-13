@@ -2,6 +2,7 @@
 schema_version=1
 task=libero_object__pick_up_the_cream_cheese_and_place_it_in_the_basket
 family=libero_object
+suite=libero_object
 language=Pick the cream cheese and place it in the basket
 goal=In(cream_cheese_1, basket_1_contain_region)
 active=arena

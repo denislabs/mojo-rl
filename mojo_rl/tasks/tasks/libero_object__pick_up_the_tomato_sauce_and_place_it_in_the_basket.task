@@ -2,6 +2,7 @@
 schema_version=1
 task=libero_object__pick_up_the_tomato_sauce_and_place_it_in_the_basket
 family=libero_object
+suite=libero_object
 language=Pick the tomato sauce and place it in the basket
 goal=In(tomato_sauce_1, basket_1_contain_region)
 active=arena

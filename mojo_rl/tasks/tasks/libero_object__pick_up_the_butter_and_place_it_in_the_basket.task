@@ -2,6 +2,7 @@
 schema_version=1
 task=libero_object__pick_up_the_butter_and_place_it_in_the_basket
 family=libero_object
+suite=libero_object
 language=Pick the butter and place it in the basket
 goal=In(butter_1, basket_1_contain_region)
 active=arena

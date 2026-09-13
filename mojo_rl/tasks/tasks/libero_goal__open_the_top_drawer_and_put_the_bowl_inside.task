@@ -2,6 +2,7 @@
 schema_version=1
 task=libero_goal__open_the_top_drawer_and_put_the_bowl_inside
 family=libero_goal
+suite=libero_goal
 language=Open the top layer of the drawer and put the bowl inside
 goal=In(akita_black_bowl_1, wooden_cabinet_1_top_region)
 active=arena

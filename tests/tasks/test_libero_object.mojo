@@ -92,7 +92,8 @@ from mojo_rl.physics3d.parser.runtime_load import (
 )
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.tasks.bddl import parse_bddl
+from mojo_rl.tasks.bddl import parse_bddl, BddlProblem
+from mojo_rl.tasks.libero_init_z import load_init_z, InitZTable
 from mojo_rl.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
     FamilySpec, TABLE_Z_OFFSET,
@@ -125,7 +126,6 @@ comptime N_TASKS = 10
 comptime N_ACTIVE = 8
 """The arena plus seven props. LIBERO's `:objects` gives six distractors and
 the target; the basket is one of the seven."""
-comptime INIT_Z_KV = "mojo_rl/tasks/libero/init_z_libero_object.kv"
 comptime Z_TOL: Float64 = 1.0e-12
 """⚠ NOT EXACT EQUALITY, and not a tuned number either. The reference is a
 DECIMAL STRING and `Float64(String)` in this toolchain is up to 1 ULP low on
@@ -173,39 +173,25 @@ def _bddl_stem(task: String) -> String:
     return String(task[byte=cut : task.byte_length()])
 
 
-def _frozen_z(f: FamilySpec) raises -> List[Float64]:
-    """LIBERO's own start height per FAMILY SLOT, from `init_z_<suite>.kv`.
+def _frozen_z(
+    f: FamilySpec, p: BddlProblem, zt: InitZTable
+) raises -> List[Float64]:
+    """LIBERO's own start height per FAMILY SLOT for THIS task.
 
-    ⚠ EVERY FREE SLOT MUST BE IN THE FILE. A prop the reference does not name
-    would silently compare against nothing."""
+    ⚠ THE KEY COMES FROM THE `.bddl`, NOT FROM THE `.task`. `init_z_*.kv` is
+    keyed by the corpus' own region names and this suite RENAMES five files'
+    regions into the union (`libero_import.RegionAlias`), so looking the height
+    up by the family's name would be looking it up by a name LIBERO never
+    used."""
     var out = List[Float64](length=len(f.slots), fill=0.0)
-    var have = List[Bool](length=len(f.slots), fill=False)
-    var text: String
-    with open(INIT_Z_KV, "r") as fh:
-        text = fh.read()
-    for line in text.splitlines():
-        var l = String(line).strip()
-        if not l.startswith("z="):
+    for k in range(len(p.init)):
+        ref a = p.init[k]
+        if len(a.args) != 2 or (a.pred != "On" and a.pred != "In"):
             continue
-        var body = String(l[byte=2 : l.byte_length()])
-        var cut = body.rfind(":")
-        if cut < 0:
-            raise Error("libero_object: bad line in " + INIT_Z_KV + ": " + l)
-        var nm = String(body[byte=0:cut])
-        var si = f.slot_index(nm)
+        var si = f.slot_index(String(a.args[0]))
         if si < 0:
-            raise Error(
-                "libero_object: " + INIT_Z_KV + " names '" + nm + "', which"
-                " the family has no slot for. Regenerate both."
-            )
-        out[si] = Float64(String(body[byte = cut + 1 : body.byte_length()]))
-        have[si] = True
-    for si in range(len(f.slots)):
-        if f.slots[si].kind == SLOT_FREE and not have[si]:
-            raise Error(
-                "libero_object: no frozen z for '" + f.slots[si].name + "' in "
-                + INIT_Z_KV + " — run `pixi run libero-init-z`."
-            )
+            continue
+        out[si] = zt.height(String(a.args[0]), String(a.args[1]))
     return out^
 
 
@@ -350,11 +336,12 @@ def main() raises:
     # `n_z_no_offset`: placements the PRE-FIX rule (no `TABLE_Z_OFFSET`) would
     # have got right. The control — it must be zero.
     var n_z_no_offset = 0
-    var frozen_z = _frozen_z(f)
+    var zt = load_init_z(String(SUITE))
     for ti in range(len(stems)):
         var t = load_task(TASK_DIR + stems[ti] + ".task")
         var p = parse_bddl(_read(BDDL_DIR + "/" + _bddl_stem(stems[ti])
                                  + ".bddl"))
+        var frozen_z = _frozen_z(f, p, zt)
 
         for i in range(nq):
             d.qpos.data[i] = Scalar[DT](0)

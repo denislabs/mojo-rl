@@ -2,6 +2,7 @@
 schema_version=1
 task=libero_goal__put_the_wine_bottle_on_top_of_the_cabinet
 family=libero_goal
+suite=libero_goal
 language=Put the wine bottle on the top of the drawer
 goal=On(wine_bottle_1, wooden_cabinet_1_top_side)
 active=arena

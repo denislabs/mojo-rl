@@ -393,11 +393,36 @@ def sample_placements(
             # family with no `slot_geom=` is using the caller's radius as a
             # resting height and is not a LIBERO family; moving it would change
             # `so101_tabletop`'s scenes for no reason.
-            var z_off = (
-                TABLE_Z_OFFSET
-                if sl.has_geom and reg.contact.byte_length() == 0
-                else 0.0
-            )
+            var z_off = 0.0
+            if sl.has_geom:
+                if reg.contact.byte_length() == 0:
+                    z_off = TABLE_Z_OFFSET
+                elif not t.inits[i].inside:
+                    # ⚠⚠ AND `On` A FIXTURE ADDS THE FIXTURE'S OWN `top_site`.
+                    # `SiteRegionRandomSampler.sample` builds `base_offset` as
+                    # the reference's pose PLUS `ref_obj.top_offset[-1]`, and
+                    # `InSiteRegionRandomSampler` has that exact line COMMENTED
+                    # OUT — see `spec.InitSpec.inside`. Every LIBERO fixture
+                    # declares `top_site` at 0.045, so a bowl `On` the stove or
+                    # the cabinet roof sat 4.5 cm inside it while the bowl `In`
+                    # the drawer was right.
+                    var ci = f.slot_index(reg.contact)
+                    if ci < 0:
+                        raise Error(
+                            "tasks: region '" + reg.name + "' names contact"
+                            " slot '" + reg.contact + "', which the family does"
+                            " not declare."
+                        )
+                    if not f.slots[ci].has_geom:
+                        raise Error(
+                            "tasks: init '" + t.inits[i].describe() + "' places"
+                            " a prop ON region '" + reg.name + "', whose"
+                            " fixture '" + reg.contact + "' has no slot_geom=."
+                            " robosuite adds that fixture's `top_site` to the"
+                            " height and there is no constant standing in for"
+                            " it — regenerate the family."
+                        )
+                    z_off = f.slots[ci].top_z
             var z = fr.z + rest + z_off
 
             var clash = False

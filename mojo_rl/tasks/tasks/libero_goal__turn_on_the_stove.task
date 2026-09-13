@@ -2,6 +2,7 @@
 schema_version=1
 task=libero_goal__turn_on_the_stove
 family=libero_goal
+suite=libero_goal
 language=Turn on the stove
 goal=Joint(flat_stove_1_button, ge, 0.5)
 active=arena

@@ -769,7 +769,11 @@ def translate_task(
                 if f.slots[s2].name == slot and f.slots[s2].kind == SLOT_FREE:
                     is_free_s = True
             if is_free_t and is_free_s:
-                t.inits.append(InitSpec(slot, String(target)))
+                # ⚠ A STACK IS ALWAYS `On` — `ObjectBasedSampler` is a third
+                # class and adds the reference's `top_offset` unconditionally
+                # (`spec.STACK_Z_OFFSET`). `(In obj other_obj)` appears once in
+                # the whole corpus and names a REGION, not a prop.
+                t.inits.append(InitSpec(slot, String(target), False))
             continue
         var fam_name = alias_region(p.regions[ri].composed_name(), region_alias)
         var fri = f.region_index(fam_name)
@@ -787,7 +791,7 @@ def translate_task(
                 is_free = True
         if not is_free:
             continue
-        t.inits.append(InitSpec(slot, fam_name^))
+        t.inits.append(InitSpec(slot, fam_name^, a.pred == "In"))
     # ── `(Open X)` / `(Turnon X)` in `:init` -> `jinit=` ──────────────────
     #
     # ⚠⚠ THIS IS A DRAW, NOT A JUMP TO THE THRESHOLD.
@@ -1125,6 +1129,17 @@ def resolve_family(
             prob.z_offset + prob.off_z - bottom[2],
             yaw,
         )
+        # ⚠⚠ A STATIC FIXTURE CARRIES `slot_geom=` TOO, AND ITS `top_z` IS
+        # LOAD-BEARING. `SiteRegionRandomSampler.sample` places an object on a
+        # fixture's site at `base_offset[2] + site_z - bottom_offset[-1]`,
+        # where `base_offset` is the fixture's own pose PLUS
+        # `ref_obj.top_offset[-1]` — the fixture's `top_site`. Every LIBERO
+        # fixture declares it at 0.045, and leaving it out placed a bowl 4.5 cm
+        # into the stove and into the cabinet's roof. MEASURED against
+        # LIBERO's frozen states: 1.0100 / 1.2315 with it, 0.9650 / 1.1865
+        # without (`tools/tasks/libero_init_z.py`).
+        var gf = asset_placement_geom(xml, String(cat.asset))
+        s.set_geom(gf[0], gf[1], gf[2])
         f.slots.append(s^)
 
     for i in range(len(p.objects)):
