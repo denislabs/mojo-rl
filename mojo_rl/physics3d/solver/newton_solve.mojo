@@ -125,7 +125,7 @@ from .elliptic_cone import (
     ell_row_cost,
     ell_hessian_block,
     ell_add_contact_hessian,
-    ell_line_deriv,
+    ell_line_eval,
     ELL_SATISFIED,
     ELL_QUADRATIC,
     ELL_CONE,
@@ -215,6 +215,7 @@ from ..gpu.constants import (
     CONTACT_IDX_FORCE_ROLL2,
     META_IDX_NUM_CONTACTS,
     META_IDX_EQ_FORCE_LIVE,
+    META_IDX_LS_EVAL,
     MODEL_META_IDX_MEANINERTIA,
     MODEL_META_IDX_NOSLIP_TOLERANCE,
     MODEL_META_IDX_NOSLIP_ITERATIONS,
@@ -3164,6 +3165,10 @@ def _newton_solve_env[
         _p_setup += _p_now - _p_last
         _p_last = _p_now
     # === Step 5: Newton iteration loop ===
+    # ⚠ MuJoCo's `sum_i d->solver[i].neval`, published on `d.meta` so a
+    # gate can see it. The line search's ANSWER barely moves between
+    # algorithms; its WORK does, and that is what AUD-40 changed.
+    var ls_eval_total = 0
     for _iter in range(NEWTON_ITER_GPU):
         # ⚠⚠ NO CONSTRAINT ROWS: MUJOCO RETURNS, AND WE USED TO SOLVE.
         # `mj_fwdConstraint` (engine_forward.c:884) is explicit —
@@ -3275,239 +3280,335 @@ def _newton_solve_env[
                 jv += eq_J[e * nv + d] * search[d]
             eq_Js[e] = jv
 
-        # Analytical Newton linesearch (matches CPU primal_linesearch_with_D)
-        # Gauss coefficients for derivative: d_gauss/dalpha = ga*alpha + gb
+        # ── `PrimalSearch` (engine_solver.c:1692), ELLIPTIC cone ─────────
+        # ⚠⚠ THIS WAS A BISECTION IN PHASE 3 AND IT IS MuJoCo'S THREE-
+        # CANDIDATE BRACKET NOW (AUD-40). The pyramidal twin
+        # (`primal.mojo:pyramidal_linesearch`) carried the ported form and
+        # this leg did not, so the two cones ran different searches; that
+        # file's header measures what the difference costs — on apollo,
+        # bisection spends the whole `ls_iterations` budget halving from
+        # 0.875 to 0.7515 without ever getting under `gtol`, where the
+        # bracket's first `p1next` lands the root in ONE evaluation.
+        #
+        # ⚠ THE COST IS WHAT WAS MISSING, NOT THE BRACKET. Phase 3 selects
+        # among its candidates by COST among those under `gtol`, and the exit
+        # compares the two bracket ends by cost and returns EXACTLY 0 when
+        # neither improves. The elliptic evaluator returned derivatives only
+        # — a bisection needs nothing else — so `ell_line_eval` grew the
+        # shifted cone cost (`ellipticCostDif`, a nine-case zone-transition
+        # table) before this could be written at all.
+        #
+        # The three phases and their spelling are `pyramidal_linesearch`'s,
+        # deliberately: the two bodies are now the same algorithm over
+        # different row kinds, and a reader comparing them should see one
+        # difference, not two.
+        comptime ZERO_E = Scalar[DTYPE](0)
         var ga: Scalar[DTYPE] = 0
         var gb: Scalar[DTYPE] = 0
+        var snorm_sq: Scalar[DTYPE] = 0
         for i in range(nv):
             ga += Mv[i] * search[i]
             gb += (Ma[i] - qfrc_sm[i]) * search[i]
+            snorm_sq += search[i] * search[i]
 
-        # Evaluate d1, d2 at alpha=0
-        var p0_d1 = gb
-        var p0_d2 = ga
-        for c in range(nc):
-            if dist_cache[c] >= Scalar[DTYPE](0):
-                continue
-            ell_line_deriv[DTYPE, NT, T_CAP](
-                nt_cache[c], c * NT, Scalar[DTYPE](0),
-                jar_n_arr[c], jar_t_arr, Js_n[c], Js_t,
-                mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
-                p0_d1, p0_d2,
-            )
-        # Scalar rows. d(cost)/dalpha = -f*Jv in EVERY state, and the second
-        # derivative is D*Jv^2 only where the row is quadratic.
-        for s in range(ns):
-            p0_d1 += -sr_f[s] * sr_Js[s]
-            if sr_st[s] == SROW_QUADRATIC:
-                p0_d2 += sr_D[s] * sr_Js[s] * sr_Js[s]
-        for e in range(neq_rows):
-            p0_d1 += -eq_f[e] * eq_Js[e]
-            if eq_st[e] == SROW_QUADRATIC:
-                p0_d2 += eq_D[e] * eq_Js[e] * eq_Js[e]
-        # ⚠ MuJoCo FLOORS `deriv[1]` ONLY WHEN IT IS <= 0 (engine_solver.c:1648,
-        # a should-not-occur convexity violation) and to `mjMINVAL` = 1e-15.
-        # Testing `< PRIMAL_MINVAL_GPU` inflates a legitimately SMALL POSITIVE
-        # curvature — which is what the line's second derivative IS near the
-        # optimum — and crushes `alpha = -d1/d2`. See the PYRAMIDAL twin in
-        # `primal.mojo` for the measurement.
-        if p0_d2 <= Scalar[DTYPE](0):
-            p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+        # ⚠⚠ `PrimalPrepare`'s `quad[0..2]` IS RECOMPUTED INSIDE EVERY
+        # EVALUATION, NOT CACHED PER CONTACT, AND THAT IS A STACK DECISION.
+        # It is alpha-independent, so three `Scratch[MC_CAP]` arrays beside
+        # `Js_n` would be the faithful and faster shape — and they are what
+        # took this kernel over Metal's per-thread stack. The failure gives
+        # NO diagnostic ("Metal Compiler failed to compile metallib"); the
+        # bisect was to revert `METADATA_SIZE` alone, which did NOT fix it,
+        # leaving the three arrays. Recomputing costs a handful of
+        # multiply-adds over `nt <= 5` rows per evaluation, next to the
+        # `UU/UV/VV` sum that was already being recomputed there.
 
-        comptime if _CPU_PROBE:
-            var _p_now = Int(perf_counter_ns())
-            _p_mv += _p_now - _p_last
-            _p_last = _p_now
-        var alpha: Scalar[DTYPE] = 0
-        if p0_d1 < Scalar[DTYPE](0):
-            # Phase 1: initial Newton step
-            var p1_alpha = -p0_d1 / p0_d2
+        # `PrimalSearch` bails on a degenerate direction before anything else
+        # (engine_solver.c:1705, LSresult 1).
+        var snorm = sqrt(snorm_sq)
+        var gtol = tol_rt * lstol_rt * snorm / scale
 
-            var snorm_sq: Scalar[DTYPE] = 0
-            for i in range(nv):
-                snorm_sq += search[i] * search[i]
-            var gtol = (
-                tol_rt * lstol_rt
-                * sqrt(snorm_sq)
-                / scale
-            )
-            var gtol_sq = gtol * gtol
+        var ls_budget = LINESEARCH_ITER
+        if lsiter_rt > 0 and lsiter_rt < ls_budget:
+            ls_budget = lsiter_rt
+        var lsiter = 0
 
-            # Inline eval at p1_alpha
-            var p1_d1 = ga * p1_alpha + gb
-            var p1_d2_v = ga
+        # ── `PrimalEval` (engine_solver.c:1511) ──────────────────────────
+        # The SHIFTED line cost `cost(alpha) - cost(0)` and its two
+        # derivatives, in ONE pass over the cones, the scalar rows and the
+        # equality rows. `it` is `ctx->LSiter` and counts EVERY evaluation,
+        # including the two before the one-sided search — `ls_iterations` is
+        # a budget of `PrimalEval` calls, not of bracket steps.
+        @parameter
+        @always_inline
+        def peval(
+            a: Scalar[DTYPE],
+            mut c_out: Scalar[DTYPE],
+            mut d0: Scalar[DTYPE],
+            mut d1: Scalar[DTYPE],
+            mut it: Int,
+        ):
+            c_out = Scalar[DTYPE](0.5) * ga * a * a + gb * a
+            d0 = ga * a + gb
+            d1 = ga
             for c in range(nc):
                 if dist_cache[c] >= Scalar[DTYPE](0):
                     continue
-                ell_line_deriv[DTYPE, NT, T_CAP](
-                    nt_cache[c], c * NT, p1_alpha,
+                ell_line_eval[DTYPE, NT, T_CAP](
+                    nt_cache[c], c * NT, a,
                     jar_n_arr[c], jar_t_arr, Js_n[c], Js_t,
                     mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
-                    p1_d1, p1_d2_v,
+                    c_out, d0, d1,
                 )
             for s in range(ns):
-                var tj = sr_jar[s] + p1_alpha * sr_Js[s]
+                var tj = sr_jar[s] + a * sr_Js[s]
                 var tst = scalar_row_state[DTYPE](
                     sr_kind[s], tj, sr_R[s], sr_floss[s]
                 )
-                p1_d1 += (
+                var st0 = scalar_row_state[DTYPE](
+                    sr_kind[s], sr_jar[s], sr_R[s], sr_floss[s]
+                )
+                c_out += scalar_row_cost[DTYPE](
+                    tst, tj, sr_D[s], sr_R[s], sr_floss[s]
+                ) - scalar_row_cost[DTYPE](
+                    st0, sr_jar[s], sr_D[s], sr_R[s], sr_floss[s]
+                )
+                d0 += (
                     -scalar_row_force[DTYPE](tst, tj, sr_D[s], sr_floss[s])
                     * sr_Js[s]
                 )
                 if tst == SROW_QUADRATIC:
-                    p1_d2_v += sr_D[s] * sr_Js[s] * sr_Js[s]
+                    d1 += sr_D[s] * sr_Js[s] * sr_Js[s]
             for e in range(neq_rows):
-                var tje = eq_jar[e] + p1_alpha * eq_Js[e]
+                var tje = eq_jar[e] + a * eq_Js[e]
                 var tste = scalar_row_state[DTYPE](
                     eq_kind[e], tje, Scalar[DTYPE](0), Scalar[DTYPE](0)
                 )
-                p1_d1 += (
+                var ste0 = scalar_row_state[DTYPE](
+                    eq_kind[e], eq_jar[e], Scalar[DTYPE](0), Scalar[DTYPE](0)
+                )
+                c_out += scalar_row_cost[DTYPE](
+                    tste, tje, eq_D[e], Scalar[DTYPE](0), Scalar[DTYPE](0)
+                ) - scalar_row_cost[DTYPE](
+                    ste0, eq_jar[e], eq_D[e], Scalar[DTYPE](0),
+                    Scalar[DTYPE](0),
+                )
+                d0 += (
                     -scalar_row_force[DTYPE](
                         tste, tje, eq_D[e], Scalar[DTYPE](0)
                     )
                     * eq_Js[e]
                 )
                 if tste == SROW_QUADRATIC:
-                    p1_d2_v += eq_D[e] * eq_Js[e] * eq_Js[e]
-            # Same rule as `p0_d2` above.
-            if p1_d2_v <= Scalar[DTYPE](0):
-                p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                    d1 += eq_D[e] * eq_Js[e] * eq_Js[e]
+            # ⚠ FLOOR ONLY A NON-POSITIVE SECOND DERIVATIVE, AND ONLY TO
+            # `mjMINVAL` (engine_solver.c:1643). Testing against
+            # `PRIMAL_MINVAL_GPU` instead floors a legitimately SMALL POSITIVE
+            # curvature — which is what this IS near the optimum — and crushes
+            # `alpha = -d0/d1`. The pyramidal twin carries the measurement.
+            if d1 <= Scalar[DTYPE](0):
+                d1 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+            it += 1
 
-            alpha = p1_alpha
-            if p1_d1 * p1_d1 >= gtol_sq:
-                # Phase 2: one-sided Newton pursuit
-                var dir_s = Scalar[DTYPE](-1) if p1_d1 > Scalar[DTYPE](
-                    0
-                ) else Scalar[DTYPE](1)
-                var p2_alpha: Scalar[DTYPE] = 0
-                var p2_d1 = p0_d1
-                var bracket = False
-                for _ls in range(LINESEARCH_ITER):
-                    if _ls >= lsiter_rt:
-                        break
-                    p2_alpha = p1_alpha
-                    p2_d1 = p1_d1
-                    if p1_d2_v > Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                        p1_alpha = p1_alpha - p1_d1 / p1_d2_v
-                    else:
-                        p1_alpha = p1_alpha + dir_s
-                    # Eval at new p1_alpha
-                    p1_d1 = ga * p1_alpha + gb
-                    p1_d2_v = ga
-                    for c in range(nc):
-                        if dist_cache[c] >= Scalar[DTYPE](0):
-                            continue
-                        ell_line_deriv[DTYPE, NT, T_CAP](
-                            nt_cache[c], c * NT, p1_alpha,
-                            jar_n_arr[c], jar_t_arr, Js_n[c], Js_t,
-                            mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
-                            p1_d1, p1_d2_v,
-                        )
-                    for s in range(ns):
-                        var tj = sr_jar[s] + p1_alpha * sr_Js[s]
-                        var tst = scalar_row_state[DTYPE](
-                            sr_kind[s], tj, sr_R[s], sr_floss[s]
-                        )
-                        p1_d1 += (
-                            -scalar_row_force[DTYPE](
-                                tst, tj, sr_D[s], sr_floss[s]
-                            )
-                            * sr_Js[s]
-                        )
-                        if tst == SROW_QUADRATIC:
-                            p1_d2_v += sr_D[s] * sr_Js[s] * sr_Js[s]
-                    for e in range(neq_rows):
-                        var tje = eq_jar[e] + p1_alpha * eq_Js[e]
-                        var tste = scalar_row_state[DTYPE](
-                            eq_kind[e], tje, Scalar[DTYPE](0),
-                            Scalar[DTYPE](0),
-                        )
-                        p1_d1 += (
-                            -scalar_row_force[DTYPE](
-                                tste, tje, eq_D[e], Scalar[DTYPE](0)
-                            )
-                            * eq_Js[e]
-                        )
-                        if tste == SROW_QUADRATIC:
-                            p1_d2_v += eq_D[e] * eq_Js[e] * eq_Js[e]
-                    # Same rule as `p0_d2` above.
-                    if p1_d2_v <= Scalar[DTYPE](0):
-                        p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-                    if p1_d1 * p1_d1 < gtol_sq:
-                        alpha = p1_alpha
-                        break
-                    if p1_d1 * dir_s > Scalar[DTYPE](0):
-                        bracket = True
-                        break
-                if bracket:
-                    # Phase 3: bracketed bisection
-                    for _ls in range(LINESEARCH_ITER):
-                        if _ls >= lsiter_rt:
-                            break
-                        var mid = (p1_alpha + p2_alpha) * Scalar[DTYPE](0.5)
-                        var mid_d1 = ga * mid + gb
-                        # `mid_d2` is written and discarded — the bisection
-                        # only brackets on the sign of `d1`. Kept so the
-                        # bracketing evaluates the SAME function as the two
-                        # Newton phases above rather than a hand-trimmed copy
-                        # of it, which is how the four inlined versions of
-                        # this block used to differ from each other.
-                        var mid_d2 = Scalar[DTYPE](0)
-                        for c in range(nc):
-                            if dist_cache[c] >= Scalar[DTYPE](0):
-                                continue
-                            ell_line_deriv[DTYPE, NT, T_CAP](
-                                nt_cache[c], c * NT, mid,
-                                jar_n_arr[c], jar_t_arr, Js_n[c], Js_t,
-                                mu_cache[c], D_n_cache[c], D_t_cache,
-                                fr_cache, mid_d1, mid_d2,
-                            )
-                        for s in range(ns):
-                            var tj = sr_jar[s] + mid * sr_Js[s]
-                            var tst = scalar_row_state[DTYPE](
-                                sr_kind[s], tj, sr_R[s], sr_floss[s]
-                            )
-                            mid_d1 += (
-                                -scalar_row_force[DTYPE](
-                                    tst, tj, sr_D[s], sr_floss[s]
-                                )
-                                * sr_Js[s]
-                            )
-                        for e in range(neq_rows):
-                            var tje = eq_jar[e] + mid * eq_Js[e]
-                            var tste = scalar_row_state[DTYPE](
-                                eq_kind[e], tje, Scalar[DTYPE](0),
-                                Scalar[DTYPE](0),
-                            )
-                            mid_d1 += (
-                                -scalar_row_force[DTYPE](
-                                    tste, tje, eq_D[e], Scalar[DTYPE](0)
-                                )
-                                * eq_Js[e]
-                            )
-                        if mid_d1 * mid_d1 < gtol_sq:
-                            p1_alpha = mid
-                            p1_d1 = mid_d1
-                            break
-                        if mid_d1 * p1_d1 > Scalar[DTYPE](0):
-                            p1_alpha = mid
-                            p1_d1 = mid_d1
-                        else:
-                            p2_alpha = mid
-                            p2_d1 = mid_d1
-                        if (p1_alpha - p2_alpha) * (
-                            p1_alpha - p2_alpha
-                        ) < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                            break
-                    if p2_d1 * p2_d1 < p1_d1 * p1_d1:
-                        alpha = p2_alpha
-                    else:
-                        alpha = p1_alpha
-                elif p1_d1 * p1_d1 >= gtol_sq:
-                    alpha = p1_alpha
-
+        var alpha: Scalar[DTYPE] = 0
+        # 0 = degenerate direction, 1 = converged on the first Newton step,
+        # 2 = one-sided search, 3 = the bracket. ⚠ WRITTEN ONLY UNDER THE
+        # TRACE, because it is read only there — an unconditional write is a
+        # dead store the compiler warns about on every build.
         comptime if _ELL_TRACE:
-            print("       alpha", alpha)
+            var ls_phase = 0
+        if snorm >= Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+            var p0_a = Scalar[DTYPE](0)
+            var p0_c = Scalar[DTYPE](0)
+            var p0_d0 = Scalar[DTYPE](0)
+            var p0_d1 = Scalar[DTYPE](0)
+            peval(p0_a, p0_c, p0_d0, p0_d1, lsiter)
+
+            comptime if _CPU_PROBE:
+                var _p_now = Int(perf_counter_ns())
+                _p_mv += _p_now - _p_last
+                _p_last = _p_now
+
+            # ⚠ ONE NEWTON STEP IS ALWAYS ATTEMPTED (engine_solver.c:1733),
+            # INCLUDING WHEN `d0 >= 0`. This leg used to guard the whole
+            # search on `p0_d1 < 0` and return alpha = 0 otherwise, which the
+            # caller's break turns into "the solve is over".
+            var p1_a = p0_a - p0_d0 / p0_d1
+            var p1_c = Scalar[DTYPE](0)
+            var p1_d0 = Scalar[DTYPE](0)
+            var p1_d1 = Scalar[DTYPE](0)
+            peval(p1_a, p1_c, p1_d0, p1_d1, lsiter)
+
+            if abs(p1_d0) < gtol:
+                alpha = p1_a
+                comptime if _ELL_TRACE:
+                    ls_phase = 1
+            else:
+                comptime if _ELL_TRACE:
+                    ls_phase = 2
+                var dir_e = Scalar[DTYPE](1) if p1_d0 < Scalar[DTYPE](
+                    0
+                ) else Scalar[DTYPE](-1)
+
+                # ── phase 2: one-sided Newton search ─────────────────────
+                var p2_a = p0_a
+                var p2_c = p0_c
+                var p2_d0 = p0_d0
+                var p2_d1 = p0_d1
+                var settled = False
+                while p1_d0 * dir_e <= -gtol and lsiter < ls_budget:
+                    p2_a = p1_a
+                    p2_c = p1_c
+                    p2_d0 = p1_d0
+                    p2_d1 = p1_d1
+                    p1_a = p1_a - p1_d0 / p1_d1
+                    peval(p1_a, p1_c, p1_d0, p1_d1, lsiter)
+                    if abs(p1_d0) < gtol:
+                        alpha = p1_a
+                        settled = True
+                        break
+
+                # Could not bracket within the budget (LSresult 3).
+                if not settled and lsiter >= ls_budget:
+                    alpha = p1_a
+                    settled = True
+
+                if not settled:
+                    comptime if _ELL_TRACE:
+                        ls_phase = 3
+                    # ── phase 3: bracket over {p1next, p2next, pmid} ─────
+                    # `p2next` starts as the point that ENDED phase 2 and
+                    # `p1next` as one Newton step off it.
+                    var n2_a = p1_a
+                    var n2_c = p1_c
+                    var n2_d0 = p1_d0
+                    var n2_d1 = p1_d1
+                    var n1_a = p1_a - p1_d0 / p1_d1
+                    var n1_c = Scalar[DTYPE](0)
+                    var n1_d0 = Scalar[DTYPE](0)
+                    var n1_d1 = Scalar[DTYPE](0)
+                    peval(n1_a, n1_c, n1_d0, n1_d1, lsiter)
+
+                    var pm_a: Scalar[DTYPE]
+                    var pm_c = Scalar[DTYPE](0)
+                    var pm_d0 = Scalar[DTYPE](0)
+                    var pm_d1 = Scalar[DTYPE](0)
+
+                    while lsiter < ls_budget:
+                        pm_a = Scalar[DTYPE](0.5) * (p1_a + p2_a)
+                        peval(pm_a, pm_c, pm_d0, pm_d1, lsiter)
+
+                        # Cheapest candidate under `gtol`, scanned in
+                        # MuJoCo's order (`p1next`, `p2next`, `pmid`) so a
+                        # cost tie resolves as it does there.
+                        var best_a = Scalar[DTYPE](0)
+                        var best_c = Scalar[DTYPE](0)
+                        var has_best = False
+                        if abs(n1_d0) < gtol:
+                            best_a = n1_a
+                            best_c = n1_c
+                            has_best = True
+                        if abs(n2_d0) < gtol and (
+                            not has_best or n2_c < best_c
+                        ):
+                            best_a = n2_a
+                            best_c = n2_c
+                            has_best = True
+                        # ⚠ NO `best_c = pm_c` HERE — `pmid` is the last
+                        # candidate, so that write is read by nothing. The
+                        # pyramidal twin drops it at the same place; a FOURTH
+                        # candidate would need it back.
+                        if abs(pm_d0) < gtol and (
+                            not has_best or pm_c < best_c
+                        ):
+                            best_a = pm_a
+                            has_best = True
+                        if has_best:
+                            alpha = best_a
+                            settled = True
+                            break
+
+                        # ── `updateBracket` (engine_solver.c:1665) ───────
+                        # A candidate replaces an end when it has the SAME
+                        # derivative sign and is closer to zero; that end
+                        # then gets a fresh Newton next-point.
+                        var b1 = False
+                        if p1_d0 < ZERO_E and n1_d0 < ZERO_E and p1_d0 < n1_d0:
+                            p1_a = n1_a; p1_c = n1_c; p1_d0 = n1_d0
+                            p1_d1 = n1_d1; b1 = True
+                        elif p1_d0 > ZERO_E and n1_d0 > ZERO_E and p1_d0 > n1_d0:
+                            p1_a = n1_a; p1_c = n1_c; p1_d0 = n1_d0
+                            p1_d1 = n1_d1; b1 = True
+                        if p1_d0 < ZERO_E and n2_d0 < ZERO_E and p1_d0 < n2_d0:
+                            p1_a = n2_a; p1_c = n2_c; p1_d0 = n2_d0
+                            p1_d1 = n2_d1; b1 = True
+                        elif p1_d0 > ZERO_E and n2_d0 > ZERO_E and p1_d0 > n2_d0:
+                            p1_a = n2_a; p1_c = n2_c; p1_d0 = n2_d0
+                            p1_d1 = n2_d1; b1 = True
+                        if p1_d0 < ZERO_E and pm_d0 < ZERO_E and p1_d0 < pm_d0:
+                            p1_a = pm_a; p1_c = pm_c; p1_d0 = pm_d0
+                            p1_d1 = pm_d1; b1 = True
+                        elif p1_d0 > ZERO_E and pm_d0 > ZERO_E and p1_d0 > pm_d0:
+                            p1_a = pm_a; p1_c = pm_c; p1_d0 = pm_d0
+                            p1_d1 = pm_d1; b1 = True
+
+                        var b2 = False
+                        if p2_d0 < ZERO_E and n1_d0 < ZERO_E and p2_d0 < n1_d0:
+                            p2_a = n1_a; p2_c = n1_c; p2_d0 = n1_d0
+                            p2_d1 = n1_d1; b2 = True
+                        elif p2_d0 > ZERO_E and n1_d0 > ZERO_E and p2_d0 > n1_d0:
+                            p2_a = n1_a; p2_c = n1_c; p2_d0 = n1_d0
+                            p2_d1 = n1_d1; b2 = True
+                        if p2_d0 < ZERO_E and n2_d0 < ZERO_E and p2_d0 < n2_d0:
+                            p2_a = n2_a; p2_c = n2_c; p2_d0 = n2_d0
+                            p2_d1 = n2_d1; b2 = True
+                        elif p2_d0 > ZERO_E and n2_d0 > ZERO_E and p2_d0 > n2_d0:
+                            p2_a = n2_a; p2_c = n2_c; p2_d0 = n2_d0
+                            p2_d1 = n2_d1; b2 = True
+                        if p2_d0 < ZERO_E and pm_d0 < ZERO_E and p2_d0 < pm_d0:
+                            p2_a = pm_a; p2_c = pm_c; p2_d0 = pm_d0
+                            p2_d1 = pm_d1; b2 = True
+                        elif p2_d0 > ZERO_E and pm_d0 > ZERO_E and p2_d0 > pm_d0:
+                            p2_a = pm_a; p2_c = pm_c; p2_d0 = pm_d0
+                            p2_d1 = pm_d1; b2 = True
+
+                        # ⚠ NEXT-POINTS ARE RECOMPUTED ONLY FOR AN END THAT
+                        # MOVED, which is what lets a converged `p1next`
+                        # survive to the candidate scan above.
+                        if b1:
+                            n1_a = p1_a - p1_d0 / p1_d1
+                            peval(n1_a, n1_c, n1_d0, n1_d1, lsiter)
+                        if b2:
+                            n2_a = p2_a - p2_d0 / p2_d1
+                            peval(n2_a, n2_c, n2_d0, n2_d1, lsiter)
+
+                        # Neither end could be improved: numerical accuracy
+                        # reached, take the midpoint (LSresult 0/7).
+                        if not b1 and not b2:
+                            alpha = pm_a
+                            settled = True
+                            break
+
+                    if not settled:
+                        # ⚠ NO IMPROVEMENT MEANS ZERO, NOT A SMALL STEP
+                        # (LSresult 5). Returning a tiny non-improving alpha
+                        # nudges `qacc` on EVERY step of a rollout once the
+                        # warm start puts the iterate near its optimum.
+                        if p1_c <= p2_c and p1_c < ZERO_E:
+                            alpha = p1_a
+                        elif p2_c <= p1_c and p2_c < ZERO_E:
+                            alpha = p2_a
+                        else:
+                            alpha = ZERO_E
+        ls_eval_total += lsiter
+        comptime if _ELL_TRACE:
+            # ⚠ `lseval` AND `phase` TOGETHER ARE THE DIAGNOSIS, and the
+            # reason this line grew them is that `alpha` alone cannot say
+            # whether phase 3 RAN. A search that converges in phase 1 prints
+            # the same shape as one that spent the whole bracket budget, so a
+            # gate over models that never bracket is blind to phase 3 and
+            # reads as coverage.
+            print("       alpha", alpha, "lseval", lsiter,
+                  "phase", ls_phase)
         # If alpha is negligible, stop
         comptime if _CPU_PROBE:
             var _p_now = Int(perf_counter_ns())
@@ -3816,6 +3917,7 @@ def _newton_solve_env[
             break
         eq_force[env, r] = eq_f[eq_weld_base + r]
     smeta[env, META_IDX_EQ_FORCE_LIVE] = Scalar[DTYPE](eq_weld_n)
+    smeta[env, META_IDX_LS_EVAL] = Scalar[DTYPE](ls_eval_total)
 
     # NOTHING RUNS AFTER THE SOLVE ON THIS PATH ANY MORE. Joint limits,
     # dry-friction dofs, tendon equalities (`build_scalar_rows` /

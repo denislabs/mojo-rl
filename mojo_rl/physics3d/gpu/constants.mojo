@@ -123,7 +123,7 @@ comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime METADATA_SIZE: Int = 28
+comptime METADATA_SIZE: Int = 29
 """Per-env metadata words: 4 fixed slots, `META_IDX_TASK_PARAM_0..11`,
 `META_IDX_ACTDAMP_LIVE`, `META_IDX_SIM_TIME`, `META_IDX_TASK_ACTIVE`,
 `META_IDX_INIT_REGION_0..2`, `META_IDX_GOAL_HELD` and the four shaping words.
@@ -361,6 +361,27 @@ comptime META_IDX_REACH_MARGIN: Int = 26
 # connect/weld when this is 0. Loud on the sensors that would be wrong, inert
 # on every other body.
 comptime META_IDX_EQ_FORCE_LIVE: Int = 27
+
+comptime META_IDX_LS_EVAL: Int = 28
+"""Line-search evaluations the LAST `mj_forward` spent, summed over the
+Newton iterations of this env's solve — MuJoCo's `d->solver[i].neval`
+added up.
+
+⚠⚠ IT IS A COUNTER, NOT A RESULT, AND IT EXISTS TO BE GATED. The primal
+line search is the solver's hottest inner loop and its ANSWER is nearly
+invariant to how it is found: bisection and MuJoCo's three-candidate
+bracket land on the same alpha to ~1e-16 on every model in this tree, so
+a gate over `qacc` cannot tell them apart while one does 72% more work
+(AUD-40: 1207 evaluations against 701 over the same 168 searches). This
+word is what makes the difference observable — see
+`test_elliptic_linesearch_evals_vs_mujoco`.
+
+⚠ WRITTEN BY THE ELLIPTIC PER-ENV LEG ONLY, so far. The pyramidal helper
+already returns its count to its caller (`lsiter`), and the blocked kernel
+prints it as `[lseval]`; neither publishes it here yet. A reader that finds
+0 on a pyramidal model is looking at an unwritten slot, not at a solve that
+did no work.
+"""
 
 
 # =============================================================================

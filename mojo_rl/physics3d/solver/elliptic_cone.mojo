@@ -433,7 +433,7 @@ def ell_add_contact_hessian[
 
 
 @always_inline
-def ell_line_deriv[
+def ell_line_eval[
     DTYPE: DType, NT: Int, T_CAP: Int
 ](
     nt: Int,
@@ -447,27 +447,81 @@ def ell_line_deriv[
     D_n: Scalar[DTYPE],
     D_t: Scratch[Scalar[DTYPE], T_CAP],
     fr: Scratch[Scalar[DTYPE], T_CAP],
+    mut cost: Scalar[DTYPE],
     mut d1: Scalar[DTYPE],
     mut d2: Scalar[DTYPE],
 ):
-    """Add this contact's contribution to the linesearch derivatives at
-    `alpha` — first into `d1`, second into `d2`.
+    """Add this contact's SHIFTED cost and two derivatives at `alpha`.
 
-    Port of `PrimalEval`'s elliptic branch fused with the `quad` terms
-    `PrimalPrepare` builds for it. MuJoCo accumulates the bottom-zone
-    quadratic into `quadTotal` and differentiates once at the end; per row
-    that is `d1 += 2*alpha*q2 + q1` and `d2 += 2*q2`, which is the form used
-    here so no cross-row state is needed.
+    `PrimalEval`'s elliptic branch (engine_solver.c:1511) fused with the
+    `quad` terms `PrimalPrepare` builds for it — now including the cost, which
+    this used to omit because the elliptic line search had nothing to spend it
+    on (AUD-40).
 
-    The caller evaluates this at four different `alpha` (the trial point, the
-    initial Newton step, each one-sided pursuit step, each bisection midpoint).
-    Those were four hand-inlined copies of the two-tangent expressions; making
-    them one call is the only reason generalizing the tangent count is a
-    tractable edit rather than a fourfold one.
+    ⚠⚠ THE COST IS A ZONE-TRANSITION TABLE, NOT A FUNCTION OF THE END POINT.
+    `ellipticCostDif` (engine_solver.c) branches on the pair
+    (zone at alpha=0, zone at alpha) — nine cases — because the cone cost is
+    only PIECEWISE smooth and the difference across a zone boundary is not
+    the difference of the two pieces' formulas. Two of the cases matter for
+    accuracy rather than bookkeeping:
+
+      * MIDDLE -> MIDDLE is RATIONALIZED. Writing it as
+        `0.5*Dm*(r^2 - r0^2)` cancels catastrophically when the step is small
+        and `r ~ r0`, which is exactly the regime phase 3 lives in — it
+        compares candidate costs that differ in the last digits. MuJoCo
+        forms `T_delta = Tsqr_delta/(T + T0)` and
+        `0.5*Dm*r_delta*(2*r0 + r_delta)` instead, which never subtracts two
+        near-equal large numbers.
+      * the BOUNDARY-CROSSING cases (3->2, 2->3) add or subtract the
+        half-gap `0.5*Dm*(mu*N + T)^2` at the crossing, because the quadratic
+        and cone pieces do not meet at the same value.
+
+    The derivatives are unchanged, and deliberately still go through
+    `_ell_quad_deriv` in the bottom zone rather than through the `q1`/`q2`
+    form MuJoCo uses (`2*alpha*quad[2] + quad[1]`). The two are algebraically
+    the same sum in a different association; keeping the existing one means
+    this change moves the COST only, and a gate that moves is telling you
+    about phase 3 rather than about a re-associated accumulation.
+
+    ⚠ `nt == 0` (a frictionless contact) reaches this with `UU == VV == 0`,
+    so both zones are decided by the sign of `N` alone and the table collapses
+    to the one-sided quadratic — the same answer `scalar_row_cost` gives for
+    the row MuJoCo would emit as `mjCNSTR_CONTACT_FRICTIONLESS`.
     """
     comptime ZERO = Scalar[DTYPE](0)
     comptime ONE = Scalar[DTYPE](1)
+    comptime TWO = Scalar[DTYPE](2)
+    comptime HALF = Scalar[DTYPE](0.5)
     comptime MINVAL = Scalar[DTYPE](ELL_MINVAL)
+
+    # `PrimalPrepare`'s `quad[0..2]` (engine_solver.c:1466-1489) — the
+    # BOTTOM-ZONE quadratic over this contact's `dim` rows:
+    #
+    #     q0 = 0.5 * sum_k D_k * jar_k^2
+    #     q1 =       sum_k D_k * jar_k * Js_k
+    #     q2 = 0.5 * sum_k D_k * Js_k^2
+    #
+    # ⚠ `q1` IS NOT HALVED AND THE OTHER TWO ARE. The asymmetry is what makes
+    # `cost = alpha^2*q2 + alpha*q1` and `deriv = 2*alpha*q2 + q1` the same
+    # polynomial's value and slope.
+    #
+    # ⚠ ALPHA-INDEPENDENT AND RECOMPUTED ANYWAY. MuJoCo hoists these out of
+    # the search; hoisting them here means three `Scratch[MAX_CONTACTS]`
+    # arrays in the caller, and those take the per-env Newton kernel over
+    # Metal's per-thread stack — a failure that reports no diagnostic at all.
+    # See the caller's note.
+    var q0 = jar_n * D_n * jar_n
+    var q1 = Js_n * D_n * jar_n
+    var q2 = Js_n * D_n * Js_n
+    for t in range(nt):
+        var dq = D_t[base + t]
+        var jr = jar_t[base + t]
+        var js = Js_t[base + t]
+        q0 += jr * dq * jr
+        q1 += js * dq * jr
+        q2 += js * dq * js
+    q0 *= HALF
+    q2 *= HALF
 
     # U/V: the ray `jar + alpha*Js` mapped into the space where the cone is
     # circular. `UU/UV/VV` are `PrimalPrepare`'s quad[5..7].
@@ -482,37 +536,80 @@ def ell_line_deriv[
         UU += u * u
         UV += u * v
         VV += v * v
+    var Dm = D_n / (mu * mu * (ONE + mu * mu))
 
+    # ── the zone at alpha = 0 ────────────────────────────────────────────
+    var zone0 = 0
+    var T0 = ZERO
+    if UU <= ZERO:
+        zone0 = 2 if U0 < ZERO else 1
+    else:
+        T0 = sqrt(UU)
+        if U0 >= mu * T0:
+            zone0 = 1
+        elif mu * U0 + T0 <= ZERO:
+            zone0 = 2
+        else:
+            zone0 = 3
+
+    # ── the zone at alpha ────────────────────────────────────────────────
     var N = U0 + alpha * V0
-    var T_sq = UU + alpha * (Scalar[DTYPE](2) * UV + alpha * VV)
-
-    # No tangential force anywhere along the ray: top or bottom by sign of N.
+    var T_sq = UU + alpha * (TWO * UV + alpha * VV)
+    var zone_a = 0
+    var T = ZERO
     if T_sq <= ZERO:
-        if N < ZERO:
-            _ell_quad_deriv[DTYPE, NT, T_CAP](
-                nt, base, alpha, jar_n, jar_t, Js_n, Js_t, D_n, D_t, d1, d2
-            )
-        return
+        zone_a = 2 if N < ZERO else 1
+    else:
+        T = sqrt(T_sq)
+        if N >= mu * T:
+            zone_a = 1
+        elif mu * N + T <= ZERO:
+            zone_a = 2
+        else:
+            zone_a = 3
 
-    var T = sqrt(T_sq)
-    if N >= mu * T:
-        return  # top zone: no cost
-    if mu * N + T <= ZERO:
+    # ── cost: `ellipticCostDif`, case for case ───────────────────────────
+    if zone0 == 1 and zone_a == 1:
+        pass  # both top: no cost at either end
+    elif zone0 == 2 and zone_a == 2:
+        cost += alpha * alpha * q2 + alpha * q1
+    elif zone0 == 3 and zone_a == 3:
+        var Tsq_delta = alpha * (TWO * UV + alpha * VV)
+        var T_delta = Tsq_delta / (T + T0)
+        var r_delta = alpha * V0 - mu * T_delta
+        var r0 = U0 - mu * T0
+        cost += HALF * Dm * r_delta * (TWO * r0 + r_delta)
+    elif zone0 == 3 and zone_a == 2:
+        var b0 = mu * U0 + T0
+        cost += alpha * (alpha * q2 + q1) + HALF * Dm * b0 * b0
+    elif zone0 == 2 and zone_a == 3:
+        var b = mu * N + T
+        cost += alpha * (alpha * q2 + q1) - HALF * Dm * b * b
+    elif zone0 == 1 and zone_a == 2:
+        cost += alpha * alpha * q2 + alpha * q1 + q0
+    elif zone0 == 1 and zone_a == 3:
+        var r = N - mu * T
+        cost += HALF * Dm * r * r
+    elif zone0 == 3 and zone_a == 1:
+        var r0 = U0 - mu * T0
+        cost += -HALF * Dm * r0 * r0
+    elif zone0 == 2 and zone_a == 1:
+        cost += -q0
+
+    # ── derivatives, unchanged ───────────────────────────────────────────
+    if zone_a == 2:
         _ell_quad_deriv[DTYPE, NT, T_CAP](
             nt, base, alpha, jar_n, jar_t, Js_n, Js_t, D_n, D_t, d1, d2
         )
-        return
-
-    # middle zone
-    var T_s = T if T > MINVAL else MINVAL
-    var Dm = D_n / (mu * mu * (ONE + mu * mu))
-    var N1 = V0
-    var T1 = (UV + alpha * VV) / T_s
-    var T2 = VV / T_s - (UV + alpha * VV) * T1 / (T_s * T_s)
-    var NmT = N - mu * T
-    var dN = N1 - mu * T1
-    d1 += Dm * NmT * dN
-    d2 += Dm * (dN * dN + NmT * (-mu * T2))
+    elif zone_a == 3:
+        var T_s = T if T > MINVAL else MINVAL
+        var N1 = V0
+        var T1 = (UV + alpha * VV) / T_s
+        var T2 = VV / T_s - (UV + alpha * VV) * T1 / (T_s * T_s)
+        var NmT = N - mu * T
+        var dN = N1 - mu * T1
+        d1 += Dm * NmT * dN
+        d2 += Dm * (dN * dN + NmT * (-mu * T2))
 
 
 @always_inline
