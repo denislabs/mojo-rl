@@ -60,7 +60,7 @@ from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
 from mojo_rl.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
-    INIT_TARGET_SLOT, STACK_Z_OFFSET, has_stacked_init,
+    INIT_TARGET_SLOT, STACK_Z_OFFSET, TABLE_Z_OFFSET, has_stacked_init,
 )
 from mojo_rl.tasks.gpu_eval import require_gpu_placement
 from mojo_rl.tasks.family import scene_path
@@ -273,8 +273,21 @@ def main() raises:
                 want_y = placed[rj].y
                 n_stacks += 1
             else:
+                # ⚠ THE TABLE/FLOOR CENTIMETRE, RECOMPUTED. LIBERO routes a
+                # region on the TABLE to `TableRegionSampler` (`z_offset=0.01`
+                # in its own signature) and one on a FIXTURE to
+                # `SiteRegionRandomSampler` (0.0) — `spec.TABLE_Z_OFFSET`
+                # quotes both and records the `.pruned_init` measurement that
+                # settled it. The discriminator is whether the region names a
+                # contact slot, i.e. whether it is anchored to a fixture.
                 var ri = f.region_index(tgt)
-                want_z = frames[ri].z - f.slots[si3].bottom_z
+                var zo = (
+                    TABLE_Z_OFFSET
+                    if f.slots[si3].has_geom
+                    and f.regions[ri].contact.byte_length() == 0
+                    else 0.0
+                )
+                want_z = frames[ri].z + zo - f.slots[si3].bottom_z
             var e = abs(placed[pi].z - want_z)
             var ex = abs(placed[pi].x - want_x)
             var ey = abs(placed[pi].y - want_y)
@@ -296,8 +309,9 @@ def main() raises:
               + "      " + String(ncon))
     ta.check(n_tasks >= 8, String(n_tasks) + " tasks checked")
     ta.check(worst_z == 0.0,
-             "every placement is exactly its rule — region_site_z -"
-             " slot.bottom_z, or the reference's x/y and top for a stack")
+             "every placement is exactly its rule — region_site_z +"
+             " TABLE_Z_OFFSET (a table region) or + 0 (a fixture one), less"
+             " slot.bottom_z; or the reference's x/y and top for a stack")
     # ⚠ ANTI-VACUITY: without a stack in the suite, the branch above is dead and
     # the check says nothing about `init=x@y`.
     ta.check(n_stacks > 0,

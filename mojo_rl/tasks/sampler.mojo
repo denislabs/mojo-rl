@@ -48,6 +48,7 @@ from std.random.philox import Random as PhiloxRandom
 
 from .spec import (
     FamilySpec, TaskSpec, SLOT_FREE, INIT_TARGET_SLOT, STACK_Z_OFFSET,
+    TABLE_Z_OFFSET,
 )
 
 
@@ -377,7 +378,27 @@ def sample_placements(
             # ⚠ `has_geom` FALSE FALLS BACK TO THE CALLER'S RADIUS, unchanged —
             # `so101_tabletop` and the hand-built test families declare no
             # robosuite sites and their numbers must not move.
-            var z = fr.z + rest
+            #
+            # ⚠⚠ AND A TABLE OR FLOOR REGION ADDS A CENTIMETRE. LIBERO routes
+            # `(On obj <table>_<region>)` to `TableRegionSampler`, whose own
+            # signature carries `z_offset=0.01`, while a FIXTURE-site region
+            # goes to `SiteRegionRandomSampler` at 0.0 — see
+            # `spec.TABLE_Z_OFFSET`, which quotes both and records the
+            # `.pruned_init` measurement that settled it. The discriminator is
+            # the same one the half-rect rule above uses: a region that names a
+            # CONTACT slot is anchored to a fixture or an object, and one that
+            # does not is the arena's own workspace.
+            #
+            # ⚠ IT IS ADDED ONLY WHEN THE SLOT CARRIES THE ASSET's SITES. A
+            # family with no `slot_geom=` is using the caller's radius as a
+            # resting height and is not a LIBERO family; moving it would change
+            # `so101_tabletop`'s scenes for no reason.
+            var z_off = (
+                TABLE_Z_OFFSET
+                if sl.has_geom and reg.contact.byte_length() == 0
+                else 0.0
+            )
+            var z = fr.z + rest + z_off
 
             var clash = False
             for j in range(len(out)):

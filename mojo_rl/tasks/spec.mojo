@@ -225,8 +225,36 @@ a stacked object's bottom and the surface it stands on.
 ⚠ QUOTED, NOT CHOSEN, and it is not zero for a reason: the reference's
 `top_site` is a declared margin rather than its true top, so the centimetre is
 what keeps a stack from starting interpenetrated when the two margins disagree.
-`bddl_base_domain` passes no `z_offset` for a SITE region (it defaults to 0.0)
-and takes this default for an object one."""
+`bddl_base_domain` passes no `z_offset` for a FIXTURE-SITE region and
+`SiteRegionRandomSampler` defaults it to 0.0; it passes none for an object one
+either, and `ObjectBasedSampler` defaults it to this. See `TABLE_Z_OFFSET` for
+the third case — which the first reading of this got wrong."""
+
+comptime TABLE_Z_OFFSET: Float64 = 0.01
+"""LIBERO's `TableRegionSampler(z_offset=0.01)` — the gap a TABLE or FLOOR
+region leaves under an object it places.
+
+⚠⚠ THE THIRD SAMPLER, AND IT WAS MISSED. `envs/regions/workspace_region_sampler
+.py` declares `class TableRegionSampler(MultiRegionRandomSampler)` with
+`z_offset=0.01` in its own signature, and `bddl_base_domain` passes none — so
+every prop LIBERO starts on a table or on the floor sits a centimetre above
+`workspace_site_z - bottom_offset[-1]`, which is the rule this tree had.
+`REGION_SAMPLERS` in `envs/regions/__init__.py` routes `libero_floor
+_manipulation`'s `floor` and `libero_tabletop_manipulation`'s `table` to it.
+
+⚠ MEASURED AGAINST LIBERO's OWN FROZEN STATES, not against the code alone.
+`libero_object`'s `.pruned_init` gives, for all seven props of
+`pick_up_the_alphabet_soup`, z = 0.0150 / 0.0350 / 0.0350 / 0.0000 / 0.0350 /
+0.0350 / -0.0050, and `workspace_site_z (-0.035) + 0.01 - bottom_z` reproduces
+every one of them exactly while the rule without it misses every one by this
+centimetre. On the FLOOR family the cost was not cosmetic: the props started
+2.5 cm inside the ground plane, 14 to 96 contacts per reset
+(`tests/tasks/test_libero_object.mojo`).
+
+⚠ NUMERICALLY EQUAL TO `STACK_Z_OFFSET` AND SEPARATELY SOURCED. Two different
+sampler classes in LIBERO declare 0.01 in two different signatures; folding
+them into one constant would make a change to either silently follow the
+other."""
 
 comptime DEFAULT_REGION_HALF_HEIGHT: Float64 = 0.12
 

@@ -313,6 +313,15 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     # only on this family — would not be looking. Extend that gate in the same
     # commit as the first LIBERO device reset.
     #
+    # ⚠ THREE THINGS ARE OWED THERE, NOT ONE. Such a config must (1) read
+    # `slot_geom=` instead of this constant, (2) walk `spec.order_inits`
+    # rather than the family's slot order, because a task with a STACK does
+    # not place its slots in that order (`gpu_eval.require_gpu_placement`
+    # refuses one for exactly this reason), and (3) add `spec.TABLE_Z_OFFSET`
+    # to a region that names no contact slot — LIBERO's `TableRegionSampler`
+    # carries `z_offset=0.01` where the fixture sampler carries 0.0, and the
+    # host applies it (measured against LIBERO's own `.pruned_init`, §6n).
+    #
     # ⚠⚠ IT TRACKS `cube.xml`'s `size` AND THERE IS NOTHING TO ENFORCE THAT.
     # A radius larger than the prop spawns it FLOATING — it drops at reset,
     # and every reset distance the shaping was calibrated against moves. The

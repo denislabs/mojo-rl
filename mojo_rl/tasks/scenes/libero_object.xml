@@ -1,0 +1,60 @@
+<mujoco model="libero_object">
+  <compiler angle="radian" inertiagrouprange="0 0" autolimits="true"/>
+  <option timestep="0.002" impratio="20" cone="elliptic" density="1.2" viscosity="0.00002" />
+  <asset>
+    <model name="panda_robosuite_nomount" file="../../envs/robots/assets/panda_robosuite_nomount.xml"/>
+    <model name="libero_floor_manipulation_arena" file="../libero/scenes/libero_floor_manipulation_arena.xml"/>
+    <model name="alphabet_soup_free" file="../libero/objects/alphabet_soup_free.xml"/>
+    <model name="basket_free" file="../libero/objects/basket_free.xml"/>
+    <model name="salad_dressing_free" file="../libero/objects/salad_dressing_free.xml"/>
+    <model name="cream_cheese_free" file="../libero/objects/cream_cheese_free.xml"/>
+    <model name="milk_free" file="../libero/objects/milk_free.xml"/>
+    <model name="tomato_sauce_free" file="../libero/objects/tomato_sauce_free.xml"/>
+    <model name="butter_free" file="../libero/objects/butter_free.xml"/>
+    <model name="bbq_sauce_free" file="../libero/objects/bbq_sauce_free.xml"/>
+    <model name="chocolate_pudding_free" file="../libero/objects/chocolate_pudding_free.xml"/>
+    <model name="ketchup_free" file="../libero/objects/ketchup_free.xml"/>
+    <model name="orange_juice_free" file="../libero/objects/orange_juice_free.xml"/>
+  </asset>
+  <worldbody>
+    <frame pos="-0.6 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="panda_robosuite_nomount" prefix="robot_"/>
+    </frame>
+    <frame pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="libero_floor_manipulation_arena" prefix="arena_"/>
+    </frame>
+    <frame pos="10.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="alphabet_soup_free" prefix="alphabet_soup_1_"/>
+    </frame>
+    <frame pos="11.0 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="basket_free" prefix="basket_1_"/>
+    </frame>
+    <frame pos="11.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="salad_dressing_free" prefix="salad_dressing_1_"/>
+    </frame>
+    <frame pos="12.0 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="cream_cheese_free" prefix="cream_cheese_1_"/>
+    </frame>
+    <frame pos="12.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="milk_free" prefix="milk_1_"/>
+    </frame>
+    <frame pos="13.0 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="tomato_sauce_free" prefix="tomato_sauce_1_"/>
+    </frame>
+    <frame pos="13.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="butter_free" prefix="butter_1_"/>
+    </frame>
+    <frame pos="14.0 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="bbq_sauce_free" prefix="bbq_sauce_1_"/>
+    </frame>
+    <frame pos="14.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="chocolate_pudding_free" prefix="chocolate_pudding_1_"/>
+    </frame>
+    <frame pos="15.0 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="ketchup_free" prefix="ketchup_1_"/>
+    </frame>
+    <frame pos="15.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="orange_juice_free" prefix="orange_juice_1_"/>
+    </frame>
+  </worldbody>
+</mujoco>

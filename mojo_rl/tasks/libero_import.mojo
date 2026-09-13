@@ -580,6 +580,46 @@ def _articulation_terms(
     return out^
 
 
+struct RegionAlias(Copyable, ImplicitlyCopyable, Movable):
+    """One `.bddl` composed region name -> the family's name for the SAME
+    rectangle.
+
+    ## ⚠⚠ WHY A REGION'S NAME IS NOT ITS IDENTITY ACROSS A SUITE
+
+    A `.bddl` region name is a ROLE in that one file. `libero_object`'s ten
+    files declare the same eight floor rectangles under names that MOVE
+    between them: `target_object_region` is
+    `(-0.145 -0.265 -0.095 -0.215)` in five files and
+    `(0.025 -0.125 0.075 -0.075)` in the other five, with
+    `other_object_region_0` holding whichever one it does not. Nothing about
+    the scene changes — the target object simply starts in the other spot.
+
+    A union family (one slot table and one region table for a suite, see
+    `gen_libero_family`) must therefore key a region by its GEOMETRY and
+    let each file resolve its own names through this map. Keying by name
+    would silently place the props in the wrong halves of the floor for five
+    of the ten tasks, with every downstream number still agreeing.
+    """
+
+    var bddl: String
+    """The composed `<target>_<name>` as the `.bddl` writes it."""
+    var family: String
+    """The name the family gives that same rectangle."""
+
+    def __init__(out self, var bddl: String, var family: String):
+        self.bddl = bddl^
+        self.family = family^
+
+
+def alias_region(name: String, region_alias: List[RegionAlias]) -> String:
+    """`name` under the family's spelling. Identity when unlisted — a slot
+    name (`On(bowl, plate_1)`) or a region whose name the suite agrees on."""
+    for i in range(len(region_alias)):
+        if region_alias[i].bddl == name:
+            return String(region_alias[i].family)
+    return String(name)
+
+
 def translate_task(p: BddlProblem, f: FamilySpec) raises -> TaskSpec:
     """The pre-L3 signature: no table, so no articulation and no asset
     access. Kept for `translate_family`'s survey shape; RAISES on an
@@ -591,7 +631,19 @@ def translate_task(p: BddlProblem, f: FamilySpec) raises -> TaskSpec:
 def translate_task(
     p: BddlProblem, f: FamilySpec, table: LiberoTable, pack_dir: String,
 ) raises -> TaskSpec:
-    """The `.task`. RAISES with the gap's name if the goal does not map."""
+    """One file against its own family: no region aliasing needed."""
+    return translate_task(p, f, table, pack_dir, List[RegionAlias]())
+
+
+def translate_task(
+    p: BddlProblem, f: FamilySpec, table: LiberoTable, pack_dir: String,
+    region_alias: List[RegionAlias],
+) raises -> TaskSpec:
+    """The `.task`. RAISES with the gap's name if the goal does not map.
+
+    `region_alias` maps this file's region names onto a UNION family's —
+    empty when the family was resolved from this file alone (see
+    `RegionAlias`). ⚠ `alias` is a reserved word."""
     var gap = classify_goal(p)
     if gap.kind != GAP_NONE:
         raise Error(
@@ -624,11 +676,14 @@ def translate_task(
                 p, f, table, String(g.pred), String(g.args[0]), pack_dir
             )
         else:
-            var target = String(g.args[1])
-            var ri = p.region_index(target)
+            var ri = p.region_index(String(g.args[1]))
+            var target = alias_region(String(g.args[1]), region_alias)
             if ri >= 0 and p.regions[ri].has_ranges:
                 # a table zone — the `_zone` box region (header)
-                target = p.regions[ri].composed_name() + ZONE_SUFFIX
+                target = (
+                    alias_region(p.regions[ri].composed_name(), region_alias)
+                    + ZONE_SUFFIX
+                )
             term = String(g.pred) + "(" + g.args[0] + ", " + target + ")"
             if f.region_index(target) < 0 and f.slot_index(target) < 0:
                 raise Error(
@@ -648,13 +703,28 @@ def translate_task(
         )
     t.goal = goal^
 
-    # ⚠ ACTIVE = EVERY SLOT, not `:obj_of_interest`. LIBERO's field names what
-    # the INSTRUCTION is about; our `active=` names what the SCENE contains,
-    # and a prop that is present but not mentioned is still on the table. Using
-    # obj_of_interest would park the distractors and quietly make every task
-    # easier than the benchmark's.
+    # ⚠ ACTIVE = EVERY SLOT THIS FILE DECLARES, not `:obj_of_interest`.
+    # LIBERO's field names what the INSTRUCTION is about; our `active=` names
+    # what the SCENE contains, and a prop that is present but not mentioned is
+    # still on the table. Using obj_of_interest would park the distractors and
+    # quietly make every task easier than the benchmark's.
+    #
+    # ⚠⚠ AND IT IS THE FILE'S `:objects`, NOT THE FAMILY'S SLOT TABLE. For a
+    # suite whose ten files declare the same props, the two are the same list
+    # and this reads identically. For a UNION family they are not:
+    # `libero_object` pools ELEVEN props and each of its ten files puts SEVEN
+    # of them on the floor. Taking the family's table would activate all
+    # eleven — four props with no `init=`, which
+    # `validate_task_against_family` refuses, and if it ever stopped refusing
+    # it would be four objects stacked at the family's park pose.
+    #
+    # The arena is the exception: it is slot 0 of every family and no `.bddl`
+    # names it (the `:fixtures` entry is `main_table` / `floor`, which
+    # `resolve_family` folds INTO the arena asset).
     for i in range(len(f.slots)):
-        t.active.append(String(f.slots[i].name))
+        var nm = String(f.slots[i].name)
+        if nm == ARENA_SLOT or p.is_object(nm) or p.is_fixture(nm):
+            t.active.append(nm^)
 
     # ── `:init` -> `init=`, and the extent comes from the FAMILY ──────────
     #
@@ -701,7 +771,7 @@ def translate_task(
             if is_free_t and is_free_s:
                 t.inits.append(InitSpec(slot, String(target)))
             continue
-        var fam_name = p.regions[ri].composed_name()
+        var fam_name = alias_region(p.regions[ri].composed_name(), region_alias)
         var fri = f.region_index(fam_name)
         if fri < 0:
             continue

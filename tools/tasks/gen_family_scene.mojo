@@ -34,6 +34,7 @@ def families() -> List[String]:
     out.append(String("mojo_rl/tasks/families/so101_tabletop.family"))
     out.append(String("mojo_rl/tasks/families/libero_goal.family"))
     out.append(String("mojo_rl/tasks/families/libero_spatial.family"))
+    out.append(String("mojo_rl/tasks/families/libero_object.family"))
     return out^
 
 
