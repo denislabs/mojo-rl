@@ -46,7 +46,9 @@ coordinates.
 
 from std.random.philox import Random as PhiloxRandom
 
-from .spec import FamilySpec, TaskSpec, SLOT_FREE
+from .spec import (
+    FamilySpec, TaskSpec, SLOT_FREE, INIT_TARGET_SLOT, STACK_Z_OFFSET,
+)
 
 
 # ⚠ BOUNDED, AND EXHAUSTION RAISES. An unbounded retry loop on an
@@ -227,6 +229,54 @@ def sample_placements(
     var of_region = List[Int]()
     for i in range(len(t.inits)):
         var si = f.slot_index(t.inits[i].slot)
+
+        # ── a STACK: the target is another slot, not a region ─────────────
+        #
+        # ⚠⚠ NO DRAW AND NO REJECTION, AND BOTH ARE robosuite's.
+        # `bddl_base_domain` samples `(On obj other_obj)` with an
+        # `ObjectBasedSampler` whose `x_ranges` and `y_ranges` are both
+        # `[[0.0, 0.0]]` and whose `ensure_valid_placement` is False: the object
+        # goes at the reference's own x/y, on top of it, full stop. The
+        # randomisation that matters already happened when the REFERENCE was
+        # drawn, and a stack that wandered would slide off the box it is meant
+        # to be standing on.
+        #
+        # ⚠ THE REFERENCE MUST ALREADY BE IN `out`. `validate_task_against_family`
+        # refuses a task whose stack precedes its reference and the importer
+        # orders them topologically; this re-checks because the index is used.
+        if f.init_target_kind(t.inits[i].region) == INIT_TARGET_SLOT:
+            var rsi = f.slot_index(t.inits[i].region)
+            var found = -1
+            for j in range(len(out)):
+                if out[j].slot == rsi:
+                    found = j
+            if si < 0 or found < 0:
+                raise Error(
+                    "tasks: init '" + t.inits[i].describe() + "' stacks on '"
+                    + t.inits[i].region + "', which has not been placed yet."
+                    " Run validate_task_against_family first."
+                )
+            ref sls = f.slots[si]
+            ref slr = f.slots[rsi]
+            if not (sls.has_geom and slr.has_geom):
+                raise Error(
+                    "tasks: init '" + t.inits[i].describe() + "' stacks '"
+                    + f.slots[si].name + "' on '" + f.slots[rsi].name
+                    + "', but one of them has no slot_geom=. A stack needs the"
+                    " reference's `top_site` and the object's `bottom_site`;"
+                    " there is no constant that stands in for either."
+                )
+            # robosuite: base = ref_pos + (0, 0, top_offset[-1]);
+            #            z = z_offset + base.z - bottom_offset[-1]
+            var sz = (
+                out[found].z + slr.top_z + STACK_Z_OFFSET - sls.bottom_z
+            )
+            out.append(Placement(si, out[found].x, out[found].y, sz))
+            of_region.append(-1)
+            report.attempts += 1
+            report.accepted += 1
+            continue
+
         var ri = f.region_index(t.inits[i].region)
         if si < 0 or ri < 0:
             # `validate_task_against_family` refuses this long before here;
@@ -362,6 +412,11 @@ def sample_placements(
                     # unanchored (table) regions still reject, which is what
                     # keeps several props on one workspace from overlapping —
                     # the behaviour every existing family has.
+                    # ⚠ A STACK CARRIES `of_region = -1` and never matches, so
+                    # it is exempt from rejection against everything — which is
+                    # right: it sits ON a placed object by construction, and the
+                    # 2-D test would see it as coincident with the very thing it
+                    # is standing on.
                     var ri_j = of_region[j]
                     if ri_j != ri:
                         if (

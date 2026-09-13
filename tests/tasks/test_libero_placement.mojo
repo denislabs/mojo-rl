@@ -60,7 +60,9 @@ from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
 from mojo_rl.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
+    INIT_TARGET_SLOT, STACK_Z_OFFSET, has_stacked_init,
 )
+from mojo_rl.tasks.gpu_eval import require_gpu_placement
 from mojo_rl.tasks.family import scene_path
 from mojo_rl.tasks.eval import region_sites
 from mojo_rl.tasks.sampler import (
@@ -185,6 +187,7 @@ def main() raises:
     print("--- 1-2. every task: the asset's height, and no contacts ---")
     print("    task                                          slots  worst |z - rule|  ncon")
     var worst_z = 0.0
+    var n_stacks = 0
     var bad_con = 0
     var n_tasks = 0
     for ti in range(len(names)):
@@ -239,14 +242,46 @@ def main() raises:
         var w = 0.0
         for pi in range(len(placed)):
             var si3 = placed[pi].slot
-            var ri = -1
+            var tgt = String("")
             for k in range(len(t.inits)):
                 if t.inits[k].slot == f.slots[si3].name:
-                    ri = f.region_index(t.inits[k].region)
-            if ri < 0:
-                raise Error("no init region for a placed slot")
-            var want_z = frames[ri].z - f.slots[si3].bottom_z
+                    tgt = String(t.inits[k].region)
+            if tgt.byte_length() == 0:
+                raise Error("no init target for a placed slot")
+            var want_z: Float64
+            var want_x = placed[pi].x
+            var want_y = placed[pi].y
+            if f.init_target_kind(tgt) == INIT_TARGET_SLOT:
+                # ⚠ THE STACK RULE, RECOMPUTED: robosuite's ObjectBasedSampler
+                # is `z = ref_z + ref.top_z + z_offset - obj.bottom_z` at the
+                # reference's own x/y (its x_ranges and y_ranges are [0, 0]).
+                var rsi = f.slot_index(tgt)
+                var rj = -1
+                for q in range(len(placed)):
+                    if placed[q].slot == rsi:
+                        rj = q
+                if rj < 0:
+                    raise Error(
+                        "the stack's reference was not placed — order_inits"
+                        " should have put it first"
+                    )
+                want_z = (
+                    placed[rj].z + f.slots[rsi].top_z + STACK_Z_OFFSET
+                    - f.slots[si3].bottom_z
+                )
+                want_x = placed[rj].x
+                want_y = placed[rj].y
+                n_stacks += 1
+            else:
+                var ri = f.region_index(tgt)
+                want_z = frames[ri].z - f.slots[si3].bottom_z
             var e = abs(placed[pi].z - want_z)
+            var ex = abs(placed[pi].x - want_x)
+            var ey = abs(placed[pi].y - want_y)
+            if ex > e:
+                e = ex
+            if ey > e:
+                e = ey
             if e > w:
                 w = e
         if w > worst_z:
@@ -261,7 +296,13 @@ def main() raises:
               + "      " + String(ncon))
     ta.check(n_tasks >= 8, String(n_tasks) + " tasks checked")
     ta.check(worst_z == 0.0,
-             "every placement is exactly region_site_z - slot.bottom_z")
+             "every placement is exactly its rule — region_site_z -"
+             " slot.bottom_z, or the reference's x/y and top for a stack")
+    # ⚠ ANTI-VACUITY: without a stack in the suite, the branch above is dead and
+    # the check says nothing about `init=x@y`.
+    ta.check(n_stacks > 0,
+             String(n_stacks) + " stacked placements were checked (init= onto"
+             " another free slot)")
     ta.check(bad_con == 0,
              String(n_tasks - bad_con) + " of " + String(n_tasks)
              + " tasks reset with ZERO contacts")
@@ -368,6 +409,42 @@ def main() raises:
     ta.check(spread > 0.0,
              "the draws DIFFER across lanes — a constant would open the drawer"
              " identically in every episode")
+
+    # ── 5. the device refusal ─────────────────────────────────────────────
+    #
+    # ⚠⚠ A STACK IS NOT DEVICE-SAMPLABLE, and the point of the check is that the
+    # refusal is SELECTIVE. `require_gpu_placement` raising on everything would
+    # score the same as raising on the right thing, and would take the other
+    # eight tasks off the device with it.
+    print()
+    print("--- 5. require_gpu_placement refuses stacks, and only stacks ---")
+    var n_stack_tasks = 0
+    var refused = 0
+    var wrongly_refused = String("")
+    for ti in range(len(names)):
+        var tk = load_task(TASK_DIR + String(names[ti]) + ".task")
+        validate_task_against_family(tk, f)
+        var stacked = has_stacked_init(tk, f)
+        if stacked:
+            n_stack_tasks += 1
+        var raised = False
+        try:
+            require_gpu_placement(tk, f)
+        except e:
+            raised = True
+        if raised and stacked:
+            refused += 1
+        elif raised and not stacked:
+            wrongly_refused += " " + String(names[ti])
+        elif stacked and not raised:
+            wrongly_refused += " NOT-REFUSED:" + String(names[ti])
+    print("    ", n_stack_tasks, "tasks stack;", refused, "refused;",
+          len(names) - n_stack_tasks, "region-only tasks accepted")
+    ta.check(n_stack_tasks == 2,
+             String(n_stack_tasks) + " tasks in the suite stack one free slot"
+             " on another")
+    ta.check(refused == n_stack_tasks and wrongly_refused.byte_length() == 0,
+             "every stacking task is refused and no other is" + wrongly_refused)
 
     print()
     print("--- ran", ta.checks, "checks,", ta.failures, "failed ---")

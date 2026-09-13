@@ -211,6 +211,23 @@ struct SlotSpec(Copyable, ImplicitlyCopyable, Movable):
 # every region in the tree. It is restated here rather than imported because
 # `eval` imports THIS module and the cycle would not close; `tests/tasks/
 # test_goal_language.mojo` asserts the two agree.
+comptime INIT_TARGET_REGION: Int = 0
+comptime INIT_TARGET_SLOT: Int = 1
+"""What an `init=`'s target names — see `InitSpec` and `init_target_kind`.
+
+`INIT_TARGET_SLOT` is a STACK: the object goes on top of another free slot,
+whose own placement is drawn first. LIBERO's `ObjectBasedSampler`."""
+
+comptime STACK_Z_OFFSET: Float64 = 0.01
+"""robosuite's `ObjectBasedSampler(z_offset=0.01)` — the gap it leaves between
+a stacked object's bottom and the surface it stands on.
+
+⚠ QUOTED, NOT CHOSEN, and it is not zero for a reason: the reference's
+`top_site` is a declared margin rather than its true top, so the centimetre is
+what keeps a stack from starting interpenetrated when the two margins disagree.
+`bddl_base_domain` passes no `z_offset` for a SITE region (it defaults to 0.0)
+and takes this default for an object one."""
+
 comptime DEFAULT_REGION_HALF_HEIGHT: Float64 = 0.12
 
 
@@ -350,15 +367,31 @@ struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
 
 
 struct InitSpec(Copyable, ImplicitlyCopyable, Movable):
-    """`init=<slot>@<region>` — a DISTRIBUTION, not a pose.
+    """`init=<slot>@<target>` — a DISTRIBUTION, not a pose.
 
-    The sampler (P2) draws from the region with rejection. Writing a pose here
+    The sampler (P2) draws from the target with rejection. Writing a pose here
     instead would make every episode identical, which is the bug that reads as
     a policy that memorised one placement.
+
+    ## ⚠ THE TARGET IS A REGION *OR* ANOTHER SLOT
+
+    `init=akita_black_bowl_1@main_table_plate_region` draws inside a region.
+    `init=akita_black_bowl_1@cookies_1` STACKS the bowl on the cookie box —
+    LIBERO's `(On akita_black_bowl_1 cookies_1)`, which it samples with an
+    `ObjectBasedSampler` whose x and y ranges are both `[0, 0]`: directly on
+    top, at the reference's own x/y.
+
+    ⚠ THE FIELD IS STILL CALLED `region` and both spellings are the bare name,
+    with no marker. That is deliberate: `goal=On(akita_black_bowl_1, plate_1)`
+    already names a slot where a region could go, and the goal language
+    resolves it by lookup. A second convention here would mean two ways to say
+    the same thing. `FamilySpec.init_target_kind` is the ONE resolver, and it
+    refuses a name that is both.
     """
 
     var slot: String
     var region: String
+    """The target: a region name, or another slot's name. See the header."""
 
     def __init__(out self, slot: String, region: String):
         self.slot = slot
@@ -489,6 +522,32 @@ struct FamilySpec(Movable & Deinitable):
         self.floor = move.floor
         self.base_qpos = move.base_qpos^
         self.inherit_option = move.inherit_option
+
+    def init_target_kind(self, name: String) raises -> Int:
+        """`INIT_TARGET_REGION`, `INIT_TARGET_SLOT`, or raises.
+
+        ⚠ THE ONE RESOLVER. `validate_task_against_family` and
+        `sampler.sample_placements` both have to answer "is this target a region
+        or a slot", and the device twin will make three — so it is answered
+        here. A name that is BOTH is refused rather than resolved by
+        precedence: whichever order this file picked, the other reading would be
+        someone's intention and nothing would report the mismatch.
+        """
+        var ri = self.region_index(name)
+        var si = self.slot_index(name)
+        if ri >= 0 and si >= 0:
+            raise Error(
+                "family '" + self.name + "': '" + name + "' is BOTH a region"
+                " and a slot, so an init naming it is ambiguous. Rename one."
+            )
+        if ri >= 0:
+            return INIT_TARGET_REGION
+        if si >= 0:
+            return INIT_TARGET_SLOT
+        raise Error(
+            "family '" + self.name + "': '" + name + "' is neither a region nor"
+            " a slot"
+        )
 
     def slot_index(self, name: String) -> Int:
         """Index of the named slot, or -1. Slot ORDER is the observation
@@ -1039,6 +1098,88 @@ def parse_task(text: String) raises -> TaskSpec:
     return t^
 
 
+def order_inits(t: TaskSpec, f: FamilySpec) raises -> List[InitSpec]:
+    """The ONE canonical order for a task's `init=` lines.
+
+    Family slot order, adjusted so that a STACK follows the slot it stands on.
+    Stable: it repeatedly emits the first slot-ordered init whose reference is
+    already out, so the result is a pure function of `(t, f)`.
+
+    ## ⚠⚠ WHY THE ORDER IS A RULE AT ALL
+
+    Two samplers draw these placements — the host's `sample_placements`, which
+    walks `t.inits` and rejects each draw against the ones already placed, and
+    the device's, which walks the FREE SLOT TABLE because a per-lane region
+    index is all `meta` can carry. Rejection is order-dependent by
+    construction, so if the two orders differ the two samplers produce
+    DIFFERENT scenes from one `(seed, lane)` and the eval path and the training
+    path silently disagree about where the props are.
+
+    Requiring the file to be sorted made the two orders identical by
+    construction. A stack is the one thing that cannot obey it:
+    `libero_spatial` declares `akita_black_bowl_1` at slot 3 and `cookies_1` at
+    slot 5, and `(On akita_black_bowl_1 cookies_1)` needs the cookie box drawn
+    FIRST — a stack takes the reference's own x/y/z.
+
+    ⚠ SO A TASK WITH A STACK IS NOT DEVICE-SAMPLABLE UNTIL THE DEVICE WALKS
+    THIS FUNCTION'S OUTPUT, and `gpu_eval.require_gpu_placement` refuses one
+    rather than letting the two paths diverge. For a task with NO stack this
+    returns exactly slot order, so every existing family and the existing
+    device sampler are unchanged.
+
+    ⚠ A CYCLE RAISES. `(On a b)` with `(On b a)` has no first draw; emitting
+    them in an arbitrary order would place one on the other's PREVIOUS episode
+    pose, which is a scene that looks sampled and is not.
+    """
+    var ordered = List[InitSpec]()
+    var taken = List[Bool](length=len(t.inits), fill=False)
+    for _pass in range(len(t.inits)):
+        var progressed = False
+        for si in range(len(f.slots)):
+            for k in range(len(t.inits)):
+                if taken[k] or t.inits[k].slot != f.slots[si].name:
+                    continue
+                var ready = True
+                if f.region_index(t.inits[k].region) < 0:
+                    var needs = False
+                    for q in range(len(t.inits)):
+                        if t.inits[q].slot == t.inits[k].region:
+                            needs = True
+                    if needs:
+                        ready = False
+                        for q in range(len(ordered)):
+                            if ordered[q].slot == t.inits[k].region:
+                                ready = True
+                if not ready:
+                    continue
+                ordered.append(t.inits[k])
+                taken[k] = True
+                progressed = True
+                break
+            if progressed:
+                break
+        if not progressed:
+            break
+    if len(ordered) != len(t.inits):
+        var stuck = String("")
+        for k in range(len(t.inits)):
+            if not taken[k]:
+                stuck += " " + t.inits[k].describe()
+        raise Error(
+            "task '" + t.name + "': a cycle in its init= stacking —" + stuck
+            + ". Each of these waits on another to be placed first."
+        )
+    return ordered^
+
+
+def has_stacked_init(t: TaskSpec, f: FamilySpec) raises -> Bool:
+    """Does any `init=` stand on another SLOT rather than a region?"""
+    for i in range(len(t.inits)):
+        if f.init_target_kind(t.inits[i].region) == INIT_TARGET_SLOT:
+            return True
+    return False
+
+
 def validate_task_against_family(t: TaskSpec, f: FamilySpec) raises:
     """⚠ THIS IS WHAT MAKES THE BUDGET REAL — `TASK_LAYER_PLAN.md` §4.4.
 
@@ -1079,11 +1220,47 @@ def validate_task_against_family(t: TaskSpec, f: FamilySpec) raises:
                 " is not listed active, so it would be PARKED and the init"
                 " ignored. Add 'active=" + slot + "' or drop the init."
             )
-        if f.region_index(region) < 0:
+        # ⚠ A REGION OR ANOTHER SLOT — `init_target_kind` is the one resolver.
+        var kind: Int
+        try:
+            kind = f.init_target_kind(region)
+        except e:
             raise Error(
-                "task '" + t.name + "': init places '" + slot + "' in region '"
-                + region + "', which family '" + f.name + "' does not declare"
+                "task '" + t.name + "': init places '" + slot + "' on '"
+                + region + "', which family '" + f.name + "' declares neither"
+                " as a region nor as a slot"
             )
+        if kind == INIT_TARGET_SLOT:
+            # ⚠⚠ A STACK'S REFERENCE MUST BE PLACED, AND PLACED FIRST. Its x/y/z
+            # ARE the reference's, so a reference that is parked puts the stack
+            # 50 m in the air, and one placed later puts it on wherever the
+            # reference happened to be LAST EPISODE. The importer's topological
+            # order guarantees the ordering; this refuses a hand-written `.task`
+            # that gets it wrong, and a self-reference, which would otherwise
+            # read its own uninitialised placement.
+            if region == slot:
+                raise Error(
+                    "task '" + t.name + "': init stacks '" + slot + "' on"
+                    " ITSELF"
+                )
+            if not t.is_active(region):
+                raise Error(
+                    "task '" + t.name + "': init stacks '" + slot + "' on '"
+                    + region + "', which is not active — a parked reference"
+                    " puts the stack at the park pose, 50 m up"
+                )
+            var ref_first = False
+            for k in range(len(t.inits)):
+                if t.inits[k].slot == region:
+                    ref_first = k < i
+            var rsi = f.slot_index(region)
+            if rsi >= 0 and f.slots[rsi].kind == SLOT_FREE and not ref_first:
+                raise Error(
+                    "task '" + t.name + "': init stacks '" + slot + "' on free"
+                    " slot '" + region + "', whose own init comes LATER (or is"
+                    " missing). A stack takes the reference's placement, so the"
+                    " reference must be drawn first."
+                )
     # ⚠ AN ACTIVE SLOT WITH NO INIT is allowed and deliberate: a fixture
     # (`static`) has a pose from the scene and nothing to sample. A FREE slot
     # without an init would start at its XML pose in every episode, which is a
@@ -1104,36 +1281,26 @@ def validate_task_against_family(t: TaskSpec, f: FamilySpec) raises:
                 " reads as a policy that memorised one layout."
             )
 
-    # ⚠⚠ `init=` LINES MUST BE IN FAMILY SLOT ORDER, AND THAT IS A PARITY
-    # REQUIREMENT, NOT TIDINESS. Two samplers draw these placements: the HOST's
-    # `sampler.sample_placements`, which walks `t.inits` in TASK ORDER and
-    # rejects each draw against the ones already placed, and the DEVICE's
-    # `init_qpos_gpu`, which walks the FREE SLOT TABLE because a per-lane
-    # region index is all `meta` can carry. Rejection is order-dependent by
-    # construction — `sampler.mojo` says so — so if the two orders differ the
-    # two samplers produce DIFFERENT scenes from the same `(seed, lane)`, and
-    # the eval path and the training path silently diverge on placement while
-    # every other number agrees.
-    #
-    # Requiring the file to be sorted makes the two orders identical by
-    # construction, which is cheaper and more checkable than teaching the
-    # device the task's ordering (three more `meta` words, and a second thing
-    # to keep in step).
-    var prev_si = -1
+    # ⚠⚠ THE ORDER IS `order_inits`, AND IT IS CHECKED RATHER THAN RE-DERIVED
+    # HERE. That function's header carries the whole argument: two samplers draw
+    # these placements, rejection is order-dependent, and a task with a STACK is
+    # the one case where slot order is not the right answer. Comparing against
+    # it keeps the rule in one place.
+    var want_order = order_inits(t, f)
     for i in range(len(t.inits)):
-        var si2 = f.slot_index(t.inits[i].slot)
-        if si2 <= prev_si:
+        if t.inits[i].slot != want_order[i].slot:
             raise Error(
-                "task '" + t.name + "': init= lines must be in FAMILY SLOT"
-                " ORDER, and '" + t.inits[i].slot + "' (slot " + String(si2)
-                + ") follows slot " + String(prev_si) + ". The host sampler"
-                " walks this list and the device sampler walks the slot table;"
-                " rejection sampling is order-dependent, so a different order"
-                " gives the two DIFFERENT scenes from one (seed, lane) — the"
-                " eval and the training run would then disagree about where"
-                " the props are, and nothing else would look wrong."
+                "task '" + t.name + "': init= lines are out of order — '"
+                + t.inits[i].slot + "' where '" + want_order[i].slot + "' is"
+                " expected. The order is family slot order, except that a"
+                " stack (`init=x@y` where y is a slot) must follow the slot it"
+                " stands on. The host sampler walks this list and the device"
+                " sampler walks the slot table; rejection sampling is"
+                " order-dependent, so a different order gives the two DIFFERENT"
+                " scenes from one (seed, lane) — the eval and the training run"
+                " would then disagree about where the props are, and nothing"
+                " else would look wrong."
             )
-        prev_si = si2
 
 
 def load_family(path: String) raises -> FamilySpec:

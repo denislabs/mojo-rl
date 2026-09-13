@@ -57,7 +57,9 @@ from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
 )
 from mojo_rl.physics3d.kinematics.quat_math import gpu_quat_mul, gpu_quat_rotate
-from .spec import FamilySpec
+from .spec import (
+    FamilySpec, TaskSpec, INIT_TARGET_SLOT, has_stacked_init,
+)
 from .predicates import (
     BoundGoal,
     OP_IN, OP_ON, OP_NEAR, OP_ABOVE, OP_UPRIGHT, OP_AT_REGION,
@@ -939,6 +941,47 @@ def tape_distance_gpu[
         Layout.row_major(NBODY_F, MODEL_BODY_SIZE),
         Layout.row_major(BATCH, MC_F * CONTACT_SIZE),
     ](meta, curriculum, xpos, xquat, site_xpos, qpos, sites, bodies, contacts, env)
+
+
+def require_gpu_placement(t: TaskSpec, f: FamilySpec) raises:
+    """⚠⚠ REFUSE A TASK THE DEVICE SAMPLER CANNOT DRAW. Call it beside
+    `require_gpu_regions` wherever a batched env resets from a `.task`.
+
+    A device reset walks the FREE SLOT TABLE, because a per-lane region index is
+    all `meta` can carry. That is the same order as the task's `init=` list for
+    every task whose placements are region draws — `spec.order_inits` returns
+    exactly slot order then, and `validate_task_against_family` requires the
+    file to match.
+
+    A STACK breaks it. `init=akita_black_bowl_1@cookies_1` takes the cookie
+    box's own x/y/z, so the box must be drawn FIRST, and `libero_spatial`
+    declares the bowl at slot 3 and the box at slot 5. The host honours that;
+    the device, walking the slot table, would draw the bowl before the box and
+    place it on the box's PREVIOUS episode pose.
+
+    ⚠ THE FAILURE IS SILENT AND IT IS THE ONE THIS REFUSES. Nothing raises: the
+    bowl lands somewhere, the episode runs, and the host eval and the device
+    training run disagree about where the props are while every other number
+    agrees. `spec.order_inits`'s header carries the parity argument in full.
+
+    The fix, when it is wanted, is for the device to walk `order_inits`' output
+    — which costs the `meta` words the slot table was chosen to avoid — and for
+    `tests/tasks/test_device_placement.mojo` to gate a family that has a stack.
+    """
+    if has_stacked_init(t, f):
+        var which = String("")
+        for i in range(len(t.inits)):
+            if f.init_target_kind(t.inits[i].region) == INIT_TARGET_SLOT:
+                which += " " + t.inits[i].describe()
+        raise Error(
+            "task '" + t.name + "' stacks one free slot on another —" + which
+            + " — and the DEVICE sampler walks the free slot table, which"
+            " cannot express that order. The host would draw the reference"
+            " first and the device would not, so the two paths would place the"
+            " props differently from the same (seed, lane) with nothing else"
+            " looking wrong. Run this task on the host path, or teach the"
+            " device sampler `spec.order_inits`."
+        )
 
 
 def require_gpu_regions(g: BoundGoal, task_name: String) raises:

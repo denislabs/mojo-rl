@@ -60,6 +60,7 @@ from .libero_categories import (
 )
 from .spec import (
     FamilySpec, TaskSpec, SlotSpec, RegionSpec, InitSpec, JointInitSpec,
+    order_inits,
     SLOT_FREE, SLOT_STATIC, SCHEMA_VERSION,
 )
 from .predicates import parse_goal
@@ -688,9 +689,17 @@ def translate_task(
         var target = String(a.args[1])
         var ri = p.region_index(target)
         if ri < 0:
-            # Not a region at all — `(On bowl cookies_1)`, a stack on another
-            # free object. `validate_init_coverage` names it; it is not a
-            # placement this sampler can express, because the surface moves.
+            # ⚠ NOT A REGION — `(On bowl cookies_1)`, a STACK on another free
+            # object. The target is the other slot's name, which is exactly what
+            # the goal language already does with `On(bowl, plate_1)`.
+            var tsi = f.slot_index(target)
+            var is_free_t = tsi >= 0 and f.slots[tsi].kind == SLOT_FREE
+            var is_free_s = False
+            for s2 in range(len(f.slots)):
+                if f.slots[s2].name == slot and f.slots[s2].kind == SLOT_FREE:
+                    is_free_s = True
+            if is_free_t and is_free_s:
+                t.inits.append(InitSpec(slot, String(target)))
             continue
         var fam_name = p.regions[ri].composed_name()
         var fri = f.region_index(fam_name)
@@ -775,16 +784,11 @@ def translate_task(
             JointInitSpec(jfixture + "_" + jjoints[0], rng.lo, rng.hi)
         )
 
-    # ⚠ FAMILY SLOT ORDER, NOT `:init` ORDER. `validate_task_against_family`
-    # refuses any other order because the host and device samplers walk
-    # different lists and rejection sampling is order-dependent. A `.bddl`
-    # lists its `:init` in authoring order, which is neither.
-    var ordered = List[InitSpec]()
-    for si in range(len(f.slots)):
-        for k in range(len(t.inits)):
-            if t.inits[k].slot == f.slots[si].name:
-                ordered.append(t.inits[k])
-    t.inits = ordered^
+    # ⚠ THE ORDER IS `spec.order_inits`, NOT A SECOND COPY OF IT. It is family
+    # slot order with stacks moved after their references, and
+    # `validate_task_against_family` checks the written file against the same
+    # function — so the importer and the validator cannot drift.
+    t.inits = order_inits(t, f)
     return t^
 
 
