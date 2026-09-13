@@ -83,6 +83,13 @@ tests/tasks/test_osc_pose.mojo
 # same eight inside a Metal/CUDA kernel at float32. The kernel keeps every
 # matrix in a global buffer; compiling it is half of what this proves.
 tests/tasks/test_osc_pose_gpu.mojo
+# The LIBERO viewer's HEADLESS path — reset, one policy step under the hold
+# action, and the goal read through the full L3 language. It is the only
+# check that runs the family's reset, the controller and the predicate in
+# one process the way the window does, and it needs no window.
+# ⚠ `--check` IS THE WHOLE ENTRY: without it this opens an SDL3 window and
+# blocks, which in CI is a hang and not a failure.
+examples/tasks/libero_viewer.mojo --check
 
 # ── mojo_rl/render: the .msh reader (L1) ─────────────────────────────
 # Hermetic: writes a .msh from the format's definition and reads it back;

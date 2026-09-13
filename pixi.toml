@@ -294,6 +294,7 @@ libero-family = { cmd = "mojo run -I . tools/tasks/gen_libero_family.mojo", desc
 osc-pose-test = { cmd = "mojo run -I . tests/tasks/test_osc_pose.mojo", description = "L4 unit gate: OSC_POSE hold/track on the composed libero_goal scene" }
 osc-pose-gpu-test = { cmd = "mojo run -I . tests/tasks/test_osc_pose_gpu.mojo", description = "L4b gate: the OSC_POSE kernel over 8 lanes (add -e apple / -e nvidia for the device leg)" }
 libero-replay = { cmd = "python tools/tasks/libero_demo_replay.py", description = "L4 gate: replay one LIBERO demo — recorded vs MuJoCo 3.12 (their model / our scene) vs ours; args: <demo.hdf5> --demo N --out DIR [--compare]" }
+libero-viewer = { cmd = "mojo run -I . examples/tasks/libero_viewer.mojo", description = "Watch a LIBERO task and DRIVE it with OSC_POSE from the sidebar; args: [suite] [task] [seed] or --check" }
 libero-demo-dump = { cmd = "python tools/tasks/libero_demo_success.py", description = "Dump each demo's trailing states + fixture poses for the demo-success gate; args: --suite libero_goal [--window 40]" }
 libero-demo-success = { cmd = "mojo run -I . examples/tasks/libero_demo_success.mojo references/libero_demos/_dumps/libero_goal/index.txt", description = "L3's ground-truth gate: do OUR goals fire on LIBERO's own successful demonstrations? (needs the demos; run libero-demo-dump first)" }
 libero-goal-eval = { cmd = "mojo run -I . tests/tasks/test_libero_goal_eval.mojo", description = "L3 gate: libero_goal's ten goals on the composed scene, host vs tape vs kernel loop (+ device leg with an accelerator)" }
