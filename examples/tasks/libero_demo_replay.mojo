@@ -29,7 +29,7 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.kinematics.site_frame import site_world_quat_list
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
 from mojo_rl.physics3d.dynamics.osc_pose import (
-    OscPose, OscPoseConfig, PandaGripperRamp, ARM_DOF,
+    OscPose, OscPoseConfig, ARM_DOF,
 )
 from mojo_rl.physics3d.studio.stepping import StudioIntegEll
 from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
@@ -154,10 +154,12 @@ def main() raises:
         da += fmd.joints[i].nv
     var dof = List[Int]()
     var qadr = List[Int]()
+    var jidx = List[Int]()
     for j in range(ARM_DOF):
         var ji = _index(fmd.joint_names, String(ROBOT) + "joint" + String(j + 1))
         dof.append(dadr_all[ji])
         qadr.append(qadr_all[ji])
+        jidx.append(ji)
     var g1 = _index(fmd.joint_names, String(ROBOT) + "finger_joint1")
     var g2 = _index(fmd.joint_names, String(ROBOT) + "finger_joint2")
     var site = _index(fmd.site_names, String(ROBOT) + "grip_site")
@@ -181,14 +183,15 @@ def main() raises:
     for i in range(nv):
         d.qvel.data[i] = Scalar[DT](init_qvel[i])
 
-    var osc = OscPose(dof^, qadr^, site, site_body, tmin^, tmax^, OscPoseConfig())
-    osc.update(d, m, scratch)
-    osc.reset()
-    var grip = PandaGripperRamp(
+    var osc = OscPose(
+        dof^, qadr^, jidx^, tmin^, tmax^, act_idx.copy(), site, site_body,
+        ga1, ga2,
         fmd.actuators[ga1].ctrl_min, fmd.actuators[ga1].ctrl_max,
         fmd.actuators[ga2].ctrl_min, fmd.actuators[ga2].ctrl_max,
+        OscPoseConfig(), nact, nq, nv,
     )
-    var ctrl = List[Float64](length=nact, fill=0.0)
+    osc.update(d, m, scratch)
+    osc.reset(d, m)
     var act = List[Scalar[DT]](length=nact if nact > 0 else 1, fill=Scalar[DT](0))
 
     # REPLAY_TRACE=<n>: print the first n substeps' controller inputs and
@@ -204,32 +207,33 @@ def main() raises:
         for s in range(SUBSTEPS):
             osc.update(d, m, scratch)
             if s == 0:
-                osc.set_goal(actions[t])
-            var tau = osc.run()
-            var gc = grip.step(actions[t][6])
+                osc.set_goal(actions[t], d, m)
+            # ⚠ ONE CALL, THE WHOLE `ctrl` VECTOR. `run` writes the seven arm
+            # torques AND the two finger positions, exactly as
+            # `Robot.control` does — the arm and the gripper share the
+            # controller's per-lane state.
+            var ctrl = osc.run(actions[t], d, m, scratch)
             if sub < trace_n:
+                var ee = osc.ee_pos(d)
+                var gp = osc.goal_pos()
+                var mb = osc.mass_block()
                 var l = String("TRACE ") + String(sub) + " tau"
                 for j in range(ARM_DOF):
-                    l += " " + String(tau[j])
-                l += " grip " + String(gc[0]) + " " + String(gc[1]) + " q"
+                    l += " " + String(ctrl[act_idx[j]])
+                l += " grip " + String(ctrl[ga1]) + " " + String(ctrl[ga2]) + " q"
                 for j in range(ARM_DOF):
                     l += " " + String(Float64(d.qpos.data[osc.qadr[j]]))
                 l += " qd"
                 for j in range(ARM_DOF):
                     l += " " + String(Float64(d.qvel.data[osc.dof[j]]))
                 l += " fq " + String(Float64(d.qpos.data[qadr_all[g1]])) + " " + String(Float64(d.qpos.data[qadr_all[g2]]))
-                l += " ee " + String(osc.ee_pos[0]) + " " + String(osc.ee_pos[1]) + " " + String(osc.ee_pos[2])
-                l += " goal " + String(osc.goal_pos[0]) + " " + String(osc.goal_pos[1]) + " " + String(osc.goal_pos[2])
-                l += " bias0 " + String(osc.bias[0]) + " " + String(osc.bias[1]) + " M00 " + String(osc.M[0]) + " " + String(osc.M[8])
+                l += " ee " + String(ee[0]) + " " + String(ee[1]) + " " + String(ee[2])
+                l += " goal " + String(gp[0]) + " " + String(gp[1]) + " " + String(gp[2])
+                l += " bias0 " + String(Float64(scratch.bias.data[osc.dof[0]])) + " " + String(Float64(scratch.bias.data[osc.dof[1]]))
+                l += " M00 " + String(mb[0]) + " " + String(mb[1 * ARM_DOF + 1])
                 l += " ncon " + String(Int(d.meta.data[META_IDX_NUM_CONTACTS]))
                 print(l)
             sub += 1
-            for i in range(nact):
-                ctrl[i] = 0.0
-            for j in range(ARM_DOF):
-                ctrl[act_idx[j]] = tau[j]
-            ctrl[ga1] = gc[0]
-            ctrl[ga2] = gc[1]
             for i in range(nv):
                 d.qfrc.data[i] = Scalar[DT](0)
             apply_actions_fields[DT](sf, d, ctrl, act, fmd.timestep)
@@ -250,15 +254,7 @@ def main() raises:
         if t == 0 or t == n_steps - 1:
             print("  step", t, "grip site", Float64(d.site_xpos.data[site * 3]),
                   Float64(d.site_xpos.data[site * 3 + 1]),
-                  Float64(d.site_xpos.data[site * 3 + 2]), "| tau0..2",
-                  tau_str(osc.torques))
+                  Float64(d.site_xpos.data[site * 3 + 2]))
     with open(out_path, "w") as fh:
         fh.write(out)
     print("replay: wrote", out_path)
-
-
-def tau_str(t: List[Float64]) -> String:
-    var s = String("")
-    for i in range(min(3, len(t))):
-        s += String(t[i]) + " "
-    return s^

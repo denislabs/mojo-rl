@@ -78,6 +78,11 @@ tests/tasks/test_libero_goal_eval.mojo
 # track. The decisive gate is `tools/tasks/libero_demo_replay.py` on a
 # recorded demo (needs the 426 MB HDF5; see its header).
 tests/tasks/test_osc_pose.mojo
+# L4b: the SAME controller over eight lanes — bit-exact against one lane at
+# a time at float64 (the lane-indexing gate), and with an accelerator the
+# same eight inside a Metal/CUDA kernel at float32. The kernel keeps every
+# matrix in a global buffer; compiling it is half of what this proves.
+tests/tasks/test_osc_pose_gpu.mojo
 
 # ── mojo_rl/render: the .msh reader (L1) ─────────────────────────────
 # Hermetic: writes a .msh from the format's definition and reads it back;

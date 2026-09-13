@@ -39,9 +39,14 @@ from mojo_rl.physics3d.parser.runtime_load import (
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
 from mojo_rl.physics3d.dynamics.osc_pose import (
-    OscPose, OscPoseConfig, PandaGripperRamp, ARM_DOF,
-    mat_inverse, mat_mul, orientation_error, axisangle_to_mat, quat_to_mat,
+    OscPose, OscPoseConfig, PandaGripperRamp, ARM_DOF, OSC_ACTION_DIM,
 )
+from mojo_rl.physics3d.dynamics.osc_pose_gpu import (
+    OSC_WORK_WORDS, OSC_W_TMP, OSC_W_TMP2, OSC_W_LAMP,
+    _inv_into, _mul_into, axisangle_mat_into,
+)
+from mojo_rl.nn.core.tensor import TensorImpl
+from mojo_rl.physics3d.fields import DYN2, rl2
 from mojo_rl.physics3d.studio.stepping import StudioIntegEll
 from mojo_rl.tasks.spec import load_family
 from mojo_rl.tasks.family import scene_path
@@ -90,26 +95,18 @@ def _dist(a: List[Float64], b: List[Float64]) -> Float64:
 
 
 def policy_step(
-    mut osc: OscPose, mut grip: PandaGripperRamp, mut d: Data[DT, DynDims, 1],
+    mut osc: OscPose, mut d: Data[DT, DynDims, 1],
     mut m: Model[DT, DynDims], mut scratch: DynamicsScratch[DT, DynDims, 1],
-    mut integ: StudioIntegEll, mut ctrl: List[Float64], mut act: List[Scalar[DT]],
+    mut integ: StudioIntegEll, mut act: List[Scalar[DT]],
     sf: SpecFields[DT, DynDims],
-    action: List[Float64], act_idx: List[Int], ga1: Int, ga2: Int, nv: Int,
-    nact: Int, timestep: Float64,
+    action: List[Float64], nv: Int, timestep: Float64,
 ) raises:
     """One policy step: 25 substeps of `Robot.control` + `mj_step`."""
     for s in range(SUBSTEPS):
         osc.update(d, m, scratch)
         if s == 0:
-            osc.set_goal(action)
-        var tau = osc.run()
-        var gc = grip.step(action[6])
-        for i in range(nact):
-            ctrl[i] = 0.0
-        for j in range(ARM_DOF):
-            ctrl[act_idx[j]] = tau[j]
-        ctrl[ga1] = gc[0]
-        ctrl[ga2] = gc[1]
+            osc.set_goal(action, d, m)
+        var ctrl = osc.run(action, d, m, scratch)
         for i in range(nv):
             d.qfrc.data[i] = Scalar[DT](0)
         apply_actions_fields[DT](sf, d, ctrl, act, timestep)
@@ -120,53 +117,61 @@ def main() raises:
     print("=== OSC_POSE — L4 unit gate ===")
     var ta = Tally()
 
-    # ── 1. algebra ───────────────────────────────────────────────────────
-    print("--- algebra ---")
-    var a = List[Float64]()
+    # ── 1. algebra, THROUGH THE DEVICE HELPERS ───────────────────────────
+    # ⚠ THESE ARE THE KERNEL'S OWN FUNCTIONS, on a one-lane work tensor —
+    # the same call shape `OscPose` uses. There is no host spelling of a
+    # matrix inverse left to test.
+    print("--- algebra (osc_pose_gpu's own helpers) ---")
+    var wt = TensorImpl[DT].alloc(OSC_WORK_WORDS)
+    for i in range(OSC_WORK_WORDS):
+        wt.data[i] = Scalar[DT](0)
+    var wv = wt.lt_dyn["cpu", DYN2](rl2(1, OSC_WORK_WORDS))
     var n = 6
     for i in range(n):
         for j in range(n):
-            a.append((4.0 if i == j else 0.0) + 0.3 * Float64((i * 7 + j * 3) % 5) + 0.3 * Float64((j * 7 + i * 3) % 5))
-    var ainv = mat_inverse(a, n)
-    var prod = mat_mul(a, ainv, n, n, n)
+            wt.data[OSC_W_TMP + i * n + j] = Scalar[DT](
+                (4.0 if i == j else 0.0)
+                + 0.3 * Float64((i * 7 + j * 3) % 5)
+                + 0.3 * Float64((j * 7 + i * 3) % 5)
+            )
+    var ok_inv = _inv_into[DT](wv, 0, OSC_W_TMP, OSC_W_TMP2, n)
+    ta.check(ok_inv, "a well-conditioned 6x6 inverts")
+    _mul_into[DT](wv, 0, OSC_W_TMP, OSC_W_TMP2, OSC_W_LAMP, n, n, n)
     var worst = 0.0
     for i in range(n):
         for j in range(n):
-            var e = prod[i * n + j] - (1.0 if i == j else 0.0)
+            var e = Float64(wt.data[OSC_W_LAMP + i * n + j]) - (1.0 if i == j else 0.0)
             if e < 0.0:
                 e = -e
             if e > worst:
                 worst = e
     ta.check(worst < 1e-12, "A @ inv(A) == I to " + String(worst))
-    var singular = List[Float64]()
     for i in range(9):
-        singular.append(1.0)
-    var raised = False
-    try:
-        _ = mat_inverse(singular, 3)
-    except e:
-        raised = True
-    ta.check(raised, "a singular matrix is REFUSED, not pseudo-inverted")
-    var ident = quat_to_mat(0.0, 0.0, 0.0, 1.0)
-    var e0 = orientation_error(ident, ident)
-    ta.check(e0[0] == 0.0 and e0[1] == 0.0 and e0[2] == 0.0, "orientation_error(I, I) == 0")
-    var th = 0.1
-    var rz = axisangle_to_mat(0.0, 0.0, th)
-    var e1 = orientation_error(rz, ident)
+        wt.data[OSC_W_TMP + i] = Scalar[DT](1.0)
     ta.check(
-        e1[0] == 0.0 and e1[1] == 0.0 and e1[2] > 0.099 and e1[2] < 0.1001,
-        "orientation_error(Rz(0.1), I) == (0, 0, ~0.1): " + String(e1[2]),
+        not _inv_into[DT](wv, 0, OSC_W_TMP, OSC_W_TMP2, 3),
+        "a singular matrix is REFUSED (the flag the kernel raises), not"
+        " pseudo-inverted",
     )
-    var rtr = mat_mul(mat_inverse(rz, 3), rz, 3, 3, 3)
+    axisangle_mat_into[DT](wv, 0, OSC_W_TMP, Scalar[DT](0), Scalar[DT](0), Scalar[DT](0.1))
+    var c = Float64(wt.data[OSC_W_TMP + 0])
+    var s01 = Float64(wt.data[OSC_W_TMP + 1])
+    ta.check(
+        c > 0.995 and c < 0.9951 and s01 < -0.0998 and s01 > -0.0999,
+        "axisangle_mat_into(0, 0, 0.1) is Rz(0.1): cos " + String(c)
+        + ", -sin " + String(s01),
+    )
+    _inv_into[DT](wv, 0, OSC_W_TMP, OSC_W_TMP2, 3)
+    _mul_into[DT](wv, 0, OSC_W_TMP, OSC_W_TMP2, OSC_W_LAMP, 3, 3, 3)
     var wo = 0.0
     for i in range(3):
         for j in range(3):
-            var e = rtr[i * 3 + j] - (1.0 if i == j else 0.0)
+            var e = Float64(wt.data[OSC_W_LAMP + i * 3 + j]) - (1.0 if i == j else 0.0)
             if e < 0.0:
                 e = -e
             if e > wo:
                 wo = e
-    ta.check(wo < 1e-12, "axisangle_to_mat is orthonormal")
+    ta.check(wo < 1e-12, "and it is orthonormal")
 
     # ── 2. the gripper ramp ─────────────────────────────────────────────
     print("--- gripper ramp ---")
@@ -227,6 +232,7 @@ def main() raises:
         da += fmd.joints[i].nv
     var dof = List[Int]()
     var qadr = List[Int]()
+    var jidx = List[Int]()
     var act_idx = List[Int]()
     var tmin = List[Float64]()
     var tmax = List[Float64]()
@@ -234,6 +240,7 @@ def main() raises:
         var ji = _index(fmd.joint_names, String("robot_joint") + String(j + 1))
         dof.append(dadr_all[ji])
         qadr.append(qadr_all[ji])
+        jidx.append(ji)
         var ai = _index(fmd.actuator_names, String("robot_torq_j") + String(j + 1))
         act_idx.append(ai)
         tmin.append(fmd.actuators[ai].ctrl_min)
@@ -257,58 +264,57 @@ def main() raises:
             d.qpos.data[qadr_all[i] + 2] = Scalar[DT](3.0)
             d.qpos.data[qadr_all[i] + 3] = Scalar[DT](1.0)
 
-    var osc = OscPose(dof^, qadr^, site, site_body, tmin^, tmax^, OscPoseConfig())
-    osc.update(d, m, scratch)
-    osc.reset()
-    var grip = PandaGripperRamp(
+    var osc = OscPose(
+        dof^, qadr^, jidx^, tmin^, tmax^, act_idx.copy(), site, site_body,
+        ga1, ga2,
         fmd.actuators[ga1].ctrl_min, fmd.actuators[ga1].ctrl_max,
         fmd.actuators[ga2].ctrl_min, fmd.actuators[ga2].ctrl_max,
+        OscPoseConfig(), nact, nq, nv,
     )
-    var p0 = osc.ee_pos.copy()
+    osc.update(d, m, scratch)
+    osc.reset(d, m)
+    var p0 = osc.ee_pos(d)
     print("  grip site at reset:", p0[0], p0[1], p0[2])
-    var ctrl = List[Float64](length=nact, fill=0.0)
     var act = List[Scalar[DT]](length=nact if nact > 0 else 1, fill=Scalar[DT](0))
 
     var zero = List[Float64](length=7, fill=0.0)
     zero[6] = -1.0
     var worst_hold = 0.0
     for _ in range(HOLD_STEPS):
-        policy_step(osc, grip, d, m, scratch, integ, ctrl, act, sf, zero, act_idx, ga1, ga2, nv, nact, fmd.timestep)
+        policy_step(osc, d, m, scratch, integ, act, sf, zero, nv, fmd.timestep)
         osc.update(d, m, scratch)
-        var dd = _dist(osc.ee_pos, p0)
+        var dd = _dist(osc.ee_pos(d), p0)
         if dd > worst_hold:
             worst_hold = dd
     print("  hold: worst grip-site drift over", HOLD_STEPS, "zero-action steps:", worst_hold, "m")
     ta.check(worst_hold < HOLD_TOL, "a zero action HOLDS the grip site (gravity cancelled, nullspace held)")
-    var tau_ok = True
-    for j in range(ARM_DOF):
-        if osc.torques[j] != osc.torques[j]:
-            tau_ok = False
-    ta.check(tau_ok, "torques are finite")
+    ta.check(osc.is_ready(), "the controller reports a live goal")
 
     var px = List[Float64](length=7, fill=0.0)
     px[0] = 1.0
     px[6] = -1.0
-    var p1 = osc.ee_pos.copy()
+    var p1 = osc.ee_pos(d)
     for _ in range(TRACK_STEPS):
-        policy_step(osc, grip, d, m, scratch, integ, ctrl, act, sf, px, act_idx, ga1, ga2, nv, nact, fmd.timestep)
+        policy_step(osc, d, m, scratch, integ, act, sf, px, nv, fmd.timestep)
     osc.update(d, m, scratch)
-    var moved = osc.ee_pos[0] - p1[0]
+    var pnow = osc.ee_pos(d)
+    var moved = pnow[0] - p1[0]
     print("  track: +x for", TRACK_STEPS, "steps moved the grip site by", moved, "m in x;",
-          "y/z drift", osc.ee_pos[1] - p1[1], osc.ee_pos[2] - p1[2])
+          "y/z drift", pnow[1] - p1[1], pnow[2] - p1[2])
     ta.check(moved > TRACK_MIN, "a +x action moves the grip site in +x by more than " + String(TRACK_MIN))
-    var off = _dist(osc.ee_pos, p1) - moved
+    var off = _dist(osc.ee_pos(d), p1) - moved
     ta.check(off < 0.02, "and the other two axes stay put (uncoupled): off-axis " + String(off))
     var mx = List[Float64](length=7, fill=0.0)
     mx[0] = -1.0
     mx[6] = -1.0
-    var p2 = osc.ee_pos.copy()
+    var p2 = osc.ee_pos(d)
     for _ in range(TRACK_STEPS):
-        policy_step(osc, grip, d, m, scratch, integ, ctrl, act, sf, mx, act_idx, ga1, ga2, nv, nact, fmd.timestep)
+        policy_step(osc, d, m, scratch, integ, act, sf, mx, nv, fmd.timestep)
     osc.update(d, m, scratch)
-    var back = p2[0] - osc.ee_pos[0]
+    var pback = osc.ee_pos(d)
+    var back = p2[0] - pback[0]
     print("  track: -x for", TRACK_STEPS, "steps moved it back by", back, "m in x;",
-          _dist(osc.ee_pos, p1), "m from the start")
+          _dist(pback, p1), "m from the start")
     ta.check(back > TRACK_MIN, "a -x action moves the grip site in -x by more than " + String(TRACK_MIN))
 
     print()

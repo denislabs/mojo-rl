@@ -292,6 +292,7 @@ libero-objects = { cmd = "python tools/tasks/gen_libero_objects.py", description
 libero-objects-check = { cmd = "python tools/tasks/gen_libero_objects.py --check", description = "CI: generated LIBERO object XMLs are up to date" }
 libero-family = { cmd = "mojo run -I . tools/tasks/gen_libero_family.mojo", description = "One LIBERO suite -> .family + .task files, e.g. `pixi run libero-family libero_goal`" }
 osc-pose-test = { cmd = "mojo run -I . tests/tasks/test_osc_pose.mojo", description = "L4 unit gate: OSC_POSE hold/track on the composed libero_goal scene" }
+osc-pose-gpu-test = { cmd = "mojo run -I . tests/tasks/test_osc_pose_gpu.mojo", description = "L4b gate: the OSC_POSE kernel over 8 lanes (add -e apple / -e nvidia for the device leg)" }
 libero-replay = { cmd = "python tools/tasks/libero_demo_replay.py", description = "L4 gate: replay one LIBERO demo — recorded vs MuJoCo 3.12 (their model / our scene) vs ours; args: <demo.hdf5> --demo N --out DIR [--compare]" }
 libero-goal-eval = { cmd = "mojo run -I . tests/tasks/test_libero_goal_eval.mojo", description = "L3 gate: libero_goal's ten goals on the composed scene, host vs tape vs kernel loop (+ device leg with an accelerator)" }
 libero-survey = { cmd = "mojo run -I . examples/tasks/libero_survey.mojo", description = "LIBERO's 130 files against the task layer: parsed / family / task / resolved" }
