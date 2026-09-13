@@ -29,9 +29,19 @@ MuJoCo's `mj_tendon` point — inside the position stage, before the sensors
 that read it — and the step builds `cdof` later. See
 `spatial_tendon_length_jac`'s own note.
 
-⚠ CPU, BATCH=1, like the sensor passes it feeds. `sensors/eval.mojo` takes
-host `List`s and one env; when AUD-53 lands the batched leg it will want a
-kernel here rather than a loop over envs.
+⚠ CPU, ANY BATCH. The pass was BATCH=1 when the sensor landed, which left
+`<tendonpos>` marked SERVED in the table and NaN in the slot on any batched
+model — the single failure the `served` flag exists to exclude. It is an env
+loop over a per-env body now, the shape `sensors/eval.mojo` uses.
+
+⚠ NO DEVICE LEG, AND THE OBSTACLE IS NAMED. `spatial_tendon_length_jac`
+builds two `Scratch` arrays of `nv` (`J_row`, `seg_J`) and zeroes the first
+unconditionally, so a kernel thread would carry `2*nv` floats of per-thread
+stack for a Jacobian this caller passes `flg_jac=False` to discard. Making
+that free wants a comptime `FLG_JAC` parameter on the helper — guarding the
+declarations, not just the writes — which is a change to eight call sites
+including the solver's. Until then a GPU-batched `<tendonpos>` reads NaN, and
+`test_tendon_length_batched_vs_mujoco` pins which leg serves it.
 """
 
 from layout import Layout, LayoutTensor
@@ -79,18 +89,87 @@ def model_reads_tendon_length[
     return False
 
 
-def compute_tendon_lengths[
-    DTYPE: DType, D: DimsLike
+def _tendon_lengths_env[
+    DTYPE: DType,
+    V_CAP: Int,
+    BATCH: Int,
+    D: DimsLike,
+    L_TENDONS: Layout,
+    L_SITES: Layout,
+    L_GEOMS: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_MMETA: Layout,
+    L_B3: Layout,
+    L_CDOF: Layout,
+    L_XQUAT: Layout,
+    L_QPOS: Layout,
+    L_TEN: Layout,
 ](
-    mut d: Data[DTYPE, D, 1],
+    env: Int,
+    nten: Int,
+    dims: D,
+    tendons: LayoutTensor[DTYPE, L_TENDONS, MutAnyOrigin],
+    sites: LayoutTensor[DTYPE, L_SITES, MutAnyOrigin],
+    geoms: LayoutTensor[DTYPE, L_GEOMS, MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    joints: LayoutTensor[DTYPE, L_JOINTS, MutAnyOrigin],
+    mmeta: LayoutTensor[DTYPE, L_MMETA, MutAnyOrigin],
+    subtree_com: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    xquat: LayoutTensor[DTYPE, L_XQUAT, MutAnyOrigin],
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    ten_length: LayoutTensor[DTYPE, L_TEN, MutAnyOrigin],
+):
+    """`d.ten_length[env, :]` for one env. The whole pass, minus the binding.
+
+    ⚠ THE PER-ENV BODY IS SEPARATE FROM THE DISPATCHER FOR THE SAME REASON
+    `sensors/eval.mojo` SPLIT: a body that takes tensors and an env index is
+    the one shape both a host loop and a kernel thread can call. This one has
+    only the host caller so far — see the dispatcher's note on what a device
+    leg would have to answer first.
+
+    ⚠ NOT `raises`. Nothing here can raise today, and keeping it that way is
+    what leaves the device leg open: a kernel body cannot propagate an error.
+    """
+    var nv = dims.get_nv()
+    var tJ = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
+
+    for t in range(nten):
+        var kind = Int(rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_KIND]))
+        var length = Scalar[DTYPE](0)
+        if kind == TENDON_KIND_SPATIAL:
+            length = spatial_tendon_length_jac[DTYPE, V_CAP, BATCH](
+                env, t, dims, tendons, sites, geoms, bodies, joints,
+                mmeta, subtree_com, cdof, xpos, xquat, tJ,
+                flg_jac=False,
+            )
+        else:
+            length = fixed_tendon_length_jac[DTYPE, V_CAP](
+                env, t, dims, tendons, joints, qpos, tJ
+            )
+        ten_length[env, t] = length
+
+
+def compute_tendon_lengths[
+    DTYPE: DType, D: DimsLike, BATCH: Int
+](
+    mut d: Data[DTYPE, D, BATCH],
     mut m: Model[DTYPE, D],
-    mut sc: DynamicsScratch[DTYPE, D, 1],
+    mut sc: DynamicsScratch[DTYPE, D, BATCH],
 ) raises:
-    """Fill `d.ten_length` for every tendon, if any sensor asks for it.
+    """Fill `d.ten_length` for every tendon of every env, if a sensor asks.
 
     Both kinds go through the shared helpers in `dynamics/tendon.mojo`, so
     the formula has one spelling — the `<tendonpos>` sensor would otherwise
     have been its fourth.
+
+    ⚠ ANY BATCH, CPU. It was BATCH=1 when the sensor landed, which made
+    `<tendonpos>` a slot the sensor table marked SERVED and the batched leg
+    left at NaN — the one failure the `served` flag is supposed to exclude.
+    The env loop is the whole fix on this leg; every tensor below is already
+    `[BATCH, ...]` and the helpers already take an `env`.
     """
     var nt = m.dims.get_ntendon()
     if nt == 0:
@@ -105,23 +184,22 @@ def compute_tendon_lengths[
 
     var dm = d.dims
     var mdm = m.dims
-    var nv = dm.get_nv()
 
     comptime V_CAP = cap[D.CAP_NV]()
-    var tJ = Scratch[Scalar[DTYPE], V_CAP](nv, fill=Scalar[DTYPE](0))
 
     # LayoutTensor views, the same idiom every `dynamics/` dispatcher uses.
-    var rl_TEN = rl2(mdm.get_ntendon(), MODEL_TENDON_SIZE)
+    var rl_TEN = rl2(BATCH, mdm.get_ntendon())
     var rl_SITE = rl2(mdm.get_nsite(), MODEL_SITE_SIZE)
     var rl_GEOM = rl2(mdm.get_ngeom(), MODEL_GEOM_SIZE)
     var rl_BODY = rl2(mdm.get_nbody(), MODEL_BODY_SIZE)
     var rl_JOINT = rl2(mdm.get_njoint(), MODEL_JOINT_SIZE)
+    var rl_TENM = rl2(mdm.get_ntendon(), MODEL_TENDON_SIZE)
     var rl_MMETA = rl1(MODEL_META_SIZE)
-    var rl_B3 = rl2(1, dm.get_nbody() * 3)
-    var rl_B4 = rl2(1, dm.get_nbody() * 4)
-    var rl_CDOF = rl2(1, dm.get_nv() * 6)
-    var rl_QPOS = rl2(1, dm.get_nq())
-    var tendons_v = m.tendons.lt_dyn["cpu", DYN2](rl_TEN)
+    var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+    var rl_B4 = rl2(BATCH, dm.get_nbody() * 4)
+    var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
+    var rl_QPOS = rl2(BATCH, dm.get_nq())
+    var tendons_v = m.tendons.lt_dyn["cpu", DYN2](rl_TENM)
     var sites_v = m.sites.lt_dyn["cpu", DYN2](rl_SITE)
     var geoms_v = m.geoms.lt_dyn["cpu", DYN2](rl_GEOM)
     var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
@@ -131,25 +209,15 @@ def compute_tendon_lengths[
     var xpos_v = d.xpos.lt_dyn["cpu", DYN2](rl_B3)
     var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
     var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+    var tenlen_v = d.ten_length.lt_dyn["cpu", DYN2](rl_TEN)
     # ⚠ STALE AT THIS POINT IN THE STEP, AND NEVER READ. `compute_cdof` runs
     # later; `flg_jac=False` below is what makes that safe. Binding it anyway
     # keeps the call shape identical to every other caller's, so a future
     # reader comparing the two sees one difference, not two.
     var cdof_v = sc.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
 
-    for t in range(nten):
-        var kind = Int(Float64(m.tendons.data[t * MODEL_TENDON_SIZE
-                                              + TENDON_IDX_KIND]))
-        var length = Scalar[DTYPE](0)
-        if kind == TENDON_KIND_SPATIAL:
-            length = spatial_tendon_length_jac[DTYPE, V_CAP, 1](
-                0, t, dm, tendons_v, sites_v, geoms_v, bodies_v, joints_v,
-                mmeta_v, stcom_v, cdof_v, xpos_v, xquat_v, tJ,
-                flg_jac=False,
-            )
-        else:
-            length = fixed_tendon_length_jac[DTYPE, V_CAP](
-                0, t, dm, tendons_v, joints_v, qpos_v, tJ
-            )
-        d.ten_length.data[t] = length
-
+    for env in range(BATCH):
+        _tendon_lengths_env[DTYPE, V_CAP, BATCH](
+            env, nten, dm, tendons_v, sites_v, geoms_v, bodies_v, joints_v,
+            mmeta_v, stcom_v, cdof_v, xpos_v, xquat_v, qpos_v, tenlen_v,
+        )
