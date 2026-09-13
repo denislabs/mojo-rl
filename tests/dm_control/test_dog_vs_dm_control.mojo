@@ -89,8 +89,12 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_CONDIM,
     GEOM_IDX_PRIORITY,
+    MODEL_SENSOR_SIZE,
+    SENSOR_IDX_SERVED,
+    SENSOR_IDX_TYPE,
 )
 from mojo_rl.physics3d.joint_types import JNT_FREE
+from mojo_rl.physics3d.constants import SENS_SUBTREEANGMOM
 from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.model.model_dims import ModelDims
 comptime MD = ModelDims[DMDogStandWalkModel]
@@ -320,25 +324,22 @@ def test_dog_xml_matches_reference() raises:
     )
 
 
-def test_dog_subtreeangmom_is_declared_and_unread() raises:
-    """The one sensor dog declares that this engine does not implement.
+def test_dog_subtreeangmom_is_declared_and_now_served() raises:
+    """`<subtreeangmom name="torso_angmom" body="torso"/>` — SERVED as of
+    2026-09-13, and this test now says so.
 
-    `<subtreeangmom name="torso_angmom" body="torso"/>` is in the model — the
-    port keeps it so the layer-1 sensor tables diff clean — but the engine has
-    no angular-momentum sensor, only `subtreelinvel`.
+    It was the last AUD-23 kind a model this tree ships an env for declared
+    and the engine did not compute: six declarations, all dog. The value is
+    gated against MuJoCo in `tests/physics3d/test_subtreeangmom_vs_mujoco.mojo`
+    at 4.4e-16; what stays here is the DECLARATION half, which is dog's own.
 
-    That is safe here for a reason worth stating rather than assuming: NO dog
-    observation and NO dog reward reads it. `Physics.inertial_sensors` reads
-    accelerometer/velocimeter/gyro and `center_of_mass_velocity` reads
-    `torso_linvel`; nothing reads `torso_angmom`. Our configs also read the
-    underlying fields directly rather than a packed `sensordata` array, so an
-    unimplemented sensor cannot shift the offset of any sensor after it — the
-    usual way this kind of gap does damage.
-
-    ⚠ IF A LATER TASK READS IT, THIS TEST IS THE PLACE THAT FINDS OUT. It fails
-    the moment the reference's dog.py mentions the sensor name.
+    ⚠ THE "READ BY NOTHING" ARM IS KEPT, AND IT IS NO LONGER LOAD-BEARING.
+    It was the reason the gap was safe: no dog observation and no dog reward
+    read `torso_angmom`. That is now a fact about the reference rather than a
+    condition on us, so the assertion is inverted in meaning but not in form
+    — if dog.py starts reading it, the sensor is there.
     """
-    print("--- dog: subtreeangmom declared, and read by nothing ---")
+    print("--- dog: subtreeangmom declared, and served since 2026-09-13 ---")
     var builtins = Python.import_module("builtins")
     var mujoco = Python.import_module("mujoco")
     var m = _mj_from_our_xml()
@@ -349,9 +350,33 @@ def test_dog_subtreeangmom_is_declared_and_unread() raises:
     assert_true(
         sid >= 0,
         "torso_angmom is missing from our XML — the port keeps it for model"
-        " fidelity even though nothing computes it",
+        " fidelity, and the engine computes it as of 2026-09-13",
     )
     print("  torso_angmom is sensor", sid, "of", Int(py=m.nsensor))
+
+    # ⚠ THE HALF THAT ACTUALLY MOVED. Our sensor table is in declaration
+    # order (`test_sensor_table_vs_mujoco` pins that against MuJoCo's own
+    # `sensor_adr`), so MuJoCo's index addresses our row. The row must be
+    # SENS_SUBTREEANGMOM and it must be SERVED — unserved, its `sensordata`
+    # slot holds `Data`'s NaN and reading it by name raises.
+    var mf = _build()
+    var o = sid * MODEL_SENSOR_SIZE
+    var kind = Int(mf.sensors.data[o + SENSOR_IDX_TYPE])
+    var served = Int(mf.sensors.data[o + SENSOR_IDX_SERVED])
+    print("  our row", sid, ": type", kind, " served", served)
+    assert_true(
+        kind == SENS_SUBTREEANGMOM,
+        "our sensor row " + String(sid) + " is type " + String(kind)
+        + ", not subtreeangmom (" + String(SENS_SUBTREEANGMOM) + ") — the"
+        " two tables are not in the same order and this arm is addressing"
+        " the wrong row",
+    )
+    assert_true(
+        served == 1,
+        "dog's torso_angmom row is NOT served. Its sensordata slot then holds"
+        " NaN while the table claims a value, which is the one failure the"
+        " served flag exists to exclude",
+    )
 
     # The load-bearing half: the reference must not read it.
     var os = Python.import_module("os")
@@ -362,9 +387,9 @@ def test_dog_subtreeangmom_is_declared_and_unread() raises:
     var src = String(py=builtins.open(path).read())
     assert_true(
         "torso_angmom" not in src,
-        "dog.py now mentions torso_angmom — a task reads the one sensor this"
-        " engine does not implement; subtreeangmom must be built before that"
-        " task is ported",
+        "dog.py now mentions torso_angmom. That is no longer a gap —"
+        " subtreeangmom is served — but it does mean this arm has stopped"
+        " describing the reference, so update it rather than deleting it",
     )
     assert_true(
         "torso_linvel" in src,

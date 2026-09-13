@@ -57,8 +57,20 @@ is an exact bound.
 
 from layout import Layout, LayoutTensor
 
-from ..gpu.constants import MODEL_BODY_SIZE, BODY_IDX_MASS, BODY_IDX_PARENT
+from ..gpu.constants import (
+    MODEL_BODY_SIZE,
+    BODY_IDX_MASS,
+    BODY_IDX_PARENT,
+    BODY_IDX_IXX,
+    BODY_IDX_IYY,
+    BODY_IDX_IZZ,
+    BODY_IDX_IQUAT_X,
+    BODY_IDX_IQUAT_Y,
+    BODY_IDX_IQUAT_Z,
+    BODY_IDX_IQUAT_W,
+)
 from ..fields import DimsLike
+from ..kinematics.quat_math import gpu_quat_rotate
 
 
 def walk_to_root[
@@ -217,3 +229,119 @@ def subtree_linvel_gpu[
     vx = px / total_mass
     vy = py / total_mass
     vz = pz / total_mass
+
+
+@always_inline
+def subtree_angmom_gpu[
+    DTYPE: DType,
+    D: DimsLike,
+    L_B3: Layout,
+    L_XQUAT: Layout,
+    L_BODIES: Layout](
+    dims: D,
+    xipos: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    xvel: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    xangvel: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    xquat: LayoutTensor[DTYPE, L_XQUAT, MutAnyOrigin],
+    subtree_com: LayoutTensor[DTYPE, L_B3, MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    env: Int,
+    root: Int,
+    mut lx: Scalar[DTYPE],
+    mut ly: Scalar[DTYPE],
+    mut lz: Scalar[DTYPE],
+):
+    """`data.subtree_angmom[root]` for one lane — MuJoCo's `mj_subtreeVel`.
+
+    Angular momentum of the subtree at `root`, about that subtree's centre of
+    mass, in the WORLD frame:
+
+        L = sum_i [ R_i (I_i . (R_i^T w_i)) + m_i (xipos_i - com) x (v_i - vcom) ]
+
+    over the bodies of the subtree, where `R_i` is the body's INERTIAL frame
+    orientation and `I_i` its diagonal inertia in that frame.
+
+    ⚠⚠ THIS IS THE DEFINITION, NOT MUJOCO'S RECURSION, AND THE SUBSTITUTION
+    WAS MEASURED BEFORE IT WAS MADE. `mj_subtreeVel`
+    (engine_core_smooth.c:2249) evaluates the same quantity with two REVERSE
+    passes over the body list, carrying a `body_vel` scratch, a momentum
+    accumulator it later divides by `body_subtreemass`, and a per-parent
+    shift term `(com_i - com_p) x subtreemass_i (vlin_i - vlin_p)`. Porting
+    that shape would have cost a `body_subtreemass` column in the body record
+    (28 -> 29, every model's layout), a `Data.subtree_angmom` field, a new
+    pass in the step with a new ordering constraint, and a 26th buffer in a
+    sensor kernel that fails with NO DIAGNOSTIC at 29. The direct sum needs
+    none of them: every operand is already bound by the sensor eval.
+
+    The two agree to 2.2e-16 on a five-body fixture with a free joint, a ball
+    joint and two hinges, at every one of the five roots — they are the same
+    identity, evaluated in a different order. ⚠ A DIFFERENT ORDER, so this is
+    NOT bit-identical to MuJoCo and its gate must not claim to be.
+
+    ⚠ `R_i` IS COMPOSED, NOT READ. `Data` has no `ximat`; it has the body's
+    world `xquat` and the body record's LOCAL inertial quaternion. Rotating a
+    vector by `R_body . R_iquat` is two `gpu_quat_rotate` calls and by its
+    transpose two more with the conjugates, which avoids materialising a
+    matrix and matches how `pose_transmission` composes a site's frame.
+
+    Massless bodies are kept in the sum rather than skipped: their inertia is
+    zero too, so both terms vanish, and the branch would only differ for a
+    body MuJoCo cannot build.
+    """
+    var nbody = dims.get_nbody()
+    comptime ZERO = Scalar[DTYPE](0)
+
+    # The subtree's own CoM velocity — the SAME walk `subtreelinvel` serves,
+    # so the two sensors cannot drift apart.
+    var vcx = ZERO
+    var vcy = ZERO
+    var vcz = ZERO
+    subtree_linvel_gpu[DTYPE](dims, xvel, bodies, env, root, vcx, vcy, vcz)
+
+    var cx = rebind[Scalar[DTYPE]](subtree_com[env, root * 3 + 0])
+    var cy = rebind[Scalar[DTYPE]](subtree_com[env, root * 3 + 1])
+    var cz = rebind[Scalar[DTYPE]](subtree_com[env, root * 3 + 2])
+
+    lx = ZERO
+    ly = ZERO
+    lz = ZERO
+
+    for b in range(nbody):
+        if not walk_to_root_gpu[DTYPE](dims, bodies, b, root):
+            continue
+
+        # ── spin: R_i (I_i . (R_i^T w_i)) ────────────────────────────────
+        var wx = rebind[Scalar[DTYPE]](xangvel[env, b * 3 + 0])
+        var wy = rebind[Scalar[DTYPE]](xangvel[env, b * 3 + 1])
+        var wz = rebind[Scalar[DTYPE]](xangvel[env, b * 3 + 2])
+        var bqx = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 0])
+        var bqy = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 1])
+        var bqz = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 2])
+        var bqw = rebind[Scalar[DTYPE]](xquat[env, b * 4 + 3])
+        var iqx = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IQUAT_X])
+        var iqy = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IQUAT_Y])
+        var iqz = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IQUAT_Z])
+        var iqw = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IQUAT_W])
+
+        var wb = gpu_quat_rotate(-bqx, -bqy, -bqz, bqw, wx, wy, wz)
+        var wi = gpu_quat_rotate(-iqx, -iqy, -iqz, iqw, wb[0], wb[1], wb[2])
+        var hx = wi[0] * rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IXX])
+        var hy = wi[1] * rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IYY])
+        var hz = wi[2] * rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IZZ])
+        var hb = gpu_quat_rotate(iqx, iqy, iqz, iqw, hx, hy, hz)
+        var hw = gpu_quat_rotate(bqx, bqy, bqz, bqw, hb[0], hb[1], hb[2])
+        lx += hw[0]
+        ly += hw[1]
+        lz += hw[2]
+
+        # ── orbital: m_i (xipos_i - com) x (v_i - vcom) ───────────────────
+        var mass = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_MASS])
+        var dx = rebind[Scalar[DTYPE]](xipos[env, b * 3 + 0]) - cx
+        var dy = rebind[Scalar[DTYPE]](xipos[env, b * 3 + 1]) - cy
+        var dz = rebind[Scalar[DTYPE]](xipos[env, b * 3 + 2]) - cz
+        var dvx = rebind[Scalar[DTYPE]](xvel[env, b * 3 + 0]) - vcx
+        var dvy = rebind[Scalar[DTYPE]](xvel[env, b * 3 + 1]) - vcy
+        var dvz = rebind[Scalar[DTYPE]](xvel[env, b * 3 + 2]) - vcz
+        lx += mass * (dy * dvz - dz * dvy)
+        ly += mass * (dz * dvx - dx * dvz)
+        lz += mass * (dx * dvy - dy * dvx)

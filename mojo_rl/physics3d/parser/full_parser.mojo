@@ -75,6 +75,7 @@ from ..constants import (
     SENS_FRAMEANGVEL,
     SENS_SUBTREECOM,
     SENS_SUBTREELINVEL,
+    SENS_SUBTREEANGMOM,
     SENSOBJ_UNKNOWN,
     SENSOBJ_BODY,
     SENSOBJ_XBODY,
@@ -6614,6 +6615,7 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 #   frameangvel      32         obj*          3   REAL       VEL    frame.mojo
 #   subtreecom       35         body          3   REAL       POS    eval (d.subtree_com)
 #   subtreelinvel    36         body          3   REAL       VEL    subtree
+#   subtreeangmom    37         body          3   REAL       VEL    subtree
 #
 # + `actuatorpos` is served only for a joint (slide/hinge) or tendon
 #   transmission — the two whose length is `gear * sum coef*qpos`. A site,
@@ -6701,6 +6703,10 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(SENS_SUBTREECOM, 3, SENSDATA_REAL, SENSSTAGE_POS, True)
     if tag_name == "subtreelinvel":
         return _SensorSpec(SENS_SUBTREELINVEL, 3, SENSDATA_REAL, SENSSTAGE_VEL, True)
+    if tag_name == "subtreeangmom":
+        return _SensorSpec(
+            SENS_SUBTREEANGMOM, 3, SENSDATA_REAL, SENSSTAGE_VEL, True
+        )
     if tag_name == "jointpos":
         return _SensorSpec(SENS_JOINTPOS, 1, SENSDATA_REAL, SENSSTAGE_POS, True)
     if tag_name == "jointvel":
@@ -6776,8 +6782,6 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(33, 3, SENSDATA_REAL, SENSSTAGE_ACC, False)
     if tag_name == "frameangacc":
         return _SensorSpec(34, 3, SENSDATA_REAL, SENSSTAGE_ACC, False)
-    if tag_name == "subtreeangmom":
-        return _SensorSpec(37, 3, SENSDATA_REAL, SENSSTAGE_VEL, False)
     if tag_name == "insidesite":
         return _SensorSpec(38, 1, SENSDATA_POSITIVE, SENSSTAGE_POS, False)
     if tag_name == "distance":
@@ -7269,6 +7273,7 @@ def _fill_sensors(
         elif (
             sd.sensor_type == SENS_SUBTREELINVEL
             or sd.sensor_type == SENS_SUBTREECOM
+            or sd.sensor_type == SENS_SUBTREEANGMOM
         ):
             sd.objtype = SENSOBJ_BODY
             var b_name = _trim(_extract_attr(tag, "body"))

@@ -70,6 +70,7 @@ from mojo_rl.physics3d.constants import (
     SENS_SUBTREECOM,
     SENSOBJ_UNKNOWN,
     SENS_SUBTREELINVEL,
+    SENS_SUBTREEANGMOM,
     SENSDATA_REAL,
     SENSDATA_POSITIVE,
     SENSSTAGE_POS,
@@ -114,7 +115,7 @@ from .frame import (
 )
 from .frame_vel import site_frame_velocity_gpu
 from .site_acc import site_accelerometer_gpu, site_force_torque_gpu
-from .subtree import subtree_linvel_gpu
+from .subtree import subtree_linvel_gpu, subtree_angmom_gpu
 from .touch import touch_sphere_site_gpu
 from .rangefinder import rangefinder_ray
 
@@ -715,6 +716,30 @@ def _eval_sensor_env[
             sensordata[env, adr + 0] = svx
             sensordata[env, adr + 1] = svy
             sensordata[env, adr + 2] = svz
+
+        elif st == SENS_SUBTREEANGMOM:
+            # `mjSENS_SUBTREEANGMOM` (engine_sensor.c). MuJoCo reads
+            # `d->subtree_angmom + 3*objid`, which `mj_subtreeVel` filled
+            # with two reverse passes. We evaluate the same identity
+            # directly over the subtree — see `subtree_angmom_gpu` for the
+            # measurement that licensed the substitution, and for why it is
+            # NOT bit-identical to the reference.
+            #
+            # ⚠ VEL STAGE, and every operand it reads is already bound here:
+            # `xipos`, `xvel`, `xangvel`, `xquat`, `subtree_com`, `bodies`.
+            # That is the whole reason this is a sensor kernel rather than a
+            # pass in the step — the stage kernel is at 25 buffers and fails
+            # with NO DIAGNOSTIC at 29.
+            var alx = Scalar[DTYPE](0)
+            var aly = Scalar[DTYPE](0)
+            var alz = Scalar[DTYPE](0)
+            subtree_angmom_gpu[DTYPE](
+                dims, xipos, xvel, xangvel, xquat, subtree_com, bodies,
+                env, objid, alx, aly, alz,
+            )
+            sensordata[env, adr + 0] = alx
+            sensordata[env, adr + 1] = aly
+            sensordata[env, adr + 2] = alz
 
         elif st == SENS_ACCELEROMETER:
             # `*_acc`, not the live FK products — see the module note.

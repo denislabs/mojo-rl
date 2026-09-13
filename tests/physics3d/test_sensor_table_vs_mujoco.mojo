@@ -392,7 +392,7 @@ comptime MIXED_XML = """
     <framequat name="fq" objtype="site" objname="imu"/>
     <jointpos name="jp" joint="knee"/>
     <touch name="t" site="foot"/>
-    <subtreeangmom name="sam" body="torso"/>
+    <framelinacc name="fla" objtype="site" objname="imu"/>
     <framexaxis name="fx" objtype="site" objname="foot"/>
     <velocimeter name="v" site="imu"/>
   </sensor>
@@ -404,17 +404,25 @@ def test_unserved_sensors_are_addressed_not_dropped() raises:
     """An unserved sensor holds its slot, so later `adr`s stay MuJoCo-exact.
 
     ⚠ THIS IS THE TEST THAT DISTINGUISHES THE THREE POSSIBLE DESIGNS. Dropping
-    the unserved `subtreeangmom` would leave `framexaxis`'s `adr` at 9 instead
-    of 12 and `velocimeter`'s at 12 instead of 15 — plausible numbers pointing
-    at another sensor's values. Refusing the model would regress four
-    dm_control models. Addressing it keeps every offset right and makes the
-    READ raise instead.
+    the unserved row would leave `framexaxis`'s `adr` at 9 instead of 12 and
+    `velocimeter`'s at 12 instead of 15 — plausible numbers pointing at
+    another sensor's values. Refusing the model would regress four dm_control
+    models. Addressing it keeps every offset right and makes the READ raise
+    instead.
 
     ⚠ THE COUNTS BELOW MOVE AS THE TAIL LANDS, AND THEY ARE PINNED ANYWAY.
     `jointpos` was served on 2026-09-13 and the frame family the same day
     (audit §6 phases 1a/1b), taking the split from 3/4 to 6/1. Pinning the
     numbers is what makes those moves visible; the two NON-VACUITY arms are
     what keep the test meaningful whichever way they move.
+
+    ⚠⚠ THE UNSERVED ROW WAS `<subtreeangmom>` UNTIL IT WAS SERVED, and the
+    replacement was chosen to keep this file about the boundary rather than
+    about the arithmetic. `framelinacc` has the SAME dim of 3, so every `adr`
+    below — and the three pinned in the served arm — is unchanged by the
+    swap; only the kind moved. A fixture whose unserved side had simply been
+    deleted would have left `unserved_seen == 0` and every assertion here
+    true by vacuity, which is the failure the non-vacuity arm names.
     """
     print("=== unserved sensors hold their sensordata slots ===")
     var mujoco = Python.import_module("mujoco")
@@ -488,7 +496,7 @@ def test_unserved_sensors_are_addressed_not_dropped() raises:
                 "a served sensor must still resolve by name")
     # ...and the unserved ones raise on every read, including `adr`, whose
     # value is CORRECT but points at values nothing wrote.
-    for nm in [String("sam")]:
+    for nm in [String("fla")]:
         var raised = False
         try:
             _ = fmd.sensor_adr_by_name(nm)

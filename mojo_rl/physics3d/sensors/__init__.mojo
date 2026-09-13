@@ -24,7 +24,9 @@ from .site_acc import (
     site_force_torque,
     site_force_torque_gpu,
 )
-from .subtree import subtree_linvel, subtree_linvel_gpu, walk_to_root
+from .subtree import (
+    subtree_linvel, subtree_linvel_gpu, subtree_angmom_gpu, walk_to_root
+)
 from .touch import touch_sphere_site, touch_sphere_site_gpu
 from .rangefinder import rangefinder_site
 from .eval import (
