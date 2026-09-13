@@ -37,7 +37,7 @@ from ..kinematics.forward_kinematics import (
     compute_body_velocities,
 )
 from ..dynamics.subtree_com import compute_subtree_com
-from ..dynamics.tendon_lengths import compute_tendon_lengths
+from ..dynamics.sensor_lengths import compute_tendon_lengths
 from ..dynamics.cdof import compute_cdof
 from ..dynamics.mass_matrix import compute_mass_matrix
 from std.time import perf_counter_ns

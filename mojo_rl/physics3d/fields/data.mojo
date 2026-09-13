@@ -218,6 +218,16 @@ struct Data[
     zeros that look like readings."""
     var xquat_acc: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*4]
     var subtree_com: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*3]
+    var actuator_length: TensorImpl[Self.DTYPE]  # [BATCH, NACT]
+    """MuJoCo's `d->actuator_length` — each actuator's transmission length.
+
+    Same contract as `ten_length` beside it, and for the same reason: filled
+    by `dynamics/sensor_lengths.compute_actuator_lengths` only when an
+    `<actuatorpos>` sensor asks, NaN everywhere else. An actuator whose
+    transmission this engine cannot express as `gear * sum coef*qpos` (a site
+    or body transmission, a ball or free joint) keeps its NaN and its sensor
+    row is UNSERVED at load."""
+
     var ten_length: TensorImpl[Self.DTYPE]  # [BATCH, NTENDON]
     """MuJoCo's `d->ten_length` — the scalar length of each tendon.
 
@@ -354,12 +364,18 @@ struct Data[
         if _nt < 1:
             _nt = 1
         self.ten_length = TensorImpl[Self.DTYPE].alloc(B * _nt)
+        var _na = dims.get_nact()
+        if _na < 1:
+            _na = 1
+        self.actuator_length = TensorImpl[Self.DTYPE].alloc(B * _na)
         # NaN for the same reason `sensordata` is NaN: this array is filled
         # only where something asked for it, and 0.0 is a plausible length.
         comptime if Self.DTYPE.is_floating_point():
             var _tnan = nan[Self.DTYPE]()
             for _i in range(B * _nt):
                 self.ten_length.data[_i] = _tnan
+            for _i in range(B * _na):
+                self.actuator_length.data[_i] = _tnan
         self.qfrc_actuator = TensorImpl[Self.DTYPE].alloc(B * dims.get_nv())
         self.mocap_pos = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 3)
         self.mocap_quat = TensorImpl[Self.DTYPE].alloc(B * dims.get_nbody() * 4)
@@ -397,6 +413,7 @@ struct Data[
         self.site_xpos_acc.upload(ctx)
         self.sensordata.upload(ctx)
         self.ten_length.upload(ctx)
+        self.actuator_length.upload(ctx)
         self.xquat_acc.upload(ctx)
         self.cfrc_int.upload(ctx)
         self.subtree_com.upload(ctx)
@@ -427,6 +444,7 @@ struct Data[
         self.site_xpos_acc.download(ctx)
         self.sensordata.download(ctx)
         self.ten_length.download(ctx)
+        self.actuator_length.download(ctx)
         self.xquat_acc.download(ctx)
         self.cfrc_int.download(ctx)
         self.subtree_com.download(ctx)

@@ -299,6 +299,38 @@ def apply_actions_fields[
         # a `mujoco.pid` actuator's first slot is its ERROR INTEGRAL, and
         # feeding that to `force = kp * u` would multiply the wrong quantity
         # by the wrong gain. `kind` used to be read forty lines further down.
+        # ── `mj_transmission`'s LENGTH half, for `<sensor><actuatorpos>` ──
+        #
+        # ⚠⚠ WRITTEN HERE AND NOT IN A PASS OF ITS OWN, BECAUSE THE ACTUATOR
+        # RECORDS LIVE IN `SpecFields` AND `EulerIntegrator.step` IS NOT GIVEN
+        # ONE. `step` takes `Data` and `Model`; this function owns `sf`,
+        # already walks each actuator's transmission triples, and runs at the
+        # same `qpos` MuJoCo's `mj_transmission` does (inside `mj_fwdPosition`,
+        # before `mj_fwdActuation` reads the length) — so the value is right
+        # and the walk is one it was making anyway.
+        #
+        #     length[i] = gear * sum_k coef_k * qpos[qadr_k]
+        #
+        # which is `d->qpos[jnt_qposadr[id]]*gear[0]` for a joint transmission
+        # (ONE triple, coef 1) and `ten_length[id]*gear[0]` for a FIXED tendon
+        # (the triples ARE the tendon's joint/coef list).
+        #
+        # ⚠ `trn_n == 0` LEAVES THE SLOT NaN. A site, body or spatial-tendon
+        # transmission has no triples and its length is not this sum; the
+        # `<actuatorpos>` row on one is marked UNSERVED at load, so nothing
+        # reads the slot — and NaN says so rather than 0.0, which is a
+        # plausible length.
+        if n > 0 and i < len(d.actuator_length.data):
+            var t_len = Float64(0)
+            for k in range(n):
+                var q_a = Int(sf.actuators.data[o + ACT_IDX_TRN_QADR_0 + k])
+                var c_a = Float64(
+                    sf.actuators.data[o + ACT_IDX_TRN_COEF_0 + k]
+                )
+                if q_a >= 0 and q_a < nq:
+                    t_len += c_a * Float64(d.qpos.data[q_a])
+            d.actuator_length.data[i] = Scalar[DTYPE](t_len * gear)
+
         var kind = Int(sf.actuators.data[o + ACT_IDX_KIND])
         var u = ctrl
         if kind != ACT_KIND_PID and adr >= 0 and adr < len(act):

@@ -51,6 +51,7 @@ from mojo_rl.physics3d.constants import (
     SENS_JOINTPOS,
     SENS_JOINTVEL,
     SENS_TENDONPOS,
+    SENS_ACTUATORPOS,
     SENS_JOINTACTFRC,
     SENS_FRAMEPOS,
     SENS_FRAMEQUAT,
@@ -369,6 +370,19 @@ def _eval_stage[
                 d.sensordata.data[adr + 0] = Scalar[DTYPE](v[0])
                 d.sensordata.data[adr + 1] = Scalar[DTYPE](v[1])
                 d.sensordata.data[adr + 2] = Scalar[DTYPE](v[2])
+
+        elif st == SENS_ACTUATORPOS:
+            # `mjSENS_ACTUATORPOS` (engine_sensor.c:652):
+            # `d->actuator_length[actuator_outadr[objid]]`, `sensor_dim`
+            # values. Every transmission MuJoCo currently ships has an output
+            # block of ONE row (`mj_transmission`'s own comment at :1299), so
+            # `outadr[i] == i` and the dim is 1.
+            #
+            # ⚠ FILLED BY `compute_actuator_lengths`, which is guarded on THIS
+            # row existing — and which leaves the slot NaN for a transmission
+            # it cannot express. Such a row is marked unserved at load, so the
+            # pass above skips it and this line is never reached for one.
+            d.sensordata.data[adr] = d.actuator_length.data[objid]
 
         elif st == SENS_TENDONPOS:
             # `mjSENS_TENDONPOS` (engine_sensor.c:648):

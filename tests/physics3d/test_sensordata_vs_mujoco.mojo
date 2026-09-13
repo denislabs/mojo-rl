@@ -1,6 +1,6 @@
 """`sensors/eval.mojo` vs MuJoCo's `d.sensordata` (AUD-23, AUD-47).
 
-Fourteen sensors, twenty-eight values, all three stages. `jointpos`/`jointvel` joined
+Fifteen sensors, twenty-nine values, all three stages. `jointpos`/`jointvel` joined
 on 2026-09-13 (audit §6 phase 1a) and sit BEHIND A FREEJOINT deliberately —
 see `test_the_joint_sensors_read_their_own_joints_address` for why a model of
 hinges alone cannot tell the two address tables apart.
@@ -46,7 +46,9 @@ from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.dynamics.tendon_lengths import model_reads_tendon_length
+from mojo_rl.physics3d.dynamics.sensor_lengths import (
+    model_reads_tendon_length,
+)
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
@@ -61,6 +63,7 @@ from mojo_rl.physics3d.gpu.constants import (
 )
 from mojo_rl.physics3d.constants import (
     SENS_ACCELEROMETER,
+    SENS_ACTUATORPOS,
     SENS_FORCE,
     SENS_TORQUE,
 )
@@ -109,6 +112,7 @@ comptime SD_XML = """
     <jointactuatorfrc name="jaf" joint="el"/>
     <tendonpos name="tpf" tendon="tf"/>
     <tendonpos name="tps" tendon="ts"/>
+    <actuatorpos name="apj" actuator="m"/>
   </sensor>
   <tendon>
     <fixed name="tf">
@@ -131,9 +135,9 @@ comptime SM = ModelDefFromXML[
     nbody=sp.NBODY, njoint=sp.NJOINT, nq=sp.NQ, nv=sp.NV,
     ngeom=sp.NGEOM, nact=sp.NACT, ntex=sp.NTEX, nmat=sp.NMAT,
     nlight=sp.NLIGHT, ncam=sp.NCAM, nsite=sp.NSITE,
-    # `parse_xml` does not count sensors — see its constructor note. Fourteen
-    # sensors; 1+1+3+3+1+3+3+3+3+3+1+1+1+1 = 28 values.
-    nsensor=14, nsensordata=28,
+    # `parse_xml` does not count sensors — see its constructor note. Fifteen
+    # sensors; 1+1+3+3+1+3+3+3+3+3+1+1+1+1+1 = 29 values.
+    nsensor=15, nsensordata=29,
     max_tendon=sp.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=8,
@@ -181,6 +185,7 @@ comptime SD_XML_CUT = """
     <jointactuatorfrc name="jaf" joint="el" cutoff="1.0"/>
     <tendonpos name="tpf" tendon="tf"/>
     <tendonpos name="tps" tendon="ts" cutoff="0.2"/>
+    <actuatorpos name="apj" actuator="m" cutoff="0.9"/>
   </sensor>
   <tendon>
     <fixed name="tf">
@@ -203,7 +208,7 @@ comptime SMC = ModelDefFromXML[
     nbody=spc.NBODY, njoint=spc.NJOINT, nq=spc.NQ, nv=spc.NV,
     ngeom=spc.NGEOM, nact=spc.NACT, ntex=spc.NTEX, nmat=spc.NMAT,
     nlight=spc.NLIGHT, ncam=spc.NCAM, nsite=spc.NSITE,
-    nsensor=14, nsensordata=28,
+    nsensor=15, nsensordata=29,
     max_tendon=spc.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=8,
@@ -242,6 +247,7 @@ def _names() -> List[String]:
         String("jv"), String("scm"), String("slv"),
         String("acc"), String("frc"), String("trq"), String("tch"),
         String("jaf"), String("tpf"), String("tps"),
+        String("apj"),
     ]
 
 
@@ -462,7 +468,7 @@ def test_sensordata_matches_mujoco() raises:
         ours.append(Float64(d.sensordata.data[i]))
 
     var n = _compare(String(SD_XML), String("plain"), 1e-9, ours, qpos, qvel)
-    assert_true(n == 28, "expected 28 values, compared " + String(n))
+    assert_true(n == 29, "expected 29 values, compared " + String(n))
 
 
 def test_cutoff_clamps_like_mujoco() raises:
@@ -492,13 +498,13 @@ def test_cutoff_clamps_like_mujoco() raises:
     var dat_plain = _mj_at(mujoco, String(SD_XML), qpos, qvel)
     var dat_cut = _mj_at(mujoco, String(SD_XML_CUT), qpos, qvel)
     var bound = 0
-    for k in range(28):
+    for k in range(29):
         if abs(
             Float64(py=dat_plain.sensordata[k])
             - Float64(py=dat_cut.sensordata[k])
         ) > 1e-12:
             bound += 1
-    print("  values MuJoCo's own cutoffs changed:", bound, "/ 28")
+    print("  values MuJoCo's own cutoffs changed:", bound, "/ 29")
     assert_true(
         bound >= 3,
         "the declared cutoffs do not bind on MuJoCo's side (only "
@@ -509,8 +515,8 @@ def test_cutoff_clamps_like_mujoco() raises:
     var n = _compare(
         String(SD_XML_CUT), String("cutoff"), 1e-9, ours, qpos, qvel
     )
-    assert_true(n == 28, "expected 28 values, compared " + String(n))
-    print("  our clamped sensordata matches MuJoCo's, all 28 values")
+    assert_true(n == 29, "expected 29 values, compared " + String(n))
+    print("  our clamped sensordata matches MuJoCo's, all 29 values")
 
 
 def test_a_stage_that_never_runs_is_loud() raises:
@@ -560,17 +566,30 @@ def test_a_stage_that_never_runs_is_loud() raises:
         var st = Int(mf.sensors.data[o + SENSOR_IDX_TYPE])
         var adr = Int(mf.sensors.data[o + SENSOR_IDX_ADR])
         var dim = Int(mf.sensors.data[o + SENSOR_IDX_DIM])
+        # ⚠⚠ A SECOND REASON A SLOT CAN BE UNCOMPUTED, AND IT IS NOT THE
+        # STAGE. `actuatorpos` reads `d.actuator_length`, which
+        # `apply_actions_fields` writes — the actuator records live in
+        # `SpecFields` and `EulerIntegrator` is handed `Data` and `Model`
+        # only. This leg calls `step` and NOTHING ELSE, so that buffer is
+        # still the NaN `Data` allocated, and the sensor correctly reports
+        # it. Asserting the NaN rather than excluding the row is what makes
+        # that a pinned contract instead of a hole: `_run_plain` DOES drive
+        # the model, and `test_actuatorpos_is_the_transmission_length_where_
+        # we_have_one` checks the same slot comes out at 1.2 there.
+        var needs_drive = st == SENS_ACTUATORPOS
         var needs_rne = (
             st == SENS_ACCELEROMETER or st == SENS_FORCE or st == SENS_TORQUE
-        )
+        ) or needs_drive
         for k in range(dim):
             var v = Float64(d.sensordata.data[adr + k])
             if needs_rne:
                 assert_true(
                     isnan(v),
                     "sensor " + String(i) + " (type " + String(st) + ") needs"
-                    " the post-constraint RNE, which this integrator does not"
-                    " run — its slot must read NaN, not " + String(v),
+                    + (" the actuator pass" if needs_drive
+                       else " the post-constraint RNE")
+                    + ", which this leg does not run — its slot must read"
+                    " NaN, not " + String(v),
                 )
                 n_nan += 1
             else:
@@ -611,6 +630,9 @@ def test_a_stage_that_never_runs_is_loud() raises:
     for i in range(SMD.NSENSOR):
         var o = i * MODEL_SENSOR_SIZE
         var st = Int(mf2.sensors.data[o + SENSOR_IDX_TYPE])
+        # ⚠ ONLY THE RNE THREE. `actuatorpos` is NaN on BOTH legs here —
+        # neither drives the model — so including it would fail this arm for
+        # a reason that has nothing to do with `RNE_POST`.
         if not (
             st == SENS_ACCELEROMETER or st == SENS_FORCE or st == SENS_TORQUE
         ):
@@ -1006,6 +1028,107 @@ def test_tendonpos_reads_ten_length_and_the_pass_is_guarded_on_it() raises:
     print("  a tendon nobody sensors keeps its NaN; the guard says no")
 
 
+def test_actuatorpos_is_the_transmission_length_where_we_have_one() raises:
+    """`actuatorpos` is `gear * sum coef*qpos`, and unserved where it is not.
+
+    ⚠⚠ THE BUFFER IS WRITTEN BY `apply_actions_fields`, NOT BY A PASS INSIDE
+    `step`. The actuator records live in `SpecFields` and `EulerIntegrator` is
+    handed `Data` and `Model` only; the function that owns them already walks
+    each actuator's transmission triples and runs at the same `qpos`
+    MuJoCo's `mj_transmission` does. A harness that drove the model some other
+    way would read NaN here — which is the point of the NaN.
+
+    ⚠ AND IT IS UNSERVED FOR A TRANSMISSION WITH NO TRIPLES. A site or
+    SPATIAL-tendon actuator's length is a Jacobian-weighted wrench or a
+    polyline, not that sum. The second half of this test loads such a model
+    and asserts the row is addressed and not served — without it, the served
+    verdict above would be about the element name rather than the
+    transmission.
+    """
+    print("=== actuatorpos is the transmission length ===")
+    var mujoco = Python.import_module("mujoco")
+    var m = mujoco.MjModel.from_xml_string(PythonObject(String(SD_XML)))
+    var O = mujoco.mjtObj
+    var sid = Int(py=mujoco.mj_name2id(m, O.mjOBJ_SENSOR, PythonObject("apj")))
+    var adr = Int(py=m.sensor_adr[sid])
+
+    var ctx = DeviceContext()
+    var mf = Mod()
+    var d = Dat()
+    var st = _run_plain(d, mf, ctx)
+    var dat = _mj_at(mujoco, String(SD_XML), st[0].copy(), st[1].copy())
+
+    var ours = Float64(d.sensordata.data[adr])
+    var theirs = Float64(py=dat.sensordata[adr])
+    print("  ours", ours, " MuJoCo", theirs,
+          "  MuJoCo actuator_length", Float64(py=dat.actuator_length[0]))
+    assert_true(
+        abs(ours - theirs) <= 1e-12,
+        "actuatorpos: ours " + String(ours) + " vs MuJoCo " + String(theirs),
+    )
+    # ⚠ NON-VACUITY. The elbow sits at 0.6 rad and the gear is 2, so the
+    # reading is 1.2 — not 0.0, which every wrong implementation returns.
+    assert_true(
+        abs(ours - 1.2) <= 1e-12,
+        "the length should be gear x qpos = 1.2; got " + String(ours),
+    )
+    # And the buffer itself, not just the sensor slice.
+    assert_true(
+        abs(Float64(d.actuator_length.data[0])
+            - Float64(py=dat.actuator_length[0])) <= 1e-12,
+        "our actuator_length[0] = "
+        + String(Float64(d.actuator_length.data[0])) + " vs MuJoCo "
+        + String(Float64(py=dat.actuator_length[0])),
+    )
+
+    # ── the unserved transmission ────────────────────────────────────────
+    var spatial = String(
+        "<mujoco><worldbody>"
+        "<body name='b' pos='0 0 1'>"
+        "<joint name='h' type='hinge' axis='0 1 0'/>"
+        "<geom name='g' type='sphere' size='0.1'/>"
+        "<site name='s0' pos='0.1 0 0' size='0.01'/>"
+        "<body name='c' pos='0.3 0 0'>"
+        "<joint name='h2' type='hinge' axis='0 1 0'/>"
+        "<geom name='g2' type='sphere' size='0.05'/>"
+        "<site name='s1' pos='0.05 0 0' size='0.01'/>"
+        "</body></body></worldbody>"
+        "<tendon><spatial name='sp'><site site='s0'/><site site='s1'/>"
+        "</spatial></tendon>"
+        "<actuator><motor name='ms' tendon='sp' gear='3'/>"
+        "<motor name='mj' joint='h' gear='2'/></actuator>"
+        "<sensor><actuatorpos name='aps' actuator='ms'/>"
+        "<actuatorpos name='apj2' actuator='mj'/></sensor></mujoco>"
+    )
+    _ = mujoco.MjModel.from_xml_string(PythonObject(spatial))
+    var fmd = parse_xml_full(spatial, String("."))
+    assert_true(
+        len(fmd.sensors) == 2,
+        "both rows must exist; got " + String(len(fmd.sensors)),
+    )
+    assert_true(
+        not fmd.sensors[0].served and fmd.sensors[0].objid == -1,
+        "the SPATIAL-tendon actuator's row must be addressed and NOT served",
+    )
+    assert_true(
+        fmd.sensors[1].served and fmd.sensors[1].objid >= 0,
+        "the joint actuator's row must be served — otherwise the verdict"
+        " above is about the element, not the transmission",
+    )
+    assert_true(
+        fmd.sensors[1].adr == 1,
+        "the served row must keep its slot behind the unserved one; adr = "
+        + String(fmd.sensors[1].adr),
+    )
+    var raised = False
+    try:
+        _ = fmd.sensor_adr_by_name(String("aps"))
+    except:
+        raised = True
+    assert_true(raised, "reading the unserved actuatorpos by name must raise")
+    print("  a spatial-tendon actuator's row is addressed, not served")
+
+
 def main() raises:
     var suite = TestSuite()
     suite.test[test_sensordata_matches_mujoco]()
@@ -1016,4 +1139,5 @@ def main() raises:
     suite.test[test_subtreecom_is_this_steps_com_not_last_steps]()
     suite.test[test_jointactuatorfrc_reads_the_actuator_force_at_the_dof]()
     suite.test[test_tendonpos_reads_ten_length_and_the_pass_is_guarded_on_it]()
+    suite.test[test_actuatorpos_is_the_transmission_length_where_we_have_one]()
     suite^.run()

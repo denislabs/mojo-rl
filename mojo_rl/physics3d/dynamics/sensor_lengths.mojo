@@ -1,5 +1,12 @@
 """`d.ten_length` — MuJoCo's `mj_tendon`, run only when something reads it.
 
+⚠ ITS SIBLING `d.actuator_length` IS NOT FILLED HERE, and the asymmetry is
+forced. The actuator records live in `SpecFields`, which `EulerIntegrator`
+does not hold — `step` is handed `Data` and `Model` only. The transmission
+length is therefore written by `apply_actions_fields`, which owns those
+records, already walks each actuator's triples, and runs at the same `qpos`
+MuJoCo's `mj_transmission` does. See `Data.actuator_length`.
+
 MuJoCo fills `d->ten_length` for every tendon inside every `mj_fwdPosition`.
 This engine does not, and that is a deliberate scope call rather than a gap:
 a spatial tendon's length is a polyline walk over its wrap geoms, and the
@@ -145,3 +152,4 @@ def compute_tendon_lengths[
                 0, t, dm, tendons_v, joints_v, qpos_v, tJ
             )
         d.ten_length.data[t] = length
+

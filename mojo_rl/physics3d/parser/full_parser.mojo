@@ -64,6 +64,7 @@ from ..constants import (
     SENS_JOINTPOS,
     SENS_JOINTVEL,
     SENS_TENDONPOS,
+    SENS_ACTUATORPOS,
     SENS_JOINTACTFRC,
     SENS_FRAMEPOS,
     SENS_FRAMEQUAT,
@@ -82,6 +83,7 @@ from ..constants import (
     SENSOBJ_SITE,
     SENSOBJ_CAMERA,
     SENSOBJ_TENDON,
+    SENSOBJ_ACTUATOR,
     SENSDATA_REAL,
     SENSDATA_POSITIVE,
     SENSDATA_AXIS,
@@ -6586,7 +6588,7 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 # =============================================================================
 
 
-# The twenty elements this loader models, and the kernel each one reaches.
+# The twenty-one elements this loader models, and the kernel each one reaches.
 # Every other `<sensor>` child is refused BY NAME in `_fill_sensors` — see the
 # note there for why a silent skip is not on the table.
 #
@@ -6601,6 +6603,7 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 #   jointpos         9          joint         1   REAL       POS    eval (qpos)
 #   jointvel         10         joint         1   REAL       VEL    eval (qvel)
 #   tendonpos        11         tendon        1   REAL       POS    eval (ten_length)
+#   actuatorpos      13         actuator+     1   REAL       POS    eval (actuator_length)
 #   jointactuatorfrc 16         joint         1   REAL       ACC    eval (qfrc)
 #   framepos         26         obj*          3   REAL       POS    frame.mojo
 #   framequat        27         obj*          4   QUATERNION POS    frame.mojo
@@ -6611,6 +6614,10 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 #   frameangvel      32         obj*          3   REAL       VEL    frame.mojo
 #   subtreecom       35         body          3   REAL       POS    eval (d.subtree_com)
 #   subtreelinvel    36         body          3   REAL       VEL    subtree
+#
+# + `actuatorpos` is served only for a joint (slide/hinge) or tendon
+#   transmission — the two whose length is `gear * sum coef*qpos`. A site,
+#   body, ball- or free-joint one is addressed and not served, decided per ROW.
 #
 # * `obj` = whatever `objtype=` names: body, xbody, geom or site. A frame
 #   sensor on a CAMERA is addressed and not served — this parser has no camera
@@ -6704,6 +6711,15 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         )
     if tag_name == "tendonpos":
         return _SensorSpec(SENS_TENDONPOS, 1, SENSDATA_REAL, SENSSTAGE_POS, True)
+    # ⚠ SERVED HERE, AND POSSIBLY UNSERVED LATER — the second element in this
+    # table whose `served` depends on more than its name (the frame family is
+    # the other). An actuator whose transmission is a site, a body, or a ball
+    # or free joint has a length this engine does not express, and
+    # `_fill_sensors` clears the flag on that ROW.
+    if tag_name == "actuatorpos":
+        return _SensorSpec(
+            SENS_ACTUATORPOS, 1, SENSDATA_REAL, SENSSTAGE_POS, True
+        )
     # ⚠ SERVED HERE, AND POSSIBLY UNSERVED LATER. These five are the only
     # elements whose `served` depends on an ATTRIBUTE: `objtype="camera"` has
     # no name lookup in this parser, so `_fill_sensors` clears the flag on
@@ -6734,8 +6750,6 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(8, 2, SENSDATA_REAL, SENSSTAGE_POS, False)
     if tag_name == "tendonvel":
         return _SensorSpec(12, 1, SENSDATA_REAL, SENSSTAGE_VEL, False)
-    if tag_name == "actuatorpos":
-        return _SensorSpec(13, 1, SENSDATA_REAL, SENSSTAGE_POS, False)
     if tag_name == "actuatorvel":
         return _SensorSpec(14, 1, SENSDATA_REAL, SENSSTAGE_VEL, False)
     if tag_name == "actuatorfrc":
@@ -6883,7 +6897,7 @@ def _fill_sensors(
     ⚠⚠ ADDRESSING IS NOT SERVING, AND THE SPLIT IS THE DESIGN. Every
     recognised element gets a row carrying MuJoCo's exact `dim`, `datatype`,
     `needstage` and `adr`, whether or not this engine can compute it. Only the
-    twenty with a kernel behind them are marked `served` — and one family,
+    twenty-one with a kernel behind them are marked `served` — and one family,
     the frame sensors, is served only for the four object types this parser
     can resolve a name for.
 
@@ -7097,6 +7111,59 @@ def _fill_sensors(
             if not sd.served:
                 sd.objid = -1
                 sd.body_id = -1
+                n_unserved += 1
+                if not _has_str(unserved_tags, tag_name):
+                    unserved_tags.append(tag_name)
+        elif sd.sensor_type == SENS_ACTUATORPOS:
+            # ⚠ `mjOBJ_ACTUATOR`, resolved against `result.actuator_names`.
+            sd.objtype = SENSOBJ_ACTUATOR
+            var aname = _trim(_extract_attr(tag, "actuator"))
+            if aname.byte_length() == 0:
+                raise Error(
+                    "physics3d: <sensor><actuatorpos> needs an actuator="
+                    " attribute"
+                )
+            var aid = -1
+            for k in range(len(result.actuator_names)):
+                if result.actuator_names[k] == aname:
+                    aid = k
+                    break
+            if aid < 0:
+                raise Error(
+                    "physics3d: <sensor><actuatorpos actuator='"
+                    + aname
+                    + "'> names no actuator in this model"
+                )
+            sd.objid = aid
+            sd.body_id = -1
+
+            # ⚠⚠ SERVED EXACTLY WHERE `apply_actions_fields` WRITES A LENGTH,
+            # WHICH IS `trn_n > 0` — the TRIPLE form. `d.actuator_length` is
+            # `gear * sum_k coef_k qpos[qadr_k]`, which is MuJoCo's
+            # `qpos[jnt_qposadr[id]]*gear[0]` for a joint transmission (one
+            # triple, coef 1) and its `ten_length[id]*gear[0]` for a FIXED
+            # tendon (the triples ARE the tendon's joint/coef list). A SITE or
+            # SPATIAL-tendon transmission has no triples — its length is a
+            # Jacobian-weighted wrench or a polyline — so the row is
+            # ADDRESSED and not served.
+            #
+            # ⚠ AND `trn_n > 0` IS NOT ENOUGH ON ITS OWN. A `joint=` actuator
+            # on a BALL joint also gets one triple, pointed at the
+            # quaternion's first component; MuJoCo's length there is an expmap
+            # projection (engine_core_smooth.c:1331-1360), not `qpos*gear`.
+            # `_fill_actuator_transmission` has already run, so these fields
+            # are the resolved truth rather than a re-read of the XML.
+            var ac = result.actuators[aid]
+            var ok_trn = ac.trn_n > 0
+            if ok_trn and ac.joint_id >= 0:
+                if ac.joint_id < len(result.joints):
+                    var jt = result.joints[ac.joint_id].jnt_type
+                    ok_trn = jt == JNT_SLIDE or jt == JNT_HINGE
+                else:
+                    ok_trn = False
+            if not ok_trn:
+                sd.served = False
+                sd.objid = -1
                 n_unserved += 1
                 if not _has_str(unserved_tags, tag_name):
                     unserved_tags.append(tag_name)
