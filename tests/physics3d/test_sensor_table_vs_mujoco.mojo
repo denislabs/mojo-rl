@@ -305,7 +305,7 @@ def test_unservable_sensors_refuse_to_load() raises:
     comptime HEAD = """
 <mujoco>
   <worldbody>
-    <body name="b"><freejoint/><geom type="box" size=".1 .1 .1"/>
+    <body name="b"><freejoint name="root"/><geom type="box" size=".1 .1 .1"/>
     <site name="s" size=".05"/></body>
   </worldbody>
   <sensor>
@@ -330,8 +330,16 @@ def test_unservable_sensors_refuse_to_load() raises:
         # a reference that does not resolve
         String('<gyro name="g" site="nope"/>'),
         String('<subtreelinvel name="sl" body="nope"/>'),
+        String('<jointpos name="jp" joint="nope"/>'),
         # a modelled element missing its object
         String('<touch name="t"/>'),
+        String('<jointvel name="jv"/>'),
+        # ⚠ A JOINT SENSOR ON A MULTI-DOF JOINT. MuJoCo's own compiler
+        # refuses this (`user_objects.cc:7902`, "joint must be slide or hinge
+        # in sensor") — the reading is one scalar and a freejoint has no
+        # single qpos to report. HEAD's body carries an unnamed freejoint, so
+        # this row names its own.
+        String('<jointpos name="jp" joint="root"/>'),
     ]
     var refused = 0
     for i in range(len(rows)):
@@ -450,9 +458,13 @@ def test_unserved_sensors_are_addressed_not_dropped() raises:
 
     print("  served:", served_seen, " unserved (addressed only):",
           unserved_seen)
-    assert_true(served_seen == 3, "expected 3 served, got "
+    # ⚠ THESE MOVE WHEN A SENSOR IS SERVED, AND THAT IS THE POINT OF PINNING
+    # THEM. `jp` was unserved until 2026-09-13 (audit §6 phase 1a); the split
+    # is 4/3 now. Both halves must stay NONZERO or the test below is checking
+    # an empty set.
+    assert_true(served_seen == 4, "expected 4 served, got "
                 + String(served_seen))
-    assert_true(unserved_seen == 4, "expected 4 unserved, got "
+    assert_true(unserved_seen == 3, "expected 3 unserved, got "
                 + String(unserved_seen))
     assert_true(
         fmd.nsensordata() == Int(py=m.nsensordata),
@@ -467,7 +479,7 @@ def test_unserved_sensors_are_addressed_not_dropped() raises:
                 "a served sensor must still resolve by name")
     # ...and the unserved ones raise on every read, including `adr`, whose
     # value is CORRECT but points at values nothing wrote.
-    for nm in [String("fq"), String("jp"), String("sam"), String("fx")]:
+    for nm in [String("fq"), String("sam"), String("fx")]:
         var raised = False
         try:
             _ = fmd.sensor_adr_by_name(nm)
@@ -478,11 +490,20 @@ def test_unserved_sensors_are_addressed_not_dropped() raises:
             "reading unserved sensor '" + nm + "' by name must raise — its"
             " offset is right and its values were never written",
         )
-    print("  all 4 unserved names raise on read: ok")
+    print("  all 3 unserved names raise on read: ok")
+
+    # ⚠ AND A SERVED JOINT SENSOR DOES NOT RAISE. Without this arm the loop
+    # above would still pass if `jointpos` had been dropped from the table
+    # altogether rather than served.
+    assert_true(
+        fmd.sensor_adr_by_name(String("jp")) == 7,
+        "`jp` is served now and must read back its adr, 7; got "
+        + String(fmd.sensor_adr_by_name(String("jp"))),
+    )
 
     # And the model said so once, by audit id.
     assert_true(
-        fmd.silent_attrs >= 4,
+        fmd.silent_attrs >= 3,
         "the unserved sensors must be reported under AUD-23; silent_attrs = "
         + String(fmd.silent_attrs),
     )

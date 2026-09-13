@@ -125,12 +125,15 @@ comptime SENS_GYRO: Int = 3
 comptime SENS_FORCE: Int = 4
 comptime SENS_TORQUE: Int = 5
 comptime SENS_RANGEFINDER: Int = 7
+comptime SENS_JOINTPOS: Int = 9
+comptime SENS_JOINTVEL: Int = 10
 comptime SENS_SUBTREELINVEL: Int = 36
 
-# `mjtObj` — the object a sensor is attached to. Only the two this loader
-# resolves; `mjOBJ_BODY` is 1 and `mjOBJ_SITE` is 6 (`mjtype.h`, re-read off
-# `mujoco.mjtObj` in the gate).
+# `mjtObj` — the object a sensor is attached to. Only the three this loader
+# resolves; `mjOBJ_BODY` is 1, `mjOBJ_JOINT` is 3 and `mjOBJ_SITE` is 6
+# (`mjtype.h:292-297`, re-read off `mujoco.mjtObj` in the gate).
 comptime SENSOBJ_BODY: Int = 1
+comptime SENSOBJ_JOINT: Int = 3
 comptime SENSOBJ_SITE: Int = 6
 
 # `mjtDataType` — decides how `cutoff` clamps (`engine_sensor.c:198-224`):

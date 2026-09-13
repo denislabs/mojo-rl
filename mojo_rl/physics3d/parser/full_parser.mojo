@@ -61,8 +61,11 @@ from ..constants import (
     SENS_FORCE,
     SENS_TORQUE,
     SENS_RANGEFINDER,
+    SENS_JOINTPOS,
+    SENS_JOINTVEL,
     SENS_SUBTREELINVEL,
     SENSOBJ_BODY,
+    SENSOBJ_JOINT,
     SENSOBJ_SITE,
     SENSDATA_REAL,
     SENSDATA_POSITIVE,
@@ -6568,7 +6571,7 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 # =============================================================================
 
 
-# The eight elements this loader models, and the kernel each one reaches.
+# The ten elements this loader models, and the kernel each one reaches.
 # Every other `<sensor>` child is refused BY NAME in `_fill_sensors` — see the
 # note there for why a silent skip is not on the table.
 #
@@ -6580,7 +6583,15 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 #   force            4          site          3   REAL       ACC    site_acc
 #   torque           5          site          3   REAL       ACC    site_acc
 #   rangefinder      7          site          1   REAL       POS    rangefinder
+#   jointpos         9          joint         1   REAL       POS    eval (qpos)
+#   jointvel         10         joint         1   REAL       VEL    eval (qvel)
 #   subtreelinvel    36         body          3   REAL       VEL    subtree
+#
+# ⚠ THE LAST TWO HAVE NO KERNEL FILE AND THAT IS NOT AN OVERSIGHT.
+# `d->qpos[m->jnt_qposadr[objid]]` and `d->qvel[m->jnt_dofadr[objid]]` are the
+# whole of `mjSENS_JOINTPOS` / `mjSENS_JOINTVEL` in the reference
+# (`engine_sensor.c:644, 873`) — one array read each. A file per sensor would
+# put a call boundary around a subscript.
 #
 # ⚠⚠ EVERY COLUMN BUT THE LAST WAS READ OFF A LIVE 3.12.0 `MjModel`, not
 # transcribed from `user_objects.cc`. The table there is three functions deep
@@ -6633,7 +6644,8 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
     time, the arms are string compares, and the tree's own rule against
     runtime-indexed tables applies to anything that might reach a kernel.
     """
-    # served == 1: a kernel in `physics3d/sensors` computes this.
+    # served == 1: a kernel in `physics3d/sensors` — or, for the two joint
+    # sensors, the eval pass itself — computes this.
     if tag_name == "touch":
         return _SensorSpec(SENS_TOUCH, 1, SENSDATA_POSITIVE, SENSSTAGE_ACC, True)
     if tag_name == "accelerometer":
@@ -6650,6 +6662,10 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(SENS_RANGEFINDER, 1, SENSDATA_REAL, SENSSTAGE_POS, True)
     if tag_name == "subtreelinvel":
         return _SensorSpec(SENS_SUBTREELINVEL, 3, SENSDATA_REAL, SENSSTAGE_VEL, True)
+    if tag_name == "jointpos":
+        return _SensorSpec(SENS_JOINTPOS, 1, SENSDATA_REAL, SENSSTAGE_POS, True)
+    if tag_name == "jointvel":
+        return _SensorSpec(SENS_JOINTVEL, 1, SENSDATA_REAL, SENSSTAGE_VEL, True)
 
     # served == 0: ADDRESSED ONLY. The row exists with MuJoCo's exact dim so
     # that every LATER sensor's `adr` is still right; nothing computes it.
@@ -6657,10 +6673,6 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(6, 3, SENSDATA_REAL, SENSSTAGE_POS, False)
     if tag_name == "camprojection":
         return _SensorSpec(8, 2, SENSDATA_REAL, SENSSTAGE_POS, False)
-    if tag_name == "jointpos":
-        return _SensorSpec(9, 1, SENSDATA_REAL, SENSSTAGE_POS, False)
-    if tag_name == "jointvel":
-        return _SensorSpec(10, 1, SENSDATA_REAL, SENSSTAGE_VEL, False)
     if tag_name == "tendonpos":
         return _SensorSpec(11, 1, SENSDATA_REAL, SENSSTAGE_POS, False)
     if tag_name == "tendonvel":
@@ -6751,7 +6763,7 @@ def _fill_sensors(
     ⚠⚠ ADDRESSING IS NOT SERVING, AND THE SPLIT IS THE DESIGN. Every
     recognised element gets a row carrying MuJoCo's exact `dim`, `datatype`,
     `needstage` and `adr`, whether or not this engine can compute it. Only the
-    eight with a kernel behind them are marked `served`.
+    ten with a kernel behind them are marked `served`.
 
     The alternative — skipping what we cannot compute — was written first and
     is wrong: `adr` would be a prefix sum over a SUBSET, so every sensor after
@@ -6760,8 +6772,9 @@ def _fill_sensors(
     sensor's real value. Refusing the whole model instead is also wrong, and
     measurably so: `dog`, `swimmer`, `finger` and `quadruped` all load today
     and all declare a sensor this engine has no kernel for (`subtreeangmom`,
-    `framepos`/`framexaxis`/`frameyaxis`, `jointpos`/`jointvel`,
-    `subtreecom`). Refusing them would trade a silent gap for a regression.
+    `framepos`/`framexaxis`/`frameyaxis`, `subtreecom` — `jointpos` and
+    `jointvel` were on that list until 2026-09-13 and are served now).
+    Refusing them would trade a silent gap for a regression.
 
     So an unserved sensor is ADDRESSED — it holds its slot, keeps every later
     `adr` honest, and is reported once by audit id — and reading it BY NAME
@@ -6875,6 +6888,69 @@ def _fill_sensors(
             n_unserved += 1
             if not _has_str(unserved_tags, tag_name):
                 unserved_tags.append(tag_name)
+        elif (
+            sd.sensor_type == SENS_JOINTPOS
+            or sd.sensor_type == SENS_JOINTVEL
+        ):
+            # ⚠ `mjOBJ_JOINT`, AND THE JOINT MUST BE SLIDE OR HINGE.
+            # MuJoCo's compiler refuses any other type outright
+            # (`user_objects.cc:7902-7913`, "joint must be slide or hinge in
+            # sensor") because the reading is ONE scalar and a free or ball
+            # joint has no single qpos to name. Refusing here rather than
+            # taking `qpos[qposadr]` of a free joint — which is a position
+            # component, a number of entirely plausible magnitude — is the
+            # whole point: the wrong answer would be silent.
+            sd.objtype = SENSOBJ_JOINT
+            var j_name = _trim(_extract_attr(tag, "joint"))
+            if j_name.byte_length() == 0:
+                raise Error(
+                    "physics3d: <sensor><"
+                    + tag_name
+                    + "> needs a joint= attribute"
+                )
+            var ji = _find_joint_index_by_name(worldbody, j_name)
+            if ji < 0:
+                raise Error(
+                    "physics3d: <sensor><"
+                    + tag_name
+                    + " joint='"
+                    + j_name
+                    + "'> names no joint in this model"
+                )
+            # ⚠ A HARD BOUND, NOT AN `if` THAT FALLS THROUGH. `objid` is
+            # used by `sensors/eval.mojo` to index `m.joints` directly, so an
+            # index past the table is an out-of-bounds read at every step
+            # rather than a wrong number once. The site branch below can
+            # afford to skip — it only loses `body_id` — and this cannot.
+            if ji >= len(result.joints):
+                raise Error(
+                    "physics3d: <sensor><"
+                    + tag_name
+                    + " joint='"
+                    + j_name
+                    + "'> resolved to joint index "
+                    + String(ji)
+                    + " but only "
+                    + String(len(result.joints))
+                    + " joints were built — the name lookup and the joint"
+                    " table disagree"
+                )
+            var jt = result.joints[ji].jnt_type
+            if jt != JNT_SLIDE and jt != JNT_HINGE:
+                raise Error(
+                    "physics3d: <sensor><"
+                    + tag_name
+                    + " joint='"
+                    + j_name
+                    + "'> names a "
+                    + ("free" if jt == JNT_FREE else "ball")
+                    + " joint. MuJoCo requires slide or hinge here"
+                    " (user_objects.cc:7902) — the sensor reports ONE scalar"
+                    " and a multi-dof joint has no single value to report."
+                    " This model does not compile in MuJoCo either."
+                )
+            sd.objid = ji
+            sd.body_id = result.joints[ji].body_id
         elif sd.sensor_type == SENS_SUBTREELINVEL:
             sd.objtype = SENSOBJ_BODY
             var b_name = _trim(_extract_attr(tag, "body"))

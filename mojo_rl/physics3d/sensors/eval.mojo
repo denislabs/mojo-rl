@@ -5,6 +5,13 @@ The six kernels beside this file each compute one sensor, addressed by
 model's sensor table, dispatches by `mjtSensor`, writes the values into
 `d.sensordata` at each sensor's own `adr`, and applies `cutoff`.
 
+⚠ TWO SENSORS ARE COMPUTED HERE RATHER THAN IN A KERNEL FILE, and that is
+deliberate. `jointpos` and `jointvel` are `d->qpos[m->jnt_qposadr[objid]]` and
+`d->qvel[m->jnt_dofadr[objid]]` — the whole of the reference's case arms
+(`engine_sensor.c:644, 873`). A file per sensor would wrap a subscript in a
+call boundary. Their `objid` is a JOINT index, not a site or a body, which is
+the only place in this pass where that is true.
+
 ⚠⚠ THREE PASSES, BECAUSE MuJoCo HAS THREE. `mj_sensorPos` runs after forward
 kinematics, `mj_sensorVel` after the velocity stage, `mj_sensorAcc` after the
 constraint solve (`engine_forward.c:1797, 1814, 1832`). A sensor's stage is not
@@ -41,6 +48,8 @@ from mojo_rl.physics3d.constants import (
     SENS_FORCE,
     SENS_TORQUE,
     SENS_RANGEFINDER,
+    SENS_JOINTPOS,
+    SENS_JOINTVEL,
     SENS_SUBTREELINVEL,
     SENSDATA_REAL,
     SENSDATA_POSITIVE,
@@ -49,6 +58,9 @@ from mojo_rl.physics3d.constants import (
     SENSSTAGE_ACC,
 )
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_JOINT_SIZE,
+    JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_DOF_ADR,
     MODEL_SENSOR_SIZE,
     SENSOR_IDX_TYPE,
     SENSOR_IDX_OBJID,
@@ -208,6 +220,33 @@ def _eval_stage[
                 d.sensordata.data[adr + 0] = Scalar[DTYPE](fv[3])
                 d.sensordata.data[adr + 1] = Scalar[DTYPE](fv[4])
                 d.sensordata.data[adr + 2] = Scalar[DTYPE](fv[5])
+
+        elif st == SENS_JOINTPOS:
+            # `mjSENS_JOINTPOS` (engine_sensor.c:644), verbatim:
+            # `sensordata[0] = d->qpos[m->jnt_qposadr[objid]]`.
+            #
+            # ⚠ `objid` IS A JOINT INDEX HERE, NOT A SITE. The other seven
+            # served types resolve to a site or a body; these two are the only
+            # ones whose `objtype` is `mjOBJ_JOINT`, and `_fill_sensors` is
+            # where that is decided. ⚠ The joint is guaranteed slide or hinge
+            # — the loader refuses anything else, as MuJoCo's compiler does —
+            # so `qpos_adr` names exactly one scalar.
+            d.sensordata.data[adr] = d.qpos.data[
+                Int(m.joints.data[objid * MODEL_JOINT_SIZE + JOINT_IDX_QPOS_ADR])
+            ]
+
+        elif st == SENS_JOINTVEL:
+            # `mjSENS_JOINTVEL` (engine_sensor.c:873):
+            # `sensordata[0] = d->qvel[m->jnt_dofadr[objid]]`.
+            #
+            # ⚠ `dof_adr`, NOT `qpos_adr`. They coincide on a model whose
+            # joints are all scalar and diverge the moment a free or ball
+            # joint appears anywhere BEFORE this one — which is most models
+            # that declare these sensors at all. Reading the wrong table gives
+            # a plausible number from the wrong joint.
+            d.sensordata.data[adr] = d.qvel.data[
+                Int(m.joints.data[objid * MODEL_JOINT_SIZE + JOINT_IDX_DOF_ADR])
+            ]
 
         elif st == SENS_SUBTREELINVEL:
             var vx = 0.0

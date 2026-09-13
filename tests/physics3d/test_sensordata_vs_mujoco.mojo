@@ -1,5 +1,10 @@
 """`sensors/eval.mojo` vs MuJoCo's `d.sensordata` (AUD-23, AUD-47).
 
+Ten sensors, twenty-two values, all three stages. `jointpos`/`jointvel` joined
+on 2026-09-13 (audit §6 phase 1a) and sit BEHIND A FREEJOINT deliberately —
+see `test_the_joint_sensors_read_their_own_joints_address` for why a model of
+hinges alone cannot tell the two address tables apart.
+
 The three evaluation passes — `sensor_pos` / `sensor_vel` / `sensor_acc` —
 walk the model's sensor table, dispatch each sensor to its kernel, write the
 values at that sensor's own `adr`, and apply `cutoff`. This compares the whole
@@ -37,9 +42,13 @@ from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_JOINT_SIZE,
+    JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_DOF_ADR,
     MODEL_SENSOR_SIZE,
     SENSOR_IDX_ADR,
     SENSOR_IDX_DIM,
@@ -77,8 +86,10 @@ comptime SD_XML = """
   </worldbody>
   <sensor>
     <rangefinder name="rf" site="down"/>
+    <jointpos name="jp" joint="el"/>
     <velocimeter name="vel" site="imu"/>
     <gyro name="gyr" site="imu"/>
+    <jointvel name="jv" joint="el"/>
     <subtreelinvel name="slv" body="torso"/>
     <accelerometer name="acc" site="imu"/>
     <force name="frc" site="wrist"/>
@@ -94,9 +105,9 @@ comptime SM = ModelDefFromXML[
     nbody=sp.NBODY, njoint=sp.NJOINT, nq=sp.NQ, nv=sp.NV,
     ngeom=sp.NGEOM, nact=sp.NACT, ntex=sp.NTEX, nmat=sp.NMAT,
     nlight=sp.NLIGHT, ncam=sp.NCAM, nsite=sp.NSITE,
-    # `parse_xml` does not count sensors — see its constructor note. Eight
-    # sensors; 1+3+3+3+3+3+3+1 = 20 values.
-    nsensor=8, nsensordata=20,
+    # `parse_xml` does not count sensors — see its constructor note. Ten
+    # sensors; 1+1+3+3+1+3+3+3+3+1 = 22 values.
+    nsensor=10, nsensordata=22,
     max_tendon=sp.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=8,
@@ -131,8 +142,10 @@ comptime SD_XML_CUT = """
   </worldbody>
   <sensor>
     <rangefinder name="rf" site="down" cutoff="0.75"/>
+    <jointpos name="jp" joint="el" cutoff="0.4"/>
     <velocimeter name="vel" site="imu" cutoff="0.3"/>
     <gyro name="gyr" site="imu" cutoff="0.5"/>
+    <jointvel name="jv" joint="el" cutoff="1.2"/>
     <subtreelinvel name="slv" body="torso"/>
     <accelerometer name="acc" site="imu"/>
     <force name="frc" site="wrist"/>
@@ -148,7 +161,7 @@ comptime SMC = ModelDefFromXML[
     nbody=spc.NBODY, njoint=spc.NJOINT, nq=spc.NQ, nv=spc.NV,
     ngeom=spc.NGEOM, nact=spc.NACT, ntex=spc.NTEX, nmat=spc.NMAT,
     nlight=spc.NLIGHT, ncam=spc.NCAM, nsite=spc.NSITE,
-    nsensor=8, nsensordata=20,
+    nsensor=10, nsensordata=22,
     max_tendon=spc.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=8,
@@ -183,7 +196,8 @@ comptime IntegC = EulerIntegrator[
 
 def _names() -> List[String]:
     return [
-        String("rf"), String("vel"), String("gyr"), String("slv"),
+        String("rf"), String("jp"), String("vel"), String("gyr"),
+        String("jv"), String("slv"),
         String("acc"), String("frc"), String("trq"), String("tch"),
     ]
 
@@ -385,7 +399,7 @@ def test_sensordata_matches_mujoco() raises:
         ours.append(Float64(d.sensordata.data[i]))
 
     var n = _compare(String(SD_XML), String("plain"), 1e-9, ours, qpos, qvel)
-    assert_true(n == 20, "expected 20 values, compared " + String(n))
+    assert_true(n == 22, "expected 22 values, compared " + String(n))
 
 
 def test_cutoff_clamps_like_mujoco() raises:
@@ -415,13 +429,13 @@ def test_cutoff_clamps_like_mujoco() raises:
     var dat_plain = _mj_at(mujoco, String(SD_XML), qpos, qvel)
     var dat_cut = _mj_at(mujoco, String(SD_XML_CUT), qpos, qvel)
     var bound = 0
-    for k in range(20):
+    for k in range(22):
         if abs(
             Float64(py=dat_plain.sensordata[k])
             - Float64(py=dat_cut.sensordata[k])
         ) > 1e-12:
             bound += 1
-    print("  values MuJoCo's own cutoffs changed:", bound, "/ 20")
+    print("  values MuJoCo's own cutoffs changed:", bound, "/ 22")
     assert_true(
         bound >= 3,
         "the declared cutoffs do not bind on MuJoCo's side (only "
@@ -432,8 +446,8 @@ def test_cutoff_clamps_like_mujoco() raises:
     var n = _compare(
         String(SD_XML_CUT), String("cutoff"), 1e-9, ours, qpos, qvel
     )
-    assert_true(n == 20, "expected 20 values, compared " + String(n))
-    print("  our clamped sensordata matches MuJoCo's, all 20 values")
+    assert_true(n == 22, "expected 22 values, compared " + String(n))
+    print("  our clamped sensordata matches MuJoCo's, all 22 values")
 
 
 def test_a_stage_that_never_runs_is_loud() raises:
@@ -550,9 +564,166 @@ def test_a_stage_that_never_runs_is_loud() raises:
     print("  with RNE_POST=True those same", n_filled, "slots are computed")
 
 
+def test_the_joint_sensors_read_their_own_joints_address() raises:
+    """`jointpos`/`jointvel` read `jnt_qposadr` / `jnt_dofadr`, not each other.
+
+    ⚠⚠ THE TWO ADDRESSES DIVERGE ONLY WHEN A MULTI-DOF JOINT COMES FIRST, and
+    that is why the fixture's `el` sits behind a freejoint. With `root`
+    consuming 7 qpos and 6 qvel, `el` has `qposadr == 7` and `dofadr == 6`:
+    a `jointvel` that read `qposadr` would index qvel[7] — past NV — and a
+    `jointpos` that read `dofadr` would return qpos[6], the quaternion's z
+    component, a number of entirely plausible magnitude. On a model of hinges
+    alone the two are equal and the bug is invisible, so this asserts the
+    divergence BEFORE trusting the agreement above.
+
+    It also pins the values themselves against MuJoCo's own addresses rather
+    than against our table, so a disagreement about joint ORDER shows up here
+    and not as a mysterious offset.
+    """
+    print("=== jointpos/jointvel address their own joint ===")
+    var mujoco = Python.import_module("mujoco")
+    var m = mujoco.MjModel.from_xml_string(PythonObject(String(SD_XML)))
+
+    var O = mujoco.mjtObj
+    var jid = Int(py=mujoco.mj_name2id(m, O.mjOBJ_JOINT, PythonObject("el")))
+    assert_true(jid >= 0, "the fixture no longer declares a joint named `el`")
+    var qadr = Int(py=m.jnt_qposadr[jid])
+    var vadr = Int(py=m.jnt_dofadr[jid])
+    print("  MuJoCo: joint `el` id", jid, " qposadr", qadr, " dofadr", vadr)
+    # ⚠ NON-VACUITY FOR THIS TEST SPECIFICALLY.
+    assert_true(
+        qadr != vadr,
+        "`el` has qposadr == dofadr == " + String(qadr) + " — the fixture has"
+        " lost the freejoint in front of it, so reading the wrong table would"
+        " give the RIGHT answer and this test proves nothing",
+    )
+
+    # And our own table agrees about which joint that is, and where it lives.
+    var ctx = DeviceContext()
+    var mf = Mod()
+    var d = Dat()
+    var st = _run_plain(d, mf, ctx)
+    var qpos = st[0].copy()
+    var qvel = st[1].copy()
+    assert_true(
+        Int(mf.joints.data[jid * MODEL_JOINT_SIZE + JOINT_IDX_QPOS_ADR])
+        == qadr,
+        "our jnt_qposadr for `el` is "
+        + String(Int(mf.joints.data[jid * MODEL_JOINT_SIZE
+                                    + JOINT_IDX_QPOS_ADR]))
+        + ", MuJoCo says " + String(qadr),
+    )
+    assert_true(
+        Int(mf.joints.data[jid * MODEL_JOINT_SIZE + JOINT_IDX_DOF_ADR])
+        == vadr,
+        "our jnt_dofadr for `el` is "
+        + String(Int(mf.joints.data[jid * MODEL_JOINT_SIZE
+                                    + JOINT_IDX_DOF_ADR]))
+        + ", MuJoCo says " + String(vadr),
+    )
+
+    # The readings, against the state the step was evaluated at.
+    var jp_adr = Int(py=m.sensor_adr[
+        Int(py=mujoco.mj_name2id(m, O.mjOBJ_SENSOR, PythonObject("jp")))])
+    var jv_adr = Int(py=m.sensor_adr[
+        Int(py=mujoco.mj_name2id(m, O.mjOBJ_SENSOR, PythonObject("jv")))])
+    var ours_jp = Float64(d.sensordata.data[jp_adr])
+    var ours_jv = Float64(d.sensordata.data[jv_adr])
+    print("  jointpos ours", ours_jp, " qpos[qposadr]", qpos[qadr])
+    print("  jointvel ours", ours_jv, " qvel[dofadr] ", qvel[vadr])
+    assert_true(
+        abs(ours_jp - qpos[qadr]) <= 1e-15,
+        "jointpos read " + String(ours_jp) + ", qpos[" + String(qadr)
+        + "] is " + String(qpos[qadr]),
+    )
+    assert_true(
+        abs(ours_jv - qvel[vadr]) <= 1e-15,
+        "jointvel read " + String(ours_jv) + ", qvel[" + String(vadr)
+        + "] is " + String(qvel[vadr]),
+    )
+
+    # ⚠ THE OVER-FIX CONTROL, SPELLED OUT: name the value the swap produces.
+    # qpos[dofadr] is the tilt quaternion's z; a jointpos reading it would be
+    # 0.22, not 0.6.
+    print("  the value a qposadr/dofadr swap would have produced:",
+          qpos[vadr])
+    assert_true(
+        abs(ours_jp - qpos[vadr]) > 1e-6,
+        "jointpos returned qpos[dofadr] = " + String(qpos[vadr])
+        + " — it is reading the DOF address",
+    )
+    print("  both joint sensors read their own address")
+
+
+def test_a_joint_sensor_on_a_multi_dof_joint_refuses() raises:
+    """MuJoCo's compiler refuses `jointpos` on a free or ball joint; so do we.
+
+    `user_objects.cc:7902-7913` — "joint must be slide or hinge in sensor".
+    The sensor reports ONE scalar, and there is no single qpos of a free joint
+    that answers to "the joint's position". Accepting it and taking
+    `qpos[qposadr]` would return the body's WORLD X, which is a number, has
+    the right units for a slide joint, and is not a joint position.
+
+    ⚠ THE ORACLE IS ASSERTED TO REFUSE TOO, in the same test. A refusal we
+    invented would be a divergence from MuJoCo dressed up as strictness.
+    """
+    print("=== jointpos on a free joint refuses, in both engines ===")
+    var bad = String(
+        "<mujoco><worldbody><body name='b' pos='0 0 1'>"
+        "<freejoint name='root'/>"
+        "<geom type='sphere' size='0.1'/>"
+        "</body></worldbody>"
+        "<sensor><jointpos name='jp' joint='root'/></sensor></mujoco>"
+    )
+
+    var mujoco = Python.import_module("mujoco")
+    var mj_refused = False
+    try:
+        _ = mujoco.MjModel.from_xml_string(PythonObject(bad))
+    except:
+        mj_refused = True
+    assert_true(
+        mj_refused,
+        "MuJoCo 3.12 ACCEPTED <jointpos> on a freejoint — the premise of our"
+        " refusal has moved and this loader is now stricter than the oracle",
+    )
+    print("  MuJoCo refuses it")
+
+    var we_refused = False
+    try:
+        _ = parse_xml_full(bad, String("."))
+    except:
+        we_refused = True
+    assert_true(
+        we_refused,
+        "our loader ACCEPTED <jointpos joint='root'> on a freejoint — it would"
+        " report qpos[0], the body's world X, as a joint position",
+    )
+    print("  we refuse it")
+
+    # ⚠ AND THE SAME DOCUMENT WITH A HINGE MUST LOAD. Without this the two
+    # refusals above could both be about the fixture, not about the joint type.
+    var good = String(
+        "<mujoco><worldbody><body name='b' pos='0 0 1'>"
+        "<joint name='h' type='hinge' axis='0 1 0'/>"
+        "<geom type='sphere' size='0.1'/>"
+        "</body></worldbody>"
+        "<sensor><jointpos name='jp' joint='h'/></sensor></mujoco>"
+    )
+    _ = mujoco.MjModel.from_xml_string(PythonObject(good))
+    var fmd = parse_xml_full(good, String("."))
+    assert_true(
+        len(fmd.sensors) == 1 and fmd.sensors[0].served,
+        "the hinge form must load and be SERVED; it is not",
+    )
+    print("  the hinge form loads and is served, in both")
+
+
 def main() raises:
     var suite = TestSuite()
     suite.test[test_sensordata_matches_mujoco]()
     suite.test[test_cutoff_clamps_like_mujoco]()
     suite.test[test_a_stage_that_never_runs_is_loud]()
+    suite.test[test_the_joint_sensors_read_their_own_joints_address]()
+    suite.test[test_a_joint_sensor_on_a_multi_dof_joint_refuses]()
     suite^.run()
