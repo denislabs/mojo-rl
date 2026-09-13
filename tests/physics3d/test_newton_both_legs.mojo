@@ -252,6 +252,8 @@ def solve_static[
     comptime L_CDOF = Layout.row_major(BATCH, MD.NV * 6)
     comptime L_M = Layout.row_major(BATCH, MD.NV * MD.NV)
     comptime L_SOLVER = Layout.row_major(BATCH, SOLVER_WS)
+    # ⚠ See the dynamic leg's twin below: `d.efc_eq_force` (AUD-48).
+    comptime L_EQF = Layout.row_major(BATCH, 6 * MD.NEQUALITY)
 
     for e in range(BATCH):
         _newton_solve_env[DT, CONE, BATCH, SOLVER_WS](
@@ -293,6 +295,7 @@ def solve_static[
             sc.qacc_constrained.lt["cpu", L_NV](),
             d.qacc_warmstart.lt["cpu", L_NV](),
             cs.solver.lt["cpu", L_SOLVER](),
+            d.efc_eq_force.lt["cpu", L_EQF](),
         )
 
 
@@ -364,6 +367,14 @@ def solve_dynamic[
     var rl_cdof = RuntimeLayout[DYN2].row_major(IndexList[2](BATCH, nv * 6))
     var rl_m = RuntimeLayout[DYN2].row_major(IndexList[2](BATCH, nv * nv))
     var rl_solver = RuntimeLayout[DYN2].row_major(IndexList[2](BATCH, SOLVER_WS))
+    # ⚠ `d.efc_eq_force` — the connect/weld equality row forces the solver
+    # retains for `mj_rnePostConstraint` (AUD-48). Added to
+    # `_newton_solve_env` in `254816cc` and NOT added here, which left this
+    # file failing to COMPILE at HEAD until 2026-09-13. It is the only
+    # caller that spells the argument list out by hand.
+    var rl_eqf = RuntimeLayout[DYN2].row_major(
+        IndexList[2](BATCH, 6 * nequality)
+    )
 
     var dims = DynDims(
         nq=nq,
@@ -406,6 +417,7 @@ def solve_dynamic[
             sc.qacc_constrained.lt_dyn["cpu", DYN2](rl_nv),
             d.qacc_warmstart.lt_dyn["cpu", DYN2](rl_nv),
             cs.solver.lt_dyn["cpu", DYN2](rl_solver),
+            d.efc_eq_force.lt_dyn["cpu", DYN2](rl_eqf),
         )
 
 
