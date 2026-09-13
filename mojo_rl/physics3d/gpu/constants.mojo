@@ -1210,7 +1210,7 @@ comptime SITE_IDX_QUAT_W: Int = 11
 # sum — drop one and every sensor after it reports an offset pointing at some
 # other sensor's values, which is a plausible wrong number rather than an
 # error. See `_fill_sensors` for why neither skipping nor refusing is right.
-comptime MODEL_SENSOR_SIZE: Int = 12  # ⚠ COUNT THE IDX LINES BELOW: 0..11
+comptime MODEL_SENSOR_SIZE: Int = 15  # ⚠ COUNT THE IDX LINES BELOW: 0..14
 
 comptime SENSOR_IDX_TYPE: Int = 0  # `mjtSensor`, e.g. SENS_TOUCH
 comptime SENSOR_IDX_OBJTYPE: Int = 1  # `mjtObj` — SENSOBJ_SITE / BODY / GEOM …
@@ -1231,6 +1231,24 @@ comptime SENSOR_IDX_SERVED: Int = 9  # 1 if a kernel computes it, else 0
 # back the global position — right units, right magnitude, wrong frame.
 comptime SENSOR_IDX_REFTYPE: Int = 10  # `mjtObj` of the reference, or UNKNOWN
 comptime SENSOR_IDX_REFID: Int = 11  # index of the reference object, or -1
+
+# `<option magnetic>` — the world-frame magnetic field a `<magnetometer>`
+# reports, rotated into its site's frame (`engine_sensor.c:538`). MuJoCo's
+# default is (0, -0.5, 0), which is NOT zero: a model that declares the
+# sensor and no `<option>` still reads a real field.
+#
+# ⚠⚠ A GLOBAL, STORED PER ROW, AND THAT IS DELIBERATE. `m->opt.magnetic` has
+# exactly ONE consumer in the whole reference (grep: `engine_sensor.c:538`),
+# so there is nothing else to share it with, and the natural home —
+# `Model.meta`, where `<option wind>` lives — is NOT bound by the sensor
+# stage kernel. Binding it would take that kernel from 25 buffers to 26,
+# against a Metal argument table that fails with NO DIAGNOSTIC at 29 (see
+# `sensors/eval.mojo`). Three columns on a row that already exists cost
+# nothing and risk nothing. The parser fills all three from one source, so
+# the copies cannot disagree.
+comptime SENSOR_IDX_MAG_X: Int = 12
+comptime SENSOR_IDX_MAG_Y: Int = 13
+comptime SENSOR_IDX_MAG_Z: Int = 14
 
 
 comptime MODEL_EXCLUDE_PAIR_SIZE: Int = 2  # body1, body2

@@ -2150,6 +2150,14 @@ struct FlatModelDef(Movable):
     var opt_wind_x: Float64
     var opt_wind_y: Float64
     var opt_wind_z: Float64
+    # `<option magnetic>` (was AUD-28): the world-frame magnetic field a
+    # `<magnetometer>` reports. ⚠ THE DEFAULT IS (0, -0.5, 0), NOT ZERO
+    # (`engine_init.c:75-77`) — a model that declares the sensor and sets no
+    # `<option>` still reads a real field, so initialising these to 0 would
+    # give every such model three zeros that look like a working sensor.
+    var opt_magnetic_x: Float64
+    var opt_magnetic_y: Float64
+    var opt_magnetic_z: Float64
     # `<option noslip_tolerance>` — the improvement threshold `mj_solNoSlip`
     # stops on, NOT the primal solver's `tolerance`. MuJoCo's default is 1e-6;
     # dm_control's manipulation models set 0 ("run every iteration"). See
@@ -2572,6 +2580,9 @@ struct FlatModelDef(Movable):
         self.opt_wind_x = Float64(0)
         self.opt_wind_y = Float64(0)
         self.opt_wind_z = Float64(0)
+        self.opt_magnetic_x = Float64(0)
+        self.opt_magnetic_y = Float64(-0.5)
+        self.opt_magnetic_z = Float64(0)
         self.noslip_tolerance = Float64(1e-6)
         self.noslip_iterations = 0
         self.solver_iterations = MJ_SOLVER_ITERATIONS

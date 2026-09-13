@@ -71,6 +71,7 @@ from mojo_rl.physics3d.constants import (
     SENSOBJ_UNKNOWN,
     SENS_SUBTREELINVEL,
     SENS_SUBTREEANGMOM,
+    SENS_MAGNETOMETER,
     SENSDATA_REAL,
     SENSDATA_POSITIVE,
     SENSSTAGE_POS,
@@ -86,6 +87,13 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_HFIELD_META_SIZE,
     MAX_GPU_HFIELDS,
     MODEL_SITE_SIZE,
+    SITE_IDX_QUAT_X,
+    SITE_IDX_QUAT_Y,
+    SITE_IDX_QUAT_Z,
+    SITE_IDX_QUAT_W,
+    SENSOR_IDX_MAG_X,
+    SENSOR_IDX_MAG_Y,
+    SENSOR_IDX_MAG_Z,
     MODEL_GEOM_SIZE,
     CONTACT_SIZE,
     METADATA_SIZE,
@@ -105,6 +113,7 @@ from mojo_rl.physics3d.gpu.constants import (
     SENSOR_IDX_REFTYPE,
     SENSOR_IDX_REFID,
 )
+from mojo_rl.physics3d.kinematics.quat_math import gpu_quat_rotate
 from .frame import (
     frame_object_pose,
     frame_object_body,
@@ -716,6 +725,44 @@ def _eval_sensor_env[
             sensordata[env, adr + 0] = svx
             sensordata[env, adr + 1] = svy
             sensordata[env, adr + 2] = svz
+
+        elif st == SENS_MAGNETOMETER:
+            # `mjSENS_MAGNETOMETER` (engine_sensor.c:538):
+            # `mju_mulMatTVec(sensordata, d->site_xmat+9*objid,
+            #                 m->opt.magnetic, 3, 3)`
+            # — the world-frame field rotated INTO the site frame.
+            #
+            # ⚠ THE FIELD IS ON THE SENSOR ROW, NOT IN `Model.meta`. It is a
+            # document global with exactly one consumer in the reference, and
+            # `mmeta` is not among this kernel's 25 buffers; binding it for
+            # three floats would spend a 26th against an argument table that
+            # fails with NO DIAGNOSTIC at 29. See `SENSOR_IDX_MAG_X`.
+            #
+            # ⚠ `R_site` IS COMPOSED, NOT READ, and the transpose is taken by
+            # rotating with the CONJUGATES in the reverse order:
+            # `R_site^T v = R_local^T (R_body^T v)`. `Data` has no
+            # `site_xmat`, and `site_xpos` is empty on a site-less model —
+            # the operand that crashed three solver tests when `tendon.mojo`
+            # bound it (see `_site_world`).
+            var mgx = rebind[Scalar[DTYPE]](sensors[i, SENSOR_IDX_MAG_X])
+            var mgy = rebind[Scalar[DTYPE]](sensors[i, SENSOR_IDX_MAG_Y])
+            var mgz = rebind[Scalar[DTYPE]](sensors[i, SENSOR_IDX_MAG_Z])
+            var mbqx = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 0])
+            var mbqy = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 1])
+            var mbqz = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 2])
+            var mbqw = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 3])
+            var msqx = rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_X])
+            var msqy = rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_Y])
+            var msqz = rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_Z])
+            var msqw = rebind[Scalar[DTYPE]](sites[objid, SITE_IDX_QUAT_W])
+            var mb = gpu_quat_rotate(
+                -mbqx, -mbqy, -mbqz, mbqw, mgx, mgy, mgz
+            )
+            var ms = gpu_quat_rotate(
+                -msqx, -msqy, -msqz, msqw, mb[0], mb[1], mb[2]
+            )
+            for k in range(3):
+                sensordata[env, adr + k] = ms[k]
 
         elif st == SENS_SUBTREEANGMOM:
             # `mjSENS_SUBTREEANGMOM` (engine_sensor.c). MuJoCo reads

@@ -76,6 +76,7 @@ from ..constants import (
     SENS_SUBTREECOM,
     SENS_SUBTREELINVEL,
     SENS_SUBTREEANGMOM,
+    SENS_MAGNETOMETER,
     SENSOBJ_UNKNOWN,
     SENSOBJ_BODY,
     SENSOBJ_XBODY,
@@ -254,6 +255,32 @@ def _parse_option_wind(xml: String) -> Tuple[Float64, Float64, Float64]:
         return (Float64(0), Float64(0), Float64(0))
     var wv = _parse_vec3(w_s)
     return (wv[0], wv[1], wv[2])
+
+
+def _parse_option_magnetic(xml: String) -> Tuple[Float64, Float64, Float64]:
+    """`<option magnetic>` — the world-frame magnetic field.
+
+    ⚠⚠ THE DEFAULT IS (0, -0.5, 0), NOT (0, 0, 0) (`engine_init.c:75-77`),
+    and it is the only option default in this parser that is not the zero or
+    the obvious one. Every model in this tree that declares a
+    `<magnetometer>` — apollo and cassie — takes it: neither sets the
+    attribute, so both read a field of half a tesla along -Y and a sensor
+    that returned zeros would be wrong on exactly the models it exists for.
+
+    Same rule as `_parse_option_wind`: the FIRST `<option>` tag in the
+    document, which is the one MuJoCo's reader keeps. Separate from
+    `_parse_option` for the same reason — that tuple is already eighteen
+    wide.
+    """
+    var pos = xml.find("<option")
+    if pos == -1:
+        return (Float64(0), Float64(-0.5), Float64(0))
+    var tag = _extract_opening_tag(xml, pos)
+    var m_s = _extract_attr(tag, "magnetic")
+    if m_s.byte_length() == 0:
+        return (Float64(0), Float64(-0.5), Float64(0))
+    var mv = _parse_vec3(m_s)
+    return (mv[0], mv[1], mv[2])
 
 
 def _parse_option(
@@ -6617,6 +6644,7 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 #   subtreecom       35         body          3   REAL       POS    eval (d.subtree_com)
 #   subtreelinvel    36         body          3   REAL       VEL    subtree
 #   subtreeangmom    37         body          3   REAL       VEL    subtree
+#   magnetometer      6         site          3   REAL       POS    eval (<option magnetic>)
 #
 # + `actuatorpos` is served only for a joint (slide/hinge) or tendon
 #   transmission — the two whose length is `gear * sum coef*qpos`. A site,
@@ -6749,10 +6777,13 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
     if tag_name == "frameangvel":
         return _SensorSpec(SENS_FRAMEANGVEL, 3, SENSDATA_REAL, SENSSTAGE_VEL, True)
 
+    if tag_name == "magnetometer":
+        return _SensorSpec(
+            SENS_MAGNETOMETER, 3, SENSDATA_REAL, SENSSTAGE_POS, True
+        )
+
     # served == 0: ADDRESSED ONLY. The row exists with MuJoCo's exact dim so
     # that every LATER sensor's `adr` is still right; nothing computes it.
-    if tag_name == "magnetometer":
-        return _SensorSpec(6, 3, SENSDATA_REAL, SENSSTAGE_POS, False)
     if tag_name == "camprojection":
         return _SensorSpec(8, 2, SENSDATA_REAL, SENSSTAGE_POS, False)
     if tag_name == "tendonvel":
@@ -7463,10 +7494,12 @@ def _scan_silent_attrs(xml: String, mut result: FlatModelDef) raises:
     # Leaving the row in would report a defect that no longer exists — the
     # opposite failure to the one this scan was built for, and just as
     # misleading.
-    _silent(
-        result, "AUD-28", _count_attr(opt, "magnetic", _SA_PRESENT),
-        "`<option magnetic>`", "there is no magnetometer",
-    )
+    # ⚠ NO AUD-28 ROW FOR `magnetic` ANY MORE: `<option magnetic>` IS READ
+    # (2026-09-13). It reaches the three `SENSOR_IDX_MAG_*` columns of every
+    # `<magnetometer>` row and `sensors/eval.mojo` rotates it into the site
+    # frame, which is `mjSENS_MAGNETOMETER` (`engine_sensor.c:538`). Leaving
+    # the row in would report a defect that no longer exists — the opposite
+    # failure to the one this scan was built for, and just as misleading.
     var n_o = (
         _count_attr(opt, "o_margin", _SA_PRESENT)
         + _count_attr(opt, "o_solref", _SA_PRESENT)
@@ -7845,6 +7878,10 @@ def parse_xml_full(
     result.timestep = opt[3]
     result.opt_density = opt[4]
     result.opt_viscosity = opt[5]
+    var magnetic = _parse_option_magnetic(xml)
+    result.opt_magnetic_x = magnetic[0]
+    result.opt_magnetic_y = magnetic[1]
+    result.opt_magnetic_z = magnetic[2]
     var wind = _parse_option_wind(xml)
     result.opt_wind_x = wind[0]
     result.opt_wind_y = wind[1]

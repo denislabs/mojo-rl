@@ -92,6 +92,9 @@ from mojo_rl.physics3d.gpu.constants import (
     SENSOR_IDX_BODY,
     SENSOR_IDX_SERVED,
     SENSOR_IDX_REFTYPE,
+    SENSOR_IDX_MAG_X,
+    SENSOR_IDX_MAG_Y,
+    SENSOR_IDX_MAG_Z,
     SENSOR_IDX_REFID,
     MODEL_MESH_META_SIZE,
     MESH_ARENA_FLOATS_PER_TRI,
@@ -2663,6 +2666,20 @@ def build_model_fields_from_flat[
         )
         mf.sensors.data[so + SENSOR_IDX_REFTYPE] = Scalar[DTYPE](se.reftype)
         mf.sensors.data[so + SENSOR_IDX_REFID] = Scalar[DTYPE](se.refid)
+        # ⚠ ON EVERY ROW, NOT ONLY THE MAGNETOMETERS. `<option magnetic>` is
+        # a document global; writing it everywhere costs three floats per row
+        # and removes the one way this could go wrong — a row that is a
+        # magnetometer by a path the packer did not anticipate, reading three
+        # zeros. Only `SENS_MAGNETOMETER` ever looks at them.
+        mf.sensors.data[so + SENSOR_IDX_MAG_X] = Scalar[DTYPE](
+            fmd.opt_magnetic_x
+        )
+        mf.sensors.data[so + SENSOR_IDX_MAG_Y] = Scalar[DTYPE](
+            fmd.opt_magnetic_y
+        )
+        mf.sensors.data[so + SENSOR_IDX_MAG_Z] = Scalar[DTYPE](
+            fmd.opt_magnetic_z
+        )
 
     # ── tendons ──────────────────────────────────────────────────────────
     #

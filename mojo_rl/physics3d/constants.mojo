@@ -122,6 +122,7 @@ comptime SENS_TOUCH: Int = 0
 comptime SENS_ACCELEROMETER: Int = 1
 comptime SENS_VELOCIMETER: Int = 2
 comptime SENS_GYRO: Int = 3
+comptime SENS_MAGNETOMETER: Int = 6
 comptime SENS_FORCE: Int = 4
 comptime SENS_TORQUE: Int = 5
 comptime SENS_RANGEFINDER: Int = 7
