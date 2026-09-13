@@ -70,6 +70,7 @@ from ..constants import (
     SENS_FRAMEZAXIS,
     SENS_FRAMELINVEL,
     SENS_FRAMEANGVEL,
+    SENS_SUBTREECOM,
     SENS_SUBTREELINVEL,
     SENSOBJ_UNKNOWN,
     SENSOBJ_BODY,
@@ -6582,7 +6583,7 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 # =============================================================================
 
 
-# The seventeen elements this loader models, and the kernel each one reaches.
+# The eighteen elements this loader models, and the kernel each one reaches.
 # Every other `<sensor>` child is refused BY NAME in `_fill_sensors` — see the
 # note there for why a silent skip is not on the table.
 #
@@ -6603,6 +6604,7 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 #   framezaxis       30         obj*          3   AXIS       POS    frame.mojo
 #   framelinvel      31         obj*          3   REAL       VEL    frame.mojo
 #   frameangvel      32         obj*          3   REAL       VEL    frame.mojo
+#   subtreecom       35         body          3   REAL       POS    eval (d.subtree_com)
 #   subtreelinvel    36         body          3   REAL       VEL    subtree
 #
 # * `obj` = whatever `objtype=` names: body, xbody, geom or site. A frame
@@ -6683,6 +6685,8 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(SENS_TORQUE, 3, SENSDATA_REAL, SENSSTAGE_ACC, True)
     if tag_name == "rangefinder":
         return _SensorSpec(SENS_RANGEFINDER, 1, SENSDATA_REAL, SENSSTAGE_POS, True)
+    if tag_name == "subtreecom":
+        return _SensorSpec(SENS_SUBTREECOM, 3, SENSDATA_REAL, SENSSTAGE_POS, True)
     if tag_name == "subtreelinvel":
         return _SensorSpec(SENS_SUBTREELINVEL, 3, SENSDATA_REAL, SENSSTAGE_VEL, True)
     if tag_name == "jointpos":
@@ -6751,8 +6755,6 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(33, 3, SENSDATA_REAL, SENSSTAGE_ACC, False)
     if tag_name == "frameangacc":
         return _SensorSpec(34, 3, SENSDATA_REAL, SENSSTAGE_ACC, False)
-    if tag_name == "subtreecom":
-        return _SensorSpec(35, 3, SENSDATA_REAL, SENSSTAGE_POS, False)
     if tag_name == "subtreeangmom":
         return _SensorSpec(37, 3, SENSDATA_REAL, SENSSTAGE_VEL, False)
     if tag_name == "insidesite":
@@ -6873,7 +6875,7 @@ def _fill_sensors(
     ⚠⚠ ADDRESSING IS NOT SERVING, AND THE SPLIT IS THE DESIGN. Every
     recognised element gets a row carrying MuJoCo's exact `dim`, `datatype`,
     `needstage` and `adr`, whether or not this engine can compute it. Only the
-    seventeen with a kernel behind them are marked `served` — and one family,
+    eighteen with a kernel behind them are marked `served` — and one family,
     the frame sensors, is served only for the four object types this parser
     can resolve a name for.
 
@@ -7153,17 +7155,30 @@ def _fill_sensors(
                 )
             sd.objid = ji
             sd.body_id = result.joints[ji].body_id
-        elif sd.sensor_type == SENS_SUBTREELINVEL:
+        elif (
+            sd.sensor_type == SENS_SUBTREELINVEL
+            or sd.sensor_type == SENS_SUBTREECOM
+        ):
             sd.objtype = SENSOBJ_BODY
             var b_name = _trim(_extract_attr(tag, "body"))
             if b_name.byte_length() == 0:
                 raise Error(
-                    "physics3d: <sensor><subtreelinvel> needs a body= attribute"
+                    "physics3d: <sensor><"
+                    + tag_name
+                    + "> needs a body= attribute"
                 )
             var bi = _find_body_index_by_name(worldbody, b_name)
+            # ⚠ `<= 0`, NOT `< 0`, AND THAT IS NOT A BOUNDS SLIP.
+            # `_find_body_index_by_name` returns 0 both for the worldbody and
+            # for a name it cannot find, so a typo would silently become "the
+            # whole model" — for `subtreecom` a perfectly plausible reading.
+            # Refusing 0 costs the ability to sensor the worldbody's subtree,
+            # which is the entire model's CoM and has no use as a sensor.
             if bi <= 0:
                 raise Error(
-                    "physics3d: <sensor><subtreelinvel body='"
+                    "physics3d: <sensor><"
+                    + tag_name
+                    + " body='"
                     + b_name
                     + "'> names no body in this model"
                 )

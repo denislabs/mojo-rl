@@ -894,10 +894,28 @@ struct EulerIntegrator[
         comptime if _EULER_PROBE:
             _e_last = Int(perf_counter_ns())
         forward_kinematics[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, ctx)
+        # ⚠⚠ `subtree_com` IS BUILT HERE, BEFORE THE POSITION-STAGE SENSORS,
+        # AND IT USED TO BE BUILT AFTER THEM. It is `mj_comPos`, part of
+        # `mj_fwdPosition` and therefore upstream of `mj_sensorPos`
+        # (engine_forward.c:1786, 1797) — and the `subtreecom` sensor reads it
+        # directly. Evaluated at the old point it would have reported the
+        # PREVIOUS STEP's centre of mass: a number that tracks the model,
+        # lags it by one step, and is wrong by an amount nobody would notice
+        # on a slow-moving body.
+        #
+        # ⚠ NOTHING ELSE MOVES. It consumes only `xipos` and the body masses,
+        # both of which the line above has just written, and every downstream
+        # consumer (cdof, the acceleration-stage sensors) reads it later in
+        # the step either way — so this reorder changes the VALUE of exactly
+        # one thing, and that thing was stale.
+        compute_subtree_com[target, Self.DTYPE, BATCH=Self.BATCH](d, m, ctx)
+        comptime if _EULER_PROBE:
+            var _e_now0 = Int(perf_counter_ns())
+            _e_subtree += _e_now0 - _e_last
+            _e_last = _e_now0
         # ── mj_sensorPos ──────────────────────────────────────────────────
         # MuJoCo evaluates the position-stage sensors here, immediately after
-        # `mj_fwdPosition` (engine_forward.c:1797). Rangefinders are the only
-        # served one today.
+        # `mj_fwdPosition` (engine_forward.c:1797).
         #
         # ⚠ CPU, BATCH=1, AND THE GUARD IS COMPTIME. `sensors/eval.mojo` takes
         # host `List`s and one env; on GPU the values live on the device and
@@ -938,11 +956,6 @@ struct EulerIntegrator[
         comptime if _EULER_PROBE:
             var _e_now = Int(perf_counter_ns())
             _e_bodyvel += _e_now - _e_last
-            _e_last = _e_now
-        compute_subtree_com[target, Self.DTYPE, BATCH=Self.BATCH](d, m, ctx)
-        comptime if _EULER_PROBE:
-            var _e_now = Int(perf_counter_ns())
-            _e_subtree += _e_now - _e_last
             _e_last = _e_now
         compute_cdof[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, self.scratch, ctx)
         comptime if _EULER_PROBE:

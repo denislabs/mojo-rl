@@ -1,6 +1,6 @@
 """`sensors/eval.mojo` vs MuJoCo's `d.sensordata` (AUD-23, AUD-47).
 
-Ten sensors, twenty-two values, all three stages. `jointpos`/`jointvel` joined
+Eleven sensors, twenty-five values, all three stages. `jointpos`/`jointvel` joined
 on 2026-09-13 (audit §6 phase 1a) and sit BEHIND A FREEJOINT deliberately —
 see `test_the_joint_sensors_read_their_own_joints_address` for why a model of
 hinges alone cannot tell the two address tables apart.
@@ -90,6 +90,7 @@ comptime SD_XML = """
     <velocimeter name="vel" site="imu"/>
     <gyro name="gyr" site="imu"/>
     <jointvel name="jv" joint="el"/>
+    <subtreecom name="scm" body="torso"/>
     <subtreelinvel name="slv" body="torso"/>
     <accelerometer name="acc" site="imu"/>
     <force name="frc" site="wrist"/>
@@ -105,9 +106,9 @@ comptime SM = ModelDefFromXML[
     nbody=sp.NBODY, njoint=sp.NJOINT, nq=sp.NQ, nv=sp.NV,
     ngeom=sp.NGEOM, nact=sp.NACT, ntex=sp.NTEX, nmat=sp.NMAT,
     nlight=sp.NLIGHT, ncam=sp.NCAM, nsite=sp.NSITE,
-    # `parse_xml` does not count sensors — see its constructor note. Ten
-    # sensors; 1+1+3+3+1+3+3+3+3+1 = 22 values.
-    nsensor=10, nsensordata=22,
+    # `parse_xml` does not count sensors — see its constructor note. Eleven
+    # sensors; 1+1+3+3+1+3+3+3+3+3+1 = 25 values.
+    nsensor=11, nsensordata=25,
     max_tendon=sp.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=8,
@@ -146,6 +147,7 @@ comptime SD_XML_CUT = """
     <velocimeter name="vel" site="imu" cutoff="0.3"/>
     <gyro name="gyr" site="imu" cutoff="0.5"/>
     <jointvel name="jv" joint="el" cutoff="1.2"/>
+    <subtreecom name="scm" body="torso"/>
     <subtreelinvel name="slv" body="torso"/>
     <accelerometer name="acc" site="imu"/>
     <force name="frc" site="wrist"/>
@@ -161,7 +163,7 @@ comptime SMC = ModelDefFromXML[
     nbody=spc.NBODY, njoint=spc.NJOINT, nq=spc.NQ, nv=spc.NV,
     ngeom=spc.NGEOM, nact=spc.NACT, ntex=spc.NTEX, nmat=spc.NMAT,
     nlight=spc.NLIGHT, ncam=spc.NCAM, nsite=spc.NSITE,
-    nsensor=10, nsensordata=22,
+    nsensor=11, nsensordata=25,
     max_tendon=spc.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=8,
@@ -197,7 +199,7 @@ comptime IntegC = EulerIntegrator[
 def _names() -> List[String]:
     return [
         String("rf"), String("jp"), String("vel"), String("gyr"),
-        String("jv"), String("slv"),
+        String("jv"), String("scm"), String("slv"),
         String("acc"), String("frc"), String("trq"), String("tch"),
     ]
 
@@ -399,7 +401,7 @@ def test_sensordata_matches_mujoco() raises:
         ours.append(Float64(d.sensordata.data[i]))
 
     var n = _compare(String(SD_XML), String("plain"), 1e-9, ours, qpos, qvel)
-    assert_true(n == 22, "expected 22 values, compared " + String(n))
+    assert_true(n == 25, "expected 25 values, compared " + String(n))
 
 
 def test_cutoff_clamps_like_mujoco() raises:
@@ -429,13 +431,13 @@ def test_cutoff_clamps_like_mujoco() raises:
     var dat_plain = _mj_at(mujoco, String(SD_XML), qpos, qvel)
     var dat_cut = _mj_at(mujoco, String(SD_XML_CUT), qpos, qvel)
     var bound = 0
-    for k in range(22):
+    for k in range(25):
         if abs(
             Float64(py=dat_plain.sensordata[k])
             - Float64(py=dat_cut.sensordata[k])
         ) > 1e-12:
             bound += 1
-    print("  values MuJoCo's own cutoffs changed:", bound, "/ 22")
+    print("  values MuJoCo's own cutoffs changed:", bound, "/ 25")
     assert_true(
         bound >= 3,
         "the declared cutoffs do not bind on MuJoCo's side (only "
@@ -446,8 +448,8 @@ def test_cutoff_clamps_like_mujoco() raises:
     var n = _compare(
         String(SD_XML_CUT), String("cutoff"), 1e-9, ours, qpos, qvel
     )
-    assert_true(n == 22, "expected 22 values, compared " + String(n))
-    print("  our clamped sensordata matches MuJoCo's, all 22 values")
+    assert_true(n == 25, "expected 25 values, compared " + String(n))
+    print("  our clamped sensordata matches MuJoCo's, all 25 values")
 
 
 def test_a_stage_that_never_runs_is_loud() raises:
@@ -719,6 +721,70 @@ def test_a_joint_sensor_on_a_multi_dof_joint_refuses() raises:
     print("  the hinge form loads and is served, in both")
 
 
+def test_subtreecom_is_this_steps_com_not_last_steps() raises:
+    """`subtreecom` reads `d.subtree_com`, which must be CURRENT at POS stage.
+
+    ⚠⚠ THIS IS A SCHEDULING BUG WITH NO FINGERPRINT IN THE VALUE. `subtreecom`
+    is a copy of `d->subtree_com[objid]`, so its arithmetic cannot be wrong —
+    only its TIMING can. `compute_subtree_com` used to run after the
+    position-stage sensors in `EulerIntegrator.step`; a `subtreecom`
+    evaluated there would report the previous step's centre of mass, which
+    tracks the model, lags it by one step, and looks entirely reasonable on
+    anything slow.
+
+    The test makes the lag large and then names it: reset (qpos0, torso at
+    z = 0), jump to the airborne tilted pose, step. A stale read would return
+    the qpos0 CoM. The main comparison above would already catch it — this
+    exists so that when it does, the failure says WHY.
+    """
+    print("=== subtreecom is current, not one step behind ===")
+    var mujoco = Python.import_module("mujoco")
+    var m = mujoco.MjModel.from_xml_string(PythonObject(String(SD_XML)))
+    var O = mujoco.mjtObj
+    var sid = Int(py=mujoco.mj_name2id(m, O.mjOBJ_SENSOR, PythonObject("scm")))
+    var adr = Int(py=m.sensor_adr[sid])
+
+    var ctx = DeviceContext()
+
+    # The value a one-step-stale read would return: the CoM at qpos0.
+    var mf0 = Mod()
+    var d0 = Dat()
+    var sf0 = SM.make_spec_fields[DTYPE]()
+    SM.init_fields[DTYPE](ctx, mf0)
+    SM.reset_data(sf0, d0)
+    var stale = List[Float64]()
+    for k in range(3):
+        stale.append(Float64(d0.subtree_com.data[k + 3]))  # body 1 = torso
+
+    var mf = Mod()
+    var d = Dat()
+    var st = _run_plain(d, mf, ctx)
+    var dat = _mj_at(mujoco, String(SD_XML), st[0].copy(), st[1].copy())
+
+    var d_live = 0.0
+    var d_stale = 0.0
+    for k in range(3):
+        var ours = Float64(d.sensordata.data[adr + k])
+        d_live += abs(ours - Float64(py=dat.sensordata[adr + k]))
+        d_stale += abs(ours - stale[k])
+    print("  |ours - MuJoCo now| =", d_live,
+          "  |ours - the qpos0 CoM| =", d_stale)
+    assert_true(
+        d_live <= 1e-9,
+        "subtreecom does not match MuJoCo at this state (|d| "
+        + String(d_live) + ")",
+    )
+    # ⚠ NON-VACUITY: the two candidate answers must actually differ, or this
+    # says nothing.
+    assert_true(
+        d_stale > 1e-3,
+        "the qpos0 CoM and the stepped CoM agree to "
+        + String(d_stale) + " — the fixture no longer moves the body between"
+        " reset and the step, so a stale read would pass",
+    )
+    print("  the stale reading is", d_stale, "away and would have failed")
+
+
 def main() raises:
     var suite = TestSuite()
     suite.test[test_sensordata_matches_mujoco]()
@@ -726,4 +792,5 @@ def main() raises:
     suite.test[test_a_stage_that_never_runs_is_loud]()
     suite.test[test_the_joint_sensors_read_their_own_joints_address]()
     suite.test[test_a_joint_sensor_on_a_multi_dof_joint_refuses]()
+    suite.test[test_subtreecom_is_this_steps_com_not_last_steps]()
     suite^.run()

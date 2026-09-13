@@ -57,6 +57,7 @@ from mojo_rl.physics3d.constants import (
     SENS_FRAMEZAXIS,
     SENS_FRAMELINVEL,
     SENS_FRAMEANGVEL,
+    SENS_SUBTREECOM,
     SENSOBJ_UNKNOWN,
     SENS_SUBTREELINVEL,
     SENSDATA_REAL,
@@ -366,6 +367,18 @@ def _eval_stage[
                 d.sensordata.data[adr + 0] = Scalar[DTYPE](v[0])
                 d.sensordata.data[adr + 1] = Scalar[DTYPE](v[1])
                 d.sensordata.data[adr + 2] = Scalar[DTYPE](v[2])
+
+        elif st == SENS_SUBTREECOM:
+            # `mjSENS_SUBTREECOM` (engine_sensor.c:737):
+            # `mju_copy3(sensordata, d->subtree_com + 3*objid)`.
+            #
+            # ⚠ THIS READ IS WHY `compute_subtree_com` MOVED AHEAD OF
+            # `sensor_pos` IN THE STEP. It is `mj_comPos`, upstream of
+            # `mj_sensorPos` in the reference; evaluated where it used to sit
+            # this would have reported LAST step's centre of mass.
+            d.sensordata.data[adr + 0] = d.subtree_com.data[objid * 3 + 0]
+            d.sensordata.data[adr + 1] = d.subtree_com.data[objid * 3 + 1]
+            d.sensordata.data[adr + 2] = d.subtree_com.data[objid * 3 + 2]
 
         elif st == SENS_SUBTREELINVEL:
             var vx = 0.0
