@@ -143,7 +143,7 @@ comptime RAISE_DYNTYPE = String(
     </body>
   </worldbody>
   <actuator>
-    <general name="m" joint="j1" dyntype="integrator" dynprm="1"/>
+    <general name="m" joint="j1" dyntype="muscle" dynprm="0.01 0.04"/>
   </actuator>
 </mujoco>
 """
@@ -267,7 +267,19 @@ def test_every_silent_row_reports_its_audit_id() raises:
     print("  silent_attrs =", fmd.silent_attrs, " ids =", len(fmd.silent_attr_ids))
     var want: List[String] = [
         String("AUD-08"), String("AUD-12"),
-        String("AUD-15"), String("AUD-21"),
+        String("AUD-15"),
+        # ⚠ AUD-21 IS GONE FROM THIS LIST ON PURPOSE, like AUD-27 and AUD-34
+        # below. `<position timeconst>` is READ as of 2026-09-13 — it
+        # resolves to `dyntype=filterexact` with `dynprm[0] = timeconst`,
+        # gated by `test_actuator_dyntype_vs_mujoco` — so a scan that still
+        # reported it would name a defect that no longer exists. The fixture
+        # keeps its `timeconst=` attribute so a regression that silently
+        # stopped reading it has to come back through that gate.
+        #
+        # ⚠ AUD-02 BELOW IS STILL LIVE BUT NARROWER: `actlimited` and
+        # `actrange` are read now (the `mj_nextActivation` clamp) and
+        # `actearly` is not, which is what the fixture's `actearly="true"`
+        # keeps firing.
         # ⚠ AUD-14 IS GONE FROM THIS LIST ON PURPOSE, like AUD-27 and AUD-34:
         # `<hfield elevation>` is READ as of 2026-09-13 and gated by
         # `test_hfield_elevation_vs_mujoco`.
@@ -309,7 +321,7 @@ def test_every_silent_row_reports_its_audit_id() raises:
     # the 3.11/3.12 actuator elements are counted with the older ones
     var fmd2 = parse_xml_full(
         RAISE_DYNTYPE.replace(
-            String("<general name=\"m\" joint=\"j1\" dyntype=\"integrator\" dynprm=\"1\"/>"),
+            String("<general name=\"m\" joint=\"j1\" dyntype=\"muscle\" dynprm=\"0.01 0.04\"/>"),
             String("<motor name=\"m\" joint=\"j1\"/><pid name=\"p\" joint=\"j1\" kp=\"5\"/><dcmotor name=\"d\" joint=\"j1\"/>"),
         ),
         String("."),
@@ -363,10 +375,33 @@ comptime RAISE_EQ_ACCEL_SENSOR = String(
 
 def test_wrong_physics_rows_raise() raises:
     print("=== the wrong-physics spellings refuse to load, by audit id ===")
+    # ⚠ `muscle`, NOT `integrator` — THE REFUSAL WAS NARROWED, NOT REMOVED.
+    # `integrator`, `filter` and `filterexact` are modelled as of 2026-09-13
+    # (AUD-02/AUD-21, `dynamics/activation.next_activation`); this fixture
+    # moved to a dyntype that is still a DIFFERENT ODE rather than a
+    # different integration of the same one. The arm below is what keeps the
+    # narrowing honest.
     assert_true(
         _parse_raises_naming(RAISE_DYNTYPE, String("AUD-02")),
-        "dyntype=\"integrator\" loaded as a stateless actuator",
+        "dyntype=\"muscle\" loaded as a stateless actuator",
     )
+    # ...and the three that ARE modelled must LOAD, each with an activation.
+    # Without this the refusal above could be satisfied by refusing every
+    # dyntype, which is what it used to do.
+    for _dt in [String("integrator"), String("filter"),
+                String("filterexact")]:
+        var _ok = parse_xml_full(
+            RAISE_DYNTYPE.replace(String("muscle"), _dt).replace(
+                String("0.01 0.04"), String("0.1")
+            ),
+            String("."),
+        )
+        assert_true(
+            _ok.na == 1,
+            "dyntype=\"" + _dt + "\" built " + String(_ok.na)
+            + " activations, not 1 — a modelled dyntype that owns no `act`"
+            " takes its force from `ctrl`, which is AUD-02's defect",
+        )
     # AUD-04 LANDED 2026-09-12: an inactive equality loads and builds nothing
     # (gated vs MuJoCo in test_equality_active_pair_class_frame_vs_mujoco).
     var inactive = parse_xml_full(RAISE_ACTIVE, String("."))

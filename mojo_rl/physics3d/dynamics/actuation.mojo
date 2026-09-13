@@ -20,6 +20,7 @@ from mojo_rl.physics3d.parser.flat_model import (
     ACT_KIND_VELOCITY,
     ACT_KIND_PID,
 )
+from mojo_rl.physics3d.dynamics.activation import next_activation
 from mojo_rl.physics3d.gpu.constants import (
     ACTTEN_IDX_SPRING_HI,
     ACTTEN_IDX_SPRING_LO,
@@ -39,6 +40,10 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_CTRL_MAX,
     ACT_IDX_CTRL_MIN,
     ACT_IDX_DYN_TAU,
+    ACT_IDX_DYN_TYPE,
+    ACT_IDX_ACT_LIMITED,
+    ACT_IDX_ACT_MIN,
+    ACT_IDX_ACT_MAX,
     ACT_IDX_FORCE_LIMITED,
     ACT_IDX_FORCE_MAX,
     ACT_IDX_FORCE_MIN,
@@ -560,17 +565,22 @@ def apply_actions_fields[
                 * force
             )
 
-        # mjDYN_FILTER, integrated by Euler exactly as `nextActivation`
-        # does for a non-`filterexact` dyntype (engine_forward.c:341):
-        #     act_dot = (ctrl - act) / tau ;  act += act_dot * timestep
+        # The activation ODE, through the one implementation
+        # (`dynamics/activation.next_activation`). It used to be
+        # `filter`-only and inline here; AUD-02/AUD-21 added `integrator`
+        # and `filterexact`, and the rule had FOUR copies.
         # `ctrl` here is already ctrlrange-clamped, matching MuJoCo, which
         # clamps `d->ctrl` before computing act_dot.
         if kind != ACT_KIND_PID and adr >= 0 and adr < len(act):
-            var tau = Float64(sf.actuators.data[o + ACT_IDX_DYN_TAU])
-            if tau < 1e-10:
-                tau = 1e-10  # mjMINVAL guard, as MuJoCo applies
-            act[adr] = Scalar[DTYPE](
-                u + (ctrl - u) / tau * timestep
+            act[adr] = next_activation[DTYPE](
+                Int(sf.actuators.data[o + ACT_IDX_DYN_TYPE]),
+                Scalar[DTYPE](u),
+                Scalar[DTYPE](ctrl),
+                Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_DYN_TAU]),
+                Scalar[DTYPE](timestep),
+                sf.actuators.data[o + ACT_IDX_ACT_LIMITED] != 0,
+                Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_ACT_MIN]),
+                Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_ACT_MAX]),
             )
 
         # The PID plugin's activations. `Pid::ActDot` writes

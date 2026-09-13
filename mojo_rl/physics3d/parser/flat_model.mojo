@@ -592,6 +592,16 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     # `_acd` silently disagree.
     var dyn_tau: Float64
     var act_adr: Int
+    # `mjtDyn`, MuJoCo's own value — see `ACT_IDX_DYN_TYPE`. ⚠ `dyn_tau`
+    # CANNOT STAND IN FOR IT (AUD-02/AUD-21): `integrator` has no tau at all
+    # and `filterexact` shares `filter`'s tau while integrating it by a
+    # different rule.
+    var dyn_type: Int
+    # `actlimited` / `actrange` — the clamp `mj_nextActivation` applies to the
+    # integrated activation, for every dyntype.
+    var act_limited: Bool
+    var act_min: Float64
+    var act_max: Float64
     # Transmission. Mirrors `ComptimeActData.motor_trn_*`
     # (`xml_parser.mojo:4381`): a `joint=` actuator is ONE (qadr, dadr, 1.0)
     # triple with `trn_n = 1`; a `tendon=` actuator copies the named tendon's
@@ -699,6 +709,10 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
         self.force_max = 0.0
         self.dyn_tau = 0.0
         self.act_adr = -1
+        self.dyn_type = 0  # mjDYN_NONE
+        self.act_limited = False
+        self.act_min = 0.0
+        self.act_max = 0.0
         self.tendon_id = -1
         self.dof_adr = -1
         self.trn_n = 0
@@ -1449,6 +1463,13 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     # rather than on the element, so the class path is the one that matters.
     var motor_dyntype_s: String
     var motor_dynprm_s: String
+    # `timeconst` (a `<position>`/`<intvelocity>` spelling of
+    # `dyntype=filterexact`, AUD-21) and the activation clamp, raw and by
+    # the same rule: "" means this class said nothing, so the parent's
+    # value stands.
+    var motor_timeconst_s: String
+    var motor_actrange_s: String
+    var motor_actlimited_s: String
     # `<general>`/`<position>`/`<velocity>` gain attributes, raw. dog and
     # quadruped both declare gainprm/biasprm/biastype in a <default> block,
     # so the class path is the one that carries them.
@@ -1696,6 +1717,9 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_force_min = 0.0
         self.motor_force_max = 0.0
         self.motor_dyntype_s = ""
+        self.motor_timeconst_s = ""
+        self.motor_actrange_s = ""
+        self.motor_actlimited_s = ""
         self.motor_dynprm_s = ""
         self.motor_gain = 1.0
         self.motor_gain_set = False

@@ -56,6 +56,10 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_BIAS1,
     ACT_IDX_KV,
     ACT_IDX_DYN_TAU,
+    ACT_IDX_DYN_TYPE,
+    ACT_IDX_ACT_LIMITED,
+    ACT_IDX_ACT_MIN,
+    ACT_IDX_ACT_MAX,
     ACT_IDX_ACT_ADR,
     ACT_IDX_TRN_N,
     ACT_IDX_TRN_QADR_0,
@@ -92,6 +96,7 @@ from mojo_rl.physics3d.gpu.constants import (
 from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_BALL
 from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, SpecFields, Dims, DimsLike
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
+from mojo_rl.physics3d.dynamics.activation import next_activation
 from mojo_rl.physics3d.dynamics.invweight import (
     compute_invweight0,
 )
@@ -1685,11 +1690,16 @@ struct ModelDefFromXML[
                 # ctrlrange-clamped, as MuJoCo clamps `d->ctrl` before
                 # computing act_dot.
                 if adr >= 0 and adr < Self.NA_F:
-                    var tau = rebind[Scalar[DTYPE]](acts[o + ACT_IDX_DYN_TAU])
-                    if tau < Scalar[DTYPE](1e-10):
-                        tau = Scalar[DTYPE](1e-10)
-                    act[env, adr] = u + (ctrl - u) / tau * Scalar[DTYPE](
-                        Self.TIMESTEP
+                    act[env, adr] = next_activation[DTYPE](
+                        Int(rebind[Scalar[DTYPE]](acts[o + ACT_IDX_DYN_TYPE])),
+                        u,
+                        ctrl,
+                        rebind[Scalar[DTYPE]](acts[o + ACT_IDX_DYN_TAU]),
+                        Scalar[DTYPE](Self.TIMESTEP),
+                        rebind[Scalar[DTYPE]](acts[o + ACT_IDX_ACT_LIMITED])
+                        != Scalar[DTYPE](0),
+                        rebind[Scalar[DTYPE]](acts[o + ACT_IDX_ACT_MIN]),
+                        rebind[Scalar[DTYPE]](acts[o + ACT_IDX_ACT_MAX]),
                     )
 
             # ── `jnt_actfrcrange` (`engine_forward.c:477`) ──────────────

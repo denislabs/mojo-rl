@@ -1355,7 +1355,7 @@ comptime PAIR_IDX_GAP: Int = 14
 # already). The comptime twin uses `_WRAPS`, which collapses to 1 on a model
 # with no tendons — so the two strides AGREE ONLY WHEN THE MODEL HAS TENDONS.
 # Anything diffing the two must convert; the equivalence gate does.
-comptime MODEL_ACTUATOR_SIZE: Int = 29 + 3 * TENDON_MAX_WRAPS
+comptime MODEL_ACTUATOR_SIZE: Int = 33 + 3 * TENDON_MAX_WRAPS
 
 comptime ACT_IDX_KIND: Int = 0  # ACT_KIND_*
 comptime ACT_IDX_GEAR: Int = 1
@@ -1489,6 +1489,37 @@ comptime ACT_IDX_PID_SLEW: Int = ACT_IDX_SITE_ID + 11
 # gaintype FIXED, biastype NONE and `ctrllimited = 1`, so `force = gain*ctrl`
 # with `gain` in `ACT_IDX_KP`. Everything special is in the moment.
 comptime ACT_IDX_BODY_ID: Int = ACT_IDX_SITE_ID + 12
+
+# `mjtDyn` (mjtype.h:242), the values this engine models. ⚠ THE NUMBERS ARE
+# MuJoCo'S, not a local encoding: a record that carries a foreign enum's value
+# under a local name is a translation table waiting to drift.
+comptime ACT_DYN_NONE: Int = 0
+comptime ACT_DYN_INTEGRATOR: Int = 1
+comptime ACT_DYN_FILTER: Int = 2
+comptime ACT_DYN_FILTEREXACT: Int = 3
+
+comptime ACT_IDX_DYN_TYPE: Int = ACT_IDX_SITE_ID + 13
+"""`mjModel.actuator_dyntype` — which activation ODE this actuator integrates.
+
+⚠⚠ IT USED TO BE INFERRED FROM `ACT_IDX_DYN_ADR >= 0` AND THAT WAS ONLY
+ENOUGH WHILE `filter` WAS THE ONLY KIND MODELLED (AUD-02/AUD-21). An
+`integrator` sets `act_dot = ctrl` with no `tau` at all, and a `filterexact`
+integrates the SAME `act_dot` as `filter` by a different rule
+(`act += act_dot * tau * (1 - exp(-h/tau))`, `mj_nextActivation`), so the tau
+column cannot distinguish them. `<position timeconst>` is `filterexact` under
+a second spelling.
+"""
+
+comptime ACT_IDX_ACT_LIMITED: Int = ACT_IDX_SITE_ID + 14
+"""`mjModel.actuator_actlimited` — 1.0 when the activation is clamped.
+
+⚠ THE CLAMP IS PART OF `mj_nextActivation`, NOT OF THE FORCE LAW. It applies
+to the integrated activation for EVERY dyntype, after the ODE step, so an
+actuator whose `act` saturates keeps producing the clamped activation's force
+rather than a growing one.
+"""
+comptime ACT_IDX_ACT_MIN: Int = ACT_IDX_SITE_ID + 15
+comptime ACT_IDX_ACT_MAX: Int = ACT_IDX_SITE_ID + 16
 
 # The tendon SPRING half of actuation (`engine_passive.c`), kept in its own
 # record rather than folded into `MODEL_TENDON_SIZE`.

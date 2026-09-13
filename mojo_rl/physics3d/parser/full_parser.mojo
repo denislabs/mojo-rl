@@ -159,6 +159,10 @@ from .flat_model import (
 # How many joints/sites one tendon may wrap — shared with the packed field
 # layout so the parser and the record cannot disagree.
 from mojo_rl.physics3d.gpu.constants import (
+    ACT_DYN_NONE,
+    ACT_DYN_FILTER,
+    ACT_DYN_FILTEREXACT,
+    ACT_DYN_INTEGRATOR,
     TENDON_MAX_WRAPS,
     TENDON_MAX_SPATIAL_WRAPS,
     WRAP_SITE,
@@ -1179,6 +1183,15 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var dp_s = _extract_attr(mtag, "dynprm")
         if dp_s.byte_length() > 0:
             d.motor_dynprm_s = dp_s
+        var tc_d = _extract_attr(mtag, "timeconst")
+        if tc_d.byte_length() > 0:
+            d.motor_timeconst_s = tc_d
+        var arng_d = _extract_attr(mtag, "actrange")
+        if arng_d.byte_length() > 0:
+            d.motor_actrange_s = arng_d
+        var alim_d = _extract_attr(mtag, "actlimited")
+        if alim_d.byte_length() > 0:
+            d.motor_actlimited_s = alim_d
 
         # Gain attrs, raw. Absent leaves the parent's value so a class
         # inherits rather than resetting to "".
@@ -4322,6 +4335,69 @@ def _fill_actuators(
             ad.ctrl_max,
         )
 
+        # ── `timeconst` on a servo is `filterexact` (AUD-21) ─────────────
+        # ⚠⚠ A SECOND SPELLING OF `dyntype`, NOT A SEPARATE FEATURE.
+        # `mjs_setToPosition` (user_api.cc:1291-1294) writes
+        # `dynprm[0] = timeconst` and
+        # `dyntype = timeconst == 0 ? mjDYN_NONE : mjDYN_FILTEREXACT`;
+        # `mjs_setToIntVelocity` calls straight through to it. So a
+        # `<position timeconst="0.02">` owns an activation variable and its
+        # force comes from `act`, which is why reading the attribute and
+        # nothing else would have been worse than ignoring it.
+        #
+        # ⚠ ZERO IS NOT "A VERY FAST FILTER", IT IS `none`. MuJoCo tests the
+        # value, not its presence, and a `timeconst="0"` actuator has NO
+        # activation state — giving it one would add a row to `na` that
+        # MuJoCo does not have and shift every later actuator's `act` index.
+        # ⚠ `is_position` ALONE: `<intvelocity>` routes through the same
+        # `mjs_setToPosition`, but it is in this parser's UNMODELLED list
+        # and is counted-and-refused before it reaches here. Naming it in
+        # this condition would be a branch that cannot run.
+        if is_position:
+            var tc_s = _trim(_extract_attr(tag, "timeconst"))
+            if tc_s.byte_length() == 0:
+                tc_s = _trim(eff.motor_timeconst_s)
+            if tc_s.byte_length() > 0:
+                var tc = _parse_float(tc_s)
+                if tc < 0.0:
+                    raise Error(
+                        "physics3d: actuator #"
+                        + String(len(result.actuators))
+                        + " declares timeconst=\"" + tc_s + "\"; MuJoCo"
+                        " refuses a negative time constant"
+                        " (user_api.cc:1292)."
+                    )
+                if tc > 0.0:
+                    ad.dyn_tau = tc
+                    ad.dyn_type = ACT_DYN_FILTEREXACT
+                    ad.act_adr = result.na
+                    result.na += 1
+
+        # ── `actlimited` / `actrange` ────────────────────────────────────
+        # The clamp `mj_nextActivation` applies AFTER integrating, for every
+        # dyntype. Read here for every actuator kind rather than inside the
+        # `<general>` block, because it is not a property of the dynamics —
+        # `<position timeconst>` above can give any servo an activation.
+        var ar_s = _trim(_extract_attr(tag, "actrange"))
+        if ar_s.byte_length() == 0:
+            ar_s = _trim(eff.motor_actrange_s)
+        var al_s = _trim(_extract_attr(tag, "actlimited"))
+        if al_s.byte_length() == 0:
+            al_s = _trim(eff.motor_actlimited_s)
+        if ar_s.byte_length() > 0:
+            var ap = List[String]()
+            _split_spaces(ar_s, ap)
+            if len(ap) >= 2:
+                ad.act_min = _parse_float(ap[0])
+                ad.act_max = _parse_float(ap[1])
+                # ⚠ MuJoCo's `auto` rule, the same one `ctrllimited` uses:
+                # a range is limiting when `lo < hi`.
+                ad.act_limited = ad.act_min < ad.act_max
+        if al_s == "true":
+            ad.act_limited = True
+        elif al_s == "false":
+            ad.act_limited = False
+
         # ── `<adhesion body=... gain=...>` (`mjTRN_BODY`) ────────────────
         if is_adhesion:
             var bname = _trim(_extract_attr(tag, "body"))
@@ -4636,25 +4712,42 @@ def _fill_actuators(
             if dyntype.byte_length() == 0 or dyntype == "none":
                 ad.dyn_tau = 0.0
                 ad.act_adr = -1
-            elif dyntype == "filter":
-                # dynprm[0], defaulting to 1.0 — MuJoCo's mjDYN_FILTER tau.
+                ad.dyn_type = ACT_DYN_NONE
+            elif (
+                dyntype == "filter"
+                or dyntype == "filterexact"
+                or dyntype == "integrator"
+            ):
+                # `dynprm[0]`, defaulting to 1.0 — MuJoCo's tau. An
+                # `integrator` has no tau; it is read and ignored, as MuJoCo
+                # reads the same column and its `act_dot` switch never
+                # touches it.
                 var parts = List[String]()
                 _split_spaces(dynprm, parts)
                 ad.dyn_tau = _parse_float(parts[0]) if len(parts) > 0 else 1.0
+                if dyntype == "filterexact":
+                    ad.dyn_type = ACT_DYN_FILTEREXACT
+                elif dyntype == "integrator":
+                    ad.dyn_type = ACT_DYN_INTEGRATOR
+                else:
+                    ad.dyn_type = ACT_DYN_FILTER
                 ad.act_adr = result.na
                 result.na += 1
             else:
-                # ⚠ AUD-02. This used to fall through to `act_adr = -1` —
-                # force from `ctrl` where MuJoCo applies it from `act` — on
-                # the belief that a comptime twin raised; the twin is gone
-                # and `bad_actuator_code` is set for gain/bias types only.
+                # ⚠ AUD-02's REFUSAL, NARROWED RATHER THAN REMOVED. The
+                # three integrable dyntypes are modelled now
+                # (`dynamics/activation.next_activation`); `muscle`,
+                # `dcmotor`, `pid` and `user` are not, and each is a
+                # different ODE rather than a different integration of the
+                # same one. Loading one as a stateless actuator would apply
+                # force from `ctrl` where MuJoCo applies it from `act`.
                 raise Error(
                     "physics3d: AUD-02 — actuator #"
                     + String(len(result.actuators)) + " declares dyntype=\""
                     + dyntype + "\", which this engine does not model (only"
-                    " none/filter). MuJoCo integrates an activation state"
-                    " and applies force from it; loading this as a"
-                    " stateless actuator is wrong physics, not an"
+                    " none/filter/filterexact/integrator). MuJoCo integrates"
+                    " an activation state and applies force from it; loading"
+                    " this as a stateless actuator is wrong physics, not an"
                     " approximation. See docs/PHYSICS3D_MUJOCO_312_AUDIT.md."
                 )
 
@@ -7712,13 +7805,18 @@ def _scan_silent_attrs(xml: String, mut result: FlatModelDef) raises:
         var t = _opening_tags(xml, more[i])
         for k in range(len(t)):
             act.append(t[k])
+    # ⚠ NARROWED 2026-09-13, NOT DELETED. `actlimited` and `actrange` ARE
+    # read now — `mj_nextActivation`'s clamp, applied for every dyntype by
+    # `dynamics/activation.next_activation` — so counting them here would
+    # report a defect that no longer exists, which is the opposite failure to
+    # the one this scan was built for. `actearly` is still unread: it applies
+    # the force from the NEXT activation rather than the current one, which
+    # is a change to `mj_fwdActuation`'s ORDER and not to the ODE.
     _silent(
         result, "AUD-02",
-        _count_attr(act, "actlimited", _SA_PRESENT)
-        + _count_attr(act, "actrange", _SA_PRESENT)
-        + _count_attr(act, "actearly", _SA_PRESENT),
-        "actuator actlimited/actrange/actearly attribute(s)",
-        "activation clamping and early application are not modelled",
+        _count_attr(act, "actearly", _SA_PRESENT),
+        "actuator `actearly` attribute(s)",
+        "the force is applied from the CURRENT activation, never the next",
     )
     _silent(
         result, "AUD-28",
@@ -7735,12 +7833,11 @@ def _scan_silent_attrs(xml: String, mut result: FlatModelDef) raises:
         "actuator-inherited damping/armature attribute(s) (3.7)",
         "no damping or armature reaches the joint through the actuator",
     )
-    _silent(
-        result, "AUD-21",
-        _count_attr(_opening_tags(xml, "position"), "timeconst", _SA_PRESENT),
-        "`<position timeconst>` (3.12)",
-        "the servo is instantaneous; MuJoCo gives it filterexact dynamics",
-    )
+    # ⚠ NO AUD-21 ROW ANY MORE: `<position timeconst>` IS READ (2026-09-13).
+    # It resolves to `dyntype=filterexact` with `dynprm[0] = timeconst`, the
+    # same thing `mjs_setToPosition` does (user_api.cc:1291-1294), so the
+    # servo owns an activation and its force comes from it. Gate:
+    # `test_actuator_dyntype_vs_mujoco`.
 
     # ── <deformable><flex> — whole elements ────────────────────────────────
     # ⚠ AUD-23's `<sensor>` counter WAS HERE and is gone: `_fill_sensors` now

@@ -105,6 +105,7 @@ from ..fields import (
 from ..kinematics.forward_kinematics import forward_kinematics
 from ..dynamics.subtree_com import compute_subtree_com
 from ..dynamics.cdof import compute_cdof
+from ..dynamics.activation import next_activation
 from ..dynamics.tendon import spatial_tendon_length_jac
 from ..dynamics.jac_point import jac_point
 from ..dynamics.actuation import actuator_scalar_force
@@ -123,6 +124,10 @@ from ..gpu.constants import (
     ACT_IDX_CTRL_MAX,
     ACT_IDX_CTRL_MIN,
     ACT_IDX_DYN_TAU,
+    ACT_IDX_DYN_TYPE,
+    ACT_IDX_ACT_LIMITED,
+    ACT_IDX_ACT_MIN,
+    ACT_IDX_ACT_MAX,
     ACT_IDX_FORCE_LIMITED,
     ACT_IDX_FORCE_MAX,
     ACT_IDX_FORCE_MIN,
@@ -420,10 +425,19 @@ def apply_pose_transmission[
             # actuators never reach that loop, so this is the only place
             # their activation advances.
             if adr >= 0 and adr < len(act):
-                var tau = Float64(sf.actuators.data[o + ACT_IDX_DYN_TAU])
-                if tau < 1e-10:
-                    tau = 1e-10
-                act[adr] = Scalar[DTYPE](u + (ctrl - u) / tau * timestep)
+                # The one implementation — see
+                # `dynamics/activation.next_activation`. These were two of
+                # its four inline copies.
+                act[adr] = next_activation[DTYPE](
+                    Int(sf.actuators.data[o + ACT_IDX_DYN_TYPE]),
+                    Scalar[DTYPE](u),
+                    Scalar[DTYPE](ctrl),
+                    Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_DYN_TAU]),
+                    Scalar[DTYPE](timestep),
+                    sf.actuators.data[o + ACT_IDX_ACT_LIMITED] != 0,
+                    Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_ACT_MIN]),
+                    Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_ACT_MAX]),
+                )
 
         # ── actuators through a SITE (`mjTRN_SITE`) ──────────────────────
         # `mj_jacSite` at the site's world point, then the gear rotated into
@@ -599,11 +613,17 @@ def apply_pose_transmission[
                 )
 
             if adr_s >= 0 and adr_s < len(act):
-                var tau_s = Float64(sf.actuators.data[o + ACT_IDX_DYN_TAU])
-                if tau_s < 1e-10:
-                    tau_s = 1e-10
-                act[adr_s] = Scalar[DTYPE](
-                    u_s + (ctrl_s - u_s) / tau_s * timestep
+                # The fourth and last inline copy of the activation ODE, now
+                # the fourth caller of `next_activation`.
+                act[adr_s] = next_activation[DTYPE](
+                    Int(sf.actuators.data[o + ACT_IDX_DYN_TYPE]),
+                    Scalar[DTYPE](u_s),
+                    Scalar[DTYPE](ctrl_s),
+                    Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_DYN_TAU]),
+                    Scalar[DTYPE](timestep),
+                    sf.actuators.data[o + ACT_IDX_ACT_LIMITED] != 0,
+                    Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_ACT_MIN]),
+                    Scalar[DTYPE](sf.actuators.data[o + ACT_IDX_ACT_MAX]),
                 )
 
         # ── `<adhesion body=>` (`mjTRN_BODY`) ────────────────────────────

@@ -390,6 +390,10 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_BIAS1,
     ACT_IDX_KV,
     ACT_IDX_DYN_TAU,
+    ACT_IDX_DYN_TYPE,
+    ACT_IDX_ACT_LIMITED,
+    ACT_IDX_ACT_MIN,
+    ACT_IDX_ACT_MAX,
     ACT_IDX_ACT_ADR,
     ACT_IDX_BODY_ID,
     ACT_IDX_PID_KI,
@@ -3292,6 +3296,15 @@ def build_spec_fields[DTYPE: DType, D: DimsLike](
         sf.actuators.data[o + ACT_IDX_PID_IMAX] = Scalar[DTYPE](a.pid_imax)
         sf.actuators.data[o + ACT_IDX_PID_SLEW] = Scalar[DTYPE](a.pid_slew)
         sf.actuators.data[o + ACT_IDX_DYN_TAU] = Scalar[DTYPE](a.dyn_tau)
+        # ⚠ `dyn_type` IS NOT DERIVABLE FROM `dyn_tau` — see
+        # `ACT_IDX_DYN_TYPE`. `integrator` has no tau and `filterexact`
+        # shares `filter`'s.
+        sf.actuators.data[o + ACT_IDX_DYN_TYPE] = Scalar[DTYPE](a.dyn_type)
+        sf.actuators.data[o + ACT_IDX_ACT_LIMITED] = Scalar[DTYPE](
+            1.0 if a.act_limited else 0.0
+        )
+        sf.actuators.data[o + ACT_IDX_ACT_MIN] = Scalar[DTYPE](a.act_min)
+        sf.actuators.data[o + ACT_IDX_ACT_MAX] = Scalar[DTYPE](a.act_max)
         sf.actuators.data[o + ACT_IDX_ACT_ADR] = Scalar[DTYPE](a.act_adr)
         sf.actuators.data[o + ACT_IDX_TRN_N] = Scalar[DTYPE](a.trn_n)
         sf.actuators.data[o + ACT_IDX_DOF_ADR] = Scalar[DTYPE](a.dof_adr)
