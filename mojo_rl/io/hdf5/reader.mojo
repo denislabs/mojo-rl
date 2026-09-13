@@ -98,11 +98,25 @@ struct H5File(Movable):
         return list_link_names(self.file_id)
 
     def has_dataset(self, name: String) raises -> Bool:
-        var names = self.dataset_names()
-        for i in range(len(names)):
-            if names[i] == name:
-                return True
-        return False
+        """Does `name` open as a dataset? PATHS INCLUDED.
+
+        ⚠⚠ IT OPENS AND CLOSES, IT DOES NOT SEARCH `dataset_names()`. That is
+        the top-level link list, so the earlier version answered False for
+        every NESTED path — `"data/demo_0/actions"` in a LIBERO recording —
+        while `open_dataset` on the same string succeeded. A predicate that
+        contradicts the accessor it guards is worse than no predicate: the
+        LIBERO demo importer probed `data/demo_<i>/actions` to count episodes
+        and concluded a 50-demo file was empty.
+
+        `H5Dopen2` returns a negative id for a missing path and the library's
+        auto error printing is off (`h5native._init_h5_library`), so this is
+        silent and allocates nothing on the miss.
+        """
+        var dset_id = h5d_open2(self.file_id, String(name), H5P_DEFAULT)
+        if dset_id < 0:
+            return False
+        _ = h5d_close(dset_id)
+        return True
 
     def open_dataset(self, var name: String) raises -> H5Dataset:
         """Open a dataset by path within the file (e.g. ``"pixels"``)."""

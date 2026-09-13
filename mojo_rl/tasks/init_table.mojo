@@ -174,6 +174,68 @@ struct InitTable(Movable & Deinitable):
             raise Error("tasks: init row " + String(i) + " out of range")
         return self._state[i * self.row_words()]
 
+    def prefix_per_task(self, n: Int) raises -> Self:
+        """The first `n` rows of each task, as a table in its own right.
+
+        LIBERO evaluates `cfg.eval.n_eval` (20) of the fifty rows a
+        `.pruned_init` carries — `metric.py`'s `indices = arange(i * env_num,
+        (i + 1) * env_num) % init_states.shape[0]`, which for one env is the
+        prefix `0..n_eval-1`. This is that selection, made a TABLE OPERATION.
+
+        ⚠⚠ IT IS NOT A CONVENIENCE FOR THE DRIVER, IT IS WHAT KEEPS THE REPORT
+        HONEST. `SuccessReport` refuses a run that did not record every lane
+        (`eval_report.mojo`: an unrecorded lane otherwise prints as a failure
+        and lowers the rate). A driver that evaluated a prefix of a fifty-row
+        table and reported against the fifty-row table would hit that refusal;
+        one that "fixed" it by recording the unvisited lanes would report a
+        rate over episodes it never ran. Selecting first and reporting over the
+        selection leaves lane `i` equal to row `i`, which is the property
+        `same_as` compares two runs by.
+
+        ⚠ THE KEY IS UNCHANGED, BECAUSE THE FAMILY IS. `family_key` is about
+        which scene the coordinates mean something in, not how many rows were
+        kept — a sub-table must still refuse to load against another family.
+        """
+        if n <= 0:
+            raise Error(
+                "tasks: prefix_per_task(" + String(n) + ") — an eval over zero"
+                " episodes prints 0.0 and reads as a failing policy."
+            )
+        var words = self.row_words()
+        var state = List[Float64]()
+        var tix = List[Int32]()
+        var mask = List[Float64]()
+        var taken = List[Int]()
+        for _ in range(len(self.tasks)):
+            taken.append(0)
+        for i in range(self.n_rows()):
+            var ti = Int(self.task_index[i])
+            if ti < 0 or ti >= len(taken):
+                raise Error(
+                    "tasks: row " + String(i) + " has task_index " + String(ti)
+                    + ", outside the manifest's table"
+                )
+            if taken[ti] >= n:
+                continue
+            taken[ti] += 1
+            for w in range(words):
+                state.append(self._state[i * words + w])
+            tix.append(self.task_index[i])
+            mask.append(self.mask[i])
+        # ⚠ REFUSES A TASK THAT CANNOT SUPPLY `n`. Silently giving one task 50
+        # episodes and another 12 makes the aggregate a statement about the
+        # mix; `eval_report` prints the denominators for the same reason.
+        for t in range(len(taken)):
+            if self.tasks[t] != "" and taken[t] != n:
+                raise Error(
+                    "tasks: task " + String(t) + " has " + String(taken[t])
+                    + " rows in this table and " + String(n) + " were asked for."
+                )
+        return Self(
+            String(self.key), self.nq, self.nv, state^, tix^, mask^,
+            self.tasks.copy(),
+        )
+
     def task_label(self, i: Int) raises -> String:
         """The instruction for row `i`'s task.
 

@@ -362,6 +362,77 @@ def main() raises:
     ta.check(seen0 and seen1,
              "the table carries BOTH tasks, so the mapping is per-row")
 
+    # ── 6. `prefix_per_task` selects, and refuses ─────────────────────────
+    #
+    # LIBERO evaluates 20 of the 50 rows a `.pruned_init` carries. The
+    # selection is a table operation so that lane `i` stays row `i` and
+    # `SuccessReport` can refuse an incomplete run — see the method's header.
+    print()
+    print("--- 6. prefix_per_task: the selection is a table ---")
+    var per_task_full = List[Int](length=2, fill=0)
+    for i in range(tbl.n_rows()):
+        per_task_full[Int(tbl.task_index[i])] += 1
+    var want_n = per_task_full[0] // 2
+    ta.check(want_n >= 1 and per_task_full[0] == per_task_full[1],
+             "the fixture has " + String(per_task_full[0]) + " rows per task,"
+             " so a prefix of " + String(want_n) + " is a real cut")
+    var sub = tbl.prefix_per_task(want_n)
+    ta.check(sub.n_rows() == want_n * 2,
+             "prefix_per_task(" + String(want_n) + ") kept "
+             + String(sub.n_rows()) + " of " + String(tbl.n_rows()) + " rows")
+    var per_task_sub = List[Int](length=2, fill=0)
+    for i in range(sub.n_rows()):
+        per_task_sub[Int(sub.task_index[i])] += 1
+    ta.check(per_task_sub[0] == want_n and per_task_sub[1] == want_n,
+             "each task contributed exactly " + String(want_n) + " rows")
+    ta.check(sub.key == tbl.key,
+             "the family key is UNCHANGED — a sub-table still refuses another"
+             " family")
+
+    # ⚠⚠ THE ROWS ARE THE FIRST ONES, AND THEY ARE THE SAME BYTES. A selection
+    # that kept the right COUNT of the wrong rows passes every check above.
+    var q_full = List[Float64](length=NQ, fill=0.0)
+    var v_full = List[Float64](length=NV, fill=0.0)
+    var q_sub = List[Float64](length=NQ, fill=0.0)
+    var v_sub = List[Float64](length=NV, fill=0.0)
+    var sub_exact = True
+    var sub_compared = 0
+    for t in range(2):
+        var taken = 0
+        for i in range(tbl.n_rows()):
+            if Int(tbl.task_index[i]) != t or taken >= want_n:
+                continue
+            tbl.apply(i, q_full, v_full)
+            sub.apply(t * want_n + taken, q_sub, v_sub)
+            for k in range(NQ):
+                if q_full[k] != q_sub[k]:
+                    sub_exact = False
+                sub_compared += 1
+            for k in range(NV):
+                if v_full[k] != v_sub[k]:
+                    sub_exact = False
+                sub_compared += 1
+            taken += 1
+    ta.check(sub_exact and sub_compared > 0,
+             "lane i of the selection is row i of the table, bit-exactly ("
+             + String(sub_compared) + " values)")
+
+    var sub_refused = 0
+    try:
+        var _z = tbl.prefix_per_task(0)
+        print("    NOT REFUSED: a zero-row selection")
+    except e:
+        sub_refused += 1
+        print("    refused a zero-row selection")
+    try:
+        var _b = tbl.prefix_per_task(per_task_full[0] + 1)
+        print("    NOT REFUSED: more rows than a task has")
+    except e:
+        sub_refused += 1
+        print("    refused more rows than a task has")
+    ta.check(sub_refused == 2,
+             String(sub_refused) + " of 2 impossible selections refused")
+
     print()
     print("--- ran", ta.checks, "checks,", ta.failures, "failed ---")
     if ta.failures != 0:
