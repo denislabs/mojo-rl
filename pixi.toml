@@ -291,6 +291,7 @@ libero-arenas-check = { cmd = "python tools/tasks/gen_libero_arenas.py --check",
 libero-objects = { cmd = "python tools/tasks/gen_libero_objects.py", description = "Generate the attachable copy (+_free variant) of every LIBERO object (needs the libero pack)" }
 libero-objects-check = { cmd = "python tools/tasks/gen_libero_objects.py --check", description = "CI: generated LIBERO object XMLs are up to date" }
 libero-family = { cmd = "mojo run -I . tools/tasks/gen_libero_family.mojo", description = "One LIBERO suite -> .family + .task files, e.g. `pixi run libero-family libero_goal`" }
+libero-goal-eval = { cmd = "mojo run -I . tests/tasks/test_libero_goal_eval.mojo", description = "L3 gate: libero_goal's ten goals on the composed scene, host vs tape vs kernel loop (+ device leg with an accelerator)" }
 libero-survey = { cmd = "mojo run -I . examples/tasks/libero_survey.mojo", description = "LIBERO's 130 files against the task layer: parsed / family / task / resolved" }
 libero-onestep = { cmd = "python tools/tasks/libero_onestep_vs_mujoco.py mojo_rl/tasks/scenes/libero_goal.xml mojo_rl/tasks/families/libero_goal.family", description = "One-step board row for the composed libero_goal scene vs MuJoCo (build /tmp/mfh/drive first, see docs/menagerie_fidelity_harnesses/README.md); args: N ctrl_scale" }
 project-init = { cmd = "mojo run -I . tools/project/project_cli.mojo init", description = "Create projects/<name>/ + project.kv. Pass the name, then --description" }

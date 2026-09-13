@@ -18,22 +18,35 @@ Nothing here allocates, nothing here holds a string.
 That is also why binding is a separate pass: the strings are resolved ONCE, on
 the host, at task-load time. A kernel never sees a name.
 
-## ⚠ TIER A vs TIER B
+## ⚠ TIER A vs TIER B — AND WHAT L3 MOVED
 
-* **Tier A** reads `Data.xpos` / `xquat` / `site_xpos` / `qpos` only — all
-  per-lane and already on device (`Data.site_xpos` is `[BATCH, NSITE*3]`).
-  In, On, Near, Above, Upright, Open, AtRegion.
-* **Tier B** needs the contact array: Touching, Grasped.
+* **Tier A** reads per-lane `Data` the reward kernel is already handed:
+  `xpos` / `xquat` / `site_xpos` / `qpos`, the model's `sites` and `bodies`
+  tables, and — since L3 — the lane's own CONTACT LIST (`contacts` +
+  `meta[META_IDX_NUM_CONTACTS]`, exactly what `sensors/touch.mojo` reads).
+  In, On, Near, Above, Upright, AtRegion, Joint, Touching, and `On(obj, obj)`.
+* **Tier B** is what has NO defined semantics yet: Grasped. It parses and
+  binds and is refused by `require_tier_a` and by the tape.
 
-**A task's `goal=` must be Tier A** — `require_tier_a` is that rule, and P3
-calls it. Tier B parses and binds and evaluates on the CPU authoring path, and
-may be logged as a diagnostic; it cannot train GPU-batched until per-lane
-contact readback is specified, which is not in this plan.
+⚠ THE OLD SPLIT WAS "Tier B needs the contact array, which is CPU-only".
+That premise was wrong by the time L3 looked: `Phyics3dBatchedEnv` passes
+`contacts` to `compute_reward_and_done_gpu` and the touch sensor evaluates
+per lane from it. The LIBERO port needed `On(a, b)` = `b.check_ontop(a)` =
+z order + CONTACT + xy < 0.03, so the contact test moved to Tier A rather
+than the benchmark's most common predicate being approximated.
 
-Less restrictive than it sounds: LIBERO's `On(a,b)` reduces to
-`b.check_ontop(a)`, and for a SITE target its `check_contact` returns True
-unconditionally — its own comment says "There is no dynamics for site
-objects". Its most-used predicate is already pure geometry against a site.
+## THE L3 OPS, AND THE LIBERO SEMANTICS THEY CARRY
+
+* `Joint(joint, cmp, thr)` — `qpos[joint] <cmp> thr`, cmp in lt/le/gt/ge.
+  LIBERO's `Open/Close/Turnon/Turnoff` are this with a per-CLASS comparison
+  (`categories.kv`); `Open` on a multi-joint object is ANY joint (`Or`),
+  `Close` is ALL (`And`), quoted from `ObjectState.is_open/is_close`.
+* `On(obj, obj)` — bound to `OP_ON_BODY`: `check_ontop` verbatim, with the
+  ARGUMENT INVERSION LIBERO's `On.__call__` performs (`arg2.check_ontop(arg1)`)
+  resolved here, once — see `eval.pred_ontop`.
+* `On(obj, box region)` / `In(obj, box region)` — a region declared
+  `:box:` (`spec.RegionSpec.is_box`) evaluates as LIBERO's `SiteObject.under`
+  / `in_box`, in the site's frame, with an optional CONTACT partner slot.
 
 ## ⚠ WHAT THIS FILE DOES NOT DO
 
@@ -62,15 +75,59 @@ comptime OP_ABOVE: Int = 3
 comptime OP_UPRIGHT: Int = 4
 comptime OP_OPEN: Int = 5
 comptime OP_AT_REGION: Int = 6
-# Tier B — contacts.
+# Contact readers. ⚠ TOUCHING IS TIER A SINCE L3 (see the header); GRASPED
+# stays Tier B — it has no defined semantics and is refused everywhere.
 comptime OP_TOUCHING: Int = 7
 comptime OP_GRASPED: Int = 8
 # Composition.
 comptime OP_AND: Int = 9
 comptime OP_OR: Int = 10
 comptime OP_NOT: Int = 11
+# L3 — appended, never renumbered (the values are in `meta` on device).
+# `Joint(joint, cmp, thr)`: a = qpos address, b = CMP_* code, param = thr.
+comptime OP_JOINT: Int = 12
+# `On(obj, obj)` after binding: a = subject root body, b = target root body.
+# ⚠ THE PARSER NEVER EMITS THIS — `On` parses to OP_ON and `bind_goal`
+# picks OP_ON_BODY when the second name is a SLOT and not a region.
+comptime OP_ON_BODY: Int = 13
 
-comptime OP_COUNT: Int = 12
+comptime OP_COUNT: Int = 14
+
+# ── comparison codes for `Joint` ───────────────────────────────────────────
+# ⚠ ALSO THE WIRE FORMAT: `b` of an OP_JOINT term. `libero_categories.kv`
+# spells them lt/le/gt/ge and imports these, so the table and the language
+# cannot disagree on a code.
+comptime CMP_NONE: Int = -1
+comptime CMP_LT: Int = 0
+comptime CMP_LE: Int = 1
+comptime CMP_GT: Int = 2
+comptime CMP_GE: Int = 3
+
+
+def cmp_from_name(s: String) raises -> Int:
+    if s == "lt":
+        return CMP_LT
+    if s == "le":
+        return CMP_LE
+    if s == "gt":
+        return CMP_GT
+    if s == "ge":
+        return CMP_GE
+    raise Error(
+        "tasks: unknown comparison '" + s + "'. Known: lt, le, gt, ge."
+    )
+
+
+def cmp_name(op: Int) -> String:
+    if op == CMP_LT:
+        return String("lt")
+    if op == CMP_LE:
+        return String("le")
+    if op == CMP_GT:
+        return String("gt")
+    if op == CMP_GE:
+        return String("ge")
+    return String("none")
 
 # ⚠ A CAP, AND IT IS A DEVICE-SIDE ONE. P3's tape is `[N_TASKS, MAX_TERMS, 4]`
 # and must be comptime-sized, so a goal that needs more terms than this cannot
@@ -104,9 +161,11 @@ def op_from_name(s: String) raises -> Int:
         return OP_OR
     if s == "Not":
         return OP_NOT
+    if s == "Joint":
+        return OP_JOINT
     raise Error(
         "tasks: unknown predicate '" + s + "'. Known: In, On, Near, Above,"
-        " Upright, Open, AtRegion, Touching, Grasped, And, Or, Not."
+        " Upright, Open, AtRegion, Joint, Touching, Grasped, And, Or, Not."
     )
 
 
@@ -133,12 +192,16 @@ def op_name(op: Int) -> String:
         return String("And")
     if op == OP_OR:
         return String("Or")
+    if op == OP_JOINT:
+        return String("Joint")
+    if op == OP_ON_BODY:
+        return String("On")
     return String("Not")
 
 
 def op_arity(op: Int) -> Int:
     """How many arguments the predicate takes, INCLUDING its numeric one."""
-    if op == OP_NEAR or op == OP_ABOVE:
+    if op == OP_NEAR or op == OP_ABOVE or op == OP_JOINT:
         return 3
     if op == OP_GRASPED or op == OP_NOT:
         return 1
@@ -146,8 +209,18 @@ def op_arity(op: Int) -> Int:
 
 
 def op_is_tier_a(op: Int) -> Bool:
-    """Can this run on device, reading only per-lane `Data`?"""
-    return op != OP_TOUCHING and op != OP_GRASPED
+    """Can this run on device, reading only per-lane `Data`?
+
+    ⚠ SINCE L3 EVERYTHING BUT GRASPED. The contact list is per lane in the
+    reward kernel (header), so Touching and `On(obj, obj)` read it there.
+    """
+    return op != OP_GRASPED
+
+
+def op_reads_contacts(op: Int) -> Bool:
+    """Does the op read the lane's contact list? (Box regions may too — that
+    is a REGION property, `RegionSpec.contact`, not an op property.)"""
+    return op == OP_TOUCHING or op == OP_GRASPED or op == OP_ON_BODY
 
 
 def op_is_composite(op: Int) -> Bool:
@@ -168,6 +241,7 @@ def op_takes_number(op: Int) -> Bool:
     """
     return (
         op == OP_NEAR or op == OP_UPRIGHT or op == OP_OPEN or op == OP_ABOVE
+        or op == OP_JOINT
     )
 
 
@@ -364,7 +438,12 @@ struct BoundTerm(Copyable, ImplicitlyCopyable, Movable):
         Near / Above         a = body id,   b = body id
         Upright              a = body id,   b = -1        param = tolerance
         Open                 a = joint id,  b = -1        param = fraction
-        Touching             a = body id,   b = body id   (Tier B)
+        Touching             a = body id,   b = body id   (slot ROOTS — the
+                             evaluator walks `body_parent` so any body of
+                             either slot counts, as robosuite's
+                             `check_contact` over a model's contact_geoms)
+        On (OP_ON_BODY)      a = body id,   b = body id   (roots, as above)
+        Joint                a = qpos adr,  b = CMP_*     param = threshold
         Grasped              a = body id,   b = -1        (Tier B)
         And / Or             a = term idx,  b = term idx
         Not                  a = term idx,  b = -1
@@ -440,11 +519,51 @@ def site_id(name: String, site_names: List[String]) raises -> Int:
     )
 
 
+def joint_qpos_addresses(joint_nq: List[Int]) -> List[Int]:
+    """Each joint's first `qpos` index, from the per-joint `nq` in joint
+    order — `FlatModelDef.joints[i].nq`. The runtime parser carries no
+    address column; the joints are in qpos order, so the prefix sum IS the
+    address, the same rule `reset.free_slot_addresses` applies."""
+    var out = List[Int]()
+    var adr = 0
+    for i in range(len(joint_nq)):
+        out.append(adr)
+        adr += joint_nq[i]
+    return out^
+
+
+def joint_id(name: String, joint_names: List[String]) raises -> Int:
+    for i in range(len(joint_names)):
+        if String(joint_names[i]) == name:
+            return i
+    raise Error(
+        "tasks: no joint named '" + name + "' in the composed scene. ⚠ A"
+        " goal names the COMPOSED joint — `<slot>_<joint in the asset>` —"
+        " because `<attach prefix=>` renames every element it splices."
+    )
+
+
 def bind_goal(
     g: Goal,
     f: FamilySpec,
     body_names: List[String],
     site_names: List[String],
+) raises -> BoundGoal:
+    """The pre-L3 signature: no joint table. A goal with a `Joint` term
+    RAISES here — pass `joint_names` and `joint_qpos_adr` (see
+    `joint_qpos_addresses`) through the wide overload."""
+    var no_names = List[String]()
+    var no_adr = List[Int]()
+    return bind_goal(g, f, body_names, site_names, no_names, no_adr)
+
+
+def bind_goal(
+    g: Goal,
+    f: FamilySpec,
+    body_names: List[String],
+    site_names: List[String],
+    joint_names: List[String],
+    joint_qpos_adr: List[Int],
 ) raises -> BoundGoal:
     """Resolve every name to an index. Runs ONCE, on the host, at load time.
 
@@ -452,6 +571,14 @@ def bind_goal(
     carries its own site plus a rectangle, and the evaluator needs both; a
     goal term only has to say WHICH region. Resolving the site here would
     throw away the rectangle and quietly turn `In` into `AtSite`.
+
+    ⚠ `On`'s SECOND NAME IS A REGION OR A SLOT, DECIDED HERE. A region wins;
+    a name that is BOTH a region and a slot is refused rather than guessed,
+    because the two evaluate differently (`pred_in_rect` / `under` against
+    `check_ontop`) and a family that overloads a name has said nothing about
+    which it meant. `In(obj, slot)` is refused outright: LIBERO's
+    `ObjectState.check_contain` calls `object.in_box`, which no object
+    class in its corpus defines — only sites and target zones have one.
     """
     var out = BoundGoal()
     for i in range(len(g.terms)):
@@ -462,18 +589,37 @@ def bind_goal(
         # "absent".
         var a: Int
         var b = -1
+        var op = t.op
         if op_is_composite(t.op):
             a = t.kid0
             b = t.kid1
         elif t.op == OP_OPEN:
-            # A joint, by the composed name. Left unresolved here: joints are
-            # not slots, and the only user so far is a drawer/door family that
-            # does not exist yet. Refused loudly rather than half-bound.
+            # A joint fraction of its range. Left unresolved: LIBERO's four
+            # articulation spellings are absolute thresholds with a per-class
+            # direction, which `Joint(joint, cmp, thr)` carries exactly; a
+            # range fraction has no user yet and would need the joint range
+            # here. Refused loudly rather than half-bound.
             raise Error(
-                "tasks: Open(joint, frac) is not bound yet — no family in the"
-                " tree has an articulated fixture. Add the joint lookup when"
-                " one does, rather than guessing the convention now."
+                "tasks: Open(joint, frac) is not bound — use"
+                " Joint(<joint>, lt|le|gt|ge, <threshold>), which is what"
+                " LIBERO's Open/Close/Turnon/Turnoff translate to."
             )
+        elif t.op == OP_JOINT:
+            if len(joint_names) == 0:
+                raise Error(
+                    "tasks: Joint(" + t.arg0 + ", ...) needs the joint table"
+                    " — call bind_goal with joint_names and joint_qpos_adr"
+                    " (predicates.joint_qpos_addresses)."
+                )
+            var jid = joint_id(t.arg0, joint_names)
+            if jid >= len(joint_qpos_adr):
+                raise Error(
+                    "tasks: joint_qpos_adr has " + String(len(joint_qpos_adr))
+                    + " entries but joint '" + t.arg0 + "' is index "
+                    + String(jid)
+                )
+            a = joint_qpos_adr[jid]
+            b = cmp_from_name(t.arg1)
         elif t.op == OP_AT_REGION:
             # ⚠ AT_REGION's FIRST ARGUMENT IS A SITE, NOT A SLOT. It is what
             # asks "is the gripper over the drop zone" — `robot_gripperframe`
@@ -491,31 +637,51 @@ def bind_goal(
         else:
             a = slot_body_id(t.arg0, body_names)
             if op_takes_region(t.op):
-                b = f.region_index(t.arg1)
-                if b < 0:
+                var ri = f.region_index(t.arg1)
+                var si = f.slot_index(t.arg1)
+                if ri >= 0 and si >= 0:
+                    raise Error(
+                        "tasks: '" + t.arg1 + "' is BOTH a region and a slot"
+                        " of family '" + f.name + "'; " + op_name(t.op)
+                        + "(" + t.arg0 + ", " + t.arg1 + ") is ambiguous."
+                        " Rename one."
+                    )
+                if ri >= 0:
+                    b = ri
+                elif si >= 0 and t.op == OP_ON:
+                    op = OP_ON_BODY
+                    b = slot_body_id(t.arg1, body_names)
+                elif si >= 0:
+                    raise Error(
+                        "tasks: In(" + t.arg0 + ", " + t.arg1 + ") names a"
+                        " SLOT as its container. LIBERO defines In only"
+                        " against a site or a target zone (`in_box`); an"
+                        " object has no interior. Declare a `:box:` region"
+                        " on the container's site instead."
+                    )
+                else:
                     raise Error(
                         "tasks: goal names region '" + t.arg1 + "', which"
                         " family '" + f.name + "' does not declare"
                     )
             elif t.arg1.byte_length() > 0:
                 b = slot_body_id(t.arg1, body_names)
-        out.terms.append(BoundTerm(t.op, a, b, t.param))
+        out.terms.append(BoundTerm(op, a, b, t.param))
     return out^
 
 
 def require_tier_a(g: BoundGoal, task_name: String) raises:
     """⚠ `TASK_LAYER_PLAN.md` §5.1's RULE, made real. P3 calls this.
 
-    A Tier B goal reads the contact array, which is not per-lane readable in
-    the reward kernel today. Training against it GPU-batched would give a
-    reward of whatever the default is — a flat curve, not a crash.
+    Since L3 the only Tier B op is `Grasped`, which has no semantics defined
+    anywhere: evaluating it would return a constant, and a constant goal
+    trains against a flat reward with every curve looking healthy.
     """
     for i in range(len(g.terms)):
         if not op_is_tier_a(g.terms[i].op):
             raise Error(
                 "task '" + task_name + "': goal uses "
-                + op_name(g.terms[i].op) + ", which is TIER B (it reads"
-                " contacts). Tier B runs on the CPU authoring path and may be"
-                " logged as a diagnostic, but a task whose REWARD needs it"
-                " cannot train GPU-batched — see TASK_LAYER_PLAN.md §5.1."
+                + op_name(g.terms[i].op) + ", which is TIER B — it has no"
+                " defined evaluation (neither host nor device). Spell the"
+                " grasp as Touching(obj, <finger slot>) or a Joint term."
             )

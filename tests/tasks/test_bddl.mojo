@@ -233,19 +233,37 @@ def main() raises:
              "every asset is a visible TODO (1 base + 4 slots), not a guess")
 
     var gap = classify_goal(p)
-    # ⚠⚠ THE **FIRST** GAP, NOT THE MOST INTERESTING ONE. This goal is
-    # `(On .. cook_region) (On .. cook_region) (Turnon ..)` and I expected
-    # ARTICULATION — but term 0 already blocks it, on the UNRANGED region, and
-    # reporting that is what keeps the survey's gap counts equal to the number
-    # of tasks blocked rather than to the number of bad terms.
-    ta.check(gap.kind == GAP_FIXTURE_REGION,
-             "the goal is refused at its FIRST blocking term: " + gap.term)
+    # ⚠ THIS GOAL IS `(On .. cook_region) (On .. cook_region) (Turnon ..)`.
+    # Before L3 it was refused at its FIRST term (the unranged fixture-site
+    # region) and this check pinned "first, not most interesting". L3 closed
+    # both gaps — box regions read off the asset, Turnon as a Joint term
+    # from the table — so it classifies as expressible; the FIRST-gap rule is
+    # pinned below on a goal that is still refused.
+    ta.check(gap.kind == GAP_NONE,
+             "On(obj, fixture site) + Turnon(fixture) classify as expressible (L3)")
+    # the pre-L3 `translate_task(p, f)` has no table and no assets, so the
+    # articulation term still RAISES there rather than being approximated
     var refused = False
     try:
         var _t = translate_task(p, f)
     except e:
         refused = True
-    ta.check(refused, "and `translate_task` RAISES rather than approximating")
+    ta.check(refused, "`translate_task` without the table RAISES on Turnon"
+             " rather than approximating")
+    # ⚠⚠ THE **FIRST** GAP, NOT THE MOST INTERESTING ONE. Two blocking terms,
+    # `In(obj, OBJECT)` first and an unknown predicate second: the report
+    # names the first, so the survey's gap counts equal the number of TASKS
+    # blocked rather than the number of bad terms.
+    var p2 = parse_bddl(
+        String(FIXTURE).replace(
+            "(And (On moka_pot_1 flat_stove_1_cook_region)",
+            "(And (In moka_pot_1 moka_pot_2) (Stack moka_pot_1 moka_pot_2)",
+        )
+    )
+    var gap2 = classify_goal(p2)
+    ta.check(gap2.kind == GAP_OBJECT_TARGET,
+             "In(obj, OBJECT) is still refused, and it is the FIRST gap"
+             " reported: " + gap2.term)
 
     print()
     print("--- ran", ta.checks, "checks,", ta.failures, "failed ---")

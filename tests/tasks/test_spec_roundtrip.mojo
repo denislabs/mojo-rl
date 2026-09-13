@@ -237,6 +237,44 @@ def main() raises:
         "a REVERSED rectangle — the sampler would just never accept a draw",
         is_family=True,
     )
+    # ── L3: the `:box:` region ────────────────────────────────────────────
+    var fb = parse_family(
+        String("schema_version=1\nfamily=f\nbase=b\nhorizon=1\n"
+               "slot=cab:static:c.xml:0,0,0\n"
+               "region=r:box:cab_top:-0.03,-0.07,0.03,0.07:0.1:cab\n"
+               "region=z:box:arena_zone_plane:-0.09,0.17,-0.01,0.25:0.007\n"
+               "region=p:site:s:-0.1,-0.1,0.1,0.1\n")
+    )
+    ta.check(
+        fb.regions[0].is_box and fb.regions[0].contact == "cab"
+        and fb.regions[0].half_height == 0.1 and fb.regions[0].has_rect,
+        "a box region keeps its kind, rect, half-height and contact slot",
+    )
+    ta.check(
+        fb.regions[1].is_box and fb.regions[1].contact == ""
+        and not fb.regions[2].is_box,
+        "a box region without a contact slot, and a plain one, are told apart",
+    )
+    var fb2 = parse_family(fb.encode())
+    ta.check(fb2.encode() == fb.encode(), "box regions ROUND-TRIP")
+    ta.refuses(
+        String("schema_version=1\nfamily=f\nbase=b\nhorizon=1\n"
+               "region=r:box:s:-0.1,-0.1,0.1,0.1\n"),
+        "a box region without its half-height (the site's size z)",
+        is_family=True,
+    )
+    ta.refuses(
+        String("schema_version=1\nfamily=f\nbase=b\nhorizon=1\n"
+               "region=r:site:s:-0.1,-0.1,0.1,0.1:0.05:cab\n"),
+        "a plain region with a contact slot (only a box carries one)",
+        is_family=True,
+    )
+    ta.refuses(
+        String("schema_version=1\nfamily=f\nbase=b\nhorizon=1\n"
+               "region=r:box:s:-0.1,-0.1,0.1,0.1:0.05:nosuch\n"),
+        "a box region whose contact slot is not a slot of the family",
+        is_family=True,
+    )
     ta.refuses(
         String("schema_version=1\nfamily=f\nbase=b\nhorizon=0\n"),
         "horizon=0", is_family=True,

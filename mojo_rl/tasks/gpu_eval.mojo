@@ -21,25 +21,28 @@ Metal has no double; an f64 multiply-add in a kernel is an LLVM-IR verification
 failure, not a slow path. Every constant is `Scalar[DTYPE](...)` of a comptime
 `Float64`, which folds at compile time.
 
-## WHERE THE TWO INPUTS LIVE, AND WHY THEY NEED NO NEW OPERANDS
+## WHERE THE INPUTS LIVE, AND WHY THEY NEED NO NEW OPERANDS
 
 * **the tape** — `meta[env, META_IDX_TASK_PARAM_0 .. _11]`, twelve per-lane
   words. Already an operand; reset preserves it (`constants.mojo:164`).
-* **the region table** — `curriculum[0, 0..4]`, shared across lanes because a
-  region belongs to the FAMILY, not to a task. Already an operand, and unused
-  by anything else in this tree.
+* **the region table** — `curriculum[0, b*REGION_WORDS ..]`, shared across
+  lanes because a region belongs to the FAMILY, not to a task. Already an
+  operand. ⚠ INDEXED BY THE TERM'S `b` SINCE L3: it used to hold exactly
+  one region (`MODEL_CURRICULUM_SIZE` was 8) and every term read region 0;
+  the table is 128 words now, 16 regions of 8, and `require_gpu_regions`
+  refuses a goal past that.
+* **the L3 inputs** — `qpos` (Joint), the model's `sites` table (a box
+  region's frame is `xquat[site body] * site quat`, the product
+  `sensors/touch.mojo` forms), the model's `bodies` table (the parent
+  column, for "is this contact body inside slot X"), and the lane's
+  `contacts` + `meta[META_IDX_NUM_CONTACTS]`. Every one of them is ALREADY
+  an operand of `compute_reward_and_done_gpu`; nothing new is bound.
 
-⚠⚠ ONE REGION, AND THE TERM'S REGION INDEX IS IGNORED ON DEVICE. The table
-below is read ONCE per lane, before the tape loop, and every `In`/`On`/
-`AtRegion` term uses it whatever its `b` says. `MODEL_CURRICULUM_SIZE` is 8
-and a region costs 5 words (site id + rect), so exactly one fits.
-
-A family may still DECLARE more — `so101_tabletop` declares three — because
-`init=` is sampled on the HOST and never consults this table. What must not
-happen is a GOAL naming region 1: it would read region 0's rectangle here and
-region 1's in `eval.eval_goal`, so the GPU and CPU rewards would disagree with
-no error anywhere. `require_gpu_regions` refuses that goal; it is the region
-counterpart of `predicates.require_tier_a` and is called in the same place.
+⚠ THE NARROW OVERLOADS (poses only) ARE THE PRE-L3 SIGNATURES, kept for the
+SO-101 drivers that compute a goal distance on the host from `Data` views.
+They compile the L3 branches OUT (`HAS_L3=False`) and evaluate an L3 op as
+False — which is why `tape.tape_needs_l3` exists on the host and why a
+LIBERO driver must call the wide ones. `family_config` does.
 """
 
 from std.math import sqrt
@@ -47,21 +50,32 @@ from std.math import sqrt
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.gpu.constants import (
-    METADATA_SIZE, META_IDX_TASK_PARAM_0, MODEL_CURRICULUM_SIZE,
+    METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_NUM_CONTACTS,
+    MODEL_CURRICULUM_SIZE, MODEL_SITE_SIZE, MODEL_BODY_SIZE,
+    SITE_IDX_BODY, SITE_IDX_QUAT_X, SITE_IDX_QUAT_Y, SITE_IDX_QUAT_Z,
+    SITE_IDX_QUAT_W, BODY_IDX_PARENT,
+    CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
 )
+from mojo_rl.physics3d.kinematics.quat_math import gpu_quat_mul, gpu_quat_rotate
+from .spec import FamilySpec
 from .predicates import (
     BoundGoal,
     OP_IN, OP_ON, OP_NEAR, OP_ABOVE, OP_UPRIGHT, OP_AT_REGION,
-    OP_AND, OP_OR, OP_NOT,
+    OP_AND, OP_OR, OP_NOT, OP_JOINT, OP_ON_BODY, OP_TOUCHING,
 )
 from .eval import (
     pred_in_rect, pred_near, pred_above, pred_upright,
-    ON_MIN_DZ, ON_MAX_DZ,
+    pred_joint, pred_ontop, pred_box_in, pred_box_under,
+    ON_MIN_DZ, ON_MAX_DZ, BOX_IN_Z_SLACK, BOX_UNDER_Z_SLACK, BOX_UNDER_HEIGHT,
+    ONTOP_XY,
 )
 from .tape import MAX_TAPE_TERMS, TERM_WORDS
 
 
 # ── the region table's layout inside `curriculum` ──────────────────────────
+# One record of REGION_WORDS per region, at `b * REGION_WORDS`; the CUR_IDX_*
+# names are OFFSETS WITHIN A RECORD (region 0's absolute indices are the
+# same numbers, which is what every pre-L3 reader assumed).
 comptime CUR_IDX_REGION_SITE: Int = 0
 comptime CUR_IDX_REGION_X0: Int = 1
 comptime CUR_IDX_REGION_Y0: Int = 2
@@ -69,45 +83,49 @@ comptime CUR_IDX_REGION_X1: Int = 3
 comptime CUR_IDX_REGION_Y1: Int = 4
 # ⚠ THE Z HALF-BAND, WORD 5. `RegionSpec.half_height`, carried per region so
 # `In`/`AtRegion` on device use the region's own volume rather than
-# `eval.IN_HALF_HEIGHT`. Six words of the eight still leaves room for exactly
-# one region — the table did not get narrower, see MAX_CURRICULUM_REGIONS.
+# `eval.IN_HALF_HEIGHT`.
 comptime CUR_IDX_REGION_H: Int = 5
-comptime REGION_WORDS: Int = 6
+# L3: 1 for a `:box:` region (LIBERO SiteObject semantics), else 0.
+comptime CUR_IDX_REGION_BOX: Int = 6
+# L3: the root body of the region's contact slot, or -1.
+comptime CUR_IDX_REGION_CONTACT: Int = 7
+comptime REGION_WORDS: Int = 8
 
-# ⚠ WORDS 6 AND 7 ARE FREE. They briefly held the two shaping weights, which
-# moved to `meta` when a multi-task batch showed that `curriculum` — one row
-# for every lane — cannot carry a per-TASK quantity. See `tasks/shaping.mojo`.
+# ⚠ AN EMPTY RECORD HAS SITE -1. `region_table_words` writes every unused
+# record that way so a stale `curriculum` from a previous family cannot be
+# read as a plausible region.
+comptime REGION_EMPTY: Float64 = -1.0
 
 comptime MAX_CURRICULUM_REGIONS: Int = MODEL_CURRICULUM_SIZE // REGION_WORDS
 
 
-def region_table_words(
-    site: Int, x0: Float64, y0: Float64, x1: Float64, y1: Float64,
-    half_height: Float64,
-) raises -> List[Float64]:
-    """The `curriculum` words for a one-region family. Host-side.
-
-    ⚠ RAISES ON A SECOND REGION rather than letting a caller write past the
-    table. `curriculum` is `MODEL_CURRICULUM_SIZE` wide and a region costs
-    five words; a sixth-word write would land in whatever follows and region 1
-    would read back a plausible site id and a plausible rectangle, both wrong.
-    """
-    if MAX_CURRICULUM_REGIONS < 1:
-        raise Error("tasks: MODEL_CURRICULUM_SIZE too small for a region")
+def _empty_table() -> List[Float64]:
     var out = List[Float64]()
     for _ in range(MODEL_CURRICULUM_SIZE):
         out.append(0.0)
-    out[CUR_IDX_REGION_SITE] = Float64(site)
-    out[CUR_IDX_REGION_X0] = x0
-    out[CUR_IDX_REGION_Y0] = y0
-    out[CUR_IDX_REGION_X1] = x1
-    out[CUR_IDX_REGION_Y1] = y1
-    # ⚠⚠ REQUIRED, NOT DEFAULTED HERE. A defaulted argument would let a caller
-    # that never heard of `half_height` keep compiling and silently ship the
-    # 0.12 fallback to device while the HOST evaluator used the region's real
+    for r in range(MAX_CURRICULUM_REGIONS):
+        out[r * REGION_WORDS + CUR_IDX_REGION_SITE] = REGION_EMPTY
+        out[r * REGION_WORDS + CUR_IDX_REGION_CONTACT] = -1.0
+    return out^
+
+
+def _write_region(
+    mut out: List[Float64], r: Int,
+    site: Int, x0: Float64, y0: Float64, x1: Float64, y1: Float64,
+    half_height: Float64, is_box: Bool, contact_body: Int,
+) raises:
+    if r >= MAX_CURRICULUM_REGIONS:
+        raise Error(
+            "tasks: region " + String(r) + " does not fit the device region"
+            " table (" + String(MAX_CURRICULUM_REGIONS) + " regions of "
+            + String(REGION_WORDS) + " words in MODEL_CURRICULUM_SIZE="
+            + String(MODEL_CURRICULUM_SIZE) + ")"
+        )
+    # ⚠⚠ REQUIRED, NOT DEFAULTED. A defaulted half-height would let a caller
+    # that never heard of it keep compiling and silently ship the 0.12
+    # fallback to device while the HOST evaluator used the region's real
     # band — the CPU and GPU rewards would then disagree on exactly the
-    # regions the field was added for. `region_half_heights(f)[i]` is the
-    # value; the compiler now insists it be passed.
+    # regions the field was added for.
     if half_height <= 0.0:
         raise Error(
             "tasks: region half-height " + String(half_height) + " accepts no"
@@ -115,14 +133,95 @@ def region_table_words(
             " state, which reads as an unlearnable task rather than a bad"
             " number. `spec.parse_region` refuses this too."
         )
-    out[CUR_IDX_REGION_H] = half_height
+    var o = r * REGION_WORDS
+    out[o + CUR_IDX_REGION_SITE] = Float64(site)
+    out[o + CUR_IDX_REGION_X0] = x0
+    out[o + CUR_IDX_REGION_Y0] = y0
+    out[o + CUR_IDX_REGION_X1] = x1
+    out[o + CUR_IDX_REGION_Y1] = y1
+    out[o + CUR_IDX_REGION_H] = half_height
+    out[o + CUR_IDX_REGION_BOX] = 1.0 if is_box else 0.0
+    out[o + CUR_IDX_REGION_CONTACT] = Float64(contact_body)
 
+
+def region_table_words(
+    site: Int, x0: Float64, y0: Float64, x1: Float64, y1: Float64,
+    half_height: Float64,
+) raises -> List[Float64]:
+    """The `curriculum` words for a ONE-region family (region 0, plain).
+    Host-side. The pre-L3 writer, kept for the SO-101 drivers; a family
+    whose goals name more than region 0, or a box region, uses the overload
+    that takes the family."""
+    var out = _empty_table()
+    _write_region(out, 0, site, x0, y0, x1, y1, half_height, False, -1)
     return out^
 
 
+def region_table_words(
+    f: FamilySpec, region_site: List[Int], region_contact: List[Int],
+) raises -> List[Float64]:
+    """Every region of the family, in family order — `eval.region_sites`,
+    `region_rects`, `region_half_heights`, `region_box_flags` and
+    `region_contact_bodies` folded into the 8-word records the device reads.
+    RAISES past `MAX_CURRICULUM_REGIONS`."""
+    from .eval import region_rects, region_half_heights
+    var out = _empty_table()
+    var rects = region_rects(f)
+    var hh = region_half_heights(f)
+    for r in range(len(f.regions)):
+        var cb = -1
+        if r < len(region_contact):
+            cb = region_contact[r]
+        _write_region(
+            out, r, region_site[r], rects[r][0], rects[r][1], rects[r][2],
+            rects[r][3], hh[r], f.regions[r].is_box, cb,
+        )
+    return out^
+
+
+# ── the kernel loops ───────────────────────────────────────────────────────
+
+
 @always_inline
-def eval_tape_gpu[
+def _slots_touching_gpu[
+    DTYPE: DType, BATCH: Int, L_BODIES: Layout, L_CON: Layout,
+](
+    root_a: Int, root_b: Int, ncon: Int,
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    contacts: LayoutTensor[DTYPE, L_CON, MutAnyOrigin],
+    env: Int,
+) -> Bool:
+    """`eval.slots_touching` over the lane's contact records: any contact
+    with one body under `root_a` and the other under `root_b`, walking
+    `BODY_IDX_PARENT` while the id exceeds the root (tree order)."""
+    for k in range(ncon):
+        var base = k * CONTACT_SIZE
+        var ba = Int(rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_BODY_A]))
+        var bb = Int(rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_BODY_B]))
+        var xa = ba
+        while xa > root_a:
+            xa = Int(rebind[Scalar[DTYPE]](bodies[xa, BODY_IDX_PARENT]))
+        var xb = bb
+        while xb > root_b:
+            xb = Int(rebind[Scalar[DTYPE]](bodies[xb, BODY_IDX_PARENT]))
+        if xa == root_a and xb == root_b:
+            return True
+        var ya = bb
+        while ya > root_a:
+            ya = Int(rebind[Scalar[DTYPE]](bodies[ya, BODY_IDX_PARENT]))
+        var yb = ba
+        while yb > root_b:
+            yb = Int(rebind[Scalar[DTYPE]](bodies[yb, BODY_IDX_PARENT]))
+        if ya == root_a and yb == root_b:
+            return True
+    return False
+
+
+@always_inline
+def _eval_tape_impl[
     DTYPE: DType, BATCH: Int, NBODY_F: Int, SITE_DIM: Int,
+    HAS_L3: Bool,
+    L_Q: Layout, L_SITES: Layout, L_BODIES: Layout, L_CON: Layout,
 ](
     meta: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
@@ -139,20 +238,28 @@ def eval_tape_gpu[
     site_xpos: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, SITE_DIM), MutAnyOrigin
     ],
+    qpos: LayoutTensor[DTYPE, L_Q, MutAnyOrigin],
+    sites: LayoutTensor[DTYPE, L_SITES, MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    contacts: LayoutTensor[DTYPE, L_CON, MutAnyOrigin],
     env: Int,
 ) -> Bool:
-    """This lane's goal, from this lane's tape. One `Bool`, no allocation."""
+    """This lane's goal, from this lane's tape. One `Bool`, no allocation.
+
+    ⚠ `HAS_L3=False` COMPILES THE L3 BRANCHES OUT and the four extra
+    tensors are then never read (the narrow overload passes `xpos` for all
+    of them). An L3 op under `HAS_L3=False` evaluates FALSE — the host
+    refuses such a tape before it reaches a narrow caller
+    (`tape.tape_needs_l3`); the kernel cannot raise.
+    """
     var v0 = False
     var v1 = False
     var v2 = False
     var last = False
 
-    var rs = Int(rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_SITE]))
-    var rx0 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_X0])
-    var ry0 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_Y0])
-    var rx1 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_X1])
-    var ry1 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_Y1])
-    var rh = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_H])
+    var ncon = 0
+    comptime if HAS_L3:
+        ncon = Int(rebind[Scalar[DTYPE]](meta[env, META_IDX_NUM_CONTACTS]))
 
     # ⚠ `comptime for`: MAX_TAPE_TERMS is 3 and the body branches on an op
     # code, so unrolling keeps every index a constant. A runtime loop here
@@ -205,7 +312,37 @@ def eval_tape_gpu[
                     rebind[Scalar[DTYPE]](xquat[env, a * 4 + 2]),
                     param,
                 )
+            elif op == OP_JOINT:
+                comptime if HAS_L3:
+                    r = pred_joint[DTYPE](
+                        rebind[Scalar[DTYPE]](qpos[env, a]), b, param
+                    )
+            elif op == OP_TOUCHING or op == OP_ON_BODY:
+                comptime if HAS_L3:
+                    var touching = _slots_touching_gpu[
+                        DTYPE, BATCH, L_BODIES, L_CON
+                    ](a, b, ncon, bodies, contacts, env)
+                    if op == OP_TOUCHING:
+                        r = touching
+                    else:
+                        r = pred_ontop[DTYPE](
+                            rebind[Scalar[DTYPE]](xpos[env, a * 3]),
+                            rebind[Scalar[DTYPE]](xpos[env, a * 3 + 1]),
+                            rebind[Scalar[DTYPE]](xpos[env, a * 3 + 2]),
+                            rebind[Scalar[DTYPE]](xpos[env, b * 3]),
+                            rebind[Scalar[DTYPE]](xpos[env, b * 3 + 1]),
+                            rebind[Scalar[DTYPE]](xpos[env, b * 3 + 2]),
+                            touching,
+                        )
             else:
+                # IN / ON / AT_REGION — region record `b`
+                var ro = b * REGION_WORDS
+                var rs = Int(rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_SITE]))
+                var rx0 = rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_X0])
+                var ry0 = rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_Y0])
+                var rx1 = rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_X1])
+                var ry1 = rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_Y1])
+                var rh = rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_H])
                 var px: Scalar[DTYPE]
                 var py: Scalar[DTYPE]
                 var pz: Scalar[DTYPE]
@@ -217,22 +354,65 @@ def eval_tape_gpu[
                     px = rebind[Scalar[DTYPE]](xpos[env, a * 3])
                     py = rebind[Scalar[DTYPE]](xpos[env, a * 3 + 1])
                     pz = rebind[Scalar[DTYPE]](xpos[env, a * 3 + 2])
-                # ⚠ THE REGION'S OWN BAND, from `curriculum`, matching
-                # `eval.eval_goal`'s `reg.half_height`. `IN_HALF_HEIGHT` is no
-                # longer read here at all: it survives as the DEFAULT the host
-                # writes into the table, one place instead of two.
-                var dz_min = -rh
-                var dz_max = rh
-                if op == OP_ON:
-                    dz_min = Scalar[DTYPE](ON_MIN_DZ)
-                    dz_max = Scalar[DTYPE](ON_MAX_DZ)
-                r = pred_in_rect[DTYPE](
-                    px, py, pz,
-                    rebind[Scalar[DTYPE]](site_xpos[env, rs * 3]),
-                    rebind[Scalar[DTYPE]](site_xpos[env, rs * 3 + 1]),
-                    rebind[Scalar[DTYPE]](site_xpos[env, rs * 3 + 2]),
-                    rx0, ry0, rx1, ry1, dz_min, dz_max,
-                )
+                var sx = rebind[Scalar[DTYPE]](site_xpos[env, rs * 3])
+                var sy = rebind[Scalar[DTYPE]](site_xpos[env, rs * 3 + 1])
+                var sz = rebind[Scalar[DTYPE]](site_xpos[env, rs * 3 + 2])
+                var is_box = False
+                comptime if HAS_L3:
+                    is_box = (
+                        Int(rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_BOX])) != 0
+                        and op != OP_AT_REGION
+                    )
+                if is_box:
+                    comptime if HAS_L3:
+                        # ── LIBERO's SiteObject, as `eval.eval_goal` ──────
+                        var sb = Int(rebind[Scalar[DTYPE]](sites[rs, SITE_IDX_BODY]))
+                        var wq = gpu_quat_mul[DTYPE](
+                            rebind[Scalar[DTYPE]](xquat[env, sb * 4 + 0]),
+                            rebind[Scalar[DTYPE]](xquat[env, sb * 4 + 1]),
+                            rebind[Scalar[DTYPE]](xquat[env, sb * 4 + 2]),
+                            rebind[Scalar[DTYPE]](xquat[env, sb * 4 + 3]),
+                            rebind[Scalar[DTYPE]](sites[rs, SITE_IDX_QUAT_X]),
+                            rebind[Scalar[DTYPE]](sites[rs, SITE_IDX_QUAT_Y]),
+                            rebind[Scalar[DTYPE]](sites[rs, SITE_IDX_QUAT_Z]),
+                            rebind[Scalar[DTYPE]](sites[rs, SITE_IDX_QUAT_W]),
+                        )
+                        var half = Scalar[DTYPE](0.5)
+                        var cx = half * (rx0 + rx1)
+                        var cy = half * (ry0 + ry1)
+                        var hx = half * (rx1 - rx0)
+                        var hy = half * (ry1 - ry0)
+                        if op == OP_IN:
+                            r = pred_box_in[DTYPE](
+                                px, py, pz, sx, sy, sz,
+                                wq[0], wq[1], wq[2], wq[3], cx, cy, hx, hy, rh,
+                            )
+                        else:
+                            var cb = Int(rebind[Scalar[DTYPE]](
+                                curriculum[0, ro + CUR_IDX_REGION_CONTACT]
+                            ))
+                            var touching = True
+                            if cb >= 0:
+                                touching = _slots_touching_gpu[
+                                    DTYPE, BATCH, L_BODIES, L_CON
+                                ](a, cb, ncon, bodies, contacts, env)
+                            r = pred_box_under[DTYPE](
+                                px, py, pz, sx, sy, sz,
+                                wq[0], wq[1], wq[2], wq[3], cx, cy, hx, hy, rh,
+                                touching,
+                            )
+                else:
+                    # ⚠ THE REGION'S OWN BAND, from `curriculum`, matching
+                    # `eval.eval_goal`'s `reg.half_height`.
+                    var dz_min = -rh
+                    var dz_max = rh
+                    if op == OP_ON:
+                        dz_min = Scalar[DTYPE](ON_MIN_DZ)
+                        dz_max = Scalar[DTYPE](ON_MAX_DZ)
+                    r = pred_in_rect[DTYPE](
+                        px, py, pz, sx, sy, sz,
+                        rx0, ry0, rx1, ry1, dz_min, dz_max,
+                    )
 
             if i == 0:
                 v0 = r
@@ -242,6 +422,77 @@ def eval_tape_gpu[
                 v2 = r
             last = r
     return last
+
+
+@always_inline
+def eval_tape_gpu[
+    DTYPE: DType, BATCH: Int, NBODY_F: Int, SITE_DIM: Int,
+](
+    meta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+    ],
+    curriculum: LayoutTensor[
+        DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+    ],
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY_F * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY_F * 4), MutAnyOrigin
+    ],
+    site_xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, SITE_DIM), MutAnyOrigin
+    ],
+    env: Int,
+) -> Bool:
+    """The pre-L3 signature: poses only, L3 branches compiled out. See
+    `_eval_tape_impl` for what an L3 op evaluates to here."""
+    comptime L_XP = Layout.row_major(BATCH, NBODY_F * 3)
+    return _eval_tape_impl[
+        DTYPE, BATCH, NBODY_F, SITE_DIM, False, L_XP, L_XP, L_XP, L_XP
+    ](meta, curriculum, xpos, xquat, site_xpos, xpos, xpos, xpos, xpos, env)
+
+
+@always_inline
+def eval_tape_gpu[
+    DTYPE: DType, BATCH: Int, NBODY_F: Int, SITE_DIM: Int,
+    NQ_F: Int, NSITE_F: Int, MC_F: Int,
+](
+    meta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+    ],
+    curriculum: LayoutTensor[
+        DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+    ],
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY_F * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY_F * 4), MutAnyOrigin
+    ],
+    site_xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, SITE_DIM), MutAnyOrigin
+    ],
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ_F), MutAnyOrigin],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MC_F * CONTACT_SIZE), MutAnyOrigin
+    ],
+    env: Int,
+) -> Bool:
+    """The whole language (L3): the reward hook's own operands, one for one."""
+    return _eval_tape_impl[
+        DTYPE, BATCH, NBODY_F, SITE_DIM, True,
+        Layout.row_major(BATCH, NQ_F),
+        Layout.row_major(NSITE_F, MODEL_SITE_SIZE),
+        Layout.row_major(NBODY_F, MODEL_BODY_SIZE),
+        Layout.row_major(BATCH, MC_F * CONTACT_SIZE),
+    ](meta, curriculum, xpos, xquat, site_xpos, qpos, sites, bodies, contacts, env)
 
 
 @always_inline
@@ -264,7 +515,9 @@ def goal_frame_ids(
     ⚠ `Upright` HAS NO TARGET, so it points at its own subject and the
     relative vector comes out zero. That is the honest answer: there is no
     second frame in the predicate, and inventing one would put a number in the
-    observation that means nothing.
+    observation that means nothing. `Joint` (L3) has no FRAME at all — its
+    subject is a qpos address — so both ids are the world body and the
+    vector is zero for the same reason.
 
     ⚠ TERM 0 IS ALWAYS A LEAF, so `And`/`Or`/`Not` never reach this. The tape
     is POST-ORDER — every child index is lower than its parent's, asserted in
@@ -276,13 +529,26 @@ def goal_frame_ids(
         return (0, a, 1, region_site)
     if op == OP_UPRIGHT:
         return (0, a, 0, a)
-    # NEAR / ABOVE — both arguments are bodies.
+    if op == OP_JOINT:
+        return (0, 0, 0, 0)
+    # NEAR / ABOVE / TOUCHING / ON_BODY — both arguments are bodies.
     return (0, a, 0, b)
 
 
+# ⚠ THE FLOOR UNDER A NON-ZERO DISTANCE. `tape_distance_gpu`'s contract is
+# ZERO IFF THE GOAL HOLDS. For the L3 ops the predicate is the authority
+# (strict inequalities, a contact bit) and the geometry only supplies the
+# gradient, so a state that fails the predicate with a zero geometric
+# shortfall — a Joint exactly at a strict threshold, an object resting on
+# another with no contact recorded — still reports THIS, never 0.
+comptime DIST_EPS: Float64 = 1e-6
+
+
 @always_inline
-def tape_distance_gpu[
+def _tape_distance_impl[
     DTYPE: DType, BATCH: Int, NBODY_F: Int, SITE_DIM: Int,
+    HAS_L3: Bool,
+    L_Q: Layout, L_SITES: Layout, L_BODIES: Layout, L_CON: Layout,
 ](
     meta: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
@@ -299,6 +565,10 @@ def tape_distance_gpu[
     site_xpos: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, SITE_DIM), MutAnyOrigin
     ],
+    qpos: LayoutTensor[DTYPE, L_Q, MutAnyOrigin],
+    sites: LayoutTensor[DTYPE, L_SITES, MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    contacts: LayoutTensor[DTYPE, L_CON, MutAnyOrigin],
     env: Int,
 ) -> Scalar[DTYPE]:
     """HOW FAR this lane is from its goal, in metres. ZERO iff the goal holds.
@@ -321,17 +591,22 @@ def tape_distance_gpu[
 
     **Zero iff the goal holds.** `tests/tasks/test_goal_distance.mojo` sweeps
     states and asserts `tape_distance_gpu(s) == 0` exactly when
-    `eval_tape_gpu(s)` is True — two separate switches over one tape, so an op
-    this one forgot shows up as a disagreement rather than as a term with no
-    gradient.
+    `eval_tape_gpu(s)` is True — two separate switches over one tape, so an
+    op this one forgot shows up as a disagreement rather than as a term with
+    no gradient.
+
+    ⚠ FOR THE L3 OPS THE PREDICATE DECIDES AND THE GEOMETRY GRADES. `Joint`,
+    `Touching`, `On(obj, obj)` and the box regions call the SAME predicate
+    the boolean loop calls; when it holds the distance is 0, when it does
+    not the distance is the geometric shortfall floored at `DIST_EPS` (plus
+    the origin distance when a required contact is missing, so "touching"
+    has a gradient too). Two switches still, one predicate.
 
     ⚠ AND ZERO IS ALSO WHAT AN UNSHAPEABLE TERM RETURNS. `Not` has no
-    monotone distance (the further you are from satisfying the negated term,
-    the better) and Tier B has no geometry here, so both contribute 0 — no
-    gradient, never a WRONG gradient. The zero-iff contract still holds
+    monotone distance and Tier B has no geometry here, so both contribute 0
+    — no gradient, never a WRONG gradient. The zero-iff contract still holds
     because those ops are refused as goals long before this
-    (`require_tier_a`), and `Not` composes to a term whose truth this file
-    reads and whose distance it declines to guess.
+    (`require_tier_a`).
 
     ## ⚠ THE COMPOSITION IS max FOR `And` AND min FOR `Or`
 
@@ -344,13 +619,12 @@ def tape_distance_gpu[
     var d1 = Scalar[DTYPE](0)
     var d2 = Scalar[DTYPE](0)
     var last = Scalar[DTYPE](0)
+    var zero = Scalar[DTYPE](0)
+    var eps = Scalar[DTYPE](DIST_EPS)
 
-    var rs = Int(rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_SITE]))
-    var rx0 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_X0])
-    var ry0 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_Y0])
-    var rx1 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_X1])
-    var ry1 = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_Y1])
-    var rh = rebind[Scalar[DTYPE]](curriculum[0, CUR_IDX_REGION_H])
+    var ncon = 0
+    comptime if HAS_L3:
+        ncon = Int(rebind[Scalar[DTYPE]](meta[env, META_IDX_NUM_CONTACTS]))
 
     comptime for i in range(MAX_TAPE_TERMS):
         comptime w = META_IDX_TASK_PARAM_0 + i * TERM_WORDS
@@ -380,7 +654,7 @@ def tape_distance_gpu[
                     Scalar[DTYPE]
                 ](xpos[env, b * 3 + 2])
                 var r = sqrt(ex * ex + ey * ey + ez * ez) - param
-                d = r if r > Scalar[DTYPE](0) else Scalar[DTYPE](0)
+                d = r if r > zero else zero
             elif op == OP_ABOVE:
                 # ⚠ `pred_above` is `za > zb + margin`, so the shortfall is
                 # how much higher `a` still has to be — and it is ZERO the
@@ -388,13 +662,12 @@ def tape_distance_gpu[
                 var r2 = (
                     rebind[Scalar[DTYPE]](xpos[env, b * 3 + 2]) + param
                 ) - rebind[Scalar[DTYPE]](xpos[env, a * 3 + 2])
-                d = r2 if r2 > Scalar[DTYPE](0) else Scalar[DTYPE](0)
+                d = r2 if r2 > zero else zero
             elif op == OP_UPRIGHT:
                 # ⚠ NOT IN METRES, AND THAT IS STATED RATHER THAN SCALED. It
                 # is the shortfall in the cosine `pred_upright` compares, so
                 # it is in [0, 2] and mixes with a metre term only through the
                 # weight the config gives it.
-                var qw = rebind[Scalar[DTYPE]](xquat[env, a * 4 + 3])
                 var qx = rebind[Scalar[DTYPE]](xquat[env, a * 4 + 0])
                 var qy = rebind[Scalar[DTYPE]](xquat[env, a * 4 + 1])
                 var cosang = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (
@@ -402,13 +675,54 @@ def tape_distance_gpu[
                 )
                 var need = Scalar[DTYPE](1) - param
                 var r3 = need - cosang
-                d = r3 if r3 > Scalar[DTYPE](0) else Scalar[DTYPE](0)
-                _ = qw
+                d = r3 if r3 > zero else zero
+            elif op == OP_JOINT:
+                comptime if HAS_L3:
+                    var q = rebind[Scalar[DTYPE]](qpos[env, a])
+                    if not pred_joint[DTYPE](q, b, param):
+                        var gap = q - param
+                        if gap < zero:
+                            gap = -gap
+                        d = gap if gap > eps else eps
+            elif op == OP_TOUCHING or op == OP_ON_BODY:
+                comptime if HAS_L3:
+                    var ax = rebind[Scalar[DTYPE]](xpos[env, a * 3])
+                    var ay = rebind[Scalar[DTYPE]](xpos[env, a * 3 + 1])
+                    var az = rebind[Scalar[DTYPE]](xpos[env, a * 3 + 2])
+                    var bx = rebind[Scalar[DTYPE]](xpos[env, b * 3])
+                    var by = rebind[Scalar[DTYPE]](xpos[env, b * 3 + 1])
+                    var bz = rebind[Scalar[DTYPE]](xpos[env, b * 3 + 2])
+                    var touching = _slots_touching_gpu[
+                        DTYPE, BATCH, L_BODIES, L_CON
+                    ](a, b, ncon, bodies, contacts, env)
+                    var ex = ax - bx
+                    var ey = ay - by
+                    var ez = az - bz
+                    var dist = sqrt(ex * ex + ey * ey + ez * ez)
+                    if op == OP_TOUCHING:
+                        if not touching:
+                            d = dist if dist > eps else eps
+                    else:
+                        if not pred_ontop[DTYPE](ax, ay, az, bx, by, bz, touching):
+                            var xy = sqrt(ex * ex + ey * ey) - Scalar[DTYPE](ONTOP_XY)
+                            if xy < zero:
+                                xy = zero
+                            var zs = bz - az
+                            if zs < zero:
+                                zs = zero
+                            var g = xy + zs
+                            if not touching:
+                                g += dist
+                            d = g if g > eps else eps
             else:
-                # IN / ON / AT_REGION — the distance to the box, in site
-                # coordinates. ⚠ AXIS-ALIGNED AND CLAMPED PER AXIS: an
-                # overshoot on one axis must not cancel a shortfall on
-                # another, which is what a signed sum would do.
+                # IN / ON / AT_REGION — region record `b`
+                var ro = b * REGION_WORDS
+                var rs = Int(rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_SITE]))
+                var rx0 = rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_X0])
+                var ry0 = rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_Y0])
+                var rx1 = rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_X1])
+                var ry1 = rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_Y1])
+                var rh = rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_H])
                 var px: Scalar[DTYPE]
                 var py: Scalar[DTYPE]
                 var pz: Scalar[DTYPE]
@@ -420,30 +734,132 @@ def tape_distance_gpu[
                     px = rebind[Scalar[DTYPE]](xpos[env, a * 3])
                     py = rebind[Scalar[DTYPE]](xpos[env, a * 3 + 1])
                     pz = rebind[Scalar[DTYPE]](xpos[env, a * 3 + 2])
-                var zlo = -rh
-                var zhi = rh
-                if op == OP_ON:
-                    zlo = Scalar[DTYPE](ON_MIN_DZ)
-                    zhi = Scalar[DTYPE](ON_MAX_DZ)
-                var ux = px - rebind[Scalar[DTYPE]](site_xpos[env, rs * 3])
-                var uy = py - rebind[Scalar[DTYPE]](site_xpos[env, rs * 3 + 1])
-                var uz = pz - rebind[Scalar[DTYPE]](site_xpos[env, rs * 3 + 2])
-                var gx = Scalar[DTYPE](0)
-                if ux < rx0:
-                    gx = rx0 - ux
-                elif ux > rx1:
-                    gx = ux - rx1
-                var gy = Scalar[DTYPE](0)
-                if uy < ry0:
-                    gy = ry0 - uy
-                elif uy > ry1:
-                    gy = uy - ry1
-                var gz = Scalar[DTYPE](0)
-                if uz < zlo:
-                    gz = zlo - uz
-                elif uz > zhi:
-                    gz = uz - zhi
-                d = sqrt(gx * gx + gy * gy + gz * gz)
+                var sx = rebind[Scalar[DTYPE]](site_xpos[env, rs * 3])
+                var sy = rebind[Scalar[DTYPE]](site_xpos[env, rs * 3 + 1])
+                var sz = rebind[Scalar[DTYPE]](site_xpos[env, rs * 3 + 2])
+                var is_box = False
+                comptime if HAS_L3:
+                    is_box = (
+                        Int(rebind[Scalar[DTYPE]](curriculum[0, ro + CUR_IDX_REGION_BOX])) != 0
+                        and op != OP_AT_REGION
+                    )
+                if is_box:
+                    comptime if HAS_L3:
+                        var sb = Int(rebind[Scalar[DTYPE]](sites[rs, SITE_IDX_BODY]))
+                        var wq = gpu_quat_mul[DTYPE](
+                            rebind[Scalar[DTYPE]](xquat[env, sb * 4 + 0]),
+                            rebind[Scalar[DTYPE]](xquat[env, sb * 4 + 1]),
+                            rebind[Scalar[DTYPE]](xquat[env, sb * 4 + 2]),
+                            rebind[Scalar[DTYPE]](xquat[env, sb * 4 + 3]),
+                            rebind[Scalar[DTYPE]](sites[rs, SITE_IDX_QUAT_X]),
+                            rebind[Scalar[DTYPE]](sites[rs, SITE_IDX_QUAT_Y]),
+                            rebind[Scalar[DTYPE]](sites[rs, SITE_IDX_QUAT_Z]),
+                            rebind[Scalar[DTYPE]](sites[rs, SITE_IDX_QUAT_W]),
+                        )
+                        var half = Scalar[DTYPE](0.5)
+                        var cx = half * (rx0 + rx1)
+                        var cy = half * (ry0 + ry1)
+                        var hx = half * (rx1 - rx0)
+                        var hy = half * (ry1 - ry0)
+                        var c = gpu_quat_rotate[DTYPE](wq[0], wq[1], wq[2], wq[3], cx, cy, zero)
+                        var ox = sx + c[0]
+                        var oy = sy + c[1]
+                        var oz = sz + c[2]
+                        if op == OP_IN:
+                            if not pred_box_in[DTYPE](
+                                px, py, pz, sx, sy, sz,
+                                wq[0], wq[1], wq[2], wq[3], cx, cy, hx, hy, rh,
+                            ):
+                                var ts = gpu_quat_rotate[DTYPE](wq[0], wq[1], wq[2], wq[3], hx, hy, rh)
+                                var tx = ts[0] if ts[0] >= zero else -ts[0]
+                                var ty = ts[1] if ts[1] >= zero else -ts[1]
+                                var tz = ts[2] if ts[2] >= zero else -ts[2]
+                                var gx = zero
+                                if px < ox - tx:
+                                    gx = (ox - tx) - px
+                                elif px > ox + tx:
+                                    gx = px - (ox + tx)
+                                var gy = zero
+                                if py < oy - ty:
+                                    gy = (oy - ty) - py
+                                elif py > oy + ty:
+                                    gy = py - (oy + ty)
+                                var zlo = oz - tz - Scalar[DTYPE](BOX_IN_Z_SLACK)
+                                var gz = zero
+                                if pz < zlo:
+                                    gz = zlo - pz
+                                elif pz > oz + tz:
+                                    gz = pz - (oz + tz)
+                                var g = sqrt(gx * gx + gy * gy + gz * gz)
+                                d = g if g > eps else eps
+                        else:
+                            var cb = Int(rebind[Scalar[DTYPE]](
+                                curriculum[0, ro + CUR_IDX_REGION_CONTACT]
+                            ))
+                            var touching = True
+                            if cb >= 0:
+                                touching = _slots_touching_gpu[
+                                    DTYPE, BATCH, L_BODIES, L_CON
+                                ](a, cb, ncon, bodies, contacts, env)
+                            if not pred_box_under[DTYPE](
+                                px, py, pz, sx, sy, sz,
+                                wq[0], wq[1], wq[2], wq[3], cx, cy, hx, hy, rh,
+                                touching,
+                            ):
+                                var dl = gpu_quat_rotate[DTYPE](
+                                    wq[0], wq[1], wq[2], wq[3], px - ox, py - oy, pz - oz
+                                )
+                                var adx = dl[0] if dl[0] >= zero else -dl[0]
+                                var ady = dl[1] if dl[1] >= zero else -dl[1]
+                                var gx = adx - hx
+                                if gx < zero:
+                                    gx = zero
+                                var gy = ady - hy
+                                if gy < zero:
+                                    gy = zero
+                                var zlo = rh - Scalar[DTYPE](BOX_UNDER_Z_SLACK)
+                                var zhi = rh + Scalar[DTYPE](BOX_UNDER_HEIGHT)
+                                var gz = zero
+                                if dl[2] < zlo:
+                                    gz = zlo - dl[2]
+                                elif dl[2] > zhi:
+                                    gz = dl[2] - zhi
+                                var g = sqrt(gx * gx + gy * gy + gz * gz)
+                                if not touching:
+                                    var ex = px - ox
+                                    var ey = py - oy
+                                    var ez = pz - oz
+                                    g += sqrt(ex * ex + ey * ey + ez * ez)
+                                d = g if g > eps else eps
+                else:
+                    # the distance to the box, in site coordinates. ⚠ AXIS-
+                    # ALIGNED AND CLAMPED PER AXIS: an overshoot on one axis
+                    # must not cancel a shortfall on another, which is what a
+                    # signed sum would do.
+                    var zlo = -rh
+                    var zhi = rh
+                    if op == OP_ON:
+                        zlo = Scalar[DTYPE](ON_MIN_DZ)
+                        zhi = Scalar[DTYPE](ON_MAX_DZ)
+                    var ux = px - sx
+                    var uy = py - sy
+                    var uz = pz - sz
+                    var gx = zero
+                    if ux < rx0:
+                        gx = rx0 - ux
+                    elif ux > rx1:
+                        gx = ux - rx1
+                    var gy = zero
+                    if uy < ry0:
+                        gy = ry0 - uy
+                    elif uy > ry1:
+                        gy = uy - ry1
+                    var gz = zero
+                    if uz < zlo:
+                        gz = zlo - uz
+                    elif uz > zhi:
+                        gz = uz - zhi
+                    d = sqrt(gx * gx + gy * gy + gz * gz)
 
             if i == 0:
                 d0 = d
@@ -455,27 +871,87 @@ def tape_distance_gpu[
     return last
 
 
+@always_inline
+def tape_distance_gpu[
+    DTYPE: DType, BATCH: Int, NBODY_F: Int, SITE_DIM: Int,
+](
+    meta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+    ],
+    curriculum: LayoutTensor[
+        DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+    ],
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY_F * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY_F * 4), MutAnyOrigin
+    ],
+    site_xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, SITE_DIM), MutAnyOrigin
+    ],
+    env: Int,
+) -> Scalar[DTYPE]:
+    """The pre-L3 signature: poses only, L3 branches compiled out."""
+    comptime L_XP = Layout.row_major(BATCH, NBODY_F * 3)
+    return _tape_distance_impl[
+        DTYPE, BATCH, NBODY_F, SITE_DIM, False, L_XP, L_XP, L_XP, L_XP
+    ](meta, curriculum, xpos, xquat, site_xpos, xpos, xpos, xpos, xpos, env)
+
+
+@always_inline
+def tape_distance_gpu[
+    DTYPE: DType, BATCH: Int, NBODY_F: Int, SITE_DIM: Int,
+    NQ_F: Int, NSITE_F: Int, MC_F: Int,
+](
+    meta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+    ],
+    curriculum: LayoutTensor[
+        DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+    ],
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY_F * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY_F * 4), MutAnyOrigin
+    ],
+    site_xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, SITE_DIM), MutAnyOrigin
+    ],
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ_F), MutAnyOrigin],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MC_F * CONTACT_SIZE), MutAnyOrigin
+    ],
+    env: Int,
+) -> Scalar[DTYPE]:
+    """The whole language (L3): the reward hook's own operands, one for one."""
+    return _tape_distance_impl[
+        DTYPE, BATCH, NBODY_F, SITE_DIM, True,
+        Layout.row_major(BATCH, NQ_F),
+        Layout.row_major(NSITE_F, MODEL_SITE_SIZE),
+        Layout.row_major(NBODY_F, MODEL_BODY_SIZE),
+        Layout.row_major(BATCH, MC_F * CONTACT_SIZE),
+    ](meta, curriculum, xpos, xquat, site_xpos, qpos, sites, bodies, contacts, env)
+
+
 def require_gpu_regions(g: BoundGoal, task_name: String) raises:
-    """⚠⚠ THE ONE-REGION RULE, MADE REAL. Call it beside `require_tier_a`.
+    """⚠⚠ THE REGION-TABLE RULE, MADE REAL. Call it beside `require_tier_a`.
 
-    `eval_tape_gpu` reads the region table ONCE, from `curriculum[0, 0..4]`,
-    and reads it UNCONDITIONALLY: a term's `b` is its region index on the CPU
-    path and indexes NOTHING on device. So a goal naming region 1 evaluates
-    against region 0's site and rectangle on the GPU while `eval.eval_goal`
-    uses region 1's on the host — the two disagree in the REWARD, which is
-    where a disagreement is least visible and most expensive.
-
-    ⚠ THIS IS NOT HYPOTHETICAL AND IT IS WHY THE CHECK EXISTS. `so101_tabletop`
-    declares three regions: `table_top` for goals, and `table_left`/
-    `table_right` so `so101_gather_bricks` can start its two props apart. Those
-    two are reachable from `init=`, which the HOST samples, and unreachable
-    from `goal=`, which the device evaluates. Nothing in the file format says
-    so — this does.
-
-    The fix, when a family genuinely needs two goal regions, is to widen
-    `MODEL_CURRICULUM_SIZE` and index the table by the term's `b`. Both halves,
-    or neither: widening the table without indexing it changes nothing, and
-    indexing a table that is one region wide reads past it.
+    `eval_tape_gpu` reads region record `b` out of `curriculum`; the table
+    holds `MAX_CURRICULUM_REGIONS` records (16 since L3, when
+    `MODEL_CURRICULUM_SIZE` went from 8 to 128 and the term's `b` started
+    indexing it — before that it held ONE and every term read region 0
+    whatever its `b` said, which is the disagreement this check was born
+    to refuse). A family may DECLARE more regions than fit — `init=` is
+    sampled on the HOST — but a GOAL naming one past the table would read
+    garbage on device and the right region on the host, in the REWARD.
     """
     for i in range(len(g.terms)):
         ref t = g.terms[i]
@@ -488,8 +964,8 @@ def require_gpu_regions(g: BoundGoal, task_name: String) raises:
                 + String(MAX_CURRICULUM_REGIONS) + " (curriculum is "
                 + String(MODEL_CURRICULUM_SIZE) + " words and a region costs "
                 + String(REGION_WORDS) + "). The device evaluator would read"
-                " region 0's rectangle for it and the host evaluator would"
-                " read the right one, so the GPU and CPU rewards would"
-                " disagree silently. Regions past the first are usable from"
-                " `init=` — sampled on the host — but not from `goal=`."
+                " past the table for it and the host evaluator would read"
+                " the right one, so the GPU and CPU rewards would disagree"
+                " silently. Widen MODEL_CURRICULUM_SIZE or reorder the"
+                " family's regions so the goal regions come first."
             )

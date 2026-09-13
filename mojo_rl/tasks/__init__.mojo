@@ -26,25 +26,33 @@ from .family import (
 from .predicates import (
     Goal, BoundGoal, GoalTerm, BoundTerm,
     parse_goal, bind_goal, require_tier_a, slot_body_id, site_id,
-    op_name, op_arity, op_is_tier_a, op_is_composite,
+    joint_id, joint_qpos_addresses,
+    op_name, op_arity, op_is_tier_a, op_is_composite, op_reads_contacts,
     MAX_GOAL_TERMS,
+    CMP_NONE, CMP_LT, CMP_LE, CMP_GT, CMP_GE, cmp_from_name, cmp_name,
 )
 from .sampler import (
     Placement, RegionFrame, SampleReport,
     sample_placements, MAX_PLACE_ATTEMPTS, PLACEMENT_SALT,
 )
 from .eval import (
-    eval_goal, region_sites,
+    eval_goal, region_sites, HostState,
     pred_in_rect, pred_near, pred_above, pred_upright,
-    region_rects,
+    pred_joint, pred_ontop, pred_box_in, pred_box_under,
+    body_in_slot, slots_touching,
+    region_rects, region_half_heights, region_box_flags,
+    region_contact_bodies,
 )
 from .tape import (
-    encode_goal, eval_tape, TAPE_WORDS, TERM_WORDS, MAX_TAPE_TERMS,
+    encode_goal, eval_tape, tape_needs_l3,
+    TAPE_WORDS, TERM_WORDS, MAX_TAPE_TERMS,
 )
 from .gpu_eval import (
-    eval_tape_gpu, region_table_words,
+    eval_tape_gpu, tape_distance_gpu, region_table_words, require_gpu_regions,
     CUR_IDX_REGION_SITE, CUR_IDX_REGION_X0, CUR_IDX_REGION_Y0,
-    CUR_IDX_REGION_X1, CUR_IDX_REGION_Y1, MAX_CURRICULUM_REGIONS,
+    CUR_IDX_REGION_X1, CUR_IDX_REGION_Y1, CUR_IDX_REGION_H,
+    CUR_IDX_REGION_BOX, CUR_IDX_REGION_CONTACT, REGION_WORDS,
+    MAX_CURRICULUM_REGIONS,
 )
 from .reset import (
     SlotAddress, free_slot_addresses, reset_slots,

@@ -13,6 +13,7 @@ from mojo_rl.tasks.spec import load_family
 from mojo_rl.tasks.family import scene_path
 from mojo_rl.tasks.predicates import (
     parse_goal, bind_goal, require_tier_a, slot_body_id,
+    joint_qpos_addresses, OP_JOINT, OP_ON_BODY, OP_ON, CMP_GE,
     op_is_composite, op_name,
     OP_IN, OP_AND, OP_NEAR, OP_GRASPED, MAX_GOAL_TERMS,
 )
@@ -170,6 +171,62 @@ def main() raises:
     var br = bind_goal(gr, f, fmd.body_names, fmd.site_names)
     ta.check(br.terms[0].a >= 0 and br.terms[0].a < len(fmd.site_names),
              "AtRegion binds its first arg to a SITE id")
+
+    # ── 4. the L3 language: Joint, On(obj, obj), contacts ──────────────────
+    print("--- L3: Joint / On(obj, obj) / Touching ---")
+    var gj = parse_goal(String("Joint(robot_shoulder_pan, lt, -0.14)"))
+    ta.check(
+        gj.terms[0].op == OP_JOINT and gj.terms[0].arg1 == "lt"
+        and gj.terms[0].param == -0.14,
+        "Joint(j, cmp, thr) parses with the comparison as a NAME and the"
+        " threshold as the number",
+    )
+    var raised_j = False
+    try:
+        _ = bind_goal(gj, f, fmd.body_names, fmd.site_names)
+    except e:
+        raised_j = True
+    ta.check(raised_j, "Joint is REFUSED by the pre-L3 bind (no joint table)")
+    var nqs = List[Int]()
+    for i in range(len(fmd.joints)):
+        nqs.append(fmd.joints[i].nq)
+    var jadr = joint_qpos_addresses(nqs)
+    var jname = String(fmd.joint_names[0])
+    var bj = bind_goal(
+        parse_goal(String("Joint(") + jname + ", ge, 0.5)"), f,
+        fmd.body_names, fmd.site_names, fmd.joint_names, jadr,
+    )
+    ta.check(
+        bj.terms[0].op == OP_JOINT and bj.terms[0].a == 0
+        and bj.terms[0].b == CMP_GE and bj.terms[0].param == 0.5,
+        "Joint binds to (qpos address, CMP code, threshold) — joint 0 is at"
+        " qpos 0",
+    )
+    ta.check(bj.is_tier_a(), "Joint is Tier A")
+    var bo = bind_goal(parse_goal(String("On(brick, cube_a)")), f,
+                       fmd.body_names, fmd.site_names)
+    ta.check(
+        bo.terms[0].op == OP_ON_BODY
+        and bo.terms[0].a == slot_body_id(String("brick"), fmd.body_names)
+        and bo.terms[0].b == slot_body_id(String("cube_a"), fmd.body_names),
+        "On(obj, SLOT) binds to OP_ON_BODY with both root bodies",
+    )
+    var bo2 = bind_goal(parse_goal(String("On(brick, table_top)")), f,
+                        fmd.body_names, fmd.site_names)
+    ta.check(bo2.terms[0].op == OP_ON, "On(obj, REGION) still binds to OP_ON")
+    var raised_in = False
+    try:
+        _ = bind_goal(parse_goal(String("In(brick, cube_a)")), f,
+                      fmd.body_names, fmd.site_names)
+    except e:
+        raised_in = True
+    ta.check(raised_in, "In(obj, SLOT) is refused (LIBERO has no object in_box)")
+    var bt = bind_goal(parse_goal(String("Touching(brick, cube_a)")), f,
+                       fmd.body_names, fmd.site_names)
+    ta.check(bt.is_tier_a(), "Touching is Tier A since L3 (the reward kernel"
+             " has the lane's contacts)")
+    ta.refuses(String("Joint(j, lt)"), "Joint with a missing threshold")
+    ta.refuses(String("Joint(j, 0.5)"), "Joint with a missing comparison")
 
     print()
     print("--- ran", ta.checks, "checks,", ta.failures, "failed ---")

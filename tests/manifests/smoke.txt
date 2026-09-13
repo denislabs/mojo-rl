@@ -67,6 +67,12 @@ tests/tasks/test_libero_categories.mojo
 # SKIPS LOUDLY without the pulled pack (`pixi run assets-pull libero`). The
 # oracle half is `tools/tasks/check_family.py` on the composed scene.
 tests/tasks/test_libero_goal_compose.mojo
+# L3's gate: the ten libero_goal tasks bind with the L3 language (Joint,
+# On(obj, obj), box regions with a contact slot), three readers agree on
+# eleven simulated states, every goal shape flips, and — with an
+# accelerator — ten lanes in a kernel agree with the host at float32.
+# Skips (loudly) without the pack.
+tests/tasks/test_libero_goal_eval.mojo
 
 # ── mojo_rl/render: the .msh reader (L1) ─────────────────────────────
 # Hermetic: writes a .msh from the format's definition and reads it back;

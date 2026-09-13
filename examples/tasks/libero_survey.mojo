@@ -133,6 +133,12 @@ def main() raises:
     var res_todo = 0
     var res_narrowed = 0
     var res_errors = List[String]()
+    # L3: the goal TRANSLATES against the resolved family (box regions,
+    # Joint terms from the table, On(obj, obj)) — the column that says
+    # "a .task could be written", counted separately from the syntactic
+    # classification so a missing threshold row is a named failure.
+    var xl_ok = 0
+    var xl_errors = List[String]()
     var gap_counts = List[Int]()
     for _ in range(6):
         gap_counts.append(0)
@@ -188,6 +194,11 @@ def main() raises:
                 var rf = resolve_family(p, table, pack_dir, res_narrowed)
                 res_ok += 1
                 res_todo += family_todo_count(rf)
+                try:
+                    var _t = translate_task(p, rf, table, pack_dir)
+                    xl_ok += 1
+                except e2:
+                    xl_errors.append(path + ": " + String(e2))
             except e:
                 res_errors.append(path + ": " + String(e))
 
@@ -209,6 +220,8 @@ def main() raises:
               " TODO placeholders left:", res_todo)
         print("            fixture yaws taken at a narrow band's midpoint:",
               res_narrowed, "(libero_spatial's cabinet, 3.6 deg)")
+        print("  written :", xl_ok, "of", len(files),
+              "goals translate to a .task against the resolved family (L3)")
     else:
         print("  resolved: SKIPPED — no LIBERO assets at", PACK_DIR, "or",
               UPSTREAM_ASSETS, "(run `pixi run assets-pull libero`)")
@@ -269,6 +282,14 @@ def main() raises:
                 " placeholders survived resolution"
             )
         print("  ok: all", res_ok, "files resolve to real assets, 0 TODO")
+        if len(xl_errors) > 0:
+            print()
+            print("  ⚠ TRANSLATION FAILURES —", len(xl_errors), ":")
+            for i in range(len(xl_errors)):
+                if i >= 8:
+                    print("      ... and", len(xl_errors) - 8, "more")
+                    break
+                print("      ", xl_errors[i])
 
     # ⚠ ANTI-VACUITY. "0 gaps" is also what a classifier that returns
     # GAP_NONE unconditionally reports, and "0 translated" is what one that
@@ -280,13 +301,21 @@ def main() raises:
             " our language does express — so zero means `classify_goal` is"
             " rejecting everything."
         )
-    if task_ok == len(files):
+    # ⚠ THE ANTI-VACUITY CHECK CHANGED SHAPE AT L3. Before it, the corpus
+    # had both expressible and refused goals and both had to appear; after
+    # it the language spans the corpus, so "130 of 130" is the EXPECTED
+    # answer and vacuity is guarded the other way: every refusal path is
+    # exercised by `tests/tasks/test_bddl.mojo` / `test_libero_goal_eval`
+    # on hand-written inputs, and the WRITTEN column below must equal the
+    # expressible one — a classifier that accepted everything while the
+    # translator refused half would show there.
+    if have_assets and xl_ok != task_ok:
         raise Error(
-            "libero survey: EVERY goal translated, which contradicts the"
-            " measured corpus — 61 On, 63 In, and 27 articulation predicates"
-            " we have no equivalent for. `classify_goal` is accepting"
-            " everything."
+            "libero survey: " + String(task_ok) + " goals classify as"
+            " expressible but " + String(xl_ok) + " translate — see the"
+            " translation failures above"
         )
-    print("  ok: the survey found BOTH translatable and untranslatable goals")
+    var written = xl_ok if have_assets else task_ok
+    print("  ok: expressible ==", task_ok, "== written", written)
     print()
     print("=== SURVEYED ===")

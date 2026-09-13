@@ -37,37 +37,10 @@ comptime KIND_ASSET: Int = 0
 comptime KIND_WORKSPACE: Int = 1
 
 # comparison ops for the articulation thresholds
-comptime CMP_NONE: Int = -1
-comptime CMP_LT: Int = 0
-comptime CMP_LE: Int = 1
-comptime CMP_GT: Int = 2
-comptime CMP_GE: Int = 3
-
-
-def cmp_from_name(s: String) raises -> Int:
-    if s == "lt":
-        return CMP_LT
-    if s == "le":
-        return CMP_LE
-    if s == "gt":
-        return CMP_GT
-    if s == "ge":
-        return CMP_GE
-    raise Error(
-        "libero table: unknown comparison '" + s + "'. Known: lt, le, gt, ge."
-    )
-
-
-def cmp_name(op: Int) -> String:
-    if op == CMP_LT:
-        return String("lt")
-    if op == CMP_LE:
-        return String("le")
-    if op == CMP_GT:
-        return String("gt")
-    if op == CMP_GE:
-        return String("ge")
-    return String("none")
+# ⚠ THE COMPARISON CODES LIVE IN `predicates.mojo` — they are the wire
+# format of a `Joint` term's `b` — and are re-exported here so the table's
+# readers keep their import. One definition, two names for it.
+from .predicates import CMP_NONE, CMP_LT, CMP_LE, CMP_GT, CMP_GE, cmp_from_name, cmp_name
 
 
 def threshold_holds(op: Int, qpos: Float64, thr: Float64) -> Bool:
@@ -155,6 +128,9 @@ struct LiberoProblem(Copyable, Movable):
     var z_offset: Float64
     """`self.z_offset` of the problem class — a fixture sits at
     `z_offset + off_z - bottom_site_z`."""
+    var zone_z: Float64
+    """World z of a table target zone's site (`zone_z=` in the table, L3)."""
+    var has_zone_z: Bool
     var floor_texture: String
     var wall_texture: String
     var base_x: Float64
@@ -184,6 +160,8 @@ struct LiberoProblem(Copyable, Movable):
         self.off_y = 0.0
         self.off_z = 0.0
         self.z_offset = 0.0
+        self.zone_z = 0.0
+        self.has_zone_z = False
         self.floor_texture = String("")
         self.wall_texture = String("")
         self.base_x = 0.0
@@ -381,6 +359,9 @@ def parse_libero_table(text: String) raises -> LiberoTable:
                 prob.off_z = o[2]
             elif key == "z_offset":
                 prob.z_offset = Float64(val)
+            elif key == "zone_z":
+                prob.zone_z = Float64(val)
+                prob.has_zone_z = True
             elif key == "floor_texture":
                 prob.floor_texture = val
             elif key == "wall_texture":
@@ -417,8 +398,9 @@ def parse_libero_table(text: String) raises -> LiberoTable:
                     "libero table: unknown key '" + key + "' at line "
                     + String(lines[i].lineno) + " inside problem '"
                     + prob.name + "'. Known: scene, workspace,"
-                    " workspace_offset, z_offset, floor_texture, wall_texture,"
-                    " base_pos, table_size, table_friction, camera, robot."
+                    " workspace_offset, z_offset, zone_z, floor_texture,"
+                    " wall_texture, base_pos, table_size, table_friction,"
+                    " camera, robot."
                 )
         else:
             raise Error(

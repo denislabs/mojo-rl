@@ -56,12 +56,27 @@ schema_version=1
 # camera= lines are the `_setup_camera` overrides of each problem class
 # (`agentview` is what the benchmark renders; `frontview` is kept for the
 # viewer). galleryview / paperview are visualisation-only and are not carried.
+#
+# zone_z= is the WORLD z of a table target zone's site — where `On(obj,
+# <table region>)` measures its band from (`TargetZone` + `under`, L3). Each
+# problem class appends the zone site to a different body with a different
+# z_offset convention, quoted:
+#     Tabletop     : table body z 0.875, `pos=target_zone.pos`, TargetZone
+#                    default z_offset=0.02                    -> 0.895
+#     Kitchen      : table body z 0.875, z_offset=workspace_offset[2]=0.90,
+#                    `pos + (0,0,-0.90)`                      -> 0.875
+#     Living room  : living_room_table body z 0, z_offset=0.41 -> 0.41
+#     Study        : study_table body z 0, z_offset=0.867      -> 0.867
+#     Floor        : floor body z 0, default z_offset=0.02     -> 0.02
+# `gen_libero_arenas.py` places `<site name="zone_plane">` there; the
+# importer anchors every table box region on it.
 problem=LIBERO_Tabletop_Manipulation
 robot=mounted
 scene=scenes/libero_tabletop_base_style.xml
 workspace=table
 workspace_offset=0,0,0.90
 z_offset=-0.04
+zone_z=0.895
 floor_texture=textures/light-gray-floor-tile.png
 wall_texture=textures/light-gray-plaster.png
 base_pos=-0.66,0,0.912
@@ -76,6 +91,7 @@ scene=scenes/libero_kitchen_tabletop_base_style.xml
 workspace=kitchen_table
 workspace_offset=0,0,0.90
 z_offset=-0.04
+zone_z=0.875
 floor_texture=textures/gray_ceramic_tile.png
 wall_texture=textures/yellow_linen_wall_texture.png
 base_pos=-0.66,0,0.912
@@ -90,6 +106,7 @@ scene=scenes/libero_living_room_tabletop_base_style.xml
 workspace=living_room_table
 workspace_offset=0,0,0.41
 z_offset=-0.014
+zone_z=0.41
 floor_texture=textures/seamless_wood_planks_floor.png
 wall_texture=textures/light-gray-plaster.png
 base_pos=-0.51,0,0.42
@@ -102,6 +119,7 @@ scene=scenes/libero_study_base_style.xml
 workspace=study_table
 workspace_offset=-0.2,0,0.867
 z_offset=-0.04
+zone_z=0.867
 floor_texture=textures/light-gray-floor-tile.png
 wall_texture=textures/light-gray-plaster.png
 base_pos=-0.75,0,0.912
@@ -114,6 +132,7 @@ scene=scenes/libero_floor_base_style.xml
 workspace=floor
 workspace_offset=0,0,-0.035
 z_offset=-0.025
+zone_z=0.02
 floor_texture=textures/light-gray-floor-tile.png
 wall_texture=textures/light-gray-plaster.png
 base_pos=-0.6,0,0

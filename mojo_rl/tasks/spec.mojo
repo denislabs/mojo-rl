@@ -189,10 +189,33 @@ struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
     `[site_z - h, site_z + h]`, centred on the site, because a region's site
     sits ON the surface it describes and containment is wanted on both sides
     of it — `On` is the one-sided predicate and it has its own band.
+
+    ## THE `:box:` KIND — LIBERO's SiteObject, verbatim (L3)
+
+    `region=<name>:box:<site>:xmin,ymin,xmax,ymax:half_height[:<contact slot>]`
+
+    A box region is the site's own `<site type="box" size=>`: the rectangle
+    is `(-hx, -hy, hx, hy)` and the half-height is `hz`, read off the asset
+    by the importer. It changes what `In` and `On` MEAN for that region —
+    `eval.pred_box_in` / `pred_box_under` transcribe LIBERO's `in_box` and
+    `under` (site-frame rotation, its 0.01 z slack, its (hz-0.005, hz+0.10)
+    band, strict inequalities) instead of the rect test above — and an
+    optional CONTACT SLOT names the fixture the object must also touch for
+    `On`, which is `SiteObjectState.check_ontop`'s
+    `env.check_contact(parent_object, other_object)`. A table target zone
+    has no parent and names no slot. `is_box` reaches the device as one
+    word of the region table; the site frame is computed there from
+    `xquat[site body] * site quat`, the same product `sensors/touch.mojo`
+    forms, so nothing new is bound per lane.
     """
 
     var name: String
     var site: String
+    var is_box: Bool
+    """`:box:` — LIBERO semantics for In/On (see the header)."""
+    var contact: String
+    """For a box region: the slot whose bodies `On` must also touch; empty
+    when none (a table zone). Refused by `parse_family` if not a slot."""
     var has_rect: Bool
     var x_min: Float64
     var y_min: Float64
@@ -209,6 +232,8 @@ struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, name: String, site: String):
         self.name = name
         self.site = site
+        self.is_box = False
+        self.contact = String("")
         self.has_rect = False
         self.x_min = 0.0
         self.y_min = 0.0
@@ -223,6 +248,8 @@ struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
     ):
         self.name = name
         self.site = site
+        self.is_box = False
+        self.contact = String("")
         self.has_rect = True
         self.x_min = x_min
         self.y_min = y_min
@@ -238,6 +265,8 @@ struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
     ):
         self.name = name
         self.site = site
+        self.is_box = False
+        self.contact = String("")
         self.has_rect = True
         self.x_min = x_min
         self.y_min = y_min
@@ -247,7 +276,7 @@ struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
         self.has_height = True
 
     def describe(self) -> String:
-        var s = self.name + ":site:" + self.site
+        var s = self.name + (":box:" if self.is_box else ":site:") + self.site
         if self.has_rect:
             s += (
                 ":" + String(self.x_min) + "," + String(self.y_min)
@@ -255,7 +284,15 @@ struct RegionSpec(Copyable, ImplicitlyCopyable, Movable):
             )
             if self.has_height:
                 s += ":" + String(self.half_height)
+        if self.is_box and self.contact.byte_length() > 0:
+            s += ":" + self.contact
         return s^
+
+    def half_x(self) -> Float64:
+        return 0.5 * (self.x_max - self.x_min)
+
+    def half_y(self) -> Float64:
+        return 0.5 * (self.y_max - self.y_min)
 
 
 struct InitSpec(Copyable, ImplicitlyCopyable, Movable):
@@ -572,24 +609,37 @@ def parse_region(spec: String) raises -> RegionSpec:
     raises today instead of being silently read as a site.
     """
     var parts = split_on(spec, String(":"))
-    if len(parts) < 3 or len(parts) > 5:
+    if len(parts) < 3 or len(parts) > 6:
         raise Error(
             "tasks: malformed region '" + spec + "' — expected"
             " '<name>:site:<site>', '<name>:site:<site>:xmin,ymin,xmax,ymax'"
             " or that with a fifth field, the half-height:"
-            " '<name>:site:<site>:xmin,ymin,xmax,ymax:0.03'"
+            " '<name>:site:<site>:xmin,ymin,xmax,ymax:0.03'; or a box:"
+            " '<name>:box:<site>:xmin,ymin,xmax,ymax:hz[:contact slot]'"
         )
     var name = String(String(parts[0]).strip())
     var kind = String(String(parts[1]).strip())
     var site = String(String(parts[2]).strip())
-    if kind != "site":
+    var is_box = kind == "box"
+    if kind != "site" and not is_box:
         raise Error(
-            "tasks: region '" + name + "' targets '" + kind + "'; only 'site'"
-            " is supported. A region is site-relative so that it TRAVELS with"
-            " a movable slot — see RegionSpec."
+            "tasks: region '" + name + "' targets '" + kind + "'; only"
+            " 'site' and 'box' are supported. A region is site-relative so"
+            " that it TRAVELS with a movable slot — see RegionSpec."
         )
     if name.byte_length() == 0 or site.byte_length() == 0:
         raise Error("tasks: region has an empty name or site: '" + spec + "'")
+    if is_box and len(parts) < 5:
+        raise Error(
+            "tasks: box region '" + name + "' needs its rectangle AND its"
+            " half-height — both are the site's `size` and LIBERO's `in_box`"
+            " / `under` read all three: '" + spec + "'"
+        )
+    if not is_box and len(parts) == 6:
+        raise Error(
+            "tasks: region '" + name + "' has a sixth field; only a `:box:`"
+            " region carries a contact slot: '" + spec + "'"
+        )
     if len(parts) == 3:
         return RegionSpec(name^, site^)
 
@@ -631,7 +681,16 @@ def parse_region(spec: String) raises -> RegionSpec:
             " False for every state and the task would read as unlearnable"
             " rather than as malformed."
         )
-    return RegionSpec(name^, site^, x0, y0, x1, y1, hh)
+    var out = RegionSpec(name^, site^, x0, y0, x1, y1, hh)
+    out.is_box = is_box
+    if len(parts) == 6:
+        out.contact = String(String(parts[5]).strip())
+        if out.contact.byte_length() == 0:
+            raise Error(
+                "tasks: box region '" + out.name + "' has an empty contact"
+                " slot field; drop the trailing ':' instead: '" + spec + "'"
+            )
+    return out^
 
 
 def parse_init(spec: String) raises -> InitSpec:
@@ -746,6 +805,18 @@ def parse_family(text: String) raises -> FamilySpec:
                 raise Error(
                     "family spec: duplicate region name '"
                     + f.regions[i].name + "'"
+                )
+    # ⚠ A BOX REGION'S CONTACT SLOT MUST BE A SLOT. It binds to that slot's
+    # root body at load time; a typo would otherwise surface as "no body
+    # named X_" from `slot_body_id`, pointing at the goal instead of here.
+    for i in range(len(f.regions)):
+        ref r = f.regions[i]
+        if r.is_box and r.contact.byte_length() > 0:
+            if f.slot_index(r.contact) < 0:
+                raise Error(
+                    "family spec: box region '" + r.name + "' names contact"
+                    " slot '" + r.contact + "', which is not a slot of"
+                    " family '" + f.name + "'"
                 )
     return f^
 

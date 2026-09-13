@@ -28,6 +28,8 @@ Quoted from `TableArena.configure_location`:
 `bottom_pos` is the floor geom's pos, (0,0,0) in every LIBERO arena.
 
 Two additions of our own, both flagged in the output:
+* a `<site name="zone_plane">` at the problem's `zone_z` (L3) — the anchor of
+  every TABLE box region, at the height LIBERO's `TargetZone` sites sit;
 * a `<site name="workspace">` at `workspace_offset` — the anchor every
   imported region rect is measured from (LIBERO measures its rects from
   the same offset; the site just gives it a name);
@@ -163,6 +165,16 @@ def generate(prob):
     # ── the workspace anchor site ────────────────────────────────────────
     ET.SubElement(wb, "site", name="workspace", pos=fmt(off), size="0.001",
                   rgba="0 0 0 0")
+    # ── the target-zone plane (L3) ───────────────────────────────────────
+    # LIBERO gives every table region its own `<site type="box">` at the
+    # zone's centroid, appended to the workspace body under a per-problem
+    # z convention (quoted in categories.kv beside `zone_z=`). Our table
+    # regions share ONE anchor and carry the centroid as their rect, so
+    # the anchor must sit at the zone plane's WORLD height: `On(obj, zone)`
+    # is `under`, a band measured from that site.
+    ET.SubElement(wb, "site", name="zone_plane",
+                  pos=fmt([off[0], off[1], float(prob["zone_z"])]),
+                  size="0.001", rgba="0 0 0 0")
 
     ET.indent(root, space="  ")
     return (
@@ -198,7 +210,10 @@ def main():
         finally:
             os.remove(tmp)
         ws = m.site("workspace").id
-        info = f"nbody {m.nbody} ngeom {m.ngeom} ncam {m.ncam} nlight {m.nlight} workspace {m.site_pos[ws].round(3).tolist()}"
+        zp = m.site("zone_plane").id
+        info = (f"nbody {m.nbody} ngeom {m.ngeom} ncam {m.ncam} nlight {m.nlight}"
+                f" workspace {m.site_pos[ws].round(3).tolist()}"
+                f" zone_plane z {float(m.site_pos[zp][2]):.3f}")
         old = open(out).read() if os.path.exists(out) else None
         if a.check:
             if old != text:

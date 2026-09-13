@@ -40,13 +40,17 @@ version that took the spec would have to be rewritten for the device, and then
 there would be two.
 """
 
+from mojo_rl.physics3d.kinematics.quat_math import gpu_quat_mul
+
 from .predicates import (
     BoundGoal,
     OP_IN, OP_ON, OP_NEAR, OP_ABOVE, OP_UPRIGHT, OP_AT_REGION,
-    OP_AND, OP_OR, OP_NOT, op_name, op_is_tier_a,
+    OP_AND, OP_OR, OP_NOT, OP_JOINT, OP_ON_BODY, OP_TOUCHING,
+    op_name, op_is_tier_a, op_reads_contacts,
 )
 from .eval import (
     pred_in_rect, pred_near, pred_above, pred_upright,
+    pred_joint, pred_ontop, pred_box_in, pred_box_under, slots_touching,
     ON_MIN_DZ, ON_MAX_DZ,
 )
 
@@ -75,8 +79,7 @@ def encode_goal(g: BoundGoal) raises -> List[Float64]:
         if not op_is_tier_a(g.terms[i].op):
             raise Error(
                 "tasks: " + op_name(g.terms[i].op) + " is TIER B and cannot go"
-                " on the device tape — it reads contacts, which the reward"
-                " kernel does not carry. See TASK_LAYER_PLAN.md §5.1."
+                " on the device tape — it has no defined evaluation."
             )
     var out = List[Float64]()
     for i in range(MAX_TAPE_TERMS):
@@ -93,6 +96,49 @@ def encode_goal(g: BoundGoal) raises -> List[Float64]:
     return out^
 
 
+def tape_needs_l3(tape: List[Float64], base: Int, reg_box: List[Int]) -> Bool:
+    """Does this tape use an L3 op, or a box region? The narrow `eval_tape`
+    refuses such a tape rather than evaluating it against inputs it does
+    not have."""
+    for i in range(MAX_TAPE_TERMS):
+        var w = base + i * TERM_WORDS
+        var op = Int(tape[w])
+        if op < 0:
+            break
+        if op == OP_JOINT or op_reads_contacts(op):
+            return True
+        if (op == OP_IN or op == OP_ON) and len(reg_box) > 0:
+            var b = Int(tape[w + 2])
+            if reg_box[b] != 0:
+                return True
+    return False
+
+
+def eval_tape(
+    tape: List[Float64], base: Int,
+    xpos: List[Float64], xquat: List[Float64], site_xpos: List[Float64],
+    reg_site: List[Int],
+    reg_xmin: List[Float64], reg_ymin: List[Float64],
+    reg_xmax: List[Float64], reg_ymax: List[Float64],
+    reg_h: List[Float64],
+) raises -> Bool:
+    """The pre-L3 signature. RAISES on a tape that needs what it does not
+    take (a Joint / contact op); see the wide overload."""
+    var none_i = List[Int]()
+    var none_f = List[Float64]()
+    if tape_needs_l3(tape, base, none_i):
+        raise Error(
+            "tasks: this tape uses an L3 op (Joint / Touching / On(obj, obj))"
+            " — evaluate it with the wide `eval_tape` that takes qpos, the"
+            " site table, body parents and the contact list."
+        )
+    return eval_tape(
+        tape, base, xpos, xquat, site_xpos,
+        reg_site, reg_xmin, reg_ymin, reg_xmax, reg_ymax, reg_h,
+        none_i, none_i, none_f, none_i, none_f, none_i, 0, none_i, none_i,
+    )
+
+
 @always_inline
 def eval_tape(
     tape: List[Float64], base: Int,
@@ -101,6 +147,11 @@ def eval_tape(
     reg_xmin: List[Float64], reg_ymin: List[Float64],
     reg_xmax: List[Float64], reg_ymax: List[Float64],
     reg_h: List[Float64],
+    reg_box: List[Int], reg_contact: List[Int],
+    qpos: List[Float64],
+    site_body: List[Int], site_quat: List[Float64],
+    body_parent: List[Int],
+    ncon: Int, con_a: List[Int], con_b: List[Int],
 ) -> Bool:
     """Evaluate the tape at `tape[base : base + TAPE_WORDS]`.
 
@@ -116,6 +167,12 @@ def eval_tape(
     ⚠ `base` EXISTS SO A KERNEL CAN PASS `env * METADATA_SIZE +
     META_IDX_TASK_PARAM_0` and read its own lane's tape out of the shared
     `meta` tensor. The host passes 0.
+
+    The L3 inputs mirror `gpu_eval.eval_tape_gpu`'s operands one for one:
+    `reg_box` / `reg_contact` are region-table words 6 and 7, `site_body` /
+    `site_quat` the model site table, `body_parent` the model body table's
+    parent column, and `(ncon, con_a, con_b)` the lane's contact list. An
+    empty `reg_box` means "no box regions" (every region plain).
     """
     var v0 = False
     var v1 = False
@@ -159,6 +216,17 @@ def eval_tape(
                 xquat[a * 4 + 3], xquat[a * 4 + 0],
                 xquat[a * 4 + 1], xquat[a * 4 + 2], param,
             )
+        elif op == OP_JOINT:
+            r = pred_joint(qpos[a], b, param)
+        elif op == OP_TOUCHING or op == OP_ON_BODY:
+            var touching = slots_touching(a, b, ncon, con_a, con_b, body_parent)
+            if op == OP_TOUCHING:
+                r = touching
+            else:
+                r = pred_ontop(
+                    xpos[a * 3], xpos[a * 3 + 1], xpos[a * 3 + 2],
+                    xpos[b * 3], xpos[b * 3 + 1], xpos[b * 3 + 2], touching,
+                )
         else:
             # IN / ON / AT_REGION
             var s = reg_site[b]
@@ -173,21 +241,52 @@ def eval_tape(
                 px = xpos[a * 3]
                 py = xpos[a * 3 + 1]
                 pz = xpos[a * 3 + 2]
-            # ⚠ THE REGION'S OWN BAND — `eval.region_half_heights(f)[b]`,
-            # matching `eval.eval_goal` and `gpu_eval.eval_tape_gpu`. Three
-            # readers of one quantity now, which is why it is a per-region
-            # ARRAY here and not the constant it used to be.
-            var dz_min = -reg_h[b]
-            var dz_max = reg_h[b]
-            if op == OP_ON:
-                dz_min = ON_MIN_DZ
-                dz_max = ON_MAX_DZ
-            r = pred_in_rect(
-                px, py, pz,
-                site_xpos[s * 3], site_xpos[s * 3 + 1], site_xpos[s * 3 + 2],
-                reg_xmin[b], reg_ymin[b], reg_xmax[b], reg_ymax[b],
-                dz_min, dz_max,
-            )
+            var is_box = len(reg_box) > 0 and reg_box[b] != 0 and op != OP_AT_REGION
+            if is_box:
+                # ── LIBERO's SiteObject (L3), as `eval.eval_goal` ─────────
+                var sb = site_body[s]
+                var wq = gpu_quat_mul[DType.float64](
+                    xquat[sb * 4 + 0], xquat[sb * 4 + 1],
+                    xquat[sb * 4 + 2], xquat[sb * 4 + 3],
+                    site_quat[s * 4 + 0], site_quat[s * 4 + 1],
+                    site_quat[s * 4 + 2], site_quat[s * 4 + 3],
+                )
+                var cx = 0.5 * (reg_xmin[b] + reg_xmax[b])
+                var cy = 0.5 * (reg_ymin[b] + reg_ymax[b])
+                var hx = 0.5 * (reg_xmax[b] - reg_xmin[b])
+                var hy = 0.5 * (reg_ymax[b] - reg_ymin[b])
+                if op == OP_IN:
+                    r = pred_box_in(
+                        px, py, pz,
+                        site_xpos[s * 3], site_xpos[s * 3 + 1], site_xpos[s * 3 + 2],
+                        wq[0], wq[1], wq[2], wq[3], cx, cy, hx, hy, reg_h[b],
+                    )
+                else:
+                    var touching = True
+                    if reg_contact[b] >= 0:
+                        touching = slots_touching(
+                            a, reg_contact[b], ncon, con_a, con_b, body_parent
+                        )
+                    r = pred_box_under(
+                        px, py, pz,
+                        site_xpos[s * 3], site_xpos[s * 3 + 1], site_xpos[s * 3 + 2],
+                        wq[0], wq[1], wq[2], wq[3], cx, cy, hx, hy, reg_h[b],
+                        touching,
+                    )
+            else:
+                # ⚠ THE REGION'S OWN BAND — `eval.region_half_heights(f)[b]`,
+                # matching `eval.eval_goal` and `gpu_eval.eval_tape_gpu`.
+                var dz_min = -reg_h[b]
+                var dz_max = reg_h[b]
+                if op == OP_ON:
+                    dz_min = ON_MIN_DZ
+                    dz_max = ON_MAX_DZ
+                r = pred_in_rect(
+                    px, py, pz,
+                    site_xpos[s * 3], site_xpos[s * 3 + 1], site_xpos[s * 3 + 2],
+                    reg_xmin[b], reg_ymin[b], reg_xmax[b], reg_ymax[b],
+                    dz_min, dz_max,
+                )
 
         if i == 0:
             v0 = r

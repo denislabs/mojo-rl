@@ -18,36 +18,55 @@ benchmark.
 `classify_goal` returns WHICH capability is missing, so the survey can count
 gaps by kind instead of reporting one opaque failure total.
 
-## THE FOUR GAPS, MEASURED ON ALL 130 FILES
+## THE GAPS, MEASURED ON ALL 130 FILES — AND WHAT L3 CLOSED
 
-| gap | what LIBERO writes | why ours cannot say it |
+| gap | what LIBERO writes | status |
 |---|---|---|
-| `GAP_OBJECT_TARGET` | `On(bowl_1, plate_1)` | our `On`'s second argument is a REGION; there is no object-relative form |
-| `GAP_FIXTURE_REGION` | `On(bowl_1, cabinet_1_top_region)` | the region has no `:ranges` — its rectangle is a `<site>` in the fixture's asset XML, which the `.bddl` does not carry |
-| `GAP_ARTICULATION` | `Open(cabinet_1_middle_region)`, `Turnon(stove_1)` | reads a fixture JOINT's qpos against per-class thresholds that live in LIBERO's PYTHON (`ArticulatedObject.default_open_ranges`), not in the file |
+| `GAP_OBJECT_TARGET` | `In(bowl_1, plate_1)` — In whose container is an OBJECT | still refused: LIBERO's `ObjectState.check_contain` calls `object.in_box`, which no object class defines; the corpus never uses it. `On(bowl_1, plate_1)` is NOT this gap since L3: it binds to `OP_ON_BODY` = `check_ontop` |
+| `GAP_FIXTURE_REGION` | `On(bowl_1, cabinet_1_top_region)` | CLOSED (L3): the region's rect is the `<site>`'s `size` in the fixture's asset, read here into a `:box:` region with the fixture as contact partner |
+| `GAP_ARTICULATION` | `Open(cabinet_1_middle_region)`, `Turnon(stove_1)` | CLOSED (L3): `Joint(<fixture>_<joint>, <cmp>, <thr>)` from `categories.kv`'s per-class thresholds, `Or` over the joints for Open/Turnon (ANY), `And` for Close/Turnoff (ALL) — `ObjectState.is_open/is_close` quoted; refused only when the class has no threshold row |
 | `GAP_UNKNOWN_PRED` | — | a predicate outside the measured seven |
 
-⚠ `GAP_FIXTURE_REGION` IS THE CHEAPEST TO CLOSE and the one worth closing
-first: our `region=` is ALREADY site-anchored (`region=table_top:site:
-table_surface:x0,y0,x1,y1`), so the missing piece is only the rectangle, and
-the rectangle is the site's own `size` in the asset. It needs an asset reader,
-not a language change.
+## WHICH JOINTS `Open(x)` READS — quoted, because it is not obvious
 
-⚠ `GAP_ARTICULATION` IS NOT A PREDICATE WE FORGOT. It is a different KIND of
-predicate: every Tier A predicate we have reads a body pose, and this reads a
-JOINT. It also cannot be imported as data — `WoodenCabinet.is_open` is
-`qpos < max(default_open_ranges)` with NEGATIVE ranges while `ShortCabinet`'s
-is `qpos > min(...)` with positive ones, so the comparison DIRECTION is
-per-class Python. Importing the threshold without the direction gives a
-predicate that is exactly backwards on half the cabinets.
+`Open(<site region>)` → `SiteObjectState.is_open` → the joints LIBERO
+attached to that site when it built `object_sites_dict`: it walks every
+body of the fixture in document order, keeps `part.findall("./joint")` (the
+body's DIRECT joints) for every part whose DESCENDANT sites include the
+name, and the last match wins — i.e. the site's innermost enclosing body.
+`Open(<fixture>)` → `ObjectState.is_open` → `MujocoXMLObject.joints`, every
+joint in the asset. `site_joints` / `asset_joints` below are those two
+rules on the asset text.
+
+## TABLE REGIONS ARE TWO THINGS IN LIBERO, AND TWO REGIONS HERE
+
+A `:regions` entry with `:ranges` is a PLACEMENT region (the init sampler,
+`reference_pos = workspace_offset`) AND, when a goal names it, a
+`TargetZone` SITE the problem class appends to the workspace body at its
+own z convention (`zone_z=` in the table). The placement region keeps its
+composed name (`main_table_stove_front_region`, plain `:site:` on the
+workspace anchor — the sampler drops props at the anchor's z); the zone is
+a `:box:` region named `<composed>_zone` on the arena's `zone_plane` site,
+and only for regions a `:goal` names. `On(plate_1, main_table_stove_front_
+region)` therefore translates to `On(plate_1, main_table_stove_front_region_zone)`.
 """
 
 from .bddl import BddlProblem, BddlAtom, BddlRegion
-from .libero_categories import LiberoTable, LiberoCategory, LiberoProblem
+from .libero_categories import (
+    LiberoTable, LiberoCategory, LiberoProblem, Threshold, cmp_name,
+)
 from .spec import (
     FamilySpec, TaskSpec, SlotSpec, RegionSpec, InitSpec,
     SLOT_FREE, SLOT_STATIC, SCHEMA_VERSION,
 )
+from .predicates import parse_goal
+from .tape import MAX_TAPE_TERMS
+
+
+# `TargetZone.zone_height` — the half-z of every table target zone's site.
+comptime TARGET_ZONE_HALF_HEIGHT: Float64 = 0.007
+comptime ZONE_SUFFIX: String = "_zone"
+comptime ZONE_SITE: String = "zone_plane"
 
 
 comptime GAP_NONE: Int = 0
@@ -63,18 +82,18 @@ def gap_name(kind: Int) -> String:
         return String("expressible")
     if kind == GAP_OBJECT_TARGET:
         return String(
-            "On/In whose target is an OBJECT, not a region (we have no"
-            " object-relative form)"
+            "In whose container is an OBJECT (LIBERO's check_contain calls"
+            " object.in_box, which no object class defines)"
         )
     if kind == GAP_FIXTURE_REGION:
         return String(
-            "On/In onto a region with no :ranges (its rect is a <site> in the"
-            " fixture's asset, not in the .bddl)"
+            "On/In onto a region whose target is neither a fixture, an object"
+            " nor the workspace"
         )
     if kind == GAP_ARTICULATION:
         return String(
-            "Open/Close/Turnon/Turnoff — reads a fixture JOINT, and the"
-            " threshold's DIRECTION lives in LIBERO's Python"
+            "Open/Close/Turnon/Turnoff on something that is neither a"
+            " fixture nor a fixture's site region"
         )
     if kind == GAP_UNKNOWN_PRED:
         return String("a predicate outside the measured seven")
@@ -92,6 +111,16 @@ struct GoalGap(Copyable, ImplicitlyCopyable, Movable):
         self.term = term^
 
 
+def _region_target(p: BddlProblem, composed: String) -> String:
+    try:
+        var ri = p.region_index(composed)
+        if ri < 0:
+            return String("")
+        return String(p.regions[ri].target)
+    except:
+        return String("")
+
+
 def classify_goal(p: BddlProblem) raises -> GoalGap:
     """`GAP_NONE` if every goal term maps, else the FIRST gap and its term.
 
@@ -99,6 +128,10 @@ def classify_goal(p: BddlProblem) raises -> GoalGap:
     untranslatable term makes the whole task untranslatable, so reporting
     further gaps in the same file would inflate the survey's counts past the
     number of TASKS blocked.
+
+    ⚠ SYNTACTIC. What the corpus SAYS can be classified from the file; whether
+    the table has a threshold row for a class, or the asset the site,
+    surfaces from `translate_task`, which raises. The survey counts both.
     """
     for i in range(len(p.goal)):
         ref g = p.goal[i]
@@ -106,6 +139,14 @@ def classify_goal(p: BddlProblem) raises -> GoalGap:
             g.pred == "Open" or g.pred == "Close"
             or g.pred == "Turnon" or g.pred == "Turnoff"
         ):
+            if len(g.args) != 1:
+                return GoalGap(GAP_ARITY, g.show())
+            var x = String(g.args[0])
+            if p.is_fixture(x) or p.is_object(x):
+                continue
+            var tgt = _region_target(p, x)
+            if tgt.byte_length() > 0 and (p.is_fixture(tgt) or p.is_object(tgt)):
+                continue
             return GoalGap(GAP_ARTICULATION, g.show())
         if g.pred != "On" and g.pred != "In":
             return GoalGap(GAP_UNKNOWN_PRED, g.show())
@@ -113,13 +154,36 @@ def classify_goal(p: BddlProblem) raises -> GoalGap:
             return GoalGap(GAP_ARITY, g.show())
         var target = String(g.args[1])
         if p.is_object(target) or p.is_fixture(target):
-            return GoalGap(GAP_OBJECT_TARGET, g.show())
+            if g.pred == "In":
+                return GoalGap(GAP_OBJECT_TARGET, g.show())
+            continue
         var ri = p.region_index(target)
         if ri < 0:
             return GoalGap(GAP_UNKNOWN_PRED, g.show())
         if not p.regions[ri].has_ranges:
-            return GoalGap(GAP_FIXTURE_REGION, g.show())
+            var t2 = String(p.regions[ri].target)
+            if not (p.is_fixture(t2) or p.is_object(t2)):
+                return GoalGap(GAP_FIXTURE_REGION, g.show())
     return GoalGap(GAP_NONE, String(""))
+
+
+def goal_zone_regions(p: BddlProblem) raises -> List[Int]:
+    """Indices of the RANGED regions a `:goal` names — the ones that get a
+    `_zone` box region (header: table regions are two things)."""
+    var out = List[Int]()
+    for i in range(len(p.goal)):
+        ref g = p.goal[i]
+        if (g.pred != "On" and g.pred != "In") or len(g.args) != 2:
+            continue
+        var ri = p.region_index(String(g.args[1]))
+        if ri >= 0 and p.regions[ri].has_ranges:
+            var seen = False
+            for k in range(len(out)):
+                if out[k] == ri:
+                    seen = True
+            if not seen:
+                out.append(ri)
+    return out^
 
 
 def translate_family(p: BddlProblem) raises -> FamilySpec:
@@ -187,7 +251,214 @@ def translate_family(p: BddlProblem) raises -> FamilySpec:
     return f^
 
 
+# ── L3: the asset text, read for what the .bddl does not carry ─────────────
+
+
+def _tag_attr_or(tag: String, name: String, dflt: String) -> String:
+    var v = _tag_attr(tag, name)
+    return v if v.byte_length() > 0 else dflt
+
+
+def _floats(text: String) -> List[Float64]:
+    var out = List[Float64]()
+    var toks = text.split(" ")
+    for k in range(len(toks)):
+        var t = String(String(toks[k]).strip())
+        if t.byte_length() > 0:
+            try:
+                out.append(Float64(t))
+            except:
+                pass
+    return out^
+
+
+def has_site(xml: String, site: String) -> Bool:
+    """Does the asset declare `<site name="<site>">`? LIBERO registers a
+    fixture's site region only when some body of the fixture carries the
+    site; a `.bddl` may name one the asset lacks (it names regions for
+    fixtures it does not even declare), and then nothing is registered."""
+    var pos = 0
+    while True:
+        var i = xml.find("<site", pos)
+        if i < 0:
+            return False
+        var j = xml.find(">", i)
+        if j < 0:
+            return False
+        if _tag_attr(String(xml[byte=i:j]), String("name")) == site:
+            return True
+        pos = j + 1
+
+
+def site_box(xml: String, site: String) raises -> List[Float64]:
+    """`(hx, hy, hz)` of `<site type="box" name="<site>" size=...>` — the
+    region a LIBERO goal means by that site. RAISES if absent or not a box:
+    `SiteObject.in_box` / `under` index `size[:2]` and `size[2]`, which only
+    a box has."""
+    var pos = 0
+    while True:
+        var i = xml.find("<site", pos)
+        if i < 0:
+            break
+        var j = xml.find(">", i)
+        if j < 0:
+            break
+        var tag = String(xml[byte=i:j])
+        if _tag_attr(tag, String("name")) == site:
+            var ty = _tag_attr_or(tag, String("type"), String("sphere"))
+            var sz = _floats(_tag_attr(tag, String("size")))
+            if ty != "box" or len(sz) != 3:
+                raise Error(
+                    "libero: site '" + site + "' is type '" + ty + "' with "
+                    + String(len(sz)) + " size numbers; LIBERO's in_box/under"
+                    " read a box's three half-sizes"
+                )
+            return sz^
+        pos = j + 1
+    raise Error(
+        "libero: no <site name=\"" + site + "\"> in the asset — the region"
+        " a goal names is that site's box, and there is none"
+    )
+
+
+def _scan_joints(
+    xml: String, site: String, mut of_site: List[String], mut all: List[String]
+) raises -> Bool:
+    """One pass over the tags: `all` gets every joint; `of_site` the direct
+    joints of the innermost body enclosing `site` (LIBERO's rule, header).
+    Returns whether the site was seen."""
+    var stack_joints = List[List[String]]()
+    var found = False
+    var pos = 0
+    while True:
+        var i = xml.find("<", pos)
+        if i < 0:
+            break
+        var j = xml.find(">", i)
+        if j < 0:
+            break
+        var tag = String(xml[byte=i:j])
+        pos = j + 1
+        if tag.startswith("<!--"):
+            var e = xml.find("-->", i)
+            pos = e + 3 if e >= 0 else pos
+            continue
+        if tag.startswith("<body"):
+            stack_joints.append(List[String]())
+        elif tag.startswith("</body"):
+            if len(stack_joints) > 0:
+                _ = stack_joints.pop()
+        elif tag.startswith("<joint"):
+            var jn = _tag_attr(tag, String("name"))
+            if jn.byte_length() > 0:
+                all.append(jn)
+                if len(stack_joints) > 0:
+                    stack_joints[len(stack_joints) - 1].append(jn)
+        elif tag.startswith("<site"):
+            if site.byte_length() > 0 and _tag_attr(tag, String("name")) == site:
+                found = True
+                of_site = List[String]()
+                if len(stack_joints) > 0:
+                    for k in range(len(stack_joints[len(stack_joints) - 1])):
+                        of_site.append(stack_joints[len(stack_joints) - 1][k])
+    return found
+
+
+def site_joints(xml: String, site: String) raises -> List[String]:
+    """The joints `Open(<site region>)` reads — see the module header."""
+    var of_site = List[String]()
+    var all = List[String]()
+    if not _scan_joints(xml, site, of_site, all):
+        raise Error("libero: no <site name=\"" + site + "\"> in the asset")
+    return of_site^
+
+
+def asset_joints(xml: String) raises -> List[String]:
+    """Every joint in the asset — `MujocoXMLObject.joints`, what
+    `Open(<fixture>)` / `Turnon(<fixture>)` read."""
+    var of_site = List[String]()
+    var all = List[String]()
+    _ = _scan_joints(xml, String(""), of_site, all)
+    return all^
+
+
+def _articulation_terms(
+    p: BddlProblem, f: FamilySpec, table: LiberoTable, pred: String,
+    x: String, pack_dir: String,
+) raises -> String:
+    """`Open/Close/Turnon/Turnoff(x)` as Joint terms over the right joints,
+    Or-joined for ANY (Open, Turnon), And-joined for ALL (Close, Turnoff)."""
+    var fixture = x
+    var site = String("")
+    if not (p.is_fixture(x) or p.is_object(x)):
+        var ri = p.region_index(x)
+        if ri < 0:
+            raise Error("libero: " + pred + "(" + x + ") names nothing declared")
+        fixture = String(p.regions[ri].target)
+        site = String(p.regions[ri].name)
+    var cat_name = String("")
+    for i in range(len(p.fixtures)):
+        if p.fixtures[i].name == fixture:
+            cat_name = String(p.fixtures[i].category)
+    for i in range(len(p.objects)):
+        if p.objects[i].name == fixture:
+            cat_name = String(p.objects[i].category)
+    var cat = table.category(cat_name)
+    var thr: Threshold
+    if pred == "Open":
+        thr = cat.open
+    elif pred == "Close":
+        thr = cat.close
+    elif pred == "Turnon":
+        thr = cat.on
+    else:
+        thr = cat.off
+    if not thr.present():
+        raise Error(
+            "libero: " + pred + "(" + x + ") — category '" + cat.name + "' has"
+            " no " + pred.lower() + "= threshold in categories.kv; LIBERO's"
+            " class defines the comparison and it must be quoted there, not"
+            " guessed from the joint range"
+        )
+    var xml: String
+    with open(pack_dir + "/" + cat.asset, "r") as fh:
+        xml = fh.read()
+    var joints: List[String]
+    if site.byte_length() > 0:
+        joints = site_joints(xml, site)
+    else:
+        joints = asset_joints(xml)
+    if len(joints) == 0:
+        raise Error(
+            "libero: " + pred + "(" + x + ") reads no joint — the site's body"
+            " (or the asset) declares none, so LIBERO's is_open would loop"
+            " over nothing and return " + ("False" if pred == "Open" or pred == "Turnon" else "True")
+        )
+    var any_ = pred == "Open" or pred == "Turnon"
+    var out = String("")
+    for k in range(len(joints)):
+        var term = (
+            String("Joint(") + fixture + "_" + joints[k] + ", " + cmp_name(thr.op)
+            + ", " + String(thr.thr) + ")"
+        )
+        if k == 0:
+            out = term^
+        else:
+            out = (String("Or(") if any_ else String("And(")) + out + ", " + term + ")"
+    return out^
+
+
 def translate_task(p: BddlProblem, f: FamilySpec) raises -> TaskSpec:
+    """The pre-L3 signature: no table, so no articulation and no asset
+    access. Kept for `translate_family`'s survey shape; RAISES on an
+    articulation goal."""
+    var t = LiberoTable()
+    return translate_task(p, f, t, String(""))
+
+
+def translate_task(
+    p: BddlProblem, f: FamilySpec, table: LiberoTable, pack_dir: String,
+) raises -> TaskSpec:
     """The `.task`. RAISES with the gap's name if the goal does not map."""
     var gap = classify_goal(p)
     if gap.kind != GAP_NONE:
@@ -206,8 +477,43 @@ def translate_task(p: BddlProblem, f: FamilySpec) raises -> TaskSpec:
     var goal = String("")
     for i in range(len(p.goal)):
         ref g = p.goal[i]
-        var term = String(g.pred) + "(" + g.args[0] + ", " + g.args[1] + ")"
+        var term: String
+        if (
+            g.pred == "Open" or g.pred == "Close"
+            or g.pred == "Turnon" or g.pred == "Turnoff"
+        ):
+            if pack_dir.byte_length() == 0:
+                raise Error(
+                    "libero: " + g.show() + " needs the category table and"
+                    " the asset pack — call translate_task(p, f, table,"
+                    " pack_dir)"
+                )
+            term = _articulation_terms(
+                p, f, table, String(g.pred), String(g.args[0]), pack_dir
+            )
+        else:
+            var target = String(g.args[1])
+            var ri = p.region_index(target)
+            if ri >= 0 and p.regions[ri].has_ranges:
+                # a table zone — the `_zone` box region (header)
+                target = p.regions[ri].composed_name() + ZONE_SUFFIX
+            term = String(g.pred) + "(" + g.args[0] + ", " + target + ")"
+            if f.region_index(target) < 0 and f.slot_index(target) < 0:
+                raise Error(
+                    "libero: " + g.show() + " names '" + target + "', which"
+                    " the family declares neither as a region nor as a slot"
+                )
         goal = term^ if i == 0 else (String("And(") + goal + ", " + term + ")")
+    # ⚠ THE DEVICE TAPE HOLDS THREE TERMS. A goal past that would parse and
+    # bind and then be refused by `encode_goal` at the driver; refusing it
+    # here keeps "written" in the survey honest about what can RUN.
+    var parsed = parse_goal(goal)
+    if len(parsed.terms) > MAX_TAPE_TERMS:
+        raise Error(
+            "libero: task '" + p.problem + "' (" + p.language + ") needs "
+            + String(len(parsed.terms)) + " goal terms; the device tape holds "
+            + String(MAX_TAPE_TERMS) + " (twelve `meta` words). Goal: " + goal
+        )
     t.goal = goal^
 
     # ⚠ ACTIVE = EVERY SLOT, not `:obj_of_interest`. LIBERO's field names what
@@ -528,6 +834,66 @@ def resolve_family(
             asset2 = String(LIBERO_OBJECT_DIR) + "/" + cat2.name + "_free.xml"
         f.slots.append(SlotSpec(String(p.objects[i].name), SLOT_FREE, asset2))
 
+    # ── regions: GOAL regions first (the device table is 16 deep and a
+    # goal must index it; `init=` regions are sampled on the host) ────────
+    var zone_anchor = String("robot_") + prob.workspace + "_" + ZONE_SITE
+    if with_robot:
+        zone_anchor = String(ARENA_SLOT) + "_" + ZONE_SITE
+    if not prob.has_zone_z:
+        raise Error(
+            "libero: problem '" + prob.name + "' has no zone_z= in the table;"
+            " the table target zones' height is a per-class convention that"
+            " must be quoted there"
+        )
+    # fixture / object sites named as regions → `:box:` with a contact slot
+    for i in range(len(p.regions)):
+        ref r3 = p.regions[i]
+        if r3.has_ranges:
+            continue
+        var tgt = String(r3.target)
+        var cat_name = String("")
+        for k in range(len(p.fixtures)):
+            if p.fixtures[k].name == tgt:
+                cat_name = String(p.fixtures[k].category)
+        for k in range(len(p.objects)):
+            if p.objects[k].name == tgt:
+                cat_name = String(p.objects[k].category)
+        if cat_name.byte_length() == 0:
+            # ⚠ SKIPPED, AS LIBERO SKIPS IT. All ten `libero_goal` files
+            # declare `bowl_drainer_1_*` regions for a fixture none of them
+            # declares (assessment §1.1); `_load_sites_in_arena` finds no
+            # body carrying the site and registers nothing, and no goal
+            # names them. A goal that DID would be refused by
+            # `classify_goal` as GAP_FIXTURE_REGION.
+            continue
+        var cat3 = table.category(cat_name)
+        var xml3: String
+        with open(pack_dir + "/" + cat3.asset, "r") as fh:
+            xml3 = fh.read()
+        if not has_site(xml3, String(r3.name)):
+            # the asset carries no such site: LIBERO registers nothing, and
+            # a goal naming it is refused at `translate_task` ("declares
+            # neither as a region nor as a slot")
+            continue
+        var hs = site_box(xml3, String(r3.name))
+        var rb = RegionSpec(
+            r3.composed_name(), r3.composed_name(),
+            -hs[0], -hs[1], hs[0], hs[1], hs[2],
+        )
+        rb.is_box = True
+        rb.contact = tgt
+        f.regions.append(rb^)
+    # table zones a goal names → `<composed>_zone` box on the zone plane
+    var zones = goal_zone_regions(p)
+    for k in range(len(zones)):
+        ref rz = p.regions[zones[k]]
+        var rq = RegionSpec(
+            rz.composed_name() + ZONE_SUFFIX, zone_anchor,
+            rz.x0, rz.y0, rz.x1, rz.y1, TARGET_ZONE_HALF_HEIGHT,
+        )
+        rq.is_box = True
+        f.regions.append(rq^)
+    # placement regions, plain, on the workspace anchor (the sampler's z)
     for i in range(len(p.regions)):
         ref r2 = p.regions[i]
         if not r2.has_ranges:

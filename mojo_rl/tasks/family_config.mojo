@@ -1004,9 +1004,13 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         # config, not in a task — a shaped reward is a research choice about
         # one experiment, and putting it in the task file would make two runs
         # incomparable while looking identical.
-        var holds = eval_tape_gpu[DTYPE, BATCH_SIZE, NBODY_F, SITE_DIM](
-            meta, curriculum, xpos, xquat, site_xpos, env
-        )
+        # ⚠ THE WIDE OVERLOAD (L3): the hook's own qpos / sites / bodies /
+        # contacts operands, so a Joint, Touching, On(obj, obj) or box
+        # region evaluates here exactly as on the host. The narrow overload
+        # compiles those branches OUT and would read such a term as False.
+        var holds = eval_tape_gpu[
+            DTYPE, BATCH_SIZE, NBODY_F, SITE_DIM, NQ_F, NSITE_F, MC_F
+        ](meta, curriculum, xpos, xquat, site_xpos, qpos, sites, bodies, contacts, env)
         # ⚠ ASKS TO TERMINATE ON SUCCESS. A sparse task that keeps running
         # after the goal is met pays for steps that teach nothing and lets a
         # policy bank the reward repeatedly; the driver's truncation still
@@ -1057,9 +1061,9 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
             Scalar[DTYPE](1) if holds else Scalar[DTYPE](0)
         )
 
-        var dist = tape_distance_gpu[DTYPE, BATCH_SIZE, NBODY_F, SITE_DIM](
-            meta, curriculum, xpos, xquat, site_xpos, env
-        )
+        var dist = tape_distance_gpu[
+            DTYPE, BATCH_SIZE, NBODY_F, SITE_DIM, NQ_F, NSITE_F, MC_F
+        ](meta, curriculum, xpos, xquat, site_xpos, qpos, sites, bodies, contacts, env)
         # ⚠⚠ PER LANE, OUT OF `meta` — `curriculum` is ONE row for the whole
         # batch and what a weight is worth depends on the TASK's distance
         # scale. At identical weights and margins the three shipped tasks get
