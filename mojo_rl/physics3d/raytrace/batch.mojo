@@ -63,6 +63,18 @@ from .camera import (
     RT_CAM_MODE_TRACKCOM,
 )
 from .render import render_pixel
+from ..fields.rt_layout import DYN1, DYN2, rl1, rl2
+from .visual import VisualModel, visual_model_from_model
+from .visual_records import (
+    MAX_VIS_LIGHTS,
+    MAX_VIS_MATERIALS,
+    MAX_VIS_TEXTURES,
+    VIS_GEOM_APPEARANCE,
+    VIS_LIGHT_WORDS,
+    VIS_MAT_WORDS,
+    VIS_TEX_WORDS,
+    VIS_UV_WORDS,
+)
 
 comptime RGB_CHANNELS: Int = 3
 
@@ -92,7 +104,7 @@ struct BatchedCameraRenderer[
     WIDTH: Int,
     HEIGHT: Int,
     SHADOWS: Bool = True,
-](Copyable, Movable):
+](Movable):
     """RGB + depth + segmentation for one camera, over every lane.
 
     ⚠ ONE CAMERA PER RENDERER, BY CHOICE. The reference packs N cameras of
@@ -126,6 +138,17 @@ struct BatchedCameraRenderer[
     comptime L_HF = Layout.row_major(Self.BATCH * Self.NHF_F)
     comptime L_RGB = Layout.row_major(Self.BATCH, Self.NPIX * RGB_CHANNELS)
     comptime L_SCALARPIX = Layout.row_major(Self.BATCH, Self.NPIX)
+    # ── the appearance tables ────────────────────────────────────────────
+    #
+    # ⚠⚠ THESE BIND THROUGH `DYN1`/`DYN2` WHILE EVERY LAYOUT ABOVE IS
+    # COMPTIME, and the reason is that a `VisualModel`'s sizes are not known
+    # until the meshes and the PNGs have been read — they are not in `Dims`
+    # and they cannot be, because `Dims` is the SOLVER's shape. A comptime
+    # layout would have to be a parameter on this struct, i.e. a second whole
+    # kernel compile per scene, and it would still be unspellable on the
+    # dynamic dims provider the task layer runs on. `rt_layout.mojo` measured
+    # runtime layouts at 0.80-0.93x of comptime ones on the Newton solve, so
+    # the cost here is at worst nothing.
 
     var rgb: DeviceBuffer[Self.DTYPE]
     """`[BATCH, HEIGHT*WIDTH*3]`, row-major, channels interleaved, in [0, 1].
@@ -146,6 +169,14 @@ struct BatchedCameraRenderer[
     dtype and one kernel. Geom counts here are in the hundreds, far inside
     float32's exact-integer range; a model with more than 2^24 geoms would
     have other problems first."""
+
+    var vis: VisualModel[Self.DTYPE]
+    """The scene AS DRAWN — see `raytrace/visual.mojo`.
+
+    Built from the `Model` alone by `__init__` (every visible geom, its own
+    rgba, one directional light and the headlight) and REPLACED by
+    `set_visual` when the caller has a parse to build the faithful one from.
+    """
 
     var cam: Int
     var light_dir: Vec3Generic[Self.DTYPE]
@@ -232,6 +263,24 @@ struct BatchedCameraRenderer[
             Scalar[Self.DTYPE](0.72),
             Scalar[Self.DTYPE](0.90),
         )
+        var ld = List[Float64]()
+        ld.append(-0.35)
+        ld.append(-0.25)
+        ld.append(-0.90)
+        self.vis = visual_model_from_model[Self.DTYPE, Self.D](m, ld)
+        self.vis.upload(ctx)
+
+    def set_visual(
+        mut self, ctx: DeviceContext, var v: VisualModel[Self.DTYPE]
+    ) raises:
+        """Install a `VisualModel` built from the parse and upload it.
+
+        ⚠ THE CALLER OWNS THE CHOICE OF GROUP MASK, and it is the one thing
+        here a picture cannot survive getting wrong — see
+        `build_visual_model`.
+        """
+        self.vis = v^
+        self.vis.upload(ctx)
 
     def render(
         mut self,
@@ -246,26 +295,38 @@ struct BatchedCameraRenderer[
         after the step's FK, or the image is one frame stale — which for a
         camera OBSERVATION is an off-by-one in the MDP and not a visual
         artefact anyone would notice.
+
+        ⚠⚠ NINETEEN BUFFERS AND FOUR SCALARS. Metal's argument table fails
+        SILENTLY at 29 and ships at 27
+        (`_metals_limit_is_the_argument_table_not_the_stack`), so the headroom
+        here is four operands and it is why the headlight is a row of the
+        light table rather than the six scalars it would otherwise be. Adding
+        an operand to this kernel is a decision, not a detail.
         """
+        var nvg = self.vis.ngeom
+        var nlight = self.vis.nlight
 
         @parameter
         @always_inline
         def cam_kernel(
-            geoms: LayoutTensor[Self.DTYPE, Self.L_GEOMS, MutAnyOrigin],
-            geom_rgba: LayoutTensor[Self.DTYPE, Self.L_RGBA, MutAnyOrigin],
+            geoms: LayoutTensor[Self.DTYPE, DYN2, MutAnyOrigin],
+            appearance: LayoutTensor[Self.DTYPE, DYN1, MutAnyOrigin],
             bodies: LayoutTensor[Self.DTYPE, Self.L_BODIES, MutAnyOrigin],
             xpos: LayoutTensor[Self.DTYPE, Self.L_B3, MutAnyOrigin],
             xquat: LayoutTensor[Self.DTYPE, Self.L_B4, MutAnyOrigin],
             subtree_com: LayoutTensor[Self.DTYPE, Self.L_B3, MutAnyOrigin],
             cameras: LayoutTensor[Self.DTYPE, Self.L_CAM, MutAnyOrigin],
-            mesh_meta: LayoutTensor[
-                Self.DTYPE, Self.L_MESH_META, MutAnyOrigin
-            ],
-            mesh_tris: LayoutTensor[Self.DTYPE, Self.L_TRI, MutAnyOrigin],
+            mesh_meta: LayoutTensor[Self.DTYPE, DYN1, MutAnyOrigin],
+            mesh_tris: LayoutTensor[Self.DTYPE, DYN1, MutAnyOrigin],
+            mesh_uv: LayoutTensor[Self.DTYPE, DYN1, MutAnyOrigin],
             hfield_meta: LayoutTensor[
                 Self.DTYPE, Self.L_HF_META, MutAnyOrigin
             ],
             hfield_data: LayoutTensor[Self.DTYPE, Self.L_HF, MutAnyOrigin],
+            materials: LayoutTensor[Self.DTYPE, DYN1, MutAnyOrigin],
+            textures: LayoutTensor[Self.DTYPE, DYN1, MutAnyOrigin],
+            texels: LayoutTensor[DType.uint8, DYN1, MutAnyOrigin],
+            lights: LayoutTensor[Self.DTYPE, DYN1, MutAnyOrigin],
             rgb_out: LayoutTensor[Self.DTYPE, Self.L_RGB, MutAnyOrigin],
             depth_out: LayoutTensor[
                 Self.DTYPE, Self.L_SCALARPIX, MutAnyOrigin
@@ -277,9 +338,8 @@ struct BatchedCameraRenderer[
             # `DevicePassable` — "use a fixed-width type" — so a plain `Int`
             # kernel operand does not compile.
             cam: Int32,
-            lx: Scalar[Self.DTYPE],
-            ly: Scalar[Self.DTYPE],
-            lz: Scalar[Self.DTYPE],
+            ng: Int32,
+            nl: Int32,
             br: Scalar[Self.DTYPE],
             bg: Scalar[Self.DTYPE],
             bb: Scalar[Self.DTYPE],
@@ -311,23 +371,28 @@ struct BatchedCameraRenderer[
                 )
                 var hit = render_pixel[Self.DTYPE, Self.SHADOWS](
                     geoms,
-                    Self.D.NGEOM,
-                    geom_rgba,
+                    Int(ng),
+                    appearance,
                     bodies,
                     xpos,
                     xquat,
                     env,
                     mesh_meta,
                     mesh_tris,
+                    mesh_uv,
                     hfield_meta,
                     hfield_data,
                     Self.D.NHFIELD_DATA,
+                    materials,
+                    textures,
+                    texels,
+                    lights,
+                    Int(nl),
                     frame,
                     Self.WIDTH,
                     Self.HEIGHT,
                     pxx,
                     py,
-                    Vec3Generic[Self.DTYPE](lx, ly, lz),
                     Vec3Generic[Self.DTYPE](br, bg, bb),
                 )
                 rgb_out[env, pix * RGB_CHANNELS + 0] = hit.rgb.x
@@ -338,24 +403,30 @@ struct BatchedCameraRenderer[
 
         var total = Self.BATCH * Self.NPIX
         ctx.enqueue_function[cam_kernel](
-            m.geoms.lt["gpu", Self.L_GEOMS](),
-            m.geom_rgba.lt["gpu", Self.L_RGBA](),
+            self.vis.geoms.lt_dyn["gpu", DYN2](rl2(nvg, MODEL_GEOM_SIZE)),
+            self.vis.appearance.lt_dyn["gpu", DYN1](
+                rl1(self.vis.appearance.n)
+            ),
             m.bodies.lt["gpu", Self.L_BODIES](),
             d.xpos.lt["gpu", Self.L_B3](),
             d.xquat.lt["gpu", Self.L_B4](),
             d.subtree_com.lt["gpu", Self.L_B3](),
             m.cameras.lt["gpu", Self.L_CAM](),
-            m.mesh_meta.lt["gpu", Self.L_MESH_META](),
-            m.mesh_tris.lt["gpu", Self.L_TRI](),
+            self.vis.mesh_meta.lt_dyn["gpu", DYN1](rl1(self.vis.mesh_meta.n)),
+            self.vis.mesh_tris.lt_dyn["gpu", DYN1](rl1(self.vis.mesh_tris.n)),
+            self.vis.mesh_uv.lt_dyn["gpu", DYN1](rl1(self.vis.mesh_uv.n)),
             m.hfield_meta.lt["gpu", Self.L_HF_META](),
             d.hfield_data.lt["gpu", Self.L_HF](),
+            self.vis.materials.lt_dyn["gpu", DYN1](rl1(self.vis.materials.n)),
+            self.vis.textures.lt_dyn["gpu", DYN1](rl1(self.vis.textures.n)),
+            self.vis.texels.lt_dyn["gpu", DYN1](rl1(self.vis.texels.n)),
+            self.vis.lights.lt_dyn["gpu", DYN1](rl1(self.vis.lights.n)),
             LayoutTensor[Self.DTYPE, Self.L_RGB](self.rgb),
             LayoutTensor[Self.DTYPE, Self.L_SCALARPIX](self.depth),
             LayoutTensor[Self.DTYPE, Self.L_SCALARPIX](self.seg),
             Int32(self.cam),
-            self.light_dir.x,
-            self.light_dir.y,
-            self.light_dir.z,
+            Int32(nvg),
+            Int32(nlight),
             self.background.x,
             self.background.y,
             self.background.z,
@@ -475,17 +546,42 @@ struct BatchedCameraRenderer[
 
         # ⚠ THE POSITIVE BRANCH, for the same reason as the kernel above.
         comptime if Self.DTYPE.is_floating_point():
-            var geoms_c = m.geoms.lt["cpu", Self.L_GEOMS]()
-            var rgba_c = m.geom_rgba.lt["cpu", Self.L_RGBA]()
+            var nvg = self.vis.ngeom
+            var geoms_c = self.vis.geoms.lt_dyn["cpu", DYN2](
+                rl2(nvg, MODEL_GEOM_SIZE)
+            )
+            var app_c = self.vis.appearance.lt_dyn["cpu", DYN1](
+                rl1(self.vis.appearance.n)
+            )
             var bodies_c = m.bodies.lt["cpu", Self.L_BODIES]()
             var xpos_c = d.xpos.lt["cpu", Self.L_B3]()
             var xquat_c = d.xquat.lt["cpu", Self.L_B4]()
             var com_c = d.subtree_com.lt["cpu", Self.L_B3]()
             var cams_c = m.cameras.lt["cpu", Self.L_CAM]()
-            var mm_c = m.mesh_meta.lt["cpu", Self.L_MESH_META]()
-            var mt_c = m.mesh_tris.lt["cpu", Self.L_TRI]()
+            var mm_c = self.vis.mesh_meta.lt_dyn["cpu", DYN1](
+                rl1(self.vis.mesh_meta.n)
+            )
+            var mt_c = self.vis.mesh_tris.lt_dyn["cpu", DYN1](
+                rl1(self.vis.mesh_tris.n)
+            )
+            var uv_c = self.vis.mesh_uv.lt_dyn["cpu", DYN1](
+                rl1(self.vis.mesh_uv.n)
+            )
             var hm_c = m.hfield_meta.lt["cpu", Self.L_HF_META]()
             var hd_c = d.hfield_data.lt["cpu", Self.L_HF]()
+            var mat_c = self.vis.materials.lt_dyn["cpu", DYN1](
+                rl1(self.vis.materials.n)
+            )
+            var tex_c = self.vis.textures.lt_dyn["cpu", DYN1](
+                rl1(self.vis.textures.n)
+            )
+            var txl_c = self.vis.texels.lt_dyn["cpu", DYN1](
+                rl1(self.vis.texels.n)
+            )
+            var lit_c = self.vis.lights.lt_dyn["cpu", DYN1](
+                rl1(self.vis.lights.n)
+            )
+            var nlight = self.vis.nlight
 
             for env in range(Self.BATCH):
                 var frame = camera_world_frame[Self.DTYPE](
@@ -496,23 +592,28 @@ struct BatchedCameraRenderer[
                         var pix = py * Self.WIDTH + pxx
                         var hit = render_pixel[Self.DTYPE, Self.SHADOWS](
                             geoms_c,
-                            Self.D.NGEOM,
-                            rgba_c,
+                            nvg,
+                            app_c,
                             bodies_c,
                             xpos_c,
                             xquat_c,
                             env,
                             mm_c,
                             mt_c,
+                            uv_c,
                             hm_c,
                             hd_c,
                             Self.D.NHFIELD_DATA,
+                            mat_c,
+                            tex_c,
+                            txl_c,
+                            lit_c,
+                            nlight,
                             frame,
                             Self.WIDTH,
                             Self.HEIGHT,
                             pxx,
                             py,
-                            self.light_dir,
                             self.background,
                         )
                         var b = env * Self.NPIX + pix

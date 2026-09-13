@@ -45,10 +45,19 @@ XMLs, and writes what MuJoCo would have seen — minus what LIBERO never uses.
 
 ## What is deliberately dropped
 
-* The 50 per-material visual OBJ geoms of the arm (36 MB). The collision
-  STLs (728 KB) render in their place until textured cameras (L5) need the
-  visual set, which then becomes a pack. The gripper's small `*_vis.stl` and
-  the mount's pedestal STL are kept.
+* Nothing of the visual set any more — L5 needed it. The 50 per-material
+  visual OBJ geoms of the arm are vendored as legacy MuJoCo `.msh`
+  (`obj_to_msh` below), which both MuJoCo and this engine's `msh_loader` read:
+  **46 MB of ASCII OBJ becomes 12 MB of binary**, and the alternative — a
+  second asset pack — is bytes nobody can fetch until they are uploaded.
+  ⚠ WITHOUT THEM THE ROBOT CANNOT BE DRAWN AT ALL. robosuite renders with
+  `render_collision_mesh=False`, so a picture of LIBERO contains the arm's
+  group-1 visual meshes and none of its collision geometry; a vendored Panda
+  carrying only the collision STLs renders an arm-shaped hole. That was
+  invisible to every L2-L4 gate because all of them are physics gates, and it
+  is 99.9% of the squared error the L5 camera gate opened with
+  (`tools/tasks/libero_camera_gate.py`: 26.5 dB, and the robot crop is 0.1%
+  of nothing else).
 * The gripper's `<sensor>` force/torque pair on `ft_frame`. LIBERO's policies
   and datasets never read them, and an unserved sensor kind is a load-time
   refusal in this engine (`PHYSICS3D_MUJOCO_312_AUDIT.md` AUD-23).
@@ -79,24 +88,82 @@ OUT_DIR = "mojo_rl/envs/robots/assets/panda_robosuite"
 INIT_QPOS = "0 -0.161037389 0 -2.44459747 0 2.2267522 0.7853981633974483 0.020833 -0.020833"
 
 
-def strip_visual_obj(arm):
-    """Drop the OBJ visual geoms, their mesh decls and their materials."""
+def obj_to_msh(src, dst):
+    """One robosuite visual OBJ -> legacy MuJoCo `.msh`.
+
+        int32   nvertex nnormal ntexcoord nface
+        float32 vertex[3n] normal[3n] texcoord[2n]
+        int32   face[3f]                       0-based vertex indices
+
+    ⚠ THE FORMAT CANNOT INDEX POSITIONS, NORMALS AND UVs SEPARATELY — one
+    index per corner addresses all three. OBJ can, so a general converter has
+    to de-index into unique (v, vt, vn) triples. These files do not need it:
+    every face corner in all 50 is spelt `i/i/i`, so the three arrays are
+    already parallel. That is ASSERTED rather than assumed — a file that broke
+    it would otherwise be written with its normals and UVs permuted, which
+    renders as a plausibly-lit wrong surface.
+    """
+    import struct
+
+    v, vn, vt, f = [], [], [], []
+    with open(src, "r", errors="ignore") as fh:
+        for line in fh:
+            if line.startswith("v "):
+                v.append([float(x) for x in line.split()[1:4]])
+            elif line.startswith("vn "):
+                vn.append([float(x) for x in line.split()[1:4]])
+            elif line.startswith("vt "):
+                vt.append([float(x) for x in line.split()[1:3]])
+            elif line.startswith("f "):
+                corners = line.split()[1:]
+                if len(corners) != 3:
+                    sys.exit(f"{src}: a face with {len(corners)} corners; "
+                             "this converter writes triangles only")
+                tri = []
+                for c in corners:
+                    parts = c.split("/")
+                    ids = [int(x) for x in parts if x != ""]
+                    if len(set(ids)) != 1:
+                        sys.exit(f"{src}: face corner {c!r} indexes position, "
+                                 "texcoord and normal differently — see obj_to_msh")
+                    tri.append(ids[0] - 1)
+                f.append(tri)
+    n = len(v)
+    if len(vn) not in (0, n) or len(vt) not in (0, n):
+        sys.exit(f"{src}: {n} vertices but {len(vn)} normals and {len(vt)} texcoords")
+    out = bytearray()
+    out += struct.pack("<4i", n, len(vn), len(vt), len(f))
+    for a in v:
+        out += struct.pack("<3f", *a)
+    for a in vn:
+        out += struct.pack("<3f", *a)
+    for a in vt:
+        out += struct.pack("<2f", *a)
+    for t in f:
+        out += struct.pack("<3i", *t)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    with open(dst, "wb") as fh:
+        fh.write(bytes(out))
+    return len(v), len(f)
+
+
+def repath_visual_obj(arm):
+    """Point every `.obj` visual mesh at the `.msh` this tool writes.
+
+    Returns `[(src_obj, dst_msh)]` for the conversion pass. The geoms and the
+    twelve `<material>`s are left exactly as robosuite authored them.
+    """
     asset = arm.find("asset")
-    keep_mesh = set()
+    converts = []
     for m in list(asset.findall("mesh")):
-        if m.get("file", "").endswith(".obj"):
-            asset.remove(m)
-        else:
-            keep_mesh.add(m.get("name"))
-    for mat in list(asset.findall("material")):
-        asset.remove(mat)
-    for body in arm.iter("body"):
-        for g in list(body.findall("geom")):
-            if g.get("mesh") and g.get("mesh") not in keep_mesh:
-                body.remove(g)
-            elif g.get("material"):
-                del g.attrib["material"]
-    return keep_mesh
+        f = m.get("file", "")
+        if not f.endswith(".obj"):
+            continue
+        src = os.path.join(RS, "robots/panda", f)
+        dst = os.path.join(OUT_DIR, "visual", os.path.basename(f)[:-4] + ".msh")
+        converts.append((src, dst))
+        m.set("file", os.path.join("visual", os.path.basename(f)[:-4] + ".msh"))
+    return converts
 
 
 def apply_robot_model_defaults(arm):
@@ -120,7 +187,7 @@ def build(mounted):
     grip = ET.parse(os.path.join(RS, "grippers/panda_gripper.xml")).getroot()
     mount = ET.parse(os.path.join(RS, "bases/rethink_mount.xml")).getroot()
 
-    strip_visual_obj(arm)
+    converts = repath_visual_obj(arm)
     apply_robot_model_defaults(arm)
 
     root = ET.Element("mujoco", model="panda_robosuite" if mounted else "panda_robosuite_nomount")
@@ -129,14 +196,27 @@ def build(mounted):
                   density="1.2", viscosity="0.00002")
 
     # ── assets: every mesh, re-pathed into OUT_DIR ──────────────────────────
+    #
+    # ⚠ THE ARM'S TWELVE `<material>`s COME TOO, and they are the robot's
+    # colour: `Shell_001` is 0.25 grey and `Face636_001` is 0.90 white, which
+    # is the dark-joint / white-shell Panda everyone recognises. A geom that
+    # kept its `material=` and lost the material itself would fall back to the
+    # 0.5 default and render a uniformly grey arm.
     asset = ET.SubElement(root, "asset")
-    copies = []  # (src, dst)
+    for mat in arm.find("asset").findall("material"):
+        asset.append(mat)
+    copies = []  # (src, dst) — a straight file copy
     sources = [(arm, "robots/panda"), (grip, "grippers")]
     if mounted:
         sources.append((mount, "bases"))
     for src_root, sub in sources:
         for m in src_root.find("asset").findall("mesh"):
             f = m.get("file")
+            if f.startswith("visual/"):
+                # written by `obj_to_msh`, not copied — see `repath_visual_obj`
+                ET.SubElement(asset, "mesh", name=m.get("name"),
+                              file=os.path.join(os.path.basename(OUT_DIR), f))
+                continue
             src = os.path.join(RS, sub, f)
             dst_name = os.path.basename(f)
             copies.append((src, os.path.join(OUT_DIR, dst_name)))
@@ -175,21 +255,31 @@ def build(mounted):
         f"     LIBERO {who}; init_qpos (7 arm + 2 finger): {INIT_QPOS} -->\n"
         + ET.tostring(root, encoding="unicode") + "\n"
     )
-    return text, copies
+    return text, copies, converts
 
 
-def verify(text, copies, name):
+def verify(text, copies, converts, name):
     """MuJoCo must load it, with the dims robosuite's merge produces."""
     import mujoco
     tmpdir = "build/panda_vendor_check"
     os.makedirs(os.path.join(tmpdir, os.path.basename(OUT_DIR)), exist_ok=True)
     for src, dst in copies:
         shutil.copyfile(src, os.path.join(tmpdir, os.path.basename(OUT_DIR), os.path.basename(dst)))
+    for src, dst in converts:
+        obj_to_msh(src, os.path.join(tmpdir, os.path.basename(OUT_DIR), "visual",
+                                     os.path.basename(dst)))
     with open(os.path.join(tmpdir, name), "w") as f:
         f.write(text)
     m = mujoco.MjModel.from_xml_path(os.path.join(tmpdir, name))
     assert m.nq == 9 and m.nv == 9 and m.nu == 9, (m.nq, m.nv, m.nu)
     assert m.njnt == 9 and m.nsensor == 0
+    # ⚠ THE VISUAL SET IS COUNTED, not assumed present. A `.msh` that failed to
+    # convert would leave a mesh MuJoCo cannot find (a load error) or a geom
+    # nothing draws (silent) — the second is the one this catches.
+    nvis = sum(1 for i in range(m.ngeom) if m.geom_group[i] == 1)
+    if nvis < 50:
+        sys.exit(f"{name}: only {nvis} geoms in the visual group; the arm's 50 "
+                 "per-material visual meshes are the point of the L5 vendoring")
     d = mujoco.MjData(m)
     d.qpos[:] = [float(x) for x in INIT_QPOS.split()]
     mujoco.mj_forward(m, d)
@@ -205,19 +295,22 @@ def main():
     a = ap.parse_args()
     outputs = [(OUT_XML, True), (OUT_XML_NOMOUNT, False)]
     all_copies = {}
+    all_converts = {}
     texts = {}
     for out, mounted in outputs:
-        text, copies = build(mounted)
-        verify(text, copies, os.path.basename(out))
+        text, copies, converts = build(mounted)
+        verify(text, copies, converts, os.path.basename(out))
         texts[out] = text
         for src, dst in copies:
             all_copies[dst] = src
+        for src, dst in converts:
+            all_converts[dst] = src
     if a.check:
         for out, _ in outputs:
             old = open(out).read() if os.path.exists(out) else ""
             if old != texts[out]:
                 sys.exit(f"STALE: {out} differs from what the tool generates")
-        for dst in all_copies:
+        for dst in list(all_copies) + list(all_converts):
             if not os.path.exists(dst):
                 sys.exit(f"MISSING: {dst}")
         print("up to date")
@@ -225,12 +318,20 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     for dst, src in all_copies.items():
         shutil.copyfile(src, dst)
+    nv = nf = 0
+    for dst, src in all_converts.items():
+        a_, b_ = obj_to_msh(src, dst)
+        nv += a_
+        nf += b_
     for out, _ in outputs:
         with open(out, "w") as f:
             f.write(texts[out])
     total = sum(os.path.getsize(d_) for d_ in all_copies)
+    vis = sum(os.path.getsize(d_) for d_ in all_converts)
     print(f"wrote {OUT_XML} and {OUT_XML_NOMOUNT} + {len(all_copies)} meshes "
           f"({total/1e6:.1f} MB) in {OUT_DIR}")
+    print(f"  + {len(all_converts)} visual .msh ({vis/1e6:.1f} MB, {nv} verts, "
+          f"{nf} tris) converted from robosuite's OBJ")
 
 
 if __name__ == "__main__":

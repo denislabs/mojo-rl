@@ -3586,6 +3586,7 @@ def _fill_model(
                 cd.target_body = _find_body_index_by_name(worldbody, tgt_s)
 
             result.cameras.append(cd)
+            result.camera_names.append(_trim(_extract_attr(tag, "name")))
             cam_count += 1
             var tag_end = worldbody.find(">", next_cam)
             scan_pos = tag_end + 1 if tag_end != -1 else wlen

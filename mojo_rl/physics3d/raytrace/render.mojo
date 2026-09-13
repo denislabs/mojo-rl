@@ -31,10 +31,27 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.math3d import Vec3 as Vec3Generic
 
-from ..gpu.constants import MODEL_GEOM_RGBA_SIZE
+from mojo_rl.math3d import Quat as QuatGeneric
+
+from ..gpu.constants import (
+    GEOM_IDX_POS_X,
+    GEOM_IDX_POS_Y,
+    GEOM_IDX_POS_Z,
+    GEOM_IDX_QUAT_X,
+    GEOM_IDX_QUAT_Y,
+    GEOM_IDX_QUAT_Z,
+    GEOM_IDX_QUAT_W,
+    GEOM_IDX_BODY,
+)
 from ..ray.model import ray_model
 from .camera import CameraFrame, camera_pixel_ray
-from .shade import ambient_term, directional_light_term, _clamp01
+from .appearance import (
+    _clamp01,
+    geom_uv,
+    sample_texture,
+    shade_lights,
+)
+from .visual_records import *
 
 
 @fieldwise_init
@@ -73,46 +90,54 @@ def render_pixel[
     DTYPE: DType,
     SHADOWS: Bool,
     L_GEOMS: Layout,
-    L_RGBA: Layout,
+    L_APP: Layout,
     L_BODIES: Layout,
     L_XPOS: Layout,
     L_XQUAT: Layout,
     L_MESH_META: Layout,
     L_TRI: Layout,
+    L_UV: Layout,
     L_HF_META: Layout,
     L_HF: Layout,
+    L_MAT: Layout,
+    L_TEX: Layout,
+    L_TEXELS: Layout,
+    L_LIGHTS: Layout,
 ](
     geoms: LayoutTensor[DTYPE, L_GEOMS, MutAnyOrigin],
     ngeom: Int,
-    geom_rgba: LayoutTensor[DTYPE, L_RGBA, MutAnyOrigin],
+    appearance: LayoutTensor[DTYPE, L_APP, MutAnyOrigin],
     bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
     xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
     xquat: LayoutTensor[DTYPE, L_XQUAT, MutAnyOrigin],
     env: Int,
     mesh_meta: LayoutTensor[DTYPE, L_MESH_META, MutAnyOrigin],
     mesh_tris: LayoutTensor[DTYPE, L_TRI, MutAnyOrigin],
+    mesh_uv: LayoutTensor[DTYPE, L_UV, MutAnyOrigin],
     hfield_meta: LayoutTensor[DTYPE, L_HF_META, MutAnyOrigin],
     hfield_data: LayoutTensor[DTYPE, L_HF, MutAnyOrigin],
     hf_stride: Int,
+    materials: LayoutTensor[DTYPE, L_MAT, MutAnyOrigin],
+    textures: LayoutTensor[DTYPE, L_TEX, MutAnyOrigin],
+    texels: LayoutTensor[DType.uint8, L_TEXELS, MutAnyOrigin],
+    lights: LayoutTensor[DTYPE, L_LIGHTS, MutAnyOrigin],
+    nlight: Int,
     frame: CameraFrame[DTYPE],
     width: Int,
     height: Int,
     px: Int,
     py: Int,
-    light_dir: Vec3Generic[DTYPE],
     background: Vec3Generic[DTYPE],
 ) -> PixelHit[DTYPE] where DTYPE.is_floating_point():
-    """Primary ray, shade, and the two by-products.
+    """Primary ray, material, texel, lights, and the two by-products.
 
-    ⚠ `flg_static` IS LEFT AT ITS DEFAULT (statics INCLUDED) and no group is
-    filtered. A camera sees the floor; a `geomgroup` mask is what MuJoCo's
-    VIEWER uses to hide collision geometry from a HUMAN, and an observation
-    should see what the robot's sensor would. Invisible geoms
-    (`GEOM_IDX_RAY_VISIBLE`) are still skipped, which is the same rule that
-    keeps a decoration out of a rangefinder.
+    ⚠ EVERY GEOM IN `geoms` IS DRAWN. The group filter and the alpha-zero
+    filter both ran when `VisualModel` was built, so there is no mask here and
+    no `flg_static`: this table already IS the set of things a camera sees.
+    That is also why the loop is 36 geoms on `libero_goal` rather than 240.
 
     ⚠ NO `bodyexclude`. A wrist camera SHOULD see the gripper it is mounted
-    on — that is most of what it is for. This is the opposite default from
+    on — that is most of what it is for. The opposite default from
     `rangefinder_site`, which excludes its own body because MuJoCo's sensor
     does.
     """
@@ -142,24 +167,100 @@ def render_pixel[
     # spells `-ray_dir_local_cam[2]` in the camera's own frame.
     var cos_axis = -dir.dot(frame.zaxis)
     var depth = hit.t * cos_axis
-
-    var gb = hit.geom * MODEL_GEOM_RGBA_SIZE
-    var base = Vec3Generic[DTYPE](
-        rebind[Scalar[DTYPE]](geom_rgba[gb + 0]),
-        rebind[Scalar[DTYPE]](geom_rgba[gb + 1]),
-        rebind[Scalar[DTYPE]](geom_rgba[gb + 2]),
-    )
-
     var hitpoint = frame.pos + dir * hit.t
 
-    var amb = ambient_term[DTYPE](hit.normal)
-    var rgb = Vec3Generic[DTYPE](
-        Scalar[DTYPE](0.5) * base.x * amb.x,
-        Scalar[DTYPE](0.5) * base.y * amb.y,
-        Scalar[DTYPE](0.5) * base.z * amb.z,
+    # ── the material ─────────────────────────────────────────────────────
+    var ab = hit.geom * VIS_GEOM_APPEARANCE
+    var base = Vec3Generic[DTYPE](
+        rebind[Scalar[DTYPE]](appearance[ab + APP_IDX_R]),
+        rebind[Scalar[DTYPE]](appearance[ab + APP_IDX_G]),
+        rebind[Scalar[DTYPE]](appearance[ab + APP_IDX_B]),
     )
+    var matid = Int(rebind[Scalar[DTYPE]](appearance[ab + APP_IDX_MATID]))
+    var specular = Scalar[DTYPE](0.5)
+    var shininess = Scalar[DTYPE](0.5)
+    var texid = -1
+    var repeat_u = Scalar[DTYPE](1)
+    var repeat_v = Scalar[DTYPE](1)
+    var texuniform = False
+    var ttype = -1
+    if matid >= 0 and matid < MAX_VIS_MATERIALS:
+        var mb = matid * VIS_MAT_WORDS
+        if rebind[Scalar[DTYPE]](materials[mb + MAT_IDX_ACTIVE]) != 0:
+            specular = rebind[Scalar[DTYPE]](materials[mb + MAT_IDX_SPECULAR])
+            shininess = rebind[Scalar[DTYPE]](
+                materials[mb + MAT_IDX_SHININESS]
+            )
+            repeat_u = rebind[Scalar[DTYPE]](
+                materials[mb + MAT_IDX_TEXREPEAT_U]
+            )
+            repeat_v = rebind[Scalar[DTYPE]](
+                materials[mb + MAT_IDX_TEXREPEAT_V]
+            )
+            texuniform = (
+                rebind[Scalar[DTYPE]](materials[mb + MAT_IDX_TEXUNIFORM]) != 0
+            )
+            texid = Int(rebind[Scalar[DTYPE]](materials[mb + MAT_IDX_TEXID]))
+            if texid >= 0:
+                var tb = texid * VIS_TEX_WORDS
+                ttype = Int(
+                    rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_TYPE])
+                )
 
-    var lit = directional_light_term[DTYPE, SHADOWS](
+    # ── the texel, in the geom's own frame ───────────────────────────────
+    if texid >= 0:
+        # ⚠ THE HIT POINT AND THE NORMAL GO BACK INTO THE GEOM'S FRAME, which
+        # is where every one of `settexture`'s texgen planes lives. The geom's
+        # world pose is the body's composed with its own, exactly as
+        # `ray_model` composes it — recomputed rather than returned, because a
+        # `RayHit` that carried a frame would carry it on every miss too.
+        var g = hit.geom
+        var lp0 = Vec3Generic[DTYPE](
+            rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_POS_X]),
+            rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_POS_Y]),
+            rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_POS_Z]),
+        )
+        var lq0 = QuatGeneric[DTYPE](
+            rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_QUAT_W]),
+            rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_QUAT_X]),
+            rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_QUAT_Y]),
+            rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_QUAT_Z]),
+        )
+        var body = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_BODY]))
+        var gpos = lp0
+        var gquat = lq0
+        if body > 0:
+            var bq = QuatGeneric[DTYPE](
+                rebind[Scalar[DTYPE]](xquat[env, body * 4 + 3]),
+                rebind[Scalar[DTYPE]](xquat[env, body * 4 + 0]),
+                rebind[Scalar[DTYPE]](xquat[env, body * 4 + 1]),
+                rebind[Scalar[DTYPE]](xquat[env, body * 4 + 2]),
+            )
+            var bp = Vec3Generic[DTYPE](
+                rebind[Scalar[DTYPE]](xpos[env, body * 3 + 0]),
+                rebind[Scalar[DTYPE]](xpos[env, body * 3 + 1]),
+                rebind[Scalar[DTYPE]](xpos[env, body * 3 + 2]),
+            )
+            gpos = bp + bq.rotate_vec(lp0)
+            gquat = bq * lq0
+        var inv = gquat.conjugate()
+        var lp = inv.rotate_vec(hitpoint - gpos)
+        var ln = inv.rotate_vec(hit.normal)
+
+        var uv = geom_uv[DTYPE](
+            geoms, mesh_uv, hit.geom, hit.tri, hit.bu, hit.bv,
+            lp, ln, ttype, repeat_u, repeat_v, texuniform,
+        )
+        var t = sample_texture[DTYPE](textures, texels, texid, uv.u, uv.v)
+        if t.hit:
+            # `GL_MODULATE`: the texel multiplies the material colour.
+            base = Vec3Generic[DTYPE](
+                base.x * t.r, base.y * t.g, base.z * t.b
+            )
+
+    var rgb = shade_lights[DTYPE, SHADOWS](
+        lights,
+        nlight,
         geoms,
         ngeom,
         bodies,
@@ -171,11 +272,15 @@ def render_pixel[
         hfield_meta,
         hfield_data,
         hf_stride,
-        hit.normal,
         hitpoint,
-        light_dir,
+        hit.normal,
+        frame.pos,
+        frame.zaxis * Scalar[DTYPE](-1),
+        base,
+        specular,
+        shininess,
+        Scalar[DTYPE](0),
     )
-    rgb = rgb + base * lit
 
     return PixelHit[DTYPE](
         Vec3Generic[DTYPE](

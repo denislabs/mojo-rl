@@ -393,7 +393,7 @@ def test_a_mesh_past_the_old_placeholder_still_hits() raises:
         a_vec[1] = vec.y
         a_vec[2] = vec.z
         var t_mj = Float64(py=mujoco.mj_rayMesh(m, d, 0, a_pnt, a_vec, a_nrm))
-        var t_ours = Float64(ours[0])
+        var t_ours = Float64(ours.t)
         if t_mj < 0.0:
             continue
         hits += 1
@@ -501,7 +501,7 @@ def test_ray_mesh_vs_mujoco() raises:
         a_vec[2] = vec.z
         var t_mj = Float64(py=mujoco.mj_rayMesh(m, d, 0, a_pnt, a_vec, a_nrm))
 
-        var t_ours = Float64(ours[0])
+        var t_ours = Float64(ours.t)
         if (t_ours >= 0.0) != (t_mj >= 0.0):
             split += 1
             continue
@@ -510,7 +510,7 @@ def test_ray_mesh_vs_mujoco() raises:
 
         hits += 1
         worst_t = max(worst_t, abs(t_ours - t_mj))
-        var n = ours[1]
+        var n = ours.normal
         worst_n = max(worst_n, abs(Float64(n.x) - Float64(py=a_nrm[0])))
         worst_n = max(worst_n, abs(Float64(n.y) - Float64(py=a_nrm[1])))
         worst_n = max(worst_n, abs(Float64(n.z) - Float64(py=a_nrm[2])))

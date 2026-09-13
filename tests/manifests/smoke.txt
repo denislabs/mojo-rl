@@ -90,6 +90,12 @@ tests/tasks/test_osc_pose_gpu.mojo
 # ⚠ `--check` IS THE WHOLE ENTRY: without it this opens an SDL3 window and
 # blocks, which in CI is a hang and not a failure.
 examples/tasks/libero_viewer.mojo --check
+# L5's hermetic half: the tracer's texture sampler, its four `settexture`
+# texgen cases and the OpenGL lighting terms, on values that are arithmetic.
+# The REAL L5 gate is `examples/tasks/libero_camera_gate.mojo`, which needs
+# ~6 GB of demonstrations; this one needs nothing and still catches a
+# half-texel offset, a wrap off by a column or a box face picked by position.
+tests/physics3d/test_appearance.mojo
 
 # ── mojo_rl/render: the .msh reader (L1) ─────────────────────────────
 # Hermetic: writes a .msh from the format's definition and reads it back;

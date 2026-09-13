@@ -55,31 +55,16 @@ import h5py
 import numpy as np
 import mujoco
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-DEMOS = os.path.join(ROOT, "references", "libero_demos")
-SCENES = os.path.join(ROOT, "mojo_rl", "tasks", "scenes")
-RS14 = os.environ.get(
-    "ROBOSUITE_140", os.path.join(ROOT, "references", "robosuite-1.4.0", "robosuite")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from libero_demo_common import (  # noqa: E402
+    DEMOS,
+    SCENES,
+    body_names,
+    build_remap,
+    convert_state,
+    fixture_poses,
+    rewrite,
 )
-PACK = os.path.join(ROOT, "mojo_rl", "tasks", "libero", "assets")
-
-
-def rewrite(xml):
-    xml = xml.replace("/Users/yifengz/workspace/robosuite-master/robosuite", RS14)
-    xml = xml.replace("/Users/yifengz/workspace/libero-dev/chiliocosm/assets", PACK)
-    return xml.replace(
-        '<compiler angle="radian" meshdir="meshes/" autolimits="true"/>',
-        '<compiler angle="radian" meshdir="meshes/" autolimits="true" inertiagrouprange="0 0"/>',
-        1,
-    )
-
-
-def ours(name):
-    for p in ("robot0_", "gripper0_"):
-        if name.startswith(p):
-            return "robot_" + name[len(p):]
-    return name
 
 
 def main():
@@ -95,8 +80,7 @@ def main():
 
     scene = os.path.join(SCENES, a.suite + ".xml")
     mo = mujoco.MjModel.from_xml_path(scene)
-    our_j = [mujoco.mj_id2name(mo, mujoco.mjtObj.mjOBJ_JOINT, i) for i in range(mo.njnt)]
-    our_b = [mujoco.mj_id2name(mo, mujoco.mjtObj.mjOBJ_BODY, i) for i in range(mo.nbody)]
+    our_b = body_names(mo)
 
     files = sorted(glob.glob(os.path.join(DEMOS, a.suite, "*_demo.hdf5")))
     if not files:
@@ -118,40 +102,21 @@ def main():
             with open(tmp, "w") as fh:
                 fh.write(xml)
             mt = mujoco.MjModel.from_xml_path(tmp)
-            their_j = [mujoco.mj_id2name(mt, mujoco.mjtObj.mjOBJ_JOINT, i) for i in range(mt.njnt)]
-            their_b = [mujoco.mj_id2name(mt, mujoco.mjtObj.mjOBJ_BODY, i) for i in range(mt.nbody)]
             if states.shape[1] != 1 + mt.nq + mt.nv or mt.nq != mo.nq or mt.nv != mo.nv:
                 sys.exit(f"{stem}/{nm}: shape mismatch {states.shape} vs nq {mt.nq} nv {mt.nv} / ours {mo.nq} {mo.nv}")
             # the joint remap is the same for every state of this demo
-            remap = []
-            for j, jn in enumerate(their_j):
-                oj = our_j.index(ours(jn))
-                nqj = (int(mo.jnt_qposadr[oj + 1]) if oj + 1 < mo.njnt else mo.nq) - int(mo.jnt_qposadr[oj])
-                nvj = (int(mo.jnt_dofadr[oj + 1]) if oj + 1 < mo.njnt else mo.nv) - int(mo.jnt_dofadr[oj])
-                remap.append((int(mt.jnt_qposadr[j]), int(mo.jnt_qposadr[oj]), nqj,
-                              int(mt.jnt_dofadr[j]), int(mo.jnt_dofadr[oj]), nvj))
+            remap = build_remap(mt, mo)
             win = states[-a.window:] if a.window < len(states) else states
             lines.append(f"DEMO {nm} {len(win)} {len(states)}")
             for row in win:
-                qt = row[1:1 + mt.nq]
-                vt = row[1 + mt.nq:]
-                qo = np.zeros(mo.nq)
-                vo = np.zeros(mo.nv)
-                for ta, oa, nqj, tv, ov, nvj in remap:
-                    qo[oa:oa + nqj] = qt[ta:ta + nqj]
-                    vo[ov:ov + nvj] = vt[tv:tv + nvj]
+                qo, vo = convert_state(row, remap, mt, mo)
                 lines.append("QPOS " + " ".join(repr(float(x)) for x in qo))
                 lines.append("QVEL " + " ".join(repr(float(x)) for x in vo))
-            for i, bn in enumerate(their_b):
-                if not bn.endswith("_main") or mt.body_parentid[i] != 0 or mt.body_jntnum[i] != 0:
-                    continue
-                ob = bn[:-5] + "_object"
-                if ob not in our_b:
-                    sys.exit(f"{stem}: no body {ob} in {scene}")
+            for ob, bp, bq in fixture_poses(mt, our_b):
                 lines.append(
                     "FIX " + ob + " "
-                    + " ".join(repr(float(x)) for x in mt.body_pos[i])
-                    + " " + " ".join(repr(float(x)) for x in mt.body_quat[i])
+                    + " ".join(repr(float(x)) for x in bp)
+                    + " " + " ".join(repr(float(x)) for x in bq)
                 )
             n_ok += 1
             os.remove(tmp)

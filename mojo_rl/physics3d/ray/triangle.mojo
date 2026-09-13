@@ -69,6 +69,29 @@ def ray_basis[
     return (b0, b1)
 
 
+@fieldwise_init
+struct TriHit[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
+    """`ray_triangle`'s answer: where, which way, and WHERE ON the triangle.
+
+    ⚠ `bu` / `bv` ARE THE REASON THIS IS A STRUCT AND NOT A TUPLE. They are the
+    barycentric weights of `v0` and `v1` (so `v2`'s is `1 - bu - bv`), and the
+    routine has always computed them — `t0`/`t1` in the body, the very test
+    that decides whether the ray is inside the triangle. Dropping them on the
+    way out meant a textured mesh could not be sampled: an interpolated UV is
+    exactly `bu*uv0 + bv*uv1 + (1-bu-bv)*uv2` and nothing else in the pipeline
+    can recover it once the distance is all that came back.
+
+    ⚠ THEY ARE ONLY MEANINGFUL WHEN `t >= 0`. A miss returns `RAY_NO_HIT` and
+    leaves them at zero, which is a legal barycentric point and therefore NOT
+    a sentinel — read them only after testing the distance.
+    """
+
+    var t: Scalar[Self.DTYPE]
+    var normal: Vec3Generic[Self.DTYPE]
+    var bu: Scalar[Self.DTYPE]
+    var bv: Scalar[Self.DTYPE]
+
+
 @always_inline
 def ray_triangle[
     DTYPE: DType
@@ -80,8 +103,8 @@ def ray_triangle[
     lvec: Vec3Generic[DTYPE],
     b0: Vec3Generic[DTYPE],
     b1: Vec3Generic[DTYPE],
-) -> Tuple[Scalar[DTYPE], Vec3Generic[DTYPE]] where DTYPE.is_floating_point():
-    """`ray_triangle` — distance along `lvec`, and the triangle's plane normal.
+) -> TriHit[DTYPE] where DTYPE.is_floating_point():
+    """`ray_triangle` — distance along `lvec`, the plane normal, the barycentrics.
 
     Everything is in the geom's LOCAL frame, including the returned normal; the
     caller rotates it out once, after the winning triangle is known, rather
@@ -93,6 +116,9 @@ def ray_triangle[
     ray origin as a hit at zero.
     """
     var zero = Vec3Generic[DTYPE](0, 0, 0)
+    var miss = TriHit[DTYPE](
+        Scalar[DTYPE](RAY_NO_HIT), zero, Scalar[DTYPE](0), Scalar[DTYPE](0)
+    )
     var d0 = v0 - lpnt
     var d1 = v1 - lpnt
     var d2 = v2 - lpnt
@@ -112,7 +138,7 @@ def ray_triangle[
         or (p01 > 0 and p11 > 0 and p21 > 0)
         or (p01 < 0 and p11 < 0 and p21 < 0)
     ):
-        return (Scalar[DTYPE](RAY_NO_HIT), zero)
+        return miss
 
     # Is the 2D origin inside the projected triangle?
     # A = (p0-p2, p1-p2), b = -p2, solve A*t = b.
@@ -122,14 +148,14 @@ def ray_triangle[
     var a3 = p11 - p21
     var det = a0 * a3 - a1 * a2
     if abs(det) < Scalar[DTYPE](RAY_MINVAL):
-        return (Scalar[DTYPE](RAY_NO_HIT), zero)
+        return miss
 
     var bb0 = -p20
     var bb1 = -p21
     var t0 = (a3 * bb0 - a1 * bb1) / det
     var t1 = (-a2 * bb0 + a0 * bb1) / det
     if t0 < 0 or t1 < 0 or t0 + t1 > 1:
-        return (Scalar[DTYPE](RAY_NO_HIT), zero)
+        return miss
 
     # Intersect the ray with the triangle's plane.
     var e0 = v0 - v2
@@ -138,6 +164,6 @@ def ray_triangle[
     var nrm = e0.cross(e1)
     var denom = lvec.dot(nrm)
     if abs(denom) < Scalar[DTYPE](RAY_MINVAL):
-        return (Scalar[DTYPE](RAY_NO_HIT), zero)
+        return miss
 
-    return (-e2.dot(nrm) / denom, nrm.normalized())
+    return TriHit[DTYPE](-e2.dot(nrm) / denom, nrm.normalized(), t0, t1)

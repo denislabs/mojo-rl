@@ -94,12 +94,27 @@ into it, never rejected."""
 
 
 @fieldwise_init
-struct RayHit[DTYPE: DType](Copyable, Movable):
-    """`mj_ray`'s three outputs. `geom` is -1 exactly when `t` is negative."""
+struct RayHit[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
+    """`mj_ray`'s three outputs, plus where on a mesh it landed.
+
+    `geom` is -1 exactly when `t` is negative.
+
+    ⚠ `tri` / `bu` / `bv` ARE FOR TEXTURING AND FOR NOTHING ELSE. They are the
+    winning triangle's arena record and its barycentric weights when the hit
+    was on a MESH, and `tri = -1` otherwise — a primitive geom has no triangle
+    and MuJoCo generates its texture coordinates from the surface point
+    instead (`settexture`'s object-linear texgen). Every consumer that
+    predates them ignores them; `mj_ray` itself does not report them, so a
+    gate against MuJoCo can only check the distance and the geom, which is
+    what `ray/`'s four gates already do.
+    """
 
     var t: Scalar[Self.DTYPE]
     var geom: Int
     var normal: Vec3Generic[Self.DTYPE]
+    var tri: Int
+    var bu: Scalar[Self.DTYPE]
+    var bv: Scalar[Self.DTYPE]
 
 
 def ray_model[
@@ -150,6 +165,9 @@ def ray_model[
     var best = Scalar[DTYPE](RAY_NO_HIT)
     var best_geom = -1
     var best_normal = Vec3Generic[DTYPE](0, 0, 0)
+    var best_tri = -1
+    var best_bu = Scalar[DTYPE](0)
+    var best_bv = Scalar[DTYPE](0)
 
     for g in range(ngeom):
 
@@ -213,6 +231,9 @@ def ray_model[
             quat = bq * lq
         var t = Scalar[DTYPE](RAY_NO_HIT)
         var n = Vec3Generic[DTYPE](0, 0, 0)
+        var gtri = -1
+        var gbu = Scalar[DTYPE](0)
+        var gbv = Scalar[DTYPE](0)
 
         if gtype == GEOM_MESH:
             var mid = Int(
@@ -259,8 +280,11 @@ def ray_model[
                         pnt,
                         vec,
                     )
-                    t = rb[0]
-                    n = rb[1]
+                    t = rb.t
+                    n = rb.normal
+                    gtri = rb.tri
+                    gbu = rb.bu
+                    gbv = rb.bv
                 else:
                     var r = ray_mesh[DTYPE, L_TRI](
                         pos,
@@ -272,8 +296,11 @@ def ray_model[
                         pnt,
                         vec,
                     )
-                    t = r[0]
-                    n = r[1]
+                    t = r.t
+                    n = r.normal
+                    gtri = r.tri
+                    gbu = r.bu
+                    gbv = r.bv
         elif gtype == GEOM_HFIELD:
             var hid = Int(
                 rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HFIELD_ID])
@@ -347,6 +374,11 @@ def ray_model[
             best = t
             best_geom = g
             best_normal = n
+            best_tri = gtri
+            best_bu = gbu
+            best_bv = gbv
 
-    return RayHit[DTYPE](best, best_geom, best_normal)
+    return RayHit[DTYPE](
+        best, best_geom, best_normal, best_tri, best_bu, best_bv
+    )
 

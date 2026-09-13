@@ -2124,6 +2124,15 @@ struct FlatModelDef(Movable):
     var geom_names: List[String]
     var site_names: List[String]
     var actuator_names: List[String]
+    var camera_names: List[String]
+    """Parallel to `cameras`; `""` for an unnamed `<camera>`.
+
+    ⚠ ADDED FOR L5, AND ITS ABSENCE WAS A REAL GAP. `CameraData` carries the
+    pose, the fovy and the mode and NOT the name, so a caller that wanted
+    LIBERO's `agentview` — the one camera every demonstration was recorded
+    through — had no way to ask for it except by index, and the index depends
+    on the order `<attach>` merged the arena. An index that is right by
+    accident is the shape this tree keeps paying for."""
     var sensor_names: List[String]
     """Parallel to `sensors`. An unnamed `<sensor>` is `""`, as everywhere
     else here — MuJoCo leaves it empty too rather than synthesising one, and
@@ -2551,6 +2560,7 @@ struct FlatModelDef(Movable):
         self.joint_names = List[String]()
         self.geom_names = List[String]()
         self.site_names = List[String]()
+        self.camera_names = List[String]()
         self.sensor_names = List[String]()
         self.actuator_names = List[String]()
         self.gravity_x = Float64(0)

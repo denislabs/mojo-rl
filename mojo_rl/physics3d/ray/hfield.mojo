@@ -177,9 +177,9 @@ def ray_hfield[
                 Vec3Generic[DTYPE](x1, y1, z11),
                 lpnt, lvec, b0, b1,
             )
-            if a[0] >= 0 and (x < 0 or a[0] < x):
-                x = a[0]
-                normal_local = a[1]
+            if a.t >= 0 and (x < 0 or a.t < x):
+                x = a.t
+                normal_local = a.normal
 
             var b = ray_triangle[DTYPE](
                 Vec3Generic[DTYPE](x0, y0, z00),
@@ -187,9 +187,9 @@ def ray_hfield[
                 Vec3Generic[DTYPE](x0, y1, z10),
                 lpnt, lvec, b0, b1,
             )
-            if b[0] >= 0 and (x < 0 or b[0] < x):
-                x = b[0]
-                normal_local = b[1]
+            if b.t >= 0 and (x < 0 or b.t < x):
+                x = b.t
+                normal_local = b.normal
 
     # ── the four vertical sides of the top box ──────────────────────────
     # Faces 0..3 are -x, +x, -y, +y in `all`'s packing (`2*axis + side`).

@@ -14,9 +14,12 @@ the rasteriser is the cheaper of the two.
 
     camera.mojo     `mj_camlight`'s camera half, as tensor reads
     reference.mojo  `cam_pos0`/`cam_poscom0`/`cam_mat0`, which need FK
-    shade.mojo      ambient + one directional light + shadow rays
-    render.mojo     one pixel: primary ray, shade, depth, segmentation
+    visual_records  the appearance tables' record layouts
+    visual.mojo     `VisualModel` — the scene AS DRAWN, beside the solver's
+    appearance.mojo MuJoCo's lighting equation + texture sampling and texgen
+    render.mojo     one pixel: primary ray, material, texel, lights, depth
     batch.mojo      the kernel and the host that owns its buffers
+    host_render     one lane on the host over a RUNTIME-dimensioned model
 """
 
 from .camera import (
@@ -30,6 +33,13 @@ from .camera import (
     RT_CAM_MODE_TARGETBODYCOM,
 )
 from .reference import init_camera_reference
-from .shade import ambient_term, directional_light_term
+from .appearance import sample_texture, geom_uv, shade_lights, Texel, UV
+from .visual import (
+    VisualModel,
+    build_visual_model,
+    visual_model_from_model,
+)
+from .visual_records import *
 from .render import PixelHit, render_pixel
 from .batch import BatchedCameraRenderer, RGB_CHANNELS
+from .host_render import render_lane_cpu

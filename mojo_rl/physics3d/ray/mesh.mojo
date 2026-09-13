@@ -63,6 +63,27 @@ def _v3[
     )
 
 
+@fieldwise_init
+struct MeshHit[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
+    """`ray_mesh`'s answer, plus WHICH triangle and where on it.
+
+    `tri` is the winning triangle's ARENA RECORD number — the same index
+    `MESH_BVH_IDX_TRI` stores and the same one `MESH_META_IDX_TRIADR` counts
+    from — so a parallel per-triangle table (`VisualModel.mesh_uv`) is indexed
+    by it directly. -1 on a miss.
+
+    ⚠ THE NORMAL IS WORLD-FRAME AND THE BARYCENTRICS ARE NOT A FRAME AT ALL.
+    `bu`/`bv` weight `v0`/`v1` of that triangle; they survive the rotation
+    because they are weights, not directions.
+    """
+
+    var t: Scalar[Self.DTYPE]
+    var normal: Vec3Generic[Self.DTYPE]
+    var tri: Int
+    var bu: Scalar[Self.DTYPE]
+    var bv: Scalar[Self.DTYPE]
+
+
 def ray_mesh[
     DTYPE: DType, L_TRI: Layout
 ](
@@ -74,8 +95,8 @@ def ray_mesh[
     ntri: Int,
     pnt: Vec3Generic[DTYPE],
     vec: Vec3Generic[DTYPE],
-) -> Tuple[Scalar[DTYPE], Vec3Generic[DTYPE]] where DTYPE.is_floating_point():
-    """Distance to the mesh surface and its world-frame normal.
+) -> MeshHit[DTYPE] where DTYPE.is_floating_point():
+    """Distance to the mesh surface, its world-frame normal, and the triangle.
 
     `tri` is `Model.mesh_tris` — nine floats per triangle, in the mesh's
     principal frame, the same frame the geom's pose assumes. `triadr` is this
@@ -89,13 +110,16 @@ def ray_mesh[
     Pass a box you trust; passing one that is too large only costs time.
     """
     var zero = Vec3Generic[DTYPE](0, 0, 0)
+    var miss = MeshHit[DTYPE](
+        Scalar[DTYPE](RAY_NO_HIT), zero, -1, Scalar[DTYPE](0), Scalar[DTYPE](0)
+    )
     if ntri <= 0:
-        return (Scalar[DTYPE](RAY_NO_HIT), zero)
+        return miss
 
     # The reference's bounding-box reject, in the geom's own frame.
     var bb = ray_box[DTYPE](pos, quat, half_extents, pnt, vec)
     if bb[0] < 0:
-        return (Scalar[DTYPE](RAY_NO_HIT), zero)
+        return miss
 
     var m = ray_map[DTYPE](pos, quat, pnt, vec)
     var lpnt = m[0]
@@ -106,6 +130,9 @@ def ray_mesh[
 
     var x = Scalar[DTYPE](RAY_NO_HIT)
     var normal_local = zero
+    var best_tri = -1
+    var best_bu = Scalar[DTYPE](0)
+    var best_bv = Scalar[DTYPE](0)
 
     for t in range(ntri):
         var o = (triadr + t) * MESH_ARENA_RECORD
@@ -119,13 +146,18 @@ def ray_mesh[
         # triangle behind the ray comes back NEGATIVE from `ray_triangle`
         # (the plane intersection is deliberately unclamped) and would
         # otherwise win every comparison against a positive distance.
-        if r[0] >= 0 and (x < 0 or r[0] < x):
-            x = r[0]
-            normal_local = r[1]
+        if r.t >= 0 and (x < 0 or r.t < x):
+            x = r.t
+            normal_local = r.normal
+            best_tri = triadr + t
+            best_bu = r.bu
+            best_bv = r.bv
 
     if x < 0:
-        return (Scalar[DTYPE](RAY_NO_HIT), zero)
-    return (x, quat.rotate_vec(normal_local))
+        return miss
+    return MeshHit[DTYPE](
+        x, quat.rotate_vec(normal_local), best_tri, best_bu, best_bv
+    )
 
 
 # ─── the BVH leg ─────────────────────────────────────────────────────────────
@@ -172,7 +204,7 @@ def ray_mesh_bvh[
     bvhnum: Int,
     pnt: Vec3Generic[DTYPE],
     vec: Vec3Generic[DTYPE],
-) -> Tuple[Scalar[DTYPE], Vec3Generic[DTYPE]] where DTYPE.is_floating_point():
+) -> MeshHit[DTYPE] where DTYPE.is_floating_point():
     """`mju_rayTree` — the same answer as `ray_mesh`, over a BVH.
 
     ⚠⚠ THE CONTRACT IS BIT-IDENTITY WITH `ray_mesh`, NOT APPROXIMATION. Culling
@@ -201,8 +233,11 @@ def ray_mesh_bvh[
     than guessing.
     """
     var zero = Vec3Generic[DTYPE](0, 0, 0)
+    var miss = MeshHit[DTYPE](
+        Scalar[DTYPE](RAY_NO_HIT), zero, -1, Scalar[DTYPE](0), Scalar[DTYPE](0)
+    )
     if ntri <= 0 or bvhnum <= 0:
-        return (Scalar[DTYPE](RAY_NO_HIT), zero)
+        return miss
 
     # The reference's bounding-box reject, in the geom's own frame. Kept even
     # though the root node is a tighter box: `half_extents` is the geom's
@@ -211,7 +246,7 @@ def ray_mesh_bvh[
     # `geom_size` is smaller than its own triangles (see `ray_mesh`).
     var bb = ray_box[DTYPE](pos, quat, half_extents, pnt, vec)
     if bb[0] < 0:
-        return (Scalar[DTYPE](RAY_NO_HIT), zero)
+        return miss
 
     var m = ray_map[DTYPE](pos, quat, pnt, vec)
     var lpnt = m[0]
@@ -226,6 +261,9 @@ def ray_mesh_bvh[
 
     var x = Scalar[DTYPE](RAY_NO_HIT)
     var normal_local = zero
+    var best_tri = -1
+    var best_bu = Scalar[DTYPE](0)
+    var best_bv = Scalar[DTYPE](0)
 
     comptime FAR = Scalar[DTYPE](1e30)
     var node = bvhadr
@@ -295,9 +333,12 @@ def ray_mesh_bvh[
                     lpnt, lvec, b0, b1,
                 )
                 # The same two tests, in the same order, as the linear sweep.
-                if r[0] >= 0 and (x < 0 or r[0] < x):
-                    x = r[0]
-                    normal_local = r[1]
+                if r.t >= 0 and (x < 0 or r.t < x):
+                    x = r.t
+                    normal_local = r.normal
+                    best_tri = tid
+                    best_bu = r.bu
+                    best_bv = r.bv
             # A leaf's escape IS `node + 1`, so one branch serves both.
             node += 1
         else:
@@ -311,5 +352,7 @@ def ray_mesh_bvh[
             node = nxt
 
     if x < 0:
-        return (Scalar[DTYPE](RAY_NO_HIT), zero)
-    return (x, quat.rotate_vec(normal_local))
+        return miss
+    return MeshHit[DTYPE](
+        x, quat.rotate_vec(normal_local), best_tri, best_bu, best_bv
+    )
