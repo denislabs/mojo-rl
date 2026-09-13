@@ -1,9 +1,14 @@
-"""`sensors/frame.mojo` vs MuJoCo's `d.sensordata` (AUD-23, audit §6 phase 1b).
+"""`sensors/frame.mojo` vs MuJoCo's `d.sensordata` (AUD-23, audit §6 1b + 1c).
 
-`framepos`, `framequat` and the three axis sensors, over the four object types
-this loader resolves and both reference forms. 124 declarations across
-`mojo_rl/envs`, Menagerie and dm_control read these; until 2026-09-13 every one
-of them read back the NaN `Data` fills `sensordata` with.
+`framepos`, `framequat`, the three axis sensors and the two velocity sensors,
+over the four object types this loader resolves and both reference forms. 212
+declarations across `mojo_rl/envs`, Menagerie and dm_control read these; until
+2026-09-13 every one of them read back the NaN `Data` fills `sensordata` with.
+
+⚠ THE TWO VELOCITY ROWS ARE A DIFFERENT STAGE. `framelinvel`/`frameangvel` are
+`mj_sensorVel`, not `mj_sensorPos`; they read `xvel`/`xangvel`, which the step
+overwrites. The harness below snapshots the state BEFORE stepping for exactly
+that reason.
 
 ⚠⚠ THE FIXTURE MUST SEPARATE `body` FROM `xbody`, OR IT PROVES ALMOST NOTHING.
 They are two frames of the same body — the body frame and the INERTIAL frame —
@@ -73,6 +78,12 @@ comptime FR_XML = """
                reftype="xbody" refname="torso"/>
     <framexaxis name="x_rel" objtype="site" objname="wrist"
                 reftype="body" refname="torso"/>
+    <framelinvel name="lv_site" objtype="site" objname="wrist"/>
+    <frameangvel name="av_geom" objtype="geom" objname="gl"/>
+    <framelinvel name="lv_rel" objtype="site" objname="wrist"
+                 reftype="xbody" refname="torso"/>
+    <frameangvel name="av_rel" objtype="xbody" objname="link"
+                 reftype="site" refname="imu"/>
   </sensor>
 </mujoco>
 """
@@ -83,8 +94,8 @@ comptime FM = ModelDefFromXML[
     nbody=fp.NBODY, njoint=fp.NJOINT, nq=fp.NQ, nv=fp.NV,
     ngeom=fp.NGEOM, nact=fp.NACT, ntex=fp.NTEX, nmat=fp.NMAT,
     nlight=fp.NLIGHT, ncam=fp.NCAM, nsite=fp.NSITE,
-    # Ten sensors; 3+4+3+3+3+3+4+3+4+3 = 33 values.
-    nsensor=10, nsensordata=33,
+    # Fourteen sensors; 3+4+3+3+3+3+4+3+4+3 + 3+3+3+3 = 45 values.
+    nsensor=14, nsensordata=45,
     max_tendon=fp.NTENDON,
     cone_type=ConeType.PYRAMIDAL,
     max_contacts=8,
@@ -106,6 +117,8 @@ def _names() -> List[String]:
         String("p_site"), String("q_site"), String("x_xbody"),
         String("y_body"), String("z_geom"), String("p_body"),
         String("q_geom"), String("p_rel"), String("q_rel"), String("x_rel"),
+        String("lv_site"), String("av_geom"), String("lv_rel"),
+        String("av_rel"),
     ]
 
 
@@ -257,11 +270,11 @@ def test_frame_sensors_match_mujoco() raises:
 
     print("  values compared:", compared, " differing: 0  worst |d| =", worst)
     print("  values MuJoCo reports NONZERO:", nonzero, "/", compared)
-    assert_true(compared == 33,
-                "expected 33 values, compared " + String(compared))
+    assert_true(compared == 45,
+                "expected 45 values, compared " + String(compared))
     # ⚠ NON-VACUITY. A `sensordata` of zeros on both sides passes every row.
     assert_true(
-        nonzero >= 25,
+        nonzero >= 37,
         "only " + String(nonzero) + " of " + String(compared) + " values are"
         " nonzero on MuJoCo's side — the fixture has stopped exercising the"
         " sensors",
@@ -305,6 +318,12 @@ def test_the_relative_form_is_not_the_global_one() raises:
     no_ref = no_ref.replace(
         String('reftype="body" refname="torso"'), String("")
     )
+    no_ref = no_ref.replace(
+        String('reftype="xbody" refname="torso"'), String("")
+    )
+    no_ref = no_ref.replace(
+        String('reftype="site" refname="imu"'), String("")
+    )
     assert_true(
         no_ref.find(String("reftype")) == -1,
         "the reference-stripping edit missed a reftype — the control below"
@@ -320,17 +339,17 @@ def test_the_relative_form_is_not_the_global_one() raises:
     mujoco.mj_forward(m2, d2)
 
     var changed = 0
-    for k in range(33):
+    for k in range(45):
         if abs(
             Float64(py=dat.sensordata[k]) - Float64(py=d2.sensordata[k])
         ) > 1e-9:
             changed += 1
     print("  values the reference frames change, on MuJoCo's own output:",
-          changed, "/ 33")
+          changed, "/ 45")
     assert_true(
-        changed >= 6,
+        changed >= 12,
         "dropping every reftype/refname changed only " + String(changed)
-        + " of 33 values — the fixture's reference frames are degenerate and"
+        + " of 45 values — the fixture's reference frames are degenerate and"
         " the relative path is not being tested",
     )
 
@@ -339,7 +358,8 @@ def test_the_relative_form_is_not_the_global_one() raises:
     # explicitly, so a regression prints the value the bug would produce.
     var O = mujoco.mjtObj
     var m = mujoco.MjModel.from_xml_string(PythonObject(String(FR_XML)))
-    for nm in [String("p_rel"), String("q_rel"), String("x_rel")]:
+    for nm in [String("p_rel"), String("q_rel"), String("x_rel"),
+               String("lv_rel"), String("av_rel")]:
         var sid = Int(py=mujoco.mj_name2id(m, O.mjOBJ_SENSOR,
                                            PythonObject(nm)))
         var adr = Int(py=m.sensor_adr[sid])

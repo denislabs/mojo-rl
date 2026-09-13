@@ -132,6 +132,8 @@ comptime SENS_FRAMEQUAT: Int = 27
 comptime SENS_FRAMEXAXIS: Int = 28
 comptime SENS_FRAMEYAXIS: Int = 29
 comptime SENS_FRAMEZAXIS: Int = 30
+comptime SENS_FRAMELINVEL: Int = 31
+comptime SENS_FRAMEANGVEL: Int = 32
 comptime SENS_SUBTREELINVEL: Int = 36
 
 # `mjtObj` — the object a sensor is attached to (`mjtype.h:291-298`, re-read

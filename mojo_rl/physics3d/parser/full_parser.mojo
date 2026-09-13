@@ -68,6 +68,8 @@ from ..constants import (
     SENS_FRAMEXAXIS,
     SENS_FRAMEYAXIS,
     SENS_FRAMEZAXIS,
+    SENS_FRAMELINVEL,
+    SENS_FRAMEANGVEL,
     SENS_SUBTREELINVEL,
     SENSOBJ_UNKNOWN,
     SENSOBJ_BODY,
@@ -6580,7 +6582,7 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 # =============================================================================
 
 
-# The fifteen elements this loader models, and the kernel each one reaches.
+# The seventeen elements this loader models, and the kernel each one reaches.
 # Every other `<sensor>` child is refused BY NAME in `_fill_sensors` — see the
 # note there for why a silent skip is not on the table.
 #
@@ -6599,6 +6601,8 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 #   framexaxis       28         obj*          3   AXIS       POS    frame.mojo
 #   frameyaxis       29         obj*          3   AXIS       POS    frame.mojo
 #   framezaxis       30         obj*          3   AXIS       POS    frame.mojo
+#   framelinvel      31         obj*          3   REAL       VEL    frame.mojo
+#   frameangvel      32         obj*          3   REAL       VEL    frame.mojo
 #   subtreelinvel    36         body          3   REAL       VEL    subtree
 #
 # * `obj` = whatever `objtype=` names: body, xbody, geom or site. A frame
@@ -6702,6 +6706,10 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(SENS_FRAMEYAXIS, 3, SENSDATA_AXIS, SENSSTAGE_POS, True)
     if tag_name == "framezaxis":
         return _SensorSpec(SENS_FRAMEZAXIS, 3, SENSDATA_AXIS, SENSSTAGE_POS, True)
+    if tag_name == "framelinvel":
+        return _SensorSpec(SENS_FRAMELINVEL, 3, SENSDATA_REAL, SENSSTAGE_VEL, True)
+    if tag_name == "frameangvel":
+        return _SensorSpec(SENS_FRAMEANGVEL, 3, SENSDATA_REAL, SENSSTAGE_VEL, True)
 
     # served == 0: ADDRESSED ONLY. The row exists with MuJoCo's exact dim so
     # that every LATER sensor's `adr` is still right; nothing computes it.
@@ -6739,10 +6747,6 @@ def _sensor_spec_of_tag(tag_name: String) -> _SensorSpec:
         return _SensorSpec(24, 1, SENSDATA_REAL, SENSSTAGE_VEL, False)
     if tag_name == "tendonlimitfrc":
         return _SensorSpec(25, 1, SENSDATA_REAL, SENSSTAGE_ACC, False)
-    if tag_name == "framelinvel":
-        return _SensorSpec(31, 3, SENSDATA_REAL, SENSSTAGE_VEL, False)
-    if tag_name == "frameangvel":
-        return _SensorSpec(32, 3, SENSDATA_REAL, SENSSTAGE_VEL, False)
     if tag_name == "framelinacc":
         return _SensorSpec(33, 3, SENSDATA_REAL, SENSSTAGE_ACC, False)
     if tag_name == "frameangacc":
@@ -6869,7 +6873,7 @@ def _fill_sensors(
     ⚠⚠ ADDRESSING IS NOT SERVING, AND THE SPLIT IS THE DESIGN. Every
     recognised element gets a row carrying MuJoCo's exact `dim`, `datatype`,
     `needstage` and `adr`, whether or not this engine can compute it. Only the
-    fifteen with a kernel behind them are marked `served` — and one family,
+    seventeen with a kernel behind them are marked `served` — and one family,
     the frame sensors, is served only for the four object types this parser
     can resolve a name for.
 
@@ -7002,6 +7006,8 @@ def _fill_sensors(
             or sd.sensor_type == SENS_FRAMEXAXIS
             or sd.sensor_type == SENS_FRAMEYAXIS
             or sd.sensor_type == SENS_FRAMEZAXIS
+            or sd.sensor_type == SENS_FRAMELINVEL
+            or sd.sensor_type == SENS_FRAMEANGVEL
         ):
             # ⚠⚠ `objtype` AND `objname` ARE BOTH REQUIRED, AND MuJoCo SAYS SO
             # IN BOTH DIRECTIONS (xml_native_reader.cc:3045-3049): naming one

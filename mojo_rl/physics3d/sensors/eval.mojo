@@ -55,6 +55,8 @@ from mojo_rl.physics3d.constants import (
     SENS_FRAMEXAXIS,
     SENS_FRAMEYAXIS,
     SENS_FRAMEZAXIS,
+    SENS_FRAMELINVEL,
+    SENS_FRAMEANGVEL,
     SENSOBJ_UNKNOWN,
     SENS_SUBTREELINVEL,
     SENSDATA_REAL,
@@ -83,9 +85,11 @@ from mojo_rl.physics3d.gpu.constants import (
 )
 from .frame import (
     frame_object_pose,
+    frame_object_body,
     frame_pos_sensor,
     frame_axis_sensor,
     frame_quat_sensor,
+    frame_vel_sensor,
 )
 from .frame_vel import site_frame_velocity
 from .site_acc import site_accelerometer, site_force_torque
@@ -269,6 +273,8 @@ def _eval_stage[
             or st == SENS_FRAMEXAXIS
             or st == SENS_FRAMEYAXIS
             or st == SENS_FRAMEZAXIS
+            or st == SENS_FRAMELINVEL
+            or st == SENS_FRAMEANGVEL
         ):
             # ⚠ FIVE SENSORS, ONE POSE LOOKUP, AND THE REFERENCE FRAME IS
             # PART OF IT. `objtype` selects among body / xbody / geom / site
@@ -317,6 +323,38 @@ def _eval_stage[
                 d.sensordata.data[adr + 1] = Scalar[DTYPE](q[1])
                 d.sensordata.data[adr + 2] = Scalar[DTYPE](q[2])
                 d.sensordata.data[adr + 3] = Scalar[DTYPE](q[3])
+            elif st == SENS_FRAMELINVEL or st == SENS_FRAMEANGVEL:
+                # ⚠ THE VELOCITY STAGE, AND `needstage` IS WHAT PUTS IT
+                # THERE. These two are the only frame sensors MuJoCo
+                # evaluates in `mj_sensorVel`; the stage filter at the top of
+                # this loop is what keeps them from reading `xvel`/`xangvel`
+                # a stage too early, when they still describe the previous
+                # step.
+                var fb = frame_object_body[DTYPE](
+                    m.geoms.data, m.sites.data, otype, objid
+                )
+                var rb = frame_object_body[DTYPE](
+                    m.geoms.data, m.sites.data,
+                    rtype if has_ref else SENSOBJ_UNKNOWN,
+                    refid if has_ref else 0,
+                )
+                var fv = frame_vel_sensor[DTYPE](
+                    d.xvel.data, d.xangvel.data, d.xipos.data, fb,
+                    op[0], op[1], op[2],
+                    has_ref, rb, rp[0], rp[1], rp[2],
+                    rp[3], rp[4], rp[5], rp[6],
+                )
+                # ⚠ ANGULAR FIRST, THEN LINEAR — `frame_vel_sensor` returns
+                # MuJoCo's packed order, not `site_frame_velocity`'s. Both
+                # halves are three plausible floats, so a swap is silent.
+                if st == SENS_FRAMELINVEL:
+                    d.sensordata.data[adr + 0] = Scalar[DTYPE](fv[3])
+                    d.sensordata.data[adr + 1] = Scalar[DTYPE](fv[4])
+                    d.sensordata.data[adr + 2] = Scalar[DTYPE](fv[5])
+                else:
+                    d.sensordata.data[adr + 0] = Scalar[DTYPE](fv[0])
+                    d.sensordata.data[adr + 1] = Scalar[DTYPE](fv[1])
+                    d.sensordata.data[adr + 2] = Scalar[DTYPE](fv[2])
             else:
                 # `mjSENS_FRAMEXAXIS` is 28 and the three are consecutive, so
                 # the axis index is the type offset — MuJoCo's own

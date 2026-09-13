@@ -1,9 +1,16 @@
-"""The frame sensors — `framepos`, `framequat`, `frame{x,y,z}axis` (AUD-23).
+"""The frame sensors — pos, quat, axes and velocities (AUD-23).
 
-One family, one helper. MuJoCo evaluates all five from the same pair of
-quantities: the world POSITION and the world ORIENTATION of whatever object
-the sensor names (`engine_sensor.c:681-736`, via `get_xpos_xmat` and
-`get_xquat` at `:226-278`). Everything else is a projection of those two.
+One family, one helper. MuJoCo evaluates `framepos`, `framequat` and the
+three axis sensors from the same pair of quantities: the world POSITION and
+the world ORIENTATION of whatever object the sensor names
+(`engine_sensor.c:681-736`, via `get_xpos_xmat` and `get_xquat` at
+`:226-278`). Everything else is a projection of those two.
+
+`framelinvel` and `frameangvel` add a third quantity — the object's BODY, so
+the body's spatial velocity can be transported to the object's point
+(`mj_objectVelocity`, engine_core_util.c:835). They are in the same file
+because they take the same `objtype` dispatch and the same reference frame,
+and splitting them would mean two spellings of that dispatch.
 
 ⚠⚠ FIVE OBJECT TYPES, AND `body` IS NOT THE BODY'S OWN FRAME. MuJoCo's
 `frameobj_map` (xml/generated/mjcf_map.h:318) admits body, xbody, geom, site
@@ -70,6 +77,7 @@ from ..gpu.constants import (
 )
 from ..kinematics.quat_math import gpu_quat_mul, gpu_quat_rotate
 from ..kinematics.xmat import quat_xmat_elem
+from .frame_vel import point_velocity_world
 
 
 @always_inline
@@ -184,6 +192,110 @@ def frame_object_pose[
 
     # Unreachable — see the docstring.
     return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+
+
+@always_inline
+def frame_object_body[
+    DTYPE: DType
+](
+    m_geoms: List[Scalar[DTYPE]],
+    m_sites: List[Scalar[DTYPE]],
+    objtype: Int,
+    objid: Int,
+) -> Int:
+    """The body a frame-sensor object rides on — `mj_objectVelocity`'s
+    `bodyid` (engine_core_util.c:840-872).
+
+    ⚠ MuJoCo ZEROES THE VELOCITY OF A DOF-LESS BODY and returns early
+    (`body_dofnum[body_weldid[bodyid]] == 0`, `:880`). There is no such guard
+    here and none is needed: `Data.xvel` / `xangvel` are PROPAGATED from the
+    world through the joint chain, so a body with no dofs above it already
+    holds exactly zero. The guard in the reference exists because `cvel` is
+    accumulated differently, not because the answer differs.
+    """
+    if objtype == SENSOBJ_GEOM:
+        return Int(m_geoms[objid * MODEL_GEOM_SIZE + GEOM_IDX_BODY])
+    if objtype == SENSOBJ_SITE:
+        return Int(m_sites[objid * MODEL_SITE_SIZE + SITE_IDX_BODY])
+    # BODY and XBODY are the same body in two frames.
+    return objid
+
+
+@always_inline
+def frame_vel_sensor[
+    DTYPE: DType
+](
+    xvel: List[Scalar[DTYPE]],
+    xangvel: List[Scalar[DTYPE]],
+    xipos: List[Scalar[DTYPE]],
+    body: Int,
+    px: Float64, py: Float64, pz: Float64,
+    has_ref: Bool,
+    ref_body: Int,
+    rpx: Float64, rpy: Float64, rpz: Float64,
+    rqx: Float64, rqy: Float64, rqz: Float64, rqw: Float64,
+) -> Tuple[Float64, Float64, Float64, Float64, Float64, Float64]:
+    """`mj_objectVelocity(..., flg_local=0)` at `(px,py,pz)`, as (ang, lin).
+
+    Returns MuJoCo's packed order — angular first, then linear — because that
+    is the order `engine_sensor.c:936` slices, and the two are three floats
+    apart. (`site_frame_velocity` next door returns the OPPOSITE order for its
+    own callers' convenience, which is exactly the kind of thing that gets
+    read wrong; hence this paragraph.)
+
+    ⚠ THE ROTATING-REFERENCE CORRECTION IS NOT OPTIONAL AND IT IS EASY TO
+    DROP. Relative to a frame that is itself turning, the object's linear
+    velocity is `v - v_ref - w_ref x (p - p_ref)`, and MuJoCo writes that
+    third term as `(p - p_ref) x w_ref` added in
+    (`mju_cross(cross, rvec, xvel_ref)` at `:923` — `xvel_ref` as a 3-pointer
+    is its ANGULAR half). Omitting it is silent whenever the reference frame
+    happens not to be rotating, which is most of the time.
+    """
+    var w = (
+        Float64(xangvel[body * 3 + 0]),
+        Float64(xangvel[body * 3 + 1]),
+        Float64(xangvel[body * 3 + 2]),
+    )
+    var v = point_velocity_world[DTYPE](
+        xvel, xangvel, xipos, body,
+        Scalar[DTYPE](px), Scalar[DTYPE](py), Scalar[DTYPE](pz),
+    )
+    var ax = w[0]
+    var ay = w[1]
+    var az = w[2]
+    var lx = Float64(v[0])
+    var ly = Float64(v[1])
+    var lz = Float64(v[2])
+    if not has_ref:
+        return (ax, ay, az, lx, ly, lz)
+
+    var rw = (
+        Float64(xangvel[ref_body * 3 + 0]),
+        Float64(xangvel[ref_body * 3 + 1]),
+        Float64(xangvel[ref_body * 3 + 2]),
+    )
+    var rv = point_velocity_world[DTYPE](
+        xvel, xangvel, xipos, ref_body,
+        Scalar[DTYPE](rpx), Scalar[DTYPE](rpy), Scalar[DTYPE](rpz),
+    )
+    var dax = ax - rw[0]
+    var day = ay - rw[1]
+    var daz = az - rw[2]
+    var dlx = lx - Float64(rv[0])
+    var dly = ly - Float64(rv[1])
+    var dlz = lz - Float64(rv[2])
+
+    # `rvec x w_ref`, added to the linear half.
+    var rx = px - rpx
+    var ry = py - rpy
+    var rz = pz - rpz
+    dlx += ry * rw[2] - rz * rw[1]
+    dly += rz * rw[0] - rx * rw[2]
+    dlz += rx * rw[1] - ry * rw[0]
+
+    var a = _rot_transpose_mul(rqx, rqy, rqz, rqw, dax, day, daz)
+    var l = _rot_transpose_mul(rqx, rqy, rqz, rqw, dlx, dly, dlz)
+    return (a[0], a[1], a[2], l[0], l[1], l[2])
 
 
 @always_inline
