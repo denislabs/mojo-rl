@@ -239,6 +239,15 @@ def part_b(base_url: String) raises -> Int:
     # not listed per file.
     _check(len(r1.skipped) == 3, "B1: expected 3 skipped, got " + String(len(r1.skipped)))
     _check(_remote_sha(cat, String("policies/act.ckpt")) == "", "B1: weights reached the platform")
+    # ⚠ The upload must be RECORDED. Without it the next pull, after anyone
+    # else's push, plans this box's own files as edited-on-both-sides and
+    # reports a conflict nobody made.
+    var a_base = load_base(A + "/" + SLUG)
+    _check(len(a_base) == 3, "B1: box A's .sync.kv should hold 3 files, got " + String(len(a_base)))
+    _check(
+        a_base.get(String("project.kv"), String("")) == _sha(A, String("project.kv")),
+        "B1: .sync.kv does not record what was uploaded",
+    )
     print("  B1 first push: 3 pushed, 3 skipped (ckpt, hidden, over cap), runs/ untouched")
     n += 1
 
