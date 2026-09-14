@@ -21,8 +21,11 @@ dashboard gets the same points when `.env` names one (`RemoteLogger`, inert
 without a URL), `run.kv` records `status`/`outcome` WRITTEN and never inferred,
 and each checkpoint is offered to the artifact sink so a box that dies at hour
 40 does not take the weights with it. A 30-minute check-up is therefore
-`tail -3 runs/<id>/metrics.csv` plus `run.kv`, from anywhere — read
-`norm/B_rank_eff` first. `norm/B` is sqrt(d) = 16 BY CONSTRUCTION and cannot
+`tail -3 runs/<id>/metrics.csv` plus `run.kv`, from anywhere — read `eval/emd`
+and `norm/B_rank_eff` first. `eval/*` is the TRACKING EVAL, run in the loop over
+the checkpoint just written (`--eval-segments`, default 1 = one segment per
+clip, ~35 s); run 1 had to be scored by hand hours after it ended, which is how
+a divergence at 4 M steps went unnoticed until 8 M (§12.14). `norm/B` is sqrt(d) = 16 BY CONSTRUCTION and cannot
 move, so it can never warn you about anything; `norm/B_rank_eff` is the
 effective rank of `E[B B^T]` and must sit at d = 256. Run 1 died with it at
 162 (§12.12-§12.13).
@@ -122,6 +125,12 @@ from mojo_rl.envs.robots import UnitreeG1Batched
 from mojo_rl.envs.robots.unitree_g1_xml import (
     UnitreeG1Model, UNITREE_G1_OBS_DIM, UNITREE_G1_STATE_DIM, UNITREE_G1_PRIV_DIM,
 )
+from mojo_rl.envs.robots import UnitreeG1
+from mojo_rl.deep_agents.fb.obs_norm import ObsNorm
+from mojo_rl.deep_agents.fb.trainer import FBTrainer
+from mojo_rl.envs.robots.g1_tracking_eval import (
+    G1_SEG_ROWS, G1TrackScore, g1_n_segments, g1_segment_row, g1_score_segment,
+)
 from mojo_rl.envs.robots.unitree_g1_rsi import (
     G1RsiTable, rsi_inject_kernel, G1_RSI_NQ, G1_RSI_NV, G1_LIE_DOWN_PROB,
     lie_down_selected,
@@ -161,6 +170,11 @@ comptime Agent = FBCPROnlineAgent[
 ]
 comptime NQ = UnitreeG1Model.NQ
 comptime NV = UnitreeG1Model.NV
+# The in-loop tracking eval runs the SAME protocol as
+# `bfm_zero_eval_tracking.mojo`, on the CPU, over the checkpoint that was just
+# written — so the number in `metrics.csv` is the number those exact bytes
+# score, and the checkpoint round-trip is exercised every time.
+comptime EvalTrainer = FBTrainer[FNet, BNet, ANet, OBS, ACT, D, 64, "cpu"]
 
 
 # ── kernels of this driver ────────────────────────────────────────────────
@@ -320,6 +334,56 @@ def _upload_floats(ctx: DeviceContext, xs: List[Int]) raises -> Tensor:
     return t^
 
 
+def _score_tracking(
+    mut t: EvalTrainer,
+    mut env: UnitreeG1[DType.float64],
+    ref rsi: G1RsiTable,
+    ref st: List[Scalar[DType.float32]],
+    ref pv: List[Scalar[DType.float32]],
+    ref qpos_col: List[Scalar[DType.float32]],
+    ckpt: String,
+    max_segments: Int,
+    mut ach: List[Float64],
+    mut tgt: List[Float64],
+    mut b_in: Tensor,
+    mut b_out: Tensor,
+    mut z_seg: Tensor,
+    mut obs_t: Tensor,
+    mut z1: Tensor,
+    mut act_out: Tensor,
+) raises -> G1TrackScore:
+    """The tracking protocol over the checkpoint just written.
+
+    Loading the FILE rather than reading the live GPU nets is deliberate: the
+    number logged is then the number those exact bytes score, and a checkpoint
+    that fails to round-trip shows up here instead of hours later on the
+    laptop. `<ckpt>.norm` is read beside it exactly as the standalone eval
+    does.
+    """
+    t.load_state(ckpt)
+    var norm = ObsNorm[OBS].try_load(ckpt + ".norm")
+    var sum_d = 0.0
+    var sum_e = 0.0
+    var sum_p = 0.0
+    var n = 0
+    for clip in range(rsi.n_ep):
+        var n_seg = g1_n_segments(Int(rsi.ep_len.data[clip]))
+        if n_seg > max_segments:
+            n_seg = max_segments
+        for seg in range(n_seg):
+            var r0 = g1_segment_row(Int(rsi.ep_offset.data[clip]), seg)
+            var sc = g1_score_segment[FNet, BNet, ANet, OBS, ACT, D, 64](
+                t, env, rsi, st, pv, qpos_col, norm, r0,
+                ach, tgt, b_in, b_out, z_seg, obs_t, z1, act_out,
+            )
+            sum_d += sc.distance
+            sum_e += sc.emd
+            sum_p += sc.proximity
+            n += 1
+    var f = Float64(n if n > 0 else 1)
+    return G1TrackScore(sum_d / f, sum_e / f, sum_p / f, n)
+
+
 def main() raises:
     var smoke = _has("--smoke")
     var no_graph = _has("--no-graph")
@@ -361,6 +425,10 @@ def main() raises:
     var seed_v = atol(_flag(String("--seed"), String(20260909)))
     var lie_prob = atof(_flag(String("--lie-prob"), String(G1_LIE_DOWN_PROB)))
     var track_on = not _has("--no-track")
+    # 0 turns the in-loop tracking eval off. 1 is one segment per clip (40
+    # segments, ~35 s) — ~3 % of a 20-minute checkpoint interval, and the only
+    # number in the file that measures the thing the run is FOR.
+    var eval_segments = atol(_flag(String("--eval-segments"), String(1)))
     seed(seed_v)
 
     # ⚠⚠ `agent.save_state(tag + "." + String(s))` WAS THE SECOND HAND-ROLLED
@@ -479,6 +547,38 @@ def main() raises:
     rsi.ep_offset.upload(ctx)
     rsi.ep_len.upload(ctx)
     print("  store:", n_rows, "rows,", store.n_episodes(), "clips;", len(starts8), "expert windows,", len(starts250), "tracking windows")
+
+    # ── the in-loop tracking eval ─────────────────────────────────────
+    # ⚠ HOST RAM. The CPU `FBTrainer` is the nets + targets + Adam moments
+    # again on the host (~2 GB) and is allocated WHETHER OR NOT the eval runs;
+    # `--eval-segments 0` skips the scoring and the ~63 MB `qpos` column, not
+    # that allocation. Say so rather than let the flag imply otherwise.
+    var eval_on = eval_segments > 0
+    var eval_env = UnitreeG1[DType.float64]()
+    var eval_t = EvalTrainer.make(
+        lr=3e-4, gamma=0.98, tau=0.01, ortho_weight=100.0, ctx=None,
+        seed=UInt64(7),
+    )
+    # The target is read from the `qpos` COLUMN, not from `rsi.rows` — they
+    # hold the same numbers, and that is the point: a corrupted RSI table
+    # would shift the reset AND the target together and the score would still
+    # look fine. Two reads, one of them independent.
+    var eval_qpos = List[Scalar[DType.float32]]()
+    if eval_on:
+        _ = eval_env.reset()
+        eval_qpos = store.load_column[DType.float32](String("qpos"))
+    var eval_b_in = Tensor.alloc(G1_SEG_ROWS * OBS if eval_on else 1)
+    var eval_b_out = Tensor()
+    var eval_z_seg = Tensor.alloc(G1_SEG_ROWS * D if eval_on else 1)
+    var eval_obs = Tensor.alloc(OBS if eval_on else 1)
+    var eval_z1 = Tensor.alloc(D if eval_on else 1)
+    var eval_act = Tensor.alloc(ACT if eval_on else 1)
+    var eval_ach = List[Float64](
+        length=(G1_SEG_ROWS * ACT if eval_on else 1), fill=0.0
+    )
+    var eval_tgt = List[Float64](
+        length=(G1_SEG_ROWS * ACT if eval_on else 1), fill=0.0
+    )
 
     # ── env and agent ─────────────────────────────────────────────────
     var env = EnvT(ctx)
@@ -789,6 +889,23 @@ def main() raises:
             agent.save_state(p)
             announce_checkpoint(p, artifacts, run.dir)
             print("  checkpoint", p)
+            if eval_on:
+                var sc = _score_tracking(
+                    eval_t, eval_env, rsi, st, pv, eval_qpos, p, eval_segments,
+                    eval_ach, eval_tgt, eval_b_in, eval_b_out, eval_z_seg,
+                    eval_obs, eval_z1, eval_act,
+                )
+                print(
+                    "  eval: emd", sc.emd, " distance", sc.distance,
+                    " proximity", sc.proximity, " over", sc.n, "segments",
+                )
+                var en = List[String]()
+                var ev = List[Float64]()
+                en.append(String("eval/emd")); ev.append(sc.emd)
+                en.append(String("eval/distance")); ev.append(sc.distance)
+                en.append(String("eval/proximity")); ev.append(sc.proximity)
+                en.append(String("eval/segments")); ev.append(Float64(sc.n))
+                logger.log_scalars(en, ev, env_steps + start_at)
             logger.flush()  # the CSV is the record; do not lose it to a crash
     ctx.synchronize()
     # ⚠ STOP THE CLOCK BEFORE THE CHECKPOINT. `el` used to be taken AFTER
