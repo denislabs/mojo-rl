@@ -135,12 +135,17 @@ def optimal_margin(shortfall: Float64) raises -> Float64:
     1M steps, same seed, same update budget, ONLY the margins differing —
     128-episode greedy evaluation against a baseline of 0 in 256:
 
-        goal margin   success      shaped reward      gradient at reset
-        0.211 (this)  0.047        0.578 -> 0.687     5.25/m
-        0.100         0.203        0.189 -> 0.352     0.73/m
+        goal margin  x goal dist  success (128 ep)  gradient at reset
+        0.070        0.50x        0.070  ( 9/128)    0.29/m
+        0.100        0.72x        0.203  (26/128)    0.73/m   <- the peak
+        0.211        1.52x        0.047  ( 6/128)    5.25/m   <- THIS FUNCTION
 
-    Fisher one-sided p = 1.1e-4. The margin with ONE SEVENTH the gradient is
-    4.3x better. `so101_lift_brick` lost the other way — its recommendation
+    0.10 beats 0.07 at Fisher one-sided p = 1.6e-3 and 0.211 at p = 1.1e-4;
+    0.07 and 0.211 are indistinguishable (p = 0.30). So the success curve has
+    an INTERIOR maximum around 0.72x the goal distance and falls away on both
+    sides, while the gradient this function maximises rises monotonically
+    across the whole range — the two are not the same shape, and the margin
+    with ONE SEVENTH the gradient of the peak is 4.3x better. `so101_lift_brick` lost the other way — its recommendation
     (0.058) was the only lift run that learned nothing at all, while 0.10 and
     0.211 both moved — though lift's goal is unreachable for other reasons,
     so that leg is weaker.
@@ -155,8 +160,9 @@ def optimal_margin(shortfall: Float64) raises -> Float64:
 
     ⚠ SO TREAT THIS AS ONE COORDINATE, not the answer: it says where the
     reset-distance gradient peaks, which is worth knowing and is not worth
-    obeying. On the only task with an achievable goal and a clean comparison,
-    a margin at 0.72x the goal distance beat one at 1.52x.
+    obeying. The measured starting point on this family is **0.7x the goal
+    distance**, and the only honest way to place a margin is still to run two
+    and compare — the curve above cost three 16-minute runs and is one task's.
     """
     if shortfall <= 0.0:
         raise Error(
