@@ -174,7 +174,12 @@ def test_agent_instantiates_and_trains_finite() raises:
     var actor = 0.0
     var f_norm = 0.0
     var b_norm = 0.0
-    agent.base.peek_losses(measure, ortho, actor, f_norm, b_norm)
+    var fbq = Float64(0)
+    var fba = Float64(0)
+    var mm = Float64(0)
+    agent.base.peek_losses(
+        measure, ortho, actor, f_norm, b_norm, fbq, fba, mm
+    )
     print("  losses: measure", measure, " ortho", ortho, " actor", actor, " |F|", f_norm, " |B|", b_norm)
     var vals = List[Float64]()
     vals.append(measure)

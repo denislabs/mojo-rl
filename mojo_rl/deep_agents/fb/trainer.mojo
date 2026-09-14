@@ -794,13 +794,17 @@ struct FBTrainer[
             self.f2.online, TensorRefs[1, MutAnyOrigin](self.fin), self.f2o, c
         )
 
+        var q1 = Float64(0)
+        var a1 = Float64(0)
+        var q2 = Float64(0)
+        var a2 = Float64(0)
         var l1 = fb_measure_loss_into[T, Self.D, Self.BATCH](
             self.ws1, self.f1o, self.b_sp, self.b_sn, self.m_target,
-            self.g_f1, self.g_bsp1, self.g_bsn1, want_loss, c,
+            self.g_f1, self.g_bsp1, self.g_bsn1, q1, a1, want_loss, c,
         )
         var l2 = fb_measure_loss_into[T, Self.D, Self.BATCH](
             self.ws2, self.f2o, self.b_sp, self.b_sn, self.m_target,
-            self.g_f2, self.g_bsp2, self.g_bsn2, want_loss, c,
+            self.g_f2, self.g_bsp2, self.g_bsn2, q2, a2, want_loss, c,
         )
         var l_ortho = fb_ortho_loss_into[T, Self.D, Self.BATCH](
             self.wso, self.b_sp, self.g_bsp_o, want_loss, c,

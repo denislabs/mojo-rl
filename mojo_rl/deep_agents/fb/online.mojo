@@ -105,6 +105,7 @@ from .kernels import (
     uniform01_kernel,
     uniform01_dev_kernel,
     mean_sq_t,
+    mean_t,
     ensure_t,
     _blocks,
 )
@@ -1207,6 +1208,7 @@ struct FBOnlineAgent[
         mut self,
         mut measure: Float64, mut ortho: Float64, mut actor: Float64,
         mut f_norm: Float64, mut b_norm: Float64,
+        mut fb_quad: Float64, mut fb_anchor: Float64, mut m_mean: Float64,
     ) raises:
         """The last step's losses, RECOMPUTED from the trainer's live buffers.
 
@@ -1223,18 +1225,36 @@ struct FBOnlineAgent[
         actor = 0.0
         f_norm = 0.0
         b_norm = 0.0
+        fb_quad = 0.0
+        fb_anchor = 0.0
+        m_mean = 0.0
         if self.t.steps == 0:
             return
         var c = self.ctx.value()
+        var q1 = Float64(0)
+        var a1 = Float64(0)
+        var q2 = Float64(0)
+        var a2 = Float64(0)
         var l1 = fb_measure_loss_into["gpu", Self.D, Self.BATCH](
             self.t.ws1, self.t.f1o, self.t.b_sp, self.t.b_sn, self.t.m_target,
-            self.t.g_f1, self.t.g_bsp1, self.t.g_bsn1, True, self.ctx,
+            self.t.g_f1, self.t.g_bsp1, self.t.g_bsn1, q1, a1, True, self.ctx,
         )
         var l2 = fb_measure_loss_into["gpu", Self.D, Self.BATCH](
             self.t.ws2, self.t.f2o, self.t.b_sp, self.t.b_sn, self.t.m_target,
-            self.t.g_f2, self.t.g_bsp2, self.t.g_bsn2, True, self.ctx,
+            self.t.g_f2, self.t.g_bsp2, self.t.g_bsn2, q2, a2, True, self.ctx,
         )
         measure = 0.5 * (l1 + l2)
+        # HALVED into the reference's scale, so these read directly against
+        # `references/BFM-Zero-main/released/new_model/train_log.txt`'s
+        # `fb_offdiag` / `fb_diag` at the same timestep. See `loss.mojo`.
+        fb_quad = 0.5 * 0.5 * (q1 + q2)
+        fb_anchor = 0.5 * 0.5 * (a1 + a2)
+        # `M1` in the reference's log: the mean ENTRY of `M = F·B(s+)^T`. It
+        # sits at ~49 and flat there from 2.3 M steps to 200 M, which makes it
+        # the cheapest check that our M is not drifting in scale.
+        m_mean = mean_t["gpu", Self.BATCH * Self.BATCH](
+            self.t.ws1.m, self.t.acc, self.ctx
+        )
         ortho = fb_ortho_loss_into["gpu", Self.D, Self.BATCH](
             self.t.wso, self.t.b_sp, self.t.g_bsp_o, True, self.ctx,
         )
@@ -1261,7 +1281,10 @@ struct FBOnlineAgent[
         var actor = Float64(0)
         var fnorm = Float64(0)
         var bnorm = Float64(0)
-        self.peek_losses(measure, ortho, actor, fnorm, bnorm)
+        var fbq = Float64(0)
+        var fba = Float64(0)
+        var mmean = Float64(0)
+        self.peek_losses(measure, ortho, actor, fnorm, bnorm, fbq, fba, mmean)
         var gf1 = Float64(0)
         var gf2 = Float64(0)
         var gb = Float64(0)
@@ -1279,6 +1302,9 @@ struct FBOnlineAgent[
             names.append(String("fb/measure")); vals.append(measure)
             names.append(String("fb/ortho")); vals.append(ortho)
             names.append(String("fb/actor")); vals.append(actor)
+            names.append(String("fb/fb_offdiag")); vals.append(fbq)
+            names.append(String("fb/fb_diag")); vals.append(fba)
+            names.append(String("fb/M1")); vals.append(mmean)
             names.append(String("fb/f_norm")); vals.append(fnorm)
             names.append(String("fb/b_norm")); vals.append(bnorm)
             names.append(String("fb/b_norm_deficit"))

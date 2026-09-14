@@ -368,10 +368,27 @@ def fb_measure_loss_into[
     ref [MutAnyOrigin] g_f: Tensor,
     ref [MutAnyOrigin] g_b_sp: Tensor,
     ref [MutAnyOrigin] g_b_next: Tensor,
+    mut out_quad: Float64,
+    mut out_anchor: Float64,
     want_loss: Bool = True,
     ctx: Optional[DeviceContext] = None,
 ) raises -> Float64:
     """`L_FB` and its gradients, on `target`. See the module docstring.
+
+    `out_quad` and `out_anchor` are the two halves of the returned sum:
+    `E_ij[(M-Mt)^2]` and `-2*E_i[F_i.B(s'_i)]`. They are separated because the
+    SUM cannot say which half is moving, and the reference logs its own two
+    (`fb_offdiag` / `fb_diag`) for exactly that reason — its 200 M-step log is
+    only usable as a comparison if ours is split the same way. Both are 0 when
+    `want_loss` is False.
+
+    ⚠ SCALES. Ours is 2x the reference's on BOTH halves (quadratic coefficient
+    1 vs their 0.5, anchor -2 vs their -1), so the BALANCE matches and
+    `ortho_weight=100` transfers, but a literal comparison against
+    `train_log.txt` needs ours halved. The driver logs the halved numbers.
+    Their `fb_diag` is also not the same QUANTITY as our anchor: theirs is
+    `-mean(diag(M - gamma*Mt))` on one B tensor, ours is `-2*E[F.B(s')]` on a
+    second one. Comparable in scale and role, not identical.
 
     `want_loss=False` skips the two reduction kernels AND the device readback,
     leaving the return value at 0. The gradients are unaffected — the loss
@@ -380,6 +397,8 @@ def fb_measure_loss_into[
     difference between a few hours and most of a day.
     """
     ws.prepare[target](ctx)
+    out_quad = 0.0
+    out_anchor = 0.0
     comptime NN = BATCH * BATCH
     comptime ND = BATCH * D
     var inv_n = Scalar[DT](1.0 / (Float64(BATCH) * Float64(BATCH)))
@@ -396,6 +415,7 @@ def fb_measure_loss_into[
             ws.go.data[i] = Scalar[DT](2.0 * r * Float64(inv_n))
         if want_loss:
             loss *= Float64(inv_n)
+            out_quad = loss
     else:
         var c = ctx.value()
         c.enqueue_function[residual_grad_kernel[NN]](
@@ -416,6 +436,7 @@ def fb_measure_loss_into[
             )
             ws.acc.download(c)
             loss = Float64(ws.acc.data[0])
+            out_quad = loss
 
     # dF, dB(s+)
     ws.pd.vjp[target, BATCH](
@@ -430,7 +451,8 @@ def fb_measure_loss_into[
             var s = Float64(0)
             for i in range(BATCH):
                 s += Float64(ws.r_out.data[i])
-            loss += -2.0 * s / Float64(BATCH)
+            out_anchor = -2.0 * s / Float64(BATCH)
+            loss += out_anchor
         for i in range(BATCH):
             ws.r_go.data[i] = anchor_scale
     else:
@@ -443,7 +465,9 @@ def fb_measure_loss_into[
                 block_dim=TPB_REDUCE,
             )
             ws.acc.download(c)
-            loss += -2.0 * Float64(ws.acc.data[0])
+            # `sum_reduce_kernel` returns the MEAN over BATCH
+            out_anchor = -2.0 * Float64(ws.acc.data[0])
+            loss += out_anchor
         c.enqueue_function[fill_kernel[BATCH]](
             ws.r_go.dev.value().unsafe_ptr(),
             anchor_scale,
