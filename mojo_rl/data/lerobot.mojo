@@ -69,6 +69,7 @@ from mojo_rl.io.parquet import ParquetFile
 from mojo_rl.io.video import VideoDecoder
 
 from .column import ColumnSpec
+from .lerobot_rejected import is_rejected, kept_rows, load_rejected_episodes
 from .store import TrajectoryStoreWriter
 
 
@@ -828,6 +829,29 @@ def import_lerobot_v3(
             + " episodes"
         )
 
+    # ⚠⚠ EPISODES THE OPERATOR REJECTED ARE NOT IMPORTED — neither their
+    # frames nor their share of the normalisation statistics. They are still
+    # in the videos and the parquet (the writer is append-only); see
+    # `lerobot_rejected.mojo`. The consistency checks above ran on the FULL
+    # dataset first, so a rejection can never hide a malformed one.
+    var rejected = load_rejected_episodes(String(root))
+    for r in rejected:
+        if r >= n_ep:
+            raise Error(
+                "lerobot: meta/rejected_episodes.json rejects episode "
+                + String(r) + ", but the dataset has " + String(n_ep)
+            )
+    if len(rejected) == n_ep:
+        raise Error("lerobot: every episode is rejected; nothing to import")
+    if verbose and len(rejected) > 0:
+        var names = String("")
+        for r in rejected:
+            names += (", " if names.byte_length() > 0 else "") + String(r)
+        print(
+            "      skipping " + String(len(rejected))
+            + " rejected episode(s): " + names
+        )
+
     # ── store ─────────────────────────────────────────────────────────
     var n_cam = len(info.cameras)
     var cam_elems = 3 * height * width
@@ -876,6 +900,8 @@ def import_lerobot_v3(
     var scratch = List[UInt8]()
 
     for e in range(n_ep):
+        if is_rejected(rejected, e):
+            continue
         var length = index.length[e]
         for c in range(n_cam):
             var first = Int(round(index.vid_from_ts[c][e] * Float64(info.fps)))
@@ -938,8 +964,18 @@ def import_lerobot_v3(
     var qs = List[Float32]()
     var am = List[Float32]()
     var as_ = List[Float32]()
-    norm_stats(frames.qpos, info.state_dim, qm, qs)
-    norm_stats(frames.action, info.action_dim, am, as_)
+    if len(rejected) == 0:
+        norm_stats(frames.qpos, info.state_dim, qm, qs)
+        norm_stats(frames.action, info.action_dim, am, as_)
+    else:
+        norm_stats(
+            kept_rows(frames.qpos, info.state_dim, index.from_index, index.length, rejected),
+            info.state_dim, qm, qs,
+        )
+        norm_stats(
+            kept_rows(frames.action, info.action_dim, index.from_index, index.length, rejected),
+            info.action_dim, am, as_,
+        )
 
     w.write_vector[DType.float32](
         String("norm_qpos_mean"), _fptr(qm), info.state_dim

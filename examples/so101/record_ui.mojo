@@ -55,6 +55,7 @@ from mojo_rl.render.imgui import (
 from mojo_rl.render.renderer3d import Renderer3D
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name, joint_short
 from mojo_rl.utils.fmt import fixed
+from mojo_rl.data.lerobot_rejected import refuse_existing_dataset, reject_episode
 from mojo_rl.vision.camera_thread import CameraReader
 
 
@@ -259,6 +260,7 @@ def main() raises:
     for i in range(SO101_N):
         joint_names.append(joint_name(i) + ".pos")
 
+    refuse_existing_dataset(out_root)
     var writer = LeRobotWriter(
         out_root.copy(), HZ, joint_names.copy(), joint_names.copy(),
         cam_names.copy(), HEIGHT, WIDTH,
@@ -299,6 +301,9 @@ def main() raises:
     var recording = False
     var ep_frames = 0
     var kept = 0
+    """Episodes WRITTEN, discarded ones included: it is the writer's index."""
+    var rejected = 0
+    var last_rejected = -1
     var total_frames = 0
     var tick = 0
     var bus_skipped = 0
@@ -353,7 +358,7 @@ def main() raises:
                     if arm:
                         follower.set_torque(False)
                     status = (
-                        String("episode ") + String(kept) + " kept ("
+                        String("episode ") + String(kept - rejected) + " kept ("
                         + String(ep_frames) + " frames)"
                     )
                     ep_frames = 0
@@ -412,7 +417,10 @@ def main() raises:
                 )
             else:
                 ig_text_disabled(String("not armed (no --arm): nothing moves"))
-            ig_text(String("kept   ") + String(kept) + " episode(s)")
+            ig_text(
+                String("kept   ") + String(kept - rejected) + " episode(s)"
+                + ((", " + String(rejected) + " discarded") if rejected > 0 else String(""))
+            )
             ig_text(String("frames ") + String(total_frames))
 
             ig_separator_text(String("episode"))
@@ -428,7 +436,21 @@ def main() raises:
                     recording = False
                     if arm:
                         follower.set_torque(False)
-                    status = String("episode ") + String(kept) + " kept"
+                    status = String("episode ") + String(kept - rejected) + " kept"
+                    ep_frames = 0
+                ig_same_line()
+                if ig_button(String("stop and discard"), 150.0, 30.0):
+                    # ⚠ Ended normally, then listed: the writer is append-only.
+                    # See `lerobot_rejected.mojo`. Written to disk NOW.
+                    writer.end_episode()
+                    _ = reject_episode(out_root, kept)
+                    last_rejected = kept
+                    kept += 1
+                    rejected += 1
+                    recording = False
+                    if arm:
+                        follower.set_torque(False)
+                    status = String("discarded (skipped on import)")
                     ep_frames = 0
             else:
                 if ig_button(String("start episode"), 150.0, 30.0):
@@ -453,6 +475,16 @@ def main() raises:
                 ig_same_line()
                 if ig_button(String("finish"), 120.0, 30.0):
                     finish = True
+                # ⚠ A demonstration is often judged bad only AFTER "stop and
+                # keep" — the replay in your head catches the fumble. Only the
+                # most recent episode, and only once.
+                if kept > 0 and last_rejected != kept - 1:
+                    ig_same_line()
+                    if ig_button(String("discard last"), 120.0, 30.0):
+                        _ = reject_episode(out_root, kept - 1)
+                        last_rejected = kept - 1
+                        rejected += 1
+                        status = String("last episode discarded (skipped on import)")
 
             ig_separator_text(String("joints (deg)"))
             for i in range(SO101_N):
@@ -523,5 +555,9 @@ def main() raises:
         return
     print("\nwriting dataset ...")
     writer.close()
-    print("  " + String(kept) + " episodes, " + String(total_frames) + " frames")
+    print(
+        "  " + String(kept - rejected) + " episodes kept, " + String(rejected)
+        + " discarded (listed in meta/rejected_episodes.json), "
+        + String(total_frames) + " frames written"
+    )
 

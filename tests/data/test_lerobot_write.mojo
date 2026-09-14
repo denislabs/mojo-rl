@@ -45,7 +45,15 @@ from std.os.path import exists
 from std.memory import Pointer
 
 from mojo_rl.data.lerobot import import_lerobot_v3
+from mojo_rl.data.lerobot_rejected import (
+    kept_rows,
+    load_rejected_episodes,
+    refuse_existing_dataset,
+    reject_episode,
+    save_rejected_episodes,
+)
 from mojo_rl.data.lerobot_write import LeRobotWriter
+from mojo_rl.io.fileio import remove_file
 from mojo_rl.data.store import TrajectoryStore
 
 
@@ -236,6 +244,125 @@ def _check(root: String, h5: String, label: String) raises -> Int:
     return compared + routed
 
 
+def _check_rejected(root: String, h5: String) raises -> Int:
+    """Discard episode 1 of `root`, import, and verify the store holds exactly
+    episodes 0 and 2 — rows, values and frames.
+
+    ⚠ THE MIDDLE EPISODE, on purpose. Dropping the last one is satisfied by
+    an importer that merely stops early; dropping the middle one needs every
+    later row and frame to shift, which is where an off-by-an-episode lives.
+    """
+    var n = 0
+    var lens = materialize[EP_LENS]()
+
+    # ── the list itself: sorted, unique, round-trips ──────────────────
+    var messy = List[Int]()
+    messy.append(1)
+    save_rejected_episodes(root, messy)
+    var again = reject_episode(root, 1)
+    if len(again) != 1 or again[0] != 1:
+        raise Error("rejecting the same episode twice must not duplicate it")
+    if len(load_rejected_episodes(root)) != 1:
+        raise Error("rejected_episodes.json did not round-trip")
+    n += 1
+
+    import_lerobot_v3(root, h5, H, W, verbose=False)
+    var s = TrajectoryStore(h5)
+    var want_rows = lens[0] + lens[2]
+    if s.n_episodes() != 2 or s.n_rows() != want_rows:
+        raise Error(
+            "rejected: the store has " + String(s.n_episodes()) + " episodes / "
+            + String(s.n_rows()) + " rows, expected 2 / " + String(want_rows)
+        )
+    if s.episodes.length_of(0) != lens[0] or s.episodes.length_of(1) != lens[2]:
+        raise Error("rejected: the kept episodes have the wrong lengths")
+    n += 1
+
+    var qpos = List[Float32](unsafe_uninit_length = want_rows * SDIM)
+    s.read_range[DType.float32](
+        String("qpos"), 0, want_rows,
+        qpos.unsafe_ptr().unsafe_bitcast[Scalar[DType.float32]]()
+        .as_unsafe_any_origin(),
+    )
+    var per_cam = 3 * H * W
+    var img = List[UInt8](unsafe_uninit_length = 2 * per_cam)
+    var row = 0
+    for ep in [0, 2]:
+        for t in range(lens[ep]):
+            var want = Float32(Float64(ep * 16 + t * 4 + 0) + 0.25)
+            if qpos[row * SDIM] != want:
+                raise Error(
+                    "rejected: store row " + String(row) + " holds qpos "
+                    + String(qpos[row * SDIM]) + ", expected episode "
+                    + String(ep) + " t=" + String(t) + " (" + String(want) + ")"
+                )
+            s.read_range[DType.uint8](
+                String("images"), row, row + 1,
+                img.unsafe_ptr().unsafe_bitcast[Scalar[DType.uint8]]()
+                .as_unsafe_any_origin(),
+            )
+            var acc = 0
+            for p in range(H * W):
+                acc += Int(img[p])  # camera 0, red plane
+            var dr = acc // (H * W) - _signature(ep, t, 0)[0]
+            if dr < -8 or dr > 8:
+                raise Error(
+                    "rejected: store row " + String(row) + " holds a frame of"
+                    " the wrong episode (red " + String(acc // (H * W)) + ")"
+                )
+            n += 2
+            row += 1
+    print(
+        "  rejected: episode 1 of 3 discarded -> 2 episodes, " + String(want_rows)
+        + " rows, values and frames of episodes 0 and 2"
+    )
+
+    # ── the statistics exclude the rejected rows ──────────────────────
+    var x = List[Float32]()
+    var starts = List[Int]()
+    var ls = List[Int]()
+    var off = 0
+    for ep in range(N_EP):
+        starts.append(off)
+        ls.append(lens[ep])
+        for t in range(lens[ep]):
+            x.append(Float32(ep * 100 + t))
+        off += lens[ep]
+    var rej = List[Int]()
+    rej.append(1)
+    var k = kept_rows(x, 1, starts, ls, rej)
+    if len(k) != lens[0] + lens[2] or k[lens[0] - 1] != Float32(lens[0] - 1) or k[lens[0]] != Float32(200):
+        raise Error("kept_rows: wrong rows kept for the statistics")
+    print("  kept_rows: the stats see episodes 0 and 2 only")
+    n += 1
+
+    # ── a rejection past the end is refused, not ignored ──────────────
+    _ = reject_episode(root, N_EP)
+    var raised = False
+    try:
+        import_lerobot_v3(root, h5 + ".bad", H, W, verbose=False)
+    except:
+        raised = True
+    if not raised:
+        raise Error("rejecting episode " + String(N_EP) + " of " + String(N_EP) + " must be refused")
+    print("  out-of-range rejection refused")
+    n += 1
+
+    # ── a recorder refuses to write over an existing recording ────────
+    var refused = False
+    try:
+        refuse_existing_dataset(root)
+    except:
+        refused = True
+    if not refused:
+        raise Error("refuse_existing_dataset accepted a directory holding a dataset")
+    print("  an existing recording is refused as --out")
+    n += 1
+
+    remove_file(root + "/meta/rejected_episodes.json")
+    return n
+
+
 def main() raises:
     print("[lerobot-write] gate")
 
@@ -243,6 +370,10 @@ def main() raises:
 
     # One mp4 per camera: episodes located by `from_timestamp`.
     var r1 = String("/tmp/mojo_rl_lw_packed")
+    # A run that died inside the rejected leg leaves its list behind, and the
+    # writer does not clear the directory.
+    if exists(r1 + "/meta/rejected_episodes.json"):
+        remove_file(r1 + "/meta/rejected_episodes.json")
     _write_dataset(r1, 100)
     total += _check(r1, String("/tmp/mojo_rl_lw_packed.h5"), String("packed"))
 
@@ -259,6 +390,8 @@ def main() raises:
             " happen, so that leg tested the same packing as the first"
         )
     print("  rolling: the rolled dataset really produced one file per episode")
+
+    total += _check_rejected(r1, String("/tmp/mojo_rl_lw_rejected.h5"))
 
     if total < 100:
         raise Error("only " + String(total) + " checks ran")

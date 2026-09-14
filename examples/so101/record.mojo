@@ -78,6 +78,7 @@ from mojo_rl.data.lerobot_write import LeRobotWriter
 from mojo_rl.io.fileio import StdinReader
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name, joint_short
 from mojo_rl.utils.fmt import col, fixed
+from mojo_rl.data.lerobot_rejected import refuse_existing_dataset, reject_episode
 from mojo_rl.vision.camera_thread import CameraReader
 
 
@@ -231,6 +232,7 @@ def main() raises:
     for i in range(SO101_N):
         joint_names.append(joint_name(i) + ".pos")
 
+    refuse_existing_dataset(out_root)
     var writer = LeRobotWriter(
         out_root.copy(),
         HZ,
@@ -251,22 +253,25 @@ def main() raises:
 
     var stdin = StdinReader()
     var kept = 0
+    """Episodes WRITTEN, rejected ones included: it is the writer's index."""
+    var rejected = 0
     var total_dropped = 0
     var total_refused = 0
 
     try:
         var ep = 0
-        while kept < n_episodes:
+        while kept - rejected < n_episodes:
             # Anything typed while the last episode was recording is not an
             # answer to this question — see `discard_pending`.
             stdin.discard_pending()
             print(
-                "── episode " + String(kept + 1) + "/" + String(n_episodes)
+                "── episode " + String(kept - rejected + 1) + "/"
+                + String(n_episodes)
                 + " ──  position the arms, then press Enter (q = finish)"
             )
             var answer = stdin.line()
             if answer == "q" or answer == "Q":
-                print("  finishing early at " + String(kept) + " episode(s)")
+                print("  finishing early at " + String(kept - rejected) + " episode(s)")
                 break
 
             # ⚠ DRAIN FIRST. Frames captured while the operator was reading
@@ -428,20 +433,21 @@ def main() raises:
             )
 
             stdin.discard_pending()
-            print("  keep this episode? [Y/r=redo/q=quit] ")
+            print("  keep this episode? [Y/r=discard and redo/q=quit] ")
             var verdict = stdin.line()
             if verdict == "r" or verdict == "R":
-                # ⚠ NOT IMPLEMENTED AS A ROLLBACK. `LeRobotWriter` is
+                # ⚠ DISCARDED BY LIST, NOT BY ROLLBACK. `LeRobotWriter` is
                 # append-only — the frames are already inside an ffmpeg pipe —
-                # so a redo would need the writer to be able to discard an
-                # open episode, which it cannot. Ending it and recording
-                # another is honest; the operator can drop it later.
+                # so the episode is ended normally and its index is written to
+                # meta/rejected_episodes.json NOW, where the importer skips it.
+                # It does not count toward --episodes, so a redo follows.
                 writer.end_episode()
+                _ = reject_episode(out_root, kept)
                 kept += 1
+                rejected += 1
                 print(
-                    "  ⚠ kept anyway: this writer cannot discard an episode"
-                    " once its frames are encoded. Episode "
-                    + String(kept - 1) + " is the one to ignore."
+                    "  discarded: episode " + String(kept - 1) + " stays in"
+                    " the files and is skipped on import"
                 )
             else:
                 writer.end_episode()
@@ -474,11 +480,12 @@ def main() raises:
     print("\nwriting dataset ...")
     writer.close()
     print(
-        "  " + String(kept) + " episodes, bus-skipped ticks "
+        "  " + String(kept - rejected) + " episodes kept, " + String(rejected)
+        + " discarded, bus-skipped ticks "
         + String(total_dropped) + ", refused writes " + String(total_refused)
     )
     print("\nnext:")
     print("  pixi run mojo run -I . examples/so101/act_so101_import_dataset.mojo"
           " --root " + out_root)
-    print("  pixi run mojo run -I . tools/hf/push_dataset.mojo --root "
-          + out_root + " --repo <you>/<name>")
+    print("  pixi run hf-push-dataset -- --root " + out_root
+          + " --repo <you>/<name>")
