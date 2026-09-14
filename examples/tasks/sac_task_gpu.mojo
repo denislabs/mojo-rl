@@ -190,7 +190,7 @@ from std.random import seed as seed_rng
 from std.sys import argv
 from std.time import perf_counter_ns
 
-from max.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from layout import Layout, LayoutTensor
 
@@ -256,6 +256,15 @@ comptime N_ENVS = 32
 # A predicate over an OBJECT's pose is not that shape: a sweep does not lift a
 # brick. `--task` takes any of them.
 comptime DEFAULT_TASK = "so101_lift_brick"
+
+comptime EVAL_ROUNDS_N: Int = 4
+"""Rounds of `N_ENVS` greedy episodes the final evaluation pools.
+
+⚠ EVERY MESSAGE ABOUT THE RATE READS THIS. The band, the rule-of-three bound
+and the printed lane count were all written as a bare 32 — the lane count —
+back when one round was the whole evaluation. A second round would have made
+each of them wrong by a factor, silently, in the direction of claiming more
+resolution than the number has."""
 comptime FAMILY = "mojo_rl/tasks/families/so101_tabletop.family"
 
 # ⚠⚠ `False`, MATCHING BOTH EXAMPLES THAT TRAIN ON THIS STACK. It was True —
@@ -334,19 +343,32 @@ def baselines_for(task: String) -> Tuple[Float64, Float64, Bool]:
         # them as goals, so the fix is not a weight.
         return (0.00, 0.00, True)
     if task == "so101_gather_bricks":
-        # ⚠ NOT EXACTLY ZERO. Two 20k warmup-only runs gave 0.000 and 0.0156
-        # (one lane of 64), so random DOES occasionally push the blocks
-        # together. 0.02 is the ceiling of what was seen and is what a rate
-        # has to beat before it means anything.
+        # ⚠⚠ RE-MEASURED AFTER THE PROP SHRANK, AND IT MOVED. This was 0.02,
+        # from two 20k warmup-only runs on the 4 cm cube that gave 0.000 and
+        # 0.0156. `cube.xml` went to 2.4 cm (the jaw cannot close on 4 cm)
+        # and a 6.9 g cube is not a 32 g one under a flailing arm, so the
+        # number was measured on a task that no longer exists — and the
+        # trainer went on printing a verdict against it. Eight 24k
+        # warmup-only runs post-shrink, seeds 101..108:
+        #
+        #     0 successes in 256 episodes -> rule-of-three bound 0.0117
+        #
+        # ⚠ A HARD-CODED BASELINE IS INVALIDATED BY A GEOMETRY CHANGE AND
+        # NOTHING TELLS YOU. Re-measure whenever the family's assets, regions
+        # or slot radius move; the provenance above is what makes that
+        # checkable.
         #
         # ⚠ THESE ARE SUCCESS RATES AND ARE LANE-COUNT INDEPENDENT, unlike the
         # shaped RETURN — a rate is per episode either way. The return
         # baselines in the header are not, and mixing the two cost two rounds.
-        # ⚠ AND THE TRAINED REFERENCE IS 0.5625, at 1M steps with weights
-        # 1.0/0.21 and `TERMINATE_ON_UNHEALTHY=False`. A run that lands far
-        # below that is not "learning slowly", it is configured differently —
-        # check `cfg/*` against the header's table before tuning anything.
-        return (0.02, 0.00, True)
+        # ⚠⚠ THE 0.5625 TRAINED REFERENCE IS ALSO PRE-SHRINK and is NOT a
+        # target on the current geometry. It was one draw at margin 0.10 on
+        # the 4 cm prop, it did not reproduce at the same config (the repeat
+        # diverged to 273x), and the prop has changed since. The best
+        # measured rate on the current task is 0.0625 at margins 0.211/0.157
+        # with a textbook critic — two lanes of 32, p ~ 0.054 against the
+        # bound below. There is no established reference above noise yet.
+        return (0.00, 0.00, True)
     if task == "so101_reach_clear" or task == "so101_reach_brick":
         return (0.25, 1.00, True)
     if task == "so101_settle_brick":
@@ -445,10 +467,45 @@ def greedy_success_rate(
     """
     comptime AO = 2 * ACT_DIM
     var ao = ctx.enqueue_create_buffer[DT](N_ENVS * AO)
-    env.reset_batch[N_ENVS](ctx, UInt64(20260907))
+
+    # ⚠⚠ FOUR ROUNDS, BECAUSE 32 EPISODES CANNOT RESOLVE THE RATES THIS
+    # FAMILY PRODUCES. One `reset_batch` gives 32 episodes and a granularity
+    # of 1/32 = 0.031, and the criterion the whole family is judged by was
+    # being read off that. `gather` scored 2/32 = 0.0625 against a baseline
+    # whose 95% upper bound is 0.0117 — p ~ 0.054, decided by whether ONE
+    # lane fell either way. 128 episodes costs 1200 greedy steps against the
+    # run's 1,000,000 training ones.
+    #
+    # ⚠ THE SEEDS ARE FIXED AND CONSECUTIVE, so the init set is still frozen
+    # and two runs remain comparable — that is the whole point of a fixed
+    # eval seed, and randomising per run would trade the resolution back for
+    # noise.
+    #
+    # ⚠ A FULL `reset_batch` PER ROUND, not `selective_reset_batch` mid-loop.
+    # Resetting inside the step window lets a fast lane contribute twice and
+    # inflates the denominator; a round is a clean set of N_ENVS episodes.
+    comptime EVAL_ROUNDS = EVAL_ROUNDS_N
+    var n = 0
+    var nf = 0
+    for rnd in range(EVAL_ROUNDS):
+        var r = round_rate(agent, env, ctx, ao, UInt64(20260907 + rnd))
+        n += r[0]
+        nf += r[1]
+    var denom = Float64(N_ENVS * EVAL_ROUNDS)
+    return (Float64(n) / denom, Float64(nf) / denom)
+
+
+def round_rate(
+    mut agent: AgentT, mut env: EnvT, ctx: DeviceContext,
+    ao: DeviceBuffer[DT], seed: UInt64,
+) raises -> Tuple[Int, Int]:
+    """One round of `N_ENVS` greedy episodes: `(met at ANY step, met at the
+    FINAL step)` as COUNTS, so the caller can pool rounds without averaging
+    averages."""
+    comptime AO = 2 * ACT_DIM
+    env.reset_batch[N_ENVS](ctx, seed)
 
     var solved = List[Bool](length=N_ENVS, fill=False)
-    var rew_h = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0))
 
     for step in range(So101TabletopConfig.MAX_STEPS):
         agent.trainer.select_greedy_action_batched[N_ENVS](
@@ -489,7 +546,7 @@ def greedy_success_rate(
             env.d.meta.data[e * METADATA_SIZE + META_IDX_GOAL_HELD]
         ) > 0.5:
             nf += 1
-    return (Float64(n) / Float64(N_ENVS), Float64(nf) / Float64(N_ENVS))
+    return (n, nf)
 
 
 def main() raises:
@@ -1036,7 +1093,7 @@ def main() raises:
             # that is good and an alpha that is still high).
             eval_env=Pointer(to=eval_env).as_unsafe_any_origin(),
             eval_every=eval_every,
-            eval_episodes=N_ENVS,
+            eval_episodes=N_ENVS,   # the PERIODIC eval; the final one pools rounds
             eval_max_steps=So101TabletopConfig.MAX_STEPS + 1,
         )
         var secs = Float64(perf_counter_ns() - t0) / 1e9
@@ -1055,8 +1112,9 @@ def main() raises:
         print("  elapsed            :", secs, "s")
         print("  episodes           :", agent.ep_count())
         print("  shaped mean return :", shaped, "(last 100 episodes)")
-        print("  SUCCESS RATE       :", rate, "(greedy,", N_ENVS,
-              "lanes, met at ANY step)")
+        print("  SUCCESS RATE       :", rate, "(greedy,",
+              N_ENVS * EVAL_ROUNDS_N, "episodes =", N_ENVS, "lanes x",
+              EVAL_ROUNDS_N, "rounds, met at ANY step)")
         print("  held at the END    :", rate_final,
               "— the stronger claim; for a goal that holds at RESET the"
               " any-step rate is 1.0 by construction")
@@ -1186,7 +1244,7 @@ def main() raises:
         # ⚠ THE DENOMINATOR IS THE GREEDY EVAL'S LANE COUNT, not the training
         # window — `rate` above comes from N_ENVS greedy episodes and the band
         # has to be the band for THAT n.
-        var n = Float64(N_ENVS)
+        var n = Float64(N_ENVS * EVAL_ROUNDS_N)
         var p = bl[0]
         var se = 0.0
         if n > 0.0:
@@ -1198,8 +1256,8 @@ def main() raises:
         #
         # The rule of three: having seen 0 successes in n trials, the 95%
         # upper bound on the true rate is about 3/n. That is the band a zero
-        # baseline deserves — at 32 lanes it is 0.094, so three lanes must
-        # succeed before the number means anything.
+        # baseline deserves — at 32 episodes it is 0.094, so three must
+        # succeed before the number means anything; at 128 it is 0.023.
         var band = p + 2.0 * se
         if p <= 0.0:
             band = 3.0 / n
