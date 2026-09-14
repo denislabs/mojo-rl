@@ -82,6 +82,10 @@ from mojo_rl.tasks.libero_goal_xml import (
 comptime LIBERO_GOAL_FRAME_SKIP: Int = 25
 """`control_freq=20` against a 2 ms timestep. See the header."""
 
+comptime LIBERO_GOAL_TIMESTEP: Float64 = LIBERO_GOAL_DIMS.TIMESTEP
+"""The generated dims' timestep, folded to a SCALAR comptime so a kernel reads a
+constant — see `LiberoGoalOscConfig.get_timestep`."""
+
 comptime LIBERO_GOAL_HORIZON: Int = 600
 """`horizon=` in the `.family`, and `cfg.eval.max_steps` in
 `lifelong/metric.py`. Restated, not read."""
@@ -524,8 +528,16 @@ struct LiberoGoalOscConfig(Phyics3dEnvConfig):
 
         ⚠ NOT RESTATED. `libero_goal_dims.mojo` is generated from the composed
         XML through `mujoco.MjModel` and CI-checked, so this is the one number
-        in the config that does NOT need keeping in step by hand."""
-        return LIBERO_GOAL_DIMS.TIMESTEP
+        in the config that does NOT need keeping in step by hand.
+
+        ⚠⚠ THROUGH A SCALAR `comptime`, NOT `LIBERO_GOAL_DIMS.TIMESTEP`. The
+        batched env calls this INSIDE the reward kernel
+        (`Scalar[DT](Self.CONFIG.get_timestep())`), and a field of a comptime
+        STRUCT INSTANCE read at runtime is materialized as a lazily-initialised
+        global: the NVIDIA build died in ptxas with "Unresolved extern function
+        'KGEN_CompilerRT_GetOrCreateGlobal'". `So101TabletopConfig` returns the
+        literal 0.002, which folds — which is why only this config hit it."""
+        return LIBERO_GOAL_TIMESTEP
 
 
 comptime LiberoGoalOscEnv = Phyics3dBatchedEnv[
