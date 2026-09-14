@@ -4719,3 +4719,112 @@ block kernel. A per-pair table (`NGEOM^2` slots, 44 KB per env on the G1)
 would make the warm start collision-free and the kernel deterministic; it
 needs a `Data` tensor of its own. (c) `Data.ccd_ws` at 1.49 GB is paid
 once; if the box is tight, `COLL_TPB=16` halves it and the rounds double.
+
+### 13.53 OPEN (2026-09-14): LIBERO on the batched env — 494 lane control steps/s at 1024 lanes, and 89% of the GPU in two kernels
+
+**Not started. Measured on an RTX 5090 during the LIBERO port; the
+optimisation is physics-engine work and is left here for whoever takes it.**
+The port's own record is `docs/LIBERO_PORT_ASSESSMENT_2026_09_13.md` §6s-§6u
+(`docs/` is gitignored; the numbers below are complete without it).
+
+**The workload.** `libero_goal` on `LiberoGoalOscEnv`
+(`mojo_rl/tasks/libero_goal_config.mojo`): a Panda under OSC_POSE, nq 41 /
+nv 37, 240 geoms (156 colliding, 11 of them meshes, 84 visual-only), 64
+contacts budget, **elliptic cone** (`impratio=20`, robosuite's `base.xml`),
+Euler, 2 ms timestep, 25 physics substeps per control step, `CRBA_TREEWALK`.
+The driver replays LIBERO's own demonstrations per lane:
+`examples/tasks/libero_demo_batched.mojo`. It needs the 10
+`libero_goal` demo HDF5s in `references/libero_demos/libero_goal/`
+(HF `yifengzhu-hf/LIBERO-datasets`, ~5.9 GB) and `pixi run assets-pull
+libero`.
+
+**Throughput** (`--timing-only --steps 60`: 55 control steps timed after 5
+warmup; action upload + `step_batch` + synchronize):
+
+    lanes   s / batch control step   lane control steps/s   physics substeps/s   us / lane step
+      64            1.349                     47                   1 186            21 078
+     256            1.706                    150                   3 750             6 666
+    1024            2.069                    494                  12 371             2 021
+
+The batch step is nearly flat in the lane count (16x the lanes for 1.53x the
+time) and still falling per lane at 1024. For comparison the G1 on the same
+box pays ~3.6 ms per substep at 64 lanes (§13.52's sweep); LIBERO pays ~52 ms.
+
+**nsys at 256 lanes** (15 control steps = 375 substeps, `-t cuda,osrt
+--sample=cpu`, `--timing-only`):
+
+    HOST
+      cuLaunchKernelEx       10 982 calls (29 per substep), 8 us avg, 87 ms total
+      cuStreamSynchronize    259 calls, 13.6 s — 84% of CUDA API time: the host WAITS
+      memcpy H->D            19 ms total (setup uploads); D->H 4 calls
+    GPU kernels (ms per physics substep)
+      Newton solver          23.6   60.3%   mojo_rl_physics3d_solver_newt..._4e2c6c1c27bd450a
+      collision (SAP)        11.2   28.6%   mojo_rl_physics3d_collision_b..._4ba3bb0e904ca920
+      mass matrix (CRBA)      2.0    5.1%
+      collision, 2nd          0.9    2.4%
+      everything else       < 0.3 each   (FK, RNE, OSC, integrator, cdof, LDL ...)
+
+**⚠ IT IS NOT HOST OVERHEAD.** The first reading of the flat scaling (and an
+M1 Pro paying a similar 1.25 s per step at 20 lanes) was a fixed host cost per
+step; nsys refutes it — 87 ms of launches over the whole run. The flat
+scaling is per-lane SERIAL GPU work: each lane's solve runs on its own
+thread, so the wall time is one lane's serial cost until the device runs out
+of parallel headroom, and that serial cost is heavy here.
+
+**Why the solver is slow here, verified in the source.** `newton_solve.mojo`'s
+GPU dispatch (the `else:` branch after the CPU loop, ~line 4176) sends only
+`ConeType.PYRAMIDAL` on NVIDIA to `solve_newton_blocked` — the cooperative
+kernel of §13.40-§13.47. **The elliptic cone on any device takes the
+one-thread-per-env `_newton_solve_fields_kernel`.** Collision is already the
+block kernel of §13.52 (`COLL_BLOCK_KERNEL = True`, and LIBERO has no
+heightfield), tuned at the G1's operating point.
+
+**Levers, cheapest first — none measured:**
+
+1. **Collision (29%).** The contype/conaffinity masks are tested per
+   candidate pair inside the sweep (`broadphase_sap.mojo` ~:597). Whether the
+   84 visual-only geoms are dropped BEFORE the sort/sweep is unverified; if
+   they are not, filtering them out of the AABB list is fidelity-neutral.
+   Second question: whether the 11 mesh colliders dominate the kernel's
+   rounds (§13.51's G1 finding was GJK trip count).
+2. **Pyramidal cone as a TRAINING variant (up to the 60%).** One comptime
+   `cone_type` on a separate model def + config would route the solve to the
+   blocked kernel. ⚠ It changes the friction model the benchmark and its
+   demonstrations use, so it is only admissible if replay still holds:
+   `libero_demo_batched` is the fidelity gate (elliptic baseline on the 5090:
+   19/20 demos reach their goal on the batch, 20/20 on the CPU, success word
+   0 disagreements of 2613). LIBERO's reported numbers must stay elliptic.
+3. **An elliptic blocked Newton kernel.** Keeps the benchmark's physics; the
+   real fix if (2) fails its replay gate. Substantial: the elliptic core and
+   the AUD-40 bracketed line search (`ell_line_eval`) live only in the
+   per-env kernel today.
+4. **Budgets.** 64 contacts and the solver's iteration cap against the
+   contact counts this scene actually reaches — measure after (1)-(3).
+
+**Correctness gates any change must keep:** `libero_demo_batched` (success
+word exact; first-10-step |dq| ≤ 1e-3 against the CPU replay),
+`tests/tasks/test_libero_osc_env.mojo`, the elliptic MuJoCo gates
+(`tests/physics3d/test_elliptic_condim46_vs_mujoco.mojo`,
+`test_elliptic_linesearch_evals_vs_mujoco.mojo`,
+`test_noslip_elliptic_vs_mujoco.mojo`), and for (1) §13.52's collision csum
+parity. On NVIDIA, cross-emit before sending to the box:
+`mojo build --target-accelerator sm_120 --emit asm` must leave no `.extern`
+in any `.ptx` (see `35f9b502d`, where a `cap[]`-zero pool scratch in this very
+elliptic kernel was an unresolved extern on CUDA and a metallib failure on
+Metal).
+
+**Reproduce:**
+
+    # on the box, after `assets-pull libero` and the demo download
+    sed "s/^comptime LANES = .*/comptime LANES = 256/" \
+        examples/tasks/libero_demo_batched.mojo > /tmp/libero_lanes_256.mojo
+    pixi run -e nvidia mojo build -I . -o /tmp/libero_256 /tmp/libero_lanes_256.mojo
+    pixi run -e nvidia /tmp/libero_256 --timing-only --steps 60          # throughput
+    pixi run -e nvidia nsys profile -t cuda,osrt --sample=cpu \
+        --cpuctxsw=process-tree -o /tmp/libero_256 --force-overwrite=true \
+        /tmp/libero_256 --timing-only --steps 15
+    pixi run -e nvidia nsys stats \
+        -r cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum,osrt_sum \
+        /tmp/libero_256.nsys-rep
+    # the fidelity gate for any lever: the full checked replay
+    pixi run -e nvidia /tmp/libero_256 --cpu-lanes 10
