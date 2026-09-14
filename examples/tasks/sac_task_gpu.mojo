@@ -122,7 +122,7 @@ episode either way — so only the RETURN figures moved.
 TIME. `so101_gather_bricks`, 1M steps, weights 1.0/0.21, everything else
 default, 3328 episodes in 34 minutes on a 5090:
 
-    SUCCESS RATE                          0.5625   greedy, 32 lanes
+    SUCCESS RATE                          0.5625   greedy, 32 lanes — ⚠ PRE-SHRINK, see `baselines_for`
       against a random baseline of          0.02   2-sigma band ends 0.069
     eval return                  35 -> 207, best 238   ceiling 363
     avg_reward                   44 -> 224, monotone, best = last
@@ -1284,9 +1284,18 @@ def main() raises:
             print("  per metre, against 24 per metre at margin 0.05.")
         else:
             print("  the rate is ABOVE the baseline's 2-sigma band:", rate)
-            if task_name == "so101_gather_bricks":
-                print("  the trained reference at 1M steps is 0.5625 —",
-                      "this run is", rate / 0.5625, "of it")
+            # ⚠⚠ NO "FRACTION OF THE REFERENCE" LINE. This divided by 0.5625
+            # and reported the run as a fraction of it — a number measured on
+            # the 4 cm prop, at margin 0.10, on a single draw that never
+            # reproduced at its own config (the repeat diverged to 273x). The
+            # comment in `baselines_for` was corrected to say so and THIS
+            # line, three hundred lines away, went on printing it: the same
+            # constant written twice, drifting the moment one copy moved.
+            #
+            # A run that clears its baseline has said what it can say. The
+            # comparison that means something is against ANOTHER RUN on the
+            # SAME geometry, and that belongs in the log, not in a verdict
+            # that implies a target nobody has reproduced.
         # ⚠ `status=done` IS WRITTEN HERE AND NOWHERE ELSE. A record still
         # saying `running` with an old `started` IS a crashed run, which is
         # information no directory listing has ever carried here — so nothing
