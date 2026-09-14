@@ -834,13 +834,17 @@ def main() raises:
             var fb_quad = 0.0
             var fb_anchor = 0.0
             var m_mean = 0.0
+            # `scale_reg`'s weight, mean|Q_fb|. Against `loss/actor`
+            # (= -mean Q_fb) the RATIO is the factor the CPR style term was
+            # under-weighted by before §12.15 — 1.0 means it never mattered.
+            var q_fb_abs = 0.0
             var actor = 0.0
             var f_norm = 0.0
             var b_norm = 0.0
             if env_steps >= SEED_STEPS:
                 agent.base.peek_losses(
                 measure, ortho, actor, f_norm, b_norm,
-                fb_quad, fb_anchor, m_mean,
+                fb_quad, fb_anchor, m_mean, q_fb_abs,
             )
             var rate = Float64(env_steps) / (el + 1e-9)
             last_measure = measure
@@ -864,6 +868,7 @@ def main() raises:
             mn.append(String("loss/fb_offdiag")); mv.append(fb_quad)
             mn.append(String("loss/fb_diag")); mv.append(fb_anchor)
             mn.append(String("loss/M1")); mv.append(m_mean)
+            mn.append(String("loss/q_fb_abs")); mv.append(q_fb_abs)
             mn.append(String("norm/F")); mv.append(f_norm)
             mn.append(String("norm/B")); mv.append(b_norm)
             # `|B|` is pinned to sqrt(d) by the net's sphere projection, so it

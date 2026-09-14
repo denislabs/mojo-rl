@@ -248,7 +248,8 @@ def test_driver_ring_and_capture(ctx: DeviceContext) raises:
     var fbq = Float64(0)
     var fba = Float64(0)
     var mm = Float64(0)
-    a.peek_losses(measure, ortho, actor, fnv, bn, fbq, fba, mm)
+    var qa = Float64(0)
+    a.peek_losses(measure, ortho, actor, fnv, bn, fbq, fba, mm, qa)
     print("      [4] losses: measure", measure, " ortho", ortho, " actor", actor,
           " |F|", fnv, " |B|", bn)
     assert_true(measure == measure and ortho == ortho, "loss is NaN")

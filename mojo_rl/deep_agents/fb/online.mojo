@@ -1209,6 +1209,7 @@ struct FBOnlineAgent[
         mut measure: Float64, mut ortho: Float64, mut actor: Float64,
         mut f_norm: Float64, mut b_norm: Float64,
         mut fb_quad: Float64, mut fb_anchor: Float64, mut m_mean: Float64,
+        mut q_fb_abs: Float64,
     ) raises:
         """The last step's losses, RECOMPUTED from the trainer's live buffers.
 
@@ -1228,6 +1229,7 @@ struct FBOnlineAgent[
         fb_quad = 0.0
         fb_anchor = 0.0
         m_mean = 0.0
+        q_fb_abs = 0.0
         if self.t.steps == 0:
             return
         var c = self.ctx.value()
@@ -1260,6 +1262,11 @@ struct FBOnlineAgent[
         )
         self.t.acc_lam.download(c)
         actor = -Float64(self.t.acc_lam.data[0])
+        # `scale_reg`'s weight. Beside `actor` (= -mean(Q_fb)) this makes the
+        # ratio `mean|Q_fb| / |mean Q_fb|` readable — the factor by which the
+        # CPR style term was under-weighted before §12.15.
+        self.t.acc_mag.download(c)
+        q_fb_abs = Float64(self.t.acc_mag.data[0])
         var fn2 = mean_sq_t["gpu", Self.BATCH * Self.D](
             self.t.f1o, self.t.acc, self.ctx
         )
@@ -1284,7 +1291,10 @@ struct FBOnlineAgent[
         var fbq = Float64(0)
         var fba = Float64(0)
         var mmean = Float64(0)
-        self.peek_losses(measure, ortho, actor, fnorm, bnorm, fbq, fba, mmean)
+        var qabs = Float64(0)
+        self.peek_losses(
+            measure, ortho, actor, fnorm, bnorm, fbq, fba, mmean, qabs
+        )
         var gf1 = Float64(0)
         var gf2 = Float64(0)
         var gb = Float64(0)
@@ -1305,6 +1315,7 @@ struct FBOnlineAgent[
             names.append(String("fb/fb_offdiag")); vals.append(fbq)
             names.append(String("fb/fb_diag")); vals.append(fba)
             names.append(String("fb/M1")); vals.append(mmean)
+            names.append(String("fb/q_fb_abs")); vals.append(qabs)
             names.append(String("fb/f_norm")); vals.append(fnorm)
             names.append(String("fb/b_norm")); vals.append(bnorm)
             names.append(String("fb/b_norm_deficit"))

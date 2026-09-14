@@ -108,7 +108,8 @@ from .kernels import (
     masked_rows_axpy_t,
     scale_t,
     sum3_scaled_t,
-    min_scale_t,
+    pessimism_blend_t,
+    mean_abs_into_t,
     smooth_action_t,
     slice_cols_t,
     mean_sq_t,
@@ -232,6 +233,7 @@ struct FBTrainer[
     # overwrites it on logging steps only — that is the same shape of bug this
     # buffer exists to fix.
     var acc_lam: Tensor
+    var acc_mag: Tensor
     var sink: Tensor
     var sink_a: Tensor
     var g_fin_a: Tensor
@@ -286,6 +288,7 @@ struct FBTrainer[
     var gamma: Float64
     var tau: Float64
     var ortho_weight: Float64
+    var fb_pessimism: Float64
     var policy_noise: Float64
     var noise_clip: Float64
     # ⚠ Global grad-norm clip, 0 = OFF. NOT cosmetic on FB: the measure loss is
@@ -396,6 +399,7 @@ struct FBTrainer[
         self.g_bsn = Tensor()
         self.acc = Tensor()
         self.acc_lam = Tensor()
+        self.acc_mag = Tensor()
         self.sink = Tensor()
         self.sink_a = Tensor()
         self.g_fin_a = Tensor()
@@ -419,6 +423,7 @@ struct FBTrainer[
         self.gamma = 0.98
         self.tau = 0.01
         self.ortho_weight = 1.0
+        self.fb_pessimism = 0.0
         self.policy_noise = 0.2
         self.noise_clip = 0.3
         self.max_grad_norm = 0.0
@@ -471,6 +476,7 @@ struct FBTrainer[
         self.g_bsn = move.g_bsn^
         self.acc = move.acc^
         self.acc_lam = move.acc_lam^
+        self.acc_mag = move.acc_mag^
         self.sink = move.sink^
         self.sink_a = move.sink_a^
         self.g_fin_a = move.g_fin_a^
@@ -494,6 +500,7 @@ struct FBTrainer[
         self.gamma = move.gamma
         self.tau = move.tau
         self.ortho_weight = move.ortho_weight
+        self.fb_pessimism = move.fb_pessimism
         self.policy_noise = move.policy_noise
         self.noise_clip = move.noise_clip
         self.max_grad_norm = move.max_grad_norm
@@ -593,6 +600,7 @@ struct FBTrainer[
             d.synchronize()
             self._rng_off_dev = ob^
         ensure_t[T](self.acc_lam, 1, c)
+        ensure_t[T](self.acc_mag, 1, c)
         ensure_t[T](self.acc_gv, 1, c)
         ensure_t[T](self.acc_gt, 1, c)
         ensure_t[T](self.bc_mask, Self.BATCH, c)
@@ -779,8 +787,13 @@ struct FBTrainer[
         self.ws1.pd.forward[T, Self.BATCH](
             TensorRefs[2, MutAnyOrigin](self.ft2, self.bt_sp), self.mt2, c
         )
-        min_scale_t[T, Self._NN](
-            self.m_target, self.mt1, self.mt2, Scalar[DT](self.gamma), c
+        # ⚠ `fb_pessimism` is 0.0 — the FB target is the ensemble MEAN, not
+        # the twin-min. This was `min_scale_t` (i.e. penalty 0.5) until
+        # §12.15; the reference sets `fb_pessimism_penalty=0.0` for the
+        # measure target and 0.5 only for its three Q critics.
+        pessimism_blend_t[T, Self._NN](
+            self.m_target, self.mt1, self.mt2, Scalar[DT](self.gamma),
+            Scalar[DT](self.fb_pessimism), c,
         )
 
         # ── 4. online F forwards + losses ────────────────────────────────
@@ -969,6 +982,14 @@ struct FBTrainer[
             TensorRefs[2, MutAnyOrigin](self.fo, self.bz), self.rz, c
         )
         mean_into_t[T, Self.BATCH](self.rz, self.acc_lam, c)
+        # ⚠ TWO DIFFERENT REDUCTIONS OF THE SAME ROWS, AND THEY ARE NOT
+        # INTERCHANGEABLE. `acc_lam` is the SIGNED mean — that is the actor
+        # loss the reference logs (`-Q_fb.mean()`). `acc_mag` is the mean of
+        # ABSOLUTE values — that is the `scale_reg` / TD3+BC weight
+        # (`Q_fb.abs().mean()`). We used `|acc_lam|` for the weight until
+        # §12.15; Jensen makes that never larger and it collapses toward 0 as
+        # Q_fb becomes sign-balanced.
+        mean_abs_into_t[T, Self.BATCH](self.rz, self.acc_mag, c)
 
         var loss = Float64(0)
         if want_loss:
@@ -998,7 +1019,7 @@ struct FBTrainer[
         # an action penalty leaves the actor with no drive at all.
         if self.bc_weight > 0.0:
             scale_by_inv_mag_t[T, Self._ND](
-                self.g_fa, self.bz, self.acc_lam,
+                self.g_fa, self.bz, self.acc_mag,
                 Scalar[DT](-1.0 / Float64(Self.BATCH)), Scalar[DT](1e-6), c,
             )
         else:
@@ -1049,13 +1070,13 @@ struct FBTrainer[
             else:
                 axpy_t[T, Self._NA](self.g_pi, self.pi, w2, c)
         # + the external term (FB-CPR's `−reg·∂Q_D/∂π`), see `g_pi_extra`.
-        # `acc_lam` holds THIS step's `mean F·z`, so the scale is not lagged.
+        # `acc_mag` holds THIS step's `mean |F·z|`, so the scale is not lagged.
         if self.has_pi_extra:
             if self.bc_weight > 0.0:
                 axpy_t[T, Self._NA](self.g_pi, self.g_pi_extra, Scalar[DT](1.0), c)
             else:
                 axpy_by_mag_t[T, Self._NA](
-                    self.g_pi, self.g_pi_extra, self.acc_lam, Scalar[DT](1.0), c
+                    self.g_pi, self.g_pi_extra, self.acc_mag, Scalar[DT](1.0), c
                 )
         mean_sq_into_t[T, Self._NA](self.g_pi, self.acc_gt, c)
 

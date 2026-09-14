@@ -191,22 +191,58 @@ def sum3_scaled_kernel[N: Int](
         dst[unsafe_offset=t] = a[unsafe_offset=t] + b[unsafe_offset=t] + w * c[unsafe_offset=t]
 
 
-def min_scale_kernel[N: Int](
+def pessimism_blend_kernel[N: Int](
     dst: Pointer[Scalar[DT], MutAnyOrigin],
     m1: Pointer[Scalar[DT], MutAnyOrigin],
     m2: Pointer[Scalar[DT], MutAnyOrigin],
     gamma: Scalar[DT],
+    penalty: Scalar[DT],
 ):
-    """`dst = gamma * min(m1, m2)` — the twin-min target, ENTRYWISE.
+    """`dst = gamma * (mean(m1,m2) - penalty*|m1-m2|)`, entrywise.
 
-    Every `(i, j)` pair of the successor-measure matrix is its own value
-    estimate, so the min is taken per element, not per row.
+    BFM-Zero's `get_targets_uncertainty` (`fb/agent.py:328`) for an ensemble
+    of two. Its `preds_unc` sums `|p_i - p_j|` over all ordered pairs and
+    divides by `P^2 - P`, which at P = 2 is exactly `|m1 - m2|`. So:
+
+        penalty 0.0  ->  the MEAN
+        penalty 0.5  ->  exactly min(m1, m2)
+
+    ⚠ THE PENALTY IS PER-TARGET AND THEY ARE NOT THE SAME. The reference ships
+    `fb_pessimism_penalty=0.0` for the FB measure target and 0.5 for all three
+    Q critics (`train.py:638-641`) — pessimism is a VALUE-function device and
+    a successor MEASURE is not a value, so biasing it down has no
+    justification. We shipped `min` at both, i.e. 0.5 on the FB target, which
+    biased every one of BATCH^2 entries down by half the ensemble disagreement
+    at each of ~6 M gradient steps (§12.15).
     """
     var t = Int(global_idx.x)
-    if t < N:
-        var a = m1[unsafe_offset=t]
-        var b = m2[unsafe_offset=t]
-        dst[unsafe_offset=t] = gamma * (a if a < b else b)
+    if t >= N:
+        return
+    var a = m1[unsafe_offset=t]
+    var b = m2[unsafe_offset=t]
+    var lo = a if a < b else b
+    var hi = b if a < b else a
+    # `mean - p*|a-b|` rearranged as `lo*(0.5+p) + hi*(0.5-p)`. Algebraically
+    # the same; in float32 it is NOT. The literal form subtracts two rounded
+    # halves and cancels — measured 9.5e-07 off the exact min at p = 0.5,
+    # which is precisely the setting Q_D runs at. This form makes p = 0.5
+    # return `lo` BIT-EXACTLY (the weights are 1 and 0) and is well
+    # conditioned in between.
+    dst[unsafe_offset=t] = gamma * (
+        lo * (Scalar[DT](0.5) + penalty) + hi * (Scalar[DT](0.5) - penalty)
+    )
+
+
+def mean_abs_into_kernel[N: Int](
+    x: Pointer[Scalar[DT], MutAnyOrigin],
+    acc: Pointer[Scalar[DT], MutAnyOrigin],
+):
+    """`acc[0] = mean(|x|)` — NOT `|mean(x)|`. See `mean_abs_into_t`."""
+    var s = Scalar[DT](0)
+    for i in range(N):
+        var v = x[unsafe_offset=i]
+        s += -v if v < Scalar[DT](0) else v
+    acc[unsafe_offset=0] = s / Scalar[DT](N)
 
 
 def residual_grad_kernel[N: Int](
@@ -635,23 +671,53 @@ def sum3_scaled_t[target: StaticString, N: Int](
         )
 
 
-def min_scale_t[target: StaticString, N: Int](
+def pessimism_blend_t[target: StaticString, N: Int](
     mut dst: Tensor, mut m1: Tensor, mut m2: Tensor, gamma: Scalar[DT],
-    ctx: Optional[DeviceContext] = None,
+    penalty: Scalar[DT], ctx: Optional[DeviceContext] = None,
 ) raises:
-    """`dst = gamma * min(m1, m2)`, entrywise."""
+    """`dst = gamma * (mean(m1,m2) - penalty*|m1-m2|)`. See the kernel."""
     ensure_t[target](dst, N, ctx)
     comptime if target == "cpu":
         for i in range(N):
             var a = m1.data[i]
             var b = m2.data[i]
-            dst.data[i] = gamma * (a if a < b else b)
+            var lo = a if a < b else b
+            var hi = b if a < b else a
+            dst.data[i] = gamma * (
+                lo * (Scalar[DT](0.5) + penalty)
+                + hi * (Scalar[DT](0.5) - penalty)
+            )
     else:
         var d = ctx.value()
-        d.enqueue_function[min_scale_kernel[N]](
+        d.enqueue_function[pessimism_blend_kernel[N]](
             dst.dev.value().unsafe_ptr(), m1.dev.value().unsafe_ptr(),
-            m2.dev.value().unsafe_ptr(), gamma,
+            m2.dev.value().unsafe_ptr(), gamma, penalty,
             grid_dim=_blocks(N), block_dim=TPB,
+        )
+
+
+def mean_abs_into_t[target: StaticString, N: Int](
+    mut x: Tensor, mut acc: Tensor, ctx: Optional[DeviceContext] = None
+) raises:
+    """`acc[0] = mean(|x|)` — NO download, so it is capture-safe.
+
+    ⚠ NOT `|mean(x)|`. `scale_reg` and TD3+BC's adaptive scale both weight by
+    `Q.abs().mean()`; we weighted by `|Q.mean()|`, which is Jensen-smaller and
+    collapses toward 0 as `Q` becomes sign-balanced — so the CPR style term
+    faded out exactly as `|F|` grew (§12.15).
+    """
+    ensure_t[target](acc, 1, ctx)
+    comptime if target == "cpu":
+        var s = Float64(0)
+        for i in range(N):
+            var v = Float64(x.data[i])
+            s += -v if v < 0.0 else v
+        acc.data[0] = Scalar[DT](s / Float64(N))
+    else:
+        var d = ctx.value()
+        d.enqueue_function[mean_abs_into_kernel[N]](
+            x.dev.value().unsafe_ptr(), acc.dev.value().unsafe_ptr(),
+            grid_dim=1, block_dim=1,
         )
 
 

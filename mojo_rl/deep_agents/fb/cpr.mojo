@@ -89,7 +89,7 @@ from .kernels import (
     axpy_t,
     scale_t,
     fill_t,
-    min_scale_t,
+    pessimism_blend_t,
     smooth_action_t,
     slice_cols_t,
     mean_into_t,
@@ -161,6 +161,9 @@ struct FBCPRHead[
     TARGET: StaticString = "cpu",
 ](Movable & Deinitable):
     comptime NW: Int = Self.BATCH // Self.SEQ
+    # `critic_pessimism_penalty` (`train.py:652`). At an ensemble of two the
+    # reference's uncertainty reduction makes 0.5 exactly the twin-min.
+    comptime CRITIC_PESSIMISM: Float64 = 0.5
     comptime D_IN: Int = Self.OBS + Self.D          # [s | z]
     comptime Q_IN: Int = Self.OBS + Self.ACT + Self.D  # [s | a | z], F's layout
     comptime _NA: Int = Self.BATCH * Self.ACT
@@ -634,8 +637,12 @@ struct FBCPRHead[
         call_forward[T, Self.BATCH](
             self.qd2.target_net, TensorRefs[1, MutAnyOrigin](self.qin_t), self.qt2, c
         )
-        min_scale_t[T, Self.BATCH](
-            self.q_target, self.qt1, self.qt2, Scalar[DT](self.gamma), c
+        # `critic_pessimism_penalty` 0.5, which at an ensemble of two IS the
+        # twin-min — the same reduction as the FB target, a DIFFERENT penalty.
+        # Q_D is a value, so pessimism belongs here; see `pessimism_blend_t`.
+        pessimism_blend_t[T, Self.BATCH](
+            self.q_target, self.qt1, self.qt2, Scalar[DT](self.gamma),
+            Scalar[DT](Self.CRITIC_PESSIMISM), c,
         )
         axpy_t[T, Self.BATCH](self.q_target, self.r_d, Scalar[DT](1.0), c)
 
