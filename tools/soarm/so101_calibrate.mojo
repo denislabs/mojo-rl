@@ -141,11 +141,18 @@ def _rows(
         if live:
             row += _rj(Int(pos[i]), 7) + " |"
         row += _rj(Int(hi[i]), 7) + " |" + _rj(Int(hi[i]) - Int(lo[i]), 8)
-        if skipped:
-            row += "   continuous, leave it alone"
+        var is_centred = False
         for k in range(len(centred)):
             if centred[k] == i:
-                row += _roll_note(Int(lo[i]), Int(pos[i]), Int(hi[i]), live)
+                is_centred = True
+        if skipped:
+            row += "   continuous, leave it alone"
+        elif is_centred:
+            row += _roll_note(Int(lo[i]), Int(pos[i]), Int(hi[i]), live)
+        elif live and Int(hi[i]) - Int(lo[i]) < 200:
+            # ⚠ A CHECKLIST ON SCREEN. Forgetting one joint cost a whole
+            # dry run, and the refusal only arrives after Enter.
+            row += "   <- not swept yet"
         lines.append(row^)
     return lines^
 
