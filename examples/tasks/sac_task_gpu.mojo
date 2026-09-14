@@ -215,6 +215,7 @@ from mojo_rl.physics3d.gpu.constants import (
 from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
 
 from mojo_rl.tasks.spec import (
+    TaskSpec,
     load_family, load_task, validate_task_against_family, SLOT_FREE,
 )
 from mojo_rl.tasks.family import scene_path
@@ -227,6 +228,7 @@ from mojo_rl.tasks.eval import (
 from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
 from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
 from mojo_rl.tasks.active import active_mask, init_region_words
+from mojo_rl.tasks.lanes import lane_task, lanes_for_task
 from mojo_rl.tasks.shaping import shaping_words, SHAPING_WORDS
 from mojo_rl.tasks.critic_health import critic_health
 
@@ -308,8 +310,69 @@ comptime DIAG_EVERY = 2_000
 comptime CHECKPOINT_EVERY = 50_000
 comptime EVAL_EVERY = 25_000
 
-def baselines_for(task: String) -> Tuple[Float64, Float64, Bool]:
-    """`(random, untrained_greedy, measured)` for a task — see the header.
+def split_csv(v: String) raises -> List[String]:
+    """`"a,b"` -> `["a", "b"]`; a bare `"a"` -> `["a"]`.
+
+    ⚠ EMPTY PIECES ARE REFUSED. `"gather,"` is a typo that would otherwise
+    become a second task named "" and fail much later, inside `load_task`,
+    naming a path instead of the flag that produced it.
+    """
+    var out = List[String]()
+    var parts = v.split(",")
+    for i in range(len(parts)):
+        var piece = String(String(parts[i]).strip())
+        if piece.byte_length() == 0:
+            raise Error(
+                "sac task: empty element in '" + v + "'. A trailing or"
+                " doubled comma is a typo, not an empty task."
+            )
+        out.append(piece)
+    return out^
+
+
+def per_task(v: String, n: Int, what: String) raises -> List[Float64]:
+    """One value broadcast to `n` tasks, or exactly `n` values.
+
+    ⚠⚠ A SHAPING PARAMETER IS PER TASK AND THAT IS THE WHOLE POINT. The
+    margins live in per-lane `meta` because what a weight is worth depends on
+    the task's own distance scale — `gather`'s `Near` starts at 0.139 m,
+    `settle`'s `On` at 0.000. One margin across a two-task batch hands its
+    lanes a bimodal reward, which on this family is how a critic gets
+    destabilised. Broadcasting is allowed because it is sometimes right; a
+    WRONG-LENGTH list is refused rather than recycled.
+    """
+    var parts = split_csv(v)
+    if len(parts) == 1:
+        var out = List[Float64]()
+        for _ in range(n):
+            out.append(Float64(parts[0]))
+        return out^
+    if len(parts) != n:
+        raise Error(
+            "sac task: " + what + " has " + String(len(parts)) + " values for "
+            + String(n) + " tasks. Give one value for all of them, or one per"
+            " task in the same order."
+        )
+    var out = List[Float64]()
+    for i in range(len(parts)):
+        out.append(Float64(parts[i]))
+    return out^
+
+
+def baselines_for(task: String) -> Tuple[Float64, Float64, Float64, Bool]:
+    """`(random_any, untrained_greedy, random_FINAL, measured)` for a task.
+
+    ⚠⚠ THE THIRD NUMBER EXISTS BECAUSE THE FIRST SATURATES ON SOME TASKS.
+    `so101_settle_brick`'s goal HOLDS AT RESET, so its any-step rate is 1.0
+    for any policy including no policy — judging a run on it reports FLAT
+    whether the task is solved or broken. The driver switches to the
+    held-at-END rate for such a task and needs that criterion's OWN baseline;
+    reusing the any-step 1.00 would put the band at 1.0 and call every run
+    flat forever.
+
+    ⚠ FOR A TASK WHOSE ANY-STEP BASELINE IS 0, THE FINAL-STEP ONE IS 0 TOO,
+    exactly and not by measurement: a goal met at the final step was met at
+    SOME step, so the final rate can never exceed the any-step rate.
 
     ⚠⚠ PER TASK, AND IT WAS A PAIR OF CONSTANTS. This file trained one task
     when those were written; `--task` made them a lie, and the first `gather`
@@ -341,7 +404,7 @@ def baselines_for(task: String) -> Tuple[Float64, Float64, Bool]:
         # reward can manufacture a grasp. `Grasped` and `Touching` are Tier B
         # (they read the contact array) and `predicates.require_tier_a` refuses
         # them as goals, so the fix is not a weight.
-        return (0.00, 0.00, True)
+        return (0.00, 0.00, 0.00, True)
     if task == "so101_gather_bricks":
         # ⚠⚠ RE-MEASURED AFTER THE PROP SHRANK, AND IT MOVED. This was 0.02,
         # from two 20k warmup-only runs on the 4 cm cube that gave 0.000 and
@@ -368,9 +431,12 @@ def baselines_for(task: String) -> Tuple[Float64, Float64, Bool]:
         # measured rate on the current task is 0.0625 at margins 0.211/0.157
         # with a textbook critic — two lanes of 32, p ~ 0.054 against the
         # bound below. There is no established reference above noise yet.
-        return (0.00, 0.00, True)
+        return (0.00, 0.00, 0.00, True)
     if task == "so101_reach_clear" or task == "so101_reach_brick":
-        return (0.25, 1.00, True)
+        # ⚠ THE FINAL-STEP FIGURE IS UNMEASURED AND UNUSED HERE: the switch
+        # to it only fires when the any-step baseline is 1.0, and this is
+        # 0.25. Left at the any-step value rather than a flattering 0.
+        return (0.25, 1.00, 0.25, True)
     if task == "so101_settle_brick":
         # ⚠⚠ THE ANY-STEP RATE IS 1.00 BY CONSTRUCTION and says nothing. Its
         # goal holds at reset — two GPU gates need that — so the number to
@@ -386,8 +452,14 @@ def baselines_for(task: String) -> Tuple[Float64, Float64, Bool]:
         # per step, worth 38 of return — against 2.4 from the reach term. The
         # policy learned to KEEP the brick on the table, which is what settle
         # asks, and barely moved the gripper (0.096 m -> 0.089 m).
-        return (1.00, 1.00, True)
-    return (0.0, 0.0, False)
+        # ⚠⚠ AND THE ANY-STEP 1.00 IS NOT A CRITERION — the goal HOLDS AT
+        # RESET, so that rate is 1.0 for any policy including no policy. The
+        # held-at-END rate is what a run is judged on and it needs its own
+        # baseline: four 24k warmup-only runs, seeds 201..204, gave 0, 0, 0
+        # and 1 of 128 — 1 in 512. 0.008 is the ceiling of what was seen,
+        # the convention `gather`'s baseline already used.
+        return (1.00, 1.00, 0.008, True)
+    return (0.0, 0.0, 0.0, False)
 # ⚠⚠ THE PREFIXES ARE GONE, AND THE PAIN THEY FIXED IS WORTH KEEPING WRITTEN
 # DOWN. Both were fixed strings from when this file trained one task, so the
 # first `gather` run on a 5090 wrote `sac_task_reach.ckpt` — and a `lift` run
@@ -425,8 +497,8 @@ comptime AgentT = SACAgent[
 
 
 def greedy_success_rate(
-    mut agent: AgentT, mut env: EnvT, ctx: DeviceContext
-) raises -> Tuple[Float64, Float64]:
+    mut agent: AgentT, mut env: EnvT, ctx: DeviceContext, n_tasks: Int
+) raises -> Tuple[List[Float64], List[Float64]]:
     """`(met at ANY step, met at the FINAL step)` over one greedy episode.
 
     ## ⚠⚠ "AT ANY STEP" IS VACUOUS FOR A GOAL THAT HOLDS AT RESET
@@ -485,23 +557,38 @@ def greedy_success_rate(
     # Resetting inside the step window lets a fast lane contribute twice and
     # inflates the denominator; a round is a clean set of N_ENVS episodes.
     comptime EVAL_ROUNDS = EVAL_ROUNDS_N
-    var n = 0
-    var nf = 0
+    # ⚠⚠ A RATE PER TASK, NOT ONE POOLED NUMBER. A two-task batch of `gather`
+    # (0.2) and `settle` (1.0) pools to 0.6 — a number neither task has, and
+    # one that moves when the lane split changes. The per-task curves ARE the
+    # multi-task claim; a mean over tasks is exactly what hides it.
+    var n = List[Int](length=n_tasks, fill=0)
+    var nf = List[Int](length=n_tasks, fill=0)
     for rnd in range(EVAL_ROUNDS):
-        var r = round_rate(agent, env, ctx, ao, UInt64(20260907 + rnd))
-        n += r[0]
-        nf += r[1]
-    var denom = Float64(N_ENVS * EVAL_ROUNDS)
-    return (Float64(n) / denom, Float64(nf) / denom)
+        var r = round_rate(
+            agent, env, ctx, ao, UInt64(20260907 + rnd), n_tasks
+        )
+        for i in range(n_tasks):
+            n[i] += r[0][i]
+            nf[i] += r[1][i]
+    var any = List[Float64]()
+    var fin = List[Float64]()
+    for i in range(n_tasks):
+        # ⚠ THE DENOMINATOR IS THE TASK'S OWN LANE COUNT. 32 lanes over 3
+        # tasks is 11/11/10; dividing all three by 32/3 would report the last
+        # one low while the numbers still looked consistent.
+        var d = Float64(lanes_for_task(i, N_ENVS, n_tasks) * EVAL_ROUNDS)
+        any.append(Float64(n[i]) / d)
+        fin.append(Float64(nf[i]) / d)
+    return (any^, fin^)
 
 
 def round_rate(
     mut agent: AgentT, mut env: EnvT, ctx: DeviceContext,
-    ao: DeviceBuffer[DT], seed: UInt64,
-) raises -> Tuple[Int, Int]:
+    ao: DeviceBuffer[DT], seed: UInt64, n_tasks: Int,
+) raises -> Tuple[List[Int], List[Int]]:
     """One round of `N_ENVS` greedy episodes: `(met at ANY step, met at the
-    FINAL step)` as COUNTS, so the caller can pool rounds without averaging
-    averages."""
+    FINAL step)` as COUNTS PER TASK, so the caller can pool rounds without
+    averaging averages and without pooling tasks."""
     comptime AO = 2 * ACT_DIM
     env.reset_batch[N_ENVS](ctx, seed)
 
@@ -537,16 +624,20 @@ def round_rate(
     # ⚠ THE FINAL-STEP READ IS THE `meta` STILL ON THE HOST FROM THE LAST
     # ITERATION — the loop downloads it every step, so this is the last step's
     # bit and needs no extra transfer.
-    var n = 0
-    var nf = 0
+    var n = List[Int](length=n_tasks, fill=0)
+    var nf = List[Int](length=n_tasks, fill=0)
     for e in range(N_ENVS):
+        # ⚠ THE SAME `lane_task` THE DRIVER WROTE WITH. Reading a lane back
+        # under a different mapping reports each task's rate under another
+        # task's name, and every total still adds up.
+        var lt = lane_task(e, n_tasks)
         if solved[e]:
-            n += 1
+            n[lt] += 1
         if Float64(
             env.d.meta.data[e * METADATA_SIZE + META_IDX_GOAL_HELD]
         ) > 0.5:
-            nf += 1
-    return (n, nf)
+            nf[lt] += 1
+    return (n^, nf^)
 
 
 def main() raises:
@@ -607,8 +698,10 @@ def main() raises:
     # 8e-05 nothing anchors the value function except the reward, and 0.024
     # per step is 200x too small to. `SoArm101ReachConfig`, which DOES train
     # on this robot, pays a `tolerance` in [0, 1] every step.
-    var shape_goal = So101TabletopConfig.SHAPE_W_GOAL
-    var shape_reach = So101TabletopConfig.SHAPE_W_REACH
+    # ⚠ TEXT, NOT A FLOAT, so a comma list survives the parse — these are
+    # PER TASK in a multi-task batch (`per_task` broadcasts or splits).
+    var shape_goal = String(So101TabletopConfig.SHAPE_W_GOAL)
+    var shape_reach = String(So101TabletopConfig.SHAPE_W_REACH)
     # ⚠⚠ THE MARGINS ARE FLAGS TOO, AND THEY HAVE TO BE. They became per-lane
     # `meta` words precisely because they are a per-TASK quantity, and a
     # per-task quantity that needs a rebuild to change is not one. Measured
@@ -621,8 +714,8 @@ def main() raises:
     # the goal term contributing almost nothing at first and the reach term
     # doing the early work. Reproducing that ratio on `lift` is a margin of
     # about 0.02.
-    var goal_margin = So101TabletopConfig.GOAL_MARGIN
-    var reach_margin = So101TabletopConfig.REACH_MARGIN
+    var goal_margin = String(So101TabletopConfig.GOAL_MARGIN)
+    var reach_margin = String(So101TabletopConfig.REACH_MARGIN)
     # ⚠⚠ THE TARGET NETWORK'S TRACKING RATE, WHICH `N_ENVS` SETS BY ACCIDENT.
     # `updates_per_step = N_ENVS` keeps UTD at 1 — 64 transitions collected,
     # 64 gradient steps — and that is the number people quote. It is not the
@@ -723,13 +816,13 @@ def main() raises:
         elif a == "--alpha" and i + 1 < len(args):
             init_alpha = Scalar[DT](Float64(String(args[i + 1])))
         elif a == "--shape-goal" and i + 1 < len(args):
-            shape_goal = Float64(String(args[i + 1]))
+            shape_goal = String(args[i + 1])
         elif a == "--shape-reach" and i + 1 < len(args):
-            shape_reach = Float64(String(args[i + 1]))
+            shape_reach = String(args[i + 1])
         elif a == "--goal-margin" and i + 1 < len(args):
-            goal_margin = Float64(String(args[i + 1]))
+            goal_margin = String(args[i + 1])
         elif a == "--reach-margin" and i + 1 < len(args):
-            reach_margin = Float64(String(args[i + 1]))
+            reach_margin = String(args[i + 1])
         elif a == "--updates-per-step" and i + 1 < len(args):
             updates_per_step = Int(String(args[i + 1]))
         elif a == "--tau" and i + 1 < len(args):
@@ -763,8 +856,27 @@ def main() raises:
 
     # ── the task, on the host ─────────────────────────────────────────────
     var f = load_family(FAMILY)
-    var t = load_task("mojo_rl/tasks/tasks/" + task_name + ".task")
-    validate_task_against_family(t, f)
+    # ⚠⚠ ONE TASK OR SEVERAL, BY THE SAME PATH. `task_name` may be a comma
+    # list; a single task is `n_tasks == 1` and every loop below still runs,
+    # so the multi-task batch is not a second code path that can rot while
+    # the single-task one is the only one exercised.
+    var task_names = split_csv(task_name)
+    var n_tasks = len(task_names)
+    var tasks = List[TaskSpec]()
+    for i in range(n_tasks):
+        var ti = load_task("mojo_rl/tasks/tasks/" + task_names[i] + ".task")
+        validate_task_against_family(ti, f)
+        # ⚠ EVERY TASK MUST BE THIS FAMILY'S. The env is monomorphised on one
+        # family, so a task from another has the wrong slot table and its
+        # body ids address the wrong props — which evaluates, and is wrong.
+        if ti.family != f.name:
+            raise Error(
+                "sac task: '" + task_names[i] + "' belongs to family '"
+                + ti.family + "' but the env is built for '" + f.name
+                + "'. A batch shares one family by construction."
+            )
+        tasks.append(ti^)
+    ref t = tasks[0]
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)
     var rects = region_rects(f)
@@ -776,7 +888,10 @@ def main() raises:
     var run = RunContext(
         project=String("so101"),
         driver=String("examples/tasks/sac_task_gpu.mojo"),
-        slug=String("sac-") + task_name,
+        # ⚠ COMMAS DO NOT BELONG IN A PATH. A two-task run's slug was
+        # `sac-so101_gather_bricks,so101_settle_brick`, which is a directory
+        # name every shell, tar and CSV consumer has an opinion about.
+        slug=String("sac-") + task_name.replace(",", "+"),
         env=String("family:") + f.name,
         task=task_name,
         seed=seed,
@@ -786,12 +901,26 @@ def main() raises:
     var csv_path = run.metrics_path()
     print("  run:", run.dir)
 
-    var g = bind_goal(parse_goal(t.goal), f, fmd.body_names, fmd.site_names)
-    require_tier_a(g, t.name)
-    # ⚠ ONE region table on device and a term's region index is ignored there.
-    require_gpu_regions(g, t.name)
-    var tape = encode_goal(g)
-    var mask = active_mask(t, f)
+    # ── the per-lane words, one set per TASK ──────────────────────────────
+    #
+    # ⚠⚠ EVERY ONE OF THESE IS ALREADY A PER-LANE `meta` FIELD. The tape, the
+    # active mask, the init-region words and the shaping words were made per
+    # lane precisely so a batch could carry more than one task; until now the
+    # driver wrote the same values into all of them. Nothing about the env or
+    # the reward kernel changes here — only which words land in which lane.
+    var tapes = List[List[Float64]]()
+    var masks = List[Float64]()
+    for i in range(n_tasks):
+        ref ti = tasks[i]
+        var gi = bind_goal(
+            parse_goal(ti.goal), f, fmd.body_names, fmd.site_names
+        )
+        require_tier_a(gi, ti.name)
+        # ⚠ ONE region table on device and a term's region index is ignored
+        # there.
+        require_gpu_regions(gi, ti.name)
+        tapes.append(encode_goal(gi))
+        masks.append(active_mask(ti, f))
 
     print("  task     :", t.name)
     print("  language :", t.language)
@@ -844,18 +973,31 @@ def main() raises:
     # and fall. `So101TabletopConfig.init_qpos_gpu` now samples them per lane
     # from `META_IDX_INIT_REGION_*`, gated against the host sampler coordinate
     # for coordinate by `tests/tasks/test_device_placement.mojo`.
-    var iw = init_region_words(t, f)
-    # ⚠ VALIDATED HERE, not at the write. `shaping_words` refuses a nonzero
-    # weight with a zero margin — `tolerance` with margin 0 is a HARD
-    # indicator, so the term goes sparse while the run still looks shaped.
-    var sw = shaping_words(
-        shape_goal, shape_reach, goal_margin, reach_margin
-    )
-    var n_active_free = 0
-    for j in range(len(iw)):
-        if iw[j] > 0.0:      # the word is region_index + 1; 0 = not placed
-            n_active_free += 1
-    print("  free slots placed at reset:", n_active_free, "of", len(iw))
+    # ⚠ PER TASK: `--goal-margin 0.10,0.21` gives each its own, because what
+    # a margin is worth depends on the task's own distance scale. One value
+    # broadcasts.
+    var wg = per_task(shape_goal, n_tasks, String("--shape-goal"))
+    var wr = per_task(shape_reach, n_tasks, String("--shape-reach"))
+    var mg = per_task(goal_margin, n_tasks, String("--goal-margin"))
+    var mr = per_task(reach_margin, n_tasks, String("--reach-margin"))
+    var iws = List[List[Float64]]()
+    var sws = List[List[Float64]]()
+    for i in range(n_tasks):
+        ref ti = tasks[i]
+        iws.append(init_region_words(ti, f))
+        # ⚠ VALIDATED HERE, not at the write. `shaping_words` refuses a
+        # nonzero weight with a zero margin — `tolerance` with margin 0 is a
+        # HARD indicator, so the term goes sparse while the run still looks
+        # shaped.
+        sws.append(shaping_words(wg[i], wr[i], mg[i], mr[i]))
+        var n_active_free = 0
+        ref iwi = iws[i]
+        for j in range(len(iwi)):
+            if iwi[j] > 0.0:   # the word is region_index + 1; 0 = not placed
+                n_active_free += 1
+        print("  ", ti.name, ": lanes", lanes_for_task(i, N_ENVS, n_tasks),
+              " free slots placed at reset", n_active_free, "of", len(iwi),
+              " margins", mg[i], "/", mr[i], " weights", wg[i], "/", wr[i])
 
     with DeviceContext() as ctx:
         # ── the logger: CSV always, the dashboard when it is configured ──
@@ -939,10 +1081,22 @@ def main() raises:
         #
         # ⚠ AS `cfg/*` SO THEY SORT TOGETHER and cannot collide with a metric
         # name. Emitted once, at step 0, before anything else is logged.
-        logger.log_scalar(String("cfg/shape_w_goal"), shape_goal, 0)
-        logger.log_scalar(String("cfg/shape_w_reach"), shape_reach, 0)
-        logger.log_scalar(String("cfg/goal_margin"), goal_margin, 0)
-        logger.log_scalar(String("cfg/reach_margin"), reach_margin, 0)
+        # ⚠⚠ PER TASK, KEYED BY TASK NAME. These were four scalars, which is
+        # right for one task and a lie for two — a batch whose tasks carry
+        # different margins would have recorded one of them, and the reason
+        # this block exists at all is that an assumed weight turned out not
+        # to be what ran.
+        logger.log_scalar(String("cfg/n_tasks"), Float64(n_tasks), 0)
+        for i in range(n_tasks):
+            var k = String("cfg/") + task_names[i] + String("/")
+            logger.log_scalar(k + String("shape_w_goal"), wg[i], 0)
+            logger.log_scalar(k + String("shape_w_reach"), wr[i], 0)
+            logger.log_scalar(k + String("goal_margin"), mg[i], 0)
+            logger.log_scalar(k + String("reach_margin"), mr[i], 0)
+            logger.log_scalar(
+                k + String("lanes"),
+                Float64(lanes_for_task(i, N_ENVS, n_tasks)), 0,
+            )
         logger.log_scalar(
             String("cfg/target_entropy"), Float64(target_entropy), 0
         )
@@ -1006,6 +1160,16 @@ def main() raises:
         env.mf.curriculum.upload(ctx)
 
         for e in range(N_ENVS):
+            # ⚠⚠ THE LANE'S OWN TASK. `lane_task` is the single definition of
+            # this mapping and the greedy evaluation reads a lane's success
+            # back through the SAME call — an offset between the two would
+            # report each task's rate under another task's name, sum
+            # correctly, and name no error.
+            var lt = lane_task(e, n_tasks)
+            ref tape = tapes[lt]
+            ref iw = iws[lt]
+            ref sw = sws[lt]
+            var mask = masks[lt]
             for w in range(TAPE_WORDS):
                 env.d.meta.data[e * METADATA_SIZE + META_IDX_TASK_PARAM_0 + w] \
                     = Scalar[DT](tape[w])
@@ -1046,6 +1210,16 @@ def main() raises:
             eval_env.mf.curriculum.data[i] = Scalar[DT](cw[i])
         eval_env.mf.curriculum.upload(ctx)
         for e in range(N_ENVS):
+            # ⚠⚠ THE LANE'S OWN TASK. `lane_task` is the single definition of
+            # this mapping and the greedy evaluation reads a lane's success
+            # back through the SAME call — an offset between the two would
+            # report each task's rate under another task's name, sum
+            # correctly, and name no error.
+            var lt = lane_task(e, n_tasks)
+            ref tape = tapes[lt]
+            ref iw = iws[lt]
+            ref sw = sws[lt]
+            var mask = masks[lt]
             for w in range(TAPE_WORDS):
                 eval_env.d.meta.data[
                     e * METADATA_SIZE + META_IDX_TASK_PARAM_0 + w
@@ -1104,27 +1278,58 @@ def main() raises:
         # `greedy_success_rate` is that measurement: one greedy episode per
         # lane, counting `META_IDX_GOAL_HELD`.
         var shaped = Float64(agent.mean_return())
-        var rates = greedy_success_rate(agent, eval_env, ctx)
-        var rate = rates[0]
-        var rate_final = rates[1]
+        var rates = greedy_success_rate(agent, eval_env, ctx, n_tasks)
+        ref any_rates = rates[0]
+        ref fin_rates = rates[1]
+        # ⚠ `rate` IS THE FIRST TASK'S, and it is only meaningful as "the"
+        # rate when there is one task. Everything below that judges a single
+        # number uses it; the per-task block above is what a batch is read
+        # from.
+        var rate = any_rates[0]
+        var rate_final = fin_rates[0]
         print("-" * 72)
         print("  env steps          :", num_steps)
         print("  elapsed            :", secs, "s")
         print("  episodes           :", agent.ep_count())
-        print("  shaped mean return :", shaped, "(last 100 episodes)")
-        print("  SUCCESS RATE       :", rate, "(greedy,",
-              N_ENVS * EVAL_ROUNDS_N, "episodes =", N_ENVS, "lanes x",
-              EVAL_ROUNDS_N, "rounds, met at ANY step)")
-        print("  held at the END    :", rate_final,
-              "— the stronger claim; for a goal that holds at RESET the"
-              " any-step rate is 1.0 by construction")
+        print("  shaped mean return :", shaped,
+              "(last 100 episodes, POOLED over tasks)" if n_tasks > 1
+              else "(last 100 episodes)")
+        # ⚠⚠ PER TASK, AND NEVER AVERAGED ACROSS THEM. `gather` at 0.20 beside
+        # `settle` at 1.0 has a mean of 0.60 — a number neither task has, that
+        # moves with the lane split, and that would let one task's collapse
+        # hide inside the other's success. The per-task rates ARE the
+        # multi-task claim.
+        for i in range(n_tasks):
+            var lanes_i = lanes_for_task(i, N_ENVS, n_tasks)
+            print("  ", task_names[i], ":  ANY", any_rates[i],
+                  "  held at END", fin_rates[i],
+                  "  (", lanes_i * EVAL_ROUNDS_N, "episodes =", lanes_i,
+                  "lanes x", EVAL_ROUNDS_N, "rounds )")
+        if n_tasks == 1:
+            print("  SUCCESS RATE       :", rate, "(greedy,",
+                  N_ENVS * EVAL_ROUNDS_N, "episodes =", N_ENVS, "lanes x",
+                  EVAL_ROUNDS_N, "rounds, met at ANY step)")
+            print("  held at the END    :", rate_final,
+                  "— the stronger claim; for a goal that holds at RESET the"
+                  " any-step rate is 1.0 by construction")
         # ⚠ LOGGED, NOT ONLY PRINTED. It is the criterion the whole family is
         # judged by and it was reaching stdout and nothing else, so no chart
         # ever carried it and no two runs could be compared on it.
-        logger.log_scalar(String("eval/success_rate"), rate, num_steps)
-        logger.log_scalar(
-            String("eval/success_rate_final"), rate_final, num_steps
-        )
+        # ⚠ ONE SERIES PER TASK, KEYED BY NAME, so two tasks in one batch
+        # give two curves rather than one average. The unsuffixed keys stay
+        # for a single-task run, because every chart and every comparison
+        # made so far reads them.
+        for i in range(n_tasks):
+            var k = String("eval/") + task_names[i] + String("/")
+            logger.log_scalar(k + String("success_rate"),
+                              any_rates[i], num_steps)
+            logger.log_scalar(k + String("success_rate_final"),
+                              fin_rates[i], num_steps)
+        if n_tasks == 1:
+            logger.log_scalar(String("eval/success_rate"), rate, num_steps)
+            logger.log_scalar(
+                String("eval/success_rate_final"), rate_final, num_steps
+            )
         logger.log_scalar(String("eval/shaped_return"), shaped, num_steps)
 
         # ⚠⚠ `close()` GOES **AFTER** THE LAST `log_scalar`, AND IT DID NOT.
@@ -1224,78 +1429,107 @@ def main() raises:
         # 0.27 and the UNTRAINED greedy actor scores 1.00 (see the header).
         # Printing "moved off zero" here would have reported a trivial task as
         # a trained one.
-        var bl = baselines_for(task_name)
-        if not bl[2]:
-            print("  ⚠⚠ NO BASELINE MEASURED for", task_name, "— run it with")
-            print("  `--warmup >= --steps` first. A rate with nothing to")
-            print("  compare it to is not a result.")
-            print("=" * 72)
-            return
-        print("  baselines for", task_name, "— random", bl[0],
-              " untrained greedy", bl[1])
+        # ⚠⚠ THE VERDICT RUNS PER TASK. It read `baselines_for(task_name)`
+        # with `task_name` being the whole comma list, so a two-task batch
+        # found no entry and printed "NO BASELINE MEASURED" for a pair of
+        # tasks that both have one. Worse, it judged ONE rate — the first
+        # task's — and would have called a batch flat or not on the strength
+        # of half of it.
+        for bi in range(n_tasks):
+            ref bname = task_names[bi]
+            print("-" * 72)
+            var bl = baselines_for(bname)
+            # ⚠⚠ A CRITERION RANDOM ALREADY SATURATES CANNOT DISCRIMINATE.
+            # `so101_settle_brick`'s goal HOLDS AT RESET, so its any-step rate
+            # is 1.0 for any policy including no policy — its baseline says
+            # exactly that (random 1.00). Judging that rate reports FLAT for a
+            # task that is solved and FLAT for one that is broken, which is
+            # the definition of a vacuous check. When the any-step baseline is
+            # already 1, the held-at-END rate is the one carrying information.
+            var rate = any_rates[bi]
+            var which = String("met at ANY step")
+            var p_base = bl[0]
+            if bl[3] and bl[0] >= 1.0:
+                rate = fin_rates[bi]
+                p_base = bl[2]
+                which = String("held at the END — the any-step rate is 1.0"
+                               " at random, so it cannot discriminate")
+            print("  judging:", which)
+            if not bl[3]:
+                print("  ⚠⚠ NO BASELINE MEASURED for", bname, "— run it with")
+                print("  `--warmup >= --steps` first. A rate with nothing to")
+                print("  compare it to is not a result.")
+                continue
+            print("  baselines for", bname, "— random", bl[0],
+                  " untrained greedy", bl[1])
 
-        # ⚠⚠ A RATE OVER n EPISODES HAS A STANDARD ERROR, AND AT THESE n IT IS
-        # THE SAME SIZE AS THE EFFECT. The window is 100 episodes, so a
-        # baseline of 0.02 carries se = sqrt(p(1-p)/n) = 0.014 — and a reading
-        # of 0.05 is 2 se above it, which is suggestive and is NOT a result.
-        # Printing the interval is what stops a noisy tick being read as a
-        # curve; the first `gather` run oscillated 0.00 .. 0.05 for 125k steps
-        # and every one of those values sits inside this band.
-        # ⚠ THE DENOMINATOR IS THE GREEDY EVAL'S LANE COUNT, not the training
-        # window — `rate` above comes from N_ENVS greedy episodes and the band
-        # has to be the band for THAT n.
-        var n = Float64(N_ENVS * EVAL_ROUNDS_N)
-        var p = bl[0]
-        var se = 0.0
-        if n > 0.0:
-            se = (p * (1.0 - p) / n) ** 0.5
-        # ⚠⚠ A ZERO BASELINE GIVES A ZERO STANDARD ERROR, and then ANY nonzero
-        # rate clears the band — one lucky lane out of 32 would read as
-        # learning. `so101_lift_brick`'s measured random rate is 0.0 and this
-        # printed a 2-sigma band ending at 0.0.
-        #
-        # The rule of three: having seen 0 successes in n trials, the 95%
-        # upper bound on the true rate is about 3/n. That is the band a zero
-        # baseline deserves — at 32 episodes it is 0.094, so three must
-        # succeed before the number means anything; at 128 it is 0.023.
-        var band = p + 2.0 * se
-        if p <= 0.0:
-            band = 3.0 / n
-        if p <= 0.0:
-            print("  baseline is 0 over", Int(n), "greedy episodes -> the",
-                  "rule-of-three 95% upper bound is", band)
-        else:
-            print("  baseline se over", Int(n), "greedy episodes:", se,
-                  " -> 2-sigma band ends at", band)
-
-        if rate <= band:
-            print("  FLAT — the rate is inside the random baseline's band.")
-            print("  ⚠ READ THE SHAPED RETURN AND `mean_q` BEFORE CONCLUDING")
-            print("  ANYTHING. The return is dense and moves long before the")
-            print("  rate does, and this run's own warmup carries its")
-            print("  baseline: while `episodes < 100` the printed avg_reward")
-            print("  is `true_mean * episodes / 100`.")
-            print("  If the return ROSE and then plateaued with a healthy")
-            print("  critic, the shaping ran out of gradient — decompose it")
-            print("  with `task_shaping_probe.mojo` and check the goal term's")
-            print("  tolerance at the measured distance. `so101_lift_brick`")
-            print("  plateaued at exactly that: margin 0.02 against a 0.030 m")
-            print("  distance is a tolerance of 0.006 and a gradient of 1.9")
-            print("  per metre, against 24 per metre at margin 0.05.")
-        else:
-            print("  the rate is ABOVE the baseline's 2-sigma band:", rate)
-            # ⚠⚠ NO "FRACTION OF THE REFERENCE" LINE. This divided by 0.5625
-            # and reported the run as a fraction of it — a number measured on
-            # the 4 cm prop, at margin 0.10, on a single draw that never
-            # reproduced at its own config (the repeat diverged to 273x). The
-            # comment in `baselines_for` was corrected to say so and THIS
-            # line, three hundred lines away, went on printing it: the same
-            # constant written twice, drifting the moment one copy moved.
+            # ⚠⚠ A RATE OVER n EPISODES HAS A STANDARD ERROR, AND AT THESE n IT IS
+            # THE SAME SIZE AS THE EFFECT. The window is 100 episodes, so a
+            # baseline of 0.02 carries se = sqrt(p(1-p)/n) = 0.014 — and a reading
+            # of 0.05 is 2 se above it, which is suggestive and is NOT a result.
+            # Printing the interval is what stops a noisy tick being read as a
+            # curve; the first `gather` run oscillated 0.00 .. 0.05 for 125k steps
+            # and every one of those values sits inside this band.
+            # ⚠ THE DENOMINATOR IS THE GREEDY EVAL'S LANE COUNT, not the training
+            # window — `rate` above comes from N_ENVS greedy episodes and the band
+            # has to be the band for THAT n.
+            # ⚠⚠ THE DENOMINATOR IS THIS TASK'S OWN EPISODE COUNT. In a batch a
+            # task gets its share of the lanes, so a band computed from N_ENVS
+            # would be the band for a sample four or eight times larger than the
+            # one the rate came from — narrower, and wrong in the direction that
+            # calls noise a result.
+            var n = Float64(lanes_for_task(bi, N_ENVS, n_tasks) * EVAL_ROUNDS_N)
+            var p = p_base
+            var se = 0.0
+            if n > 0.0:
+                se = (p * (1.0 - p) / n) ** 0.5
+            # ⚠⚠ A ZERO BASELINE GIVES A ZERO STANDARD ERROR, and then ANY nonzero
+            # rate clears the band — one lucky lane out of 32 would read as
+            # learning. `so101_lift_brick`'s measured random rate is 0.0 and this
+            # printed a 2-sigma band ending at 0.0.
             #
-            # A run that clears its baseline has said what it can say. The
-            # comparison that means something is against ANOTHER RUN on the
-            # SAME geometry, and that belongs in the log, not in a verdict
-            # that implies a target nobody has reproduced.
+            # The rule of three: having seen 0 successes in n trials, the 95%
+            # upper bound on the true rate is about 3/n. That is the band a zero
+            # baseline deserves — at 32 episodes it is 0.094, so three must
+            # succeed before the number means anything; at 128 it is 0.023.
+            var band = p + 2.0 * se
+            if p <= 0.0:
+                band = 3.0 / n
+            if p <= 0.0:
+                print("  baseline is 0 over", Int(n), "greedy episodes -> the",
+                      "rule-of-three 95% upper bound is", band)
+            else:
+                print("  baseline se over", Int(n), "greedy episodes:", se,
+                      " -> 2-sigma band ends at", band)
+
+            if rate <= band:
+                print("  FLAT — the rate is inside the random baseline's band.")
+                print("  ⚠ READ THE SHAPED RETURN AND `mean_q` BEFORE CONCLUDING")
+                print("  ANYTHING. The return is dense and moves long before the")
+                print("  rate does, and this run's own warmup carries its")
+                print("  baseline: while `episodes < 100` the printed avg_reward")
+                print("  is `true_mean * episodes / 100`.")
+                print("  If the return ROSE and then plateaued with a healthy")
+                print("  critic, the shaping ran out of gradient — decompose it")
+                print("  with `task_shaping_probe.mojo` and check the goal term's")
+                print("  tolerance at the measured distance. `so101_lift_brick`")
+                print("  plateaued at exactly that: margin 0.02 against a 0.030 m")
+                print("  distance is a tolerance of 0.006 and a gradient of 1.9")
+                print("  per metre, against 24 per metre at margin 0.05.")
+            else:
+                print("  the rate is ABOVE the baseline's 2-sigma band:", rate)
+                # ⚠⚠ NO "FRACTION OF THE REFERENCE" LINE. This divided by 0.5625
+                # and reported the run as a fraction of it — a number measured on
+                # the 4 cm prop, at margin 0.10, on a single draw that never
+                # reproduced at its own config (the repeat diverged to 273x). The
+                # comment in `baselines_for` was corrected to say so and THIS
+                # line, three hundred lines away, went on printing it: the same
+                # constant written twice, drifting the moment one copy moved.
+                #
+                # A run that clears its baseline has said what it can say. The
+                # comparison that means something is against ANOTHER RUN on the
+                # SAME geometry, and that belongs in the log, not in a verdict
+                # that implies a target nobody has reproduced.
         # ⚠ `status=done` IS WRITTEN HERE AND NOWHERE ELSE. A record still
         # saying `running` with an old `started` IS a crashed run, which is
         # information no directory listing has ever carried here — so nothing
