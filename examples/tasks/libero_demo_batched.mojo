@@ -4,6 +4,24 @@
     pixi run mojo run -I . examples/tasks/libero_demo_batched.mojo --demo-offset 2 --steps 100
     pixi run -e nvidia mojo run -I . examples/tasks/libero_demo_batched.mojo
 
+    # the throughput sweep — one lane count per build (see `LANES`)
+    for n in 64 256 1024; do
+        sed "s/^comptime LANES = .*/comptime LANES = $n/" \
+            examples/tasks/libero_demo_batched.mojo > /tmp/libero_lanes_$n.mojo
+        pixi run -e nvidia mojo run -I . /tmp/libero_lanes_$n.mojo --timing-only
+    done
+    # and one checked run at scale, the success word on every lane
+    pixi run -e nvidia mojo run -I . /tmp/libero_lanes_256.mojo --cpu-lanes 10
+
+`--timing-only` skips the per-step downloads, the success word and the CPU leg,
+and times only the action upload + `step_batch` + synchronize after
+`WARMUP_STEPS`. ⚠ READ THROUGHPUT FROM A `--timing-only` RUN. The checked run
+times the same span and still reads slower (M1 Pro, 20 lanes: 3.2 s per batch
+step checked, 1.25 s timing-only) — the host's per-step downloads and
+evaluation load the machine between the timed spans. `--cpu-lanes K` checks an evenly spaced sample of K lanes
+against the CPU (default min(LANES, 20)); the success word is always checked
+on every lane.
+
 Every lane runs one `libero_goal` demonstration: its task's goal tape and
 active mask in `meta`, the family's region table in `curriculum`, the demo's
 recorded initial state, and its recorded 7-word OSC_POSE actions fed step by
@@ -68,6 +86,7 @@ from std.os import listdir
 from std.os.path import exists
 from std.sys import argv
 from std.memory.alloc import unsafe_alloc
+from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
@@ -121,8 +140,17 @@ comptime FAMILY_DIR = "mojo_rl/tasks/families/"
 comptime TASK_DIR = "mojo_rl/tasks/tasks/"
 comptime DEMO_DIR = "references/libero_demos/libero_goal"
 comptime N_TASKS = 10
-comptime DEMOS_PER_TASK = 2
-comptime N_ENVS = N_TASKS * DEMOS_PER_TASK
+comptime LANES = 20
+"""The lane count. ⚠ A COMPILE-TIME CONSTANT, because it is `N_ENVS` of the
+batched env and this nightly has no `-D` integer define — the sweep below
+`sed`s it per run, the `g1_lane_sweep_gpu.mojo` idiom. Every distinct value is
+its own kernel instantiation, so a failing count fails alone."""
+comptime N_ENVS = LANES
+comptime DEMOS_PER_TASK = (LANES + N_TASKS - 1) // N_TASKS
+comptime DEMOS_IN_FILE = 50
+"""`LIBERO-datasets` records fifty per task; past that the lanes reuse demos."""
+comptime WARMUP_STEPS = 5
+"""Control steps excluded from the timing: kernel launch and lazy allocation."""
 comptime NQ = LIBERO_GOAL_DIMS.NQ
 comptime NV = LIBERO_GOAL_DIMS.NV
 comptime NB = LIBERO_GOAL_DIMS.NBODY
@@ -217,6 +245,8 @@ def main() raises:
     var demo_offset = 0
     var max_steps = 0
     var window = 10
+    var cpu_lanes = -1
+    var timing_only = False
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -229,6 +259,11 @@ def main() raises:
         elif s == "--window" and i + 1 < len(args):
             window = Int(String(args[i + 1]))
             i += 1
+        elif s == "--cpu-lanes" and i + 1 < len(args):
+            cpu_lanes = Int(String(args[i + 1]))
+            i += 1
+        elif s == "--timing-only":
+            timing_only = True
         else:
             # ⚠ REFUSED, NOT IGNORED — `_a_silently_ignored_argument_runs_the_
             # wrong_experiment_for_an_hour`.
@@ -252,9 +287,8 @@ def main() raises:
     # ── the demos: actions, and the first recorded state in OUR order ──────
     var remap = load_state_remap(String(FAMILY))
     var row_words = remap.row_words()
-    var lane_task = List[Int]()
-    var lane_demo = List[Int]()
-    var lane_T = List[Int]()
+    var pair_T = List[Int]()
+    var pair_demo = List[Int]()
     var actions = List[List[Float64]]()
     var q0 = List[List[Float64]]()
     var v0 = List[List[Float64]]()
@@ -269,7 +303,7 @@ def main() raises:
             )
         var h5 = H5File(path)
         for k in range(DEMOS_PER_TASK):
-            var di = demo_offset + k
+            var di = (demo_offset + k) % DEMOS_IN_FILE
             var d_act = h5.open_dataset(
                 String("data/demo_") + String(di) + "/actions"
             )
@@ -290,12 +324,24 @@ def main() raises:
             var qo = List[Float64](length=remap.nq, fill=0.0)
             var vo = List[Float64](length=remap.nv, fill=0.0)
             remap.convert_into(row, qo, vo)
-            lane_task.append(ti)
-            lane_demo.append(di)
-            lane_T.append(T)
+            pair_T.append(T)
+            pair_demo.append(di)
             actions.append(al^)
             q0.append(qo^)
             v0.append(vo^)
+    # ⚠ LANE e RUNS TASK e % N_TASKS, ITS (e // N_TASKS)-th DEMO. The demo
+    # data lives once per (task, demo) pair; `actions`, `q0` and `v0` are
+    # indexed by `lane_pair[e]`, never by the lane.
+    var lane_task = List[Int]()
+    var lane_demo = List[Int]()
+    var lane_T = List[Int]()
+    var lane_pair = List[Int]()
+    for e in range(N_ENVS):
+        var pi = (e % N_TASKS) * DEMOS_PER_TASK + e // N_TASKS
+        lane_pair.append(pi)
+        lane_task.append(e % N_TASKS)
+        lane_demo.append(pair_demo[pi])
+        lane_T.append(pair_T[pi])
     var horizon = 0
     for e in range(N_ENVS):
         if max_steps > 0 and lane_T[e] > max_steps:
@@ -411,9 +457,9 @@ def main() raises:
         env.d.meta.data[mb + META_IDX_SHAPE_W_REACH] = Scalar[DT](0)
         env.d.meta.data[mb + META_IDX_GOAL_HELD] = Scalar[DT](0)
         for k in range(NQ):
-            env.d.qpos.data[e * NQ + k] = Scalar[DT](q0[e][k])
+            env.d.qpos.data[e * NQ + k] = Scalar[DT](q0[lane_pair[e]][k])
         for k in range(NV):
-            env.d.qvel.data[e * NV + k] = Scalar[DT](v0[e][k])
+            env.d.qvel.data[e * NV + k] = Scalar[DT](v0[lane_pair[e]][k])
     env.d.meta.upload(ctx)
     env.d.qpos.upload(ctx)
     env.d.qvel.upload(ctx)
@@ -422,7 +468,25 @@ def main() raises:
     env._osc_anchor(ctx)
     ctx.synchronize()
 
+    # ⚠ THE CPU CHECK RUNS ON AN EVENLY SPACED SAMPLE, because one CPU lane
+    # is as slow as a whole batch step: at 1024 lanes checking them all is
+    # most of an hour. The success word is still checked on EVERY lane.
+    if cpu_lanes < 0:
+        cpu_lanes = N_ENVS if N_ENVS < 20 else 20
+    if cpu_lanes > N_ENVS:
+        cpu_lanes = N_ENVS
+    if timing_only:
+        cpu_lanes = 0
+    var cpu_ids = List[Int]()
+    var is_cpu = List[Bool](length=N_ENVS, fill=False)
+    for c in range(cpu_lanes):
+        var e = (c * N_ENVS) // cpu_lanes
+        cpu_ids.append(e)
+        is_cpu[e] = True
+
     var act_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * OSC_ACTION_DIM)
+    var timed_steps = 0
+    var timed_ns = 0
     var dev_traj = List[List[Float64]]()
     var dev_success = List[Int]()
     for _ in range(N_ENVS):
@@ -436,10 +500,21 @@ def main() raises:
         var ap = act_h.unsafe_ptr()
         for e in range(N_ENVS):
             for k in range(OSC_ACTION_DIM):
-                var v = actions[e][t * 7 + k] if t < lane_T[e] else 0.0
+                var v = actions[lane_pair[e]][t * 7 + k] if t < lane_T[e] else 0.0
                 ap[unsafe_offset = e * OSC_ACTION_DIM + k] = Scalar[DT](v)
+        # ⚠ THE TIMED SPAN IS THE ACTION UPLOAD, THE STEP AND A SYNCHRONIZE —
+        # not the downloads or the host evaluation below, which are this
+        # gate's cost and not the simulator's. Warmup steps are excluded.
+        ctx.synchronize()
+        var t0 = perf_counter_ns()
         ctx.enqueue_copy(env._action, act_h)
         env.step_batch[N_ENVS](ctx, UInt64(t + 1))
+        ctx.synchronize()
+        if t >= WARMUP_STEPS:
+            timed_ns += Int(perf_counter_ns() - t0)
+            timed_steps += 1
+        if timing_only:
+            continue
         env.d.qpos.download(ctx)
         env.d.xpos.download(ctx)
         env.d.xquat.download(ctx)
@@ -452,8 +527,9 @@ def main() raises:
         for e in range(N_ENVS):
             if t >= lane_T[e]:
                 continue
-            for k in range(NQ):
-                dev_traj[e].append(Float64(env.d.qpos.data[e * NQ + k]))
+            if is_cpu[e]:
+                for k in range(NQ):
+                    dev_traj[e].append(Float64(env.d.qpos.data[e * NQ + k]))
             var st = HostState(List[Float64](), List[Float64](), List[Float64]())
             for k in range(NB * 3):
                 st.xpos.append(Float64(env.d.xpos.data[e * NB * 3 + k]))
@@ -489,6 +565,19 @@ def main() raises:
             if dev_says and dev_success[e] < 0:
                 dev_success[e] = t
     print("  batch: stepped", horizon, "control steps on", N_ENVS, "lanes")
+    if timed_steps > 0:
+        var per_step = Float64(timed_ns) / Float64(timed_steps) * 1e-9
+        print("  throughput:", timed_steps, "timed control steps (after",
+              WARMUP_STEPS, "warmup) —", _num(per_step * 1e3), "ms per batch step |",
+              Int(Float64(N_ENVS) / per_step), "lane control steps/s |",
+              Int(Float64(N_ENVS * SUBSTEPS) / per_step), "physics substeps/s |",
+              _num(per_step / Float64(N_ENVS) * 1e6), "us per lane step")
+    if timing_only:
+        if env.osc_singular_lanes(ctx) > 0:
+            raise Error("a lane ended the timing run singular")
+        print()
+        print("=== TIMING ONLY — no success word, no CPU check ===")
+        return
 
     # ══ THE CPU LEG — one lane at a time, the same demos ═══════════════════
     var verts = 32768
@@ -513,15 +602,16 @@ def main() raises:
     var div_end = List[Float64]()
     var arm_end = List[Float64]()
     var window_worst = 0.0
-    for e in range(N_ENVS):
+    for ci in range(len(cpu_ids)):
+        var e = cpu_ids[ci]
         # a fresh Data, scratch and integrator per lane: nothing carried over
         var d = Data[H, DynDims, 1](dims)
         var scratch = DynamicsScratch[H, DynDims, 1](dims)
         var integ = StudioIntegEll(dims)
         for k in range(NQ):
-            d.qpos.data[k] = Scalar[H](q0[e][k])
+            d.qpos.data[k] = Scalar[H](q0[lane_pair[e]][k])
         for k in range(NV):
-            d.qvel.data[k] = Scalar[H](v0[e][k])
+            d.qvel.data[k] = Scalar[H](v0[lane_pair[e]][k])
         forward_kinematics["cpu", H, DynDims, 1](d, m)
         var osc = _make_osc(
             fmd.joint_names, fmd.site_names, fmd.actuator_names, site_body,
@@ -539,7 +629,7 @@ def main() raises:
         for t in range(lane_T[e]):
             var a = List[Float64]()
             for k in range(7):
-                a.append(actions[e][t * 7 + k])
+                a.append(actions[lane_pair[e]][t * 7 + k])
             for s in range(SUBSTEPS):
                 osc.update(d, m, scratch)
                 if s == 0:
@@ -603,28 +693,34 @@ def main() raises:
     print("  lane task                                demo    T  success(batch/cpu)"
           + "   |dq| @1       @10       @50       @end   arm@end")
     var n_dev = 0
+    var n_dev_sample = 0
     var n_cpu = 0
     var n_agree = 0
     for e in range(N_ENVS):
-        var nm = String(String(names[lane_task[e]])[byte = String(FAMILY).byte_length() + 2 : String(names[lane_task[e]]).byte_length()])
         if dev_success[e] >= 0:
             n_dev += 1
-        if cpu_success[e] >= 0:
+    for ci in range(len(cpu_ids)):
+        var e = cpu_ids[ci]
+        var nm = String(String(names[lane_task[e]])[byte = String(FAMILY).byte_length() + 2 : String(names[lane_task[e]]).byte_length()])
+        if dev_success[e] >= 0:
+            n_dev_sample += 1
+        if cpu_success[ci] >= 0:
             n_cpu += 1
-        if (dev_success[e] >= 0) == (cpu_success[e] >= 0):
+        if (dev_success[e] >= 0) == (cpu_success[ci] >= 0):
             n_agree += 1
         var sd = String(dev_success[e]) if dev_success[e] >= 0 else String("-")
-        var sc = String(cpu_success[e]) if cpu_success[e] >= 0 else String("-")
+        var sc = String(cpu_success[ci]) if cpu_success[ci] >= 0 else String("-")
         print("  " + _pad(String(e), 5) + _pad(nm, 36) + _pad(String(lane_demo[e]), 5)
               + _pad(String(lane_T[e]), 5) + _pad(sd + " / " + sc, 21)
-              + _pad(_num(div_1[e]), 10)
-              + _pad(_num(div_10[e]), 10)
-              + _pad(_num(div_50[e]), 10)
-              + _pad(_num(div_end[e]), 10)
-              + _num(arm_end[e]))
+              + _pad(_num(div_1[ci]), 10)
+              + _pad(_num(div_10[ci]), 10)
+              + _pad(_num(div_50[ci]), 10)
+              + _pad(_num(div_end[ci]), 10)
+              + _num(arm_end[ci]))
     print()
-    print("  success over the demo: batch", n_dev, "/", N_ENVS, "  cpu", n_cpu,
-          "/", N_ENVS, "  lanes agreeing", n_agree, "/", N_ENVS)
+    print("  success over the demo: batch", n_dev, "/", N_ENVS, "(all lanes);",
+          "on the", len(cpu_ids), "CPU-checked lanes batch", n_dev_sample,
+          "cpu", n_cpu, "agreeing", n_agree)
     print("  success word: device GOAL_HELD vs host eval on the device state —",
           eval_cmp, "comparisons,", eval_true, "true,", eval_bad, "disagreeing")
     print("  physics: worst |dq| over the first", window, "steps",
