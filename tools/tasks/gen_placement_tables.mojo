@@ -356,7 +356,12 @@ def generate(family: String) raises -> String:
     o += "    comptime NBODY: Int = " + String(dims.get_nbody()) + "\n"
     o += "    comptime NSITE: Int = " + String(dims.get_nsite()) + "\n"
     o += "    comptime GRIPPER_SITE: Int = " + String(grip) + "  # "
-    o += String(GRIPPER_SITE_NAME) + "\n\n"
+    o += String(GRIPPER_SITE_NAME) + "\n"
+    o += "    comptime N_BASE_QPOS: Int = " + String(len(f.base_qpos)) + "\n\n"
+    var bq = List[String]()
+    for i in range(len(f.base_qpos)):
+        bq.append(_f(f.base_qpos[i]))
+    o += _method("base_qpos", "i", "Float64", bq)
     o += _method("free_slot", "j", "Int", fslot)
     o += _method("free_qadr", "j", "Int", fqadr)
     o += _method("free_dadr", "j", "Int", fdadr)

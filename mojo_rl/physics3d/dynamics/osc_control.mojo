@@ -116,6 +116,13 @@ def _osc_lane[
     `ctrl` row; run first would have the arm law overwrite the fingers.
     """
     if policy_step != 0:
+        # ⚠⚠ THE SINGULAR FLAG IS PER CONTROL STEP, CLEARED HERE. `osc_run_gpu`
+        # only ever SETS it and `osc_reset_gpu` was the only clear, so one
+        # singular substep kept a lane reporting "singular, torques zero" for
+        # the rest of the episode while its torques were in fact being
+        # computed again. Cleared on the policy step, it answers "did any of
+        # THIS step's substeps fail", which is what `osc_singular_lanes` says.
+        state[env, OSC_IDX_SINGULAR] = Scalar[DTYPE](0)
         osc_set_goal_gpu[DTYPE](
             state, work, refs, actions, xquat, site_xpos, sites, env
         )

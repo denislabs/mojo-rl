@@ -22,6 +22,27 @@ struct LiberoLivingRoomScene3Placement(PlacementTable):
     comptime NBODY: Int = 26
     comptime NSITE: Int = 10
     comptime GRIPPER_SITE: Int = 4  # robot_grip_site
+    comptime N_BASE_QPOS: Int = 9
+
+    @staticmethod
+    def base_qpos[DTYPE: DType](i: Int) -> Scalar[DTYPE]:
+        if i == 0:
+            return Scalar[DTYPE](0.0)
+        if i == 1:
+            return Scalar[DTYPE](-0.161037389)
+        if i == 2:
+            return Scalar[DTYPE](0.0)
+        if i == 3:
+            return Scalar[DTYPE](-2.44459747)
+        if i == 4:
+            return Scalar[DTYPE](0.0)
+        if i == 5:
+            return Scalar[DTYPE](2.2267522)
+        if i == 6:
+            return Scalar[DTYPE](0.7853981633974483)
+        if i == 7:
+            return Scalar[DTYPE](0.020833)
+        return Scalar[DTYPE](-0.020833)
 
     @staticmethod
     def free_slot(j: Int) -> Int:

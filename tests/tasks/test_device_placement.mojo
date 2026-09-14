@@ -201,6 +201,8 @@ struct Stats(Copyable, ImplicitlyCopyable, Movable):
     var meta_touched: Int
     var jinit_draws: Int
     var jinit_bad: Int
+    var base_words: Int
+    var base_bad: Int
     # rule coverage, per placement the HOST made
     var geom: Int
     var table_off: Int
@@ -228,6 +230,8 @@ struct Stats(Copyable, ImplicitlyCopyable, Movable):
         self.meta_touched = 0
         self.jinit_draws = 0
         self.jinit_bad = 0
+        self.base_words = 0
+        self.base_bad = 0
         self.geom = 0
         self.table_off = 0
         self.on_fixture = 0
@@ -390,6 +394,16 @@ def _parity[T: PlacementTable](
     for lane in range(BATCH):
         var qseen = List[Bool](length=NQ, fill=False)
         var vseen = List[Bool](length=NV, fill=False)
+        # ── the base asset's rest pose ──
+        for i in range(T.N_BASE_QPOS):
+            st.base_words += 1
+            if Float64(qs.data[lane * NQ + i]) != f.base_qpos[i]:
+                st.base_bad += 1
+            if i < NV and Float64(vs.data[lane * NV + i]) != 0.0:
+                st.base_bad += 1
+            qseen[i] = True
+            if i < NV:
+                vseen[i] = True
         # ── the joint draws ──
         for k in range(li.n_jinit):
             var want = li.jvals[lane * li.n_jinit + k]
@@ -760,6 +774,11 @@ struct SynthStackPlacement(PlacementTable):
     comptime NBODY: Int = 4
     comptime NSITE: Int = Self.N_REGIONS
     comptime GRIPPER_SITE: Int = 0
+    comptime N_BASE_QPOS: Int = 0
+
+    @staticmethod
+    def base_qpos[DTYPE: DType](i: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
 
     @staticmethod
     def free_slot(j: Int) -> Int:
@@ -922,6 +941,11 @@ struct SynthFixturePlacement(PlacementTable):
     comptime NBODY: Int = 4
     comptime NSITE: Int = Self.N_REGIONS
     comptime GRIPPER_SITE: Int = 0
+    comptime N_BASE_QPOS: Int = 0
+
+    @staticmethod
+    def base_qpos[DTYPE: DType](i: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
 
     @staticmethod
     def free_slot(j: Int) -> Int:
@@ -1309,6 +1333,11 @@ def main() raises:
     ta.check(st.bad == 0,
              "the device and the host agree on every coordinate of every"
              " placement, within " + String(TOL) + " m")
+    print("      base_qpos words", st.base_words, " differing", st.base_bad)
+    ta.check(st.base_words > 0 and st.base_bad == 0,
+             String(st.base_words) + " rest-pose words: the reset writes the"
+             " family's base_qpos and zeroes those velocities (q = 0 is the"
+             " Panda's singular pose)")
     ta.check(st.jinit_bad == 0,
              String(st.jinit_draws) + " joint draws: the device writes the"
              " host's value and zeroes the velocity")

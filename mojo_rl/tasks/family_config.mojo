@@ -128,6 +128,12 @@ struct So101TabletopPlacement(PlacementTable):
     comptime NBODY: Int = So101TabletopModel.NBODY
     comptime NSITE: Int = So101TabletopModel.NSITE
     comptime GRIPPER_SITE: Int = So101TabletopConfig.GRIPPER_SITE
+    # `so101_tabletop.family` declares no `base_qpos=`: its rest is `qpos0`.
+    comptime N_BASE_QPOS: Int = 0
+
+    @staticmethod
+    def base_qpos[DTYPE: DType](i: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
 
     @staticmethod
     def free_slot(j: Int) -> Int:

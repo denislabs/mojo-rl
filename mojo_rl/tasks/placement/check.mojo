@@ -227,6 +227,15 @@ def placement_table_drift[T: PlacementTable](
             + String(facts.nq) + "/" + String(facts.nv) + "/"
             + String(facts.nbody) + "/" + String(facts.nsite)
         )
+    if T.N_BASE_QPOS != len(f.base_qpos):
+        out.append(
+            "N_BASE_QPOS " + String(T.N_BASE_QPOS) + " vs the family's "
+            + String(len(f.base_qpos))
+        )
+    else:
+        for i in range(T.N_BASE_QPOS):
+            if T.base_qpos[D64](i) != f.base_qpos[i]:
+                out.append("base_qpos[" + String(i) + "]")
     if T.GRIPPER_SITE != facts.gripper_site:
         out.append(
             "GRIPPER_SITE " + String(T.GRIPPER_SITE) + " vs scene "

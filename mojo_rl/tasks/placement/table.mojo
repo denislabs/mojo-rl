@@ -145,6 +145,14 @@ trait PlacementTable:
     comptime GRIPPER_SITE: Int
     """The end-effector site the observation's goal words measure from —
     `robot_grip_site` on the Panda, `robot_gripperframe` on the SO-101."""
+    comptime N_BASE_QPOS: Int
+    """How many leading `qpos` words `base_qpos[DTYPE](i)` restates."""
+
+    @staticmethod
+    def base_qpos[DTYPE: DType](i: Int) -> Scalar[DTYPE]:
+        """The `.family`'s `base_qpos=` — the base asset's joint positions at
+        REST, which the reset writes into `qpos[0 .. N_BASE_QPOS)`."""
+        ...
 
     # ── per free slot ──
     @staticmethod
@@ -555,11 +563,26 @@ def reset_task_slots[
     env: Int,
     seed: Int,
 ):
-    """The task layer's whole reset for one lane: joints, THEN placements.
+    """The task layer's whole reset for one lane: the base asset's rest pose,
+    the joint draws, THEN the placements.
+
+    ⚠⚠ THE REST POSE, BECAUSE `qpos0` IS NOT IT. `_reset_env_lane` restores
+    the composed scene's `qpos0`, which for the Panda is every joint at ZERO —
+    the arm straight up, a SINGULAR configuration: the site Jacobian's
+    angular-x row is identically zero there, so OSC_POSE's operational-space
+    inertia cannot be inverted and the controller writes no torque. Every
+    host path (`libero_eval`, the gates, the generator's FK) writes
+    `base_qpos` first; the device reset did not, and the batched LIBERO env
+    reported 16 of 16 lanes singular with the arm falling (M1 Pro and 5090
+    alike). `qvel` is zeroed over the same words.
 
     ⚠ THE ORDER IS LOAD-BEARING. A region carried by a drawer reads the
     drawer's drawn `qpos`, so the draw must be written first — the host's order
     too (draw, FK, frames, sample)."""
+    for i in range(T.N_BASE_QPOS):
+        qpos[env, i] = T.base_qpos[DTYPE](i)
+        if i < NV_F:
+            qvel[env, i] = Scalar[DTYPE](0)
     draw_joint_inits[T, DTYPE, BATCH_SIZE, NQ_F, NV_F](
         qpos, qvel, meta, env, seed
     )
