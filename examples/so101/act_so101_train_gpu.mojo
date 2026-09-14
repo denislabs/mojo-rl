@@ -273,6 +273,8 @@ from mojo_rl.deep_agents.act.trainer import (
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.core.run import RunContext, register_run
+from mojo_rl.deep_agents.training.checkpoint import announce_checkpoint
+from mojo_rl.io.artifact_sink import ArtifactSink, close_sink, sink_for_run
 
 
 
@@ -583,6 +585,24 @@ def main() raises:
         logger.set_config("backbone_init", "random")
         logger.set_config("backbone_norm", "trainable")
 
+    # ⚠⚠ REGISTERED AFTER THE LAST `set_config`, AND IT WAS NEVER CALLED. The
+    # registration is what carries `project=` to the dashboard: without it
+    # this driver's runs reached the monitor with no project, so they appeared
+    # under "All runs" and on no project's page.
+    register_run(run, logger)
+
+    # ⚠⚠ THE ARTIFACT UPLINK — `best` and `last` leave the box while the run
+    # is going, so a rented GPU that dies at hour three does not take the
+    # weights with it. `sink_for_run` returns None when `.env` names no
+    # monitor, and every `announce_checkpoint` is a no-op on a None.
+    #
+    # ⚠ `ACT_NO_MONITOR` MUST SILENCE THIS TOO. `sink_for_run` reads `.env`
+    # itself, so without this branch a run told to stay off the dashboard
+    # would still upload ~130 MB per validation to it.
+    var artifacts: Optional[ArtifactSink] = None
+    if monitor_url.byte_length() > 0:
+        artifacts = sink_for_run(run.id, run.dir)
+
     var qpos = List[Scalar[DT]](unsafe_uninit_length=BATCH * QPOS)
     var images = List[Scalar[DT]](unsafe_uninit_length=BATCH * IMG_ELEMS)
     var actions = List[Scalar[DT]](unsafe_uninit_length=BATCH * K * ADIM)
@@ -888,11 +908,13 @@ def main() raises:
             # Written EVERY pass: a run killed at hour three otherwise leaves
             # nothing to evaluate or resume from.
             tr.save(last_ckpt)
+            announce_checkpoint(last_ckpt, artifacts, run.dir)
             if vl1 < best_val:
                 best_val = vl1
                 best_step = s
                 stale = 0
                 tr.save(best_ckpt)
+                announce_checkpoint(best_ckpt, artifacts, run.dir)
             else:
                 stale += 1
 
@@ -921,14 +943,22 @@ def main() raises:
                 )
                 break
 
-    logger.close()
     # ⚠ THE RUN RECORDS ITS OWN VERDICT — `outcome=` is what pain 1 asks for,
     # and no naming convention supplies it. `best/val_l1` against the 0.4076
     # line is this configuration's comparison.
-    run.set_outcome(
+    var outcome = (
         String("best_val_l1=") + String(best_val)
         + " best_step=" + String(best_step)
     )
+    run.set_outcome(outcome)
+    # ⚠ `finish` BEFORE `close`, WITH THE OUTCOME. `close()` finishes with an
+    # EMPTY outcome if the driver did not, so the verdict used to reach
+    # `run.kv` and never the dashboard.
+    logger.finish(String("done"), outcome)
+    logger.close()
+    # ⚠ AFTER THE LOOP, NOT IN IT: this drains the uploads still queued, and
+    # a `best` written at the last validation is exactly the one that matters.
+    close_sink(artifacts)
     run.close()
 
     print("")
