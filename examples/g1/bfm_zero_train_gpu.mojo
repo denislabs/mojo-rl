@@ -429,6 +429,11 @@ def main() raises:
     # segments, ~35 s) — ~3 % of a 20-minute checkpoint interval, and the only
     # number in the file that measures the thing the run is FOR.
     var eval_segments = atol(_flag(String("--eval-segments"), String(1)))
+    # The eval used to run ONLY at checkpoints, so the curve was three points
+    # and "the peak is at 4000" partly meant "4000 was the best of the three
+    # we sampled". `--eval-every` (batched steps) decouples the two; it
+    # defaults to the checkpoint cadence, so nothing moves unless asked.
+    var eval_every = atol(_flag(String("--eval-every"), String(0)))
     seed(seed_v)
 
     # ⚠⚠ `agent.save_state(tag + "." + String(s))` WAS THE SECOND HAND-ROLLED
@@ -869,6 +874,30 @@ def main() raises:
             mn.append(String("loss/fb_diag")); mv.append(fb_anchor)
             mn.append(String("loss/M1")); mv.append(m_mean)
             mn.append(String("loss/q_fb_abs")); mv.append(q_fb_abs)
+            # ── the CPR half ──────────────────────────────────────────
+            # Runs 1-3 turned at the same step under three materially
+            # different FB losses, and NOTHING logged inflected at the turn.
+            # The FB half was the only half being logged: the discriminator
+            # and Q_D — the terms that hold pi on the expert manifold, i.e.
+            # the terms tracking quality IS — were completely unobserved.
+            # `d_gap` is the one to watch: D+ - D- going to 0 means the
+            # discriminator can no longer tell policy from expert, so r_D
+            # carries no signal and the style term is inert however large
+            # `reg_coeff` is.
+            var d_pos = 0.0
+            var d_neg = 0.0
+            var r_d = 0.0
+            var q_d = 0.0
+            var q_loss = 0.0
+            var q_pi = 0.0
+            agent.head.read_diag(d_pos, d_neg, r_d, q_d, q_loss, q_pi)
+            mn.append(String("cpr/d_pos")); mv.append(d_pos)
+            mn.append(String("cpr/d_neg")); mv.append(d_neg)
+            mn.append(String("cpr/d_gap")); mv.append(d_pos - d_neg)
+            mn.append(String("cpr/r_d")); mv.append(r_d)
+            mn.append(String("cpr/q_d")); mv.append(q_d)
+            mn.append(String("cpr/q_loss")); mv.append(q_loss)
+            mn.append(String("cpr/q_pi")); mv.append(q_pi)
             mn.append(String("norm/F")); mv.append(f_norm)
             mn.append(String("norm/B")); mv.append(b_norm)
             # `|B|` is pinned to sqrt(d) by the net's sphere projection, so it
@@ -901,12 +930,23 @@ def main() raises:
             mn.append(String("env/lie_down")); mv.append(lie_frac)
             mn.append(String("env/elapsed_s")); mv.append(el)
             logger.log_scalars(mn, mv, env_steps + start_at)
-        if ckpt_every > 0 and s > 0 and s % ckpt_every == 0:
-            var p = run.checkpoint_path(String("step_") + String(s + s_off))
+        var ee = eval_every if eval_every > 0 else ckpt_every
+        var do_ckpt = ckpt_every > 0 and s > 0 and s % ckpt_every == 0
+        var do_eval = eval_on and ee > 0 and s > 0 and s % ee == 0
+        if do_ckpt or do_eval:
+            # A kept checkpoint when one is due, otherwise ONE scratch file
+            # overwritten in place — the eval scores a FILE either way, so the
+            # finer cadence costs a 465 MB write and no disk growth. The
+            # scratch path is never announced to the artifact sink.
+            var p = run.checkpoint_path(
+                String("step_") + String(s + s_off) if do_ckpt
+                else String("_eval_scratch")
+            )
             agent.save_state(p)
-            announce_checkpoint(p, artifacts, run.dir)
-            print("  checkpoint", p)
-            if eval_on:
+            if do_ckpt:
+                announce_checkpoint(p, artifacts, run.dir)
+                print("  checkpoint", p)
+            if do_eval:
                 var sc = _score_tracking(
                     eval_t, eval_env, rsi, st, pv, eval_qpos, p, eval_segments,
                     eval_ach, eval_tgt, eval_b_in, eval_b_out, eval_z_seg,
