@@ -547,6 +547,14 @@ def main() raises:
     # cube is not held. It is unexplained and left visible rather than
     # smoothed over; the decision rests on the TOP of the range, which is
     # monotone: 0.04 and 0.03 never hold, 0.024 does.
+    # ⚠⚠ THE SHIPPED WIDTH IS THE ONE THE VERDICT IS ABOUT. This leg used to
+    # conclude "the prop is too wide, shrink `cube.xml`" whenever ANY width
+    # held — so after the prop was actually shrunk to 0.012 it kept telling
+    # the reader to shrink it, with 0.012 sitting in its own HELD row. The
+    # question is whether THE PROP THE FAMILY SHIPS is holdable; the other
+    # rows only say where the boundary is.
+    var shipped = Float64(env.mf.geoms.data[o_b + GEOM_IDX_HALF_X])
+    var shipped_held = False
     var widths = [0.020, 0.015, 0.012, 0.010]
     var any_held = False
     for wi in range(len(widths)):
@@ -596,13 +604,23 @@ def main() raises:
               "   HELD" if bh > 0.0 else "   dropped")
         if bh > 0.0:
             any_held = True
+            # float equality is fine here: `hw` is written INTO the geom and
+            # read back out of it, so the comparison is against the value
+            # this loop just stored.
+            if hw == shipped:
+                shipped_held = True
     # restore, so nothing downstream inherits a shrunken prop
     env.mf.geoms.data[o_b + GEOM_IDX_HALF_X] = Scalar[DT](0.02)
     env.mf.geoms.data[o_b + GEOM_IDX_HALF_Y] = Scalar[DT](0.02)
     env.mf.geoms.data[o_b + GEOM_IDX_HALF_Z] = Scalar[DT](0.02)
-    if any_held:
-        print("  -> THE PROP IS TOO WIDE FOR THIS JAW. A narrower cube is"
-              " held, so the jaw and the solver are fine and the fix is"
+    if shipped_held:
+        print("  -> THE SHIPPED PROP (half-extent", shipped, ") IS HELD. The"
+              " rows above only locate the boundary; nothing here asks for an"
+              " asset change.")
+    elif any_held:
+        print("  -> THE PROP IS TOO WIDE FOR THIS JAW. The shipped",
+              shipped, "half-extent is dropped and a narrower cube is held,"
+              " so the jaw and the solver are fine and the fix is"
               " `cube.xml`'s `size` (or a task with a smaller prop).")
     else:
         print("  -> NO WIDTH HOLDS, down to a 1.2 cm cube. The prop is not"
