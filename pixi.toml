@@ -235,6 +235,7 @@ gen-family-scenes-check = { cmd = "mojo run -I . tools/tasks/gen_family_scene.mo
 gen-placement-tables = { cmd = "mojo run -I . tools/tasks/gen_placement_tables.mojo", description = "Generate every LIBERO family's device placement table (mojo_rl/tasks/placement/) from the .family + composed scene FK" }
 gen-placement-tables-check = { cmd = "mojo run -I . tools/tasks/gen_placement_tables.mojo --check", description = "Fail if a device placement table is stale (CI)" }
 device-placement = { cmd = "mojo run -I . tests/tasks/test_device_placement.mojo", description = "The device reset's free-slot placement against the host sampler: so101_tabletop + every LIBERO task, exact, with rule coverage" }
+libero-demo-batched = { cmd = "mojo run -I . examples/tasks/libero_demo_batched.mojo", description = "LIBERO demonstrations replayed on the batched env (a real task per lane) against the CPU replay: success word exact, physics window, success side by side; args: [--demo-offset K] [--steps S] [--window W]" }
 libero-task-hooks = { cmd = "mojo run -I . tests/tasks/test_libero_task_hooks.mojo", description = "The per-step task hooks (repark, observation, GOAL_HELD) on every LIBERO task: device == host == oracle, plus LiberoGoalOscConfig's own hooks" }
 format = { cmd = "mojo format -l 80 ." }
 # Dear ImGui shim for `mojo_rl/render/imgui/` (the ImGui dm_control viewer).
