@@ -24,6 +24,7 @@ the hash, and why it also carries the generating recipe (`seed` +
 transitions are 992 MiB but ~2 min of CPU) rather than fetched.
 """
 
+from mojo_rl.core.bytes import string_from_bytes
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.io.fetch import fetch_to_cache, sha256_file, upload_file
 from mojo_rl.io.fileio import file_size
@@ -90,6 +91,28 @@ def _opt_int(ref doc: JsonDoc, node: Int, name: String) raises -> Int:
     if n < 0 or doc.kind_of(n) != 2:  # J_NUMBER
         return 0
     return doc.integer(n)
+
+
+struct CatalogAnswer(Movable):
+    """A status and a parsed body, for the routes where more than one status
+    is a normal answer (`/projects/<slug>/files/*`: 200, 201 and 409)."""
+
+    var status: Int
+    var doc: JsonDoc
+    var text: String
+
+    def __init__(out self, status: Int, var doc: JsonDoc, var text: String):
+        self.status = status
+        self.doc = doc^
+        self.text = text^
+
+    def __init__(out self, *, deinit move: Self):
+        self.status = move.status
+        self.doc = move.doc^
+        self.text = move.text^
+
+    def take_doc(deinit self) -> JsonDoc:
+        return self.doc^
 
 
 struct RemoteCatalog(Movable & Deinitable):
@@ -175,6 +198,131 @@ struct RemoteCatalog(Movable & Deinitable):
         if len(raw) == 0:
             return JsonDoc()  # 204 / empty 200: an empty doc, not a parse error
         return parse_json(raw^)
+
+    def _call(
+        mut self, method: String, path: String, body: String
+    ) raises -> CatalogAnswer:
+        """`_request` without an expected status: the caller reads it.
+
+        ⚠ A NON-JSON BODY IS KEPT AS TEXT, NOT RAISED. A 502 from Cloudflare
+        is HTML, and the caller's error message is the only place it will be
+        seen.
+        """
+        var url = self.base_url + path
+        var payload = List[UInt8]()
+        var ctype = String("")
+        if body.byte_length() > 0:
+            for i in range(body.byte_length()):
+                payload.append(body.as_bytes()[i])
+            ctype = String("application/json")
+        var r = self._http.request(method, url, payload^, ctype, -1)
+        var status = r.status
+        var raw = r^.take_body()
+        var text = string_from_bytes(raw)
+        if len(raw) == 0:
+            return CatalogAnswer(status, JsonDoc(), text^)
+        try:
+            return CatalogAnswer(status, parse_json(raw^), text^)
+        except:
+            return CatalogAnswer(status, JsonDoc(), text^)
+
+    # ── project definition files (private projects) ───────────────────
+
+    def list_projects(mut self) raises -> JsonDoc:
+        """This account's projects on the platform, with run counts."""
+        return self._request(String("GET"), String("/projects"), String(""), 200)
+
+    def upsert_project(mut self, slug: String, description: String) raises:
+        """Create the project on the platform if needed; set its description.
+
+        ⚠ ONLY THE DESCRIPTION. The display NAME is editable on the dashboard,
+        and `project.kv` has no display name — its `name=` is the slug — so
+        sending one would reset a person's edit on every push.
+        """
+        var w = JsonWriter()
+        w.begin_object()
+        w.member(String("description"), description)
+        w.end_object()
+        _ = self._request(String("PUT"), String("/projects/") + slug, w.done(), 200)
+
+    def project_files(mut self, slug: String) raises -> JsonDoc:
+        """`{project, description, max_file_bytes, files: [{path, sha256,
+        sizeBytes, download_url}]}`. Raises naming the project on a 404."""
+        var a = self._call(
+            String("GET"), String("/projects/") + slug + "/files", String("")
+        )
+        if a.status == 404:
+            raise Error(
+                "project '" + slug + "' is not on the platform — push it from"
+                " the box that has it: pixi run project-push " + slug
+            )
+        if a.status != 200:
+            raise Error(
+                "GET /projects/" + slug + "/files -> " + String(a.status)
+                + ": " + a.text
+            )
+        return a^.take_doc()
+
+    def push_project_file(
+        mut self,
+        slug: String,
+        rel_path: String,
+        local_path: String,
+        sha256: String,
+        size_bytes: Int,
+        base_sha256: String,
+    ) raises -> String:
+        """Upload one definition file over `base_sha256`. Returns `uploaded`,
+        `unchanged`, or `conflict:<sha the platform holds>`.
+
+        ⚠⚠ A CONFLICT IS A RETURN VALUE, NOT A RAISE. It is an expected answer
+        — another box edited the file — and one conflicting file must not stop
+        the rest of a push. Everything else unexpected raises with the body.
+
+        ⚠ `sha256` IS HASHED BY THE CALLER, BEFORE THE UPLOAD, and the Worker
+        re-hashes what arrives. A file edited between the two fails there with
+        a 422 rather than being filed under a digest it does not have.
+        """
+        var w = JsonWriter()
+        w.begin_object()
+        w.member(String("path"), rel_path)
+        w.member(String("sha256"), sha256)
+        w.member(String("size_bytes"), size_bytes)
+        w.member(String("base_sha256"), base_sha256)
+        w.end_object()
+        var body = w.done()
+        var base = String("/projects/") + slug + "/files/"
+
+        var pre = self._call(String("POST"), base + "presign", body)
+        if pre.status == 200:
+            return String("unchanged")
+        if pre.status == 409:
+            return String("conflict:") + _opt_string(
+                pre.doc, pre.doc.root(), String("current_sha256")
+            )
+        if pre.status != 201:
+            raise Error(
+                "POST " + base + "presign (" + rel_path + ") -> "
+                + String(pre.status) + ": " + pre.text
+            )
+        var url = _opt_string(pre.doc, pre.doc.root(), String("upload_url"))
+        if url.byte_length() == 0:
+            raise Error("presign answered 201 without an upload_url")
+        var put = upload_file(url, local_path, rel_path, quiet=True)
+        if put < 200 or put >= 300:
+            raise Error("PUT " + rel_path + " to storage -> " + String(put))
+
+        var done = self._call(String("POST"), base + "complete", body)
+        if done.status == 200:
+            return String("uploaded")
+        if done.status == 409:
+            return String("conflict:") + _opt_string(
+                done.doc, done.doc.root(), String("current_sha256")
+            )
+        raise Error(
+            "POST " + base + "complete (" + rel_path + ") -> "
+            + String(done.status) + ": " + done.text
+        )
 
     # ── read ──────────────────────────────────────────────────────────
 

@@ -32,12 +32,29 @@ measures a sink that had nothing to collapse and reports success.
 ⚠ `/fail/...` prefixes let a gate ask for a failure on demand, which is the one
 thing a real server will not do reliably.
 
+## Project definition files (private projects)
+
+  PUT  /projects/<slug>                   create; set description
+  GET  /projects/<slug>/files             rows + a download_url into /r2/
+  POST /projects/<slug>/files/presign     409 on a stale base, 413 over the cap
+  POST /projects/<slug>/files/complete    HASHES the object, then compare-and-swap
+  POST /__inject_file                     {slug, path, sha256} — a row the real
+                                          Worker would refuse, for the client's
+                                          own path check
+
+⚠⚠ THIS MIRRORS THE WORKER'S RULES AND IS NOT THEIR GATE. The swap and the
+path rules are gated on the Worker itself (`worker/test/project_files.test.ts`
+in rl-monitor); this copy exists so the Mojo client's behaviour under those
+rules can be driven without a network. The cap is deliberately TINY
+(`PROJECT_FILE_MAX`) so a gate can exceed it with a 5 KB file.
+
 Routes: anything else 200s. `/__shutdown` exits.
 """
 
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -53,6 +70,18 @@ OBJECTS = {}
 ARTIFACTS = {}
 SLOW_PUT_MS = 150
 LOCK = threading.Lock()
+
+# slug -> {"description": str, "files": {path: sha256}}
+PROJECTS = {}
+PROJECT_FILE_MAX = 4096
+_SEG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _path_ok(path):
+    if not 0 < len(path) <= 512:
+        return False
+    parts = path.split("/")
+    return len(parts) <= 8 and all(_SEG.match(p) for p in parts)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -94,6 +123,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         u = urlparse(self.path)
         blob = self._body()
+        m = re.match(r"^/projects/([^/]+)$", u.path)
+        if m:
+            self._record("PUT", blob.decode("utf-8", "replace"))
+            d = json.loads(blob or b"{}")
+            with LOCK:
+                p = PROJECTS.setdefault(m.group(1), {"description": "", "files": {}})
+                if "description" in d:
+                    p["description"] = d["description"]
+            return self._json(200, {"slug": m.group(1), "description": p["description"]})
         if "slow" in u.path:
             time.sleep(SLOW_PUT_MS / 1000.0)
         self._record("PUT", f"<{len(blob)} bytes sha={hashlib.sha256(blob).hexdigest()[:16]}>")
@@ -107,6 +145,31 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/__shutdown":
             os._exit(0)
+        m = re.match(r"^/projects/([^/]+)/files$", u.path)
+        if m:
+            self._record("GET", "")
+            with LOCK:
+                p = PROJECTS.get(m.group(1))
+                if p is None:
+                    return self._json(404, {"error": "unknown project"})
+                files = [
+                    {
+                        "path": path,
+                        "sha256": sha,
+                        "sizeBytes": len(OBJECTS.get(f"/r2/pf/{m.group(1)}/{sha}", b"")),
+                        "download_url": f"http://127.0.0.1:{PORT}/r2/pf/{m.group(1)}/{sha}",
+                    }
+                    for path, sha in sorted(p["files"].items())
+                ]
+                return self._json(
+                    200,
+                    {
+                        "project": m.group(1),
+                        "description": p["description"],
+                        "max_file_bytes": PROJECT_FILE_MAX,
+                        "files": files,
+                    },
+                )
         if u.path.startswith("/r2/"):
             with LOCK:
                 blob = OBJECTS.get(u.path)
@@ -153,6 +216,43 @@ class Handler(BaseHTTPRequestHandler):
                     "expires_at": "2099-01-01T00:00:00Z",
                 },
             )
+
+        if u.path == "/__inject_file":
+            d = json.loads(text)
+            with LOCK:
+                p = PROJECTS.setdefault(d["slug"], {"description": "", "files": {}})
+                p["files"][d["path"]] = d["sha256"]
+                OBJECTS[f"/r2/pf/{d['slug']}/{d['sha256']}"] = d.get("body", "x").encode()
+            return self._json(200, {"ok": True})
+
+        m = re.match(r"^/projects/([^/]+)/files/(presign|complete)$", u.path)
+        if m:
+            slug, step = m.group(1), m.group(2)
+            d = json.loads(text)
+            path, sha, size, base = d["path"], d["sha256"], d["size_bytes"], d["base_sha256"]
+            key = f"/r2/pf/{slug}/{sha}"
+            with LOCK:
+                p = PROJECTS.get(slug)
+                if p is None:
+                    return self._json(404, {"error": "unknown project"})
+                if not _path_ok(path):
+                    return self._json(400, {"error": f"bad path {path!r}"})
+                if size > PROJECT_FILE_MAX:
+                    return self._json(413, {"error": "over the cap", "max_file_bytes": PROJECT_FILE_MAX})
+                cur = p["files"].get(path, "")
+                if cur == sha:
+                    return self._json(200, {"path": path, "unchanged": True})
+                if cur != base:
+                    return self._json(409, {"error": "conflict", "current_sha256": cur})
+                if step == "presign":
+                    return self._json(201, {"path": path, "upload_url": f"http://127.0.0.1:{PORT}{key}"})
+                blob = OBJECTS.get(key)
+                if blob is None:
+                    return self._json(422, {"error": "nothing uploaded"})
+                if len(blob) != size or hashlib.sha256(blob).hexdigest() != sha:
+                    return self._json(422, {"error": "bytes do not match sha256/size"})
+                p["files"][path] = sha
+            return self._json(200, {"path": path, "sha256": sha, "size_bytes": size})
 
         if u.path.endswith("/complete"):
             return self._json(200, {"ok": True, "status": "ready"})

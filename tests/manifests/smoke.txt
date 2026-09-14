@@ -433,6 +433,7 @@ tests/core/test_project.mojo
 # would keep using. Plus the deploy-side resolver: a role resolves, an
 # unpromoted one falls back rather than raising. Mutation-checked.
 tests/core/test_policy.mojo
+tests/core/test_project_sync.mojo
 # Asset packs (§9 infrastructure; NOTHING is migrated yet). The declaration
 # grammar and its eight refusals, the CREDENTIAL decision — which is the whole
 # reason `provider=` exists, since two https URLs can need different secrets or

@@ -38,6 +38,7 @@ development, and a project layer that blocked a run over it would be turned off.
 from std.os import getenv
 from std.os.path import exists
 
+from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.kv import KvLine, KvWriter, kv_lines, kv_write, split_once
 from mojo_rl.io.proc import quote_arg, run_capture
 from mojo_rl.io.fileio import write_text_atomic
@@ -238,7 +239,10 @@ def parse_project(text: String, what: String, root: String = String("")) raises 
 
 
 def load_project(name: String, root: String = String("")) raises -> ProjectSpec:
-    var r = root if root else String(DEFAULT_ROOT)
+    # ⚠ `projects_root()`, NOT `DEFAULT_ROOT`. `project_exists` already used
+    # the resolved root, so with `MOJO_RL_PROJECTS` set the two disagreed: a
+    # project that "exists" could not be loaded.
+    var r = root if root else projects_root()
     var path = r + "/" + name + "/project.kv"
     with open(path, "r") as fh:
         return parse_project(fh.read(), path, r)
@@ -250,9 +254,25 @@ def load_project(name: String, root: String = String("")) raises -> ProjectSpec:
 
 
 def projects_root() -> String:
-    """`MOJO_RL_PROJECTS`, or `projects`."""
+    """`MOJO_RL_PROJECTS` from the environment, then from `.env`, else
+    `projects`.
+
+    ⚠ `.env` IS NOT THE ENVIRONMENT. Nothing exports it, so a root set there —
+    which is where §4 says to set it — used to be ignored by every tool, and
+    each would quietly create its own `./projects` beside the real one.
+    """
     var v = getenv("MOJO_RL_PROJECTS")
-    return v if v.byte_length() > 0 else String(DEFAULT_ROOT)
+    if v.byte_length() > 0:
+        return v
+    try:
+        var env = load_dotenv(String(".env"))
+        if "MOJO_RL_PROJECTS" in env:
+            var e = env["MOJO_RL_PROJECTS"]
+            if e.byte_length() > 0:
+                return e
+    except:
+        pass
+    return String(DEFAULT_ROOT)
 
 
 def project_exists(name: String, root: String = String("")) -> Bool:

@@ -7,8 +7,17 @@
     pixi run project-prune so101 --older-than 30 [--apply]
     pixi run project-promote <run_id> best --as reach --note "8/10 on the arm"
         (add --no-push to keep it local; the box is the record either way)
-    pixi run project-push so101 [<run_id>] [--kind checkpoint]
-    pixi run project-pull so101 <run_id> [--kind checkpoint]
+    pixi run project-push so101 [<run_id>] [--kind checkpoint] [--force]
+    pixi run project-pull so101 [<run_id>] [--kind checkpoint] [--force]
+    pixi run project-list --remote
+
+⚠⚠ PROJECTS ARE PRIVATE AND NOT IN GIT. `projects/` is ignored, so a project's
+DEFINITION (`project.kv`, calibration, task files, policy records) reaches a
+second box through the platform: `project-push so101` sends it before the run
+artifacts, and `project-pull so101` with no run id recreates it on a fresh
+box. Who wins when two boxes edited the same file is `core/project_sync.mojo`;
+a conflict overwrites nothing unless `--force` is given. Put flags AFTER the
+positional arguments.
 
 ⚠⚠ EVERYTHING HERE IS LOCAL AND COMPLETE. `docs/PROJECT_LAYER_PLAN.md` §10: the
 OSS half is a project on ONE machine with nothing crippled, and the paid half is
@@ -43,6 +52,7 @@ from mojo_rl.core.policy import (
     write_policy,
 )
 from mojo_rl.core.run import RunRecord, epoch_seconds, iso8601_utc, load_run
+from mojo_rl.data.project_sync import pull_definition, push_definition
 from mojo_rl.data.remote import RemoteCatalog
 from mojo_rl.io.fetch import fetch_to_cache
 from mojo_rl.io.fileio import file_size
@@ -132,7 +142,30 @@ def cmd_init() raises:
     print("    ref=task:<name>:<path>@<commit>")
 
 
+def cmd_list_remote() raises:
+    var cat = RemoteCatalog.from_env()
+    var doc = cat.list_projects()
+    var root = doc.root()
+    var n = doc.size(root)
+    for i in range(n):
+        var row = doc.at(root, i)
+        var slug = doc.string(doc.field(row, String("slug")))
+        var runs = doc.integer(doc.field(row, String("runCount")))
+        var desc = doc.string(doc.field(row, String("description")))
+        var here = project_exists(slug, projects_root())
+        print(
+            "  " + slug, "—", String(runs), "runs",
+            ("  " + desc) if desc else "",
+            "" if here else "   (not on this box: project-pull " + slug + ")",
+        )
+    print()
+    print(" ", n, "project(s) on the platform")
+
+
 def cmd_list() raises:
+    if _has("--remote"):
+        cmd_list_remote()
+        return
     var root = projects_root()
     var names = _ls(root)
     var shown = 0
@@ -591,14 +624,37 @@ def cmd_push() raises:
     """
     var project = _positional(1)
     if project.byte_length() == 0:
-        raise Error("usage: project-push <project> [<run_id>] [--kind K]")
+        raise Error(
+            "usage: project-push <project> [<run_id>] [--kind K] [--force]"
+            " [--definition-only]"
+        )
     var only = _positional(2)
     var kind = _flag(String("--kind"), String("checkpoint"))
+    var cat = RemoteCatalog.from_env()
+
+    # ⚠ THE DEFINITION FIRST, and only when no single run was named. A box
+    # that pushes a run whose project the platform has never seen would
+    # otherwise leave the training box that pulls it with checkpoints and no
+    # calibration to run them with.
+    if only.byte_length() == 0:
+        var root = projects_root()
+        var spec = load_project(project, root)
+        print("definition  " + root + "/" + project + "/")
+        var rep = push_definition(
+            cat, project, root, spec.description, _has("--force")
+        )
+        rep.print_all(String("pushed"))
+        if _has("--definition-only"):
+            return
+        print()
+
     var dirs = _run_dirs(project, only)
     if len(dirs) == 0:
-        raise Error("no runs with a run.kv under " + project)
-
-    var cat = RemoteCatalog.from_env()
+        if only.byte_length() > 0:
+            raise Error("no run " + only + " with a run.kv under " + project)
+        print("runs        none with a run.kv under " + project + " yet")
+        return
+    print("runs")
     var sent = 0
     var skipped = 0
     var missing = 0
@@ -660,8 +716,17 @@ def cmd_pull() raises:
     """
     var project = _positional(1)
     var rid = _positional(2)
-    if project.byte_length() == 0 or rid.byte_length() == 0:
-        raise Error("usage: project-pull <project> <run_id> [--kind K]")
+    if project.byte_length() == 0:
+        raise Error("usage: project-pull <project> [<run_id>] [--kind K] [--force]")
+    if rid.byte_length() == 0:
+        # ⚠ NO RUN ID = THE DEFINITION. This is the first command on a fresh
+        # training box: it recreates `projects/<project>/` from the platform.
+        var cat0 = RemoteCatalog.from_env()
+        var root = projects_root()
+        print("definition  " + root + "/" + project + "/")
+        var rep = pull_definition(cat0, project, root, _has("--force"))
+        rep.print_all(String("pulled"))
+        return
     var kind = _flag(String("--kind"), String(""))
     var dest_root = projects_root() + "/" + project + "/runs/" + rid
     _ = run_capture("mkdir -p " + quote_arg(dest_root))

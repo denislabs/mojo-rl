@@ -247,22 +247,16 @@ checkpoints/
 # Run directories (`core/run.mojo`). One per execution: run.kv, metrics.csv and
 # checkpoints/.
 #
-# ⚠ THE RECORD IS IGNORED, THE DEFINITION IS NOT — see docs/PROJECT_LAYER_PLAN.md
-# §4. When the project layer lands (P1) the definition (`project.kv`, `.family`,
-# `.task`, dataset/asset pointers) is TRACKED under `projects/<name>/` and only
-# `projects/*/runs/` is ignored, exactly as this line ignores the P0 root.
+# The P0 run root, used by a driver whose project does not exist locally.
 /runs/
 
-# Project directories (`core/project.mojo`). ⚠⚠ THE DEFINITION IS TRACKED AND
-# THE DATA IS NOT — docs/PROJECT_LAYER_PLAN.md §4. `project.kv` and the pointers
-# beside it are a few KB of text saying exactly what a run was: that is the
-# reproducibility story, and ignoring it would leave the recipe on one laptop's
-# filesystem, which is the pain being fixed one level up. So these rules name
-# the run data, never `projects/` itself.
-projects/*/runs/
-projects/*/artifacts/
-projects/*/**/*.h5
-projects/*/**/*.mp4
+# Project directories (`core/project.mojo`). ⚠⚠ ALL OF IT, DEFINITION INCLUDED.
+# Projects are PRIVATE and are created without touching the core repository,
+# so none of `projects/` belongs in it. The definition (`project.kv`,
+# calibration, task files, policy records) reaches another machine through the
+# platform instead: `project-push <name>` / `project-pull <name>`
+# (`core/project_sync.mojo`). This revises PROJECT_LAYER_PLAN.md §4.
+projects/
 *.mp4
 # ...except the vision gate's INPUT. `*.mp4` above is for renderer recordings;
 # this 3 KB file is a committed test fixture, and without it a fresh checkout
