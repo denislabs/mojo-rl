@@ -22,6 +22,7 @@ from mojo_rl.robot.so101.arm import (
 
 from mojo_rl.robot.so101.calibration import (
     NARROWER_FRACTION,
+    SEAM_MARGIN,
     UNLIMITED_MAX,
     UNLIMITED_MIN,
     CalibrationRecord,

@@ -79,7 +79,8 @@ from mojo_rl.robot.feetech.control_table import (
 )
 from mojo_rl.robot.so101 import (
     NARROWER_FRACTION, SO101Arm, SO101_N, UNLIMITED_MAX, UNLIMITED_MIN,
-    CalibrationRecord, centre_on_middle_pose, frame_position, joint_name,
+    SEAM_MARGIN, CalibrationRecord, centre_on_middle_pose, frame_position,
+    joint_name,
     joint_short,
     load_calibration_json,
     save_calibration_json, span_regressions,
@@ -125,6 +126,7 @@ def _rows(
     ref pos: Array[Int32, SO101_N],
     ref hi: Array[Int32, SO101_N],
     ref skip: List[Int],
+    ref centred: List[Int],
     live: Bool,
 ) raises -> List[String]:
     """The table's lines. `live` shows POS; a final table does not need it."""
@@ -141,8 +143,41 @@ def _rows(
         row += _rj(Int(hi[i]), 7) + " |" + _rj(Int(hi[i]) - Int(lo[i]), 8)
         if skipped:
             row += "   continuous, leave it alone"
+        for k in range(len(centred)):
+            if centred[k] == i:
+                row += _roll_note(Int(lo[i]), Int(pos[i]), Int(hi[i]), live)
         lines.append(row^)
     return lines^
+
+
+def _deg(ticks_from_middle: Int) -> Int:
+    return Int(Float64(ticks_from_middle) * 360.0 / 4096.0)
+
+
+def _roll_note(lo: Int, pos: Int, hi: Int, live: Bool) raises -> String:
+    """Degrees from the middle pose for a `--limited` joint, and a warning
+    before the encoder seam.
+
+    ⚠⚠ "AS FAR AS THE CABLE ALLOWS" IS NOT AN INSTRUCTION ANYONE CAN FOLLOW
+    WITHOUT A NUMBER. The first operator swept past half a turn twice, because
+    nothing on screen said where the seam was. The table shows the angle now,
+    and says STOP before it.
+    """
+    var note = String("   ")
+    if live:
+        note += _sgn(_deg(pos - 2047)) + " deg now, "
+    note += "swept " + _sgn(_deg(lo - 2047)) + " / " + _sgn(_deg(hi - 2047))
+    if lo < SEAM_MARGIN or hi > 4095 - SEAM_MARGIN:
+        note += "  ✗ PAST HALF A TURN — press Enter and start again"
+    elif lo < 2047 - 1934 or hi > 2047 + 1934:
+        note += "  ⚠ STOP: 170 deg, the encoder wraps at 180"
+    else:
+        note += "  (stay within +/-170)"
+    return note^
+
+
+def _sgn(v: Int) -> String:
+    return ("+" + String(v)) if v > 0 else String(v)
 
 
 def _sweep_table(
@@ -150,6 +185,7 @@ def _sweep_table(
     ref pos: Array[Int32, SO101_N],
     ref hi: Array[Int32, SO101_N],
     ref skip: List[Int],
+    ref centred: List[Int],
     redraw_lines: Int,
     plain: Bool,
 ) raises -> Int:
@@ -171,7 +207,7 @@ def _sweep_table(
     cursor to move and every redraw would append.
     """
     var live = stdout_is_tty() and not plain
-    var lines = _rows(lo, pos, hi, skip, True)
+    var lines = _rows(lo, pos, hi, skip, centred, True)
     var block = String("")
     if live and redraw_lines > 0:
         block += "\x1b[" + String(redraw_lines) + "F" + "\x1b[0J"
@@ -606,7 +642,11 @@ def _calibrate(
         # mirrored to the TIGHTER side — so both sides must be swept.
         print(
             "  " + joint_name(centred[k]) + ": turn it BOTH ways from the"
-            " middle pose, only as far as the camera cable safely allows."
+            " middle pose, LESS THAN HALF A TURN each way"
+        )
+        print(
+            "    (watch its degrees in the table; stop by +/-170, and sooner"
+            " if the cable is tight)"
         )
     print("  Recording positions. Press ENTER to stop.")
     stdin.discard_pending()
@@ -665,13 +705,13 @@ def _calibrate(
         # full table — 10 a second of them.
         if now - last_draw > 100_000_000:
             if stdout_is_tty() and not plain:
-                drawn = _sweep_table(lo, raw, hi, continuous, drawn, plain)
+                drawn = _sweep_table(lo, raw, hi, continuous, centred, drawn, plain)
                 last_draw = now
             elif plain:
-                drawn = _sweep_table(lo, raw, hi, continuous, 0, plain)
+                drawn = _sweep_table(lo, raw, hi, continuous, centred, 0, plain)
                 last_draw = now
 
-    _ = _sweep_table(lo, raw, hi, continuous, drawn, plain)
+    _ = _sweep_table(lo, raw, hi, continuous, centred, drawn, plain)
     # ⚠ LEAVE THE CURSOR ON A FRESH LINE. Everything printed after this is a
     # normal `print`; if the redraw left the cursor inside the table, those
     # lines overwrite it — which is exactly how the proposed calibration came
