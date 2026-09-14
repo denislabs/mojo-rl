@@ -123,12 +123,13 @@ comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime METADATA_SIZE: Int = 42
+comptime METADATA_SIZE: Int = 48
 """Per-env metadata words: 4 fixed slots, `META_IDX_TASK_PARAM_0..11`,
 `META_IDX_ACTDAMP_LIVE`, `META_IDX_SIM_TIME`, `META_IDX_TASK_ACTIVE`, three
 RETIRED words (19..21), `META_IDX_GOAL_HELD`, the four shaping words,
-`META_IDX_EQ_FORCE_LIVE`, `META_IDX_LS_EVAL`, and the `META_INIT_SLOTS`-word
-init block `META_IDX_INIT_REGION_0..12` (29..41).
+`META_IDX_EQ_FORCE_LIVE`, `META_IDX_LS_EVAL`, the `META_INIT_SLOTS`-word
+init block `META_IDX_INIT_REGION_0..12` (29..41), and the joint-init block
+`META_IDX_JINIT_0` (42..47, `META_JINIT_WORDS` per draw).
 
 ⚠ RAISED FROM 29 TO 42 FOR THE LIBERO DEVICE RESET, by APPENDING. The init
 block was three words at 19..21, one per `so101_tabletop` free slot, and
@@ -304,6 +305,29 @@ refused by `tasks/active.init_region_words`."""
 comptime META_IDX_INIT_REGION_0: Int = 29
 comptime META_IDX_INIT_REGION_1: Int = 30
 comptime META_IDX_INIT_REGION_2: Int = 31
+
+# ── WHICH JOINTS THIS LANE DRAWS AT RESET — `jinit=`, `META_JINIT_WORDS` each ──
+#
+# ⚠⚠ A DRAWER THAT A TASK OPENS STARTED SHUT ON THE DEVICE. `jinit=` is a
+# uniform draw per reset (LIBERO's `OpenCloseSampler`), the host has always made
+# it, and no word carried it to `init_qpos_gpu` — so 27 tasks began with their
+# drawer or knob at `qpos0` on the device, and a prop drawn INTO a drawer region
+# had a frame that only the host knew. `tasks/placement/table.draw_joint_inits`
+# reads these.
+#
+#     [k*3 + 0]  table joint index + 1   (0 = no draw — what a zero meta holds)
+#     [k*3 + 1]  lo
+#     [k*3 + 2]  hi
+#
+# ⚠ `lo`/`hi` IN `meta`, NOT IN THE TABLE, because the RANGE is the task's: the
+# same microwave joint is drawn in [-2.094, -1.3] by one task and [-0.005, 0.0]
+# by another. The JOINT is the family's, so its address is in the table.
+#
+# ⚠ APPENDED, like the init block, so no word moved. Two draws: the corpus uses
+# at most one per task, and `placement/check.joint_init_words` refuses a third.
+comptime META_JINIT_SLOTS: Int = 2
+comptime META_JINIT_WORDS: Int = 3
+comptime META_IDX_JINIT_0: Int = 42
 
 comptime INIT_REGION_NONE: Float64 = 0.0
 """What `META_IDX_INIT_REGION_*` holds for a slot with no `init=` — and what

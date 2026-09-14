@@ -60,7 +60,7 @@ from .spec import (
 # ⚠ `MAX_PLACE_ATTEMPTS` AND `PLACEMENT_SALT` ARE DEFINED IN
 # `placement/table.mojo` and re-exported here — the device kernel reads the same
 # two names, where they used to be restated on the config and asserted equal.
-from .placement.table import MAX_PLACE_ATTEMPTS, PLACEMENT_SALT
+from .placement.table import MAX_PLACE_ATTEMPTS, PLACEMENT_SALT, JOINT_AXIS_BASE
 
 
 struct Placement(Copyable, ImplicitlyCopyable, Movable):
@@ -160,18 +160,8 @@ def _uniform01(seed: UInt64, lane: Int, axis: Int, attempt: Int) -> Float64:
     return Float64(v[0])
 
 
-comptime JOINT_AXIS_BASE: Int = 0x8000
-"""Where a `jinit=` draw's Philox axis starts, clear of every placement axis.
-
-⚠ `_uniform01` packs `subsequence = (lane << 16) | axis`, and a placement uses
-axis `si * 2` / `si * 2 + 1` — so the placement axes are bounded by twice the
-family's slot count. Starting the joint draws at 0x8000 cannot collide with any
-of them for any family a scene could hold, and a collision would not be an
-error: it would silently correlate a drawer's opening with an object's x.
-
-⚠ It must stay BELOW 0x10000 or it would carry into the lane bits and give two
-lanes one stream — which is the same failure a shared seed would cause, and the
-reason `_uniform01` uses the counter axes at all."""
+# ⚠ `JOINT_AXIS_BASE` — where a `jinit=` draw's Philox axis starts — is defined
+# in `placement/table.mojo` beside the kernel that draws the same numbers.
 
 
 def sample_joint_inits(

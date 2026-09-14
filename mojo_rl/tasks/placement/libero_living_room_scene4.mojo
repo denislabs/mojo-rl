@@ -5,7 +5,7 @@ CI checks it with: pixi run gen-placement-tables --check
 
 From `mojo_rl/tasks/families/libero_living_room_scene4.family`,
 `mojo_rl/tasks/scenes/libero_living_room_scene4.xml` and forward kinematics on it.
-5 free slots, 6 regions, 1 of them moving.
+5 free slots, 6 regions (1 moving, 0 followed on one slide), 0 drawable joints.
 See `placement/table.mojo` for what each method means.
 """
 
@@ -18,6 +18,7 @@ struct LiberoLivingRoomScene4Placement(PlacementTable):
     comptime N_REGIONS: Int = 6
     comptime NQ: Int = 44
     comptime NV: Int = 39
+    comptime N_JOINTS: Int = 0
 
     @staticmethod
     def free_slot(j: Int) -> Int:
@@ -230,15 +231,39 @@ struct LiberoLivingRoomScene4Placement(PlacementTable):
         return Scalar[DTYPE](0.0)
 
     @staticmethod
-    def region_moves(r: Int) -> Bool:
+    def region_move_joint(r: Int) -> Int:
         if r == 0:
-            return True
+            return -2
         if r == 1:
-            return False
+            return -1
         if r == 2:
-            return False
+            return -1
         if r == 3:
-            return False
+            return -1
         if r == 4:
-            return False
-        return False
+            return -1
+        return -1
+
+    @staticmethod
+    def region_move_axis_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def region_move_axis_y[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def region_move_axis_z[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def joint_name(k: Int) -> String:
+        return String("")
+
+    @staticmethod
+    def joint_qadr(k: Int) -> Int:
+        return 0
+
+    @staticmethod
+    def joint_dadr(k: Int) -> Int:
+        return 0

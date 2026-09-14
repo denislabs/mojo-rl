@@ -5,7 +5,7 @@ CI checks it with: pixi run gen-placement-tables --check
 
 From `mojo_rl/tasks/families/libero_kitchen_scene3.family`,
 `mojo_rl/tasks/scenes/libero_kitchen_scene3.xml` and forward kinematics on it.
-2 free slots, 4 regions, 0 of them moving.
+2 free slots, 4 regions (0 moving, 0 followed on one slide), 1 drawable joints.
 See `placement/table.mojo` for what each method means.
 """
 
@@ -18,6 +18,7 @@ struct LiberoKitchenScene3Placement(PlacementTable):
     comptime N_REGIONS: Int = 4
     comptime NQ: Int = 24
     comptime NV: Int = 22
+    comptime N_JOINTS: Int = 1
 
     @staticmethod
     def free_slot(j: Int) -> Int:
@@ -168,5 +169,29 @@ struct LiberoKitchenScene3Placement(PlacementTable):
         return Scalar[DTYPE](0.0)
 
     @staticmethod
-    def region_moves(r: Int) -> Bool:
-        return False
+    def region_move_joint(r: Int) -> Int:
+        return -1
+
+    @staticmethod
+    def region_move_axis_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def region_move_axis_y[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def region_move_axis_z[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def joint_name(k: Int) -> String:
+        return String("flat_stove_1_button")
+
+    @staticmethod
+    def joint_qadr(k: Int) -> Int:
+        return 9
+
+    @staticmethod
+    def joint_dadr(k: Int) -> Int:
+        return 9

@@ -95,7 +95,7 @@ from mojo_rl.physics3d.gpu.constants import (
 from .gpu_eval import (
     eval_tape_gpu, tape_distance_gpu, goal_frame_ids,
 )
-from .placement.table import PlacementTable, place_free_slots
+from .placement.table import PlacementTable, reset_task_slots
 from .predicates import OP_NEAR, OP_ABOVE, OP_ON, OP_IN
 from mojo_rl.envs.dm_control.rewards import (
     tolerance, SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN,
@@ -127,6 +127,7 @@ struct So101TabletopPlacement(PlacementTable):
     comptime N_REGIONS: Int = So101TabletopConfig.N_REGIONS
     comptime NQ: Int = 27
     comptime NV: Int = 24
+    comptime N_JOINTS: Int = 0
 
     @staticmethod
     def free_slot(j: Int) -> Int:
@@ -235,8 +236,32 @@ struct So101TabletopPlacement(PlacementTable):
         return Scalar[DTYPE](0)
 
     @staticmethod
-    def region_moves(r: Int) -> Bool:
-        return False
+    def region_move_joint(r: Int) -> Int:
+        return -1
+
+    @staticmethod
+    def region_move_axis_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
+
+    @staticmethod
+    def region_move_axis_y[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
+
+    @staticmethod
+    def region_move_axis_z[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
+
+    @staticmethod
+    def joint_name(k: Int) -> String:
+        return String("")
+
+    @staticmethod
+    def joint_qadr(k: Int) -> Int:
+        return 0
+
+    @staticmethod
+    def joint_dadr(k: Int) -> Int:
+        return 0
 
 
 struct So101TabletopConfig(Phyics3dEnvConfig):
@@ -1331,7 +1356,7 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         # this hook writes only `qpos`/`qvel` — never `meta`. A hook that
         # zeroed `meta` here would blank every lane's goal at the first reset
         # and every reward would read 0: a flat curve, not a crash.
-        place_free_slots[So101TabletopPlacement, DTYPE, BATCH_SIZE, NQ_F, NV_F](
+        reset_task_slots[So101TabletopPlacement, DTYPE, BATCH_SIZE, NQ_F, NV_F](
             qpos, qvel, meta, env, seed
         )
         _ = joints

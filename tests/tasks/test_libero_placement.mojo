@@ -499,17 +499,14 @@ def main() raises:
 
     # ── 5. the device refusal ─────────────────────────────────────────────
     #
-    # ⚠⚠ STACKS ARE DEVICE-SAMPLABLE NOW, and the refusal left is the MOVING
-    # region. `gpu_eval.require_gpu_placement` refused every stacking task
-    # because the device walked the free-slot table; `placement/table` walks
-    # `order_inits` and `tests/tasks/test_device_placement.mojo` gates both
-    # stacking tasks against the host. What the device still cannot draw is a
-    # region whose site hangs under a joint — the top drawer's, whose frame is
-    # known only after this reset's `jinit=` and FK. The refusal must be
-    # SELECTIVE: raising on everything would score the same as raising on the
-    # right thing and take the other nine tasks off the device with it.
+    # ⚠⚠ EVERY libero_spatial TASK IS DEVICE-SAMPLABLE NOW. The stacks since
+    # the device walked `order_inits`; the top-drawer task since the kernel
+    # draws `jinit=` first and a region carried by one slide follows the drawn
+    # opening. `tests/tasks/test_device_placement.mojo` gates both against the
+    # host, and builds the refusals (a region on a free body, an unknown joint,
+    # too many draws) on purpose — this suite no longer contains one.
     print()
-    print("--- 5. require_device_placement: stacks pass, the moving drawer does not ---")
+    print("--- 5. require_device_placement: all ten accepted, stacks and drawer included ---")
     var n_stack_tasks = 0
     var stacks_refused = 0
     var refused_names = List[String]()
@@ -541,9 +538,8 @@ def main() raises:
              String(n_stack_tasks) + " tasks in the suite stack one free slot"
              " on another")
     ta.check(stacks_refused == 0, "no stacking task is refused")
-    ta.check(len(refused_names) == 1 and refused_on_drawer == 1,
-             "exactly one task is refused, and it draws in the top drawer's"
-             " region")
+    ta.check(len(refused_names) == 0 and refused_on_drawer == 0,
+             "no task is refused — the top-drawer task included")
 
     print()
     print("--- ran", ta.checks, "checks,", ta.failures, "failed ---")

@@ -19,10 +19,10 @@ it is a `DTYPE` constant in the kernel, because Metal has no `double`.
 radius for it, which is not in the `.family`, so there is nothing to generate
 from — `so101_tabletop`, the one family like that, has a hand-written table.
 
-⚠ `region_moves` IS THE SITE'S BODY CHAIN, not a list. A region whose site hangs
-under any joint has a frame that depends on this reset's joint draws, and the
-kernel runs before FK; `check.require_device_placement` refuses a task that
-draws in one.
+⚠ `region_move_joint` IS THE SITE'S BODY CHAIN, not a list. No joint above the
+site: -1. Exactly one joint and it is a drawable SLIDE: that joint, with the world
+axis measured by FK. Anything else: -2, which `check.require_device_placement`
+refuses, because the kernel runs before FK.
 """
 
 from std.os import listdir
@@ -36,6 +36,7 @@ from mojo_rl.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
 from mojo_rl.physics3d.fields import Data, Model, DynDims
+from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 
 comptime DT = DType.float64
@@ -110,7 +111,9 @@ def _method(
     if len(values) == 0:
         # a family with no regions still has to satisfy the trait
         var zero = String("Scalar[DTYPE](0.0)") if ret == "Float64" else (
-            String("False") if ret == "Bool" else String("0")
+            String("False") if ret == "Bool" else (
+                String('String("")') if ret == "String" else String("0")
+            )
         )
         return s + "        return " + zero + "\n\n"
     if same:
@@ -171,6 +174,31 @@ def generate(family: String) raises -> String:
     var addrs = free_slot_addresses(f, fmd.joint_names, jt, jqn, jvn)
     var rsites = region_sites(f, fmd.site_names)
 
+    # ── the drawable joints: every hinge/slide of a STATIC slot, scene order ──
+    # ⚠ BY NAME PREFIX `<slot>_`, the composer's own spelling (`wooden_cabinet_1
+    # _top_level`). The underscore keeps `white_cabinet_1` from claiming
+    # `white_cabinet_10`'s joints.
+    var jnames = List[String]()
+    var jqadr = List[Int]()
+    var jdadr = List[Int]()
+    var jidx = List[Int]()
+    var qa_run = 0
+    var da_run = 0
+    for i in range(len(fmd.joints)):
+        var owned = False
+        for si in range(len(f.slots)):
+            if f.slots[si].kind == SLOT_FREE:
+                continue
+            if String(fmd.joint_names[i]).startswith(f.slots[si].name + "_"):
+                owned = True
+        if owned and (jt[i] == JNT_HINGE or jt[i] == JNT_SLIDE) and jqn[i] == 1:
+            jnames.append(String(fmd.joint_names[i]))
+            jqadr.append(qa_run)
+            jdadr.append(da_run)
+            jidx.append(i)
+        qa_run += jqn[i]
+        da_run += jvn[i]
+
     var fslot = List[String]()
     var fqadr = List[String]()
     var fdadr = List[String]()
@@ -198,6 +226,10 @@ def generate(family: String) raises -> String:
         fbot.append(_f(s.bottom_z))
         ftop.append(_f(s.top_z))
 
+    var rx_raw = List[Float64]()
+    for r in range(len(f.regions)):
+        for c in range(3):
+            rx_raw.append(Float64(d.site_xpos.data[rsites[r] * 3 + c]))
     var rx = List[String]()
     var ry = List[String]()
     var rz = List[String]()
@@ -210,7 +242,11 @@ def generate(family: String) raises -> String:
     var rcg = List[String]()
     var rctop = List[String]()
     var rmove = List[String]()
+    var rax = List[String]()
+    var ray = List[String]()
+    var raz = List[String]()
     var n_moves = 0
+    var n_followed = 0
     for r in range(len(f.regions)):
         ref reg = f.regions[r]
         var sid = rsites[r]
@@ -233,20 +269,46 @@ def generate(family: String) raises -> String:
                 ctop = f.slots[ci].top_z
         rcg.append(_b(cg))
         rctop.append(_f(ctop))
-        var moves = False
+        # every joint above the site, by the body chain
+        var chain = List[Int]()
         var b = fmd.sites[sid].body_id
         var guard = 0
         while b > 0:
             for k in range(len(fmd.joints)):
                 if fmd.joints[k].body_id == b:
-                    moves = True
+                    chain.append(k)
             b = fmd.bodies[b - 1].parent
             guard += 1
             if guard > len(fmd.bodies):
                 raise Error(family + ": a cycle in the body parent chain")
-        if moves:
+        var carried = -1
+        var ax = 0.0
+        var ay = 0.0
+        var az = 0.0
+        if len(chain) > 0:
             n_moves += 1
-        rmove.append(_b(moves))
+            carried = -2
+            if len(chain) == 1 and jt[chain[0]] == JNT_SLIDE:
+                for q in range(len(jidx)):
+                    if jidx[q] == chain[0]:
+                        carried = q
+            if carried >= 0:
+                # ⚠ THE AXIS IS MEASURED, FK at q = 1 minus FK at q = 0, not
+                # read off `<joint axis>` — a slide's world axis is the parent
+                # chain's rotation applied to it, and FK already composes that.
+                n_followed += 1
+                var adr = jqadr[carried]
+                d.qpos.data[adr] = Scalar[DT](1)
+                forward_kinematics["cpu", DT, DynDims, 1](d, m)
+                ax = Float64(d.site_xpos.data[sid * 3]) - rx_raw[r * 3]
+                ay = Float64(d.site_xpos.data[sid * 3 + 1]) - rx_raw[r * 3 + 1]
+                az = Float64(d.site_xpos.data[sid * 3 + 2]) - rx_raw[r * 3 + 2]
+                d.qpos.data[adr] = Scalar[DT](0)
+                forward_kinematics["cpu", DT, DynDims, 1](d, m)
+        rmove.append(String(carried))
+        rax.append(_f(ax))
+        ray.append(_f(ay))
+        raz.append(_f(az))
 
     var name = struct_name(family)
     var o = String("")
@@ -256,7 +318,8 @@ def generate(family: String) raises -> String:
     o += "From `" + String(FAMILY_DIR) + "/" + family + ".family`,\n"
     o += "`" + scene_path(f) + "` and forward kinematics on it.\n"
     o += String(len(fslot)) + " free slots, " + String(len(f.regions))
-    o += " regions, " + String(n_moves) + " of them moving.\n"
+    o += " regions (" + String(n_moves) + " moving, " + String(n_followed)
+    o += " followed on one slide), " + String(len(jnames)) + " drawable joints.\n"
     o += "See `placement/table.mojo` for what each method means.\n"
     o += '"""\n\n'
     o += "from mojo_rl.tasks.placement.table import PlacementTable\n\n\n"
@@ -265,7 +328,8 @@ def generate(family: String) raises -> String:
     o += "    comptime N_FREE: Int = " + String(len(fslot)) + "\n"
     o += "    comptime N_REGIONS: Int = " + String(len(f.regions)) + "\n"
     o += "    comptime NQ: Int = " + String(nq) + "\n"
-    o += "    comptime NV: Int = " + String(nv) + "\n\n"
+    o += "    comptime NV: Int = " + String(nv) + "\n"
+    o += "    comptime N_JOINTS: Int = " + String(len(jnames)) + "\n\n"
     o += _method("free_slot", "j", "Int", fslot)
     o += _method("free_qadr", "j", "Int", fqadr)
     o += _method("free_dadr", "j", "Int", fdadr)
@@ -285,7 +349,20 @@ def generate(family: String) raises -> String:
     o += _method("region_anchored", "r", "Bool", ranch)
     o += _method("region_contact_has_geom", "r", "Bool", rcg)
     o += _method("region_contact_top_z", "r", "Float64", rctop)
-    o += _method("region_moves", "r", "Bool", rmove)
+    o += _method("region_move_joint", "r", "Int", rmove)
+    o += _method("region_move_axis_x", "r", "Float64", rax)
+    o += _method("region_move_axis_y", "r", "Float64", ray)
+    o += _method("region_move_axis_z", "r", "Float64", raz)
+    var jn = List[String]()
+    var jq = List[String]()
+    var jd = List[String]()
+    for k in range(len(jnames)):
+        jn.append('String("' + jnames[k] + '")')
+        jq.append(String(jqadr[k]))
+        jd.append(String(jdadr[k]))
+    o += _method("joint_name", "k", "String", jn)
+    o += _method("joint_qadr", "k", "Int", jq)
+    o += _method("joint_dadr", "k", "Int", jd)
     # one trailing newline, not two
     return String(o[byte = 0 : o.byte_length() - 1])
 

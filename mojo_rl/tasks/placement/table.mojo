@@ -44,8 +44,14 @@ kernel cannot raise. The kernel leaves that slot at whatever `qpos` holds —
 the park pose after `_reset_env_lane` — which is the VISIBLE failure: every goal
 naming the prop is false. Everything the host raises on at the SPEC level (an
 anchored `On` whose fixture has no `slot_geom=`, a stack onto a static slot, a
-region that moves) is refused before a word is written, by
+region the kernel cannot follow) is refused before a word is written, by
 `check.require_device_placement`.
+
+## `jinit=` — THE JOINTS, DRAWN FIRST
+
+`draw_joint_inits` is `sampler.sample_joint_inits` on the device, and
+`reset_task_slots` runs it before the placements, because a prop drawn into a
+drawer region stands in the drawer the draw just opened.
 """
 
 from layout import Layout, LayoutTensor
@@ -53,6 +59,7 @@ from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_INIT_REGION_0, META_INIT_SLOTS,
+    META_IDX_JINIT_0, META_JINIT_SLOTS, META_JINIT_WORDS,
 )
 from mojo_rl.tasks.obs import FREE_JOINT_NV
 from mojo_rl.tasks.spec import TABLE_Z_OFFSET, STACK_Z_OFFSET
@@ -66,6 +73,20 @@ and asserted equal by the gate."""
 comptime PLACEMENT_SALT: UInt64 = 0x9E3779B97F4A7C15
 """Keeps placement draws off the env's reset-noise stream. See `sampler.mojo`'s
 header; any value that is not the env's own works."""
+
+
+comptime JOINT_AXIS_BASE: Int = 0x8000
+"""Where a `jinit=` draw's Philox axis starts, clear of every placement axis.
+
+⚠ `_uniform01` packs `subsequence = (lane << 16) | axis`, and a placement uses
+axis `si * 2` / `si * 2 + 1` — so the placement axes are bounded by twice the
+family's slot count. Starting the joint draws at 0x8000 cannot collide with any
+of them for any family a scene could hold, and a collision would not be an
+error: it would silently correlate a drawer's opening with an object's x.
+
+⚠ It must stay BELOW 0x10000 or it would carry into the lane bits and give two
+lanes one stream — which is the same failure a shared seed would cause, and the
+reason `_uniform01` uses the counter axes at all."""
 
 
 # ── THE INIT WORD — one per free slot, `meta[META_IDX_INIT_REGION_0 + j]` ──
@@ -209,11 +230,47 @@ trait PlacementTable:
         ...
 
     @staticmethod
-    def region_moves(r: Int) -> Bool:
-        """The region's site hangs under a JOINT, so its world frame is only
-        known after this reset's joint draws and FK. HOST-ONLY: the kernel
-        runs before FK and reads `region_site_*` as constants, so a word
-        naming such a region is refused."""
+    def region_move_joint(r: Int) -> Int:
+        """What carries the region's site.
+
+        * `-1` — nothing: the site is on a body with no joint above it, and
+          `region_site_*` is its frame in every episode.
+        * `k >= 0` — exactly ONE SLIDE joint, table joint `k`: the frame is
+          `region_site_* + region_move_axis_* * qpos[joint_qadr(k)]`, the
+          site being measured with that joint at 0. That is a drawer interior.
+        * `-2` — anything else (a hinge, two joints, a free body): the frame is
+          not affine in one `qpos` word, the kernel runs before FK, and
+          `check.require_device_placement` refuses a word naming it.
+        """
+        ...
+
+    @staticmethod
+    def region_move_axis_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        """World displacement of the site per unit of the carrying slide."""
+        ...
+
+    @staticmethod
+    def region_move_axis_y[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        ...
+
+    @staticmethod
+    def region_move_axis_z[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        ...
+
+    # ── per drawable joint — every hinge/slide of a STATIC slot ──
+    comptime N_JOINTS: Int
+
+    @staticmethod
+    def joint_name(k: Int) -> String:
+        """HOST-ONLY — `check.joint_init_words` resolves a `jinit=` by it."""
+        ...
+
+    @staticmethod
+    def joint_qadr(k: Int) -> Int:
+        ...
+
+    @staticmethod
+    def joint_dadr(k: Int) -> Int:
         ...
 
 
@@ -330,6 +387,18 @@ def place_free_slots[
         var fx = T.region_site_x[DTYPE](r)
         var fy = T.region_site_y[DTYPE](r)
         var fz = T.region_site_z[DTYPE](r)
+        # ⚠⚠ A DRAWER'S REGION FOLLOWS THE DRAWER. The host resolves frames by
+        # FK AFTER this reset's `jinit=` draws; the kernel has no FK, so a
+        # region carried by one slide reads that slide's `qpos` — written by
+        # `draw_joint_inits` just before this, or `qpos0` if the task draws
+        # none — and shifts the site along the table's world axis. Affine and
+        # exact up to the ULP a different association costs.
+        var mj = T.region_move_joint(r)
+        if mj >= 0:
+            var q = rebind[Scalar[DTYPE]](qpos[env, T.joint_qadr(mj)])
+            fx = fx + T.region_move_axis_x[DTYPE](r) * q
+            fy = fy + T.region_move_axis_y[DTYPE](r) * q
+            fz = fz + T.region_move_axis_z[DTYPE](r) * q
         var z_off = Scalar[DTYPE](0)
         if has_geom:
             if not anchored:
@@ -402,6 +471,75 @@ def place_free_slots[
                 preg[n_placed] = r
                 n_placed += 1
                 break
+
+
+@always_inline
+def draw_joint_inits[
+    T: PlacementTable,
+    DTYPE: DType,
+    BATCH_SIZE: Int,
+    NQ_F: Int,
+    NV_F: Int,
+](
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin],
+    meta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+    ],
+    env: Int,
+    seed: Int,
+):
+    """`sampler.sample_joint_inits` + `reset.apply_joint_inits`, on one lane.
+
+    Draw `k` is `lo + u * (hi - lo)` with `u` on Philox axis
+    `JOINT_AXIS_BASE + k`, attempt 0 — the host's coordinates, where `k` is the
+    `jinit=` line's index in the TASK. Writes the joint's `qpos` and zeroes its
+    `qvel`; a word of 0 draws nothing and leaves both alone."""
+    for k in range(META_JINIT_SLOTS):
+        comptime W = META_JINIT_WORDS
+        var jw = Int(rebind[Scalar[DTYPE]](meta[env, META_IDX_JINIT_0 + k * W]))
+        if jw <= 0 or jw > T.N_JOINTS:
+            continue
+        var jk = jw - 1
+        var lo = rebind[Scalar[DTYPE]](meta[env, META_IDX_JINIT_0 + k * W + 1])
+        var hi = rebind[Scalar[DTYPE]](meta[env, META_IDX_JINIT_0 + k * W + 2])
+        var ru = PhiloxRandom(
+            seed=UInt64(seed) ^ PLACEMENT_SALT,
+            subsequence=(UInt64(env) << 16) | UInt64(JOINT_AXIS_BASE + k),
+            offset=UInt64(0),
+        )
+        var u = Scalar[DTYPE](Float64(ru.step_uniform()[0]))
+        qpos[env, T.joint_qadr(jk)] = lo + u * (hi - lo)
+        qvel[env, T.joint_dadr(jk)] = Scalar[DTYPE](0)
+
+
+@always_inline
+def reset_task_slots[
+    T: PlacementTable,
+    DTYPE: DType,
+    BATCH_SIZE: Int,
+    NQ_F: Int,
+    NV_F: Int,
+](
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin],
+    meta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+    ],
+    env: Int,
+    seed: Int,
+):
+    """The task layer's whole reset for one lane: joints, THEN placements.
+
+    ⚠ THE ORDER IS LOAD-BEARING. A region carried by a drawer reads the
+    drawer's drawn `qpos`, so the draw must be written first — the host's order
+    too (draw, FK, frames, sample)."""
+    draw_joint_inits[T, DTYPE, BATCH_SIZE, NQ_F, NV_F](
+        qpos, qvel, meta, env, seed
+    )
+    place_free_slots[T, DTYPE, BATCH_SIZE, NQ_F, NV_F](
+        qpos, qvel, meta, env, seed
+    )
 
 
 @always_inline

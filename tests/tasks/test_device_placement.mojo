@@ -22,25 +22,34 @@ every task of every LIBERO family, and section 6 COUNTS that the corpus reaches
 each rule — a parity check over placements that never take a branch says
 nothing about that branch.
 
+## `jinit=`, AND THE REGION THAT FOLLOWS IT
+
+`reset_task_slots` draws each `jinit=` BEFORE placing, and a region carried by
+one slide (a drawer interior) reads the drawn `qpos`. So the host frames here
+are per LANE — FK after that lane's own draws — and the table's carrying joint
+and axis are checked against a NUDGE oracle, never against the generator's own
+body-chain walk.
+
 ## THE SECTIONS
 
-1. `meta`'s init block, and `so101_tabletop`'s hand-written table vs its family
-2. device vs host on `so101_tabletop`
-3. an untouched `meta` parks every free slot
-4. every LIBERO family: its generated table vs the family and FK, EXACTLY
-5. every LIBERO task: refused by `require_device_placement`, or device == host
-   on every coordinate of every lane — and the refusals are exactly the tasks
-   drawing in a region an INDEPENDENT oracle finds moving
-6. the corpus reaches every rule the kernel mirrors
+1. `meta`'s appended init and jinit blocks
+2. `so101_tabletop`: its hand-written table, then device vs host
+3. an untouched `meta` writes nothing
+4. every LIBERO family: its generated table vs the family, FK and the oracle
+5. every LIBERO task: joint draws and placements, device == host on every lane,
+   and nothing else written; refusals exactly where the oracle says
+6. the corpus reaches every rule the kernel mirrors (checked after 8)
 7. the stack exemption, on a scene built to reach it — the host used to CRASH
+7b. `In` a fixture, the clamp and the region exemption, which the corpus lacks
+8. the refusals, on corpus tasks changed one way each
 """
 
 from std.os import listdir
 
 from mojo_rl.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
 from mojo_rl.tasks.spec import (
-    FamilySpec, TaskSpec, load_family, load_task, parse_family, parse_task,
-    validate_task_against_family, SLOT_FREE, INIT_TARGET_SLOT,
+    FamilySpec, TaskSpec, JointInitSpec, load_family, load_task, parse_family,
+    parse_task, validate_task_against_family, SLOT_FREE, INIT_TARGET_SLOT,
 )
 from mojo_rl.tasks.family import scene_path
 from mojo_rl.tasks.family_config import (
@@ -48,15 +57,19 @@ from mojo_rl.tasks.family_config import (
 )
 from mojo_rl.tasks.active import init_region_words
 from mojo_rl.tasks.eval import region_sites
-from mojo_rl.tasks.reset import SlotAddress, free_slot_addresses
+from mojo_rl.tasks.reset import (
+    SlotAddress, free_slot_addresses, joint_init_addresses,
+    joint_init_dof_addresses,
+)
 from mojo_rl.tasks.sampler import (
-    sample_placements, RegionFrame, SampleReport,
+    sample_placements, sample_joint_inits, RegionFrame, SampleReport,
 )
 from mojo_rl.tasks.placement.table import (
-    PlacementTable, place_free_slots,
+    PlacementTable, reset_task_slots,
 )
 from mojo_rl.tasks.placement.check import (
-    require_device_placement, placement_table_drift,
+    require_device_placement, placement_table_drift, joint_init_words,
+    SceneFacts,
 )
 from mojo_rl.tasks.placement.libero_goal import LiberoGoalPlacement
 from mojo_rl.tasks.placement.libero_kitchen_scene1 import (
@@ -123,9 +136,10 @@ from mojo_rl.tasks.placement.libero_study_scene4 import (
 )
 from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_INIT_REGION_0, META_INIT_SLOTS, META_IDX_LS_EVAL,
+    META_IDX_JINIT_0, META_JINIT_SLOTS, META_JINIT_WORDS,
     MODEL_JOINT_SIZE, MODEL_BODY_SIZE, MODEL_GEOM_SIZE,
 )
-from mojo_rl.physics3d.joint_types import JNT_FREE
+from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from mojo_rl.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
@@ -183,13 +197,17 @@ struct Stats(Copyable, ImplicitlyCopyable, Movable):
     var exact: Int
     var left_alone: Int
     var left_alone_bad: Int
+    var other_written: Int
     var meta_touched: Int
+    var jinit_draws: Int
+    var jinit_bad: Int
     # rule coverage, per placement the HOST made
     var geom: Int
     var table_off: Int
     var on_fixture: Int
     var in_fixture: Int
     var stacks: Int
+    var followed: Int
     var reordered_tasks: Int
     var rejections: Int
     var clamped: Int
@@ -206,33 +224,41 @@ struct Stats(Copyable, ImplicitlyCopyable, Movable):
         self.exact = 0
         self.left_alone = 0
         self.left_alone_bad = 0
+        self.other_written = 0
         self.meta_touched = 0
+        self.jinit_draws = 0
+        self.jinit_bad = 0
         self.geom = 0
         self.table_off = 0
         self.on_fixture = 0
         self.in_fixture = 0
         self.stacks = 0
+        self.followed = 0
         self.reordered_tasks = 0
         self.rejections = 0
         self.clamped = 0
         self.exempt = 0
 
 
-struct Scene(Copyable, Movable):
-    """What the host sampler needs from a composed scene, plus the oracle."""
+struct LaneInputs(Copyable, Movable):
+    """What the HOST uses for each lane: FK frames after that lane's joint
+    draws, and the draws themselves. Flat: `frames[lane * n_regions + r]`,
+    `jvals[lane * n_jinit + k]`."""
 
     var frames: List[RegionFrame]
-    var addrs: List[SlotAddress]
-    var moves: List[Bool]
-    var nq: Int
-    var nv: Int
+    var n_regions: Int
+    var jadr: List[Int]
+    var jdadr: List[Int]
+    var jvals: List[Float64]
+    var n_jinit: Int
 
     def __init__(out self):
         self.frames = List[RegionFrame]()
-        self.addrs = List[SlotAddress]()
-        self.moves = List[Bool]()
-        self.nq = 0
-        self.nv = 0
+        self.n_regions = 0
+        self.jadr = List[Int]()
+        self.jdadr = List[Int]()
+        self.jvals = List[Float64]()
+        self.n_jinit = 0
 
 
 def _sorted(var xs: List[String]) -> List[String]:
@@ -262,74 +288,6 @@ def _tasks_of(family: String) raises -> List[String]:
     return _sorted(out^)
 
 
-def _scene(f: FamilySpec, verts0: Int) raises -> Scene:
-    """Frames, addresses and the MOVING-REGION ORACLE from the composed scene.
-
-    ⚠⚠ THE ORACLE DOES NOT WALK THE BODY CHAIN, which is how the generator
-    decides `region_moves`. A gate that re-ran the generator's walk would
-    share its off-by-one — and the generator's first run HAD one (the flat body
-    list has no worldbody record). Instead: FK at the reset state, then nudge
-    EVERY joint (a slide or hinge by 0.05, a free joint's position by 0.05),
-    FK again, and a region moves iff its site did.
-    """
-    var fmd = parse_model_runtime(scene_path(f))
-    var verts = verts0
-    var dims = dims_from_flat(fmd, max_contacts=64, nmesh_verts=verts)
-    var m = Model[DT, DynDims](dims)
-    while True:
-        try:
-            build_model_runtime[DT](fmd, dims, m)
-            break
-        except e:
-            if String(e).find("mesh vertex capacity") < 0:
-                raise e
-            verts *= 2
-            dims = dims_from_flat(fmd, max_contacts=64, nmesh_verts=verts)
-            m = Model[DT, DynDims](dims)
-    var d = Data[DT, DynDims, 1](dims)
-    var sc = Scene()
-    sc.nq = dims.get_nq()
-    sc.nv = dims.get_nv()
-    for i in range(sc.nq):
-        d.qpos.data[i] = Scalar[DT](0)
-    for i in range(len(f.base_qpos)):
-        d.qpos.data[i] = Scalar[DT](f.base_qpos[i])
-    forward_kinematics["cpu", DT, DynDims, 1](d, m)
-    var rsites = region_sites(f, fmd.site_names)
-    for r in range(len(f.regions)):
-        var s = rsites[r]
-        sc.frames.append(RegionFrame(
-            Float64(d.site_xpos.data[s * 3]),
-            Float64(d.site_xpos.data[s * 3 + 1]),
-            Float64(d.site_xpos.data[s * 3 + 2]),
-        ))
-    var jt = List[Int]()
-    var jqn = List[Int]()
-    var jvn = List[Int]()
-    for i in range(len(fmd.joints)):
-        jt.append(fmd.joints[i].jnt_type)
-        jqn.append(fmd.joints[i].nq)
-        jvn.append(fmd.joints[i].nv)
-    sc.addrs = free_slot_addresses(f, fmd.joint_names, jt, jqn, jvn)
-
-    var adr = 0
-    for j in range(len(jt)):
-        if jt[j] == JNT_FREE:
-            d.qpos.data[adr] = d.qpos.data[adr] + Scalar[DT](0.05)
-        elif jqn[j] == 1:
-            d.qpos.data[adr] = d.qpos.data[adr] + Scalar[DT](0.05)
-        adr += jqn[j]
-    forward_kinematics["cpu", DT, DynDims, 1](d, m)
-    for r in range(len(f.regions)):
-        var s = rsites[r]
-        sc.moves.append(
-            Float64(d.site_xpos.data[s * 3]) != sc.frames[r].x
-            or Float64(d.site_xpos.data[s * 3 + 1]) != sc.frames[r].y
-            or Float64(d.site_xpos.data[s * 3 + 2]) != sc.frames[r].z
-        )
-    return sc^
-
-
 def _host_radii(f: FamilySpec, fallback: Float64) -> List[Float64]:
     var radii = List[Float64]()
     for _ in range(len(f.slots)):
@@ -337,7 +295,9 @@ def _host_radii(f: FamilySpec, fallback: Float64) -> List[Float64]:
     return radii^
 
 
-def _coverage(t: TaskSpec, f: FamilySpec, mut st: Stats) raises:
+def _coverage(
+    t: TaskSpec, f: FamilySpec, move_joint: List[Int], mut st: Stats
+) raises:
     """Which of the kernel's rules THIS task's placements take — per lane, so
     the counts are comparable with `st.placements`."""
     var reordered = False
@@ -354,7 +314,10 @@ def _coverage(t: TaskSpec, f: FamilySpec, mut st: Stats) raises:
         if f.init_target_kind(it.region) == INIT_TARGET_SLOT:
             st.stacks += BATCH
             continue
-        ref reg = f.regions[f.region_index(it.region)]
+        var ri = f.region_index(it.region)
+        if move_joint[ri] >= 0:
+            st.followed += BATCH
+        ref reg = f.regions[ri]
         if not f.slots[si].has_geom:
             continue
         if reg.contact.byte_length() == 0:
@@ -368,22 +331,32 @@ def _coverage(t: TaskSpec, f: FamilySpec, mut st: Stats) raises:
 def _parity[T: PlacementTable](
     t: TaskSpec,
     f: FamilySpec,
-    frames: List[RegionFrame],
+    li: LaneInputs,
     radii: List[Float64],
     mut st: Stats,
 ) raises:
-    """The kernel on BATCH lanes against `sample_placements` on each lane."""
+    """`reset_task_slots` on BATCH lanes against the host on each lane.
+
+    ⚠ EVERY WORD THE KERNEL MAY NOT TOUCH IS CHECKED UNTOUCHED: `qpos` starts
+    at 0 (the host's own pre-FK state for a fixture joint) with each free slot
+    at a sentinel, `qvel` at a sentinel. A write anywhere but a placed slot or a
+    drawn joint is counted."""
     comptime NQ = T.NQ
     comptime NV = T.NV
     comptime L_Q = Layout.row_major(BATCH, NQ)
     comptime L_V = Layout.row_major(BATCH, NV)
     comptime L_M = Layout.row_major(BATCH, METADATA_SIZE)
     var words = init_region_words(t, f)
+    var jwords = joint_init_words[T](t)
     var qs = TensorImpl[DT].alloc(BATCH * NQ)
     var vs = TensorImpl[DT].alloc(BATCH * NV)
     var ms = TensorImpl[DT].alloc(BATCH * METADATA_SIZE)
     for i in range(BATCH * NQ):
-        qs.data[i] = Scalar[DT](QPOS_SENTINEL)
+        qs.data[i] = Scalar[DT](0)
+    for e in range(BATCH):
+        for j in range(T.N_FREE):
+            for w in range(7):
+                qs.data[e * NQ + T.free_qadr(j) + w] = Scalar[DT](QPOS_SENTINEL)
     for i in range(BATCH * NV):
         vs.data[i] = Scalar[DT](QVEL_SENTINEL)
     for e in range(BATCH):
@@ -397,6 +370,10 @@ def _parity[T: PlacementTable](
             ms.data[e * METADATA_SIZE + META_IDX_INIT_REGION_0 + j] = Scalar[
                 DT
             ](words[j])
+        for j in range(len(jwords)):
+            ms.data[e * METADATA_SIZE + META_IDX_JINIT_0 + j] = Scalar[DT](
+                jwords[j]
+            )
     var meta_before = List[Float64]()
     for i in range(BATCH * METADATA_SIZE):
         meta_before.append(Float64(ms.data[i]))
@@ -405,12 +382,31 @@ def _parity[T: PlacementTable](
     var mt = ms.lt["cpu", L_M]()
 
     for lane in range(BATCH):
-        place_free_slots[T, DT, BATCH, NQ, NV](qt, vt, mt, lane, SEED)
+        reset_task_slots[T, DT, BATCH, NQ, NV](qt, vt, mt, lane, SEED)
     for i in range(BATCH * METADATA_SIZE):
         if Float64(ms.data[i]) != meta_before[i]:
             st.meta_touched += 1
 
     for lane in range(BATCH):
+        var qseen = List[Bool](length=NQ, fill=False)
+        var vseen = List[Bool](length=NV, fill=False)
+        # ── the joint draws ──
+        for k in range(li.n_jinit):
+            var want = li.jvals[lane * li.n_jinit + k]
+            var got = Float64(qs.data[lane * NQ + li.jadr[k]])
+            st.jinit_draws += 1
+            if abs(got - want) > TOL or Float64(
+                vs.data[lane * NV + li.jdadr[k]]
+            ) != 0.0:
+                st.jinit_bad += 1
+                print("      ", t.name, "lane", lane, "jinit", k, ": device",
+                      got, "host", want)
+            qseen[li.jadr[k]] = True
+            vseen[li.jdadr[k]] = True
+        # ── the placements, on this lane's frames ──
+        var frames = List[RegionFrame]()
+        for r in range(li.n_regions):
+            frames.append(li.frames[lane * li.n_regions + r])
         var rep = SampleReport()
         var placed = sample_placements(
             t, f, frames, radii, UInt64(SEED), lane, rep
@@ -423,6 +419,10 @@ def _parity[T: PlacementTable](
             var si = T.free_slot(j)
             var qa = T.free_qadr(j)
             var da = T.free_dadr(j)
+            for w in range(7):
+                qseen[qa + w] = True
+            for w in range(6):
+                vseen[da + w] = True
             var k = -1
             for p in range(len(placed)):
                 if placed[p].slot == si:
@@ -474,38 +474,186 @@ def _parity[T: PlacementTable](
                       Float64(qs.data[base + 1]), ",",
                       Float64(qs.data[base + 2]), ") host (", placed[k].x,
                       ",", placed[k].y, ",", placed[k].z, ")")
+        # ── nothing else ──
+        for i in range(NQ):
+            if not qseen[i] and Float64(qs.data[lane * NQ + i]) != 0.0:
+                st.other_written += 1
+        for i in range(NV):
+            if not vseen[i] and Float64(vs.data[lane * NV + i]) != QVEL_SENTINEL:
+                st.other_written += 1
 
 
-def _family[T: PlacementTable](
-    name: String, mut ta: Tally, mut st: Stats, mut refused: List[String],
-    mut should_refuse: List[String],
+def _run_family[T: PlacementTable](
+    f: FamilySpec,
+    tasks: List[String],
+    verts0: Int,
+    fallback_radius: Float64,
+    mut ta: Tally,
+    mut st: Stats,
+    mut refused: List[String],
+    mut should: List[String],
 ) raises:
-    """Sections 4 and 5 for one generated table."""
-    var f = load_family(String(FAMILY_DIR) + "/" + name + ".family")
-    var sc = _scene(f, 32768)
-    var radii = _host_radii(f, 0.02)
-    var drift = placement_table_drift[T](
-        f, sc.addrs, sc.frames, sc.moves, radii, sc.nq, sc.nv
-    )
-    if len(drift) > 0:
-        for i in range(len(drift)):
-            if i < 6:
-                print("      ", name, ":", drift[i])
+    """The table against an INDEPENDENTLY derived `SceneFacts`, then every task:
+    refused, or parity on BATCH lanes with the host's per-lane FK frames."""
+    var fmd = parse_model_runtime(scene_path(f))
+    var verts = verts0
+    var dims = dims_from_flat(fmd, max_contacts=64, nmesh_verts=verts)
+    var m = Model[DT, DynDims](dims)
+    while True:
+        try:
+            build_model_runtime[DT](fmd, dims, m)
+            break
+        except e:
+            if String(e).find("mesh vertex capacity") < 0:
+                raise e
+            verts *= 2
+            dims = dims_from_flat(fmd, max_contacts=64, nmesh_verts=verts)
+            m = Model[DT, DynDims](dims)
+    var d = Data[DT, DynDims, 1](dims)
+    var facts = SceneFacts()
+    facts.nq = dims.get_nq()
+    facts.nv = dims.get_nv()
+    var rsites = region_sites(f, fmd.site_names)
+    var nr = len(f.regions)
+
+    var jt = List[Int]()
+    var jqn = List[Int]()
+    var jvn = List[Int]()
+    for i in range(len(fmd.joints)):
+        jt.append(fmd.joints[i].jnt_type)
+        jqn.append(fmd.joints[i].nq)
+        jvn.append(fmd.joints[i].nv)
+    facts.addrs = free_slot_addresses(f, fmd.joint_names, jt, jqn, jvn)
+
+    # the host's reset state before FK: zeros, then base_qpos
+    for i in range(facts.nq):
+        d.qpos.data[i] = Scalar[DT](0)
+    for i in range(len(f.base_qpos)):
+        d.qpos.data[i] = Scalar[DT](f.base_qpos[i])
+    forward_kinematics["cpu", DT, DynDims, 1](d, m)
+    var z = List[Float64]()
+    for r in range(nr):
+        for c in range(3):
+            z.append(Float64(d.site_xpos.data[rsites[r] * 3 + c]))
+        facts.frames.append(RegionFrame(z[r * 3], z[r * 3 + 1], z[r * 3 + 2]))
+
+    # drawable joints: 1-dof hinge/slide named `<static slot>_...`
+    var jidx = List[Int]()
+    var qa_run = 0
+    var da_run = 0
+    for i in range(len(jt)):
+        var owned = False
+        for si in range(len(f.slots)):
+            if f.slots[si].kind != SLOT_FREE and String(
+                fmd.joint_names[i]
+            ).startswith(f.slots[si].name + "_"):
+                owned = True
+        if owned and jqn[i] == 1 and (jt[i] == JNT_HINGE or jt[i] == JNT_SLIDE):
+            facts.joint_names.append(String(fmd.joint_names[i]))
+            facts.joint_qadr.append(qa_run)
+            facts.joint_dadr.append(da_run)
+            jidx.append(i)
+        qa_run += jqn[i]
+        da_run += jvn[i]
+
+    # ⚠⚠ THE CARRYING-JOINT ORACLE, BY NUDGES — NOT THE GENERATOR'S BODY WALK.
+    # (1) every joint at once: which sites move at all; (2) each drawable joint
+    # alone at 0.05 and at 0.10: which sites it moves, and whether the move is
+    # LINEAR (a slide) and the WHOLE of the global move (nothing else carries
+    # it). One such joint -> it, axis = move / 0.05; moving otherwise -> -2.
+    var adr = 0
+    for j in range(len(jt)):
+        if jqn[j] == 7 or jqn[j] == 1:
+            d.qpos.data[adr] = d.qpos.data[adr] + Scalar[DT](0.05)
+        adr += jqn[j]
+    forward_kinematics["cpu", DT, DynDims, 1](d, m)
+    var g = List[Float64]()
+    for r in range(nr):
+        for c in range(3):
+            g.append(Float64(d.site_xpos.data[rsites[r] * 3 + c]) - z[r * 3 + c])
+    for i in range(facts.nq):
+        d.qpos.data[i] = Scalar[DT](0)
+    for i in range(len(f.base_qpos)):
+        d.qpos.data[i] = Scalar[DT](f.base_qpos[i])
+    var d1 = List[Float64](length=nr * 3 * len(jidx) + 1, fill=0.0)
+    var d2 = List[Float64](length=nr * 3 * len(jidx) + 1, fill=0.0)
+    for k in range(len(jidx)):
+        for step in range(2):
+            var qv = 0.05 if step == 0 else 0.10
+            d.qpos.data[facts.joint_qadr[k]] = Scalar[DT](qv)
+            forward_kinematics["cpu", DT, DynDims, 1](d, m)
+            for r in range(nr):
+                for c in range(3):
+                    var dd = Float64(d.site_xpos.data[rsites[r] * 3 + c]) - z[
+                        r * 3 + c
+                    ]
+                    if step == 0:
+                        d1[(k * nr + r) * 3 + c] = dd
+                    else:
+                        d2[(k * nr + r) * 3 + c] = dd
+            d.qpos.data[facts.joint_qadr[k]] = Scalar[DT](0)
+    for r in range(nr):
+        var moved = g[r * 3] != 0.0 or g[r * 3 + 1] != 0.0 or g[r * 3 + 2] != 0.0
+        var carried = -1
+        var ax = 0.0
+        var ay = 0.0
+        var az = 0.0
+        if moved:
+            carried = -2
+            var hits = 0
+            var hk = -1
+            for k in range(len(jidx)):
+                var b = (k * nr + r) * 3
+                if d1[b] != 0.0 or d1[b + 1] != 0.0 or d1[b + 2] != 0.0:
+                    hits += 1
+                    hk = k
+            if hits == 1:
+                var b = (hk * nr + r) * 3
+                var linear = True
+                var whole = True
+                for c in range(3):
+                    if abs(d2[b + c] - 2.0 * d1[b + c]) > 1.0e-12:
+                        linear = False
+                    if abs(g[r * 3 + c] - d1[b + c]) > 1.0e-12:
+                        whole = False
+                if linear and whole:
+                    carried = hk
+                    ax = d1[b] / 0.05
+                    ay = d1[b + 1] / 0.05
+                    az = d1[b + 2] / 0.05
+        facts.move_joint.append(carried)
+        facts.move_axis.append(ax)
+        facts.move_axis.append(ay)
+        facts.move_axis.append(az)
+    forward_kinematics["cpu", DT, DynDims, 1](d, m)
+
+    var radii = _host_radii(f, fallback_radius)
+    var drift = placement_table_drift[T](f, facts, radii)
+    for i in range(len(drift)):
+        if i < 6:
+            print("      ", f.name, ":", drift[i])
     ta.check(len(drift) == 0,
-             name + ": the generated table matches the family, the addresses"
-             " and FK exactly, and the moving-region oracle")
-    var tasks = _tasks_of(name)
+             f.name + ": the table matches the family, the addresses, FK, the"
+             " drawable joints and the nudge oracle")
+
     for i in range(len(tasks)):
         var t = load_task(TASK_DIR + tasks[i] + ".task")
         validate_task_against_family(t, f)
         st.tasks += 1
-        var on_moving = False
+        var expect_refuse = False
         for k in range(len(t.inits)):
             var r = f.region_index(t.inits[k].region)
-            if r >= 0 and sc.moves[r]:
-                on_moving = True
-        if on_moving:
-            should_refuse.append(t.name)
+            if r >= 0 and facts.move_joint[r] == -2:
+                expect_refuse = True
+        for k in range(len(t.joint_inits)):
+            var hit = False
+            for q in range(len(facts.joint_names)):
+                if facts.joint_names[q] == t.joint_inits[k].joint:
+                    hit = True
+            if not hit:
+                expect_refuse = True
+        if expect_refuse:
+            should.append(t.name)
         var raised = False
         try:
             require_device_placement[T](t, f)
@@ -516,8 +664,55 @@ def _family[T: PlacementTable](
         if raised:
             st.refused += 1
             continue
-        _coverage(t, f, st)
-        _parity[T](t, f, sc.frames, radii, st)
+
+        var li = LaneInputs()
+        li.n_regions = nr
+        li.n_jinit = len(t.joint_inits)
+        li.jadr = joint_init_addresses(t, fmd.joint_names, jqn)
+        li.jdadr = joint_init_dof_addresses(t, fmd.joint_names, jvn)
+        for lane in range(BATCH):
+            var jv = sample_joint_inits(t, UInt64(SEED), lane)
+            for i2 in range(facts.nq):
+                d.qpos.data[i2] = Scalar[DT](0)
+            for i2 in range(len(f.base_qpos)):
+                d.qpos.data[i2] = Scalar[DT](f.base_qpos[i2])
+            for k in range(len(jv)):
+                d.qpos.data[li.jadr[k]] = Scalar[DT](jv[k])
+                li.jvals.append(jv[k])
+            forward_kinematics["cpu", DT, DynDims, 1](d, m)
+            for r in range(nr):
+                var s = rsites[r]
+                li.frames.append(RegionFrame(
+                    Float64(d.site_xpos.data[s * 3]),
+                    Float64(d.site_xpos.data[s * 3 + 1]),
+                    Float64(d.site_xpos.data[s * 3 + 2]),
+                ))
+        _coverage(t, f, facts.move_joint, st)
+        _parity[T](t, f, li, radii, st)
+
+
+def _synth_facts(
+    n_regions: Int, frames: List[RegionFrame], addrs: List[SlotAddress]
+) -> SceneFacts:
+    var sf = SceneFacts()
+    sf.frames = frames.copy()
+    sf.addrs = addrs.copy()
+    for _ in range(n_regions):
+        sf.move_joint.append(-1)
+        for _c in range(3):
+            sf.move_axis.append(0.0)
+    sf.nq = 21
+    sf.nv = 18
+    return sf^
+
+
+def _synth_lanes(frames: List[RegionFrame]) -> LaneInputs:
+    var li = LaneInputs()
+    li.n_regions = len(frames)
+    for _ in range(BATCH):
+        for r in range(len(frames)):
+            li.frames.append(frames[r])
+    return li^
 
 
 # ── section 7's scene: a stack wider than its reference ─────────────────────
@@ -549,6 +744,7 @@ struct SynthStackPlacement(PlacementTable):
     comptime N_REGIONS: Int = 2
     comptime NQ: Int = 21
     comptime NV: Int = 18
+    comptime N_JOINTS: Int = 0
 
     @staticmethod
     def free_slot(j: Int) -> Int:
@@ -627,8 +823,32 @@ struct SynthStackPlacement(PlacementTable):
         return Scalar[DTYPE](0.0)
 
     @staticmethod
-    def region_moves(r: Int) -> Bool:
-        return False
+    def region_move_joint(r: Int) -> Int:
+        return -1
+
+    @staticmethod
+    def region_move_axis_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
+
+    @staticmethod
+    def region_move_axis_y[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
+
+    @staticmethod
+    def region_move_axis_z[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
+
+    @staticmethod
+    def joint_name(k: Int) -> String:
+        return String("")
+
+    @staticmethod
+    def joint_qadr(k: Int) -> Int:
+        return 0
+
+    @staticmethod
+    def joint_dadr(k: Int) -> Int:
+        return 0
 
 
 # ── section 7b's scene: a fixture, its top, its interior, and a table zone ──
@@ -666,6 +886,7 @@ struct SynthFixturePlacement(PlacementTable):
     comptime N_REGIONS: Int = 3
     comptime NQ: Int = 21
     comptime NV: Int = 18
+    comptime N_JOINTS: Int = 0
 
     @staticmethod
     def free_slot(j: Int) -> Int:
@@ -752,40 +973,82 @@ struct SynthFixturePlacement(PlacementTable):
         return Scalar[DTYPE](0.046875 if r != 2 else 0.0)
 
     @staticmethod
-    def region_moves(r: Int) -> Bool:
-        return False
+    def region_move_joint(r: Int) -> Int:
+        return -1
+
+    @staticmethod
+    def region_move_axis_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
+
+    @staticmethod
+    def region_move_axis_y[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
+
+    @staticmethod
+    def region_move_axis_z[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
+
+    @staticmethod
+    def joint_name(k: Int) -> String:
+        return String("")
+
+    @staticmethod
+    def joint_qadr(k: Int) -> Int:
+        return 0
+
+    @staticmethod
+    def joint_dadr(k: Int) -> Int:
+        return 0
 
 
 def main() raises:
-    print("=== device placement vs the host sampler ===")
+    print("=== the device reset vs the host: jinit= and placements ===")
     var ta = Tally()
 
-    # ── 1. the init block, and so101_tabletop's table ─────────────────────
-    print("--- 1. meta's init block, and so101_tabletop's hand-written table ---")
+    # ── 1. meta's two appended blocks ─────────────────────────────────────
+    print("--- 1. meta's init and jinit blocks ---")
     ta.check(
-        META_IDX_INIT_REGION_0 + META_INIT_SLOTS == METADATA_SIZE,
-        "the init block is contiguous and ENDS `meta` ("
+        META_IDX_INIT_REGION_0 + META_INIT_SLOTS == META_IDX_JINIT_0
+        and META_IDX_JINIT_0 + META_JINIT_SLOTS * META_JINIT_WORDS
+        == METADATA_SIZE,
+        "the init block then the jinit block are contiguous and END `meta` ("
         + String(META_IDX_INIT_REGION_0) + ".." + String(METADATA_SIZE - 1)
-        + "), so widening it moved no other word",
+        + "), so widening moved no other word",
     )
     ta.check(META_IDX_LS_EVAL < META_IDX_INIT_REGION_0,
-             "every older word sits below the init block")
+             "every older word sits below the appended blocks")
 
+    # ── 2. so101_tabletop ─────────────────────────────────────────────────
+    print()
+    print("--- 2. so101_tabletop: its hand-written table, then device vs host ---")
     var f = load_family(SO101_FAMILY)
-    var sc = _scene(f, SO_ARM101_NMESH_VERTS)
-    var radii = _host_radii(f, So101TabletopConfig.SLOT_RADIUS)
-    var drift = placement_table_drift[So101TabletopPlacement](
-        f, sc.addrs, sc.frames, sc.moves, radii, sc.nq, sc.nv
+    var names = List[String]()
+    names.append(String("so101_reach_brick"))
+    names.append(String("so101_lift_brick"))
+    names.append(String("so101_gather_bricks"))
+    names.append(String("so101_settle_brick"))
+    var st0 = Stats()
+    var r0 = List[String]()
+    var s0 = List[String]()
+    _run_family[So101TabletopPlacement](
+        f, names, SO_ARM101_NMESH_VERTS, So101TabletopConfig.SLOT_RADIUS, ta,
+        st0, r0, s0,
     )
-    for i in range(len(drift)):
-        print("      so101_tabletop:", drift[i])
-    ta.check(len(drift) == 0,
-             "So101TabletopPlacement matches the family, addresses and FK")
-
-    # ⚠ THE RADIUS IS READ FROM THE PROP'S OWN ASSET, not from the composed
-    # scene. For this family it is both the clash radius and the resting
-    # height, so a value that is not the box's half-size starts every prop
-    # floating or inside the table.
+    print("      placements", st0.placements, " coordinates", st0.coords,
+          " exact", st0.exact, " worst", st0.worst)
+    if st0.placements == 0:
+        raise Error(
+            "device placement: so101_tabletop placed NOTHING, so the parity"
+            " below compared nothing"
+        )
+    ta.check(
+        st0.bad == 0 and st0.left_alone_bad == 0 and st0.meta_touched == 0
+        and st0.other_written == 0 and len(r0) == 0,
+        "so101_tabletop: every coordinate agrees, nothing else is written,"
+        " nothing refused",
+    )
+    # ⚠ THE RADIUS IS READ FROM THE PROP'S OWN ASSET. For this family it is
+    # both the clash radius and the resting height.
     var cube = parse_model_runtime("mojo_rl/tasks/assets/props/cube.xml")
     var ok_rad = False
     for i in range(len(cube.geoms)):
@@ -794,39 +1057,12 @@ def main() raises:
     ta.check(ok_rad,
              "SLOT_RADIUS is the prop asset's own half-size (resting height)")
 
-    # ── 2. so101_tabletop, device vs host ─────────────────────────────────
-    print()
-    print("--- 2. so101_tabletop: device vs host,", BATCH, "lanes ---")
-    var st0 = Stats()
-    var names = List[String]()
-    names.append(String("so101_reach_brick"))
-    names.append(String("so101_lift_brick"))
-    names.append(String("so101_gather_bricks"))
-    names.append(String("so101_settle_brick"))
-    for n in range(len(names)):
-        var t = load_task(TASK_DIR + names[n] + ".task")
-        validate_task_against_family(t, f)
-        require_device_placement[So101TabletopPlacement](t, f)
-        _parity[So101TabletopPlacement](t, f, sc.frames, radii, st0)
-    print("      placements", st0.placements, " coordinates", st0.coords,
-          " exact", st0.exact, " worst", st0.worst, " rejections",
-          st0.rejections)
-    if st0.placements == 0:
-        raise Error(
-            "device placement: so101_tabletop placed NOTHING, so the parity"
-            " below compared nothing"
-        )
-    ta.check(st0.bad == 0 and st0.left_alone_bad == 0 and st0.meta_touched == 0,
-             "so101_tabletop: every coordinate agrees, every unplaced slot is"
-             " untouched, and meta is not written")
-
-    # ── 3. an untouched meta parks everything ─────────────────────────────
+    # ── 3. an untouched meta writes nothing ───────────────────────────────
     #
     # ⚠⚠ THE CASE A DRIVER FALLS INTO BY FORGETTING. `Data.__init__` uploads a
-    # ZERO-FILLED `meta`, so zero is what every lane reads until something
-    # writes the init words. Zero must mean "not placed".
+    # ZERO-FILLED `meta`: zero must mean no placement AND no joint draw.
     print()
-    print("--- 3. an untouched meta leaves every free slot where it was ---")
+    print("--- 3. an untouched meta leaves every qpos and qvel word alone ---")
     comptime NQ0 = So101TabletopPlacement.NQ
     comptime NV0 = So101TabletopPlacement.NV
     var zs = TensorImpl[DT].alloc(BATCH * NQ0)
@@ -879,68 +1115,101 @@ def main() raises:
     var st = Stats()
     var refused = List[String]()
     var should = List[String]()
-    var seen = List[String]()
     for i in range(len(fams)):
         ref nm = fams[i]
-        seen.append(nm)
+        var lf = load_family(String(FAMILY_DIR) + "/" + nm + ".family")
         if nm == "libero_goal":
-            _family[LiberoGoalPlacement](nm, ta, st, refused, should)
+            _run_family[LiberoGoalPlacement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_kitchen_scene1":
-            _family[LiberoKitchenScene1Placement](nm, ta, st, refused, should)
+            _run_family[LiberoKitchenScene1Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_kitchen_scene2":
-            _family[LiberoKitchenScene2Placement](nm, ta, st, refused, should)
+            _run_family[LiberoKitchenScene2Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_kitchen_scene3":
-            _family[LiberoKitchenScene3Placement](nm, ta, st, refused, should)
+            _run_family[LiberoKitchenScene3Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_kitchen_scene4":
-            _family[LiberoKitchenScene4Placement](nm, ta, st, refused, should)
+            _run_family[LiberoKitchenScene4Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_kitchen_scene5":
-            _family[LiberoKitchenScene5Placement](nm, ta, st, refused, should)
+            _run_family[LiberoKitchenScene5Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_kitchen_scene6":
-            _family[LiberoKitchenScene6Placement](nm, ta, st, refused, should)
+            _run_family[LiberoKitchenScene6Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_kitchen_scene7":
-            _family[LiberoKitchenScene7Placement](nm, ta, st, refused, should)
+            _run_family[LiberoKitchenScene7Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_kitchen_scene8":
-            _family[LiberoKitchenScene8Placement](nm, ta, st, refused, should)
+            _run_family[LiberoKitchenScene8Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_kitchen_scene9":
-            _family[LiberoKitchenScene9Placement](nm, ta, st, refused, should)
+            _run_family[LiberoKitchenScene9Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_kitchen_scene10":
-            _family[LiberoKitchenScene10Placement](nm, ta, st, refused, should)
+            _run_family[LiberoKitchenScene10Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_living_room_scene1":
-            _family[LiberoLivingRoomScene1Placement](
-                nm, ta, st, refused, should
+            _run_family[LiberoLivingRoomScene1Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
             )
         elif nm == "libero_living_room_scene2":
-            _family[LiberoLivingRoomScene2Placement](
-                nm, ta, st, refused, should
+            _run_family[LiberoLivingRoomScene2Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
             )
         elif nm == "libero_living_room_scene3":
-            _family[LiberoLivingRoomScene3Placement](
-                nm, ta, st, refused, should
+            _run_family[LiberoLivingRoomScene3Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
             )
         elif nm == "libero_living_room_scene4":
-            _family[LiberoLivingRoomScene4Placement](
-                nm, ta, st, refused, should
+            _run_family[LiberoLivingRoomScene4Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
             )
         elif nm == "libero_living_room_scene5":
-            _family[LiberoLivingRoomScene5Placement](
-                nm, ta, st, refused, should
+            _run_family[LiberoLivingRoomScene5Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
             )
         elif nm == "libero_living_room_scene6":
-            _family[LiberoLivingRoomScene6Placement](
-                nm, ta, st, refused, should
+            _run_family[LiberoLivingRoomScene6Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
             )
         elif nm == "libero_object":
-            _family[LiberoObjectPlacement](nm, ta, st, refused, should)
+            _run_family[LiberoObjectPlacement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_spatial":
-            _family[LiberoSpatialPlacement](nm, ta, st, refused, should)
+            _run_family[LiberoSpatialPlacement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_study_scene1":
-            _family[LiberoStudyScene1Placement](nm, ta, st, refused, should)
+            _run_family[LiberoStudyScene1Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_study_scene2":
-            _family[LiberoStudyScene2Placement](nm, ta, st, refused, should)
+            _run_family[LiberoStudyScene2Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_study_scene3":
-            _family[LiberoStudyScene3Placement](nm, ta, st, refused, should)
+            _run_family[LiberoStudyScene3Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         elif nm == "libero_study_scene4":
-            _family[LiberoStudyScene4Placement](nm, ta, st, refused, should)
+            _run_family[LiberoStudyScene4Placement](
+                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+            )
         else:
             ta.check(False, nm + ": a LIBERO family with no table in this gate"
                      " — run `pixi run gen-placement-tables` and import it")
@@ -950,23 +1219,28 @@ def main() raises:
           " placements", st.placements)
     print("      coordinates", st.coords, " exact", st.exact, " worst",
           st.worst, " differing", st.bad)
+    print("      jinit draws", st.jinit_draws, " differing", st.jinit_bad)
     print("      unplaced free slots", st.left_alone, " written anyway",
-          st.left_alone_bad, " meta words written", st.meta_touched)
+          st.left_alone_bad, " other words written", st.other_written,
+          " meta words written", st.meta_touched)
     ta.check(st.tasks == N_LIBERO_TASKS,
              String(st.tasks) + " LIBERO tasks visited (the importer's "
              + String(N_LIBERO_TASKS) + ")")
-    if st.placements == 0:
+    if st.placements == 0 or st.jinit_draws == 0:
         raise Error(
-            "device placement: no LIBERO placement was compared, so 'no"
-            " differences' below would say nothing"
+            "device placement: no LIBERO placement or joint draw was compared,"
+            " so 'no differences' below would say nothing"
         )
     ta.check(st.bad == 0,
              "the device and the host agree on every coordinate of every"
              " placement, within " + String(TOL) + " m")
-    ta.check(st.left_alone_bad == 0,
-             "a free slot the host does not place, the device does not write")
+    ta.check(st.jinit_bad == 0,
+             String(st.jinit_draws) + " joint draws: the device writes the"
+             " host's value and zeroes the velocity")
+    ta.check(st.left_alone_bad == 0 and st.other_written == 0,
+             "the device writes a free slot only where the host places it, and"
+             " no other qpos/qvel word at all")
     ta.check(st.meta_touched == 0, "the kernel never writes meta")
-
     var same = len(refused) == len(should)
     for i in range(len(refused)):
         var hit = False
@@ -975,19 +1249,15 @@ def main() raises:
                 hit = True
         if not hit:
             same = False
-    ta.check(len(should) >= 1,
-             String(len(should)) + " task(s) draw in a region the FK oracle"
-             " finds moving — the refusal below is not vacuous")
     ta.check(same,
-             "the refused tasks are EXACTLY those drawing in a moving region ("
-             + String(len(refused)) + " refused)")
+             "the refused corpus tasks are EXACTLY those the nudge oracle says"
+             " the kernel cannot follow (" + String(len(refused)) + " refused)")
 
-    # ── 6. coverage: the corpus reaches every rule ────────────────────────
     print()
     print("--- 6. the rules the CORPUS placements reach (checked after 7) ---")
     print("      slot_geom", st.geom, " table z offset", st.table_off,
           " On a fixture", st.on_fixture, " In a fixture", st.in_fixture,
-          " stacks", st.stacks)
+          " stacks", st.stacks, " in a followed region", st.followed)
     print("      tasks whose walk is not slot order", st.reordered_tasks,
           " rejections", st.rejections, " clamped axes", st.clamped,
           " exempt overlaps", st.exempt)
@@ -1011,20 +1281,18 @@ def main() raises:
     saddrs.append(SlotAddress(-1, -1))
     for j in range(3):
         saddrs.append(SlotAddress(7 * j, 6 * j))
-    var smoves = List[Bool]()
-    smoves.append(False)
-    smoves.append(False)
     var sradii = _host_radii(sf, 0.02)
     var sdrift = placement_table_drift[SynthStackPlacement](
-        sf, saddrs, sframes, smoves, sradii, 21, 18
+        sf, _synth_facts(2, sframes, saddrs), sradii
     )
     for i in range(len(sdrift)):
         print("      synth:", sdrift[i])
     ta.check(len(sdrift) == 0, "the synthetic table matches its family")
     require_device_placement[SynthStackPlacement](stask, sf)
     var s7 = Stats()
-    _coverage(stask, sf, s7)
-    _parity[SynthStackPlacement](stask, sf, sframes, sradii, s7)
+    var smj = List[Int](length=2, fill=-1)
+    _coverage(stask, sf, smj, s7)
+    _parity[SynthStackPlacement](stask, sf, _synth_lanes(sframes), sradii, s7)
     print("      placements", s7.placements, " exempt overlaps", s7.exempt,
           " worst", s7.worst)
     ta.check(s7.exempt >= BATCH,
@@ -1049,20 +1317,20 @@ def main() raises:
     faddrs.append(SlotAddress(-1, -1))
     for j in range(3):
         faddrs.append(SlotAddress(7 * j, 6 * j))
-    var fmoves = List[Bool]()
-    for _ in range(3):
-        fmoves.append(False)
     var fradii = _host_radii(ff, 0.02)
     var fdrift = placement_table_drift[SynthFixturePlacement](
-        ff, faddrs, fframes, fmoves, fradii, 21, 18
+        ff, _synth_facts(3, fframes, faddrs), fradii
     )
     for i in range(len(fdrift)):
         print("      synth_fixture:", fdrift[i])
     ta.check(len(fdrift) == 0, "the synthetic fixture table matches its family")
     require_device_placement[SynthFixturePlacement](ftask, ff)
     var s7b = Stats()
-    _coverage(ftask, ff, s7b)
-    _parity[SynthFixturePlacement](ftask, ff, fframes, fradii, s7b)
+    var fmj = List[Int](length=3, fill=-1)
+    _coverage(ftask, ff, fmj, s7b)
+    _parity[SynthFixturePlacement](
+        ftask, ff, _synth_lanes(fframes), fradii, s7b
+    )
     print("      placements", s7b.placements, " On", s7b.on_fixture, " In",
           s7b.in_fixture, " clamped", s7b.clamped, " exempt", s7b.exempt,
           " worst", s7b.worst)
@@ -1070,21 +1338,63 @@ def main() raises:
              and s7b.left_alone_bad == 0,
              "all three placed, and the device agrees on every coordinate")
 
+    # ── 8. the refusals, on tasks built to need them ──────────────────────
+    #
+    # ⚠ THE CORPUS NO LONGER NEEDS ONE — the drawer task is followed now — so
+    # a refusal that raised on nothing would pass section 5 for free. Three
+    # real corpus tasks, each changed in ONE way, must each be refused, and the
+    # unchanged task must not be.
+    print()
+    print("--- 8. refusals: an unfollowable region, an unknown joint, too many draws ---")
+    var of = load_family(String(FAMILY_DIR) + "/libero_object.family")
+    var otasks = _tasks_of(String("libero_object"))
+    var base_t = load_task(TASK_DIR + otasks[0] + ".task")
+    validate_task_against_family(base_t, of)
+    var base_ok = True
+    try:
+        require_device_placement[LiberoObjectPlacement](base_t, of)
+    except:
+        base_ok = False
+    ta.check(base_ok, "the unchanged libero_object task is accepted")
+    var bad_region = load_task(TASK_DIR + otasks[0] + ".task")
+    bad_region.inits[0].region = String("basket_1_contain_region")
+    var r1 = False
+    try:
+        require_device_placement[LiberoObjectPlacement](bad_region, of)
+    except:
+        r1 = True
+    ta.check(r1,
+             "a prop drawn into the basket (a region on a FREE body) is refused")
+    var gf = load_family(String(FAMILY_DIR) + "/libero_goal.family")
+    var gtasks = _tasks_of(String("libero_goal"))
+    var bad_joint = load_task(TASK_DIR + gtasks[0] + ".task")
+    bad_joint.joint_inits.append(JointInitSpec(String("not_a_joint"), 0.0, 0.1))
+    var r2 = False
+    try:
+        require_device_placement[LiberoGoalPlacement](bad_joint, gf)
+    except:
+        r2 = True
+    ta.check(r2, "a jinit= on a joint the table does not list is refused")
+    var many = load_task(TASK_DIR + gtasks[0] + ".task")
+    for _ in range(META_JINIT_SLOTS + 1):
+        many.joint_inits.append(JointInitSpec(
+            String(LiberoGoalPlacement.joint_name(0)), -0.16, -0.14
+        ))
+    var r3 = False
+    try:
+        require_device_placement[LiberoGoalPlacement](many, gf)
+    except:
+        r3 = True
+    ta.check(r3, String(META_JINIT_SLOTS + 1) + " jinit= lines are refused")
+
     # ── 6 (checked). every rule is reached by SOMETHING compared above ────
     #
     # ⚠ THE SOURCE IS PRINTED BESIDE EACH COUNT, because "reached" by a
-    # synthetic scene is a weaker statement than reached by the corpus, and a
-    # combined total would hide which one it is.
+    # synthetic scene is a weaker statement than reached by the corpus.
     print()
     print("--- 6. every rule the kernel mirrors, reached (corpus + synthetic) ---")
     var sy = Stats()
-    sy.geom = s7.geom + s7b.geom
-    sy.table_off = s7.table_off + s7b.table_off
-    sy.on_fixture = s7.on_fixture + s7b.on_fixture
     sy.in_fixture = s7.in_fixture + s7b.in_fixture
-    sy.stacks = s7.stacks + s7b.stacks
-    sy.reordered_tasks = s7.reordered_tasks + s7b.reordered_tasks
-    sy.rejections = s7.rejections + s7b.rejections
     sy.clamped = s7.clamped + s7b.clamped
     sy.exempt = s7.exempt + s7b.exempt
     print("      corpus   : In", st.in_fixture, " clamped", st.clamped,
@@ -1108,6 +1418,10 @@ def main() raises:
              "rule 6: overlaps exempted across regions or against a stack"
              " (corpus " + String(st.exempt) + ", synthetic "
              + String(sy.exempt) + ")")
+    ta.check(st.jinit_draws > 0, "jinit=: joint draws")
+    ta.check(st.followed > 0,
+             "jinit=: placements in a region that FOLLOWS a drawn slide ("
+             + String(st.followed) + ")")
 
     print()
     print("--- ran", ta.checks, "checks,", ta.failures, "failed ---")

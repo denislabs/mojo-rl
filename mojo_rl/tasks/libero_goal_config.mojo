@@ -15,10 +15,11 @@ reset — is the task layer's (`tasks/gpu_eval.mojo`, `tasks/tape.mojo`,
 `tasks/family_config.mojo`'s hooks for the SO-101 family), and this config does
 NOT wire it: `OBS_DIM` is the plain state and the reward is zero.
 
-⚠ EXCEPT THE FREE-SLOT PLACEMENT. `init_qpos_gpu` calls the task layer's shared
-kernel (`tasks/placement/table.mojo`) on this family's generated table, because
-placement is DATA in `meta` and one kernel for every family — not a second copy
-of anything. Without init words it is a no-op.
+⚠ EXCEPT THE RESET: `jinit=` draws and the free-slot placement. `init_qpos_gpu`
+calls the task layer's shared kernel (`tasks/placement/table.reset_task_slots`)
+on this family's generated table, because both are DATA in `meta` and one
+kernel serves every family — not a second copy of anything. Without words it is
+a no-op.
 
 That split is deliberate and it is the honest scope of "the batched device
 wiring". A config that also carried a goal would be a second copy of the task
@@ -56,7 +57,7 @@ from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE, METADATA_SIZE, MODEL_BODY_SIZE, MODEL_CURRICULUM_SIZE,
     MODEL_GEOM_SIZE, MODEL_JOINT_SIZE, MODEL_SITE_SIZE,
 )
-from mojo_rl.tasks.placement.table import place_free_slots
+from mojo_rl.tasks.placement.table import reset_task_slots
 from mojo_rl.tasks.placement.libero_goal import LiberoGoalPlacement
 from mojo_rl.tasks.gpu_eval import eval_tape_gpu
 from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
@@ -312,7 +313,8 @@ struct LiberoGoalOscConfig(Phyics3dEnvConfig):
         env: Int,
         seed: Int,
     ):
-        """THE FREE-SLOT PLACEMENT AT RESET — the first LIBERO device reset.
+        """THE JOINT DRAWS AND FREE-SLOT PLACEMENT AT RESET — the first LIBERO
+        device reset.
 
         ⚠ THE SAME KERNEL AS `so101_tabletop`, reading this family's GENERATED
         table (`placement/libero_goal.mojo`), and gated against the host
@@ -322,15 +324,13 @@ struct LiberoGoalOscConfig(Phyics3dEnvConfig):
         `_reset_env_lane` put it, which is what this config did before.
 
         ⚠ WORDS, NOT A TASK. The driver writes them per lane with
-        `active.init_region_words` after `placement.check.
-        require_device_placement[LiberoGoalPlacement]` — the tape, the mask
-        and the observation words are still owed (see the header).
+        `active.init_region_words` and `placement.check.joint_init_words`
+        after `require_device_placement[LiberoGoalPlacement]` — the tape, the
+        mask and the observation words are still owed (see the header).
 
-        ⚠ `jinit=` IS NOT DRAWN HERE. A drawer starts where `qpos0` has it on
-        the device, and at a draw inside its range on the host; no
-        `libero_goal` placement depends on it, and the one corpus placement
-        that does (`libero_spatial`'s top drawer) is refused."""
-        place_free_slots[LiberoGoalPlacement, DTYPE, BATCH_SIZE, NQ_F, NV_F](
+        ⚠ `jinit=` FIRST, THEN PLACEMENTS (`reset_task_slots`): a prop drawn
+        into a drawer region stands in the drawer the draw just opened."""
+        reset_task_slots[LiberoGoalPlacement, DTYPE, BATCH_SIZE, NQ_F, NV_F](
             qpos, qvel, meta, env, seed
         )
         _ = joints

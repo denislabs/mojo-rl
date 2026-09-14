@@ -5,7 +5,7 @@ CI checks it with: pixi run gen-placement-tables --check
 
 From `mojo_rl/tasks/families/libero_kitchen_scene2.family`,
 `mojo_rl/tasks/scenes/libero_kitchen_scene2.xml` and forward kinematics on it.
-4 free slots, 9 regions, 3 of them moving.
+4 free slots, 9 regions (3 moving, 3 followed on one slide), 3 drawable joints.
 See `placement/table.mojo` for what each method means.
 """
 
@@ -18,6 +18,7 @@ struct LiberoKitchenScene2Placement(PlacementTable):
     comptime N_REGIONS: Int = 9
     comptime NQ: Int = 40
     comptime NV: Int = 36
+    comptime N_JOINTS: Int = 3
 
     @staticmethod
     def free_slot(j: Int) -> Int:
@@ -290,21 +291,89 @@ struct LiberoKitchenScene2Placement(PlacementTable):
         return Scalar[DTYPE](0.0)
 
     @staticmethod
-    def region_moves(r: Int) -> Bool:
+    def region_move_joint(r: Int) -> Int:
         if r == 0:
-            return False
+            return -1
         if r == 1:
-            return True
+            return 0
         if r == 2:
-            return True
+            return 1
         if r == 3:
-            return True
+            return 2
         if r == 4:
-            return False
+            return -1
         if r == 5:
-            return False
+            return -1
         if r == 6:
-            return False
+            return -1
         if r == 7:
-            return False
-        return False
+            return -1
+        return -1
+
+    @staticmethod
+    def region_move_axis_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 0:
+            return Scalar[DTYPE](0.0)
+        if r == 1:
+            return Scalar[DTYPE](-1.222980050563649e-16)
+        if r == 2:
+            return Scalar[DTYPE](-1.222980050563649e-16)
+        if r == 3:
+            return Scalar[DTYPE](-1.222980050563649e-16)
+        if r == 4:
+            return Scalar[DTYPE](0.0)
+        if r == 5:
+            return Scalar[DTYPE](0.0)
+        if r == 6:
+            return Scalar[DTYPE](0.0)
+        if r == 7:
+            return Scalar[DTYPE](0.0)
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def region_move_axis_y[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 0:
+            return Scalar[DTYPE](0.0)
+        if r == 1:
+            return Scalar[DTYPE](-1.0)
+        if r == 2:
+            return Scalar[DTYPE](-1.0)
+        if r == 3:
+            return Scalar[DTYPE](-1.0)
+        if r == 4:
+            return Scalar[DTYPE](0.0)
+        if r == 5:
+            return Scalar[DTYPE](0.0)
+        if r == 6:
+            return Scalar[DTYPE](0.0)
+        if r == 7:
+            return Scalar[DTYPE](0.0)
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def region_move_axis_z[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def joint_name(k: Int) -> String:
+        if k == 0:
+            return String("wooden_cabinet_1_top_level")
+        if k == 1:
+            return String("wooden_cabinet_1_middle_level")
+        return String("wooden_cabinet_1_bottom_level")
+
+    @staticmethod
+    def joint_qadr(k: Int) -> Int:
+        if k == 0:
+            return 9
+        if k == 1:
+            return 10
+        return 11
+
+    @staticmethod
+    def joint_dadr(k: Int) -> Int:
+        if k == 0:
+            return 9
+        if k == 1:
+            return 10
+        return 11
