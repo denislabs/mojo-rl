@@ -107,6 +107,29 @@ def span_regressions(
     return out^
 
 
+comptime SEAM_MARGIN = 45
+"""Ticks (~4 deg) short of the encoder seam a limited sweep may reach. See
+`centre_on_middle_pose`."""
+
+
+def frame_position(reading: Int, shift: Int) -> Int:
+    """A position read under one `Homing_Offset`, re-expressed under an offset
+    `shift` ticks larger. Wraps at the 4096-tick turn.
+
+    ⚠⚠ LIMITS LIVE IN THE HOMED FRAME, AND THAT IS WHAT THIS IS FOR. The servo
+    reports `Present_Position = Actual - Homing_Offset`, and lerobot records
+    `Min`/`Max_Position_Limit` from those homed readings. A sweep read under a
+    DIFFERENT offset — zeroed, or the old calibration's in a dry run — gives
+    limits shifted by the difference, and a shift keeps the span, so no span
+    check can see it. Every sweep reading goes through here first.
+
+    ⚠ THE WRAP IS REAL, NOT DEFENSIVE. A continuous joint crosses the seam, and
+    `Present_Position` wraps with it; so does a joint whose old offset put the
+    seam inside its travel.
+    """
+    return ((reading - shift) % 4096 + 4096) % 4096
+
+
 def centre_on_middle_pose(
     mut c: CalibrationRecord, i: Int, centre: Int
 ) raises -> Int:
@@ -130,6 +153,19 @@ def centre_on_middle_pose(
     """
     var lo = Int(c.rmin[i])
     var hi = Int(c.rmax[i])
+    # ⚠⚠ THE SEAM. In the homed frame the middle pose reads 2047, so the
+    # encoder wraps exactly half a turn away on either side. A sweep that got
+    # within `SEAM_MARGIN` of 0 or 4095 turned (or nearly turned) past half a
+    # turn, its extremes are the WRAP and not the operator's stop, and centring
+    # them would produce 0..4094: a "limit" that limits nothing.
+    if lo < SEAM_MARGIN or hi > 4095 - SEAM_MARGIN:
+        raise Error(
+            joint_name(i) + " swept " + String(lo) + ".." + String(hi)
+            + ": it went (nearly) half a turn from the middle pose, where the"
+            " encoder wraps, so these extremes are not stops. A limited joint"
+            " must stay within +/-176 deg of the middle pose. Sweep it again,"
+            " less far."
+        )
     if lo > centre or hi < centre:
         raise Error(
             joint_name(i) + " swept " + String(lo) + ".." + String(hi)

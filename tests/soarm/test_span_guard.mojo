@@ -27,7 +27,7 @@ that gets disabled.
 
 from mojo_rl.robot.so101 import (
     NARROWER_FRACTION, SO101_N, UNLIMITED_MAX, UNLIMITED_MIN,
-    CalibrationRecord, centre_on_middle_pose, joint_name,
+    CalibrationRecord, centre_on_middle_pose, frame_position, joint_name,
     span_regressions,
 )
 
@@ -138,6 +138,57 @@ def main() raises:
         raise Error("a sweep not containing the middle pose must be refused")
     print("  --limited: a one-sided sweep is refused")
     checks += 1
+
+    # ── the seam: a limited sweep that reached the wrap is refused ────
+    #
+    # The 2026-09-14 dry run swept wrist_roll to exactly 0..4095 — the wrap,
+    # not a stop — and centring turned it into 0..4094, a limit of nothing.
+    var seam = _mk([592,816,927,875,0,2030], [3317,3236,3130,3212,4095,3513])
+    var seam_raised = False
+    try:
+        _ = centre_on_middle_pose(seam, 4, 2047)
+    except:
+        seam_raised = True
+    if not seam_raised:
+        raise Error("a sweep reaching the encoder seam must be refused")
+    var near = _mk([592,816,927,875,44,2030], [3317,3236,3130,3212,3000,3513])
+    var near_raised = False
+    try:
+        _ = centre_on_middle_pose(near, 4, 2047)
+    except:
+        near_raised = True
+    var inside_seam = _mk([592,816,927,875,45,2030], [3317,3236,3130,3212,3000,3513])
+    _ = centre_on_middle_pose(inside_seam, 4, 2047)
+    if not near_raised:
+        raise Error("a sweep 44 ticks from the seam must be refused")
+    print("  seam: 0..4095 refused, 44 ticks refused, 45 ticks accepted")
+    checks += 3
+
+    # ── the frame: limits must be recorded under the NEW offset ───────
+    #
+    # ⚠⚠ The 2026-09-14 follower, elbow_flex. Stored homing +382 (lerobot's),
+    # stored limits 927..3130; a dry run read under that offset swept
+    # 929..3133 and put the middle pose 19 ticks below 2047. The new offset is
+    # therefore 382 - 19 = 363, and the invariant is PHYSICAL: a pose's
+    # absolute count (reading + offset) is the same whichever frame read it.
+    var old_h = 382
+    var delta = -19
+    var new_h = old_h + delta
+    for reading in [929, 3133, 2047 + delta]:
+        var moved = frame_position(reading, delta)
+        if moved + new_h != reading + old_h:
+            raise Error(
+                "frame_position: reading " + String(reading) + " -> "
+                + String(moved) + " is not the same pose under offset "
+                + String(new_h)
+            )
+    if frame_position(2047 + delta, delta) != 2047:
+        raise Error("frame_position: the middle pose must read 2047 in the new frame")
+    # A shift that crosses the seam wraps rather than going negative.
+    if frame_position(10, 50) != 4056 or frame_position(4090, -20) != 14:
+        raise Error("frame_position must wrap at 4096")
+    print("  frame: elbow_flex 929..3133 under +382 -> 948..3152 under +363 (same poses); wraps")
+    checks += 3
 
     print("  " + String(checks) + " checks, 0 failures")
     print("[PASS] span-guard")

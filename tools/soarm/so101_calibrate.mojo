@@ -79,7 +79,8 @@ from mojo_rl.robot.feetech.control_table import (
 )
 from mojo_rl.robot.so101 import (
     NARROWER_FRACTION, SO101Arm, SO101_N, UNLIMITED_MAX, UNLIMITED_MIN,
-    CalibrationRecord, centre_on_middle_pose, joint_name, joint_short,
+    CalibrationRecord, centre_on_middle_pose, frame_position, joint_name,
+    joint_short,
     load_calibration_json,
     save_calibration_json, span_regressions,
 )
@@ -441,6 +442,56 @@ def main() raises:
                 )
 
 
+def _to_frame(mut raw: Array[Int32, SO101_N], ref shift: List[Int]):
+    for i in range(SO101_N):
+        raw[i] = Int32(frame_position(Int(raw[i]), shift[i]))
+
+
+comptime FRAME_TOLERANCE = 60
+"""Ticks (~5 deg) a resting joint may read outside the limits just written."""
+
+
+def _check_frame(
+    mut arm: SO101Arm, ref cal: CalibrationRecord, ref centred: List[Int]
+) raises:
+    """Read the arm back under the calibration just written: every joint must
+    sit inside its own new limits.
+
+    ⚠⚠ THE ONE CHECK THAT SEES A FRAME ERROR. The arm is resting where the
+    sweep left it, inside its physical travel, and a correct calibration puts
+    that travel inside `[min, max]`. Limits recorded under the wrong offset
+    are shifted by hundreds of ticks and leave joints OUTSIDE — which a span
+    comparison, a read-back of the written registers, and a dry run all miss.
+    Raising here makes the caller restore the previous calibration.
+
+    A centred joint is exempt: its range was deliberately cut to the tighter
+    side, and it may rest beyond it.
+    """
+    var raw = Array[Int32, SO101_N](fill=0)
+    if arm.read_positions(Span(raw)) != SO101_N:
+        raise Error("calibrate: could not re-read the arm after writing")
+    var bad = String("")
+    for i in range(SO101_N):
+        var exempt = False
+        for k in range(len(centred)):
+            if centred[k] == i:
+                exempt = True
+        if exempt or cal.is_unlimited(i):
+            continue
+        var p = Int(raw[i])
+        if p < Int(cal.rmin[i]) - FRAME_TOLERANCE or p > Int(cal.rmax[i]) + FRAME_TOLERANCE:
+            bad += (
+                "\n    " + joint_name(i) + " reads " + String(p) + ", limits "
+                + String(Int(cal.rmin[i])) + ".." + String(Int(cal.rmax[i]))
+            )
+    if bad.byte_length() > 0:
+        raise Error(
+            "calibrate: after writing, joints read OUTSIDE their new limits —"
+            " the limits were recorded in the wrong frame. Not keeping it:" + bad
+        )
+    print("  frame check: every joint reads inside its new limits")
+
+
 def _calibrate(
     mut arm: SO101Arm,
     mut stdin: StdinReader,
@@ -478,8 +529,8 @@ def _calibrate(
         zero.rmin[i] = Int32(UNLIMITED_MIN)
         zero.rmax[i] = Int32(UNLIMITED_MAX)
     # ⚠ The offsets must actually be zero on the SERVO for the next read to be
-    # absolute. In a dry run they are not, so the numbers below are relative
-    # to the OLD offsets and are printed as an estimate, not a result.
+    # absolute. In a dry run they are not: the read is under the OLD offsets,
+    # and `shift` below converts it.
     _apply(arm, zero, write)
 
     if arm.read_positions(Span(raw)) != SO101_N:
@@ -497,6 +548,40 @@ def _calibrate(
                 " joint closer to the middle of its travel and start again."
             )
         next_cal.homing[i] = Int32(off)
+
+    # ⚠⚠ THE SWEEP READS IN THE FRAME THE LIMITS WILL LIVE IN. `Min`/`Max`
+    # are compared against `Present_Position = Actual - Homing_Offset`, so they
+    # must be recorded under the NEW offset — lerobot writes the half-turn
+    # homings BEFORE it records ranges for exactly this reason. This tool used
+    # to sweep with the offsets still ZEROED and write those absolute extremes
+    # beside the new offset: every joint's limits shifted by its own offset
+    # (~360 ticks on elbow_flex, ~590 on shoulder_lift on the 2026-09-14
+    # follower), with the span intact so no guard could see it.
+    #
+    # With --write: the new offsets are written now, and readings need no
+    # shift. Dry run: nothing may be written, so readings are under the OLD
+    # offsets; `frame_position` shifts each one by this read's delta, and the
+    # proposal printed is the real one rather than an estimate.
+    var shift = List[Int]()
+    for i in range(SO101_N):
+        if write:
+            shift.append(0)
+            continue
+        shift.append(Int(next_cal.homing[i]))
+        var real = Int(next_cal.homing[i]) + Int(previous.homing[i])
+        if real > MAX_OFFSET_MAG or real < -MAX_OFFSET_MAG:
+            raise Error(
+                "calibrate: " + joint_name(i) + " would need a homing offset of "
+                + String(real) + " — outside the +/-" + String(MAX_OFFSET_MAG)
+                + " the encoding can hold. Move that joint closer to the"
+                " middle of its travel and start again."
+            )
+        next_cal.homing[i] = Int32(real)
+    if write:
+        var homed = zero.copy()
+        for i in range(SO101_N):
+            homed.homing[i] = next_cal.homing[i]
+        _apply(arm, homed, True)
     print("")
 
     # ── step 2: sweep ────────────────────────────────────────────────
@@ -534,6 +619,7 @@ def _calibrate(
     # arm is at one end of a range it never had.
     var seeded = False
     if arm.read_positions(Span(raw)) == SO101_N:
+        _to_frame(raw, shift)
         for i in range(SO101_N):
             lo[i] = raw[i]
             hi[i] = raw[i]
@@ -560,6 +646,7 @@ def _calibrate(
         if arm.read_positions(Span(raw)) != SO101_N:
             partial += 1
             continue
+        _to_frame(raw, shift)
         if not seeded:
             for i in range(SO101_N):
                 lo[i] = raw[i]
@@ -696,5 +783,6 @@ def _calibrate(
         print("  not applied.")
         return False
     _apply(arm, next_cal, write)
+    _check_frame(arm, next_cal, centred)
     print("\ndone. Verify with:  pixi run soarm-diag")
     return True

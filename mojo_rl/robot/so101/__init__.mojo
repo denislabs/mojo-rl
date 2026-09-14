@@ -26,6 +26,7 @@ from mojo_rl.robot.so101.calibration import (
     UNLIMITED_MIN,
     CalibrationRecord,
     centre_on_middle_pose,
+    frame_position,
     load_calibration_json,
     save_calibration_json,
     span_regressions,
