@@ -736,6 +736,17 @@ def _calibrate(
     for k in range(len(centred)):
         var i = centred[k]
         var swept = next_cal.span(i)
+        var below = CENTRE - Int(next_cal.rmin[i])
+        var above = Int(next_cal.rmax[i]) - CENTRE
+        if below < 200 or above < 200:
+            # ⚠ Centring mirrors the TIGHTER side, so a one-way sweep becomes a
+            # zero range, and the generic "probably not moved" below would
+            # say the opposite of what happened.
+            print(
+                "  ⚠ " + joint_name(i) + " was turned only ONE way ("
+                + _sgn(_deg(-below)) + " / " + _sgn(_deg(above))
+                + " deg): turn it both ways from the middle pose"
+            )
         var lost = centre_on_middle_pose(next_cal, i, CENTRE)
         print(
             "  " + joint_name(i) + " limited to " + String(Int(next_cal.rmin[i]))
