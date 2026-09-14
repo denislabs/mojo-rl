@@ -54,6 +54,15 @@ writable at all (`arm.mojo:311`).
    without end stops, and `SO101Calibration.is_unlimited` treats that exact
    pair as the marker. A sweep would record whatever arc the operator happened
    to turn through and silently convert a continuous joint into a limited one.
+4. ⚠ **UNLESS `--limited wrist_roll` IS PASSED.** A camera mounted on the
+   wrist-roll part turns with it, and a full turn winds its cable round the
+   wrist. The joint is then swept like the others, only as far as the cable
+   allows, and its range is mirrored about the middle pose to the tighter side
+   (`centre_on_middle_pose`). An off-centre range would move the joint's zero,
+   and teleop would drive the follower's wrist that far off the leader's.
+
+       pixi run soarm-calibrate -- --port /dev/cu.usbmodem5B8E1139971 \\
+           --limited wrist_roll --write --backup follower.json
 """
 
 from std.sys import argv
@@ -70,7 +79,8 @@ from mojo_rl.robot.feetech.control_table import (
 )
 from mojo_rl.robot.so101 import (
     NARROWER_FRACTION, SO101Arm, SO101_N, UNLIMITED_MAX, UNLIMITED_MIN,
-    CalibrationRecord, joint_name, joint_short, load_calibration_json,
+    CalibrationRecord, centre_on_middle_pose, joint_name, joint_short,
+    load_calibration_json,
     save_calibration_json, span_regressions,
 )
 from mojo_rl.utils.fmt import fixed
@@ -293,6 +303,7 @@ def main() raises:
     # enough that an unhurried calibration never reaches it.
     var sweep_s = 600
     var continuous = List[Int]()
+    var limited_names = List[String]()
 
     var args = argv()
     for i in range(len(args)):
@@ -311,11 +322,34 @@ def main() raises:
             # Deliberately shrinking a joint's range is legitimate — a new
             # physical limit, a changed gripper. It just must not be silent.
             allow_narrower = True
+        elif a == "--limited" and i + 1 < len(args):
+            # A continuous joint swept and written as LIMITED — see F4 below.
+            limited_names.append(String(args[i + 1]))
         elif a == "--plain":
             # Escape hatch: no cursor tricks, one table per redraw interval.
             plain = True
     # `wrist_roll` turns without end stops on this arm; see the header.
     continuous.append(4)
+
+    # ⚠⚠ `--limited wrist_roll`: SWEPT LIKE ANY OTHER JOINT, THEN CENTRED. A
+    # camera on the wrist-roll part turns with it, and a full turn winds its
+    # USB cable round the wrist. `write_goals` clamps to the calibrated range,
+    # so a real range here is what stops teleop or a policy from doing that.
+    # The range is made symmetric about the middle pose so the joint's zero
+    # does not move — `centre_on_middle_pose` says why that matters.
+    var centred = List[Int]()
+    for n in limited_names:
+        var found = -1
+        for k in range(len(continuous)):
+            if joint_name(continuous[k]) == n:
+                found = k
+        if found < 0:
+            raise Error(
+                "calibrate: --limited " + n + " — only a continuous joint can"
+                " be limited, and the continuous joints are: wrist_roll"
+            )
+        centred.append(continuous[found])
+        _ = continuous.pop(found)
 
     if port == "":
         raise Error(
@@ -387,8 +421,8 @@ def main() raises:
     # by hand from the backup path printed above.
     try:
         committed = _calibrate(
-            arm, stdin, continuous, sweep_s, write, auto_backup, plain,
-            current, allow_narrower,
+            arm, stdin, continuous, centred, sweep_s, write, auto_backup,
+            plain, current, allow_narrower,
         )
     finally:
         if write and not committed:
@@ -411,6 +445,7 @@ def _calibrate(
     mut arm: SO101Arm,
     mut stdin: StdinReader,
     ref continuous: List[Int],
+    ref centred: List[Int],
     sweep_s: Int,
     write: Bool,
     auto_backup: String,
@@ -471,10 +506,23 @@ def _calibrate(
         if k > 0:
             skip_names += ", "
         skip_names += joint_name(continuous[k])
-    print(
-        "  Move all joints EXCEPT " + skip_names + " through their FULL range"
-        " of motion, one at a time, by hand."
-    )
+    if len(continuous) > 0:
+        print(
+            "  Move all joints EXCEPT " + skip_names + " through their FULL"
+            " range of motion, one at a time, by hand."
+        )
+    else:
+        print(
+            "  Move every joint through its FULL range of motion, one at a"
+            " time, by hand."
+        )
+    for k in range(len(centred)):
+        # ⚠ The cable, not the servo, is the end stop here, and the range is
+        # mirrored to the TIGHTER side — so both sides must be swept.
+        print(
+            "  " + joint_name(centred[k]) + ": turn it BOTH ways from the"
+            " middle pose, only as far as the camera cable safely allows."
+        )
     print("  Recording positions. Press ENTER to stop.")
     stdin.discard_pending()
     print("")
@@ -558,6 +606,17 @@ def _calibrate(
     for i in range(SO101_N):
         next_cal.rmin[i] = lo[i]
         next_cal.rmax[i] = hi[i]
+    for k in range(len(centred)):
+        var i = centred[k]
+        var swept = next_cal.span(i)
+        var lost = centre_on_middle_pose(next_cal, i, CENTRE)
+        print(
+            "  " + joint_name(i) + " limited to " + String(Int(next_cal.rmin[i]))
+            + ".." + String(Int(next_cal.rmax[i])) + " (+/-"
+            + fixed(Float64(next_cal.span(i)) * 180.0 / 4095.0, 1)
+            + " deg about the middle pose; " + String(lost) + " of "
+            + String(swept) + " swept ticks dropped to keep it centred)"
+        )
     for k in range(len(continuous)):
         var i = continuous[k]
         # See the header: a continuous joint must keep the 0..4095 marker.

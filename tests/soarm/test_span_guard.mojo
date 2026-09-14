@@ -27,7 +27,8 @@ that gets disabled.
 
 from mojo_rl.robot.so101 import (
     NARROWER_FRACTION, SO101_N, UNLIMITED_MAX, UNLIMITED_MIN,
-    CalibrationRecord, joint_name, span_regressions,
+    CalibrationRecord, centre_on_middle_pose, joint_name,
+    span_regressions,
 )
 
 
@@ -86,6 +87,56 @@ def main() raises:
     if len(span_regressions(old, narrowed_roll, skip)) != 0:
         raise Error("wrist_roll is skipped; it must never flag")
     print("  continuous joint: never flagged")
+    checks += 1
+
+    # ── --limited wrist_roll: the range is CENTRED on the middle pose ──
+    #
+    # ⚠ The value that matters is the MID, not the span: degrees are measured
+    # from (min + max) / 2, and a leader still carrying the 0..4095 marker has
+    # its mid at 2047. An asymmetric cable-bounded sweep, +170 / -120 deg
+    # (1934 / 1365 ticks), must come back mirrored to the tighter side.
+    var lim = _mk([592,816,927,875,2047 - 1934,2030], [3317,3236,3130,3212,2047 + 1365,3513])
+    var lost = centre_on_middle_pose(lim, 4, 2047)
+    if Int(lim.rmin[4]) != 682 or Int(lim.rmax[4]) != 3412:
+        raise Error(
+            "centred range: expected 682..3412, got " + String(Int(lim.rmin[4]))
+            + ".." + String(Int(lim.rmax[4]))
+        )
+    if Int(lim.rmin[4]) + Int(lim.rmax[4]) != 2 * 2047:
+        raise Error("centred range: mid moved off the middle pose")
+    if lost != 569:
+        raise Error("centred range: expected 569 ticks dropped, got " + String(lost))
+    print("  --limited: +170/-120 deg sweep -> 682..3412, mid 2047, 569 ticks dropped")
+    checks += 3
+
+    # The tighter side on the OTHER side, so a mutant that always keeps the
+    # low half cannot pass both.
+    var lim2 = _mk([592,816,927,875,2047 - 500,2030], [3317,3236,3130,3212,2047 + 1500,3513])
+    _ = centre_on_middle_pose(lim2, 4, 2047)
+    if Int(lim2.rmin[4]) != 1547 or Int(lim2.rmax[4]) != 2547:
+        raise Error(
+            "centred range (tight low side): expected 1547..2547, got "
+            + String(Int(lim2.rmin[4])) + ".." + String(Int(lim2.rmax[4]))
+        )
+    # The other five joints are untouched.
+    for i in range(SO101_N):
+        if i == 4:
+            continue
+        if lim2.rmin[i] != old.rmin[i] or lim2.rmax[i] != old.rmax[i]:
+            raise Error("centring wrist_roll changed " + joint_name(i))
+    print("  --limited: tight low side -> 1547..2547; other joints untouched")
+    checks += 2
+
+    # A sweep that never crossed the middle pose cannot be centred.
+    var one_sided = _mk([592,816,927,875,2100,2030], [3317,3236,3130,3212,3000,3513])
+    var raised = False
+    try:
+        _ = centre_on_middle_pose(one_sided, 4, 2047)
+    except:
+        raised = True
+    if not raised:
+        raise Error("a sweep not containing the middle pose must be refused")
+    print("  --limited: a one-sided sweep is refused")
     checks += 1
 
     print("  " + String(checks) + " checks, 0 failures")

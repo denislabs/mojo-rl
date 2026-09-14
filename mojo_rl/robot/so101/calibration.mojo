@@ -107,6 +107,41 @@ def span_regressions(
     return out^
 
 
+def centre_on_middle_pose(
+    mut c: CalibrationRecord, i: Int, centre: Int
+) raises -> Int:
+    """Limit joint `i` to a range SYMMETRIC about `centre`. Returns the ticks
+    of swept travel given up to make it symmetric.
+
+    For a normally continuous joint calibrated as limited (`--limited
+    wrist_roll`, when a camera cable must not wind round the wrist).
+    `c.rmin[i]` / `c.rmax[i]` hold the swept extremes on entry.
+
+    ⚠⚠ A LIMITED RANGE MOVES THE JOINT'S ZERO UNLESS IT IS CENTRED.
+    `SO101Calibration.degrees` measures from `mid = (range_min + range_max) /
+    2`. A continuous joint's marker `0..4095` puts that at 2047 — the middle
+    pose. A cable-bounded sweep of +170/-120 degrees would put it 25 degrees
+    away, and teleop maps LEADER degrees to FOLLOWER degrees: a leader still
+    carrying the marker would drive the follower's wrist 25 degrees off its
+    own, silently, on every frame. Recording would capture that offset too.
+
+    So the range is cut to the TIGHTER side, mirrored. The travel lost is
+    returned so the tool can print it rather than hide it.
+    """
+    var lo = Int(c.rmin[i])
+    var hi = Int(c.rmax[i])
+    if lo > centre or hi < centre:
+        raise Error(
+            joint_name(i) + " swept " + String(lo) + ".." + String(hi)
+            + ", which does not contain the middle pose (" + String(centre)
+            + "). Sweep it to both sides of the middle pose."
+        )
+    var half = min(centre - lo, hi - centre)
+    c.rmin[i] = Int32(centre - half)
+    c.rmax[i] = Int32(centre + half)
+    return (hi - lo) - 2 * half
+
+
 def save_calibration_json(path: String, ref c: CalibrationRecord) raises:
     """Write `lerobot-calibrate`'s own JSON shape."""
     var w = JsonWriter()
