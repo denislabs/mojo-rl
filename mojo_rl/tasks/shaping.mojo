@@ -128,8 +128,35 @@ def optimal_margin(shortfall: Float64) raises -> Float64:
     `tolerance` is 1 inside `[lower, upper]`, so a term with a nonzero radius
     has less to close than its distance suggests.
 
-    ⚠ A STARTING POINT, NOT A RULE. The optimum is computed at the RESET
-    distance; the gradient a policy needs is the one along the path it takes.
+    ## ⚠⚠ IT HAS LOST EVERY TIME IT HAS BEEN TESTED. DO NOT FOLLOW IT BLIND.
+
+    The number below is the gradient peak AT THE RESET DISTANCE, and that has
+    turned out not to predict learning. Measured on `so101_gather_bricks`,
+    1M steps, same seed, same update budget, ONLY the margins differing —
+    128-episode greedy evaluation against a baseline of 0 in 256:
+
+        goal margin   success      shaped reward      gradient at reset
+        0.211 (this)  0.047        0.578 -> 0.687     5.25/m
+        0.100         0.203        0.189 -> 0.352     0.73/m
+
+    Fisher one-sided p = 1.1e-4. The margin with ONE SEVENTH the gradient is
+    4.3x better. `so101_lift_brick` lost the other way — its recommendation
+    (0.058) was the only lift run that learned nothing at all, while 0.10 and
+    0.211 both moved — though lift's goal is unreachable for other reasons,
+    so that leg is weaker.
+
+    The likely reason: learning is not decided at the reset distance. A
+    narrow band keeps the term near zero until the predicate is nearly
+    satisfied and then rises sharply, so the return discriminates ACHIEVING
+    the goal from hovering near it. A wide band pays generously for being
+    roughly in the area, and a policy can collect most of it without ever
+    closing. Maximising the slope at reset optimises the wrong end of the
+    trajectory.
+
+    ⚠ SO TREAT THIS AS ONE COORDINATE, not the answer: it says where the
+    reset-distance gradient peaks, which is worth knowing and is not worth
+    obeying. On the only task with an achievable goal and a clean comparison,
+    a margin at 0.72x the goal distance beat one at 1.52x.
     """
     if shortfall <= 0.0:
         raise Error(

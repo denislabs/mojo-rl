@@ -134,12 +134,21 @@ def margin_report(
     var best = optimal_margin(d)
     print("  ", label, "margin", margin, "-> term at reset", t,
           " headroom", 1.0 - t, " gradient", grad, "/m")
-    print("        gradient-optimal margin for a", d, "m shortfall is",
-          best, "(term at reset 0.368)")
+    # ⚠⚠ REPORTED, NOT RECOMMENDED. This read as advice and the advice lost:
+    # on `gather`, 1M steps at the same seed and update budget, the margin at
+    # this peak (0.211) scored 0.047 while 0.10 — one SEVENTH the gradient —
+    # scored 0.203, Fisher one-sided p = 1.1e-4. See `optimal_margin`'s
+    # docstring for the table and the likely mechanism.
+    print("        (FYI the reset-distance gradient peaks at", best, "for a",
+          d, "m shortfall — NOT a recommendation; it has lost both times it"
+          " was followed)")
     if t > 0.6:
         print("        ⚠ MORE THAN 0.6 OF THIS TERM IS FREE AT RESET. The"
               " margin is wide against the distance to be closed, so most of"
-              " the term is paid before the policy acts.")
+              " the term is paid before the policy acts — though on"
+              " `gather` the WIDE setting scored 4.3x WORSE than the one"
+              " whose term is 0.011 at reset, so this is a fact about the"
+              " term and not a verdict on the margin.")
 
 
 def main() raises:
