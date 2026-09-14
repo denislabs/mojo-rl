@@ -545,8 +545,12 @@ comptime LiberoGoalOscEnv = Phyics3dBatchedEnv[
 ]
 """The batched env, parameterised on the lane count.
 
-⚠ IT CANNOT RUN ON METAL. `nv = 37` and the per-thread stack the CRBA and
-Newton kernels want exceeds what Apple's pipeline creation allows — the P0 park
-probe died at nv = 24. It COMPILES here, which is what
-`tests/tasks/test_libero_osc_env.mojo` checks; the stepping leg is owed on
-NVIDIA."""
+⚠⚠ IT RUNS ON METAL — THE "nv = 37 STACK" EXPLANATION WAS WRONG. Both the
+Metal "failed to compile metallib" and NVIDIA's ptxas "Unresolved extern
+function 'KGEN_CompilerRT_GetOrCreateGlobal'" were the elliptic Newton branch
+building eight `ScratchPool`-backed scratches in the kernel, because
+`cap[]` is 0 for a model with no tendons and no equalities
+(`newton_solve.mojo`, `EQ_CAP`). With that guarded,
+`examples/tasks/libero_osc_batched.mojo` builds and steps on an M1 Pro.
+`tests/tasks/test_libero_osc_env.mojo` still keeps its stepping leg behind
+`has_nvidia_gpu_accelerator()`."""

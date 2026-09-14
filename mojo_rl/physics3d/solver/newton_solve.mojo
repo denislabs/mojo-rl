@@ -2734,7 +2734,21 @@ def _newton_solve_env[
     # tendon, up to TWO limit rows per tendon (a `range` has two sides; only
     # one can be violated at a time, but the builder tries both), and the
     # connect/weld rows added for defect 29a (6 each).
-    comptime EQ_CAP = cap[3 * D.CAP_NTENDON + 6 * D.CAP_NEQUALITY]()
+    #
+    # ⚠⚠ `cap[]` IS 0 FOR A STATIC ZERO AS WELL AS A DYNAMIC DIMENSION, and 0
+    # selects `Scratch`'s HEAP leg — a block from the process-global
+    # `ScratchPool`. A model with no tendons and no equalities (every LIBERO
+    # scene, and this is the elliptic branch, so pyramidal SO-101 never came
+    # here) therefore built eight pool-backed scratches INSIDE the GPU kernel:
+    # ptxas died on "Unresolved extern function
+    # 'KGEN_CompilerRT_GetOrCreateGlobal'" (the pool's `_Global` lookup), found
+    # by `mojo build --target-accelerator sm_120 --emit asm` and a grep of the
+    # `.ptx`. The exclude table in `contact_detection` already guards the same
+    # way; a static zero gets a one-slot inline array, only a dynamic
+    # provider gets the heap.
+    comptime EQ_CAP = cap[3 * D.CAP_NTENDON + 6 * D.CAP_NEQUALITY]() if (
+        may_exist[D.NTENDON]() or may_exist[D.NEQUALITY]()
+    ) else 1
     # the LIVE budget for the capacity guard below -- never the cap
     var max_eq_rows = 3 * ntendon + 6 * nequality
     var eq_J = Scratch[Scalar[DTYPE], EQ_CAP * V_CAP](max_eq_rows * nv, fill=Scalar[DTYPE](0))

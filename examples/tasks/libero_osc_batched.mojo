@@ -1,10 +1,16 @@
 """THE BATCHED LIBERO ENV, DRIVEN BY OSC_POSE — L6's wiring, running.
 
     pixi run -e nvidia mojo run -I . examples/tasks/libero_osc_batched.mojo
-    pixi run -e nvidia mojo run -I . examples/tasks/libero_osc_batched.mojo 64 20
+    pixi run -e nvidia mojo run -I . examples/tasks/libero_osc_batched.mojo 20   # control steps; 16 lanes (comptime)
 
-⚠⚠ RUN THIS ON NVIDIA, AND ON APPLE IT DOES NOT FAIL AT RUNTIME — IT FAILS TO
-BUILD. `libero_goal` is nv = 37 and the Newton solver's per-thread arrays are
+⚠⚠ CORRECTED 2026-09-14: IT BUILDS AND STEPS ON APPLE TOO. The failure below
+was not the nv = 37 stack: it was eight `ScratchPool`-backed scratches in the
+elliptic Newton kernel (`cap[]` is 0 for a model with no tendons/equalities),
+the same defect NVIDIA's ptxas reported as an unresolved
+`KGEN_CompilerRT_GetOrCreateGlobal`. The paragraph is kept for the record.
+
+(Historical:) RUN THIS ON NVIDIA, AND ON APPLE IT DOES NOT FAIL AT RUNTIME — IT
+FAILS TO BUILD. `libero_goal` is nv = 37 and the Newton solver's per-thread arrays are
 sized by it; Metal's backend answers "Metal Compiler failed to compile
 metallib" and no binary is produced. That is not a bug to catch: the P0 park
 probe died the same way at nv = 24, and `examples/tasks/task_eval_frozen.mojo`
@@ -55,6 +61,7 @@ from mojo_rl.physics3d.dynamics.osc_pose_gpu import (
 from mojo_rl.tasks.spec import load_family
 from mojo_rl.tasks.family import scene_path
 from mojo_rl.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
+from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_OBS_DIM
 from mojo_rl.tasks.libero_goal_config import (
     LiberoGoalOscConfig, LiberoGoalOscEnv, LIBERO_GOAL_FRAME_SKIP,
 )
@@ -146,9 +153,14 @@ def main() raises:
     # it at construction; writing zeros again would only prove the copy works.
     _ = env.action_ptr()
 
-    # The observation is `qpos ++ qvel` (see LIBERO_GOAL_OBS_DIM), so the arm's
-    # joint speeds are readable without any new accessor.
-    comptime OBS = LIBERO_GOAL_DIMS.NQ + LIBERO_GOAL_DIMS.NV
+    # The observation STARTS with `qpos ++ qvel` (see LIBERO_GOAL_OBS_DIM), so
+    # the arm's joint speeds are readable without any new accessor.
+    #
+    # ⚠ THE ROW WIDTH IS `LIBERO_GOAL_OBS_DIM`, NOT `NQ + NV`. It was `NQ + NV`
+    # until the task hooks widened the observation to 91; after that this
+    # buffer was 13 words per lane SHORT of the `_obs` copied into it, and every
+    # lane past the first was read at the wrong stride.
+    comptime OBS = LIBERO_GOAL_OBS_DIM
     var obs_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * OBS)
     print("  step   mean |qvel_arm|   max |qvel_arm|   singular lanes")
     for s in range(n_steps):
