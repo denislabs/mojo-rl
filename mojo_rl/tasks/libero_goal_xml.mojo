@@ -32,18 +32,17 @@ comptime _pm = LIBERO_GOAL_DIMS
 comptime LIBERO_GOAL_MAX_CONTACTS: Int = 64
 comptime LIBERO_GOAL_N_FREE_SLOTS: Int = 4
 comptime LIBERO_GOAL_N_GOAL_WORDS: Int = 9
-comptime LIBERO_GOAL_OBS_DIM: Int = _pm.NQ + _pm.NV
-"""The plain state, and NOT YET the task layer's words.
+comptime LIBERO_GOAL_OBS_DIM: Int = (
+    _pm.NQ + _pm.NV + LIBERO_GOAL_N_FREE_SLOTS + LIBERO_GOAL_N_GOAL_WORDS
+)
+"""`qpos`, `qvel`, one active word per free slot, nine goal words — the layout
+`tasks/task_hooks.write_task_obs` writes.
 
-⚠⚠ THIS WAS `NQ + NV + N_FREE_SLOTS + N_GOAL_WORDS` AND NOTHING WROTE THE
-EXTRA THIRTEEN. The model default writes `qpos ++ qvel` and stops, so an env
-built on the wider figure would have reported thirteen constant zeros as
-observation — a policy input that is always the same number, which trains
-without error and cannot be told from a feature that happens not to matter.
-`So101TabletopConfig.custom_extract_obs_gpu` is what fills those words for its
-family (the per-slot active flag and pose, then the goal's own coordinates);
-the LIBERO equivalent lands with the task hooks, and this constant grows again
-in the same commit. Declaring a width nothing fills is the trap."""
+⚠⚠ IT WAS `NQ + NV` WHILE NOTHING FILLED THE REST, AND IT GREW IN THE COMMIT
+THAT FILLS IT. Declaring a width nothing writes is a policy input that is
+always zero; `tests/tasks/test_libero_task_hooks.mojo` asserts this equals
+`NQ + NV + LiberoGoalPlacement.N_FREE + TASK_GOAL_WORDS`, so the four literals
+above cannot drift from the table and the hook."""
 
 comptime LiberoGoalModel = ModelDefFromXML[
     xml_path="mojo_rl/tasks/scenes/libero_goal.xml",

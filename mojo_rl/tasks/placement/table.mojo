@@ -112,7 +112,8 @@ comptime INIT_WORD_IN_BIAS: Int = 4096
 
 
 trait PlacementTable:
-    """One family's placement geometry, as comptime data a kernel can read.
+    """One family's task table — reset geometry, and what the per-step task
+    hooks (`tasks/task_hooks.mojo`) need — as comptime data a kernel can read.
 
     ⚠⚠ EVERY FLOAT METHOD RETURNS `Scalar[DTYPE]`, NEVER `Float64`. The kernel
     selects among the entries with a RUNTIME index, and a runtime-selected
@@ -139,6 +140,11 @@ trait PlacementTable:
     comptime N_REGIONS: Int
     comptime NQ: Int
     comptime NV: Int
+    comptime NBODY: Int
+    comptime NSITE: Int
+    comptime GRIPPER_SITE: Int
+    """The end-effector site the observation's goal words measure from —
+    `robot_grip_site` on the Panda, `robot_gripperframe` on the SO-101."""
 
     # ── per free slot ──
     @staticmethod
@@ -172,6 +178,19 @@ trait PlacementTable:
         ...
 
     @staticmethod
+    def free_park_x[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        """`family.park_pos` — where an INACTIVE slot is pinned every step."""
+        ...
+
+    @staticmethod
+    def free_park_y[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        ...
+
+    @staticmethod
+    def free_park_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        ...
+
+    @staticmethod
     def free_bottom_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
         """For a stack standing ON this slot's reference."""
         ...
@@ -182,6 +201,13 @@ trait PlacementTable:
         ...
 
     # ── per region ──
+    @staticmethod
+    def region_site(r: Int) -> Int:
+        """The region's site id — the goal words' TARGET for `In`/`On`/
+        `AtRegion`. Per region: LIBERO's regions hang off many sites, where
+        `so101_tabletop`'s all share `table_surface`."""
+        ...
+
     @staticmethod
     def region_site_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
         ...

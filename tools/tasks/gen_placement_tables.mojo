@@ -29,7 +29,7 @@ from std.os import listdir
 from std.sys import argv
 
 from mojo_rl.tasks.spec import load_family, FamilySpec, SLOT_FREE
-from mojo_rl.tasks.family import scene_path
+from mojo_rl.tasks.family import scene_path, park_pos
 from mojo_rl.tasks.reset import free_slot_addresses
 from mojo_rl.tasks.eval import region_sites
 from mojo_rl.physics3d.parser.runtime_load import (
@@ -42,6 +42,9 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 comptime DT = DType.float64
 comptime FAMILY_DIR = "mojo_rl/tasks/families"
 comptime OUT_DIR = "mojo_rl/tasks/placement"
+comptime GRIPPER_SITE_NAME = "robot_grip_site"
+"""The vendored Panda's end-effector site — the one OSC_POSE drives
+(`examples/tasks/libero_eval.mojo`), and the goal words' origin."""
 
 
 def _families() raises -> List[String]:
@@ -207,6 +210,9 @@ def generate(family: String) raises -> String:
     var frad = List[String]()
     var fbot = List[String]()
     var ftop = List[String]()
+    var fpx = List[String]()
+    var fpy = List[String]()
+    var fpz = List[String]()
     for si in range(len(f.slots)):
         ref s = f.slots[si]
         if s.kind != SLOT_FREE:
@@ -225,7 +231,24 @@ def generate(family: String) raises -> String:
         frad.append(_f(s.h_radius))
         fbot.append(_f(s.bottom_z))
         ftop.append(_f(s.top_z))
+        var pp = park_pos(f, si)
+        fpx.append(_f(pp[0]))
+        fpy.append(_f(pp[1]))
+        fpz.append(_f(pp[2]))
 
+    var grip = -1
+    for i in range(len(fmd.site_names)):
+        if fmd.site_names[i] == GRIPPER_SITE_NAME:
+            grip = i
+    if grip < 0:
+        raise Error(
+            family + ": the composed scene has no site '" + GRIPPER_SITE_NAME
+            + "' — the goal words' origin. Is the base robot still the"
+            " vendored Panda?"
+        )
+    var rsid = List[String]()
+    for r in range(len(f.regions)):
+        rsid.append(String(rsites[r]))
     var rx_raw = List[Float64]()
     for r in range(len(f.regions)):
         for c in range(3):
@@ -329,15 +352,23 @@ def generate(family: String) raises -> String:
     o += "    comptime N_REGIONS: Int = " + String(len(f.regions)) + "\n"
     o += "    comptime NQ: Int = " + String(nq) + "\n"
     o += "    comptime NV: Int = " + String(nv) + "\n"
-    o += "    comptime N_JOINTS: Int = " + String(len(jnames)) + "\n\n"
+    o += "    comptime N_JOINTS: Int = " + String(len(jnames)) + "\n"
+    o += "    comptime NBODY: Int = " + String(dims.get_nbody()) + "\n"
+    o += "    comptime NSITE: Int = " + String(dims.get_nsite()) + "\n"
+    o += "    comptime GRIPPER_SITE: Int = " + String(grip) + "  # "
+    o += String(GRIPPER_SITE_NAME) + "\n\n"
     o += _method("free_slot", "j", "Int", fslot)
     o += _method("free_qadr", "j", "Int", fqadr)
     o += _method("free_dadr", "j", "Int", fdadr)
     o += _method("free_has_geom", "j", "Bool", fgeom)
     o += _method("free_rest", "j", "Float64", frest)
     o += _method("free_radius", "j", "Float64", frad)
+    o += _method("free_park_x", "j", "Float64", fpx)
+    o += _method("free_park_y", "j", "Float64", fpy)
+    o += _method("free_park_z", "j", "Float64", fpz)
     o += _method("free_bottom_z", "j", "Float64", fbot)
     o += _method("free_top_z", "j", "Float64", ftop)
+    o += _method("region_site", "r", "Int", rsid)
     o += _method("region_site_x", "r", "Float64", rx)
     o += _method("region_site_y", "r", "Float64", ry)
     o += _method("region_site_z", "r", "Float64", rz)

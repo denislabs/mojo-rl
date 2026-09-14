@@ -19,6 +19,9 @@ struct LiberoKitchenScene1Placement(PlacementTable):
     comptime NQ: Int = 26
     comptime NV: Int = 24
     comptime N_JOINTS: Int = 3
+    comptime NBODY: Int = 30
+    comptime NSITE: Int = 14
+    comptime GRIPPER_SITE: Int = 4  # robot_grip_site
 
     @staticmethod
     def free_slot(j: Int) -> Int:
@@ -51,12 +54,42 @@ struct LiberoKitchenScene1Placement(PlacementTable):
         return Scalar[DTYPE](0.03535533905932738)
 
     @staticmethod
+    def free_park_x[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        if j == 0:
+            return Scalar[DTYPE](11.0)
+        return Scalar[DTYPE](11.5)
+
+    @staticmethod
+    def free_park_y[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def free_park_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](50.0)
+
+    @staticmethod
     def free_bottom_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
         return Scalar[DTYPE](-0.06)
 
     @staticmethod
     def free_top_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
         return Scalar[DTYPE](0.04)
+
+    @staticmethod
+    def region_site(r: Int) -> Int:
+        if r == 0:
+            return 10
+        if r == 1:
+            return 11
+        if r == 2:
+            return 12
+        if r == 3:
+            return 13
+        if r == 4:
+            return 0
+        if r == 5:
+            return 0
+        return 0
 
     @staticmethod
     def region_site_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:

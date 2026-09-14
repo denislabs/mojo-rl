@@ -14,6 +14,7 @@ from mojo_rl.tasks.spec import (
     FamilySpec, TaskSpec, SLOT_FREE, INIT_TARGET_SLOT,
 )
 from mojo_rl.tasks.reset import SlotAddress
+from mojo_rl.tasks.family import park_pos
 from mojo_rl.tasks.sampler import RegionFrame
 from mojo_rl.tasks.placement.table import PlacementTable
 from mojo_rl.physics3d.gpu.constants import META_JINIT_SLOTS, META_JINIT_WORDS
@@ -42,6 +43,11 @@ struct SceneFacts(Copyable, Movable):
     var joint_dadr: List[Int]
     var nq: Int
     var nv: Int
+    var nbody: Int
+    var nsite: Int
+    var gripper_site: Int
+    var region_site: List[Int]
+    """Per region, its site id in the composed scene."""
 
     def __init__(out self):
         self.addrs = List[SlotAddress]()
@@ -53,6 +59,10 @@ struct SceneFacts(Copyable, Movable):
         self.joint_dadr = List[Int]()
         self.nq = 0
         self.nv = 0
+        self.nbody = 0
+        self.nsite = 0
+        self.gripper_site = -1
+        self.region_site = List[Int]()
 
 
 def joint_init_words[T: PlacementTable](t: TaskSpec) raises -> List[Float64]:
@@ -207,10 +217,20 @@ def placement_table_drift[T: PlacementTable](
     """
     comptime AXIS_TOL: Float64 = 1.0e-9
     var out = List[String]()
-    if T.NQ != facts.nq or T.NV != facts.nv:
+    if (
+        T.NQ != facts.nq or T.NV != facts.nv or T.NBODY != facts.nbody
+        or T.NSITE != facts.nsite
+    ):
         out.append(
-            "NQ/NV " + String(T.NQ) + "/" + String(T.NV) + " vs scene "
-            + String(facts.nq) + "/" + String(facts.nv)
+            "NQ/NV/NBODY/NSITE " + String(T.NQ) + "/" + String(T.NV) + "/"
+            + String(T.NBODY) + "/" + String(T.NSITE) + " vs scene "
+            + String(facts.nq) + "/" + String(facts.nv) + "/"
+            + String(facts.nbody) + "/" + String(facts.nsite)
+        )
+    if T.GRIPPER_SITE != facts.gripper_site:
+        out.append(
+            "GRIPPER_SITE " + String(T.GRIPPER_SITE) + " vs scene "
+            + String(facts.gripper_site)
         )
     if T.N_SLOTS != len(f.slots) or T.N_REGIONS != len(f.regions):
         out.append("slot/region counts")
@@ -245,6 +265,12 @@ def placement_table_drift[T: PlacementTable](
                 who + ": radius " + String(T.free_radius[D64](j)) + " vs "
                 + String(rad)
             )
+        var pp = park_pos(f, si)
+        if (
+            T.free_park_x[D64](j) != pp[0] or T.free_park_y[D64](j) != pp[1]
+            or T.free_park_z[D64](j) != pp[2]
+        ):
+            out.append(who + ": park pose")
         if s.has_geom and (
             T.free_bottom_z[D64](j) != s.bottom_z
             or T.free_top_z[D64](j) != s.top_z
@@ -278,6 +304,11 @@ def placement_table_drift[T: PlacementTable](
     for r in range(len(f.regions)):
         ref reg = f.regions[r]
         var who = "region " + String(r) + " (" + reg.name + ")"
+        if T.region_site(r) != facts.region_site[r]:
+            out.append(
+                who + ": site id " + String(T.region_site(r)) + " vs scene "
+                + String(facts.region_site[r])
+            )
         if (
             T.region_site_x[D64](r) != facts.frames[r].x
             or T.region_site_y[D64](r) != facts.frames[r].y

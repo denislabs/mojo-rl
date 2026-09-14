@@ -488,6 +488,7 @@ def _run_family[T: PlacementTable](
     tasks: List[String],
     verts0: Int,
     fallback_radius: Float64,
+    gripper_name: String,
     mut ta: Tally,
     mut st: Stats,
     mut refused: List[String],
@@ -515,6 +516,12 @@ def _run_family[T: PlacementTable](
     facts.nv = dims.get_nv()
     var rsites = region_sites(f, fmd.site_names)
     var nr = len(f.regions)
+    facts.nbody = dims.get_nbody()
+    facts.nsite = dims.get_nsite()
+    facts.region_site = rsites.copy()
+    for i in range(len(fmd.site_names)):
+        if fmd.site_names[i] == gripper_name:
+            facts.gripper_site = i
 
     var jt = List[Int]()
     var jqn = List[Int]()
@@ -703,6 +710,11 @@ def _synth_facts(
             sf.move_axis.append(0.0)
     sf.nq = 21
     sf.nv = 18
+    sf.nbody = 4
+    sf.nsite = n_regions
+    sf.gripper_site = 0
+    for r in range(n_regions):
+        sf.region_site.append(r)
     return sf^
 
 
@@ -745,6 +757,9 @@ struct SynthStackPlacement(PlacementTable):
     comptime NQ: Int = 21
     comptime NV: Int = 18
     comptime N_JOINTS: Int = 0
+    comptime NBODY: Int = 4
+    comptime NSITE: Int = Self.N_REGIONS
+    comptime GRIPPER_SITE: Int = 0
 
     @staticmethod
     def free_slot(j: Int) -> Int:
@@ -849,6 +864,23 @@ struct SynthStackPlacement(PlacementTable):
     @staticmethod
     def joint_dadr(k: Int) -> Int:
         return 0
+    @staticmethod
+    def free_park_x[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        # `family.park_pos` at the default park (10, 0, 50), spacing 0.5
+        return Scalar[DTYPE](10.0) + Scalar[DTYPE](j + 1) * Scalar[DTYPE](0.5)
+
+    @staticmethod
+    def free_park_y[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def free_park_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](50.0)
+
+    @staticmethod
+    def region_site(r: Int) -> Int:
+        return r
+
 
 
 # ── section 7b's scene: a fixture, its top, its interior, and a table zone ──
@@ -887,6 +919,9 @@ struct SynthFixturePlacement(PlacementTable):
     comptime NQ: Int = 21
     comptime NV: Int = 18
     comptime N_JOINTS: Int = 0
+    comptime NBODY: Int = 4
+    comptime NSITE: Int = Self.N_REGIONS
+    comptime GRIPPER_SITE: Int = 0
 
     @staticmethod
     def free_slot(j: Int) -> Int:
@@ -999,6 +1034,23 @@ struct SynthFixturePlacement(PlacementTable):
     @staticmethod
     def joint_dadr(k: Int) -> Int:
         return 0
+    @staticmethod
+    def free_park_x[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        # `family.park_pos` at the default park (10, 0, 50), spacing 0.5
+        return Scalar[DTYPE](10.0) + Scalar[DTYPE](j + 2) * Scalar[DTYPE](0.5)
+
+    @staticmethod
+    def free_park_y[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def free_park_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](50.0)
+
+    @staticmethod
+    def region_site(r: Int) -> Int:
+        return r
+
 
 
 def main() raises:
@@ -1031,8 +1083,8 @@ def main() raises:
     var r0 = List[String]()
     var s0 = List[String]()
     _run_family[So101TabletopPlacement](
-        f, names, SO_ARM101_NMESH_VERTS, So101TabletopConfig.SLOT_RADIUS, ta,
-        st0, r0, s0,
+        f, names, SO_ARM101_NMESH_VERTS, So101TabletopConfig.SLOT_RADIUS,
+        String("robot_gripperframe"), ta, st0, r0, s0,
     )
     print("      placements", st0.placements, " coordinates", st0.coords,
           " exact", st0.exact, " worst", st0.worst)
@@ -1120,95 +1172,118 @@ def main() raises:
         var lf = load_family(String(FAMILY_DIR) + "/" + nm + ".family")
         if nm == "libero_goal":
             _run_family[LiberoGoalPlacement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_kitchen_scene1":
             _run_family[LiberoKitchenScene1Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_kitchen_scene2":
             _run_family[LiberoKitchenScene2Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_kitchen_scene3":
             _run_family[LiberoKitchenScene3Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_kitchen_scene4":
             _run_family[LiberoKitchenScene4Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_kitchen_scene5":
             _run_family[LiberoKitchenScene5Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_kitchen_scene6":
             _run_family[LiberoKitchenScene6Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_kitchen_scene7":
             _run_family[LiberoKitchenScene7Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_kitchen_scene8":
             _run_family[LiberoKitchenScene8Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_kitchen_scene9":
             _run_family[LiberoKitchenScene9Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_kitchen_scene10":
             _run_family[LiberoKitchenScene10Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_living_room_scene1":
             _run_family[LiberoLivingRoomScene1Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_living_room_scene2":
             _run_family[LiberoLivingRoomScene2Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_living_room_scene3":
             _run_family[LiberoLivingRoomScene3Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_living_room_scene4":
             _run_family[LiberoLivingRoomScene4Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_living_room_scene5":
             _run_family[LiberoLivingRoomScene5Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_living_room_scene6":
             _run_family[LiberoLivingRoomScene6Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_object":
             _run_family[LiberoObjectPlacement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_spatial":
             _run_family[LiberoSpatialPlacement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_study_scene1":
             _run_family[LiberoStudyScene1Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_study_scene2":
             _run_family[LiberoStudyScene2Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_study_scene3":
             _run_family[LiberoStudyScene3Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         elif nm == "libero_study_scene4":
             _run_family[LiberoStudyScene4Placement](
-                lf, _tasks_of(nm), 32768, 0.02, ta, st, refused, should
+                lf, _tasks_of(nm), 32768, 0.02, String("robot_grip_site"), ta, st,
+                refused, should
             )
         else:
             ta.check(False, nm + ": a LIBERO family with no table in this gate"

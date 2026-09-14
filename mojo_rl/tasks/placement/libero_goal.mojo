@@ -19,6 +19,9 @@ struct LiberoGoalPlacement(PlacementTable):
     comptime NQ: Int = 41
     comptime NV: Int = 37
     comptime N_JOINTS: Int = 4
+    comptime NBODY: Int = 38
+    comptime NSITE: Int = 17
+    comptime GRIPPER_SITE: Int = 4  # robot_grip_site
 
     @staticmethod
     def free_slot(j: Int) -> Int:
@@ -75,6 +78,24 @@ struct LiberoGoalPlacement(PlacementTable):
         return Scalar[DTYPE](0.03535533905932738)
 
     @staticmethod
+    def free_park_x[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        if j == 0:
+            return Scalar[DTYPE](12.0)
+        if j == 1:
+            return Scalar[DTYPE](12.5)
+        if j == 2:
+            return Scalar[DTYPE](13.0)
+        return Scalar[DTYPE](13.5)
+
+    @staticmethod
+    def free_park_y[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def free_park_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](50.0)
+
+    @staticmethod
     def free_bottom_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
         if j == 0:
             return Scalar[DTYPE](-0.06)
@@ -93,6 +114,38 @@ struct LiberoGoalPlacement(PlacementTable):
         if j == 2:
             return Scalar[DTYPE](0.04)
         return Scalar[DTYPE](0.04)
+
+    @staticmethod
+    def region_site(r: Int) -> Int:
+        if r == 0:
+            return 11
+        if r == 1:
+            return 12
+        if r == 2:
+            return 13
+        if r == 3:
+            return 10
+        if r == 4:
+            return 14
+        if r == 5:
+            return 16
+        if r == 6:
+            return 1
+        if r == 7:
+            return 0
+        if r == 8:
+            return 0
+        if r == 9:
+            return 0
+        if r == 10:
+            return 0
+        if r == 11:
+            return 0
+        if r == 12:
+            return 0
+        if r == 13:
+            return 0
+        return 0
 
     @staticmethod
     def region_site_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:

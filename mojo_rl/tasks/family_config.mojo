@@ -92,17 +92,14 @@ from mojo_rl.physics3d.gpu.constants import (
     rk4_extra_workspace_size,
 )
 
-from .gpu_eval import (
-    eval_tape_gpu, tape_distance_gpu, goal_frame_ids,
-)
+from .gpu_eval import eval_tape_gpu, tape_distance_gpu
 from .placement.table import PlacementTable, reset_task_slots
+from .task_hooks import (
+    repark_inactive_slots, write_task_obs, write_task_obs_host,
+)
 from .predicates import OP_NEAR, OP_ABOVE, OP_ON, OP_IN
 from mojo_rl.envs.dm_control.rewards import (
     tolerance, SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN,
-)
-from .obs import (
-    slot_active, write_free_slot_obs, write_free_slot_obs_host,
-    FREE_JOINT_NV,
 )
 from .so101_tabletop_xml import (
     So101TabletopModel, SO101_TABLETOP_N_FREE_SLOTS,
@@ -128,6 +125,9 @@ struct So101TabletopPlacement(PlacementTable):
     comptime NQ: Int = 27
     comptime NV: Int = 24
     comptime N_JOINTS: Int = 0
+    comptime NBODY: Int = So101TabletopModel.NBODY
+    comptime NSITE: Int = So101TabletopModel.NSITE
+    comptime GRIPPER_SITE: Int = So101TabletopConfig.GRIPPER_SITE
 
     @staticmethod
     def free_slot(j: Int) -> Int:
@@ -166,6 +166,23 @@ struct So101TabletopPlacement(PlacementTable):
         return Scalar[DTYPE](So101TabletopConfig.SLOT_RADIUS)
 
     @staticmethod
+    def free_park_x[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        # ⚠ IN `DTYPE`, NOT `Float64`: `j` is a runtime index, so a `Float64`
+        # product here would be a `double` in a Metal kernel. Same op order
+        # as `family.park_pos`, so the float64 value is identical.
+        return Scalar[DTYPE](So101TabletopConfig.PARK_X) + Scalar[DTYPE](
+            Self.free_slot(j)
+        ) * Scalar[DTYPE](So101TabletopConfig.PARK_SPACING)
+
+    @staticmethod
+    def free_park_y[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](So101TabletopConfig.PARK_Y)
+
+    @staticmethod
+    def free_park_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](So101TabletopConfig.PARK_Z)
+
+    @staticmethod
     def free_bottom_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
         return Scalar[DTYPE](0)
 
@@ -175,6 +192,10 @@ struct So101TabletopPlacement(PlacementTable):
 
     # ⚠ ONE SITE FOR EVERY REGION — true of this family, and the reason the
     # config restates a single triple.
+    @staticmethod
+    def region_site(r: Int) -> Int:
+        return So101TabletopConfig.REGION_SITE_ID
+
     @staticmethod
     def region_site_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
         return Scalar[DTYPE](So101TabletopConfig.REGION_SITE_X)
@@ -626,84 +647,7 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         # returns a three-word observation with no error until something
         # indexes past it. The runtime accessors are correct on BOTH
         # providers, which is why `fields/dims.mojo` has all three families.
-        var nq = d.dims.get_nq()
-        var nv = d.dims.get_nv()
-        for i in range(nq):
-            obs.append(d.qpos.data[i])
-        for i in range(nv):
-            obs.append(d.qvel.data[i])
-        for _ in range(Self.N_FREE_SLOTS):
-            obs.append(Scalar[DTYPE](0))
-
-        var mask = d.meta.data[META_IDX_TASK_ACTIVE]
-        comptime for j in range(Self.N_FREE_SLOTS):
-            comptime si = (
-                Self.FREE_SLOT_IDX_0 if j == 0
-                else (Self.FREE_SLOT_IDX_1 if j == 1 else Self.FREE_SLOT_IDX_2)
-            )
-            comptime qa = (
-                Self.FREE_QADR_0 if j == 0
-                else (Self.FREE_QADR_1 if j == 1 else Self.FREE_QADR_2)
-            )
-            comptime da = (
-                Self.FREE_DADR_0 if j == 0
-                else (Self.FREE_DADR_1 if j == 1 else Self.FREE_DADR_2)
-            )
-            write_free_slot_obs_host[DTYPE](
-                obs,
-                slot_active[DTYPE](mask, si),
-                qa,
-                nq + da,
-                nq + nv + j,
-            )
-
-        # ── the nine goal words — the CPU twin of the block in `_gpu` ─────
-        #
-        # ⚠ THE RULE IS SHARED (`goal_frame_ids`) AND ONLY THE READS DIFFER.
-        # `Data` here, `LayoutTensor` there; there is no type that is both, so
-        # the two loops exist, and the ids they use come from one function so
-        # the body-vs-site decision cannot drift between them.
-        var g_op = Int(d.meta.data[META_IDX_TASK_PARAM_0])
-        comptime GS = Self.GRIPPER_SITE
-        var gx = d.site_xpos.data[GS * 3]
-        var gy = d.site_xpos.data[GS * 3 + 1]
-        var gz = d.site_xpos.data[GS * 3 + 2]
-        var sx = Scalar[DTYPE](0)
-        var sy = Scalar[DTYPE](0)
-        var sz = Scalar[DTYPE](0)
-        var tx = Scalar[DTYPE](0)
-        var ty = Scalar[DTYPE](0)
-        var tz = Scalar[DTYPE](0)
-        if g_op >= 0:
-            var ga = Int(d.meta.data[META_IDX_TASK_PARAM_0 + 1])
-            var gb = Int(d.meta.data[META_IDX_TASK_PARAM_0 + 2])
-            var ids = goal_frame_ids(g_op, ga, gb, Self.REGION_SITE_ID)
-            if ids[0] == 1:
-                sx = d.site_xpos.data[ids[1] * 3]
-                sy = d.site_xpos.data[ids[1] * 3 + 1]
-                sz = d.site_xpos.data[ids[1] * 3 + 2]
-            else:
-                sx = d.xpos.data[ids[1] * 3]
-                sy = d.xpos.data[ids[1] * 3 + 1]
-                sz = d.xpos.data[ids[1] * 3 + 2]
-            if ids[2] == 1:
-                tx = d.site_xpos.data[ids[3] * 3]
-                ty = d.site_xpos.data[ids[3] * 3 + 1]
-                tz = d.site_xpos.data[ids[3] * 3 + 2]
-            else:
-                tx = d.xpos.data[ids[3] * 3]
-                ty = d.xpos.data[ids[3] * 3 + 1]
-                tz = d.xpos.data[ids[3] * 3 + 2]
-        obs.append(gx)
-        obs.append(gy)
-        obs.append(gz)
-        obs.append(sx - gx)
-        obs.append(sy - gy)
-        obs.append(sz - gz)
-        obs.append(tx - sx)
-        obs.append(ty - sy)
-        obs.append(tz - sz)
-
+        write_task_obs_host[So101TabletopPlacement, DTYPE, D](d, obs)
         _ = m_bodies
         _ = m_joints
         _ = m_geoms
@@ -805,44 +749,12 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         there, and this hook also runs at the END of `_reset_env_lane` — a
         write here would land after `init_qpos_gpu` and before the first step.
         """
-        var mask = rebind[Scalar[DTYPE]](meta[env, META_IDX_TASK_ACTIVE])
-        comptime for j in range(Self.N_FREE_SLOTS):
-            comptime si = (
-                Self.FREE_SLOT_IDX_0 if j == 0
-                else (Self.FREE_SLOT_IDX_1 if j == 1 else Self.FREE_SLOT_IDX_2)
-            )
-            comptime qa = (
-                Self.FREE_QADR_0 if j == 0
-                else (Self.FREE_QADR_1 if j == 1 else Self.FREE_QADR_2)
-            )
-            comptime da = (
-                Self.FREE_DADR_0 if j == 0
-                else (Self.FREE_DADR_1 if j == 1 else Self.FREE_DADR_2)
-            )
-            # ⚠ FOLDED AT COMPILE TIME. `si` is a comptime index, so the park
-            # pose is three constants in the kernel and not an arithmetic
-            # chain — and no `Float64` reaches the device, which Metal has no
-            # instruction for.
-            comptime px = Scalar[DTYPE](
-                Self.PARK_X + Float64(si) * Self.PARK_SPACING
-            )
-            comptime py = Scalar[DTYPE](Self.PARK_Y)
-            comptime pz = Scalar[DTYPE](Self.PARK_Z)
-            if not slot_active[DTYPE](mask, si):
-                # ⚠ THE QUATERNION IS IDENTITY AND W COMES FIRST IN `qpos`.
-                # `reset.write_free_pose` writes the same seven words; the
-                # trap it records — that `(0,0,0,0)` is a DEGENERATE rotation
-                # forward kinematics turns into a NaN pose — applies here on
-                # every step rather than once.
-                qpos[env, qa + 0] = px
-                qpos[env, qa + 1] = py
-                qpos[env, qa + 2] = pz
-                qpos[env, qa + 3] = Scalar[DTYPE](1)
-                qpos[env, qa + 4] = Scalar[DTYPE](0)
-                qpos[env, qa + 5] = Scalar[DTYPE](0)
-                qpos[env, qa + 6] = Scalar[DTYPE](0)
-                comptime for k in range(FREE_JOINT_NV):
-                    qvel[env, da + k] = Scalar[DTYPE](0)
+        # ⚠ THE RULE IS `task_hooks.repark_inactive_slots`, shared with every
+        # LIBERO config; this family's park poses reach it through
+        # `So101TabletopPlacement`, drift-checked against `family.park_pos`.
+        repark_inactive_slots[So101TabletopPlacement, DTYPE, BATCH_SIZE, NQ, NV](
+            qpos, qvel, meta, env
+        )
 
     # === GPU: the observation — full state, plus §3.4's active mask ===
     @always_inline
@@ -944,106 +856,19 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         per episode beside the tape; an observation hook that computed it
         would be deciding what the task is while reporting what the state is.
         """
-        comptime for i in range(NQ_F):
-            obs[env, i] = qpos[env, i]
-        comptime for i in range(NV_F):
-            obs[env, NQ_F + i] = qvel[env, i]
-
-        var mask = rebind[Scalar[DTYPE]](meta[env, META_IDX_TASK_ACTIVE])
-        comptime for j in range(Self.N_FREE_SLOTS):
-            comptime si = (
-                Self.FREE_SLOT_IDX_0 if j == 0
-                else (Self.FREE_SLOT_IDX_1 if j == 1 else Self.FREE_SLOT_IDX_2)
-            )
-            comptime qa = (
-                Self.FREE_QADR_0 if j == 0
-                else (Self.FREE_QADR_1 if j == 1 else Self.FREE_QADR_2)
-            )
-            comptime da = (
-                Self.FREE_DADR_0 if j == 0
-                else (Self.FREE_DADR_1 if j == 1 else Self.FREE_DADR_2)
-            )
-            write_free_slot_obs[DTYPE, BATCH_SIZE, OBS_DIM](
-                obs, env,
-                slot_active[DTYPE](mask, si),
-                qa,
-                NQ_F + da,
-                Self.OBS_MASK_BASE + j,
-            )
-
-        _ = xpos
+        # ⚠ THE LAYOUT AND THE GOAL WORDS ARE `task_hooks.write_task_obs`,
+        # shared with every LIBERO config. The nine goal words are the reward's
+        # own geometry — without them the policy cannot see half its reward
+        # (`SHAPE_W_REACH` pays on the gripper-to-subject distance, which is
+        # forward kinematics over six joint angles): measured over 190k steps
+        # on `gather`, a converged critic and a return that never moved.
+        write_task_obs[
+            So101TabletopPlacement, DTYPE, BATCH_SIZE, NQ_F, NV_F, NBODY_F,
+            SITE_DIM, OBS_DIM,
+        ](qpos, qvel, xpos, site_xpos, meta, obs, env)
         _ = xquat
         _ = xvel
         _ = bodies
-        # ── the nine goal words ───────────────────────────────────────────
-        #
-        # ⚠⚠ THE REWARD'S OWN GEOMETRY, AND WITHOUT IT THE POLICY CANNOT SEE
-        # HALF ITS REWARD. `SHAPE_W_REACH` pays on the gripper-to-subject
-        # distance, and the gripper's Cartesian position is forward kinematics
-        # over six joint angles — nothing in `qpos` or `qvel` gives it.
-        # Measured over 190k steps on `gather`: critic converged (mean_q 33.8,
-        # critic_loss 0.30) and the return never moved.
-        #
-        # ⚠ THE IDS COME FROM `goal_frame_ids`, which is the ONE place the
-        # body-vs-site rule is written — the CPU twin below calls the same
-        # function and only the reads differ.
-        var g_op = Int(rebind[Scalar[DTYPE]](meta[env, META_IDX_TASK_PARAM_0]))
-        var gx = Scalar[DTYPE](0)
-        var gy = Scalar[DTYPE](0)
-        var gz = Scalar[DTYPE](0)
-        var sx = Scalar[DTYPE](0)
-        var sy = Scalar[DTYPE](0)
-        var sz = Scalar[DTYPE](0)
-        var tx = Scalar[DTYPE](0)
-        var ty = Scalar[DTYPE](0)
-        var tz = Scalar[DTYPE](0)
-        comptime GS = Self.GRIPPER_SITE
-        gx = rebind[Scalar[DTYPE]](site_xpos[env, GS * 3])
-        gy = rebind[Scalar[DTYPE]](site_xpos[env, GS * 3 + 1])
-        gz = rebind[Scalar[DTYPE]](site_xpos[env, GS * 3 + 2])
-        # ⚠ `op < 0` IS THE EMPTY TAPE — a lane whose goal was never written.
-        # Its goal words stay ZERO rather than reading term 0's garbage as a
-        # body id, which would land on a real, wrong position.
-        if g_op >= 0:
-            var ga = Int(
-                rebind[Scalar[DTYPE]](meta[env, META_IDX_TASK_PARAM_0 + 1])
-            )
-            var gb = Int(
-                rebind[Scalar[DTYPE]](meta[env, META_IDX_TASK_PARAM_0 + 2])
-            )
-            # ⚠ THE CONSTANT, NOT `curriculum` — the CPU twin has no
-            # curriculum to read and the two vectors must agree word for word.
-            var ids = goal_frame_ids(g_op, ga, gb, Self.REGION_SITE_ID)
-            if ids[0] == 1:
-                sx = rebind[Scalar[DTYPE]](site_xpos[env, ids[1] * 3])
-                sy = rebind[Scalar[DTYPE]](site_xpos[env, ids[1] * 3 + 1])
-                sz = rebind[Scalar[DTYPE]](site_xpos[env, ids[1] * 3 + 2])
-            else:
-                sx = rebind[Scalar[DTYPE]](xpos[env, ids[1] * 3])
-                sy = rebind[Scalar[DTYPE]](xpos[env, ids[1] * 3 + 1])
-                sz = rebind[Scalar[DTYPE]](xpos[env, ids[1] * 3 + 2])
-            if ids[2] == 1:
-                tx = rebind[Scalar[DTYPE]](site_xpos[env, ids[3] * 3])
-                ty = rebind[Scalar[DTYPE]](site_xpos[env, ids[3] * 3 + 1])
-                tz = rebind[Scalar[DTYPE]](site_xpos[env, ids[3] * 3 + 2])
-            else:
-                tx = rebind[Scalar[DTYPE]](xpos[env, ids[3] * 3])
-                ty = rebind[Scalar[DTYPE]](xpos[env, ids[3] * 3 + 1])
-                tz = rebind[Scalar[DTYPE]](xpos[env, ids[3] * 3 + 2])
-        comptime GB = Self.OBS_GOAL_BASE
-        obs[env, GB + 0] = gx
-        obs[env, GB + 1] = gy
-        obs[env, GB + 2] = gz
-        # ⚠ RELATIVE, NOT ABSOLUTE, for the two vectors. An absolute subject
-        # position makes the policy learn the subtraction; the reward is a
-        # function of the DIFFERENCES and those are what it is handed.
-        obs[env, GB + 3] = sx - gx
-        obs[env, GB + 4] = sy - gy
-        obs[env, GB + 5] = sz - gz
-        obs[env, GB + 6] = tx - sx
-        obs[env, GB + 7] = ty - sy
-        obs[env, GB + 8] = tz - sz
-
         _ = contacts
         _ = sites
         _ = geoms
