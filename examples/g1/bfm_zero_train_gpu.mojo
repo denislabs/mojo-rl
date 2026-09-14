@@ -880,10 +880,15 @@ def main() raises:
             # The FB half was the only half being logged: the discriminator
             # and Q_D — the terms that hold pi on the expert manifold, i.e.
             # the terms tracking quality IS — were completely unobserved.
-            # `d_gap` is the one to watch: D+ - D- going to 0 means the
-            # discriminator can no longer tell policy from expert, so r_D
-            # carries no signal and the style term is inert however large
-            # `reg_coeff` is.
+            # ⚠ `d_pos` / `d_neg` are BCE LOSSES (`bce_logits_const_t` with
+            # targets 1.0 and 0.0), NOT discriminator scores. CHANCE IS
+            # ln(2) = 0.693 ON BOTH; small is healthy, and the DIFFERENCE
+            # between them means nothing. A first reading of them as scores
+            # produced a confident "the discriminator is dead" that the
+            # reference's own log refuted: at 4.6 M it runs 0.044 expert /
+            # 0.110 policy where we run 0.074 / 0.086 — same regime, both far
+            # below chance. Named for what they are so the misreading is
+            # harder to repeat.
             var d_pos = 0.0
             var d_neg = 0.0
             var r_d = 0.0
@@ -891,9 +896,8 @@ def main() raises:
             var q_loss = 0.0
             var q_pi = 0.0
             agent.head.read_diag(d_pos, d_neg, r_d, q_d, q_loss, q_pi)
-            mn.append(String("cpr/d_pos")); mv.append(d_pos)
-            mn.append(String("cpr/d_neg")); mv.append(d_neg)
-            mn.append(String("cpr/d_gap")); mv.append(d_pos - d_neg)
+            mn.append(String("cpr/bce_expert")); mv.append(d_pos)
+            mn.append(String("cpr/bce_policy")); mv.append(d_neg)
             mn.append(String("cpr/r_d")); mv.append(r_d)
             mn.append(String("cpr/q_d")); mv.append(q_d)
             mn.append(String("cpr/q_loss")); mv.append(q_loss)
