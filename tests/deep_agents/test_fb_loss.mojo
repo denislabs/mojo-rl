@@ -18,6 +18,13 @@ construction:
       direction) strictly worse than a spread-out one. Checked as an ordering
       between two concrete `B`s rather than against a magic threshold.
 
+      ⚠ [2] and [4] are NECESSARY AND NOT SUFFICIENT, and the first G1 run is
+      the proof: both passed for months against an `L_ortho` whose minimiser
+      was a rank-d/2 collapse. [2] checks the gradient against the loss, and
+      the LOSS was the bug; [4] compares two hand-built points and never
+      visits the minimiser. Only following the gradient can see it, which is
+      `test_fb_ortho_fixed_point.mojo`.
+
 [1] and [2] are central finite differences of every input of both losses.
 
 Run:
@@ -135,49 +142,32 @@ def test_measure_loss_gradients() raises:
 
 def test_ortho_loss_gradients() raises:
     print("[2] fb_ortho_loss vs central finite differences ...")
-    var bs = _mk(BATCH * D, 0.19, -0.23, 0.31)
-    var bsp = _mk(BATCH * D, -0.27, 0.15, -0.11)
-    var gs = Tensor.alloc(BATCH * D)
-    var gsp = Tensor.alloc(BATCH * D)
-    var base = fb_ortho_loss[D, BATCH](bs, bsp, gs, gsp)
+    var b = _mk(BATCH * D, 0.19, -0.23, 0.31)
+    var g = Tensor.alloc(BATCH * D)
+    var base = fb_ortho_loss[D, BATCH](b, g)
     print("      L_ortho =", base)
 
-    var sink_a = Tensor.alloc(BATCH * D)
-    var sink_b = Tensor.alloc(BATCH * D)
-    var worst_s = Float64(0)
-    var worst_sp = Float64(0)
+    var sink = Tensor.alloc(BATCH * D)
+    var worst = Float64(0)
 
+    # `B` is both inputs of the pairwise dot, so a single perturbation moves
+    # BOTH sides — which is exactly the derivative the trainer needs.
     for idx in range(BATCH * D):
-        var keep = bs.data[idx]
-        bs.data[idx] = Scalar[DT](Float64(keep) + EPS)
-        var lp = fb_ortho_loss[D, BATCH](bs, bsp, sink_a, sink_b)
-        bs.data[idx] = Scalar[DT](Float64(keep) - EPS)
-        var lm = fb_ortho_loss[D, BATCH](bs, bsp, sink_a, sink_b)
-        bs.data[idx] = keep
+        var keep = b.data[idx]
+        b.data[idx] = Scalar[DT](Float64(keep) + EPS)
+        var lp = fb_ortho_loss[D, BATCH](b, sink)
+        b.data[idx] = Scalar[DT](Float64(keep) - EPS)
+        var lm = fb_ortho_loss[D, BATCH](b, sink)
+        b.data[idx] = keep
         var fd = (lp - lm) / (2.0 * EPS)
-        var an = Float64(gs.data[idx])
+        var an = Float64(g.data[idx])
         var den = abs(an) if abs(an) > 0.1 else 0.1
         var rel = abs(fd - an) / den
-        if rel > worst_s:
-            worst_s = rel
+        if rel > worst:
+            worst = rel
 
-    for idx in range(BATCH * D):
-        var keep = bsp.data[idx]
-        bsp.data[idx] = Scalar[DT](Float64(keep) + EPS)
-        var lp = fb_ortho_loss[D, BATCH](bs, bsp, sink_a, sink_b)
-        bsp.data[idx] = Scalar[DT](Float64(keep) - EPS)
-        var lm = fb_ortho_loss[D, BATCH](bs, bsp, sink_a, sink_b)
-        bsp.data[idx] = keep
-        var fd = (lp - lm) / (2.0 * EPS)
-        var an = Float64(gsp.data[idx])
-        var den = abs(an) if abs(an) > 0.1 else 0.1
-        var rel = abs(fd - an) / den
-        if rel > worst_sp:
-            worst_sp = rel
-
-    print("      worst rel err: dB(s)", worst_s, " dB(s+)", worst_sp)
-    assert_true(worst_s < FD_TOL, "dB(s): " + String(worst_s))
-    assert_true(worst_sp < FD_TOL, "dB(s+): " + String(worst_sp))
+    print("      worst rel err: dB(s+)", worst)
+    assert_true(worst < FD_TOL, "dB(s+): " + String(worst))
 
 
 def test_anchor_term_is_load_bearing() raises:
@@ -285,17 +275,8 @@ def test_ortho_penalises_collapse() raises:
     )
 
     var g1 = Tensor.alloc(BATCH * D)
-    var g2 = Tensor.alloc(BATCH * D)
-    # Distinct copies: the loss takes b_s and b_sp as separate `ref` args and
-    # Mojo forbids aliasing them, which is the right rule here — the two are an
-    # independent pair of draws by construction.
-    var collapsed2 = Tensor.alloc(BATCH * D)
-    var spread2 = Tensor.alloc(BATCH * D)
-    for i in range(BATCH * D):
-        collapsed2.data[i] = collapsed.data[i]
-        spread2.data[i] = spread.data[i]
-    var l_col = fb_ortho_loss[D, BATCH](collapsed, collapsed2, g1, g2)
-    var l_spr = fb_ortho_loss[D, BATCH](spread, spread2, g1, g2)
+    var l_col = fb_ortho_loss[D, BATCH](collapsed, g1)
+    var l_spr = fb_ortho_loss[D, BATCH](spread, g1)
     print("      L_ortho collapsed", l_col, " spread", l_spr)
     assert_true(
         l_col > l_spr + 1e-6,

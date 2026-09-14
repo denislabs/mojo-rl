@@ -32,13 +32,38 @@ on pairs one step apart.
 
 ## The orthonormality regulariser
 
-    L_ortho = E_ij[ (B(s_i)·B(s+_j))^2 ] - 2·E_i[ ||B(s_i)||^2 ]
+    L_ortho = E_ij[ (B(s+_i)·B(s+_j))^2 ] - 2·E_i[ ||B(s+_i)||^2 ]
+
+ONE batch, against ITSELF. Both indices range over the SAME tensor, and that is
+load-bearing — see the warning below.
 
 Pushes `E[B B^T]` towards the identity. Without it `B` collapses: a constant `B`
 makes the measure loss trivially satisfiable, and — this is the trap
 §11 flags — the loss curve looks the same either way. On `point_mass` the
 collapse is detectable by hand; on walker it is not, which is why the milestone
 validates there first.
+
+⚠ **THIS TERM WAS ITSELF A COLLAPSE OBJECTIVE until §12.13 of
+`docs/BFM_ZERO_G1_REPRODUCTION.md`.** It ran `E_ij[(B(s_i)·B(s+_j))^2]` across
+TWO INDEPENDENT batches. With two tensors there is no self-pairing, so nothing
+anchors any direction's variance: the minimiser is not "B isotropic" but "let
+the two batches span ORTHOGONAL SUBSPACES" — a rank-≤d/2 collapse of BOTH, the
+exact failure this term exists to prevent. Following the gradient on free rows
+(d=32, BATCH=128, the run's 4:1 ratio): the two-tensor form drives rank
+25.3 → 11.3 with cross-batch mean|cos| → 1e-4; the one-tensor form reaches
+rank = d = 32.000 in 200 steps and holds there. It killed the first G1 run.
+
+`tests/deep_agents/test_fb_ortho_fixed_point.mojo` is the gate, and it FOLLOWS
+THE GRADIENT to the fixed point. Both older ortho gates PASS on the broken
+objective: the finite-difference check confirms the gradient matches the loss
+(and the loss was the bug), and "a rank-1 B scores worse than a spread one"
+compares two hand-built points and never visits the real minimiser.
+
+BFM-Zero masks the diagonal (`references/BFM-Zero-main/humanoidverse/agents/fb/
+agent.py:250`). We do not need to: `|B|` is pinned to √d by the net's own sphere
+projection, so the i=j term is a constant whose gradient is purely radial and
+the projection removes it. Measured — including it still converges to rank = d
+exactly. It costs a reported offset of `D^2/BATCH` and nothing else.
 
 ## Gradients
 
@@ -47,8 +72,12 @@ All three are exact, not approximations:
     dL_FB/dM     = 2(M - Mtarget)/BATCH^2          M = F·B(s+)^T
     dL_FB/dF    += -2/BATCH · B(s')                 (anchor)
     dL_FB/dB(s') = -2/BATCH · F
-    dL_ortho/dO  = 2·O/BATCH^2                     O = B(s)·B(s+)^T
-    dL_ortho/dB(s) += -4/BATCH · B(s)
+    dL_ortho/dO  = 2·O/BATCH^2                     O = B(s+)·B(s+)^T
+    dL_ortho/dB(s+) += -4/BATCH · B(s+)
+
+`B(s+)` appears on BOTH sides of `O`, so its total derivative is the SUM of the
+pairwise-dot vjp's two input gradients. They are equal here (`O` is symmetric),
+but summing is the statement that does not rely on that.
 
 `Mtarget` carries no gradient — it is built from the target networks and is
 passed in already scaled by `gamma`.
@@ -97,6 +126,7 @@ struct FBLossWorkspace[D: Int, BATCH: Int](Movable & Deinitable):
     var r_go: Tensor
     var acc: Tensor
     var ga: Tensor
+    var gb2: Tensor
 
     def __init__(out self):
         self.pd = PairwiseDot[Self.D, Self.BATCH]()
@@ -107,6 +137,7 @@ struct FBLossWorkspace[D: Int, BATCH: Int](Movable & Deinitable):
         self.r_go = Tensor()
         self.acc = Tensor()
         self.ga = Tensor()
+        self.gb2 = Tensor()
 
     def __init__(out self, *, deinit move: Self):
         self.pd = move.pd^
@@ -117,6 +148,7 @@ struct FBLossWorkspace[D: Int, BATCH: Int](Movable & Deinitable):
         self.r_go = move.r_go^
         self.acc = move.acc^
         self.ga = move.ga^
+        self.gb2 = move.gb2^
 
     def prepare[target: StaticString](
         mut self, ctx: Optional[DeviceContext] = None
@@ -130,6 +162,7 @@ struct FBLossWorkspace[D: Int, BATCH: Int](Movable & Deinitable):
             self.r_go.ensure(Self.BATCH)
             self.acc.ensure(1)
             self.ga.ensure(ND)
+            self.gb2.ensure(ND)
         else:
             var c = ctx.value()
             self.m.ensure_gpu(c, NN)
@@ -139,6 +172,7 @@ struct FBLossWorkspace[D: Int, BATCH: Int](Movable & Deinitable):
             self.acc.ensure(1)
             self.acc.ensure_gpu(c, 1)
             self.ga.ensure_gpu(c, ND)
+            self.gb2.ensure_gpu(c, ND)
 
 
 def pairwise_matrix[
@@ -253,25 +287,26 @@ def fb_measure_loss[
 def fb_ortho_loss[
     D: Int, BATCH: Int
 ](
-    ref b_s: Tensor,
-    ref b_sp: Tensor,
-    mut g_b_s: Tensor,
-    mut g_b_sp: Tensor,
+    ref b: Tensor,
+    mut g_b: Tensor,
 ) raises -> Float64:
-    """`L_ortho` and its gradients.
+    """`L_ortho` and its gradient.
 
-    OVERWRITES `g_b_s` / `g_b_sp` rather than accumulating. `B(s+)` receives
-    gradient from both losses, and making the trainer add them explicitly keeps
-    that visible at the call site — an accumulating signature would let a
-    forgotten zeroing silently double one contribution.
+    ONE batch against itself. Passing two independent batches here is a
+    COLLAPSE objective, not a regulariser — see the module header.
+
+    OVERWRITES `g_b` rather than accumulating. `B(s+)` receives gradient from
+    both losses, and making the trainer add them explicitly keeps that visible
+    at the call site — an accumulating signature would let a forgotten zeroing
+    silently double one contribution.
     """
     var op = PairwiseDot[D, BATCH].make["cpu", Deterministic](None)
     var ins = TensorPack[2]()
     ins[0].ensure(BATCH * D)
     ins[1].ensure(BATCH * D)
     for i in range(BATCH * D):
-        ins[0].data[i] = b_s.data[i]
-        ins[1].data[i] = b_sp.data[i]
+        ins[0].data[i] = b.data[i]
+        ins[1].data[i] = b.data[i]
     var o = Tensor.alloc(BATCH * BATCH)
     op.forward["cpu", BATCH](TensorRefs[2, MutAnyOrigin](ins[0], ins[1]), o, None)
 
@@ -289,22 +324,22 @@ def fb_ortho_loss[
         TensorRefs[2, MutAnyOrigin](ins[0], ins[1]), go, TensorRefs[2, MutAnyOrigin](grads[0], grads[1]),
         None,
     )
-    g_b_s.ensure(BATCH * D)
-    g_b_sp.ensure(BATCH * D)
+    # `B` is BOTH inputs of `O`, so its total derivative is the SUM of the two
+    # input gradients.
+    g_b.ensure(BATCH * D)
     for i in range(BATCH * D):
-        g_b_s.data[i] = grads[0].data[i]
-        g_b_sp.data[i] = grads[1].data[i]
+        g_b.data[i] = grads[0].data[i] + grads[1].data[i]
 
-    # -2·mean_i ||B(s_i)||^2, gradient -4/BATCH · B(s).
+    # -2·mean_i ||B(s+_i)||^2, gradient -4/BATCH · B(s+).
     var sq = Float64(0)
     for i in range(BATCH * D):
-        var v = Float64(b_s.data[i])
+        var v = Float64(b.data[i])
         sq += v * v
     loss += -2.0 * sq / Float64(BATCH)
     var c = -4.0 / Float64(BATCH)
     for i in range(BATCH * D):
-        g_b_s.data[i] = Scalar[DT](
-            Float64(g_b_s.data[i]) + c * Float64(b_s.data[i])
+        g_b.data[i] = Scalar[DT](
+            Float64(g_b.data[i]) + c * Float64(b.data[i])
         )
     return loss
 
@@ -441,20 +476,22 @@ def fb_ortho_loss_into[
     target: StaticString, D: Int, BATCH: Int
 ](
     mut ws: FBLossWorkspace[D, BATCH],
-    ref [MutAnyOrigin] b_s: Tensor,
-    ref [MutAnyOrigin] b_sp: Tensor,
-    ref [MutAnyOrigin] g_b_s: Tensor,
-    ref [MutAnyOrigin] g_b_sp: Tensor,
+    ref [MutAnyOrigin] b: Tensor,
+    ref [MutAnyOrigin] g_b: Tensor,
     want_loss: Bool = True,
     ctx: Optional[DeviceContext] = None,
 ) raises -> Float64:
-    """`L_ortho` and its gradients, on `target`. OVERWRITES both gradients."""
+    """`L_ortho` and its gradient, on `target`. OVERWRITES `g_b`.
+
+    ONE batch against itself — see the module header for why two independent
+    batches make this a collapse objective.
+    """
     ws.prepare[target](ctx)
     comptime NN = BATCH * BATCH
     comptime ND = BATCH * D
     var inv_n = Scalar[DT](1.0 / (Float64(BATCH) * Float64(BATCH)))
 
-    ws.pd.forward[target, BATCH](TensorRefs[2, MutAnyOrigin](b_s, b_sp), ws.m, ctx)
+    ws.pd.forward[target, BATCH](TensorRefs[2, MutAnyOrigin](b, b), ws.m, ctx)
 
     var loss = Float64(0)
     comptime if target == "cpu":
@@ -489,28 +526,31 @@ def fb_ortho_loss_into[
             ws.acc.download(c)
             loss = Float64(ws.acc.data[0])
 
+    # `b` is BOTH inputs of `O`, so its total derivative is the SUM of the two
+    # input gradients — `ws.gb2` catches the mirrored half.
     ws.pd.vjp[target, BATCH](
-        TensorRefs[2, MutAnyOrigin](b_s, b_sp), ws.go, TensorRefs[2, MutAnyOrigin](g_b_s, g_b_sp), ctx
+        TensorRefs[2, MutAnyOrigin](b, b), ws.go, TensorRefs[2, MutAnyOrigin](g_b, ws.gb2), ctx
     )
 
-    # -2·mean_i ||B(s_i)||^2 ; gradient -4/BATCH · B(s).
+    # -2·mean_i ||B(s+_i)||^2 ; gradient -4/BATCH · B(s+).
     var c4 = Scalar[DT](-4.0 / Float64(BATCH))
     comptime if target == "cpu":
         if want_loss:
             var sq = Float64(0)
             for i in range(ND):
-                var v = Float64(b_s.data[i])
+                var v = Float64(b.data[i])
                 sq += v * v
             loss += -2.0 * sq / Float64(BATCH)
         for i in range(ND):
-            g_b_s.data[i] = Scalar[DT](
-                Float64(g_b_s.data[i]) + Float64(c4) * Float64(b_s.data[i])
+            g_b.data[i] = Scalar[DT](
+                Float64(g_b.data[i]) + Float64(ws.gb2.data[i])
+                + Float64(c4) * Float64(b.data[i])
             )
     else:
         var c = ctx.value()
         if want_loss:
             c.enqueue_function[sumsq_reduce_kernel[ND]](
-                b_s.dev.value().unsafe_ptr(),
+                b.dev.value().unsafe_ptr(),
                 ws.acc.dev.value().unsafe_ptr(),
                 grid_dim=1,
                 block_dim=TPB_REDUCE,
@@ -519,8 +559,15 @@ def fb_ortho_loss_into[
             # the kernel returns the MEAN over ND, so scale back to per-ROW
             loss += -2.0 * Float64(ws.acc.data[0]) * Float64(D)
         c.enqueue_function[axpy_kernel[ND]](
-            g_b_s.dev.value().unsafe_ptr(),
-            b_s.dev.value().unsafe_ptr(),
+            g_b.dev.value().unsafe_ptr(),
+            ws.gb2.dev.value().unsafe_ptr(),
+            Scalar[DT](1.0),
+            grid_dim=(ND + TPB - 1) // TPB,
+            block_dim=TPB,
+        )
+        c.enqueue_function[axpy_kernel[ND]](
+            g_b.dev.value().unsafe_ptr(),
+            b.dev.value().unsafe_ptr(),
             c4,
             grid_dim=(ND + TPB - 1) // TPB,
             block_dim=TPB,

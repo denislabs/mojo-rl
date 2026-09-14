@@ -188,7 +188,6 @@ struct FBTrainer[
     var wso: FBLossWorkspace[Self.D, Self.BATCH]
 
     # Owned scratch — sized once, reused every step.
-    var b_s: Tensor
     var b_sp: Tensor
     var b_sn: Tensor
     var bt_sp: Tensor
@@ -212,11 +211,9 @@ struct FBTrainer[
     var g_bsp2: Tensor
     var g_bsn1: Tensor
     var g_bsn2: Tensor
-    var g_bs_o: Tensor
     var g_bsp_o: Tensor
     var g_bsp: Tensor
     var g_bsn: Tensor
-    var g_bs: Tensor
     var acc: Tensor
     # ⚠⚠ Persistent vjp GRAD-INPUT sinks. These were `TensorPack[1]()` locals
     # created inside `train_step` / `_actor_step`, i.e. a device alloc + free on
@@ -371,7 +368,6 @@ struct FBTrainer[
         self.ws1 = FBLossWorkspace[Self.D, Self.BATCH]()
         self.ws2 = FBLossWorkspace[Self.D, Self.BATCH]()
         self.wso = FBLossWorkspace[Self.D, Self.BATCH]()
-        self.b_s = Tensor()
         self.b_sp = Tensor()
         self.b_sn = Tensor()
         self.bt_sp = Tensor()
@@ -395,11 +391,9 @@ struct FBTrainer[
         self.g_bsp2 = Tensor()
         self.g_bsn1 = Tensor()
         self.g_bsn2 = Tensor()
-        self.g_bs_o = Tensor()
         self.g_bsp_o = Tensor()
         self.g_bsp = Tensor()
         self.g_bsn = Tensor()
-        self.g_bs = Tensor()
         self.acc = Tensor()
         self.acc_lam = Tensor()
         self.sink = Tensor()
@@ -449,7 +443,6 @@ struct FBTrainer[
         self.ws1 = move.ws1^
         self.ws2 = move.ws2^
         self.wso = move.wso^
-        self.b_s = move.b_s^
         self.b_sp = move.b_sp^
         self.b_sn = move.b_sn^
         self.bt_sp = move.bt_sp^
@@ -473,11 +466,9 @@ struct FBTrainer[
         self.g_bsp2 = move.g_bsp2^
         self.g_bsn1 = move.g_bsn1^
         self.g_bsn2 = move.g_bsn2^
-        self.g_bs_o = move.g_bs_o^
         self.g_bsp_o = move.g_bsp_o^
         self.g_bsp = move.g_bsp^
         self.g_bsn = move.g_bsn^
-        self.g_bs = move.g_bs^
         self.acc = move.acc^
         self.acc_lam = move.acc_lam^
         self.sink = move.sink^
@@ -613,7 +604,6 @@ struct FBTrainer[
         ensure_t[T](self.g_pi_extra, Self._NA, c)
         ensure_t[T](self.sink_a, Self.BATCH * (Self.OBS + Self.D), c)
         ensure_t[T](self.g_fin_a, Self.BATCH * Self.F_IN, c)
-        ensure_t[T](self.b_s, Self._ND, c)
         ensure_t[T](self.b_sp, Self._ND, c)
         ensure_t[T](self.b_sn, Self._ND, c)
         ensure_t[T](self.bt_sp, Self._ND, c)
@@ -638,11 +628,9 @@ struct FBTrainer[
         ensure_t[T](self.g_bsp2, Self._ND, c)
         ensure_t[T](self.g_bsn1, Self._ND, c)
         ensure_t[T](self.g_bsn2, Self._ND, c)
-        ensure_t[T](self.g_bs_o, Self._ND, c)
         ensure_t[T](self.g_bsp_o, Self._ND, c)
         ensure_t[T](self.g_bsp, Self._ND, c)
         ensure_t[T](self.g_bsn, Self._ND, c)
-        ensure_t[T](self.g_bs, Self._ND, c)
         ensure_t[T](self.pi, Self._NA, c)
         ensure_t[T](self.fo, Self._ND, c)
         ensure_t[T](self.g_fa, Self._ND, c)
@@ -736,9 +724,9 @@ struct FBTrainer[
         self.actor.online.zero_grad[T](c)
 
         # ── 1. B forwards (online) ───────────────────────────────────────
-        call_forward[T, Self.BATCH](
-            self.bnet.online, TensorRefs[1, MutAnyOrigin](self.bs), self.b_s, c
-        )
+        # `B(s)` used to be computed here for the two-tensor ortho term. That
+        # term was a collapse objective (see `loss.mojo`'s header); the ortho
+        # now runs on `b_sp` alone, so this forward and its vjp are gone.
         call_forward[T, Self.BATCH](
             self.bnet.online, TensorRefs[1, MutAnyOrigin](self.bsp), self.b_sp, c
         )
@@ -815,8 +803,7 @@ struct FBTrainer[
             self.g_f2, self.g_bsp2, self.g_bsn2, want_loss, c,
         )
         var l_ortho = fb_ortho_loss_into[T, Self.D, Self.BATCH](
-            self.wso, self.b_s, self.b_sp, self.g_bs_o, self.g_bsp_o,
-            want_loss, c,
+            self.wso, self.b_sp, self.g_bsp_o, want_loss, c,
         )
 
         # ── 5. backprop ──────────────────────────────────────────────────
@@ -829,16 +816,15 @@ struct FBTrainer[
             TensorRefs[1, MutAnyOrigin](self.sink), c,
         )
 
-        # B: three vjps, accumulating into one set of parameter gradients.
+        # B: two vjps, accumulating into one set of parameter gradients.
+        # `b_sp` carries BOTH losses — the measure residual from each F, and
+        # the whole ortho term.
         sum3_scaled_t[T, Self._ND](
             self.g_bsp, self.g_bsp1, self.g_bsp2, self.g_bsp_o,
             Scalar[DT](self.ortho_weight), c,
         )
         scale_t[T, Self._ND](self.g_bsn, self.g_bsn1, Scalar[DT](1.0), c)
         axpy_t[T, Self._ND](self.g_bsn, self.g_bsn2, Scalar[DT](1.0), c)
-        scale_t[T, Self._ND](
-            self.g_bs, self.g_bs_o, Scalar[DT](self.ortho_weight), c
-        )
 
         call_vjp[T, Self.BATCH](
             self.bnet.online, TensorRefs[1, MutAnyOrigin](self.bsp), self.g_bsp,
@@ -846,10 +832,6 @@ struct FBTrainer[
         )
         call_vjp[T, Self.BATCH](
             self.bnet.online, TensorRefs[1, MutAnyOrigin](self.bsn), self.g_bsn,
-            TensorRefs[1, MutAnyOrigin](self.sink), c,
-        )
-        call_vjp[T, Self.BATCH](
-            self.bnet.online, TensorRefs[1, MutAnyOrigin](self.bs), self.g_bs,
             TensorRefs[1, MutAnyOrigin](self.sink), c,
         )
 
@@ -878,7 +860,7 @@ struct FBTrainer[
         if not want_loss:
             return FBLosses(0.0, 0.0, 0.0, 0.0, 0.0)
         var fn2 = mean_sq_t[T, Self._ND](self.f1o, self.acc, c)
-        var bn2 = mean_sq_t[T, Self._ND](self.b_s, self.acc, c)
+        var bn2 = mean_sq_t[T, Self._ND](self.b_sp, self.acc, c)
         return FBLosses(
             0.5 * (l1 + l2), l_ortho, l_actor,
             sqrt(fn2 * Float64(Self.D)), sqrt(bn2 * Float64(Self.D)),

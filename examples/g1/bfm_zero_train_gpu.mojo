@@ -21,8 +21,11 @@ dashboard gets the same points when `.env` names one (`RemoteLogger`, inert
 without a URL), `run.kv` records `status`/`outcome` WRITTEN and never inferred,
 and each checkpoint is offered to the artifact sink so a box that dies at hour
 40 does not take the weights with it. A 30-minute check-up is therefore
-`tail -3 runs/<id>/metrics.csv` plus `run.kv`, from anywhere — read `norm/B`
-first, it is sqrt(d) = 16 by construction and any drift is a bug, not a trend.
+`tail -3 runs/<id>/metrics.csv` plus `run.kv`, from anywhere — read
+`norm/B_rank_eff` first. `norm/B` is sqrt(d) = 16 BY CONSTRUCTION and cannot
+move, so it can never warn you about anything; `norm/B_rank_eff` is the
+effective rank of `E[B B^T]` and must sit at d = 256. Run 1 died with it at
+162 (§12.12-§12.13).
 
 `--resume PATH` restores the online nets + `.norm`; `--start-at N` is the env
 steps that checkpoint already represents, so `--steps` stays the TOTAL and this
@@ -751,6 +754,30 @@ def main() raises:
             mn.append(String("loss/actor")); mv.append(actor)
             mn.append(String("norm/F")); mv.append(f_norm)
             mn.append(String("norm/B")); mv.append(b_norm)
+            # `|B|` is pinned to sqrt(d) by the net's sphere projection, so it
+            # is structurally incapable of showing a DIRECTIONAL collapse —
+            # which is what killed run 1 (§12.12). `ortho` can, once unpacked.
+            #
+            # `tr(C) = d` always, so `Q := ortho + 2d` is the whole pairwise
+            # sum `mean_ij (B_i·B_j)^2`. That sum INCLUDES i=j, and each of
+            # those is `||B_i||^4 = d^2`, contributing a constant `d^2/BATCH`
+            # that has nothing to do with isotropy — subtract it before
+            # reading anything, or a perfectly isotropic B reports rank 205
+            # instead of 256:
+            #
+            #     tr(C^2)  = (Q - d^2/BATCH) · BATCH/(BATCH-1)
+            #     rank_eff = tr(C)^2 / tr(C^2) = d^2 / tr(C^2)
+            #
+            # the participation-ratio effective rank of `E[B B^T]`. d = 256
+            # means isotropic; the reference holds it there for 200 M steps
+            # (§12.13). THIS is the number to watch, not `norm/B`.
+            var q = ortho + 2.0 * Float64(D)
+            var nb = Float64(BATCH)
+            var tr_c2 = (q - Float64(D) * Float64(D) / nb) * nb / (nb - 1.0)
+            mn.append(String("norm/B_rank_eff"))
+            mv.append(
+                Float64(D) * Float64(D) / tr_c2 if tr_c2 > 1e-9 else 0.0
+            )
             mn.append(String("env/st_s")); mv.append(rate)
             mn.append(String("env/ring")); mv.append(Float64(agent.base.size))
             mn.append(String("train/updates")); mv.append(Float64(agent.total_train_steps()))

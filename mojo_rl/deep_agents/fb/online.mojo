@@ -1212,7 +1212,7 @@ struct FBOnlineAgent[
 
         `train_step(want_loss=False)` skips the reductions and the D2H; the
         activations it leaves behind (`f1o`, `b_sp`, `b_sn`, `m_target`,
-        `b_s`, `acc_lam`) are the pre-update ones of that step, so re-running
+        `acc_lam`) are the pre-update ones of that step, so re-running
         the two loss reductions over them returns exactly what
         `want_loss=True` would have — without ever putting a sync inside the
         captured sequence. The gradient outputs go to the scratch the next
@@ -1236,8 +1236,7 @@ struct FBOnlineAgent[
         )
         measure = 0.5 * (l1 + l2)
         ortho = fb_ortho_loss_into["gpu", Self.D, Self.BATCH](
-            self.t.wso, self.t.b_s, self.t.b_sp, self.t.g_bs_o, self.t.g_bsp_o,
-            True, self.ctx,
+            self.t.wso, self.t.b_sp, self.t.g_bsp_o, True, self.ctx,
         )
         self.t.acc_lam.download(c)
         actor = -Float64(self.t.acc_lam.data[0])
@@ -1245,7 +1244,7 @@ struct FBOnlineAgent[
             self.t.f1o, self.t.acc, self.ctx
         )
         var bn2 = mean_sq_t["gpu", Self.BATCH * Self.D](
-            self.t.b_s, self.t.acc, self.ctx
+            self.t.b_sp, self.t.acc, self.ctx
         )
         f_norm = sqrt(fn2 * Float64(Self.D))
         b_norm = sqrt(bn2 * Float64(Self.D))
