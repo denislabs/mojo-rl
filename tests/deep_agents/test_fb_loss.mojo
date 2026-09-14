@@ -63,40 +63,32 @@ def _mk(n: Int, a: Float64, b: Float64, c: Float64) raises -> Tensor:
 
 
 def _measure_only_loss(
-    ref f: Tensor, ref bsp: Tensor, ref bn: Tensor, ref mt: Tensor,
-    with_anchor: Bool,
+    ref f: Tensor, ref bg: Tensor, ref mt: Tensor, with_anchor: Bool,
 ) raises -> Float64:
     var gf = Tensor.alloc(BATCH * D)
-    var gsp = Tensor.alloc(BATCH * D)
-    var gbn = Tensor.alloc(BATCH * D)
-    return fb_measure_loss[D, BATCH](
-        f, bsp, bn, mt, gf, gsp, gbn, with_anchor
-    )
+    var gbg = Tensor.alloc(BATCH * D)
+    return fb_measure_loss[D, BATCH](f, bg, mt, gf, gbg, with_anchor)
 
 
 def test_measure_loss_gradients() raises:
     print("[1] fb_measure_loss vs central finite differences ...")
-    var f = _mk(BATCH * D, 0.21, -0.13, 0.4)
-    var bsp = _mk(BATCH * D, -0.17, 0.29, -0.2)
-    var bn = _mk(BATCH * D, 0.11, 0.07, 0.33)
-    var mt = _mk(BATCH * BATCH, 0.05, -0.09, 0.15)
-
+    var f = _mk(BATCH * D, 0.13, -0.21, 0.05)
+    var bg = _mk(BATCH * D, -0.17, 0.29, -0.2)
+    var mt = _mk(BATCH * BATCH, 0.07, 0.03, -0.1)
     var gf = Tensor.alloc(BATCH * D)
-    var gsp = Tensor.alloc(BATCH * D)
-    var gbn = Tensor.alloc(BATCH * D)
-    var base = fb_measure_loss[D, BATCH](f, bsp, bn, mt, gf, gsp, gbn, True)
+    var gbg = Tensor.alloc(BATCH * D)
+    var base = fb_measure_loss[D, BATCH](f, bg, mt, gf, gbg, True)
     print("      L_FB =", base)
 
     var worst_f = Float64(0)
-    var worst_sp = Float64(0)
-    var worst_bn = Float64(0)
+    var worst_b = Float64(0)
 
     for idx in range(BATCH * D):
         var keep = f.data[idx]
         f.data[idx] = Scalar[DT](Float64(keep) + EPS)
-        var lp = _measure_only_loss(f, bsp, bn, mt, True)
+        var lp = _measure_only_loss(f, bg, mt, True)
         f.data[idx] = Scalar[DT](Float64(keep) - EPS)
-        var lm = _measure_only_loss(f, bsp, bn, mt, True)
+        var lm = _measure_only_loss(f, bg, mt, True)
         f.data[idx] = keep
         var fd = (lp - lm) / (2.0 * EPS)
         var an = Float64(gf.data[idx])
@@ -105,39 +97,26 @@ def test_measure_loss_gradients() raises:
         if rel > worst_f:
             worst_f = rel
 
+    # ONE B tensor now, so a single perturbation moves the matrix, its
+    # diagonal and the anchor together — which is exactly the derivative the
+    # trainer applies.
     for idx in range(BATCH * D):
-        var keep = bsp.data[idx]
-        bsp.data[idx] = Scalar[DT](Float64(keep) + EPS)
-        var lp = _measure_only_loss(f, bsp, bn, mt, True)
-        bsp.data[idx] = Scalar[DT](Float64(keep) - EPS)
-        var lm = _measure_only_loss(f, bsp, bn, mt, True)
-        bsp.data[idx] = keep
+        var keep = bg.data[idx]
+        bg.data[idx] = Scalar[DT](Float64(keep) + EPS)
+        var lp = _measure_only_loss(f, bg, mt, True)
+        bg.data[idx] = Scalar[DT](Float64(keep) - EPS)
+        var lm = _measure_only_loss(f, bg, mt, True)
+        bg.data[idx] = keep
         var fd = (lp - lm) / (2.0 * EPS)
-        var an = Float64(gsp.data[idx])
+        var an = Float64(gbg.data[idx])
         var den = abs(an) if abs(an) > 0.1 else 0.1
         var rel = abs(fd - an) / den
-        if rel > worst_sp:
-            worst_sp = rel
+        if rel > worst_b:
+            worst_b = rel
 
-    for idx in range(BATCH * D):
-        var keep = bn.data[idx]
-        bn.data[idx] = Scalar[DT](Float64(keep) + EPS)
-        var lp = _measure_only_loss(f, bsp, bn, mt, True)
-        bn.data[idx] = Scalar[DT](Float64(keep) - EPS)
-        var lm = _measure_only_loss(f, bsp, bn, mt, True)
-        bn.data[idx] = keep
-        var fd = (lp - lm) / (2.0 * EPS)
-        var an = Float64(gbn.data[idx])
-        var den = abs(an) if abs(an) > 0.1 else 0.1
-        var rel = abs(fd - an) / den
-        if rel > worst_bn:
-            worst_bn = rel
-
-    print("      worst rel err: dF", worst_f, " dB(s+)", worst_sp,
-          " dB(s')", worst_bn)
+    print("      worst rel err: dF", worst_f, " dB(goal)", worst_b)
     assert_true(worst_f < FD_TOL, "dF: " + String(worst_f))
-    assert_true(worst_sp < FD_TOL, "dB(s+): " + String(worst_sp))
-    assert_true(worst_bn < FD_TOL, "dB(s'): " + String(worst_bn))
+    assert_true(worst_b < FD_TOL, "dB(goal): " + String(worst_b))
 
 
 def test_ortho_loss_gradients() raises:
@@ -181,25 +160,18 @@ def test_anchor_term_is_load_bearing() raises:
     var f0 = Tensor.alloc(BATCH * D)          # F = 0
     for i in range(BATCH * D):
         f0.data[i] = Scalar[DT](0)
-    var bsp = _mk(BATCH * D, -0.17, 0.29, -0.2)
-    var bn = _mk(BATCH * D, 0.11, 0.07, 0.33)
+    var bg = _mk(BATCH * D, -0.17, 0.29, -0.2)
     var mt = Tensor.alloc(BATCH * BATCH)      # target also 0 (F=0 bootstrapped)
     for i in range(BATCH * BATCH):
         mt.data[i] = Scalar[DT](0)
 
     var gf_no = Tensor.alloc(BATCH * D)
-    var gsp_no = Tensor.alloc(BATCH * D)
-    var gbn_no = Tensor.alloc(BATCH * D)
-    var l_no = fb_measure_loss[D, BATCH](
-        f0, bsp, bn, mt, gf_no, gsp_no, gbn_no, False
-    )
+    var gbg_no = Tensor.alloc(BATCH * D)
+    var l_no = fb_measure_loss[D, BATCH](f0, bg, mt, gf_no, gbg_no, False)
 
     var gf_yes = Tensor.alloc(BATCH * D)
-    var gsp_yes = Tensor.alloc(BATCH * D)
-    var gbn_yes = Tensor.alloc(BATCH * D)
-    var l_yes = fb_measure_loss[D, BATCH](
-        f0, bsp, bn, mt, gf_yes, gsp_yes, gbn_yes, True
-    )
+    var gbg_yes = Tensor.alloc(BATCH * D)
+    var l_yes = fb_measure_loss[D, BATCH](f0, bg, mt, gf_yes, gbg_yes, True)
 
     var gn_no = Float64(0)
     var gn_yes = Float64(0)
@@ -228,17 +200,20 @@ def test_anchor_term_is_load_bearing() raises:
         " training will converge to the empty representation.",
     )
 
-    # And the gradient must point somewhere useful: dL/dF = -2/BATCH · B(s'),
-    # so a step against it increases F·B(s') — exactly the anchor's purpose.
+    # And the gradient must point somewhere useful. The anchor is now the
+    # DIAGONAL of the same matrix, `-2·mean_i(M_ii - Mt_ii)`, so at F = 0 with
+    # a zero target the off-diagonal residual contributes nothing and
+    # dL/dF_i = -2/BATCH · B(goal)_i exactly — a step against it increases
+    # F_i·B(goal)_i, which is the anchor's whole purpose.
     var worst = Float64(0)
     for i in range(BATCH * D):
-        var want = -2.0 / Float64(BATCH) * Float64(bn.data[i])
+        var want = -2.0 / Float64(BATCH) * Float64(bg.data[i])
         var e = abs(Float64(gf_yes.data[i]) - want)
         if e > worst:
             worst = e
     assert_true(
         worst < 1e-5,
-        "the anchor gradient at F=0 is not -2/BATCH·B(s'): worst "
+        "the anchor gradient at F=0 is not -2/BATCH·B(goal): worst "
         + String(worst),
     )
 

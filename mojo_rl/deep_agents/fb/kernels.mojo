@@ -261,6 +261,50 @@ def residual_grad_kernel[N: Int](
         go[unsafe_offset=t] = Scalar[DT](2.0) * (m[unsafe_offset=t] - mt[unsafe_offset=t]) * inv_n
 
 
+def fb_diag_override_kernel[BATCH: Int](
+    go: Pointer[Scalar[DT], MutAnyOrigin],
+    diag_scale: Scalar[DT],
+):
+    """Overwrite `go[i,i]` with `diag_scale` on a `[BATCH, BATCH]` matrix.
+
+    The reference splits `M`'s diagonal out of the squared term entirely
+    (`(diff * off_diag).pow(2)`) and gives it the LINEAR anchor instead
+    (`-diagonal(diff).mean()`). So the diagonal's upstream gradient is a
+    CONSTANT `-2/BATCH` (our 2x scale), not `2*(M-Mt)/...`: the residual
+    never reaches it. Run `residual_grad_kernel` first, then this.
+    """
+    var i = Int(global_idx.x)
+    if i < BATCH:
+        go[unsafe_offset=i * BATCH + i] = diag_scale
+
+
+def fb_diag_stats_kernel[BATCH: Int](
+    m: Pointer[Scalar[DT], MutAnyOrigin],
+    mt: Pointer[Scalar[DT], MutAnyOrigin],
+    acc: Pointer[Scalar[DT], MutAnyOrigin],
+):
+    """`acc[0] = sum_i r_ii`, `acc[1] = sum_i r_ii^2` for `r = m - mt`.
+
+    Both halves of the loss VALUE need the diagonal separated: the anchor is
+    the diagonal mean, and the off-diagonal sum of squares is the full sum
+    minus the diagonal's own. Reducing once for both keeps them consistent.
+    """
+    var t = Int(thread_idx.x)
+    var s1: Scalar[DT] = 0.0
+    var s2: Scalar[DT] = 0.0
+    var k = t
+    while k < BATCH:
+        var r = m[unsafe_offset=k * BATCH + k] - mt[unsafe_offset=k * BATCH + k]
+        s1 += r
+        s2 += r * r
+        k += TPB_REDUCE
+    var t1 = block.sum[block_size=TPB_REDUCE, broadcast=False](val=s1)
+    var t2 = block.sum[block_size=TPB_REDUCE, broadcast=False](val=s2)
+    if t == 0:
+        acc[unsafe_offset=0] = t1[0]
+        acc[unsafe_offset=1] = t2[0]
+
+
 def sq_diff_reduce_kernel[N: Int](
     m: Pointer[Scalar[DT], MutAnyOrigin],
     mt: Pointer[Scalar[DT], MutAnyOrigin],

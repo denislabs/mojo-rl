@@ -1214,7 +1214,7 @@ struct FBOnlineAgent[
         """The last step's losses, RECOMPUTED from the trainer's live buffers.
 
         `train_step(want_loss=False)` skips the reductions and the D2H; the
-        activations it leaves behind (`f1o`, `b_sp`, `b_sn`, `m_target`,
+        activations it leaves behind (`f1o`, `b_sn`, `m_target`,
         `acc_lam`) are the pre-update ones of that step, so re-running
         the two loss reductions over them returns exactly what
         `want_loss=True` would have — without ever putting a sync inside the
@@ -1238,12 +1238,12 @@ struct FBOnlineAgent[
         var q2 = Float64(0)
         var a2 = Float64(0)
         var l1 = fb_measure_loss_into["gpu", Self.D, Self.BATCH](
-            self.t.ws1, self.t.f1o, self.t.b_sp, self.t.b_sn, self.t.m_target,
-            self.t.g_f1, self.t.g_bsp1, self.t.g_bsn1, q1, a1, True, self.ctx,
+            self.t.ws1, self.t.f1o, self.t.b_sn, self.t.m_target,
+            self.t.g_f1, self.t.g_bsn1, q1, a1, True, self.ctx,
         )
         var l2 = fb_measure_loss_into["gpu", Self.D, Self.BATCH](
-            self.t.ws2, self.t.f2o, self.t.b_sp, self.t.b_sn, self.t.m_target,
-            self.t.g_f2, self.t.g_bsp2, self.t.g_bsn2, q2, a2, True, self.ctx,
+            self.t.ws2, self.t.f2o, self.t.b_sn, self.t.m_target,
+            self.t.g_f2, self.t.g_bsn2, q2, a2, True, self.ctx,
         )
         measure = 0.5 * (l1 + l2)
         # HALVED into the reference's scale, so these read directly against
@@ -1258,7 +1258,7 @@ struct FBOnlineAgent[
             self.t.ws1.m, self.t.acc, self.ctx
         )
         ortho = fb_ortho_loss_into["gpu", Self.D, Self.BATCH](
-            self.t.wso, self.t.b_sp, self.t.g_bsp_o, True, self.ctx,
+            self.t.wso, self.t.b_sn, self.t.g_bsn_o, True, self.ctx,
         )
         self.t.acc_lam.download(c)
         actor = -Float64(self.t.acc_lam.data[0])
@@ -1271,7 +1271,7 @@ struct FBOnlineAgent[
             self.t.f1o, self.t.acc, self.ctx
         )
         var bn2 = mean_sq_t["gpu", Self.BATCH * Self.D](
-            self.t.b_sp, self.t.acc, self.ctx
+            self.t.b_sn, self.t.acc, self.ctx
         )
         f_norm = sqrt(fn2 * Float64(Self.D))
         b_norm = sqrt(bn2 * Float64(Self.D))
