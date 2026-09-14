@@ -616,8 +616,43 @@ def main() raises:
     # `critic_loss` 0.013 against 1667. The tracking rate is the axis.
     var tau = Scalar[DT](0.0025)
     var args = argv()
+    # ⚠⚠ AN UNRECOGNISED ARGUMENT IS A HARD ERROR, AND IT DID NOT USED TO BE.
+    # The task was settable ONLY by `--task <name>` while every other tool in
+    # `examples/tasks/` takes it POSITIONALLY, so
+    #
+    #     ... sac_task_gpu.mojo so101_gather_bricks --steps 1000000 ...
+    #
+    # matched no branch, was dropped in silence, and ran `DEFAULT_TASK`. Two
+    # 17-minute `gather` runs on a 5090 were `lift` runs, and both printed
+    # `so101_lift_brick` in a banner that nobody reads when they know what
+    # they launched. The earlier `lift` runs were right BY ACCIDENT — lift is
+    # the default — which is exactly why it went unnoticed.
+    #
+    # A silently ignored argument makes every typo a full-length run of the
+    # wrong experiment, so the loop below refuses anything it does not know.
+    var positional = List[String]()
     for i in range(1, len(args)):
         var a = String(args[i])
+        # skip a flag's VALUE — it is consumed by the flag, not positional
+        if i > 1:
+            var prev = String(args[i - 1])
+            if prev.startswith("--"):
+                continue
+        if not a.startswith("--"):
+            positional.append(a)
+    if len(positional) > 1:
+        raise Error(
+            "sac task: more than one positional argument ("
+            + String(len(positional)) + "). The first is the task name;"
+            " everything else must be a flag."
+        )
+    if len(positional) == 1:
+        task_name = positional[0]
+
+    for i in range(1, len(args)):
+        var a = String(args[i])
+        if not a.startswith("--"):
+            continue                      # a positional, or a flag's value
         if a == "--steps" and i + 1 < len(args):
             num_steps = Int(String(args[i + 1]))
         elif a == "--warmup" and i + 1 < len(args):
@@ -644,6 +679,16 @@ def main() raises:
             tau = Scalar[DT](Float64(String(args[i + 1])))
         elif a == "--seed" and i + 1 < len(args):
             seed = Int(String(args[i + 1]))
+        else:
+            # ⚠ INCLUDES A KNOWN FLAG WITH NO VALUE, which falls through the
+            # `i + 1 < len(args)` guards above and would otherwise be dropped
+            # exactly as silently as a misspelling.
+            raise Error(
+                "sac task: unrecognised or valueless argument '" + a + "'."
+                " The task name is POSITIONAL (or `--task <name>`); every"
+                " flag takes a value. Refusing rather than running"
+                " " + String(DEFAULT_TASK) + " for an hour."
+            )
 
     # ⚠⚠ ONE SEED FOR BOTH RNGs — the host's (uniform warmup actions, network
     # init) and the env's per-lane device stream. They were two separate 42s,
