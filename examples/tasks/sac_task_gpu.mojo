@@ -122,7 +122,7 @@ episode either way — so only the RETURN figures moved.
 TIME. `so101_gather_bricks`, 1M steps, weights 1.0/0.21, everything else
 default, 3328 episodes in 34 minutes on a 5090:
 
-    SUCCESS RATE                          0.5625   greedy, 32 lanes — ⚠ PRE-SHRINK, see `baselines_for`
+    SUCCESS RATE                          0.5625   ⚠ PRE-SHRINK, superseded — see `baselines_for`
       against a random baseline of          0.02   2-sigma band ends 0.069
     eval return                  35 -> 207, best 238   ceiling 363
     avg_reward                   44 -> 224, monotone, best = last
@@ -424,13 +424,26 @@ def baselines_for(task: String) -> Tuple[Float64, Float64, Float64, Bool]:
         # ⚠ THESE ARE SUCCESS RATES AND ARE LANE-COUNT INDEPENDENT, unlike the
         # shaped RETURN — a rate is per episode either way. The return
         # baselines in the header are not, and mixing the two cost two rounds.
-        # ⚠⚠ THE 0.5625 TRAINED REFERENCE IS ALSO PRE-SHRINK and is NOT a
-        # target on the current geometry. It was one draw at margin 0.10 on
-        # the 4 cm prop, it did not reproduce at the same config (the repeat
-        # diverged to 273x), and the prop has changed since. The best
-        # measured rate on the current task is 0.0625 at margins 0.211/0.157
-        # with a textbook critic — two lanes of 32, p ~ 0.054 against the
-        # bound below. There is no established reference above noise yet.
+        # ⚠⚠ THE 0.5625 TRAINED REFERENCE IS PRE-SHRINK and is NOT a target
+        # on the current geometry. It was one draw at margin 0.10 on the 4 cm
+        # prop, it did not reproduce at the same config (the repeat diverged
+        # to 273x), and the prop has changed since.
+        #
+        # THE ESTABLISHED REFERENCE, on the current geometry, is two draws at
+        # margins 0.10/0.20, weights 1.0/0.21, 16 updates and tau 0.00125 —
+        # each 1M steps with a textbook critic (peak 1.015x and 1.023x their
+        # fixed points), evaluated over 128 episodes:
+        #
+        #     seed   any-step        held at END     critic peak
+        #     2      0.203 (26/128)  0.148 (19/128)  1.015x
+        #     3      0.133 (17/128)  0.117 (15/128)  1.023x
+        #     pooled 0.168 (43/256)  0.133 (34/256)
+        #
+        # The two seeds are one population (Fisher p = 0.09) and the pooled
+        # rate against a baseline of 0 in 256 is not close — 43 successes
+        # against an expectation of 3. A run far below 0.13 at this config is
+        # configured differently or has a sick critic; check `cfg/*` and the
+        # peak ratio before tuning anything.
         return (0.00, 0.00, 0.00, True)
     if task == "so101_reach_clear" or task == "so101_reach_brick":
         # ⚠ THE FINAL-STEP FIGURE IS UNMEASURED AND UNUSED HERE: the switch
