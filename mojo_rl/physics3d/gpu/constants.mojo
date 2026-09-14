@@ -123,10 +123,18 @@ comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime METADATA_SIZE: Int = 29
+comptime METADATA_SIZE: Int = 42
 """Per-env metadata words: 4 fixed slots, `META_IDX_TASK_PARAM_0..11`,
-`META_IDX_ACTDAMP_LIVE`, `META_IDX_SIM_TIME`, `META_IDX_TASK_ACTIVE`,
-`META_IDX_INIT_REGION_0..2`, `META_IDX_GOAL_HELD` and the four shaping words.
+`META_IDX_ACTDAMP_LIVE`, `META_IDX_SIM_TIME`, `META_IDX_TASK_ACTIVE`, three
+RETIRED words (19..21), `META_IDX_GOAL_HELD`, the four shaping words,
+`META_IDX_EQ_FORCE_LIVE`, `META_IDX_LS_EVAL`, and the `META_INIT_SLOTS`-word
+init block `META_IDX_INIT_REGION_0..12` (29..41).
+
+⚠ RAISED FROM 29 TO 42 FOR THE LIBERO DEVICE RESET, by APPENDING. The init
+block was three words at 19..21, one per `so101_tabletop` free slot, and
+`libero_object` has eleven. Growing it in place would have shifted every word
+after it; moving it to the end shifts none, and the three words it left are
+retired rather than reused (see the block below).
 
 ⚠ RAISED FROM 8 FOR `reassemble_5_bricks_random_order`, which stores TWO
 five-entry orders — `desired_order` and `initial_order`, the second because its
@@ -275,12 +283,27 @@ comptime META_IDX_TASK_ACTIVE: Int = 18
 # scene, in the tasks that park a prop deliberately. Biasing by one makes the
 # untouched value mean the safe thing.
 #
-# ⚠ THREE, MATCHING `So101TabletopConfig.N_FREE_SLOTS`. A family with more
-# free slots needs more words here — the ceiling is the same 13-slot compile
-# ceiling the slot table already lives under.
-comptime META_IDX_INIT_REGION_0: Int = 19
-comptime META_IDX_INIT_REGION_1: Int = 20
-comptime META_IDX_INIT_REGION_2: Int = 21
+# ⚠⚠ ONE WORD PER FREE SLOT, UP TO `META_INIT_SLOTS`, AND THE BLOCK IS
+# CONTIGUOUS — three drivers index it as `META_IDX_INIT_REGION_0 + j`. It was
+# three words here (19..21), matching `So101TabletopConfig.N_FREE_SLOTS`, and
+# `libero_object` has eleven free slots; it now lives at the END of `meta`
+# (29..41) so that widening it shifted no other word. 19..21 are RETIRED:
+# nothing writes them and nothing may read them, and reusing them for a new
+# word would hand an old driver's init words to that word's reader.
+#
+# ⚠ THE WORD IS NO LONGER ONLY A REGION. `tasks/placement/table.mojo` owns the
+# encoding — a region index, the same with the `In` bias, or a STACK onto
+# another slot — because the device reset now walks `spec.order_inits` and
+# needs all three to agree with the host sampler. `tasks/active.
+# init_region_words` is its one writer.
+comptime META_INIT_SLOTS: Int = 13
+"""Init words per lane: the family compile ceiling of 13 slots
+(`docs/TASK_LAYER_IMPLEMENTATION.md` §1.0). A family with more free slots is
+refused by `tasks/active.init_region_words`."""
+
+comptime META_IDX_INIT_REGION_0: Int = 29
+comptime META_IDX_INIT_REGION_1: Int = 30
+comptime META_IDX_INIT_REGION_2: Int = 31
 
 comptime INIT_REGION_NONE: Float64 = 0.0
 """What `META_IDX_INIT_REGION_*` holds for a slot with no `init=` — and what

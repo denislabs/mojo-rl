@@ -1,0 +1,484 @@
+"""`libero_spatial`'s device placement table — GENERATED, DO NOT EDIT.
+
+Regenerate with:  pixi run gen-placement-tables
+CI checks it with: pixi run gen-placement-tables --check
+
+From `mojo_rl/tasks/families/libero_spatial.family`,
+`mojo_rl/tasks/scenes/libero_spatial.xml` and forward kinematics on it.
+5 free slots, 16 regions, 3 of them moving.
+See `placement/table.mojo` for what each method means.
+"""
+
+from mojo_rl.tasks.placement.table import PlacementTable
+
+
+struct LiberoSpatialPlacement(PlacementTable):
+    comptime N_SLOTS: Int = 8
+    comptime N_FREE: Int = 5
+    comptime N_REGIONS: Int = 16
+    comptime NQ: Int = 48
+    comptime NV: Int = 43
+
+    @staticmethod
+    def free_slot(j: Int) -> Int:
+        if j == 0:
+            return 3  # akita_black_bowl_1
+        if j == 1:
+            return 4  # akita_black_bowl_2
+        if j == 2:
+            return 5  # cookies_1
+        if j == 3:
+            return 6  # glazed_rim_porcelain_ramekin_1
+        return 7  # plate_1
+
+    @staticmethod
+    def free_qadr(j: Int) -> Int:
+        if j == 0:
+            return 13
+        if j == 1:
+            return 20
+        if j == 2:
+            return 27
+        if j == 3:
+            return 34
+        return 41
+
+    @staticmethod
+    def free_dadr(j: Int) -> Int:
+        if j == 0:
+            return 13
+        if j == 1:
+            return 19
+        if j == 2:
+            return 25
+        if j == 3:
+            return 31
+        return 37
+
+    @staticmethod
+    def free_has_geom(j: Int) -> Bool:
+        return True
+
+    @staticmethod
+    def free_rest[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.06)
+
+    @staticmethod
+    def free_radius[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.03535533905932738)
+
+    @staticmethod
+    def free_bottom_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](-0.06)
+
+    @staticmethod
+    def free_top_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0.04)
+
+    @staticmethod
+    def region_site_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 0:
+            return Scalar[DTYPE](0.02215061353603401)
+        if r == 1:
+            return Scalar[DTYPE](0.02215061353603401)
+        if r == 2:
+            return Scalar[DTYPE](0.02215061353603401)
+        if r == 3:
+            return Scalar[DTYPE](0.0200116120156533)
+        if r == 4:
+            return Scalar[DTYPE](-0.26)
+        if r == 5:
+            return Scalar[DTYPE](0.0)
+        if r == 6:
+            return Scalar[DTYPE](0.0)
+        if r == 7:
+            return Scalar[DTYPE](0.0)
+        if r == 8:
+            return Scalar[DTYPE](0.0)
+        if r == 9:
+            return Scalar[DTYPE](0.0)
+        if r == 10:
+            return Scalar[DTYPE](0.0)
+        if r == 11:
+            return Scalar[DTYPE](0.0)
+        if r == 12:
+            return Scalar[DTYPE](0.0)
+        if r == 13:
+            return Scalar[DTYPE](0.0)
+        if r == 14:
+            return Scalar[DTYPE](0.0)
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def region_site_y[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 0:
+            return Scalar[DTYPE](-0.2787397901656337)
+        if r == 1:
+            return Scalar[DTYPE](-0.2787397901656337)
+        if r == 2:
+            return Scalar[DTYPE](-0.2787397901656337)
+        if r == 3:
+            return Scalar[DTYPE](-0.2825822337235548)
+        if r == 4:
+            return Scalar[DTYPE](-0.14)
+        if r == 5:
+            return Scalar[DTYPE](0.0)
+        if r == 6:
+            return Scalar[DTYPE](0.0)
+        if r == 7:
+            return Scalar[DTYPE](0.0)
+        if r == 8:
+            return Scalar[DTYPE](0.0)
+        if r == 9:
+            return Scalar[DTYPE](0.0)
+        if r == 10:
+            return Scalar[DTYPE](0.0)
+        if r == 11:
+            return Scalar[DTYPE](0.0)
+        if r == 12:
+            return Scalar[DTYPE](0.0)
+        if r == 13:
+            return Scalar[DTYPE](0.0)
+        if r == 14:
+            return Scalar[DTYPE](0.0)
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def region_site_z[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 0:
+            return Scalar[DTYPE](1.09063)
+        if r == 1:
+            return Scalar[DTYPE](1.0219)
+        if r == 2:
+            return Scalar[DTYPE](0.95201)
+        if r == 3:
+            return Scalar[DTYPE](1.12652)
+        if r == 4:
+            return Scalar[DTYPE](0.905)
+        if r == 5:
+            return Scalar[DTYPE](0.9)
+        if r == 6:
+            return Scalar[DTYPE](0.9)
+        if r == 7:
+            return Scalar[DTYPE](0.9)
+        if r == 8:
+            return Scalar[DTYPE](0.9)
+        if r == 9:
+            return Scalar[DTYPE](0.9)
+        if r == 10:
+            return Scalar[DTYPE](0.9)
+        if r == 11:
+            return Scalar[DTYPE](0.9)
+        if r == 12:
+            return Scalar[DTYPE](0.9)
+        if r == 13:
+            return Scalar[DTYPE](0.9)
+        if r == 14:
+            return Scalar[DTYPE](0.9)
+        return Scalar[DTYPE](0.9)
+
+    @staticmethod
+    def region_has_rect(r: Int) -> Bool:
+        if r == 0:
+            return True  # wooden_cabinet_1_top_region
+        if r == 1:
+            return True  # wooden_cabinet_1_middle_region
+        if r == 2:
+            return True  # wooden_cabinet_1_bottom_region
+        if r == 3:
+            return True  # wooden_cabinet_1_top_side
+        if r == 4:
+            return True  # flat_stove_1_cook_region
+        if r == 5:
+            return True  # main_table_plate_region
+        if r == 6:
+            return True  # main_table_next_to_plate_region
+        if r == 7:
+            return True  # main_table_box_region
+        if r == 8:
+            return True  # main_table_next_to_box_region
+        if r == 9:
+            return True  # main_table_between_plate_ramekin_region
+        if r == 10:
+            return True  # main_table_ramekin_region
+        if r == 11:
+            return True  # main_table_next_to_ramekin_region
+        if r == 12:
+            return True  # main_table_table_center
+        if r == 13:
+            return True  # main_table_table_front
+        if r == 14:
+            return True  # main_table_cabinet_region
+        return True  # main_table_stove_region
+
+    @staticmethod
+    def region_x0[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 0:
+            return Scalar[DTYPE](-0.02993)
+        if r == 1:
+            return Scalar[DTYPE](-0.02993)
+        if r == 2:
+            return Scalar[DTYPE](-0.02993)
+        if r == 3:
+            return Scalar[DTYPE](-0.12534)
+        if r == 4:
+            return Scalar[DTYPE](-0.075)
+        if r == 5:
+            return Scalar[DTYPE](0.05)
+        if r == 6:
+            return Scalar[DTYPE](0.0)
+        if r == 7:
+            return Scalar[DTYPE](0.06)
+        if r == 8:
+            return Scalar[DTYPE](0.12)
+        if r == 9:
+            return Scalar[DTYPE](-0.06)
+        if r == 10:
+            return Scalar[DTYPE](-0.21)
+        if r == 11:
+            return Scalar[DTYPE](-0.19)
+        if r == 12:
+            return Scalar[DTYPE](-0.1)
+        if r == 13:
+            return Scalar[DTYPE](0.19)
+        if r == 14:
+            return Scalar[DTYPE](0.02)
+        return Scalar[DTYPE](-0.42)
+
+    @staticmethod
+    def region_y0[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 0:
+            return Scalar[DTYPE](-0.07561)
+        if r == 1:
+            return Scalar[DTYPE](-0.07561)
+        if r == 2:
+            return Scalar[DTYPE](-0.07561)
+        if r == 3:
+            return Scalar[DTYPE](-0.09438)
+        if r == 4:
+            return Scalar[DTYPE](-0.075)
+        if r == 5:
+            return Scalar[DTYPE](0.19)
+        if r == 6:
+            return Scalar[DTYPE](0.3)
+        if r == 7:
+            return Scalar[DTYPE](0.02)
+        if r == 8:
+            return Scalar[DTYPE](-0.08)
+        if r == 9:
+            return Scalar[DTYPE](0.19)
+        if r == 10:
+            return Scalar[DTYPE](0.19)
+        if r == 11:
+            return Scalar[DTYPE](0.31)
+        if r == 12:
+            return Scalar[DTYPE](-0.01)
+        if r == 13:
+            return Scalar[DTYPE](-0.01)
+        if r == 14:
+            return Scalar[DTYPE](-0.28)
+        return Scalar[DTYPE](-0.15)
+
+    @staticmethod
+    def region_x1[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 0:
+            return Scalar[DTYPE](0.02993)
+        if r == 1:
+            return Scalar[DTYPE](0.02993)
+        if r == 2:
+            return Scalar[DTYPE](0.02993)
+        if r == 3:
+            return Scalar[DTYPE](0.12534)
+        if r == 4:
+            return Scalar[DTYPE](0.075)
+        if r == 5:
+            return Scalar[DTYPE](0.07)
+        if r == 6:
+            return Scalar[DTYPE](0.02)
+        if r == 7:
+            return Scalar[DTYPE](0.08)
+        if r == 8:
+            return Scalar[DTYPE](0.14)
+        if r == 9:
+            return Scalar[DTYPE](-0.04)
+        if r == 10:
+            return Scalar[DTYPE](-0.19)
+        if r == 11:
+            return Scalar[DTYPE](-0.17)
+        if r == 12:
+            return Scalar[DTYPE](-0.05)
+        if r == 13:
+            return Scalar[DTYPE](0.21)
+        if r == 14:
+            return Scalar[DTYPE](0.04)
+        return Scalar[DTYPE](-0.4)
+
+    @staticmethod
+    def region_y1[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 0:
+            return Scalar[DTYPE](0.07561)
+        if r == 1:
+            return Scalar[DTYPE](0.07561)
+        if r == 2:
+            return Scalar[DTYPE](0.07561)
+        if r == 3:
+            return Scalar[DTYPE](0.09438)
+        if r == 4:
+            return Scalar[DTYPE](0.075)
+        if r == 5:
+            return Scalar[DTYPE](0.21)
+        if r == 6:
+            return Scalar[DTYPE](0.32)
+        if r == 7:
+            return Scalar[DTYPE](0.04)
+        if r == 8:
+            return Scalar[DTYPE](-0.06)
+        if r == 9:
+            return Scalar[DTYPE](0.21)
+        if r == 10:
+            return Scalar[DTYPE](0.21)
+        if r == 11:
+            return Scalar[DTYPE](0.33)
+        if r == 12:
+            return Scalar[DTYPE](0.01)
+        if r == 13:
+            return Scalar[DTYPE](0.01)
+        if r == 14:
+            return Scalar[DTYPE](-0.26)
+        return Scalar[DTYPE](-0.13)
+
+    @staticmethod
+    def region_anchored(r: Int) -> Bool:
+        if r == 0:
+            return True
+        if r == 1:
+            return True
+        if r == 2:
+            return True
+        if r == 3:
+            return True
+        if r == 4:
+            return True
+        if r == 5:
+            return False
+        if r == 6:
+            return False
+        if r == 7:
+            return False
+        if r == 8:
+            return False
+        if r == 9:
+            return False
+        if r == 10:
+            return False
+        if r == 11:
+            return False
+        if r == 12:
+            return False
+        if r == 13:
+            return False
+        if r == 14:
+            return False
+        return False
+
+    @staticmethod
+    def region_contact_has_geom(r: Int) -> Bool:
+        if r == 0:
+            return True
+        if r == 1:
+            return True
+        if r == 2:
+            return True
+        if r == 3:
+            return True
+        if r == 4:
+            return True
+        if r == 5:
+            return False
+        if r == 6:
+            return False
+        if r == 7:
+            return False
+        if r == 8:
+            return False
+        if r == 9:
+            return False
+        if r == 10:
+            return False
+        if r == 11:
+            return False
+        if r == 12:
+            return False
+        if r == 13:
+            return False
+        if r == 14:
+            return False
+        return False
+
+    @staticmethod
+    def region_contact_top_z[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 0:
+            return Scalar[DTYPE](0.045)
+        if r == 1:
+            return Scalar[DTYPE](0.045)
+        if r == 2:
+            return Scalar[DTYPE](0.045)
+        if r == 3:
+            return Scalar[DTYPE](0.045)
+        if r == 4:
+            return Scalar[DTYPE](0.045)
+        if r == 5:
+            return Scalar[DTYPE](0.0)
+        if r == 6:
+            return Scalar[DTYPE](0.0)
+        if r == 7:
+            return Scalar[DTYPE](0.0)
+        if r == 8:
+            return Scalar[DTYPE](0.0)
+        if r == 9:
+            return Scalar[DTYPE](0.0)
+        if r == 10:
+            return Scalar[DTYPE](0.0)
+        if r == 11:
+            return Scalar[DTYPE](0.0)
+        if r == 12:
+            return Scalar[DTYPE](0.0)
+        if r == 13:
+            return Scalar[DTYPE](0.0)
+        if r == 14:
+            return Scalar[DTYPE](0.0)
+        return Scalar[DTYPE](0.0)
+
+    @staticmethod
+    def region_moves(r: Int) -> Bool:
+        if r == 0:
+            return True
+        if r == 1:
+            return True
+        if r == 2:
+            return True
+        if r == 3:
+            return False
+        if r == 4:
+            return False
+        if r == 5:
+            return False
+        if r == 6:
+            return False
+        if r == 7:
+            return False
+        if r == 8:
+            return False
+        if r == 9:
+            return False
+        if r == 10:
+            return False
+        if r == 11:
+            return False
+        if r == 12:
+            return False
+        if r == 13:
+            return False
+        if r == 14:
+            return False
+        return False

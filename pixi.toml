@@ -232,6 +232,9 @@ gen-park-scenes = { cmd = "python tools/tasks/gen_park_scenes.py", description =
 gen-park-scenes-check = { cmd = "python tools/tasks/gen_park_scenes.py --check", description = "Fail if the P0 park scenes or pose module are stale (CI)" }
 gen-family-scenes = { cmd = "mojo run -I . tools/tasks/gen_family_scene.mojo", description = "Compose every .family into mojo_rl/tasks/scenes/" }
 gen-family-scenes-check = { cmd = "mojo run -I . tools/tasks/gen_family_scene.mojo --check", description = "Fail if a composed family scene is stale (CI)" }
+gen-placement-tables = { cmd = "mojo run -I . tools/tasks/gen_placement_tables.mojo", description = "Generate every LIBERO family's device placement table (mojo_rl/tasks/placement/) from the .family + composed scene FK" }
+gen-placement-tables-check = { cmd = "mojo run -I . tools/tasks/gen_placement_tables.mojo --check", description = "Fail if a device placement table is stale (CI)" }
+device-placement = { cmd = "mojo run -I . tests/tasks/test_device_placement.mojo", description = "The device reset's free-slot placement against the host sampler: so101_tabletop + every LIBERO task, exact, with rule coverage" }
 format = { cmd = "mojo format -l 80 ." }
 # Dear ImGui shim for `mojo_rl/render/imgui/` (the ImGui dm_control viewer).
 # Clones ImGui into third_party/ on first run, then rebuilds only when stale.

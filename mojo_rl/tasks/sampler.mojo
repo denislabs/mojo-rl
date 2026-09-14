@@ -56,10 +56,11 @@ from .spec import (
 # over-constrained region hangs a training run at reset with no diagnostic;
 # a loop that gives up and returns the last draw produces an overlapping
 # scene, which MuJoCo resolves by launching the objects apart on step 1.
-comptime MAX_PLACE_ATTEMPTS: Int = 64
-
-# See the module header. Any value that is not the env's own works.
-comptime PLACEMENT_SALT: UInt64 = 0x9E3779B97F4A7C15
+#
+# ⚠ `MAX_PLACE_ATTEMPTS` AND `PLACEMENT_SALT` ARE DEFINED IN
+# `placement/table.mojo` and re-exported here — the device kernel reads the same
+# two names, where they used to be restated on the config and asserted equal.
+from .placement.table import MAX_PLACE_ATTEMPTS, PLACEMENT_SALT
 
 
 struct Placement(Copyable, ImplicitlyCopyable, Movable):
@@ -107,6 +108,11 @@ struct SampleReport(Copyable, ImplicitlyCopyable, Movable):
 
     var attempts: Int
     var accepted: Int
+    var exempt: Int
+    """Horizontal overlaps the clash test SKIPPED — two different regions with
+    either anchored, or an object already placed as a stack. Counted so a gate
+    can show its corpus reaches that branch; a skip that never fires is
+    indistinguishable from one that is not there."""
     var clamped: Int
     """How many axes collapsed to a point because the object does not fit the
     region it was asked to start in.
@@ -122,6 +128,7 @@ struct SampleReport(Copyable, ImplicitlyCopyable, Movable):
         self.clamped = 0
         self.attempts = 0
         self.accepted = 0
+        self.exempt = 0
 
     def rejected(self) -> Int:
         return self.attempts - self.accepted
@@ -458,17 +465,28 @@ def sample_placements(
                     # unanchored (table) regions still reject, which is what
                     # keeps several props on one workspace from overlapping —
                     # the behaviour every existing family has.
-                    # ⚠ A STACK CARRIES `of_region = -1` and never matches, so
-                    # it is exempt from rejection against everything — which is
-                    # right: it sits ON a placed object by construction, and the
-                    # 2-D test would see it as coincident with the very thing it
-                    # is standing on.
+                    # ⚠⚠ A STACK CARRIES `of_region = -1`, AND THIS USED TO
+                    # INDEX `f.regions[-1]` WITH IT. The comment here said a
+                    # stack is exempt; the code reached `f.regions[ri_j]` for a
+                    # TABLE region's draw overlapping a stack, and Mojo's `List`
+                    # asserts on a negative index — `mojo run` CRASHED. No
+                    # corpus seed had reached it because a stack sits on its
+                    # reference, which rejects the draw first unless the stack
+                    # is the wider of the two. It is now the exemption the
+                    # comment described: a stack sits ON a placed object by
+                    # construction, and what it overlaps is that object's
+                    # business. `tests/tasks/test_device_placement.mojo`
+                    # builds the case.
                     var ri_j = of_region[j]
+                    if ri_j < 0:
+                        report.exempt += 1
+                        continue
                     if ri_j != ri:
                         if (
                             reg.contact.byte_length() > 0
                             or f.regions[ri_j].contact.byte_length() > 0
                         ):
+                            report.exempt += 1
                             continue
                     clash = True
             if not clash:

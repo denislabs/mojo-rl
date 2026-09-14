@@ -50,7 +50,9 @@ cliff of 28. `meta` is already per-lane and already an operand of
 word of `METADATA_SIZE` and no signature anywhere.
 """
 
-from .spec import FamilySpec, TaskSpec, SLOT_FREE
+from .spec import FamilySpec, TaskSpec, SLOT_FREE, INIT_TARGET_SLOT
+from .placement.table import INIT_WORD_IN_BIAS
+from mojo_rl.physics3d.gpu.constants import META_INIT_SLOTS
 from .obs import slot_active, write_free_slot_obs, FREE_JOINT_NQ, FREE_JOINT_NV
 
 
@@ -113,10 +115,15 @@ def mask_slots(mask: Float64, nslots: Int) -> List[Bool]:
 # ── the per-free-slot init region words ────────────────────────────────────
 
 def init_region_words(t: TaskSpec, f: FamilySpec) raises -> List[Float64]:
-    """One word per FREE slot: the region its `init=` names, or -1.
+    """One word per FREE slot: where its `init=` starts it, or 0.
+
+    ⚠ THE ENCODING IS `placement/table.mojo`'s — a region `r + 1`, the same
+    plus `INIT_WORD_IN_BIAS` for an `In`, `-(s + 1)` for a STACK on family slot
+    `s` — and this is its one writer. The paragraphs below predate stacks and
+    `In`, and still hold for the region case.
 
     ⚠⚠ INDEXED BY FREE-SLOT ORDINAL, NOT BY FAMILY SLOT INDEX. The `meta`
-    words are `META_IDX_INIT_REGION_0..2` and there are `N_FREE_SLOTS` of
+    words are `META_IDX_INIT_REGION_0..` and there are `N_FREE_SLOTS` of
     them, while the family's slot 0 here is a static fixture — so the returned
     list is `[brick, cube_a, cube_b]`, not `[table, brick, cube_a, cube_b]`.
     The active MASK is the other convention (bit per FAMILY slot, so the
@@ -140,9 +147,35 @@ def init_region_words(t: TaskSpec, f: FamilySpec) raises -> List[Float64]:
     for i in range(len(f.slots)):
         if f.slots[i].kind != SLOT_FREE:
             continue
-        var ri = -1
+        var w = 0
         for k in range(len(t.inits)):
-            if t.inits[k].slot == f.slots[i].name:
-                ri = f.region_index(t.inits[k].region)
-        out.append(Float64(ri + 1))
+            if t.inits[k].slot != f.slots[i].name:
+                continue
+            ref it = t.inits[k]
+            if f.init_target_kind(it.region) == INIT_TARGET_SLOT:
+                # ⚠ A STACK NAMES THE FAMILY SLOT, NOT A REGION. This used to
+                # fall through `region_index` to -1 and write 0 — so a stacked
+                # prop was silently PARKED on the device, which is why
+                # `require_gpu_placement` had to refuse every task with one.
+                w = -(f.slot_index(it.region) + 1)
+            else:
+                var ri = f.region_index(it.region)
+                if ri + 1 >= INIT_WORD_IN_BIAS:
+                    raise Error(
+                        "task '" + t.name + "': init region '" + it.region
+                        + "' is family region " + String(ri) + ", and an init"
+                        " word holds regions below "
+                        + String(INIT_WORD_IN_BIAS - 1) + " (the `In` bias)."
+                    )
+                w = ri + 1
+                if it.inside:
+                    w += INIT_WORD_IN_BIAS
+        out.append(Float64(w))
+    if len(out) > META_INIT_SLOTS:
+        raise Error(
+            "task '" + t.name + "': family '" + f.name + "' has "
+            + String(len(out)) + " free slots and `meta` holds "
+            + String(META_INIT_SLOTS) + " init words. Widen META_INIT_SLOTS"
+            " (it is appended at the end of `meta`) or split the family."
+        )
     return out^

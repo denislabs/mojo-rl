@@ -69,12 +69,6 @@ anywhere.
 
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
-# ⚠ THE SAME GENERATOR THE HOST SAMPLER USES, and it must be. `sampler.
-# _uniform01` is counter-based Philox precisely so a draw is a pure function
-# of (seed, lane, axis, attempt) and the two implementations can be compared
-# element for element — a stateful stream would make the device's draw depend
-# on how many attempts the other lanes needed.
-from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from std.math import sqrt
@@ -88,9 +82,6 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     META_IDX_PREV_X,
     META_IDX_TASK_ACTIVE,
-    META_IDX_INIT_REGION_0,
-    META_IDX_INIT_REGION_1,
-    META_IDX_INIT_REGION_2,
     META_IDX_GOAL_HELD,
     META_IDX_SHAPE_W_GOAL,
     META_IDX_SHAPE_W_REACH,
@@ -104,6 +95,7 @@ from mojo_rl.physics3d.gpu.constants import (
 from .gpu_eval import (
     eval_tape_gpu, tape_distance_gpu, goal_frame_ids,
 )
+from .placement.table import PlacementTable, place_free_slots
 from .predicates import OP_NEAR, OP_ABOVE, OP_ON, OP_IN
 from mojo_rl.envs.dm_control.rewards import (
     tolerance, SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN,
@@ -117,6 +109,134 @@ from .so101_tabletop_xml import (
 )
 from mojo_rl.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
 from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
+
+
+struct So101TabletopPlacement(PlacementTable):
+    """`so101_tabletop`'s placement table, over `So101TabletopConfig`'s own
+    restated constants.
+
+    ⚠ HAND-WRITTEN, UNLIKE THE LIBERO TABLES, because this family's free slots
+    carry no `slot_geom=`: the host sampler uses the CALLER's radius for them,
+    which no generator can read out of a `.family`. `SLOT_RADIUS` is that radius
+    on both paths. `check.placement_table_drift` diffs every method against the
+    loaded family and FK, as the config's constants always were.
+    """
+
+    comptime N_SLOTS: Int = 4
+    comptime N_FREE: Int = So101TabletopConfig.N_FREE_SLOTS
+    comptime N_REGIONS: Int = So101TabletopConfig.N_REGIONS
+    comptime NQ: Int = 27
+    comptime NV: Int = 24
+
+    @staticmethod
+    def free_slot(j: Int) -> Int:
+        if j == 0:
+            return So101TabletopConfig.FREE_SLOT_IDX_0
+        if j == 1:
+            return So101TabletopConfig.FREE_SLOT_IDX_1
+        return So101TabletopConfig.FREE_SLOT_IDX_2
+
+    @staticmethod
+    def free_qadr(j: Int) -> Int:
+        if j == 0:
+            return So101TabletopConfig.FREE_QADR_0
+        if j == 1:
+            return So101TabletopConfig.FREE_QADR_1
+        return So101TabletopConfig.FREE_QADR_2
+
+    @staticmethod
+    def free_dadr(j: Int) -> Int:
+        if j == 0:
+            return So101TabletopConfig.FREE_DADR_0
+        if j == 1:
+            return So101TabletopConfig.FREE_DADR_1
+        return So101TabletopConfig.FREE_DADR_2
+
+    @staticmethod
+    def free_has_geom(j: Int) -> Bool:
+        return False
+
+    @staticmethod
+    def free_rest[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](So101TabletopConfig.SLOT_RADIUS)
+
+    @staticmethod
+    def free_radius[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](So101TabletopConfig.SLOT_RADIUS)
+
+    @staticmethod
+    def free_bottom_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
+
+    @staticmethod
+    def free_top_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
+
+    # ⚠ ONE SITE FOR EVERY REGION — true of this family, and the reason the
+    # config restates a single triple.
+    @staticmethod
+    def region_site_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](So101TabletopConfig.REGION_SITE_X)
+
+    @staticmethod
+    def region_site_y[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](So101TabletopConfig.REGION_SITE_Y)
+
+    @staticmethod
+    def region_site_z[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](So101TabletopConfig.REGION_SITE_Z)
+
+    @staticmethod
+    def region_has_rect(r: Int) -> Bool:
+        return True
+
+    @staticmethod
+    def region_x0[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 1:
+            return Scalar[DTYPE](So101TabletopConfig.REGION_X0_1)
+        if r == 2:
+            return Scalar[DTYPE](So101TabletopConfig.REGION_X0_2)
+        return Scalar[DTYPE](So101TabletopConfig.REGION_X0_0)
+
+    @staticmethod
+    def region_y0[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 1:
+            return Scalar[DTYPE](So101TabletopConfig.REGION_Y0_1)
+        if r == 2:
+            return Scalar[DTYPE](So101TabletopConfig.REGION_Y0_2)
+        return Scalar[DTYPE](So101TabletopConfig.REGION_Y0_0)
+
+    @staticmethod
+    def region_x1[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 1:
+            return Scalar[DTYPE](So101TabletopConfig.REGION_X1_1)
+        if r == 2:
+            return Scalar[DTYPE](So101TabletopConfig.REGION_X1_2)
+        return Scalar[DTYPE](So101TabletopConfig.REGION_X1_0)
+
+    @staticmethod
+    def region_y1[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 1:
+            return Scalar[DTYPE](So101TabletopConfig.REGION_Y1_1)
+        if r == 2:
+            return Scalar[DTYPE](So101TabletopConfig.REGION_Y1_2)
+        return Scalar[DTYPE](So101TabletopConfig.REGION_Y1_0)
+
+    @staticmethod
+    def region_anchored(r: Int) -> Bool:
+        return False
+
+    @staticmethod
+    def region_contact_has_geom(r: Int) -> Bool:
+        return False
+
+    @staticmethod
+    def region_contact_top_z[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        return Scalar[DTYPE](0)
+
+    @staticmethod
+    def region_moves(r: Int) -> Bool:
+        return False
 
 
 struct So101TabletopConfig(Phyics3dEnvConfig):
@@ -305,22 +425,13 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     # instead. Every LIBERO family has them (93 assets, 10 distinct triples,
     # radius spanning 0.005 to 0.3).
     #
-    # ⚠ SO A DEVICE TWIN FOR A LIBERO FAMILY MUST READ THEM TOO. This one is
-    # correct because `so101_tabletop`'s cube declares no such sites and the
-    # host falls back to `radii[si]`; a config that copied this shape for a
-    # family that DOES declare them would place every object at the wrong
-    # height and `tests/tasks/test_device_placement.mojo` — which today runs
-    # only on this family — would not be looking. Extend that gate in the same
-    # commit as the first LIBERO device reset.
-    #
-    # ⚠ THREE THINGS ARE OWED THERE, NOT ONE. Such a config must (1) read
-    # `slot_geom=` instead of this constant, (2) walk `spec.order_inits`
-    # rather than the family's slot order, because a task with a STACK does
-    # not place its slots in that order (`gpu_eval.require_gpu_placement`
-    # refuses one for exactly this reason), and (3) add `spec.TABLE_Z_OFFSET`
-    # to a region that names no contact slot — LIBERO's `TableRegionSampler`
-    # carries `z_offset=0.01` where the fixture sampler carries 0.0, and the
-    # host applies it (measured against LIBERO's own `.pruned_init`, §6n).
+    # ⚠ AND THE DEVICE RESET NOW READS THEM TOO. This note used to list what a
+    # LIBERO twin owed — read `slot_geom=`, walk `spec.order_inits`, add
+    # `TABLE_Z_OFFSET` on a region naming no contact slot — and the host had
+    # since grown a FOURTH (the fixture's `top_site` for `On`). All four live in
+    # `placement/table.place_free_slots`, which this family reaches through
+    # `So101TabletopPlacement` with `has_geom` false, so this constant is its
+    # fallback radius exactly as it is the host's `radii[si]`.
     #
     # ⚠⚠ IT TRACKS `cube.xml`'s `size` AND THERE IS NOTHING TO ENFORCE THAT.
     # A radius larger than the prop spawns it FLOATING — it drops at reset,
@@ -329,15 +440,6 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     # 4 cm cube (see the header of `cube.xml`); this moved with it.
     comptime SLOT_RADIUS: Float64 = 0.012
 
-    # ⚠⚠ MATCHES `sampler.MAX_PLACE_ATTEMPTS` AND `sampler.PLACEMENT_SALT`,
-    # and BOTH must, or the device and the host draw different numbers from
-    # the same (seed, lane) — the eval would then place props somewhere the
-    # training run never saw, with every other number agreeing. Restated
-    # rather than imported because these end up inside a kernel body, and
-    # gated by the parity test, which is the only thing that makes a
-    # restatement safe.
-    comptime MAX_PLACE_ATTEMPTS: Int = 64
-    comptime PLACEMENT_SALT: UInt64 = 0x9E3779B97F4A7C15
 
     # ── REWARD SHAPING — see `custom_reward_gpu` for the whole argument ────
     #
@@ -1215,153 +1317,23 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         # through the whole horizon with its qpos and qvel in the observation.
         # Nothing raised; the curve just looked like a hard task.
         #
-        # ⚠ `sampler.sample_placements` IS THE SPEC THIS IMPLEMENTS, and it
-        # was written to be implementable here — pure geometry, counter-based
-        # Philox, no `Data`, no `Model`. `tests/tasks/test_device_placement.
-        # mojo` runs both on the same `(seed, lane)` and demands identical
-        # poses, because two implementations of one distribution is exactly
-        # the drift that file exists to prevent.
+        # ⚠⚠ AND IT WAS THEN A HAND-WRITTEN COPY OF `sample_placements` FOR THIS
+        # FAMILY ONLY — one site, one radius, slot-order walk — which is correct
+        # here and wrong for every LIBERO family on four counts. The rule now
+        # lives once in `placement/table.place_free_slots`, and this family
+        # supplies its restated constants through `So101TabletopPlacement`
+        # below. `tests/tasks/test_device_placement.mojo` still demands the
+        # device and host poses agree on every coordinate, for this family and
+        # for all twenty-three LIBERO ones.
         #
         # ⚠⚠ AND THE TAPE MUST SURVIVE THIS. `_reset_env_lane` writes
         # META_IDX_STEP_COUNT and leaves the rest (`gpu/constants.mojo`), and
         # this hook writes only `qpos`/`qvel` — never `meta`. A hook that
         # zeroed `meta` here would blank every lane's goal at the first reset
         # and every reward would read 0: a flat curve, not a crash.
-        var placed_x = Array[Scalar[DTYPE], Self.N_FREE_SLOTS](
-            fill=Scalar[DTYPE](0)
+        place_free_slots[So101TabletopPlacement, DTYPE, BATCH_SIZE, NQ_F, NV_F](
+            qpos, qvel, meta, env, seed
         )
-        var placed_y = Array[Scalar[DTYPE], Self.N_FREE_SLOTS](
-            fill=Scalar[DTYPE](0)
-        )
-        var n_placed = 0
-
-        comptime for j in range(Self.N_FREE_SLOTS):
-            comptime qa = (
-                Self.FREE_QADR_0 if j == 0
-                else (Self.FREE_QADR_1 if j == 1 else Self.FREE_QADR_2)
-            )
-            comptime da = (
-                Self.FREE_DADR_0 if j == 0
-                else (Self.FREE_DADR_1 if j == 1 else Self.FREE_DADR_2)
-            )
-            comptime mw = (
-                META_IDX_INIT_REGION_0 if j == 0
-                else (
-                    META_IDX_INIT_REGION_1 if j == 1
-                    else META_IDX_INIT_REGION_2
-                )
-            )
-            # ⚠⚠ THE WORD IS `region_index + 1` AND ZERO MEANS "NO init=" —
-            # which is also what an untouched `meta` holds, because `Data`
-            # uploads a zero-filled one at construction. A driver that forgot
-            # these words therefore PARKS every free slot, which is the safe
-            # answer; with 0 meaning `table_top` it would silently place them.
-            # A slot left alone stays where `qpos0` put it — the park pose,
-            # which `pre_step_full_gpu` pins every step anyway.
-            var ri = Int(rebind[Scalar[DTYPE]](meta[env, mw])) - 1
-            if ri >= 0:
-                # the region rectangle, resolved from the restated table
-                var rx0 = Scalar[DTYPE](Self.REGION_X0_0)
-                var ry0 = Scalar[DTYPE](Self.REGION_Y0_0)
-                var rx1 = Scalar[DTYPE](Self.REGION_X1_0)
-                var ry1 = Scalar[DTYPE](Self.REGION_Y1_0)
-                if ri == 1:
-                    rx0 = Scalar[DTYPE](Self.REGION_X0_1)
-                    ry0 = Scalar[DTYPE](Self.REGION_Y0_1)
-                    rx1 = Scalar[DTYPE](Self.REGION_X1_1)
-                    ry1 = Scalar[DTYPE](Self.REGION_Y1_1)
-                elif ri == 2:
-                    rx0 = Scalar[DTYPE](Self.REGION_X0_2)
-                    ry0 = Scalar[DTYPE](Self.REGION_Y0_2)
-                    rx1 = Scalar[DTYPE](Self.REGION_X1_2)
-                    ry1 = Scalar[DTYPE](Self.REGION_Y1_2)
-
-                # ⚠⚠ THE DRAW COORDINATES ARE `sampler._uniform01`'s, VERBATIM:
-                # subsequence `(lane << 16) | axis`, offset `attempt`, seed
-                # `seed ^ PLACEMENT_SALT`, and axis `si * 2 (+ 1)` where `si`
-                # is the FAMILY SLOT INDEX — not the free-slot ordinal `j`.
-                # Using `j` here would draw a different stream for every slot
-                # after the first and the parity test would fail on slot 1.
-                comptime si = (
-                    Self.FREE_SLOT_IDX_0 if j == 0
-                    else (
-                        Self.FREE_SLOT_IDX_1 if j == 1
-                        else Self.FREE_SLOT_IDX_2
-                    )
-                )
-                var ax = Scalar[DTYPE](0)
-                var ay = Scalar[DTYPE](0)
-                var accepted = False
-                for attempt in range(Self.MAX_PLACE_ATTEMPTS):
-                    var ru = PhiloxRandom(
-                        seed=UInt64(seed) ^ Self.PLACEMENT_SALT,
-                        subsequence=(UInt64(env) << 16) | UInt64(si * 2),
-                        offset=UInt64(attempt),
-                    )
-                    var rv = PhiloxRandom(
-                        seed=UInt64(seed) ^ Self.PLACEMENT_SALT,
-                        subsequence=(UInt64(env) << 16) | UInt64(si * 2 + 1),
-                        offset=UInt64(attempt),
-                    )
-                    var u = Scalar[DTYPE](Float64(ru.step_uniform()[0]))
-                    var v = Scalar[DTYPE](Float64(rv.step_uniform()[0]))
-                    var cx = Scalar[DTYPE](Self.REGION_SITE_X) + rx0 + u * (
-                        rx1 - rx0
-                    )
-                    var cy = Scalar[DTYPE](Self.REGION_SITE_Y) + ry0 + v * (
-                        ry1 - ry0
-                    )
-                    # ⚠ REJECTED AGAINST THE SLOTS ALREADY PLACED, IN ORDER.
-                    # The host does the same and `spec.
-                    # validate_task_against_family` forces `init=` lines into
-                    # family slot order so the two walks coincide — rejection
-                    # is order-dependent and a different order is a different
-                    # scene from the same seed.
-                    var clash = False
-                    for k in range(Self.N_FREE_SLOTS):
-                        if k >= n_placed:
-                            break
-                        var dx = placed_x[k] - cx
-                        var dy = placed_y[k] - cy
-                        comptime rr = Scalar[DTYPE](
-                            Self.SLOT_RADIUS + Self.SLOT_RADIUS
-                        )
-                        if dx * dx + dy * dy < rr * rr:
-                            clash = True
-                    if not clash:
-                        ax = cx
-                        ay = cy
-                        accepted = True
-                        break
-
-                # ⚠⚠ EXHAUSTION LEAVES THE SLOT PARKED, AND THE HOST RAISES.
-                # A kernel cannot raise, so the two cannot agree on the
-                # failure mode — and of the two available here, parking is the
-                # one that is VISIBLE: the prop is 50 m away, every goal that
-                # names it is false, and the lane scores 0 forever. Returning
-                # the last (overlapping) draw would instead have the solver
-                # eject the props on step 1, which reads as a policy that
-                # cannot learn. The host's raise is the real diagnostic and it
-                # fires on the same region for the same reason.
-                if accepted:
-                    qpos[env, qa + 0] = ax
-                    qpos[env, qa + 1] = ay
-                    qpos[env, qa + 2] = Scalar[DTYPE](
-                        Self.REGION_SITE_Z + Self.SLOT_RADIUS
-                    )
-                    # ⚠ W-FIRST IN `qpos`. `Data.xquat` is w-LAST and this
-                    # file reads that convention elsewhere; a free joint's
-                    # seven words are (x, y, z, w, x, y, z).
-                    qpos[env, qa + 3] = Scalar[DTYPE](1)
-                    qpos[env, qa + 4] = Scalar[DTYPE](0)
-                    qpos[env, qa + 5] = Scalar[DTYPE](0)
-                    qpos[env, qa + 6] = Scalar[DTYPE](0)
-                    comptime for k in range(FREE_JOINT_NV):
-                        qvel[env, da + k] = Scalar[DTYPE](0)
-                    placed_x[n_placed] = ax
-                    placed_y[n_placed] = ay
-                    n_placed += 1
-
         _ = joints
         _ = mocap_pos
         _ = mocap_quat

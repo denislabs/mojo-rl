@@ -62,7 +62,8 @@ from mojo_rl.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
     INIT_TARGET_SLOT, STACK_Z_OFFSET, TABLE_Z_OFFSET, has_stacked_init,
 )
-from mojo_rl.tasks.gpu_eval import require_gpu_placement
+from mojo_rl.tasks.placement.check import require_device_placement
+from mojo_rl.tasks.placement.libero_spatial import LiberoSpatialPlacement
 from mojo_rl.tasks.family import scene_path
 from mojo_rl.tasks.eval import region_sites
 from mojo_rl.tasks.sampler import (
@@ -498,15 +499,21 @@ def main() raises:
 
     # ── 5. the device refusal ─────────────────────────────────────────────
     #
-    # ⚠⚠ A STACK IS NOT DEVICE-SAMPLABLE, and the point of the check is that the
-    # refusal is SELECTIVE. `require_gpu_placement` raising on everything would
-    # score the same as raising on the right thing, and would take the other
-    # eight tasks off the device with it.
+    # ⚠⚠ STACKS ARE DEVICE-SAMPLABLE NOW, and the refusal left is the MOVING
+    # region. `gpu_eval.require_gpu_placement` refused every stacking task
+    # because the device walked the free-slot table; `placement/table` walks
+    # `order_inits` and `tests/tasks/test_device_placement.mojo` gates both
+    # stacking tasks against the host. What the device still cannot draw is a
+    # region whose site hangs under a joint — the top drawer's, whose frame is
+    # known only after this reset's `jinit=` and FK. The refusal must be
+    # SELECTIVE: raising on everything would score the same as raising on the
+    # right thing and take the other nine tasks off the device with it.
     print()
-    print("--- 5. require_gpu_placement refuses stacks, and only stacks ---")
+    print("--- 5. require_device_placement: stacks pass, the moving drawer does not ---")
     var n_stack_tasks = 0
-    var refused = 0
-    var wrongly_refused = String("")
+    var stacks_refused = 0
+    var refused_names = List[String]()
+    var refused_on_drawer = 0
     for ti in range(len(names)):
         var tk = load_task(TASK_DIR + String(names[ti]) + ".task")
         validate_task_against_family(tk, f)
@@ -515,22 +522,28 @@ def main() raises:
             n_stack_tasks += 1
         var raised = False
         try:
-            require_gpu_placement(tk, f)
+            require_device_placement[LiberoSpatialPlacement](tk, f)
         except e:
             raised = True
-        if raised and stacked:
-            refused += 1
-        elif raised and not stacked:
-            wrongly_refused += " " + String(names[ti])
-        elif stacked and not raised:
-            wrongly_refused += " NOT-REFUSED:" + String(names[ti])
-    print("    ", n_stack_tasks, "tasks stack;", refused, "refused;",
-          len(names) - n_stack_tasks, "region-only tasks accepted")
+        if not raised:
+            continue
+        refused_names.append(String(names[ti]))
+        if stacked:
+            stacks_refused += 1
+        for k in range(len(tk.inits)):
+            if tk.inits[k].region == "wooden_cabinet_1_top_region":
+                refused_on_drawer += 1
+    print("    ", n_stack_tasks, "tasks stack,", stacks_refused, "of them refused;",
+          len(refused_names), "refused in all")
+    for i in range(len(refused_names)):
+        print("      refused:", refused_names[i])
     ta.check(n_stack_tasks == 2,
              String(n_stack_tasks) + " tasks in the suite stack one free slot"
              " on another")
-    ta.check(refused == n_stack_tasks and wrongly_refused.byte_length() == 0,
-             "every stacking task is refused and no other is" + wrongly_refused)
+    ta.check(stacks_refused == 0, "no stacking task is refused")
+    ta.check(len(refused_names) == 1 and refused_on_drawer == 1,
+             "exactly one task is refused, and it draws in the top drawer's"
+             " region")
 
     print()
     print("--- ran", ta.checks, "checks,", ta.failures, "failed ---")

@@ -1225,11 +1225,13 @@ def order_inits(t: TaskSpec, f: FamilySpec) raises -> List[InitSpec]:
     slot 5, and `(On akita_black_bowl_1 cookies_1)` needs the cookie box drawn
     FIRST — a stack takes the reference's own x/y/z.
 
-    ⚠ SO A TASK WITH A STACK IS NOT DEVICE-SAMPLABLE UNTIL THE DEVICE WALKS
-    THIS FUNCTION'S OUTPUT, and `gpu_eval.require_gpu_placement` refuses one
-    rather than letting the two paths diverge. For a task with NO stack this
-    returns exactly slot order, so every existing family and the existing
-    device sampler are unchanged.
+    ⚠ THE DEVICE NOW WALKS THIS FUNCTION'S RULE. `placement/table.
+    place_free_slots` repeats the same loop over the per-lane init words —
+    first slot-ordered init whose stack reference has been walked, restart —
+    so a task with a stack is device-samplable, and `tests/tasks/
+    test_device_placement.mojo` gates it on the three corpus tasks that stack.
+    (It replaced `gpu_eval.require_gpu_placement`, which refused every one.)
+    For a task with NO stack this returns exactly slot order.
 
     ⚠ A CYCLE RAISES. `(On a b)` with `(On b a)` has no first draw; emitting
     them in an arbitrary order would place one on the other's PREVIOUS episode
@@ -1399,7 +1401,7 @@ def validate_task_against_family(t: TaskSpec, f: FamilySpec) raises:
                 " expected. The order is family slot order, except that a"
                 " stack (`init=x@y` where y is a slot) must follow the slot it"
                 " stands on. The host sampler walks this list and the device"
-                " sampler walks the slot table; rejection sampling is"
+                " sampler re-derives it from the slot table; rejection sampling is"
                 " order-dependent, so a different order gives the two DIFFERENT"
                 " scenes from one (seed, lane) — the eval and the training run"
                 " would then disagree about where the props are, and nothing"
