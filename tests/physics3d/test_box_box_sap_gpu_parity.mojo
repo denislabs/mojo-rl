@@ -190,7 +190,9 @@ def _m3() -> ModelDefFromXML[
 comptime M_BOX_ON_PLANE = _m3()
 
 
-def _ncon[M: ModelDefFromXML](use_sap: Bool, on_gpu: Bool) raises -> Int:
+def _ncon[M: ModelDefFromXML](
+    ctx: DeviceContext, use_sap: Bool, on_gpu: Bool
+) raises -> Int:
     comptime MD = Dims[
         nq=M.NQ, nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM,
         nsite=M.NSITE, max_contacts=M.MAX_CONTACTS, nequality=M.MAX_EQUALITY,
@@ -198,7 +200,6 @@ def _ncon[M: ModelDefFromXML](use_sap: Bool, on_gpu: Bool) raises -> Int:
         npair=M.NPAIR, nact=M.NACT, nten=M.NTEN_F, nkey=M.NKEY,
     ]
     var sf = M.make_spec_fields[DTYPE]()
-    var ctx = DeviceContext()
     var mf = Model[DTYPE, MD]()
     M.init_fields[DTYPE](ctx, mf)
     var d = Data[DTYPE, MD, 1]()
@@ -222,7 +223,7 @@ def _ncon[M: ModelDefFromXML](use_sap: Bool, on_gpu: Bool) raises -> Int:
 
 
 def _leg[M: ModelDefFromXML](
-    label: String, use_sap: Bool, on_gpu: Bool
+    ctx: DeviceContext, label: String, use_sap: Bool, on_gpu: Bool
 ) raises -> Int:
     """One leg, announced BEFORE it runs and timed after — so a leg that never
     returns is named by the last line printed, not hidden in a silent row."""
@@ -231,25 +232,29 @@ def _leg[M: ModelDefFromXML](
     )
     print("    ...", what, "|", label, flush=True)
     var t0 = perf_counter_ns()
-    var n = _ncon[M](use_sap, on_gpu)
+    var n = _ncon[M](ctx, use_sap, on_gpu)
     print("       ", what, "ncon", n, "in",
           Float64(perf_counter_ns() - t0) / 1e9, "s", flush=True)
     return n
 
 
 def _row[M: ModelDefFromXML](
-    label: String, sap_only: Bool, mut failures: Int
+    ctx: DeviceContext, label: String, sap_only: Bool, mut failures: Int
 ) raises:
-    var sc = _leg[M](label, True, False)
-    var sg = _leg[M](label, True, True)
+    var sc = _leg[M](ctx, label, True, False)
+    var sg = _leg[M](ctx, label, True, True)
     var nc = sc
     var ng = sg
     if not sap_only:
-        nc = _leg[M](label, False, False)
-        ng = _leg[M](label, False, True)
+        nc = _leg[M](ctx, label, False, False)
+        ng = _leg[M](ctx, label, False, True)
     var ok = sc > 0 and sg == sc and nc == sc and ng == nc
+    var n2 = (
+        String("N^2 skipped") if sap_only
+        else "N^2 cpu " + String(nc) + " gpu " + String(ng)
+    )
     print("  " + ("ok  " if ok else "FAIL") + "  SAP cpu", sc, "gpu", sg,
-          "| N^2 cpu", nc, "gpu", ng, "|", label, flush=True)
+          "|", n2, "|", label, flush=True)
     if not ok:
         failures += 1
 
@@ -269,18 +274,24 @@ def main() raises:
         else:
             raise Error("unknown argument '" + a + "' (--first, --sap-only)")
     print("=== box/box contacts: CPU vs GPU, SAP and N^2 ===", flush=True)
+    # ⚠ ONE CONTEXT FOR THE WHOLE RUN, as the batched env holds one. A context
+    # per leg destroyed a CUDA stream between the CPU leg and the GPU leg, and
+    # the first NVIDIA run hung right after that `cuStreamDestroy`.
+    var ctx = DeviceContext()
     var failures = 0
     _row[M_BOX_ON_WORLD_BOX](
-        "box on a worldbody box (0.5 mm into it)", sap_only, failures
+        ctx, "box on a worldbody box (0.5 mm into it)", sap_only, failures
     )
     if not first:
-        _row[M_BOX_ON_BODY_BOX]("box on a static body's box", sap_only, failures)
+        _row[M_BOX_ON_BODY_BOX](
+            ctx, "box on a static body's box", sap_only, failures
+        )
         _row[M_MOKA_POT_ON_TABLE](
-            "LIBERO's moka pot (15 boxes) on the kitchen table", sap_only,
+            ctx, "LIBERO's moka pot (15 boxes) on the kitchen table", sap_only,
             failures,
         )
         _row[M_BOX_ON_PLANE](
-            "CONTROL: box on a plane (the plane path, not the pair path)",
+            ctx, "CONTROL: box on a plane (the plane path, not the pair path)",
             sap_only, failures,
         )
     if failures > 0:
