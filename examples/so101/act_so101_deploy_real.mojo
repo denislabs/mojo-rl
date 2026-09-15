@@ -11,14 +11,23 @@ same two cameras the demonstrations were recorded with.
     # every command it WOULD have sent, and never energises anything.
     pixi run mojo build -I . -Xlinker -ld_classic -o /tmp/act_deploy \\
         examples/so101/act_so101_deploy_real.mojo
-    /tmp/act_deploy --store ~/.cache/mojo_rl/act_so101/<the one you trained on>.h5
+
+    # a promoted policy: weights + policies/act.norm.json, pulled with
+    #   pixi run project-pull so101-tower --weights
+    /tmp/act_deploy --project so101-tower --role act --devices 0,1
 
     # --arm is what actually moves the robot. Be at the desk, hand on the power.
-    /tmp/act_deploy --store <...> --arm --seconds 30
+    /tmp/act_deploy --project so101-tower --role act --devices 0,1 --arm --seconds 30
 
-    # and BEFORE the first armed run on a rig whose cameras have been
-    # unplugged, moved, or added to: check that device i is really slot i.
-    /tmp/act_deploy --store <...> --snap /tmp/snap
+    # --store <the .h5 it was trained on> is OPTIONAL now: it enables check 1
+    # (replaying a held-out episode) and --snap, which compares each camera
+    # with the store's frames — worth it before the first armed run on a rig
+    # whose cameras have been moved.
+    /tmp/act_deploy --project so101-tower --store <...> --snap /tmp/snap
+
+⚠ The normalization comes from `norm.json` beside the weights
+(`policies/<role>.norm.json`, or `<run>/checkpoints/norm.json` for `--ckpt`),
+`--norm` names another, and `--store` recomputes it — both given must agree.
 
 This is the closed-loop counterpart of `act_so101_openloop_eval.mojo` and the
 ACT counterpart of `deploy_reach_real.mojo`. Where the reach deployment ran a
@@ -147,6 +156,7 @@ from mojo_rl.deep_agents.act.config import (
     SO101_QPOS,
 )
 from mojo_rl.deep_agents.act.data import ACTDataset
+from mojo_rl.deep_agents.act.norm_file import ACTNorm, act_norm_from
 from mojo_rl.deep_agents.act.inference import (
     TemporalEnsemble,
     denormalize,
@@ -422,6 +432,32 @@ def camera_names(store: String) raises -> List[String]:
     return out^
 
 
+def norm_beside(ckpt: String) -> String:
+    """The norm.json that goes with a checkpoint, or "" if none exists.
+
+    `policies/<role>.ckpt` -> `policies/<role>.norm.json` (what promotion
+    writes); `<run>/checkpoints/<name>.ckpt` -> `<run>/checkpoints/norm.json`
+    (what the trainer writes).
+    """
+    if ckpt.endswith(".ckpt"):
+        var role_norm = String(ckpt[byte=0 : ckpt.byte_length() - 5]) + ".norm.json"
+        if exists(role_norm):
+            return role_norm
+    var cut = ckpt.rfind("/")
+    var run_norm = (String(ckpt[byte=0:cut]) if cut > 0 else String(".")) + "/norm.json"
+    if exists(run_norm):
+        return run_norm
+    return String("")
+
+
+def norm_candidates(ckpt: String) -> String:
+    var cut = ckpt.rfind("/")
+    var dir = String(ckpt[byte=0:cut]) if cut > 0 else String(".")
+    if ckpt.endswith(".ckpt"):
+        return String(ckpt[byte=0 : ckpt.byte_length() - 5]) + ".norm.json or " + dir + "/norm.json"
+    return dir + "/norm.json"
+
+
 def store_path() raises -> String:
     """`--store` or `$ACT_STORE` — there is deliberately no default.
 
@@ -447,6 +483,9 @@ def main() raises:
     var force = False
     var store = String("")
     var ckpt = String("")
+    var norm_file = String("")
+    var project = String(POLICY_PROJECT)
+    var role = String(POLICY_ROLE)
     var seconds = 30
     var step_ticks = MAX_STEP_TICKS
     var smooth = 1.0
@@ -472,6 +511,12 @@ def main() raises:
             store = String(args[i + 1])
         elif a == "--ckpt" and i + 1 < len(args):
             ckpt = String(args[i + 1])
+        elif a == "--norm" and i + 1 < len(args):
+            norm_file = String(args[i + 1])
+        elif a == "--project" and i + 1 < len(args):
+            project = String(args[i + 1])
+        elif a == "--role" and i + 1 < len(args):
+            role = String(args[i + 1])
         elif a == "--seconds" and i + 1 < len(args):
             seconds = Int(String(args[i + 1]))
         elif a == "--step" and i + 1 < len(args):
@@ -497,15 +542,11 @@ def main() raises:
                 if parts[k] != "":
                     devices.append(Int(parts[k]))
     if store == "":
-        store = store_path()
+        store = getenv("ACT_STORE")
     if ckpt == "":
         # ⚠ THE ROLE BEFORE THE CONSTANT, and an explicit `--ckpt` before both.
-        ckpt = resolve_policy(
-            String(POLICY_PROJECT), String(POLICY_ROLE), String(DEFAULT_CKPT)
-        )
-        var provenance = describe_policy(
-            String(POLICY_PROJECT), String(POLICY_ROLE)
-        )
+        ckpt = resolve_policy(project, role, String(DEFAULT_CKPT))
+        var provenance = describe_policy(project, role)
         # ⚠ SAY WHICH WEIGHTS, BEFORE THE ARM MOVES. Silently loading something
         # other than what the operator expects is the failure this prevents.
         if provenance:
@@ -515,7 +556,7 @@ def main() raises:
             print(
                 "  policy          = " + ckpt
                 + "  (flat fallback; nothing promoted into the '"
-                + String(POLICY_ROLE) + "' role)"
+                + role + "' role of project '" + project + "')"
             )
     if len(devices) == 0:
         devices.append(0)
@@ -534,8 +575,27 @@ def main() raises:
         print("  pass --arm to actually move the follower")
     print("=" * 74)
 
-    if not exists(store):
+    # ⚠⚠ THE NORMALIZATION: `--norm`, else the one beside the weights, else the
+    # store. A checkpoint carries none of its own, and the wrong statistics do
+    # not fail — they shift and scale every command on a real arm. See
+    # `deep_agents/act/norm_file.mojo`.
+    if norm_file == "" and store == "":
+        norm_file = norm_beside(ckpt)
+    if norm_file == "" and store == "":
+        raise Error(
+            "act deploy: no normalization for " + ckpt + ". Expected "
+            + norm_candidates(ckpt) + ", or pass --norm <norm.json> or --store"
+            " <the .h5 it was trained on>. For a run trained before norm.json"
+            " existed: examples/so101/act_so101_export_norm.mojo."
+        )
+    var have_store = store != ""
+    if have_store and not exists(store):
         raise Error("act deploy: no store at " + store)
+    if snap != "" and not have_store:
+        raise Error(
+            "act deploy: --snap compares each camera with the STORE's frames,"
+            " so it needs --store"
+        )
     if not exists(ckpt):
         raise Error(
             "act deploy: no checkpoint at " + ckpt + " — train first"
@@ -548,35 +608,57 @@ def main() raises:
     # column of the 50-episode store is 7.1 GiB and residency would load all
     # of it to compute nothing. `--check` then streams the handful of rows it
     # actually reads.
-    print("store       " + store)
-    var ds = ACTDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W](
-        store.copy(), seed=7, max_image_bytes=0
-    )
-    print(
-        "            " + String(ds.n_rows()) + " frames, "
-        + String(ds.n_episodes()) + " episodes, "
-        + String(len(ds.train_eps)) + " train / "
-        + String(len(ds.val_eps)) + " held out"
-    )
+    var ds_opt: Optional[ACTDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W]] = None
+    var norm: ACTNorm
+    if have_store:
+        print("store       " + store)
+        ds_opt = ACTDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W](
+            store.copy(), seed=7, max_image_bytes=0
+        )
+        ref ds = ds_opt.value()
+        print(
+            "            " + String(ds.n_rows()) + " frames, "
+            + String(ds.n_episodes()) + " episodes, "
+            + String(len(ds.train_eps)) + " train / "
+            + String(len(ds.val_eps)) + " held out"
+        )
+        var store_norm = act_norm_from(
+            ds.qpos_raw, ds.action_raw, ds.n_rows(), ds.n_episodes(),
+            ds.qpos_mean, ds.qpos_std, ds.action_mean, ds.action_std,
+            camera_names(store), IMG_H, IMG_W, store,
+        )
+        if norm_file != "":
+            # ⚠ BOTH GIVEN: they must agree, or one of them belongs to another
+            # policy. The store is the ground truth for the check it enables.
+            var file_norm = ACTNorm.load(norm_file, QPOS, ADIM)
+            var same = True
+            for j in range(QPOS):
+                if file_norm.qpos_mean[j] != store_norm.qpos_mean[j] or file_norm.qpos_std[j] != store_norm.qpos_std[j]:
+                    same = False
+            for j in range(ADIM):
+                if file_norm.action_mean[j] != store_norm.action_mean[j] or file_norm.action_std[j] != store_norm.action_std[j]:
+                    same = False
+            if not same and not force:
+                raise Error(
+                    "act deploy: " + norm_file + " does not match the statistics of "
+                    + store + " — they come from different training data. Drop one,"
+                    " or pass --force."
+                )
+        norm = store_norm^
+    else:
+        norm = ACTNorm.load(norm_file, QPOS, ADIM)
+        print("normalization " + norm_file)
+        print(
+            "            " + String(norm.n_rows) + " frames, " + String(norm.n_episodes)
+            + " episodes (from " + norm.store + ")"
+        )
 
-    # The action box: what the demonstrations ever commanded, per joint.
-    var a_lo = List[Float64](length=ADIM, fill=1.0e18)
-    var a_hi = List[Float64](length=ADIM, fill=-1.0e18)
-    var q_lo = List[Float64](length=QPOS, fill=1.0e18)
-    var q_hi = List[Float64](length=QPOS, fill=-1.0e18)
-    for r in range(ds.n_rows()):
-        for j in range(ADIM):
-            var v = Float64(ds.action_raw[r * ADIM + j])
-            if v < a_lo[j]:
-                a_lo[j] = v
-            if v > a_hi[j]:
-                a_hi[j] = v
-        for j in range(QPOS):
-            var w = Float64(ds.qpos_raw[r * QPOS + j])
-            if w < q_lo[j]:
-                q_lo[j] = w
-            if w > q_hi[j]:
-                q_hi[j] = w
+    # The action box: what the demonstrations ever commanded, per joint —
+    # the same min/max over every row, now carried by `norm`.
+    var a_lo = norm.action_min.copy()
+    var a_hi = norm.action_max.copy()
+    var q_lo = norm.qpos_min.copy()
+    var q_hi = norm.qpos_max.copy()
     for j in range(ADIM):
         var pad = ACTION_BOX_MARGIN * (a_hi[j] - a_lo[j])
         a_lo[j] -= pad
@@ -607,7 +689,14 @@ def main() raises:
     var pred = List[Scalar[DT]](length=ADIM, fill=Scalar[DT](0.0))
 
     # ── check 1: does THIS checkpoint go with THIS store? ─────────────────
-    if check_steps > 0 and snap == "":
+    if check_steps > 0 and snap == "" and not have_store:
+        print("")
+        print(
+            "── check 1 skipped: no --store, so no held-out episode to replay."
+            " The statistics come from the policy's norm.json. ──"
+        )
+    if check_steps > 0 and snap == "" and have_store:
+        ref ds = ds_opt.value()
         print("")
         print(
             "── replaying " + String(check_steps) + " steps of held-out"
@@ -671,7 +760,7 @@ def main() raises:
 
     # ── the cameras ───────────────────────────────────────────────────────
     print("")
-    var names = camera_names(store)
+    var names = norm.cameras.copy()
     var cams = List[CameraReader]()
     for i in range(N_CAM):
         var label = names[i] if i < len(names) else String("slot ") + String(i)
@@ -726,6 +815,7 @@ def main() raises:
         )
         var snap_chw = List[UInt8](length=CAM_ELEMS, fill=0)
         var row = List[Scalar[DType.uint8]]()
+        ref ds = ds_opt.value()
         ds.image_row_u8(ds.store.episodes.start_of(ds.val_eps[0]), row)
         var hwc = List[UInt8](length=IMG_W * IMG_H * 3, fill=0)
         for i in range(N_CAM):
@@ -959,8 +1049,8 @@ def main() raises:
             for j in range(QPOS):
                 qpos_n[j] = (
                     Scalar[DT](follower.cal.degrees(j, raw[j]))
-                    - ds.qpos_mean[j]
-                ) / ds.qpos_std[j]
+                    - norm.qpos_mean[j]
+                ) / norm.qpos_std[j]
 
             for i in range(N_CAM):
                 camera_frame_to_chw_rgb(
@@ -998,7 +1088,7 @@ def main() raises:
             sum_contrib += te.n_contributors(t_cmd)
             te.action_at(t_cmd, pred_n)
             denormalize(
-                pred_n, 0, ds.action_mean, ds.action_std, pred, 0, ADIM
+                pred_n, 0, norm.action_mean, norm.action_std, pred, 0, ADIM
             )
 
             for j in range(ADIM):
