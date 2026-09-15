@@ -53,7 +53,8 @@ from std.os import listdir, makedirs
 from std.os.path import exists, isdir
 from std.pathlib import Path
 
-from mojo_rl.io.fileio import file_size, rename_over
+from mojo_rl.io.fileio import file_size, parent_dir, rename_over
+from mojo_rl.io.proc import quote_arg, run_capture
 from mojo_rl.io.hf import (
     HF_DATASET,
     hf_client,
@@ -873,6 +874,39 @@ def import_lerobot_v3(
     columns.append(ColumnSpec(String("images"), DType.uint8, img_shape^))
 
     var tmp = out_path + ".tmp"
+
+    # ⚠⚠ THE DISK IS CHECKED BEFORE THE FIRST FRAME IS DECODED. The first
+    # 50-episode store (19,365 rows, 8.9 GB) filled a rented box's disk and
+    # failed only at the final flush, as "H5Fflush failed: ret=-1", after every
+    # video had been decoded. The images column dominates the size, so the
+    # estimate is exact to within the small columns and HDF5's overhead; 5% of
+    # headroom covers both.
+    var rows_to_write = 0
+    for e in range(n_ep):
+        if not is_rejected(rejected, e):
+            rows_to_write += index.length[e]
+    var need = Int(Float64(rows_to_write * row_elems) * 1.05) + 64_000_000
+    if exists(tmp):
+        # A previous failed import's partial store is replaced by this one.
+        need -= file_size(tmp)
+    var free = free_bytes(parent_dir(out_path))
+    if free >= 0 and free < need:
+        raise Error(
+            "lerobot: the store needs ~" + String(need // 1_000_000_000) + "."
+            + String((need // 100_000_000) % 10) + " GB (" + String(rows_to_write)
+            + " rows x " + String(n_cam) + " cameras x " + String(height) + "x"
+            + String(width) + "x3) but " + parent_dir(out_path) + " has "
+            + String(free // 1_000_000_000) + "." + String((free // 100_000_000) % 10)
+            + " GB free. Free space, or pass --out on a larger disk."
+            + (" A partial store from an earlier attempt is at " + tmp if exists(tmp) else "")
+        )
+    if verbose:
+        print(
+            "      store ~" + String(need // 1_000_000_000) + "."
+            + String((need // 100_000_000) % 10) + " GB, "
+            + (String(free // 1_000_000_000) + " GB free" if free >= 0 else "free space unknown")
+        )
+
     var w = TrajectoryStoreWriter(
         String(tmp), columns^, env_id^, 0, source_commit^
     )
@@ -899,6 +933,8 @@ def import_lerobot_v3(
     var hwc = List[UInt8](unsafe_uninit_length=cam_elems)
     var scratch = List[UInt8]()
 
+    var written_eps = 0
+    var written_rows = 0
     for e in range(n_ep):
         if is_rejected(rejected, e):
             continue
@@ -948,10 +984,14 @@ def import_lerobot_v3(
                 1,
             )
         w.end_episode()
-        if verbose and (e % 10 == 0 or e == n_ep - 1):
+        written_eps += 1
+        written_rows += length
+        if verbose and (written_eps % 10 == 1 or e == n_ep - 1):
+            # ⚠ Counts of what is WRITTEN: with rejected episodes skipped, the
+            # source indices ("episode 56/56 rows 21297") overstated the store.
             print(
-                "      episode " + String(e + 1) + "/" + String(n_ep)
-                + "  rows " + String(index.to_index[e])
+                "      episode " + String(written_eps) + "/"
+                + String(n_ep - len(rejected)) + "  rows " + String(written_rows)
             )
 
     for c in range(n_cam):
@@ -1167,3 +1207,25 @@ def resolve_dataset_root(
             " huggingface_hub cache, and downloading was disabled"
         )
     return hf_download_dataset(repo, mine^, revision, verbose)
+
+
+def free_bytes(dir: String) -> Int:
+    """Free bytes on the filesystem holding `dir`, or -1 if `df` cannot say.
+
+    `df -Pk` is POSIX (Linux and macOS agree on its columns), and -1 lets a box
+    with no `df` import anyway rather than refuse on a check it cannot run.
+    """
+    try:
+        var out = run_capture(
+            String("df -Pk ") + quote_arg(dir) + " 2>/dev/null | tail -1", 4096
+        )
+        var cols = List[String]()
+        for c in out.split(" "):
+            var t = String(c.strip())
+            if t.byte_length() > 0:
+                cols.append(t)
+        if len(cols) < 4:
+            return -1
+        return atol(cols[3]) * 1024
+    except:
+        return -1

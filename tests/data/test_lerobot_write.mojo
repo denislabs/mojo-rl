@@ -44,7 +44,7 @@ from std.os import makedirs
 from std.os.path import exists
 from std.memory import Pointer
 
-from mojo_rl.data.lerobot import import_lerobot_v3
+from mojo_rl.data.lerobot import free_bytes, import_lerobot_v3
 from mojo_rl.data.lerobot_rejected import (
     kept_rows,
     load_rejected_episodes,
@@ -509,6 +509,9 @@ def _check_rejected(root: String, h5: String) raises -> Int:
     if not raised:
         raise Error("rejecting episode " + String(N_EP) + " of " + String(N_EP) + " must be refused")
     print("  out-of-range rejection refused")
+    if free_bytes(String("/tmp")) <= 0:
+        raise Error("free_bytes(/tmp) must report free space — the import's disk preflight would be blind")
+    print("  free_bytes: /tmp reports " + String(free_bytes(String("/tmp")) // 1_000_000_000) + " GB free")
     n += 1
 
     # ── a recorder refuses to write over an existing recording ────────
