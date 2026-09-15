@@ -9,6 +9,7 @@
         policies/act.kv               synced
         policies/act.ckpt             NOT synced — weights, see `sync_refusal`
         runs/...                      NOT synced — run data goes as artifacts
+        datasets/...                  NOT synced — recordings go to the Hub
         .sync.kv                      NOT synced — this box's sync record
 
 ⚠⚠ PROJECTS ARE NOT IN THE CORE GIT REPO. `projects/` is ignored: a project is
@@ -126,6 +127,12 @@ def sync_refusal(rel: String) -> String:
     var first = String(parts[0])
     if len(parts) > 1 and (first == "runs" or first == "artifacts"):
         return String("run data — pushed as run artifacts, not as definition")
+    if len(parts) > 1 and first == "datasets":
+        # ⚠ A RECORDING IS NOT DEFINITION, even though most of its files are
+        # small `.json` / `.parquet` that pass every other rule here. Its home
+        # is the Hub (`hf-push-dataset`); pushed here it would be half a
+        # dataset — the videos refused as bulk, the metadata accepted.
+        return String("recorded dataset — pushed with hf-push-dataset, not as definition")
     var dot = rel.rfind(".")
     var slash = rel.rfind("/")
     if dot > slash and dot >= 0:
@@ -203,10 +210,14 @@ def scan_definition(project_dir: String, max_bytes: Int = 0) raises -> LocalScan
         var rel = String(full[byte = prefix.byte_length() :])
         if rel == SYNC_FILE:
             continue
-        # ⚠ `runs/` AND `artifacts/` ARE SKIPPED AS A WHOLE, ONE LINE EACH.
+        # ⚠ `runs/`, `artifacts/` AND `datasets/` ARE SKIPPED AS A WHOLE.
         # A project with 40 runs would otherwise print a thousand "run data"
         # lines above the three that matter.
-        if rel.startswith("runs/") or rel.startswith("artifacts/"):
+        if (
+            rel.startswith("runs/")
+            or rel.startswith("artifacts/")
+            or rel.startswith("datasets/")
+        ):
             continue
         var why = sync_refusal(rel)
         if why.byte_length() > 0:

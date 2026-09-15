@@ -275,6 +275,34 @@ def projects_root() -> String:
     return String(DEFAULT_ROOT)
 
 
+def project_dataset_dir(project: String, dataset: String) raises -> String:
+    """`<projects root>/<project>/datasets/<dataset>` — where a recording goes.
+
+    ⚠ THE PROJECT MUST EXIST. A typo in `--project` would otherwise create a
+    second, unregistered project directory holding an hour of demonstrations.
+
+    ⚠ `datasets/` IS NOT SYNCED AS DEFINITION (`core/project_sync.mojo`): a
+    recording's home on other machines is the Hub, via `hf-push-dataset`.
+    """
+    var root = projects_root()
+    if not project_exists(project, root):
+        raise Error(
+            "no project '" + project + "' under " + root + "/ — create it with"
+            " `pixi run project-init " + project + "`, or pull it"
+        )
+    if (
+        dataset.byte_length() == 0
+        or dataset.find("/") >= 0
+        or dataset.startswith(".")
+        or dataset.find(" ") >= 0
+    ):
+        raise Error(
+            "dataset name '" + dataset + "': use one path segment, no spaces,"
+            " not starting with '.'"
+        )
+    return root + "/" + project + "/datasets/" + dataset
+
+
 def project_exists(name: String, root: String = String("")) -> Bool:
     var r = root if root else projects_root()
     return exists(r + "/" + name + "/project.kv")

@@ -42,10 +42,13 @@ that program is safe to run:
   3. every goal is clamped to `present ± max_step_ticks`, so a leader that is
      far from the follower is followed by a ramp instead of a lunge.
 
-⚠ **TORQUE IS ON ONLY DURING AN EPISODE.** Between episodes — while you are
-reading a prompt — the follower is released. `teleop.mojo` holds torque for
-its whole run; a recorder spends most of its time waiting for a human, and
-holding a pose through that is both a thermal and a safety cost for nothing.
+⚠ **TORQUE IS ON FROM THE FIRST EPISODE UNTIL THE END.** Between episodes the
+follower HOLDS its last pose (it cannot follow: this program blocks on a
+prompt). It used to be released after each episode, which dropped the arm
+wherever the demonstration ended. It is released once, after a prompt telling
+the operator to support it. `record_ui.mojo` goes further and follows the
+leader between episodes. Holding costs servo heat over a long session; a
+dropped arm costs more.
 
 ⚠ **A `finally` DOES NOT COVER AN ABORT OR A SIGNAL.** Same warning as
 `teleop.mojo`, and it is not theoretical — it happened on 2026-08-25. The
@@ -78,6 +81,7 @@ from mojo_rl.data.lerobot_write import LeRobotWriter
 from mojo_rl.io.fileio import StdinReader
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name, joint_short
 from mojo_rl.utils.fmt import col, fixed
+from mojo_rl.core.project import project_dataset_dir
 from mojo_rl.data.lerobot_rejected import refuse_existing_dataset, reject_episode
 from mojo_rl.vision.camera_thread import CameraReader
 
@@ -112,6 +116,8 @@ def _split(s: String, sep: String) -> List[String]:
 
 def main() raises:
     var out_root = String("")
+    var project = String("")
+    var dataset = String("")
     var task = String("")
     var n_episodes = 5
     var seconds = 20
@@ -124,6 +130,10 @@ def main() raises:
         var a = String(args[i])
         if a == "--out" and i + 1 < len(args):
             out_root = String(args[i + 1])
+        elif a == "--project" and i + 1 < len(args):
+            project = String(args[i + 1])
+        elif a == "--dataset" and i + 1 < len(args):
+            dataset = String(args[i + 1])
         elif a == "--task" and i + 1 < len(args):
             # ⚠ CONSUME EVERY WORD UP TO THE NEXT FLAG. `pixi run <task> --
             # --task "Grab the green cube"` re-splits the quoted string, so
@@ -156,8 +166,17 @@ def main() raises:
             # command line does not silently mean the opposite of what it did.
             pass
 
+    if project.byte_length() > 0 or dataset.byte_length() > 0:
+        if out_root.byte_length() > 0:
+            raise Error("record: give --out, or --project with --dataset, not both")
+        if project.byte_length() == 0 or dataset.byte_length() == 0:
+            raise Error("record: --project and --dataset go together")
+        out_root = project_dataset_dir(project, dataset)
     if out_root == "":
-        raise Error("record: --out <directory> is required")
+        raise Error(
+            "record: --project <name> --dataset <name> (or --out <directory>)"
+            " is required"
+        )
     if task == "":
         raise Error(
             "record: --task \"<what the operator is doing>\" is required — it"
@@ -412,7 +431,16 @@ def main() raises:
                     print(line)
 
             if arm:
-                follower.set_torque(False)
+                # ⚠⚠ HOLD, DO NOT RELEASE. Releasing here dropped the arm at
+                # the end of every episode, wherever the demonstration left
+                # it. The goal is parked on the follower's own pose so it
+                # stops tracking the leader while the operator reads the
+                # prompt; torque is released once, at the end, after a prompt.
+                if follower.read_positions(Span(present)) == SO101_N:
+                    var hold_ticks = follower.max_step_ticks
+                    follower.max_step_ticks = 0
+                    follower.write_goals(Span(present))
+                    follower.max_step_ticks = hold_ticks
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
 
             var cdrop = 0
@@ -459,6 +487,14 @@ def main() raises:
             ep += 1
             if verdict == "q" or verdict == "Q":
                 break
+        if arm:
+            stdin.discard_pending()
+            print(
+                "\n  ⚠ the follower is still holding its pose. SUPPORT IT BY"
+                " HAND (or rest it on the table), then press Enter to release"
+                " torque."
+            )
+            _ = stdin.line()
     finally:
         # Release torque on ANY exit, including an exception.
         try:

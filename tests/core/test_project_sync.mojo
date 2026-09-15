@@ -110,6 +110,7 @@ def part_a() raises -> Int:
     bad.append(String("policies/act.ckpt"))
     bad.append(String("runs/r1/run.kv"))
     bad.append(String("artifacts/x.json"))
+    bad.append(String("datasets/trial-01/meta/info.json"))
     bad.append(String(".DS_Store"))
     bad.append(String("calibration/.hidden"))
     bad.append(String("../escape.txt"))
@@ -225,6 +226,7 @@ def part_b(base_url: String) raises -> Int:
     _put(A, String("policies/act.kv"), String("name=act\nrun_id=r1\n"))
     _put(A, String("policies/act.ckpt"), String("WEIGHTS"))
     _put(A, String("runs/r1/run.kv"), String("run_id=r1\n"))
+    _put(A, String("datasets/trial-01/meta/info.json"), String("{\"fps\": 30}\n"))
     _put(A, String(".DS_Store"), String("x"))
     var big = String("")
     for _ in range(5000):
@@ -239,6 +241,10 @@ def part_b(base_url: String) raises -> Int:
     # not listed per file.
     _check(len(r1.skipped) == 3, "B1: expected 3 skipped, got " + String(len(r1.skipped)))
     _check(_remote_sha(cat, String("policies/act.ckpt")) == "", "B1: weights reached the platform")
+    _check(
+        _remote_sha(cat, String("datasets/trial-01/meta/info.json")) == "",
+        "B1: a recorded dataset's metadata reached the platform as definition",
+    )
     # ⚠ The upload must be RECORDED. Without it the next pull, after anyone
     # else's push, plans this box's own files as edited-on-both-sides and
     # reports a conflict nobody made.

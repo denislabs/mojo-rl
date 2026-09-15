@@ -7,12 +7,26 @@
     pixi run build-opencv                       # ONCE
 
     # safe: shows everything, energises nothing
-    pixi run mojo run -I . examples/so101/record_ui.mojo \\
-        --out /tmp/my-recording --task "Grab the green cube"
+    pixi run soarm-record-ui -- --project so101-tower --dataset trial-01 \\
+        --task "Grab the green cube"
 
     # --arm is what moves the robot
-    pixi run mojo run -I . examples/so101/record_ui.mojo --arm \\
-        --out /tmp/my-recording --task "Grab the green cube"
+    pixi run soarm-record-ui -- --arm --project so101-tower --dataset trial-01 \\
+        --task "Grab the green cube" \\
+        --devices 0,1 --cameras observation.images.overhead,observation.images.wrist
+
+`--project P --dataset D` records into `projects/P/datasets/D/` (the project
+must exist); `--out DIR` still works for a recording outside any project.
+
+## ⚠⚠ The follower is ENGAGED once, and stays engaged
+
+With `--arm`, "engage follower" turns torque on and the follower follows the
+leader continuously — between episodes too — so it can be brought to a start
+pose, and ending an episode does not drop it. Only "release follower" turns
+torque off, and `finish` is refused until then, so the drop is always an
+explicit act done with the leader at rest. This differs from `record.mojo`,
+which blocks on a terminal prompt between episodes and so cannot follow.
+(Closing the window, or an error, still releases in the `finally`.)
 
 This is what LeRobot uses Rerun for: seeing the feeds and the joint traces
 while teleoperating, so a demonstration can be judged before it is kept. It is
@@ -45,6 +59,7 @@ for the camera being shown.
 from std.sys import argv
 from std.time import perf_counter_ns
 
+from mojo_rl.core.project import project_dataset_dir
 from mojo_rl.data.lerobot_write import LeRobotWriter
 from mojo_rl.render.imgui import (
     IgTexture, ig_begin_child, ig_begin_panel, ig_begin_window, ig_button,
@@ -181,6 +196,26 @@ def _split(s: String, sep: String) -> List[String]:
     return out^
 
 
+def _engage(mut follower: SO101Arm, mut present: Array[Int32, SO101_N]) raises -> Bool:
+    """Torque ON with the goal parked on the follower's CURRENT pose.
+
+    Guard 1 of `record.mojo`: enabling torque must hold the arm where it
+    stands, never snap it to a stale `Goal_Position`. From then on each tick's
+    goal is clamped to `present ± MAX_STEP_TICKS`, so a leader held elsewhere
+    is reached by a ramp. Returns False (and leaves torque off) on a partial
+    read.
+    """
+    if follower.read_positions(Span(present)) != SO101_N:
+        return False
+    follower.set_position_mode()
+    var hold = follower.max_step_ticks
+    follower.max_step_ticks = 0
+    follower.write_goals(Span(present))
+    follower.max_step_ticks = hold
+    follower.set_torque(True)
+    return True
+
+
 def main() raises:
     if not imgui_shim_available():
         raise Error(
@@ -188,8 +223,11 @@ def main() raises:
         )
 
     var out_root = String("")
+    var project = String("")
+    var dataset = String("")
     var task = String("")
-    var seconds = 20
+    var seconds = 120
+    """A CAP, not a schedule: an episode is normally ended with a button."""
     var devices = List[Int]()
     var cam_names = List[String]()
     var arm = False
@@ -199,6 +237,10 @@ def main() raises:
         var a = String(args[i])
         if a == "--out" and i + 1 < len(args):
             out_root = String(args[i + 1])
+        elif a == "--project" and i + 1 < len(args):
+            project = String(args[i + 1])
+        elif a == "--dataset" and i + 1 < len(args):
+            dataset = String(args[i + 1])
         elif a == "--task" and i + 1 < len(args):
             # ⚠ CONSUME EVERY WORD UP TO THE NEXT FLAG. `pixi run <task> --
             # --task "Grab the green cube"` re-splits the quoted string, so
@@ -225,8 +267,17 @@ def main() raises:
         elif a == "--arm":
             arm = True
 
+    if project.byte_length() > 0 or dataset.byte_length() > 0:
+        if out_root.byte_length() > 0:
+            raise Error("record_ui: give --out, or --project with --dataset, not both")
+        if project.byte_length() == 0 or dataset.byte_length() == 0:
+            raise Error("record_ui: --project and --dataset go together")
+        out_root = project_dataset_dir(project, dataset)
     if out_root == "":
-        raise Error("record_ui: --out <directory> is required")
+        raise Error(
+            "record_ui: --project <name> --dataset <name> (or --out <directory>)"
+            " is required"
+        )
     if task == "":
         raise Error("record_ui: --task \"<what you are doing>\" is required")
     if len(devices) == 0:
@@ -307,6 +358,8 @@ def main() raises:
     var trace_hi = Float32(0.0)
 
     var recording = False
+    var engaged = False
+    """Follower torque ON and following the leader. Independent of recording."""
     var ep_frames = 0
     var kept = 0
     """Episodes WRITTEN, discarded ones included: it is the writer's index."""
@@ -343,7 +396,11 @@ def main() raises:
                     goals[i] = follower.cal.raw_from_degrees(
                         i, leader.cal.degrees(i, lead_raw[i])
                     )
-                if arm and recording:
+                # ⚠⚠ WHENEVER ENGAGED, NOT ONLY WHILE RECORDING. The follower
+                # used to follow the leader during an episode only, so it could
+                # not be brought to a start pose, and every end of episode
+                # released torque with the arm in the air — it fell.
+                if arm and engaged:
                     try:
                         follower.write_goals(Span(goals))
                     except:
@@ -359,15 +416,14 @@ def main() raises:
                 ep_frames += 1
                 total_frames += 1
                 if ep_frames >= HZ * seconds:
-                    # Auto-stop at the configured length.
+                    # Auto-stop at the cap. ⚠ The follower stays ENGAGED: an
+                    # episode ending is not a reason for the arm to drop.
                     writer.end_episode()
                     kept += 1
                     recording = False
-                    if arm:
-                        follower.set_torque(False)
                     status = (
                         String("episode ") + String(kept - rejected) + " kept ("
-                        + String(ep_frames) + " frames)"
+                        + String(ep_frames) + " frames, reached --seconds)"
                     )
                     ep_frames = 0
 
@@ -442,8 +498,6 @@ def main() raises:
                     writer.end_episode()
                     kept += 1
                     recording = False
-                    if arm:
-                        follower.set_torque(False)
                     status = String("episode ") + String(kept - rejected) + " kept"
                     ep_frames = 0
                 ig_same_line()
@@ -456,8 +510,6 @@ def main() raises:
                     kept += 1
                     rejected += 1
                     recording = False
-                    if arm:
-                        follower.set_torque(False)
                     status = String("discarded (skipped on import)")
                     ep_frames = 0
             else:
@@ -466,23 +518,22 @@ def main() raises:
                     # not part of the episode — same drain as record.mojo.
                     for i in range(n_cam):
                         _ = cams[i].drain()
-                    if arm:
-                        # Guard 1: park the goal on the CURRENT pose before
-                        # arming, so torque does not snap to a stale goal.
-                        if follower.read_positions(Span(present)) == SO101_N:
-                            follower.set_position_mode()
-                            var hold = follower.max_step_ticks
-                            follower.max_step_ticks = 0
-                            follower.write_goals(Span(present))
-                            follower.max_step_ticks = hold
-                            follower.set_torque(True)
+                    if arm and not engaged:
+                        engaged = _engage(follower, present)
                     writer.begin_episode(task.copy())
                     recording = True
                     ep_frames = 0
                     status = String("recording")
                 ig_same_line()
                 if ig_button(String("finish"), 120.0, 30.0):
-                    finish = True
+                    if engaged:
+                        # ⚠ Finishing releases torque. Refused while engaged,
+                        # so the drop is always an explicit, separate act.
+                        status = String(
+                            "release the follower first (leader at rest)"
+                        )
+                    else:
+                        finish = True
                 # ⚠ A demonstration is often judged bad only AFTER "stop and
                 # keep" — the replay in your head catches the fumble. Only the
                 # most recent episode, and only once.
@@ -493,6 +544,27 @@ def main() raises:
                         last_rejected = kept - 1
                         rejected += 1
                         status = String("last episode discarded (skipped on import)")
+
+            if arm:
+                ig_separator_text(String("follower"))
+                if engaged:
+                    ig_text_colored(String("ENGAGED — following the leader"), 1.0, 0.25, 0.2)
+                    if not recording:
+                        ig_text_disabled(
+                            String("rest the leader first: releasing drops the arm")
+                        )
+                        if ig_button(String("release follower"), 150.0, 30.0):
+                            follower.set_torque(False)
+                            engaged = False
+                            status = String("follower released")
+                else:
+                    ig_text_disabled(String("released (torque off)"))
+                    if ig_button(String("engage follower"), 150.0, 30.0):
+                        engaged = _engage(follower, present)
+                        status = (
+                            String("follower engaged") if engaged
+                            else String("engage refused: partial servo read")
+                        )
 
             ig_separator_text(String("joints (deg)"))
             for i in range(SO101_N):
