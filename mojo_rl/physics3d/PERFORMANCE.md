@@ -4720,7 +4720,7 @@ would make the warm start collision-free and the kernel deterministic; it
 needs a `Data` tensor of its own. (c) `Data.ccd_ws` at 1.49 GB is paid
 once; if the box is tight, `COLL_TPB=16` halves it and the rounds double.
 
-### 13.53 OPEN (2026-09-14): LIBERO on the batched env — 494 lane control steps/s at 1024 lanes, and 89% of the GPU in two kernels
+### 13.53 SOLVER CLOSED by §13.54, COLLISION OPEN (2026-09-14): LIBERO on the batched env — 494 lane control steps/s at 1024 lanes, and 89% of the GPU in two kernels
 
 **Not started. Measured on an RTX 5090 during the LIBERO port; the
 optimisation is physics-engine work and is left here for whoever takes it.**
@@ -5100,3 +5100,60 @@ line search stays thread-0 serial, so the sliding lanes (`t` 41-53,
 6-7 iterations, 40-50 evaluations a substep) are the floor after this
 change; `ell_line_eval` over `nc` cone rows is the next cooperative
 candidate if that floor is what the trace shows.
+
+**The box (2026-09-15, RTX 5090, 256 lanes, the two runs above):**
+
+    fidelity gate, --cpu-lanes 10, 347 control steps:   === PASS ===
+      success word: 32 751 comparisons, 0 disagreeing
+      first-10-step |dq| vs the CPU replay: 2.0e-06 (bound 1e-3)
+      success over the demo: batch 232 / 256; the 10 CPU-checked lanes
+      batch 9, cpu 10, agreeing 9 — the same 1-of-N miss the elliptic
+      per-env baseline had (19/20 vs 20/20): lane 0, open_the_middle_drawer,
+      the CPU reaches the goal at step 127 and the batch drifts late
+      (|dq| 1.4 at the end, 1.7e-06 at step 50)
+
+    throughput, --timing-only --steps 60 (55 timed after 5 warmup):
+      per batch control step   1 706 ms  ->  801 ms      2.13x
+      lane control steps/s        150   ->  319
+      physics substeps/s        3 750   ->  7 990
+      us per lane step          6 666   ->  3 129
+
+So the whole step lost 905 ms per control step — 36 ms per substep —
+against the 23.6 ms the Newton kernel cost in the 15-step profile window
+and the ~40 ms it must have cost in this 60-step window (§13.53: the
+solve gets heavier along the demo). The kernel-level share is the nsys
+run's to give (`cuda_gpu_kern_sum`, the recipe above): what remains of
+the 32 ms per substep is collision (11-16 ms in §13.53's trace) plus the
+blocked Newton's new cost plus ~3 ms of everything else. The next lever
+is whichever of those two the trace names, and for Newton it is the
+thread-0 line search on the sliding lanes.
+
+**The trace after the port (2026-09-15, RTX 5090, 256 lanes, 15 control
+steps = 375 substeps, `cuda_gpu_kern_sum`), ms per substep:**
+
+    kernel                     before (§13.53)   after    share now
+    collision (block SAP)          11.2           9.47       62.7%
+    Newton (blocked, elliptic)     23.6           2.09       13.9%     11.3x on the kernel
+    mass matrix (CRBA)              2.0           1.64       10.9%
+    collision, 2nd                  0.9           0.75        5.0%
+    everything else               < 0.3 each    < 0.21 each
+    GPU total                      39.2          15.1                  2.6x in this window
+
+The Newton launch now spans 1.2-3.8 ms (median 1.96), against 14.6-44.3
+before: the tail lanes that set the launch time cost 3.8 ms, not 44. The
+collision kernel's hash changed with the tree's `LIBERO_GOAL_MAX_CONTACTS`
+(64 -> 144, the user's 2026-09-15 budget commit), which is the 11.2 -> 9.47
+— not this section's work. The whole-step number (801 ms per batch control
+step, 32 ms per substep over the 60-step window) sits above this window's
+15.1 ms per substep for the reason §13.53 gave: the solve and the
+collision both get heavier along the demonstration.
+
+**Verdict.** Lever 3 delivered what §13.53 priced it at — the solver is
+off the critical path — and the LIBERO step is now a COLLISION problem:
+63% of the GPU in the block SAP kernel over 240 geoms (156 colliding, 11
+meshes, 144-contact budget). §13.52's levers apply, at LIBERO's operating
+point this time: the GJK trip-count divergence within a round, the warm
+hash's collisions, and §13.53 lever 1's second question — whether the 11
+mesh colliders (the gripper fingers and the props) are the kernel's
+rounds. The cooperative line search is no longer worth its compile time
+before that is measured.
