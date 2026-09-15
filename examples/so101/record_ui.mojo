@@ -235,7 +235,15 @@ def main() raises:
     if len(cam_names) == 0:
         cam_names = _split(String(CAMERA_NAMES), String(","))
     if len(cam_names) != len(devices):
-        raise Error("record_ui: camera device/name count mismatch")
+        var got = String("")
+        for n in cam_names:
+            got += (" | " if got.byte_length() > 0 else "") + n
+        raise Error(
+            "record_ui: " + String(len(devices)) + " camera device(s) but "
+            + String(len(cam_names)) + " camera name(s) [" + got + "]."
+            " --devices and --cameras are COMMA-separated, with no spaces:"
+            " --devices 0,1 --cameras observation.images.a,observation.images.b"
+        )
 
     var cams = List[CameraReader]()
     for i in range(len(devices)):

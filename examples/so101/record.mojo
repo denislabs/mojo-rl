@@ -172,7 +172,9 @@ def main() raises:
     if len(cam_names) != len(devices):
         raise Error(
             "record: " + String(len(devices)) + " camera devices but "
-            + String(len(cam_names)) + " camera names"
+            + String(len(cam_names)) + " camera names. --devices and --cameras"
+            " are COMMA-separated, with no spaces: --devices 0,1 --cameras"
+            " observation.images.a,observation.images.b"
         )
 
     print("=" * 72)
