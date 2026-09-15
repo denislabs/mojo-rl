@@ -128,6 +128,10 @@ from mojo_rl.envs.robots.unitree_g1_xml import (
 from mojo_rl.envs.robots import UnitreeG1
 from mojo_rl.deep_agents.fb.obs_norm import ObsNorm
 from mojo_rl.deep_agents.fb.trainer import FBTrainer
+from mojo_rl.envs.robots.g1_motion_priority import (
+    G1_PRIO_REFRESH, g1_motion_priority, g1_fill_motion_table,
+    g1_fill_window_table,
+)
 from mojo_rl.envs.robots.g1_tracking_eval import (
     G1_SEG_ROWS, G1TrackScore, g1_n_segments, g1_segment_row, g1_score_segment,
 )
@@ -300,6 +304,27 @@ def _has(name: String) -> Bool:
     return False
 
 
+def _clip_ranges(
+    mut store: TrajectoryStore, window: Int,
+    mut begin: List[Int], mut end: List[Int],
+) raises:
+    """The `[begin, end)` slice of `_valid_starts`'s output belonging to each
+    clip. `_valid_starts` walks episodes in order and appends contiguously, so
+    this describes the layout that table ALREADY has — motion prioritization
+    expands it clip by clip."""
+    begin.clear()
+    end.clear()
+    var at = 0
+    for e in range(store.n_episodes()):
+        var n = store.episodes.length_of(e)
+        var count = n - window
+        if count < 0:
+            count = 0
+        begin.append(at)
+        at += count
+        end.append(at)
+
+
 def _valid_starts(mut store: TrajectoryStore, window: Int) raises -> List[Int]:
     """Window starts whose rows `start .. start + window` stay inside one
     episode (`start + window` is the last NEXT row the window touches)."""
@@ -351,8 +376,14 @@ def _score_tracking(
     mut obs_t: Tensor,
     mut z1: Tensor,
     mut act_out: Tensor,
+    mut per_clip: List[Float64],
 ) raises -> G1TrackScore:
     """The tracking protocol over the checkpoint just written.
+
+    `per_clip` is filled with each motion's mean EMD — that is what motion
+    PRIORITIZATION reweights the sampling by, and the reference refreshes it
+    from this same eval (`train.py:350`). A clip with no scored segment keeps
+    its entry at 0, which `g1_motion_priority` clamps to the floor weight.
 
     Loading the FILE rather than reading the live GPU nets is deliberate: the
     number logged is then the number those exact bytes score, and a checkpoint
@@ -366,7 +397,12 @@ def _score_tracking(
     var sum_e = 0.0
     var sum_p = 0.0
     var n = 0
+    per_clip.clear()
+    for _ in range(rsi.n_ep):
+        per_clip.append(0.0)
     for clip in range(rsi.n_ep):
+        var clip_e = 0.0
+        var clip_n = 0
         var n_seg = g1_n_segments(Int(rsi.ep_len.data[clip]))
         if n_seg > max_segments:
             n_seg = max_segments
@@ -379,7 +415,11 @@ def _score_tracking(
             sum_d += sc.distance
             sum_e += sc.emd
             sum_p += sc.proximity
+            clip_e += sc.emd
+            clip_n += 1
             n += 1
+        if clip_n > 0:
+            per_clip[clip] = clip_e / Float64(clip_n)
     var f = Float64(n if n > 0 else 1)
     return G1TrackScore(sum_d / f, sum_e / f, sum_p / f, n)
 
@@ -434,6 +474,11 @@ def main() raises:
     # we sampled". `--eval-every` (batched steps) decouples the two; it
     # defaults to the checkpoint cadence, so nothing moves unless asked.
     var eval_every = atol(_flag(String("--eval-every"), String(0)))
+    # Motion prioritization: resample the motions we track WORST more often
+    # (`g1_motion_priority.mojo`). The reference refreshes it from the tracking
+    # eval every `eval_every_steps` = 9.6 M env steps, so it does nothing at
+    # all below that — and matters above it, which is where a long run lives.
+    var prio_on = not _has("--no-prio")
     seed(seed_v)
 
     # ⚠⚠ `agent.save_state(tag + "." + String(s))` WAS THE SECOND HAND-ROLLED
@@ -542,6 +587,13 @@ def main() raises:
     eobs.upload(ctx)
     var starts8 = _valid_starts(store, SEQ)
     var starts250 = _valid_starts(store, TRACK_LEN + 1)
+    # motion prioritization rebuilds these two tables clip by clip
+    var beg8 = List[Int]()
+    var end8 = List[Int]()
+    var beg250 = List[Int]()
+    var end250 = List[Int]()
+    _clip_ranges(store, SEQ, beg8, end8)
+    _clip_ranges(store, TRACK_LEN + 1, beg250, end250)
     var starts8_dev = _upload_ints(ctx, starts8)
     var starts250_t = _upload_floats(ctx, starts250)
     var rsi = G1RsiTable.from_store(store)
@@ -552,6 +604,24 @@ def main() raises:
     rsi.ep_offset.upload(ctx)
     rsi.ep_len.upload(ctx)
     print("  store:", n_rows, "rows,", store.n_episodes(), "clips;", len(starts8), "expert windows,", len(starts250), "tracking windows")
+
+    # ── motion prioritization tables ──────────────────────────────────
+    # FIXED LENGTH, rewritten IN PLACE. `_gather_expert_windows` reads the
+    # expert start buffer from inside the captured graph, so the graph bakes
+    # in that buffer's POINTER — handing the agent a NEW, longer table at a
+    # refresh would leave it reading freed memory 9.6 M steps into a run.
+    comptime PRIO_MOTION_LEN = 4096
+    var prio_motion = Tensor()
+    ensure_t["gpu"](prio_motion, PRIO_MOTION_LEN, Optional(ctx))
+    var n_prio_motion = 0
+    var prio_tbl = List[Int]()
+    var cur8 = List[Int]()
+    var cur250 = List[Int]()
+    for _ in range(store.n_episodes()):
+        cur8.append(0)
+        cur250.append(0)
+    var next_prio = G1_PRIO_REFRESH
+    var prio_emd = List[Float64]()
 
     # ── the in-loop tracking eval ─────────────────────────────────────
     # ⚠ HOST RAM. The CPU `FBTrainer` is the nets + targets + Adam moments
@@ -681,6 +751,7 @@ def main() raises:
             mptr(env.d.qpos.dev.value().unsafe_ptr()),
             mptr(env.d.qvel.dev.value().unsafe_ptr()),
             mptr(row_got.unsafe_ptr()),
+            mptr(prio_motion.dev.value().unsafe_ptr()), Int32(n_prio_motion),
             grid_dim=_blocks(N_ENVS), block_dim=TPB,
         )
         env._run_fields_fk(ctx)
@@ -954,7 +1025,7 @@ def main() raises:
                 var sc = _score_tracking(
                     eval_t, eval_env, rsi, st, pv, eval_qpos, p, eval_segments,
                     eval_ach, eval_tgt, eval_b_in, eval_b_out, eval_z_seg,
-                    eval_obs, eval_z1, eval_act,
+                    eval_obs, eval_z1, eval_act, prio_emd,
                 )
                 print(
                     "  eval: emd", sc.emd, " distance", sc.distance,
@@ -966,6 +1037,59 @@ def main() raises:
                 en.append(String("eval/distance")); ev.append(sc.distance)
                 en.append(String("eval/proximity")); ev.append(sc.proximity)
                 en.append(String("eval/segments")); ev.append(Float64(sc.n))
+
+                # ── motion prioritization refresh ─────────────────────
+                if prio_on and env_steps + start_at >= next_prio:
+                    next_prio += G1_PRIO_REFRESH
+                    # 1. the RSI reset draw: which motion a lane starts in
+                    g1_fill_motion_table(
+                        prio_emd, PRIO_MOTION_LEN, prio_tbl
+                    )
+                    for i in range(len(prio_tbl)):
+                        prio_motion.data[i] = Scalar[DT](prio_tbl[i])
+                    prio_motion.upload(ctx)
+                    n_prio_motion = len(prio_tbl)
+                    # 2. the tracking-z windows, same length, in place
+                    g1_fill_window_table(
+                        starts250, beg250, end250, prio_emd, cur250,
+                        len(starts250), prio_tbl,
+                    )
+                    for i in range(len(prio_tbl)):
+                        starts250_t.data[i] = Scalar[DT](prio_tbl[i])
+                    starts250_t.upload(ctx)
+                    # 3. the expert windows the discriminator certifies —
+                    #    SAME buffer, SAME length. `attach_expert_windows`
+                    #    would hand the agent a new one and the captured
+                    #    graph still points at the old.
+                    g1_fill_window_table(
+                        starts8, beg8, end8, prio_emd, cur8,
+                        len(starts8), prio_tbl,
+                    )
+                    var h8 = ctx.enqueue_create_host_buffer[IDX_DT](
+                        len(prio_tbl)
+                    )
+                    for i in range(len(prio_tbl)):
+                        h8[i] = Scalar[IDX_DT](prio_tbl[i])
+                    ctx.enqueue_copy(agent.starts_dev.value(), h8)
+                    ctx.synchronize()
+                    var lo = prio_emd[0]
+                    var hi = prio_emd[0]
+                    for i in range(len(prio_emd)):
+                        if prio_emd[i] < lo:
+                            lo = prio_emd[i]
+                        if prio_emd[i] > hi:
+                            hi = prio_emd[i]
+                    print(
+                        "  motion priorities refreshed: EMD", lo, "..", hi,
+                        " weight spread",
+                        g1_motion_priority(hi) / g1_motion_priority(lo),
+                    )
+                    en.append(String("prio/emd_min")); ev.append(lo)
+                    en.append(String("prio/emd_max")); ev.append(hi)
+                    en.append(String("prio/spread"))
+                    ev.append(
+                        g1_motion_priority(hi) / g1_motion_priority(lo)
+                    )
                 logger.log_scalars(en, ev, env_steps + start_at)
             logger.flush()  # the CSV is the record; do not lose it to a crash
     ctx.synchronize()

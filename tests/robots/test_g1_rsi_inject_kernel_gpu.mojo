@@ -78,6 +78,9 @@ def main() raises:
         mptr(rows.unsafe_ptr()), mptr(epo.unsafe_ptr()), mptr(epl.unsafe_ptr()),
         Int32(NEP), mptr(u.unsafe_ptr()), P, Scalar[DT](1.0),
         mptr(qpos.unsafe_ptr()), mptr(qvel.unsafe_ptr()), mptr(rout.unsafe_ptr()),
+        # 0 = the uniform motion draw this gate was written against; the
+        # prioritized table is gated in test_g1_motion_priority.mojo
+        mptr(rows.unsafe_ptr()), Int32(0),
         grid_dim=(LANES + TPB - 1) // TPB, block_dim=TPB,
     )
     var h_qpos = c.enqueue_create_host_buffer[DT](LANES * NQ)
@@ -122,4 +125,46 @@ def main() raises:
     )
     assert_true(disagree == 0, "the host lie-down predicate disagrees with the kernel")
     assert_true(bad_row == 0, "a lane got a row outside its episode, or qvel was not written")
+    # ── the PRIORITIZED motion draw ───────────────────────────────────
+    # The uniform path above is what every earlier gate exercised. This is the
+    # wiring motion prioritization actually uses: a table in which motion `m`
+    # appears in proportion to its weight, indexed by the SAME u0. Untested,
+    # the table could be built perfectly and never reach the kernel.
+    var mt = c.enqueue_create_buffer[DT](8)
+    var h_mt = c.enqueue_create_host_buffer[DT](8)
+    for i in range(8):
+        h_mt[i] = Scalar[DT](0.0 if i < 7 else 1.0)   # motion 0 gets 7/8
+    c.enqueue_copy(mt, h_mt)
+    var u2 = c.enqueue_create_buffer[DT](LANES * 3)
+    var h_u2 = c.enqueue_create_host_buffer[DT](LANES * 3)
+    for l in range(LANES):
+        h_u2[l * 3 + 0] = Scalar[DT](Float64(l) / Float64(LANES))  # sweeps [0,1)
+        h_u2[l * 3 + 1] = Scalar[DT](0.5)
+        h_u2[l * 3 + 2] = Scalar[DT](1.0)             # lie-down off
+    c.enqueue_copy(u2, h_u2)
+    var rout2 = c.enqueue_create_buffer[DT](LANES)
+    c.enqueue_function[rsi_inject_kernel[LANES, NQ, NV]](
+        mptr(rows.unsafe_ptr()), mptr(epo.unsafe_ptr()), mptr(epl.unsafe_ptr()),
+        Int32(NEP), mptr(u2.unsafe_ptr()), P, Scalar[DT](1.0),
+        mptr(qpos.unsafe_ptr()), mptr(qvel.unsafe_ptr()), mptr(rout2.unsafe_ptr()),
+        mptr(mt.unsafe_ptr()), Int32(8),
+        grid_dim=(LANES + TPB - 1) // TPB, block_dim=TPB,
+    )
+    var h_rout2 = c.enqueue_create_host_buffer[DT](LANES)
+    c.enqueue_copy(h_rout2, rout2)
+    c.synchronize()
+    var n_ep0 = 0
+    for l in range(LANES):
+        # episode 0 owns rows 0..3, episode 1 rows 4..7
+        if Int(h_rout2[l]) < 4:
+            n_ep0 += 1
+    var frac0 = Float64(n_ep0) / Float64(LANES)
+    print("  prioritized draw: motion 0 got", frac0, "of lanes (table says 0.875)")
+    if abs(frac0 - 0.875) > 0.02:
+        raise Error(
+            "the motion table did not reach the kernel: motion 0 got "
+            + String(frac0) + " of the lanes, the table gives it 7/8. A"
+            " uniform result (0.5) means n_motion_table is being ignored."
+        )
+
     print("G1_RSI_INJECT_KERNEL OK")

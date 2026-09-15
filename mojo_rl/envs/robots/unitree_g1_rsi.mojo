@@ -194,16 +194,34 @@ def rsi_inject_kernel[LANES: Int, NQ: Int, NV: Int](
     qpos: Pointer[Scalar[DT], MutAnyOrigin],        # LANES * NQ
     qvel: Pointer[Scalar[DT], MutAnyOrigin],        # LANES * NV
     row_out: Pointer[Scalar[DT], MutAnyOrigin],     # LANES, the row each lane got (diagnostics)
+    motion_table: Pointer[Scalar[DT], MutAnyOrigin],  # n_motion_table motion ids
+    n_motion_table: Int32,                            # 0 = uniform over motions
 ):
-    """One thread per lane: motion ← u0 uniform over motions, row ← u1
-    uniform inside it, the lie-down transform when u2 < lie_prob."""
+    """One thread per lane: motion ← u0, row ← u1 uniform inside it, the
+    lie-down transform when u2 < lie_prob.
+
+    `motion_table` is MOTION PRIORITIZATION (`g1_motion_priority.mojo`): a
+    table of motion ids in which motion `m` appears `reps[m]` times, so a
+    uniform draw over it lands on `m` with probability `reps[m]/sum(reps)`.
+    `n_motion_table = 0` keeps the old uniform draw, which is what every gate
+    written before prioritization existed still exercises.
+    """
     var l = Int(global_idx.x)
     if l >= LANES:
         return
     comptime W = NQ + NV
-    var e = Int(u[unsafe_offset=l * 3 + 0] * Scalar[DT](Int(n_ep)))
+    var e: Int
+    if n_motion_table > 0:
+        var t = Int(u[unsafe_offset=l * 3 + 0] * Scalar[DT](Int(n_motion_table)))
+        if t >= Int(n_motion_table):
+            t = Int(n_motion_table) - 1
+        e = Int(motion_table[unsafe_offset=t])
+    else:
+        e = Int(u[unsafe_offset=l * 3 + 0] * Scalar[DT](Int(n_ep)))
     if e >= Int(n_ep):
         e = Int(n_ep) - 1
+    if e < 0:
+        e = 0
     var length = Int(ep_len[unsafe_offset=e])
     var k = Int(u[unsafe_offset=l * 3 + 1] * Scalar[DT](length))
     if k >= length:
