@@ -20,19 +20,20 @@ tasks, so it carries two `akita_black_bowl` instances plus three props.
 `<option>` (`inherit_option=1`). The SO-101 family runs pyramidal; this one
 must not, or the friction model differs from the benchmark's.
 
-⚠ `max_contacts` IS A BUDGET, NOT A MEASUREMENT, exactly as
-`so101_tabletop_xml.mojo` says of its own. 64 covers the Panda's gripper on
-one object plus the object on the table with margin; it is the number to
-revisit first if the batched env reports dropped contacts.
+⚠⚠ `max_contacts` WAS 64 AND THE SCENE PEAKS AT 228 — MEASURED, NOW GENERATED.
+Five props landing at reset (`tools/tasks/libero_contact_budget.mojo`); the
+batched env truncates at the cap silently. The budget is
+`libero_envs/budgets.LIBERO_SPATIAL_MAX_CONTACTS` — see
+`tools/tasks/gen_libero_envs.mojo` for the rule and what it does not prove.
 """
 
 from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.tasks.libero_spatial_dims import LIBERO_SPATIAL_DIMS
+from mojo_rl.tasks.libero_envs.budgets import LIBERO_SPATIAL_MAX_CONTACTS
 
 comptime _pm = LIBERO_SPATIAL_DIMS
 
-comptime LIBERO_SPATIAL_MAX_CONTACTS: Int = 64
 comptime LIBERO_SPATIAL_N_FREE_SLOTS: Int = 5
 comptime LIBERO_SPATIAL_N_GOAL_WORDS: Int = 9
 comptime LIBERO_SPATIAL_OBS_DIM: Int = (
@@ -60,5 +61,9 @@ comptime LiberoSpatialModel = ModelDefFromXML[
     cone_type=ConeType.ELLIPTIC,
     max_contacts=LIBERO_SPATIAL_MAX_CONTACTS,
     obs_dim_override=LIBERO_SPATIAL_OBS_DIM,
-    action_dim_override=9,
+    # ⚠ SEVEN, NOT THE NINE ACTUATORS — OSC_POSE's action, as in
+    # `libero_goal_xml.mojo`. This said 9 until `test_libero_task_hooks`'s
+    # per-family facts read it; no batched env had been built on this family,
+    # so nothing had compiled the controller's `constrained` against it.
+    action_dim_override=7,
 ]

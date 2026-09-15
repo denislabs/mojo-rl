@@ -32,27 +32,29 @@ every task whose basket nobody pushes.
 `<option>` (`inherit_option=1`). The SO-101 family runs pyramidal; this one
 must not, or the friction model differs from the benchmark's.
 
-⚠ `max_contacts` IS A BUDGET, NOT A MEASUREMENT, and this family's is HIGHER
-than its two siblings'. Eleven props on one floor plane rest in eleven
-independent contact patches before the gripper touches anything, where
-`libero_goal`'s four sit on a table; 96 covers that plus the gripper on one
-object with margin. It is the number to revisit first if the batched env
-reports dropped contacts.
+⚠ `max_contacts` IS GENERATED FROM A MEASUREMENT, and it is a SAMPLED one.
+The sampled resets peak at 68 (`tools/tasks/libero_contact_budget.mojo`); the
+budget is `libero_envs/budgets.LIBERO_OBJECT_MAX_CONTACTS`. ⚠ LIBERO's OWN
+frozen state is 204 contacts in MuJoCo (`test_libero_object`'s header) and there
+is no init table for this suite on disk to measure it on ours, so a driver must
+report saturated lanes rather than trust the number.
 """
 
 from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.tasks.libero_object_dims import LIBERO_OBJECT_DIMS
+from mojo_rl.tasks.libero_envs.budgets import LIBERO_OBJECT_MAX_CONTACTS
 
 comptime _pm = LIBERO_OBJECT_DIMS
 
-comptime LIBERO_OBJECT_MAX_CONTACTS: Int = 96
 comptime LIBERO_OBJECT_N_FREE_SLOTS: Int = 11
 comptime LIBERO_OBJECT_N_GOAL_WORDS: Int = 9
-comptime LIBERO_OBJECT_OBS_DIM: Int = _pm.NQ + _pm.NV
-"""The plain state, and NOT YET the task layer's words — see
-`libero_goal_xml.LIBERO_GOAL_OBS_DIM` for why declaring a width nothing fills
-is the trap. This constant grows with the task hooks, in their commit."""
+comptime LIBERO_OBJECT_OBS_DIM: Int = (
+    _pm.NQ + _pm.NV + LIBERO_OBJECT_N_FREE_SLOTS + LIBERO_OBJECT_N_GOAL_WORDS
+)
+"""`task_hooks.write_task_obs`'s layout — see `libero_goal_xml.LIBERO_GOAL_OBS_DIM`
+and `tests/tasks/test_libero_task_hooks.mojo`, which checks it against the
+family's table on every LIBERO family."""
 
 comptime LiberoObjectModel = ModelDefFromXML[
     xml_path="mojo_rl/tasks/scenes/libero_object.xml",

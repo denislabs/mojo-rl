@@ -17,19 +17,23 @@ free objects (bowl, cream cheese, wine bottle, plate).
 `<option>` (`inherit_option=1`). The SO-101 family runs pyramidal; this one
 must not, or the friction model differs from the benchmark's.
 
-⚠ `max_contacts` IS A BUDGET, NOT A MEASUREMENT, exactly as
-`so101_tabletop_xml.mojo` says of its own. 64 covers the Panda's gripper on
-one object plus the object on the table with margin; it is the number to
-revisit first if the batched env reports dropped contacts.
+⚠⚠ `max_contacts` WAS 64 AND THE SCENE NEEDS 112 — MEASURED, NOW GENERATED.
+Every prop landing at reset touches the table with all its collision boxes at
+once: 112 contacts, on every task, on all fifty frozen inits, and MuJoCo counts
+the same 112 at the same substep (`tools/tasks/libero_contact_budget.mojo`).
+The batched env truncates at the cap SILENTLY, so for its whole life until this
+the landing ran on a truncated contact set. The budget is
+`libero_envs/budgets.LIBERO_GOAL_MAX_CONTACTS`, from that measurement and the
+rule in `tools/tasks/gen_libero_envs.mojo`.
 """
 
 from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
+from mojo_rl.tasks.libero_envs.budgets import LIBERO_GOAL_MAX_CONTACTS
 
 comptime _pm = LIBERO_GOAL_DIMS
 
-comptime LIBERO_GOAL_MAX_CONTACTS: Int = 64
 comptime LIBERO_GOAL_N_FREE_SLOTS: Int = 4
 comptime LIBERO_GOAL_N_GOAL_WORDS: Int = 9
 comptime LIBERO_GOAL_OBS_DIM: Int = (

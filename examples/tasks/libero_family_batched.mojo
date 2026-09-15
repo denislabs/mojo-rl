@@ -1,0 +1,706 @@
+"""ONE LIBERO FAMILY ON THE BATCH — its device reset, its hooks, its physics.
+
+    pixi run mojo run -I . examples/tasks/libero_family_batched.mojo
+    pixi run mojo run -I . examples/tasks/libero_family_batched.mojo --steps 40 --cpu-lanes 4
+
+    # every family — one per build (see `FAMILY`)
+    for fam in $(ls mojo_rl/tasks/families | sed -n 's/^\\(libero_.*\\)\\.family$/\\1/p'); do
+        sed "s/^comptime FAMILY = .*/comptime FAMILY = \\"$fam\\"/" \\
+            examples/tasks/libero_family_batched.mojo > /tmp/libero_family_$fam.mojo
+        pixi run mojo run -I . /tmp/libero_family_$fam.mojo
+    done
+
+Every LIBERO family now has a batched env (`libero_osc_config.LiberoOscConfig`
+over its generated table and model def). `libero_demo_batched` gates one of
+them against LIBERO's own demonstrations; the other 22 have no demonstrations
+on disk. This is the gate that runs on all 23 without any: the family's tasks
+round-robin over the lanes, the DEVICE resets them (placements and `jinit=`
+draws from `meta` words), and the null action steps them.
+
+## ⚠ `FAMILY` IS A COMPILE-TIME CONSTANT, SELECTED BY `comptime if`
+
+A batched env is a GPU kernel instantiation per model; importing all 23 and
+dispatching at RUNTIME would compile all 23. `comptime if FAMILY == ...`
+elaborates only the branch taken (probed: an untaken branch holding a failing
+`comptime assert` does not fire), so one file serves every family and each
+build pays for one. There is no `-D` string define; the loop above `sed`s it.
+
+## WHAT IT CHECKS
+
+1. ⚠⚠ **THE DEVICE RESET IS THE HOST'S.** Lane `e` runs task `e % n_tasks`,
+   reset by `reset_batch(SEED)`; the host runs `libero_viewer`'s reset for
+   `(SEED, e)` and every `base_qpos` word, every `jinit=` draw and every placed
+   slot's pose must agree to `RESET_TOL` (float32 device, float64 host). The
+   kernel is gated bit-for-bit on CPU tensors by `test_device_placement`; this
+   is the same rule through `reset_batch`, on the device, in the env.
+2. **THE SUCCESS WORD, EXACTLY**, on every lane after every step: the device
+   `META_IDX_GOAL_HELD` against `eval.eval_goal` on that lane's downloaded
+   device state. ⚠ And the NULL-ACTION RATE IS ZERO: the libero_eval gate —
+   "any task above 0 at reset is a bug in G3-G6, not a policy" — so a word that
+   ever reads True under `zeros(7)` is refused here too.
+3. ⚠⚠ **NO LANE SATURATES ITS CONTACT BUDGET.** The batched env truncates at
+   `max_contacts` silently; a lane reading `ncon == max_contacts` after a
+   control step is refused, and the peak is printed beside the budget. (The
+   substeps in between are not visible from here — `libero-contact-budget`
+   counts those on the CPU.)
+4. **THE PHYSICS AGAINST THE CPU**, on `--cpu-lanes` lanes: the same host reset
+   stepped by `OscPose` + `StudioIntegEll`, max |qpos| over the arm, the
+   fixture joints and the ACTIVE props (an inactive prop is pinned at park on
+   the device and falls on the CPU, which has no repark hook). Bounded by
+   `WINDOW_TOL` over the first `--window` steps, reported after.
+5. finite state on every lane, and no singular controller.
+"""
+
+from std.os import listdir
+from std.sys import argv
+from std.time import perf_counter_ns
+from max.gpu.host import DeviceContext
+
+from mojo_rl.nn.constants import DT
+from mojo_rl.physics3d.fields import Data, Model, DynDims, DynamicsScratch
+from mojo_rl.physics3d.model.model_def import ModelDefLike
+from mojo_rl.physics3d.parser.runtime_load import (
+    parse_model_runtime, dims_from_flat, build_model_runtime,
+    spec_fields_runtime,
+)
+from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.studio.stepping import StudioIntegEll
+from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
+from mojo_rl.physics3d.dynamics.osc_pose import (
+    OscPose, OscPoseConfig, ARM_DOF,
+)
+from mojo_rl.physics3d.dynamics.osc_pose_gpu import (
+    OSC_ACTION_DIM, build_osc_refs,
+)
+from mojo_rl.physics3d.gpu.constants import (
+    METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
+    META_IDX_GOAL_HELD, META_IDX_NUM_CONTACTS, META_IDX_INIT_REGION_0,
+    META_INIT_SLOTS, META_IDX_JINIT_0, META_JINIT_SLOTS, META_JINIT_WORDS,
+    META_IDX_SHAPE_W_GOAL, META_IDX_SHAPE_W_REACH, MODEL_CURRICULUM_SIZE,
+    CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
+)
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from mojo_rl.tasks.spec import (
+    load_family, load_task, validate_task_against_family, FamilySpec, TaskSpec,
+    SLOT_FREE,
+)
+from mojo_rl.tasks.family import scene_path
+from mojo_rl.tasks.predicates import (
+    parse_goal, bind_goal, require_tier_a, joint_qpos_addresses, BoundGoal,
+)
+from mojo_rl.tasks.eval import (
+    eval_goal, HostState, region_sites, region_contact_bodies,
+)
+from mojo_rl.tasks.sampler import (
+    sample_placements, sample_joint_inits, RegionFrame, SampleReport,
+)
+from mojo_rl.tasks.reset import (
+    free_slot_addresses, reset_slots, joint_init_addresses,
+    joint_init_dof_addresses, apply_joint_inits, SlotAddress,
+)
+from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
+from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
+from mojo_rl.tasks.active import active_mask, init_region_words
+from mojo_rl.tasks.placement.table import PlacementTable
+from mojo_rl.tasks.placement.check import (
+    joint_init_words, require_device_placement,
+)
+from mojo_rl.tasks.libero_osc_config import LiberoOscConfig
+from mojo_rl.tasks.placement.libero_goal import LiberoGoalPlacement
+from mojo_rl.tasks.libero_goal_xml import LiberoGoalModel
+from mojo_rl.tasks.placement.libero_object import LiberoObjectPlacement
+from mojo_rl.tasks.libero_object_xml import LiberoObjectModel
+from mojo_rl.tasks.placement.libero_spatial import LiberoSpatialPlacement
+from mojo_rl.tasks.libero_spatial_xml import LiberoSpatialModel
+from mojo_rl.tasks.placement.libero_kitchen_scene1 import LiberoKitchenScene1Placement
+from mojo_rl.tasks.libero_envs.libero_kitchen_scene1_xml import LiberoKitchenScene1Model
+from mojo_rl.tasks.placement.libero_kitchen_scene2 import LiberoKitchenScene2Placement
+from mojo_rl.tasks.libero_envs.libero_kitchen_scene2_xml import LiberoKitchenScene2Model
+from mojo_rl.tasks.placement.libero_kitchen_scene3 import LiberoKitchenScene3Placement
+from mojo_rl.tasks.libero_envs.libero_kitchen_scene3_xml import LiberoKitchenScene3Model
+from mojo_rl.tasks.placement.libero_kitchen_scene4 import LiberoKitchenScene4Placement
+from mojo_rl.tasks.libero_envs.libero_kitchen_scene4_xml import LiberoKitchenScene4Model
+from mojo_rl.tasks.placement.libero_kitchen_scene5 import LiberoKitchenScene5Placement
+from mojo_rl.tasks.libero_envs.libero_kitchen_scene5_xml import LiberoKitchenScene5Model
+from mojo_rl.tasks.placement.libero_kitchen_scene6 import LiberoKitchenScene6Placement
+from mojo_rl.tasks.libero_envs.libero_kitchen_scene6_xml import LiberoKitchenScene6Model
+from mojo_rl.tasks.placement.libero_kitchen_scene7 import LiberoKitchenScene7Placement
+from mojo_rl.tasks.libero_envs.libero_kitchen_scene7_xml import LiberoKitchenScene7Model
+from mojo_rl.tasks.placement.libero_kitchen_scene8 import LiberoKitchenScene8Placement
+from mojo_rl.tasks.libero_envs.libero_kitchen_scene8_xml import LiberoKitchenScene8Model
+from mojo_rl.tasks.placement.libero_kitchen_scene9 import LiberoKitchenScene9Placement
+from mojo_rl.tasks.libero_envs.libero_kitchen_scene9_xml import LiberoKitchenScene9Model
+from mojo_rl.tasks.placement.libero_kitchen_scene10 import LiberoKitchenScene10Placement
+from mojo_rl.tasks.libero_envs.libero_kitchen_scene10_xml import LiberoKitchenScene10Model
+from mojo_rl.tasks.placement.libero_living_room_scene1 import LiberoLivingRoomScene1Placement
+from mojo_rl.tasks.libero_envs.libero_living_room_scene1_xml import LiberoLivingRoomScene1Model
+from mojo_rl.tasks.placement.libero_living_room_scene2 import LiberoLivingRoomScene2Placement
+from mojo_rl.tasks.libero_envs.libero_living_room_scene2_xml import LiberoLivingRoomScene2Model
+from mojo_rl.tasks.placement.libero_living_room_scene3 import LiberoLivingRoomScene3Placement
+from mojo_rl.tasks.libero_envs.libero_living_room_scene3_xml import LiberoLivingRoomScene3Model
+from mojo_rl.tasks.placement.libero_living_room_scene4 import LiberoLivingRoomScene4Placement
+from mojo_rl.tasks.libero_envs.libero_living_room_scene4_xml import LiberoLivingRoomScene4Model
+from mojo_rl.tasks.placement.libero_living_room_scene5 import LiberoLivingRoomScene5Placement
+from mojo_rl.tasks.libero_envs.libero_living_room_scene5_xml import LiberoLivingRoomScene5Model
+from mojo_rl.tasks.placement.libero_living_room_scene6 import LiberoLivingRoomScene6Placement
+from mojo_rl.tasks.libero_envs.libero_living_room_scene6_xml import LiberoLivingRoomScene6Model
+from mojo_rl.tasks.placement.libero_study_scene1 import LiberoStudyScene1Placement
+from mojo_rl.tasks.libero_envs.libero_study_scene1_xml import LiberoStudyScene1Model
+from mojo_rl.tasks.placement.libero_study_scene2 import LiberoStudyScene2Placement
+from mojo_rl.tasks.libero_envs.libero_study_scene2_xml import LiberoStudyScene2Model
+from mojo_rl.tasks.placement.libero_study_scene3 import LiberoStudyScene3Placement
+from mojo_rl.tasks.libero_envs.libero_study_scene3_xml import LiberoStudyScene3Model
+from mojo_rl.tasks.placement.libero_study_scene4 import LiberoStudyScene4Placement
+from mojo_rl.tasks.libero_envs.libero_study_scene4_xml import LiberoStudyScene4Model
+
+
+comptime H = DType.float64
+comptime FAMILY = "libero_kitchen_scene3"
+"""The family this build runs. ⚠ `sed` it — see the header."""
+comptime LANES = 16
+comptime SEED = 11
+comptime FAMILY_DIR = "mojo_rl/tasks/families/"
+comptime TASK_DIR = "mojo_rl/tasks/tasks/"
+comptime SUBSTEPS = 25
+comptime WARMUP_STEPS = 3
+comptime RESET_TOL: Float64 = 2.0e-5
+"""m / rad. A float32 word of a pose near 1 m is 6e-8 apart from its float64;
+the region frames the device places against are the table's literals and the
+host's are FK, both from the same scene, measured bit-exact on CPU tensors."""
+comptime WINDOW_TOL: Float64 = 1.0e-3
+"""`libero_demo_batched`'s bound, for the same reason: float32 against float64
+through contact."""
+
+
+def _index(names: List[String], want: String) raises -> Int:
+    for i in range(len(names)):
+        if String(names[i]) == want:
+            return i
+    raise Error("libero family batched: no '" + want + "' in the scene")
+
+
+def _task_names(family: String) raises -> List[String]:
+    var out = List[String]()
+    var want = family + "__"
+    for e in listdir(TASK_DIR):
+        var n = String(e)
+        if n.startswith(want) and n.endswith(".task"):
+            out.append(String(n[byte = 0 : n.byte_length() - 5]))
+    for i in range(len(out)):
+        for j in range(i + 1, len(out)):
+            if out[j] < out[i]:
+                out[i], out[j] = out[j], out[i]
+    return out^
+
+
+def _host_reset(
+    mut d: Data[H, DynDims, 1],
+    mut m: Model[H, DynDims],
+    t: TaskSpec, f: FamilySpec,
+    rsites: List[Int], addrs: List[SlotAddress],
+    jq: List[Int], jd: List[Int],
+    nq: Int, nv: Int, lane: Int,
+) raises:
+    """`libero_viewer.reset_episode`'s order for `(SEED, lane)`: base pose,
+    `jinit=` draws, FK, placements on the frames FK gives, `reset_slots`."""
+    for i in range(nq):
+        d.qpos.data[i] = Scalar[H](0)
+    for i in range(nv):
+        d.qvel.data[i] = Scalar[H](0)
+    for i in range(len(f.base_qpos)):
+        d.qpos.data[i] = Scalar[H](f.base_qpos[i])
+    var jv = sample_joint_inits(t, UInt64(SEED), lane)
+    for k in range(len(jv)):
+        d.qpos.data[jq[k]] = Scalar[H](jv[k])
+    forward_kinematics["cpu", H, DynDims, 1](d, m)
+    var frames = List[RegionFrame]()
+    for r in range(len(f.regions)):
+        var si = rsites[r]
+        frames.append(RegionFrame(
+            Float64(d.site_xpos.data[si * 3]),
+            Float64(d.site_xpos.data[si * 3 + 1]),
+            Float64(d.site_xpos.data[si * 3 + 2]),
+        ))
+    var radii = List[Float64](length=len(f.slots), fill=0.02)
+    var rep = SampleReport()
+    var placed = sample_placements(t, f, frames, radii, UInt64(SEED), lane, rep)
+    var qpos = List[Float64]()
+    for i in range(nq):
+        qpos.append(Float64(d.qpos.data[i]))
+    var qvel = List[Float64](length=nv, fill=0.0)
+    reset_slots(t, f, placed, addrs, qpos, qvel)
+    apply_joint_inits(t, jq, jv, qpos, qvel, jd)
+    for i in range(nq):
+        d.qpos.data[i] = Scalar[H](qpos[i])
+    for i in range(nv):
+        d.qvel.data[i] = Scalar[H](qvel[i])
+    forward_kinematics["cpu", H, DynDims, 1](d, m)
+
+
+def run[T: PlacementTable, M: ModelDefLike](
+    steps: Int, window: Int, cpu_lanes_arg: Int
+) raises:
+    comptime E = Phyics3dBatchedEnv[
+        M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
+    ]
+    comptime NQ = M.NQ
+    comptime NV = M.NV
+    comptime NB = M.NBODY
+    comptime NS = M.NSITE
+    comptime MC = M.MAX_CONTACTS
+    var family = String(FAMILY)
+
+    print("=" * 78)
+    print("LIBERO family on the batch —", family, "|", LANES, "lanes |",
+          steps, "null-action control steps | max_contacts", MC)
+    print("=" * 78)
+
+    var f = load_family(String(FAMILY_DIR) + family + ".family")
+    var fmd = parse_model_runtime(scene_path(f))
+    var names = _task_names(family)
+    var n_tasks = len(names)
+    if n_tasks == 0:
+        raise Error("no task files for " + family)
+
+    # ── tasks: goals, tapes, masks, reset words ───────────────────────────
+    var nqs = List[Int]()
+    var jt = List[Int]()
+    var jvn = List[Int]()
+    for k in range(len(fmd.joints)):
+        nqs.append(fmd.joints[k].nq)
+        jt.append(fmd.joints[k].jnt_type)
+        jvn.append(fmd.joints[k].nv)
+    var jadr = joint_qpos_addresses(nqs)
+    var addrs = free_slot_addresses(f, fmd.joint_names, jt, nqs, jvn)
+    var tasks = List[TaskSpec]()
+    var goals = List[BoundGoal]()
+    var tapes = List[List[Float64]]()
+    var masks = List[Float64]()
+    var iwords = List[List[Float64]]()
+    var jwords = List[List[Float64]]()
+    for ti in range(n_tasks):
+        var t = load_task(String(TASK_DIR) + names[ti] + ".task")
+        validate_task_against_family(t, f)
+        var g = bind_goal(
+            parse_goal(t.goal), f, fmd.body_names, fmd.site_names,
+            fmd.joint_names, jadr,
+        )
+        require_tier_a(g, t.name)
+        require_gpu_regions(g, t.name)
+        require_device_placement[T](t, f)
+        tapes.append(encode_goal(g))
+        masks.append(active_mask(t, f))
+        iwords.append(init_region_words(t, f))
+        jwords.append(joint_init_words[T](t))
+        goals.append(g^)
+        tasks.append(t^)
+    var rsites = region_sites(f, fmd.site_names)
+    var rcontact = region_contact_bodies(f, fmd.body_names)
+    var site_body_tab = List[Int]()
+    var site_quat_tab = List[Float64]()
+    for k in range(len(fmd.sites)):
+        site_body_tab.append(fmd.sites[k].body_id)
+        site_quat_tab.append(fmd.sites[k].quat_x)
+        site_quat_tab.append(fmd.sites[k].quat_y)
+        site_quat_tab.append(fmd.sites[k].quat_z)
+        site_quat_tab.append(fmd.sites[k].quat_w)
+    var body_parent_tab = List[Int]()
+    body_parent_tab.append(-1)
+    for k in range(len(fmd.bodies)):
+        body_parent_tab.append(fmd.bodies[k].parent)
+    print("  tasks:", n_tasks, "| lane e runs task e %", n_tasks)
+
+    # ── the controller record ─────────────────────────────────────────────
+    var qadr_all = List[Int]()
+    var dadr_all = List[Int]()
+    var qa = 0
+    var da = 0
+    for k in range(len(fmd.joints)):
+        qadr_all.append(qa)
+        dadr_all.append(da)
+        qa += fmd.joints[k].nq
+        da += fmd.joints[k].nv
+    var ctrl_min = List[Float64]()
+    var ctrl_max = List[Float64]()
+    for k in range(len(fmd.actuators)):
+        ctrl_min.append(fmd.actuators[k].ctrl_min)
+        ctrl_max.append(fmd.actuators[k].ctrl_max)
+    var dof = List[Int]()
+    var qadr = List[Int]()
+    var jidx = List[Int]()
+    var act_idx = List[Int]()
+    var tmin = List[Float64]()
+    var tmax = List[Float64]()
+    for j in range(ARM_DOF):
+        var ji = _index(fmd.joint_names, String("robot_joint") + String(j + 1))
+        dof.append(dadr_all[ji])
+        qadr.append(qadr_all[ji])
+        jidx.append(ji)
+        var ai = _index(fmd.actuator_names, String("robot_torq_j") + String(j + 1))
+        act_idx.append(ai)
+        tmin.append(ctrl_min[ai])
+        tmax.append(ctrl_max[ai])
+    var site = _index(fmd.site_names, String("robot_grip_site"))
+    var site_body = fmd.sites[site].body_id
+    var ga1 = _index(fmd.actuator_names, String("robot_gripper_finger_joint1"))
+    var ga2 = _index(fmd.actuator_names, String("robot_gripper_finger_joint2"))
+    var cfg = OscPoseConfig()
+    var refs = build_osc_refs(
+        dof.copy(), qadr.copy(), jidx.copy(), tmin.copy(), tmax.copy(),
+        act_idx.copy(), site, site_body, ga1, ga2,
+        ctrl_min[ga1], ctrl_max[ga1], ctrl_min[ga2], ctrl_max[ga2],
+        cfg.kp, cfg.damping_ratio, cfg.output_max_pos, cfg.output_max_ori,
+        cfg.nullspace_kp, cfg.gripper_speed,
+    )
+
+    # ══ THE BATCH: words first, then the DEVICE reset ══════════════════════
+    var t_build = perf_counter_ns()
+    var ctx = DeviceContext()
+    var env = E(ctx)
+    env.set_osc_refs(refs, ctx)
+    var cw = region_table_words(f, rsites, rcontact)
+    for k in range(MODEL_CURRICULUM_SIZE):
+        env.mf.curriculum.data[k] = Scalar[DT](cw[k])
+    env.mf.curriculum.upload(ctx)
+    for e in range(LANES):
+        var mb = e * METADATA_SIZE
+        var ti = e % n_tasks
+        for k in range(METADATA_SIZE):
+            env.d.meta.data[mb + k] = Scalar[DT](0)
+        for k in range(TAPE_WORDS):
+            env.d.meta.data[mb + META_IDX_TASK_PARAM_0 + k] = Scalar[DT](tapes[ti][k])
+        env.d.meta.data[mb + META_IDX_TASK_ACTIVE] = Scalar[DT](masks[ti])
+        for k in range(META_INIT_SLOTS):
+            env.d.meta.data[mb + META_IDX_INIT_REGION_0 + k] = Scalar[DT](0)
+        for k in range(len(iwords[ti])):
+            env.d.meta.data[mb + META_IDX_INIT_REGION_0 + k] = Scalar[DT](iwords[ti][k])
+        for k in range(len(jwords[ti])):
+            env.d.meta.data[mb + META_IDX_JINIT_0 + k] = Scalar[DT](jwords[ti][k])
+        env.d.meta.data[mb + META_IDX_SHAPE_W_GOAL] = Scalar[DT](0)
+        env.d.meta.data[mb + META_IDX_SHAPE_W_REACH] = Scalar[DT](0)
+    env.d.meta.upload(ctx)
+    ctx.synchronize()
+    env.reset_batch[LANES](ctx, UInt64(SEED))
+    ctx.synchronize()
+    print("  env built and reset in",
+          Float64(perf_counter_ns() - t_build) / 1e9, "s (after compile)")
+
+    # ── 1. the device reset against the host's ────────────────────────────
+    env.d.qpos.download(ctx)
+    env.d.qvel.download(ctx)
+    ctx.synchronize()
+    var verts = 32768
+    var dims = dims_from_flat(fmd, max_contacts=MC, nmesh_verts=verts)
+    var m = Model[H, DynDims](dims)
+    while True:
+        try:
+            build_model_runtime[H](fmd, dims, m)
+            break
+        except e:
+            if String(e).find("mesh vertex capacity") < 0:
+                raise e
+            verts *= 2
+            dims = dims_from_flat(fmd, max_contacts=MC, nmesh_verts=verts)
+            m = Model[H, DynDims](dims)
+    var reset_words = 0
+    var reset_worst = 0.0
+    var reset_bad = 0
+    var placed_slots = 0
+    var drawn = 0
+    var host_q0 = List[List[Float64]]()
+    for e in range(LANES):
+        var ti = e % n_tasks
+        var jq = joint_init_addresses(tasks[ti], fmd.joint_names, nqs)
+        var jd = joint_init_dof_addresses(tasks[ti], fmd.joint_names, jvn)
+        var d = Data[H, DynDims, 1](dims)
+        _host_reset(d, m, tasks[ti], f, rsites, addrs, jq, jd, NQ, NV, e)
+        var hq = List[Float64]()
+        for i in range(NQ):
+            hq.append(Float64(d.qpos.data[i]))
+        # the words the device reset owns: base_qpos, the drawn joints, and the
+        # 7 pose words of every ACTIVE free slot (an inactive one is left for
+        # the per-step repark)
+        var own = List[Int]()
+        for i in range(len(f.base_qpos)):
+            own.append(i)
+        for k in range(len(jq)):
+            own.append(jq[k])
+            drawn += 1
+        for si in range(len(f.slots)):
+            if f.slots[si].kind != SLOT_FREE or not tasks[ti].is_active(f.slots[si].name):
+                continue
+            placed_slots += 1
+            for w in range(7):
+                own.append(addrs[si].qadr + w)
+        for k in range(len(own)):
+            var i = own[k]
+            var dv = abs(Float64(env.d.qpos.data[e * NQ + i]) - hq[i])
+            reset_words += 1
+            if dv > reset_worst:
+                reset_worst = dv
+            if dv > RESET_TOL:
+                reset_bad += 1
+                if reset_bad <= 10:
+                    print("   RESET MISMATCH lane", e, names[ti], "qpos[", i,
+                          "] device", Float64(env.d.qpos.data[e * NQ + i]),
+                          "host", hq[i])
+        host_q0.append(hq^)
+    print("  1. reset:", reset_words, "words compared (", placed_slots,
+          "active slots,", drawn, "joint draws ) | worst", reset_worst,
+          "| over", RESET_TOL, ":", reset_bad)
+
+    # ── 2-3-5. the null action on the batch ───────────────────────────────
+    var act_h = ctx.enqueue_create_host_buffer[DT](LANES * OSC_ACTION_DIM)
+    var ap = act_h.unsafe_ptr()
+    for k in range(LANES * OSC_ACTION_DIM):
+        ap[unsafe_offset=k] = Scalar[DT](0)
+    var dev_traj = List[List[Float64]]()
+    for _ in range(LANES):
+        dev_traj.append(List[Float64]())
+    var eval_cmp = 0
+    var eval_bad = 0
+    var eval_true = 0
+    var saturated = 0
+    var peak_ncon = 0
+    var nonfinite = 0
+    var singular_steps = 0
+    var timed_ns = 0
+    var timed_steps = 0
+    for step in range(steps):
+        ctx.synchronize()
+        var t0 = perf_counter_ns()
+        ctx.enqueue_copy(env._action, act_h)
+        env.step_batch[LANES](ctx, UInt64(step + 1))
+        ctx.synchronize()
+        if step >= WARMUP_STEPS:
+            timed_ns += Int(perf_counter_ns() - t0)
+            timed_steps += 1
+        env.d.qpos.download(ctx)
+        env.d.xpos.download(ctx)
+        env.d.xquat.download(ctx)
+        env.d.site_xpos.download(ctx)
+        env.d.contacts.download(ctx)
+        env.d.meta.download(ctx)
+        ctx.synchronize()
+        if env.osc_singular_lanes(ctx) > 0:
+            singular_steps += 1
+        for e in range(LANES):
+            for k in range(NQ):
+                var q = Float64(env.d.qpos.data[e * NQ + k])
+                dev_traj[e].append(q)
+                if q != q or q > 1.0e6 or q < -1.0e6:
+                    nonfinite += 1
+            var nc = Int(env.d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
+            if nc > peak_ncon:
+                peak_ncon = nc
+            if nc >= MC:
+                saturated += 1
+            var st = HostState(List[Float64](), List[Float64](), List[Float64]())
+            for k in range(NB * 3):
+                st.xpos.append(Float64(env.d.xpos.data[e * NB * 3 + k]))
+            for k in range(NB * 4):
+                st.xquat.append(Float64(env.d.xquat.data[e * NB * 4 + k]))
+            for k in range(NS * 3):
+                st.site_xpos.append(Float64(env.d.site_xpos.data[e * NS * 3 + k]))
+            for k in range(NQ):
+                st.qpos.append(Float64(env.d.qpos.data[e * NQ + k]))
+            st.site_body = site_body_tab.copy()
+            st.site_quat = site_quat_tab.copy()
+            st.body_parent = body_parent_tab.copy()
+            var ncon = nc if nc < MC else MC
+            st.ncon = ncon
+            for c in range(ncon):
+                var cb = e * MC * CONTACT_SIZE + c * CONTACT_SIZE
+                st.con_a.append(Int(env.d.contacts.data[cb + CONTACT_IDX_BODY_A]))
+                st.con_b.append(Int(env.d.contacts.data[cb + CONTACT_IDX_BODY_B]))
+            var host_says = eval_goal(goals[e % n_tasks], f, st, rsites, rcontact)
+            var dev_says = Float64(
+                env.d.meta.data[e * METADATA_SIZE + META_IDX_GOAL_HELD]
+            ) > 0.5
+            eval_cmp += 1
+            if host_says:
+                eval_true += 1
+            if host_says != dev_says:
+                eval_bad += 1
+                if eval_bad <= 10:
+                    print("   EVAL MISMATCH lane", e, names[e % n_tasks], "step",
+                          step, ": device", dev_says, "host", host_says)
+    var per_step = (
+        Float64(timed_ns) / Float64(timed_steps) * 1e-9 if timed_steps > 0 else 0.0
+    )
+    print("  2. success word:", eval_cmp, "lane-steps compared |", eval_bad,
+          "disagreeing |", eval_true, "true under the null action")
+    print("  3. contacts: peak", peak_ncon, "of", MC, "| saturated lane-steps",
+          saturated)
+    print("  5. non-finite qpos words", nonfinite, "| singular steps",
+          singular_steps)
+    if timed_steps > 0:
+        print("     timing:", per_step * 1e3, "ms per batch step |",
+              Int(Float64(LANES) / per_step), "lane control steps/s")
+
+    # ── 4. the CPU leg ────────────────────────────────────────────────────
+    var cpu_lanes = cpu_lanes_arg
+    if cpu_lanes < 0:
+        cpu_lanes = n_tasks if n_tasks < LANES else LANES
+    if cpu_lanes > LANES:
+        cpu_lanes = LANES
+    var sf = spec_fields_runtime[H](fmd, dims, m)
+    var nact = dims.get_nact()
+    var null_action = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
+    var window_worst = 0.0
+    var end_worst = 0.0
+    for c in range(cpu_lanes):
+        var e = c
+        var ti = e % n_tasks
+        var jq = joint_init_addresses(tasks[ti], fmd.joint_names, nqs)
+        var jd = joint_init_dof_addresses(tasks[ti], fmd.joint_names, jvn)
+        var d = Data[H, DynDims, 1](dims)
+        var scratch = DynamicsScratch[H, DynDims, 1](dims)
+        var integ = StudioIntegEll(dims)
+        _host_reset(d, m, tasks[ti], f, rsites, addrs, jq, jd, NQ, NV, e)
+        var osc = OscPose(
+            dof.copy(), qadr.copy(), jidx.copy(), tmin.copy(), tmax.copy(),
+            act_idx.copy(), site, site_body, ga1, ga2,
+            ctrl_min[ga1], ctrl_max[ga1], ctrl_min[ga2], ctrl_max[ga2],
+            OscPoseConfig(), nact, NQ, NV,
+        )
+        osc.update(d, m, scratch)
+        osc.reset(d, m)
+        var act = List[Scalar[H]](length=nact if nact > 0 else 1, fill=Scalar[H](0))
+        # the compared words: everything but an INACTIVE prop's pose
+        var cmp = List[Bool](length=NQ, fill=True)
+        for si in range(len(f.slots)):
+            if f.slots[si].kind == SLOT_FREE and not tasks[ti].is_active(f.slots[si].name):
+                for w in range(7):
+                    cmp[addrs[si].qadr + w] = False
+        var lane_window = 0.0
+        var lane_end = 0.0
+        for step in range(steps):
+            for s in range(SUBSTEPS):
+                osc.update(d, m, scratch)
+                if s == 0:
+                    osc.set_goal(null_action, d, m)
+                var ctrl = osc.run(null_action, d, m, scratch)
+                for k in range(NV):
+                    d.qfrc.data[k] = Scalar[H](0)
+                apply_actions_fields[H](sf, d, ctrl, act, fmd.timestep)
+                integ.step["cpu"](d, m)
+            var worst = 0.0
+            for k in range(NQ):
+                if not cmp[k]:
+                    continue
+                var dv = abs(Float64(d.qpos.data[k]) - dev_traj[e][step * NQ + k])
+                if dv > worst:
+                    worst = dv
+            if step < window and worst > lane_window:
+                lane_window = worst
+            lane_end = worst
+        print("     cpu lane", e, names[ti], ": |dq| first", window, "steps",
+              lane_window, "| at step", steps, lane_end)
+        if lane_window > window_worst:
+            window_worst = lane_window
+        if lane_end > end_worst:
+            end_worst = lane_end
+    print("  4. cpu:", cpu_lanes, "lanes | worst |dq| over the first", window,
+          "steps", window_worst, "| worst at the end", end_worst)
+
+    # ── verdict ───────────────────────────────────────────────────────────
+    var fails = List[String]()
+    if reset_words == 0 or placed_slots == 0:
+        fails.append("the reset comparison is vacuous")
+    if reset_bad > 0:
+        fails.append(String(reset_bad) + " reset words differ from the host")
+    if eval_cmp == 0:
+        fails.append("no success word was compared")
+    if eval_bad > 0:
+        fails.append(String(eval_bad) + " success words disagree with the host")
+    if eval_true > 0:
+        fails.append(String(eval_true) + " lane-steps solved under the NULL action")
+    if saturated > 0:
+        fails.append(String(saturated) + " lane-steps saturated max_contacts")
+    if peak_ncon == 0:
+        fails.append("no contact on any lane — the scene is not resting on anything")
+    if nonfinite > 0:
+        fails.append(String(nonfinite) + " non-finite qpos words")
+    if singular_steps > 0:
+        fails.append(String(singular_steps) + " steps with a singular controller")
+    if cpu_lanes > 0 and window_worst > WINDOW_TOL:
+        fails.append("batch vs CPU " + String(window_worst) + " over the first "
+                     + String(window) + " steps, bound " + String(WINDOW_TOL))
+    print()
+    if len(fails) > 0:
+        for i in range(len(fails)):
+            print("  FAIL:", fails[i])
+        raise Error(family + ": " + String(len(fails)) + " check(s) failed")
+    print("=== PASS —", family, "===")
+
+
+def main() raises:
+    var args = argv()
+    var steps = 25
+    var window = 5
+    var cpu_lanes = -1
+    var i = 1
+    while i < len(args):
+        var s = String(args[i])
+        if s == "--steps" and i + 1 < len(args):
+            steps = Int(String(args[i + 1]))
+            i += 1
+        elif s == "--window" and i + 1 < len(args):
+            window = Int(String(args[i + 1]))
+            i += 1
+        elif s == "--cpu-lanes" and i + 1 < len(args):
+            cpu_lanes = Int(String(args[i + 1]))
+            i += 1
+        else:
+            raise Error("libero family batched: unknown argument '" + s + "'")
+        i += 1
+
+    comptime if FAMILY == "libero_goal":
+        run[LiberoGoalPlacement, LiberoGoalModel](steps, window, cpu_lanes)
+    elif FAMILY == "libero_object":
+        run[LiberoObjectPlacement, LiberoObjectModel](steps, window, cpu_lanes)
+    elif FAMILY == "libero_spatial":
+        run[LiberoSpatialPlacement, LiberoSpatialModel](steps, window, cpu_lanes)
+    elif FAMILY == "libero_kitchen_scene1":
+        run[LiberoKitchenScene1Placement, LiberoKitchenScene1Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_kitchen_scene2":
+        run[LiberoKitchenScene2Placement, LiberoKitchenScene2Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_kitchen_scene3":
+        run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_kitchen_scene4":
+        run[LiberoKitchenScene4Placement, LiberoKitchenScene4Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_kitchen_scene5":
+        run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_kitchen_scene6":
+        run[LiberoKitchenScene6Placement, LiberoKitchenScene6Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_kitchen_scene7":
+        run[LiberoKitchenScene7Placement, LiberoKitchenScene7Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_kitchen_scene8":
+        run[LiberoKitchenScene8Placement, LiberoKitchenScene8Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_kitchen_scene9":
+        run[LiberoKitchenScene9Placement, LiberoKitchenScene9Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_kitchen_scene10":
+        run[LiberoKitchenScene10Placement, LiberoKitchenScene10Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_living_room_scene1":
+        run[LiberoLivingRoomScene1Placement, LiberoLivingRoomScene1Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_living_room_scene2":
+        run[LiberoLivingRoomScene2Placement, LiberoLivingRoomScene2Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_living_room_scene3":
+        run[LiberoLivingRoomScene3Placement, LiberoLivingRoomScene3Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_living_room_scene4":
+        run[LiberoLivingRoomScene4Placement, LiberoLivingRoomScene4Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_living_room_scene5":
+        run[LiberoLivingRoomScene5Placement, LiberoLivingRoomScene5Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_living_room_scene6":
+        run[LiberoLivingRoomScene6Placement, LiberoLivingRoomScene6Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_study_scene1":
+        run[LiberoStudyScene1Placement, LiberoStudyScene1Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_study_scene2":
+        run[LiberoStudyScene2Placement, LiberoStudyScene2Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_study_scene3":
+        run[LiberoStudyScene3Placement, LiberoStudyScene3Model](steps, window, cpu_lanes)
+    elif FAMILY == "libero_study_scene4":
+        run[LiberoStudyScene4Placement, LiberoStudyScene4Model](steps, window, cpu_lanes)
+    else:
+        comptime assert False, "libero_family_batched: FAMILY names no LIBERO family"
