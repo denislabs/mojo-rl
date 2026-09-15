@@ -36,6 +36,7 @@ from .h5_types import (
 from .h5d import (
     h5d_close, h5d_create2, h5d_get_space, h5d_set_extent, h5d_write,
 )
+from .h5e import h5e_print_stack
 from .h5f import h5f_close, h5f_create, h5f_flush
 from .h5p import (
     h5p_close, h5p_create, h5p_dataset_create_class, h5p_set_chunk,
@@ -103,6 +104,7 @@ struct H5DatasetWriter(Movable):
             ext[1] = hsize_t(self.row_dim)
         var ext_ret = h5d_set_extent(self.dset_id, ext.unsafe_ptr())
         if ext_ret < 0:
+            h5e_print_stack(String("H5Dset_extent (append)"))
             raise Error("H5Dset_extent failed: ret=" + String(Int(ext_ret)))
 
         # 2. Select the new tail rows [old_n, new_n) in the FILE space.
@@ -149,6 +151,10 @@ struct H5DatasetWriter(Movable):
             H5P_DEFAULT,
             buf.unsafe_bitcast[NoneType](),
         )
+        # ⚠ THE STACK IS PRINTED BEFORE THE CLOSES: any successful libhdf5
+        # call clears the error stack, so after them it would print empty.
+        if ret < 0:
+            h5e_print_stack(String("H5Dwrite (append)"))
         _ = h5s_close(mem_space)
         _ = h5s_close(file_space)
 
@@ -254,6 +260,9 @@ struct H5Writer(Movable):
         var dset = h5d_create2(
             self.file_id, name^, type_id, space, H5P_DEFAULT, dcpl, H5P_DEFAULT
         )
+        # ⚠ Printed before the closes, which would clear the error stack.
+        if dset < 0:
+            h5e_print_stack(String("H5Dcreate2"))
         _ = h5p_close(dcpl)
         _ = h5s_close(space)
         if dset < 0:
@@ -265,4 +274,5 @@ struct H5Writer(Movable):
         """Force buffered data to disk without closing the file."""
         var ret = h5f_flush(self.file_id, c_int(0))  # H5F_SCOPE_LOCAL
         if ret < 0:
+            h5e_print_stack(String("H5Fflush"))
             raise Error("H5Fflush failed: ret=" + String(Int(ret)))

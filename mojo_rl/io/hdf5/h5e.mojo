@@ -45,3 +45,30 @@ def h5e_set_auto2_off() raises -> herr_t:
             Pointer[NoneType, MutAnyOrigin],
         ) thin -> herr_t,
     ]()(H5E_DEFAULT, null_fn, null_data)
+
+
+
+def h5e_print_stack(context: String):
+    """Print libhdf5's CURRENT error stack to stderr, under a heading.
+
+    ⚠⚠ FOR WRITE FAILURES ONLY. Auto-printing is off (see the module header)
+    because many failed calls are normal control flow. A failed WRITE never
+    is, and its return code alone says nothing: the first 50-episode store
+    died on a rented box as "H5Fflush failed: ret=-1", with 11 GB free and the
+    real cause sitting in a stack nobody printed. The writer calls this
+    before raising, so the next failure names itself.
+
+    `H5Eprint2(H5E_DEFAULT, NULL)` prints to stderr. Never raises: a
+    diagnostic that fails must not replace the error it was describing.
+    """
+    try:
+        print("── libhdf5 error stack: " + context + " ──")
+        var addr: Int = 0
+        var null_stream = Pointer[NoneType, MutAnyOrigin](unsafe_from_address=addr)
+        _ = _get_dylib_function[
+            lib,
+            "H5Eprint2",
+            def(hid_t, Pointer[NoneType, MutAnyOrigin]) thin -> herr_t,
+        ]()(H5E_DEFAULT, null_stream)
+    except:
+        pass
