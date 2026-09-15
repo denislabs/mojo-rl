@@ -98,7 +98,7 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.io.hdf5.reader import H5File
+from mojo_rl.io.hdf5.reader import H5File, H5Dataset
 from mojo_rl.physics3d.fields import Data, Model, DynDims, DynamicsScratch
 from mojo_rl.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
@@ -319,12 +319,28 @@ def main() raises:
         var h5 = H5File(path)
         for k in range(DEMOS_PER_TASK):
             var di = (demo_offset + k) % DEMOS_IN_FILE
-            var d_act = h5.open_dataset(
-                String("data/demo_") + String(di) + "/actions"
-            )
-            var d_st = h5.open_dataset(
-                String("data/demo_") + String(di) + "/states"
-            )
+            # ⚠ NAME THE FILE AND THE DEMO. libhdf5's own diagnostic names
+            # neither, and a "message not aligned" while deserializing an
+            # object header is a file whose BYTES are wrong (truncated or
+            # corrupted on disk), which only the path can be checked for —
+            # `h5py` over the same file says the same thing in one line.
+            var d_act: H5Dataset
+            var d_st: H5Dataset
+            try:
+                d_act = h5.open_dataset(
+                    String("data/demo_") + String(di) + "/actions"
+                )
+                d_st = h5.open_dataset(
+                    String("data/demo_") + String(di) + "/states"
+                )
+            except e:
+                raise Error(
+                    "cannot open data/demo_" + String(di) + " in " + path
+                    + " (" + String(e) + "). If libhdf5 printed 'message"
+                    " not aligned' or 'can't deserialize', the file's bytes"
+                    " are damaged: check it with h5py, `df -h`, and re-fetch"
+                    " it from HF `yifengzhu-hf/LIBERO-datasets`"
+                )
             var T = Int(d_act.dims[0])
             var raw_a = unsafe_alloc[Scalar[H]](T * 7).as_unsafe_any_origin()
             d_act.read_all[H](raw_a)
