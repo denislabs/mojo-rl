@@ -261,6 +261,46 @@ def residual_grad_kernel[N: Int](
         go[unsafe_offset=t] = Scalar[DT](2.0) * (m[unsafe_offset=t] - mt[unsafe_offset=t]) * inv_n
 
 
+def pessimism_row_weights_kernel[N: Int](
+    w1: Pointer[Scalar[DT], MutAnyOrigin],
+    w2: Pointer[Scalar[DT], MutAnyOrigin],
+    a: Pointer[Scalar[DT], MutAnyOrigin],
+    b: Pointer[Scalar[DT], MutAnyOrigin],
+    penalty: Scalar[DT],
+):
+    """d/da and d/db of `mean(a,b) - penalty*|a-b|`, per row.
+
+    The same reduction `pessimism_blend_kernel` applies to the VALUE, applied
+    to its GRADIENT: written as `lo*(0.5+p) + hi*(0.5-p)`, the derivative is
+    `0.5+p` on whichever of the two is smaller and `0.5-p` on the other. At
+    `penalty = 0.5` that is 1 and 0 — the whole gradient goes to the min
+    branch, which is what `actor_pessimism_penalty=0.5` means.
+    """
+    var t = Int(global_idx.x)
+    if t >= N:
+        return
+    var lo_w = Scalar[DT](0.5) + penalty
+    var hi_w = Scalar[DT](0.5) - penalty
+    if a[unsafe_offset=t] <= b[unsafe_offset=t]:
+        w1[unsafe_offset=t] = lo_w
+        w2[unsafe_offset=t] = hi_w
+    else:
+        w1[unsafe_offset=t] = hi_w
+        w2[unsafe_offset=t] = lo_w
+
+
+def scale_rows_kernel[N: Int, DIM: Int](
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    rowscale: Pointer[Scalar[DT], MutAnyOrigin],
+):
+    """`dst[i, :] = rowscale[i] * src[i, :]`."""
+    var t = Int(global_idx.x)
+    if t >= N * DIM:
+        return
+    dst[unsafe_offset=t] = rowscale[unsafe_offset=t // DIM] * src[unsafe_offset=t]
+
+
 def fb_diag_override_kernel[BATCH: Int](
     go: Pointer[Scalar[DT], MutAnyOrigin],
     diag_scale: Scalar[DT],
@@ -712,6 +752,52 @@ def sum3_scaled_t[target: StaticString, N: Int](
             dst.dev.value().unsafe_ptr(), a.dev.value().unsafe_ptr(),
             b.dev.value().unsafe_ptr(), c.dev.value().unsafe_ptr(), w,
             grid_dim=_blocks(N), block_dim=TPB,
+        )
+
+
+def pessimism_row_weights_t[target: StaticString, N: Int](
+    mut w1: Tensor, mut w2: Tensor, mut a: Tensor, mut b: Tensor,
+    penalty: Scalar[DT], ctx: Optional[DeviceContext] = None,
+) raises:
+    """Per-row gradient weights of the pessimistic blend. See the kernel."""
+    ensure_t[target](w1, N, ctx)
+    ensure_t[target](w2, N, ctx)
+    var lo_w = Scalar[DT](0.5) + penalty
+    var hi_w = Scalar[DT](0.5) - penalty
+    comptime if target == "cpu":
+        for i in range(N):
+            if a.data[i] <= b.data[i]:
+                w1.data[i] = lo_w
+                w2.data[i] = hi_w
+            else:
+                w1.data[i] = hi_w
+                w2.data[i] = lo_w
+    else:
+        var d = ctx.value()
+        d.enqueue_function[pessimism_row_weights_kernel[N]](
+            w1.dev.value().unsafe_ptr(), w2.dev.value().unsafe_ptr(),
+            a.dev.value().unsafe_ptr(), b.dev.value().unsafe_ptr(), penalty,
+            grid_dim=_blocks(N), block_dim=TPB,
+        )
+
+
+def scale_rows_t[target: StaticString, N: Int, DIM: Int](
+    mut dst: Tensor, mut src: Tensor, mut rowscale: Tensor,
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """`dst[i, :] = rowscale[i] * src[i, :]`."""
+    ensure_t[target](dst, N * DIM, ctx)
+    comptime if target == "cpu":
+        for i in range(N):
+            var r = rowscale.data[i]
+            for k in range(DIM):
+                dst.data[i * DIM + k] = r * src.data[i * DIM + k]
+    else:
+        var d = ctx.value()
+        d.enqueue_function[scale_rows_kernel[N, DIM]](
+            dst.dev.value().unsafe_ptr(), src.dev.value().unsafe_ptr(),
+            rowscale.dev.value().unsafe_ptr(),
+            grid_dim=_blocks(N * DIM), block_dim=TPB,
         )
 
 

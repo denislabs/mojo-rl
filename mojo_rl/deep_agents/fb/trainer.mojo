@@ -109,6 +109,8 @@ from .kernels import (
     scale_t,
     sum3_scaled_t,
     pessimism_blend_t,
+    pessimism_row_weights_t,
+    scale_rows_t,
     mean_abs_into_t,
     smooth_action_t,
     slice_cols_t,
@@ -284,12 +286,20 @@ struct FBTrainer[
     var g_fa: Tensor
     var g_pi: Tensor
     var rz: Tensor
+    var rz2: Tensor
+    var rzp: Tensor
+    var w_f1: Tensor
+    var w_f2: Tensor
+    var zw: Tensor
+    var fo2: Tensor
+    var g_pi2: Tensor
 
     var ctx: Optional[DeviceContext]
     var gamma: Float64
     var tau: Float64
     var ortho_weight: Float64
     var fb_pessimism: Float64
+    var actor_pessimism: Float64
     var policy_noise: Float64
     var noise_clip: Float64
     # ⚠ Global grad-norm clip, 0 = OFF. NOT cosmetic on FB: the measure loss is
@@ -417,11 +427,19 @@ struct FBTrainer[
         self.g_fa = Tensor()
         self.g_pi = Tensor()
         self.rz = Tensor()
+        self.rz2 = Tensor()
+        self.rzp = Tensor()
+        self.w_f1 = Tensor()
+        self.w_f2 = Tensor()
+        self.zw = Tensor()
+        self.fo2 = Tensor()
+        self.g_pi2 = Tensor()
         self.ctx = None
         self.gamma = 0.98
         self.tau = 0.01
         self.ortho_weight = 1.0
         self.fb_pessimism = 0.0
+        self.actor_pessimism = 0.5
         self.policy_noise = 0.2
         self.noise_clip = 0.3
         self.max_grad_norm = 0.0
@@ -491,11 +509,19 @@ struct FBTrainer[
         self.g_fa = move.g_fa^
         self.g_pi = move.g_pi^
         self.rz = move.rz^
+        self.rz2 = move.rz2^
+        self.rzp = move.rzp^
+        self.w_f1 = move.w_f1^
+        self.w_f2 = move.w_f2^
+        self.zw = move.zw^
+        self.fo2 = move.fo2^
+        self.g_pi2 = move.g_pi2^
         self.ctx = move.ctx^
         self.gamma = move.gamma
         self.tau = move.tau
         self.ortho_weight = move.ortho_weight
         self.fb_pessimism = move.fb_pessimism
+        self.actor_pessimism = move.actor_pessimism
         self.policy_noise = move.policy_noise
         self.noise_clip = move.noise_clip
         self.max_grad_norm = move.max_grad_norm
@@ -636,6 +662,13 @@ struct FBTrainer[
         ensure_t[T](self.g_fa, Self._ND, c)
         ensure_t[T](self.g_pi, Self._NA, c)
         ensure_t[T](self.rz, Self.BATCH, c)
+        ensure_t[T](self.rz2, Self.BATCH, c)
+        ensure_t[T](self.rzp, Self.BATCH, c)
+        ensure_t[T](self.w_f1, Self.BATCH, c)
+        ensure_t[T](self.w_f2, Self.BATCH, c)
+        ensure_t[T](self.zw, Self._ND, c)
+        ensure_t[T](self.fo2, Self._ND, c)
+        ensure_t[T](self.g_pi2, Self._NA, c)
         ensure_t[T](self.acc, 1, c)
         ensure_t[T](self.bs, Self.BATCH * Self.OBS, c)
         ensure_t[T](self.ba, Self._NA, c)
@@ -960,6 +993,9 @@ struct FBTrainer[
         call_forward[T, Self.BATCH](
             self.f1.online, TensorRefs[1, MutAnyOrigin](self.fin_a), self.fo, c
         )
+        call_forward[T, Self.BATCH](
+            self.f2.online, TensorRefs[1, MutAnyOrigin](self.fin_a), self.fo2, c
+        )
 
         # ⚠⚠ Rowwise F·z and its mean are computed on EVERY step, not only
         # when a loss is wanted. They feed TD3+BC's adaptive scale below, and
@@ -968,7 +1004,24 @@ struct FBTrainer[
         self.ws1.rd.forward[T, Self.BATCH](
             TensorRefs[2, MutAnyOrigin](self.fo, self.bz), self.rz, c
         )
-        mean_into_t[T, Self.BATCH](self.rz, self.acc_lam, c)
+        self.ws2.rd.forward[T, Self.BATCH](
+            TensorRefs[2, MutAnyOrigin](self.fo2, self.bz), self.rz2, c
+        )
+        # Q_fb is the PESSIMISTIC reduction over the ensemble, which at
+        # `actor_pessimism` 0.5 is exactly `min(F1·z, F2·z)` (`agent.py:275`).
+        # This went through F1 ALONE until §12.19 — an optimistic value term,
+        # and the one place the twin was paid for and not used.
+        pessimism_blend_t[T, Self.BATCH](
+            self.rzp, self.rz, self.rz2, Scalar[DT](1.0),
+            Scalar[DT](self.actor_pessimism), c,
+        )
+        # per-row d/dF1 and d/dF2 of that same reduction: at penalty 0.5 the
+        # whole gradient goes to whichever twin is the min on that row
+        pessimism_row_weights_t[T, Self.BATCH](
+            self.w_f1, self.w_f2, self.rz, self.rz2,
+            Scalar[DT](self.actor_pessimism), c,
+        )
+        mean_into_t[T, Self.BATCH](self.rzp, self.acc_lam, c)
         # ⚠ TWO DIFFERENT REDUCTIONS OF THE SAME ROWS, AND THEY ARE NOT
         # INTERCHANGEABLE. `acc_lam` is the SIGNED mean — that is the actor
         # loss the reference logs (`-Q_fb.mean()`). `acc_mag` is the mean of
@@ -976,7 +1029,7 @@ struct FBTrainer[
         # (`Q_fb.abs().mean()`). We used `|acc_lam|` for the weight until
         # §12.15; Jensen makes that never larger and it collapses toward 0 as
         # Q_fb becomes sign-balanced.
-        mean_abs_into_t[T, Self.BATCH](self.rz, self.acc_mag, c)
+        mean_abs_into_t[T, Self.BATCH](self.rzp, self.acc_mag, c)
 
         var loss = Float64(0)
         if want_loss:
@@ -1004,30 +1057,50 @@ struct FBTrainer[
         # the normalisation is unconditional AND capture-safe.
         # ⚠ BC ONLY — see `act_l2_margin`. Normalising the value term against
         # an action penalty leaves the actor with no drive at all.
-        if self.bc_weight > 0.0:
-            scale_by_inv_mag_t[T, Self._ND](
-                self.g_fa, self.bz, self.acc_mag,
-                Scalar[DT](-1.0 / Float64(Self.BATCH)), Scalar[DT](1e-6), c,
-            )
-        else:
-            scale_t[T, Self._ND](
-                self.g_fa, self.bz,
-                Scalar[DT](-1.0 / Float64(Self.BATCH)), c,
-            )
-
-        # ⚠ Through F1 WITHOUT keeping F1's parameter grads: the optimizer has
-        # already stepped them above, and folding a second, differently-scaled
-        # critic gradient into the next step would be silent. The vjp
-        # accumulates into params, so F1's grads are zeroed right after.
-        call_vjp[T, Self.BATCH](
-            self.f1.online, TensorRefs[1, MutAnyOrigin](self.fin_a), self.g_fa,
-            TensorRefs[1, MutAnyOrigin](self.g_fin_a), c,
-        )
-        self.f1.online.zero_grad[T](c)
-
-        slice_cols_t[T, Self.F_IN, Self._A_OFF, Self.ACT, Self.BATCH](
-            self.g_pi, self.g_fin_a, c
-        )
+        # The value term's cotangent is `-w_i·z_i / BATCH` — the plain `z`
+        # scaled PER ROW by that twin's share of the pessimistic reduction.
+        # `zw` holds it so the two scale kernels below stay exactly what they
+        # were; writing a row-scaled variant of each would be the same rule in
+        # two more places.
+        for _twin in range(2):
+            if _twin == 0:
+                scale_rows_t[T, Self.BATCH, Self.D](self.zw, self.bz, self.w_f1, c)
+            else:
+                scale_rows_t[T, Self.BATCH, Self.D](self.zw, self.bz, self.w_f2, c)
+            if self.bc_weight > 0.0:
+                scale_by_inv_mag_t[T, Self._ND](
+                    self.g_fa, self.zw, self.acc_mag,
+                    Scalar[DT](-1.0 / Float64(Self.BATCH)), Scalar[DT](1e-6), c,
+                )
+            else:
+                scale_t[T, Self._ND](
+                    self.g_fa, self.zw,
+                    Scalar[DT](-1.0 / Float64(Self.BATCH)), c,
+                )
+            # ⚠ Through F WITHOUT keeping its parameter grads: the optimizer
+            # has already stepped them above, and folding a second,
+            # differently-scaled critic gradient into the next step would be
+            # silent. The vjp accumulates into params, so they are zeroed
+            # right after.
+            if _twin == 0:
+                call_vjp[T, Self.BATCH](
+                    self.f1.online, TensorRefs[1, MutAnyOrigin](self.fin_a),
+                    self.g_fa, TensorRefs[1, MutAnyOrigin](self.g_fin_a), c,
+                )
+                self.f1.online.zero_grad[T](c)
+                slice_cols_t[T, Self.F_IN, Self._A_OFF, Self.ACT, Self.BATCH](
+                    self.g_pi, self.g_fin_a, c
+                )
+            else:
+                call_vjp[T, Self.BATCH](
+                    self.f2.online, TensorRefs[1, MutAnyOrigin](self.fin_a),
+                    self.g_fa, TensorRefs[1, MutAnyOrigin](self.g_fin_a), c,
+                )
+                self.f2.online.zero_grad[T](c)
+                slice_cols_t[T, Self.F_IN, Self._A_OFF, Self.ACT, Self.BATCH](
+                    self.g_pi2, self.g_fin_a, c
+                )
+                axpy_t[T, Self._NA](self.g_pi, self.g_pi2, Scalar[DT](1.0), c)
         mean_sq_into_t[T, Self._NA](self.g_pi, self.acc_gv, c)
         # + BC: d/dpi of `bc_weight · mean_i mean_k (pi - a_data)^2`.
         # `axpy` twice rather than a bespoke kernel: g_pi += w·pi, g_pi -= w·a.

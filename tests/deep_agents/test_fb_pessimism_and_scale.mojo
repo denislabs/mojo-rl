@@ -26,7 +26,9 @@ from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.fb.kernels import pessimism_blend_t, mean_abs_into_t, mean_into_t
+from mojo_rl.deep_agents.fb.kernels import (
+    pessimism_blend_t, pessimism_row_weights_t, mean_abs_into_t, mean_into_t,
+)
 
 comptime N: Int = 64
 # `DT` is float32: the MEAN costs one rounding, so it gets a float32 band.
@@ -151,9 +153,65 @@ def test_mean_abs_is_not_abs_mean() raises:
     print("      ratio mean(|x|)/|mean(x)| =", absmean / signed)
 
 
+def test_weights_are_the_blends_derivative() raises:
+    """The actor's Q_fb VALUE and its GRADIENT must come from one rule.
+
+    `pessimism_blend_t` reduces the twin to a value; `pessimism_row_weights_t`
+    says how much of the gradient each twin gets. They are written as separate
+    kernels, so nothing but this stops them drifting apart — and a value that
+    is `min` paired with a gradient that is the mean would train the actor
+    against an objective it is not being scored on, silently.
+
+    The identity: `blend(a, b, 1, p) == w1*a + w2*b`, exactly, for every p.
+    """
+    print("[4] the row weights ARE the blend's derivative ...")
+    var a = Tensor.alloc(N)
+    var b = Tensor.alloc(N)
+    for i in range(N):
+        # straddling, so `min` picks each side about half the time
+        a.data[i] = Scalar[DT](0.5 * Float64(i) - 8.0)
+        b.data[i] = Scalar[DT](-0.3 * Float64(i) + 5.0)
+    var w1 = Tensor.alloc(N)
+    var w2 = Tensor.alloc(N)
+    var blended = Tensor.alloc(N)
+    for pi in range(3):
+        var p = 0.0 if pi == 0 else (0.25 if pi == 1 else 0.5)
+        pessimism_blend_t["cpu", N](blended, a, b, Scalar[DT](1.0), Scalar[DT](p), None)
+        pessimism_row_weights_t["cpu", N](w1, w2, a, b, Scalar[DT](p), None)
+        var worst = Float64(0)
+        var n_min = 0
+        for i in range(N):
+            var recon = (
+                Float64(w1.data[i]) * Float64(a.data[i])
+                + Float64(w2.data[i]) * Float64(b.data[i])
+            )
+            var e = abs(recon - Float64(blended.data[i]))
+            if e > worst:
+                worst = e
+            if Float64(w1.data[i]) > 0.99:
+                n_min += 1
+        print("      p =", p, "  worst |w.x - blend| =", worst,
+              "  rows where twin1 took it all:", n_min)
+        assert_true(
+            worst < MEAN_TOL,
+            "at p=" + String(p) + " the weights do not reconstruct the blend ("
+            + String(worst) + ") — value and gradient have drifted apart",
+        )
+    # at p = 0.5 the split must be hard: all-or-nothing, never shared
+    pessimism_row_weights_t["cpu", N](w1, w2, a, b, Scalar[DT](0.5), None)
+    for i in range(N):
+        var x = Float64(w1.data[i])
+        assert_true(
+            abs(x) < 1e-12 or abs(x - 1.0) < 1e-12,
+            "at penalty 0.5 each row's gradient must go ENTIRELY to the min"
+            " twin; got weight " + String(x),
+        )
+
+
 def main() raises:
     print("=== FB pessimism + scale_reg reductions ===")
     test_pessimism_blend()
     test_gamma_multiplies_the_blend()
     test_mean_abs_is_not_abs_mean()
+    test_weights_are_the_blends_derivative()
     print("=== all passed ===")

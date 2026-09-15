@@ -50,9 +50,11 @@ the COUPLING — "is `s` on the trajectory `z` encodes" — which is the
 conditional signal §15.3 asks for and the reason `D(s)` alone is worse
 than nothing.
 
-⚠ `Q_D`'s actor gradient goes through twin 1 alone, as the FB actor's goes
-through `F1` alone. The reference uses `mean − 0.5·spread` of two members,
-which for two members is exactly `min`; the target uses the min here too.
+⚠ `Q_D`'s actor gradient goes through twin 1 alone. The FB actor's no longer
+does — since §12.19 `Q_fb` is `min(F1·z, F2·z)` (`actor_pessimism` 0.5,
+`agent.py:275`), so THIS is now the only place an actor gradient is taken from
+a single twin. The reference's `mean − 0.5·spread` of two members is exactly
+`min`; `Q_D`'s TARGET already uses it, only its actor path does not.
 
 Checkpoint: `save_state(p)` writes the FB nets to `p` in `FBTrainer`'s own
 layout (so `fb_eval_walker_online.mojo` loads it unchanged) and `D` +
