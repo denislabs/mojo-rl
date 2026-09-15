@@ -67,6 +67,12 @@ comptime LiberoGoalModel = ModelDefFromXML[
     npair=_pm.NPAIR,
     timestep=_pm.TIMESTEP,
     cone_type=ConeType.ELLIPTIC,
+    # ⚠⚠ THE SCENE'S OWN MAX CONDIM (4: robosuite's finger pads), NOT THE
+    # DEFAULT 3. Without it the batched solver clamps every finger-pad contact
+    # to condim 3 and drops its TORSIONAL row — while the CPU replay leg
+    # (`StudioIntegEll`, built at MAX_CONDIM 6) keeps it, so batch and CPU
+    # disagreed on every grasp. Found by the blocked-solver work (§13.54).
+    max_condim=_pm.MAX_CONDIM,
     max_contacts=LIBERO_GOAL_MAX_CONTACTS,
     obs_dim_override=LIBERO_GOAL_OBS_DIM,
     # ⚠⚠ SEVEN, NOT THE NINE ACTUATORS. LIBERO's policy emits OSC_POSE's

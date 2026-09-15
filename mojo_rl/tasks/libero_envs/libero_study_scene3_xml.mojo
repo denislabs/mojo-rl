@@ -51,6 +51,7 @@ comptime LiberoStudyScene3Model = ModelDefFromXML[
     npair=_pm.NPAIR,
     timestep=_pm.TIMESTEP,
     cone_type=ConeType.ELLIPTIC,
+    max_condim=_pm.MAX_CONDIM,
     max_contacts=LIBERO_STUDY_SCENE3_MAX_CONTACTS,
     obs_dim_override=LIBERO_STUDY_SCENE3_OBS_DIM,
     action_dim_override=7,

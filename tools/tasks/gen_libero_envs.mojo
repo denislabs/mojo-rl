@@ -21,9 +21,17 @@ The batched env truncates at `max_contacts` silently
 peak — the landing of every prop at reset, which is the scene's geometric
 ceiling (on `libero_goal` the sampled resets and all fifty frozen inits hit the
 same 112, and MuJoCo agrees substep for substep). A grasp adds contacts on top
-of a resting scene: `libero_goal`'s 500 recorded demonstrations peak 7 above
-their resting count. `GRASP_MARGIN` is four times that, so a gripper closing on
-a prop while another lands still fits.
+of a resting scene, and the demonstrations say how many: the batched replay of
+`libero_goal`'s demos on the 5090 (256 lanes, 60 steps, PERFORMANCE.md §13.53's
+per-step CSV) peaks at 77-89 contacts mid-grasp, steps 25-43, on four tasks,
+against a resting 37 — the fingers and a carried bowl or bottle on the
+cabinet. `GRASP_MARGIN` covers a grasp while a prop is still landing only on a
+family whose peak already sits well above its resting count; on `libero_goal`
+the budget, 144, is 55 above that grasp peak.
+
+⚠ AN EARLIER VERSION OF THIS PARAGRAPH SAID THE DEMOS PEAK "7 ABOVE" RESTING.
+That came from `libero_demo_success`, which replays only each demo's SUCCESS
+WINDOW (its last states, the prop already set down), not the grasp.
 
 ⚠ NOT A PROOF. Frozen inits exist on disk for `libero_goal` only; the other 22
 budgets are sampled resets, and `test_libero_object` records a LIBERO frozen
@@ -201,6 +209,7 @@ def render_env(family: String, n_free: Int, b: Int, peak: Int) raises -> String:
         "    npair=_pm.NPAIR,\n"
         "    timestep=_pm.TIMESTEP,\n"
         "    cone_type=ConeType.ELLIPTIC,\n"
+        "    max_condim=_pm.MAX_CONDIM,\n"
         "    max_contacts=" + up + "_MAX_CONTACTS,\n"
         "    obs_dim_override=" + up + "_OBS_DIM,\n"
         "    action_dim_override=7,\n"

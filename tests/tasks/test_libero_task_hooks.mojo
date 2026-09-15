@@ -14,7 +14,8 @@ on one table. This gates it where that family cannot look.
 1. **Every family's comptime facts agree with its files**, on all 23: the
    observation width the env allocates (`M.OBS_DIM`) is `NQ + NV + N_FREE +
    TASK_GOAL_WORDS` (what the hook writes); the generated table and the
-   generated model def agree on nq/nv/nbody/nsite; the cone is ELLIPTIC; the
+   generated model def agree on nq/nv/nbody/nsite; the cone is ELLIPTIC and
+   `MAX_CONDIM` is the parsed scene's own (4, not the default 3); the
    contact budget is ABOVE the peak `libero-contact-budget` measured
    (`contact_budget.kv`); and the ONE config's restated constants —
    `FRAME_SKIP`, `MAX_STEPS`, `get_timestep` — are this family's
@@ -597,6 +598,13 @@ def _statics[T: PlacementTable, M: ModelDefLike, C: Phyics3dEnvConfig](
     )
     ta.quiet(M.CONE_TYPE == ConeType.ELLIPTIC,
              name + ": the cone is not ELLIPTIC (robosuite's base.xml)")
+    # ⚠ AGAINST THE PARSED SCENE, not the generated dims the def reads — a
+    # def that forgets `max_condim=` compiles at the default 3 and drops the
+    # finger pads' torsional row on the batch only (the CPU leg builds at 6).
+    var fmd = parse_model_runtime(scene_path(f))
+    ta.quiet(M.MAX_CONDIM == fmd.max_condim,
+             name + ": MAX_CONDIM " + String(M.MAX_CONDIM)
+             + " != the scene's " + String(fmd.max_condim))
     ta.quiet(M.ACTION_DIM == 7, name + ": ACTION_DIM is not OSC_POSE's 7")
     if name not in peaks:
         ta.quiet(False, name + ": no measured contact peak in " + BUDGET_KV)

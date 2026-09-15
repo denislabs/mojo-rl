@@ -51,6 +51,7 @@ comptime LiberoLivingRoomScene4Model = ModelDefFromXML[
     npair=_pm.NPAIR,
     timestep=_pm.TIMESTEP,
     cone_type=ConeType.ELLIPTIC,
+    max_condim=_pm.MAX_CONDIM,
     max_contacts=LIBERO_LIVING_ROOM_SCENE4_MAX_CONTACTS,
     obs_dim_override=LIBERO_LIVING_ROOM_SCENE4_OBS_DIM,
     action_dim_override=7,
