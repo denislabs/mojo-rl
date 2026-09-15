@@ -5157,3 +5157,81 @@ hash's collisions, and §13.53 lever 1's second question — whether the 11
 mesh colliders (the gripper fingers and the props) are the kernel's
 rounds. The cooperative line search is no longer worth its compile time
 before that is measured.
+
+### 13.55 OPEN (2026-09-15): LIBERO's collision — every lane overflows the block kernel's candidate list and runs on the serial kernel
+
+**The finding, before any 5090 number** (M1 Pro, 4 lanes, recorded
+`libero_goal` demo poses, `COLL_CAND_REPORT`): the thread-0 sweep of
+`_detect_contacts_sap_block_kernel` passes the AABB test on far more pairs
+than the 256-candidate cap, on EVERY lane, so every lane is marked
+(`overflow`) and re-run by the flagged-only serial kernel:
+
+    window (control steps)   sweep AABB passes   survive pair/body/mask   listed   fallback
+    5   (settled)            377 mean, max 378    25 mean,  max  27        256      16 of 16
+    30  (grasp, carry)       404 mean, max 486    53 mean,  max 135        256      16 of 16
+    45  (placing)            427 mean, max 500    70 mean,  max 127        256      16 of 16
+
+So on LIBERO the block kernel lists, gives up, and the serial per-env kernel
+does the collision — the §13.51 kernel the block one replaced. The two
+collision kernels of §13.54's trace are most likely the serial fallback
+(9.47 ms) and the block kernel's listing (0.75 ms); the `nofb` arm below
+confirms or refutes it. 82-88% of the listed pairs are box/box: LIBERO's
+fixtures are built from many boxes on one body, which the AABB sweep lists
+and the narrow phase's body filter throws away one candidate at a time.
+
+**The candidate fix, off: `ccd_workspace.COLL_PREFILTER`.** The sweep drops
+a pair before listing it when `_sap_pair_narrow` would reject it before any
+geometry — the predefined-pair lookup, `pair_body_filtered`, the
+contype/conaffinity mask, through one helper (`_sap_pair_listable`) that the
+report's survivor count uses too. Exact by construction: such a pair emits
+nothing and touches no warm slot, the survivors keep their emission order.
+With it the listed candidates are 25-135, no lane overflows, and the kernel
+runs 1-5 rounds of `COLL_TPB`.
+
+**⚠ AND ON METAL IT EXPOSES A KNOWN MISCOMPUTE.** With the prefilter — or
+with the cap raised to 400 and no prefilter — the block kernel's narrow
+phase runs on LIBERO and returns 0 contacts where production returns 37:
+`tests/physics3d/test_box_box_sap_gpu_parity.mojo` (dc3dda72d) records the
+block kernel dropping box/box pairs on Metal and CUDA being correct (5090,
+every row agrees). The overflow was what kept `libero_goal`'s props on the
+table on the Mac; that test's header guessed it, and the report measures
+it. So `COLL_PREFILTER` must not ship on Metal as is. The Metal times
+(base 11.6 / 17.9 / 22.1 ms per launch, prefilter 6.9 / 6.0 / 7.5) are NOT
+a speedup — those launches lost their contacts, and the table script says so.
+
+**The instruments** (all off by default, the production contact set
+unchanged — the `base` arm's checksums match the pre-change build's):
+
+- `COLL_CAND_REPORT` writes a per-lane report into the dead tail of
+  `coll_stage` after phase 3: listed candidates, overflow and fallback
+  flags, sweep length (AABB tests, sort shifts), the UNCAPPED AABB passes
+  and their filter survivors, plane candidates, and the kind keys in
+  phase-2 order.
+- `benchmarks/physics3d_gpu/bench_libero_collision.mojo`: recorded demo
+  poses in three windows, the env's exact collision instantiation, one
+  timed launch per snapshot, a CPU check, the report decoder.
+- `scripts/libero_collision_arms.sh build|run` and
+  `scripts/libero_collision_arms.py`: nine arms built by flipping knobs in
+  place (restored from its own copy, refused on dirty files or identical
+  binaries), run interleaved, MIN over rounds, and a table that flags any
+  arm whose contact set departs from production's before reading its time.
+
+**The box run** (from the repository root; ~9 compiles, then ~3 rounds):
+
+    pixi run -e nvidia bash scripts/libero_collision_arms.sh build
+    pixi run -e nvidia bash scripts/libero_collision_arms.sh run
+    pixi run python scripts/libero_collision_arms.py > libero_coll/TABLE.txt
+
+What decides:
+
+1. `nofb`'s `flagged` = 256 on every window and `base - nofb` ≈ `base`:
+   production LIBERO is the serial kernel. (Expected from the report.)
+2. `pre`'s CPU check equal to `base`'s, and no `!!` line: the prefilter is
+   exact on CUDA. If `!!` fires on NVIDIA, the box/box defect is not
+   Metal-only after all, and nothing below it counts.
+3. `base / pre`: the prefilter's win on the kernel; ×63% for the step.
+4. The `pre_stop*` split: if phase 1 (the listing, ~3 000 AABB tests and
+   ~5 000 insertion-sort shifts per lane on thread 0) dominates, the sort
+   and sweep are next; if phase 2 does, `pre_tpb64` says whether fewer
+   rounds pay; `pre - pre_nofb` prices the flagged-only launch that runs
+   every substep with nothing flagged.

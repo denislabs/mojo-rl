@@ -169,6 +169,7 @@ from .ccd_workspace import (
     CCD_WS_SIZE, COLL_TPB, COLL_CCD_LANES, COLL_NCAND_CAP, COLL_STAGE_MAXC,
     HILL_WARM_ACROSS_STEPS, HILL_WARM_SLOTS, HW_WS_OFF,
     COLL_STAGE_SLOTS, COLL_BLOCK_KERNEL, COLL_NO_FALLBACK,
+    COLL_CAND_REPORT, COLL_REPORT_HDR, COLL_REPORT_WORDS, COLL_PREFILTER,
 )
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
@@ -3009,6 +3010,80 @@ comptime COLL_STOP_AFTER: Int = 0
 comptime _KIND_PLANE_BASE: Int = 64
 comptime _KIND_MAX: Int = 80
 
+# Where `COLL_CAND_REPORT` writes in an env's `coll_stage` row: the last
+# `COLL_REPORT_WORDS` scalars (layout in `ccd_workspace.mojo`). ONE spelling
+# for the kernel and the benchmark that decodes it.
+comptime COLL_REPORT_BASE: Int = (
+    COLL_STAGE_SLOTS * CONTACT_SIZE - COLL_REPORT_WORDS
+)
+
+
+@always_inline
+def _sap_pair_listable[
+    DTYPE: DType,
+    D: DimsLike,
+    EX_CAP: Int,
+    L_PAIRS: Layout,
+    L_MMETA: Layout,
+    L_BODIES: Layout,
+    L_EXCLUDES: Layout,
+](
+    si: Int,
+    sj: Int,
+    si_type: Int,
+    sj_type: Int,
+    si_body: Int,
+    sj_body: Int,
+    si_contype: Int,
+    si_conaffinity: Int,
+    sj_contype: Int,
+    sj_conaffinity: Int,
+    dims: D,
+    pairs: LayoutTensor[DTYPE, L_PAIRS, MutAnyOrigin],
+    mmeta: LayoutTensor[DTYPE, L_MMETA, MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    excludes: LayoutTensor[DTYPE, L_EXCLUDES, MutAnyOrigin],
+    ex_sig: Scratch[Int, EX_CAP],
+    n_sig: Int,
+    nbody: Int,
+) -> Bool:
+    """Would `_sap_pair_narrow` get past its first rejects for this AABB pair?
+
+    ⚠ A TRANSCRIPTION OF THAT FUNCTION'S HEAD, IN ITS ORDER, THROUGH THE
+    FUNCTIONS IT CALLS: the pair canonicalised by (`mj_geom_type_rank`,
+    geom index); a predefined `<pair>` skips the filters; otherwise
+    `pair_body_filtered`, then the contype/conaffinity mask. False means
+    the narrow phase returns before any geometry, emitting nothing and
+    touching no warm slot — so dropping the pair from the list is exact.
+    Read by `COLL_CAND_REPORT` (the survivor count) and `COLL_PREFILTER`
+    (the listing itself). If the prefilter ships, `_sap_pair_narrow` should
+    call this rather than keep its own copy (`_a_rule_written_inline_twice
+    _drifts`); until then the benchmark's CPU check is what holds the two
+    together."""
+    var lo = si if si < sj else sj
+    var hi = sj if si < sj else si
+    var lo_type = si_type if si < sj else sj_type
+    var hi_type = sj_type if si < sj else si_type
+    var gi = lo
+    var gj = hi
+    if mj_geom_type_rank(lo_type) > mj_geom_type_rank(hi_type):
+        gi = hi
+        gj = lo
+    if find_predefined_pair[DTYPE](gi, gj, dims, pairs, mmeta) >= 0:
+        return True
+    var gi_is_si = gi == si
+    var gi_body = si_body if gi_is_si else sj_body
+    var gj_body = sj_body if gi_is_si else si_body
+    if pair_body_filtered[DTYPE, EX_CAP=EX_CAP](
+        gi_body, gj_body, bodies, mmeta, excludes, ex_sig, n_sig, nbody,
+    ):
+        return False
+    if (si_contype & sj_conaffinity) == 0 and (
+        sj_contype & si_conaffinity
+    ) == 0:
+        return False
+    return True
+
 
 def _detect_contacts_sap_block_kernel[
     DTYPE: DType,
@@ -3278,6 +3353,14 @@ def _detect_contacts_sap_block_kernel[
     var ncand = 0
     var overflow = 0
     var off = 0
+    # `COLL_CAND_REPORT`'s thread-0 counters. Declared for every build and
+    # consumed below either way, so the production build compiles them out.
+    var rep_tests = 0
+    var rep_shifts = 0
+    var rep_sap_n = 0
+    var rep_aabb_all = 0
+    var rep_survive = 0
+    var rep_planes = 0
 
     @parameter
     @always_inline
@@ -3330,6 +3413,8 @@ def _detect_contacts_sap_block_kernel[
                 if rebind[Scalar[DTYPE]](pf_sh[gj]) != Scalar[DTYPE](0):
                     var gj_type = Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + gj]))
                     _push(gi, gj, -1, _KIND_PLANE_BASE + mj_geom_type_rank(gj_type))
+                    comptime if COLL_CAND_REPORT:
+                        rep_planes += 1
         barrier()
 
     if tid == 0:
@@ -3391,7 +3476,11 @@ def _detect_contacts_sap_block_kernel[
             ) > key_val:
                 idx_sh[j + 1] = idx_sh[j]
                 j -= 1
+                comptime if COLL_CAND_REPORT:
+                    rep_shifts += 1
             idx_sh[j + 1] = Scalar[DTYPE](key)
+        comptime if COLL_CAND_REPORT:
+            rep_sap_n = sap_n
         # 4c. the sweep: AABB tests and the break only
         for i in range(sap_n):
             var si = Int(rebind[Scalar[DTYPE]](idx_sh[i]))
@@ -3399,6 +3488,8 @@ def _detect_contacts_sap_block_kernel[
             var si_type = Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + si]))
             var si_rank = mj_geom_type_rank(si_type)
             for j in range(i + 1, sap_n):
+                comptime if COLL_CAND_REPORT:
+                    rep_tests += 1
                 var sj = Int(rebind[Scalar[DTYPE]](idx_sh[j]))
                 if rebind[Scalar[DTYPE]](ab_sh[0 * NG + sj]) > si_max_x:
                     break
@@ -3419,6 +3510,26 @@ def _detect_contacts_sap_block_kernel[
                     si_rank * 8 + sj_rank if si_rank <= sj_rank
                     else sj_rank * 8 + si_rank
                 )
+                comptime if COLL_CAND_REPORT or COLL_PREFILTER:
+                    var keep = _sap_pair_listable[DTYPE, EX_CAP=EX_CAP](
+                        si, sj, si_type,
+                        Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + sj])),
+                        Int(rebind[Scalar[DTYPE]](gf_sh[1 * NG + si])),
+                        Int(rebind[Scalar[DTYPE]](gf_sh[1 * NG + sj])),
+                        Int(rebind[Scalar[DTYPE]](gf_sh[2 * NG + si])),
+                        Int(rebind[Scalar[DTYPE]](gf_sh[3 * NG + si])),
+                        Int(rebind[Scalar[DTYPE]](gf_sh[2 * NG + sj])),
+                        Int(rebind[Scalar[DTYPE]](gf_sh[3 * NG + sj])),
+                        dims, pairs, mmeta, bodies, excludes, ex_sig, n_sig,
+                        nbody,
+                    )
+                    comptime if COLL_CAND_REPORT:
+                        rep_aabb_all += 1
+                        if keep:
+                            rep_survive += 1
+                    comptime if COLL_PREFILTER:
+                        if not keep:
+                            continue
                 _push(si, sj, si_type, key)
         # 5. the kind order: a counting sort on the keys, stable, so two
         # candidates of one kind keep their emission order.
@@ -3581,6 +3692,57 @@ def _detect_contacts_sap_block_kernel[
     if tid == 0 and Int(rebind[Scalar[DTYPE]](ctrl_sh[1])) == 0:
         sort_contacts_mujoco_order[DTYPE](env, contacts, n_out)
         smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](n_out)
+
+    # ── `COLL_CAND_REPORT`: the candidate list, into the dead staging tail ──
+    # After the compaction above nothing reads `stage` until the next
+    # launch's phase 2 writes it again, so `contacts` / `ncon` are unchanged.
+    # The kind key is RECOMPUTED from the candidate's geom types, because
+    # phase 3 reused the key slot for the destination offset; `ord_sh`
+    # (the phase-2 order) is untouched by phase 3.
+    comptime if COLL_CAND_REPORT:
+        comptime assert COLL_BLOCK_KERNEL, (
+            "COLL_CAND_REPORT reports the BLOCK kernel's candidate list"
+        )
+        if tid == 0:
+            comptime RB = COLL_REPORT_BASE
+            stage[env, RB + 0] = Scalar[DTYPE](ncand)
+            stage[env, RB + 1] = Scalar[DTYPE](overflow)
+            stage[env, RB + 2] = Scalar[DTYPE](
+                Int(rebind[Scalar[DTYPE]](ctrl_sh[1]))
+            )
+            stage[env, RB + 3] = smeta[env, META_IDX_NUM_CONTACTS]
+            stage[env, RB + 4] = Scalar[DTYPE](rep_sap_n)
+            stage[env, RB + 5] = Scalar[DTYPE](rep_tests)
+            stage[env, RB + 6] = Scalar[DTYPE](rep_shifts)
+            stage[env, RB + 7] = Scalar[DTYPE](COLL_TPB)
+            stage[env, RB + 8] = Scalar[DTYPE](rep_aabb_all)
+            stage[env, RB + 9] = Scalar[DTYPE](rep_survive)
+            stage[env, RB + 10] = Scalar[DTYPE](rep_planes)
+            for p in range(COLL_NCAND_CAP):
+                var key = -1
+                if p < ncand:
+                    var c = Int(rebind[Scalar[DTYPE]](ord_sh[p]))
+                    var a = Int(rebind[Scalar[DTYPE]](cand_sh[0 * NC + c]))
+                    var b = Int(rebind[Scalar[DTYPE]](cand_sh[1 * NC + c]))
+                    var t = Int(rebind[Scalar[DTYPE]](cand_sh[2 * NC + c]))
+                    var rb_ = mj_geom_type_rank(
+                        Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + b]))
+                    )
+                    if t < 0:
+                        key = _KIND_PLANE_BASE + rb_
+                    else:
+                        var ra = mj_geom_type_rank(
+                            Int(rebind[Scalar[DTYPE]](gf_sh[0 * NG + a]))
+                        )
+                        key = ra * 8 + rb_ if ra <= rb_ else rb_ * 8 + ra
+                stage[env, RB + COLL_REPORT_HDR + p] = Scalar[DTYPE](key)
+    else:
+        _ = rep_tests
+        _ = rep_shifts
+        _ = rep_sap_n
+        _ = rep_aabb_all
+        _ = rep_survive
+        _ = rep_planes
 
 def detect_contacts_sap[
     target: StaticString,

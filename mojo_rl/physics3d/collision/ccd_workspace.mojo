@@ -309,6 +309,54 @@ comptime COLL_STAGE_SLOTS: Int = (
 # contact set is WRONG for those envs while this is on.
 comptime COLL_NO_FALLBACK: Bool = False
 
+# ⚠ A MEASUREMENT KNOB, THE CONTACT SET UNCHANGED (PERFORMANCE.md §13.55).
+# True makes thread 0 of the block kernel write a per-env REPORT of its
+# candidate list into the TAIL of that env's `coll_stage` row, after phase 3
+# has compacted the staging windows into `contacts` — the slab is dead by
+# then, and nothing reads it until the next launch's phase 2 writes it
+# again, so `contacts` and `ncon` are bit-identical with the knob on. What
+# it answers, per env: how many candidates the narrow phase ran (hence how
+# many ROUNDS of `COLL_TPB`), which KINDS they were in round order, how
+# long thread 0's sweep was (AABB tests, insertion-sort shifts), and why an
+# env went to the serial fallback. Layout, from
+# `broadphase_sap.COLL_REPORT_BASE`:
+#
+#     [0] ncand      [1] overflow (list past COLL_NCAND_CAP)
+#     [2] fallback   (overflow OR a staging window filled; ncon = -1)
+#     [3] ncon out   [4] sap_n (geoms in the sweep)
+#     [5] sweep AABB tests   [6] insertion-sort shifts   [7] COLL_TPB
+#     [8] sweep AABB passes, UNCAPPED (the list stops at COLL_NCAND_CAP; this
+#         does not)   [9] of those, the pairs that survive the narrow phase's
+#         first rejects — the predefined-pair lookup, `pair_body_filtered`
+#         and the contype/conaffinity mask, the SAME functions it calls
+#     [10] plane candidates listed
+#     [11 ..] the candidates' kind keys in phase-2 ORDER, -1 past ncand
+#
+# ⚠ NOT FOR TIMING: the report is serial work on thread 0 at the end of
+# every launch, and the two counters sit inside the sweep's inner loop.
+# Read times from a build with this off. `benchmarks/physics3d_gpu/
+# bench_libero_collision.mojo` decodes it.
+comptime COLL_CAND_REPORT: Bool = False
+
+# ⚠ A CANDIDATE FIX UNDER MEASUREMENT, OFF (PERFORMANCE.md §13.55). True makes
+# the block kernel's thread-0 sweep drop a pair BEFORE listing it when the
+# narrow phase would reject it at once — the predefined-pair lookup, then
+# `pair_body_filtered`, then the contype/conaffinity mask, through the
+# helper `broadphase_sap._sap_pair_listable`. Exact by construction: such a
+# pair emits no contact and touches no warm slot, and the survivors keep
+# their emission order, so the compacted `contacts` are the same list.
+#
+# WHY: on LIBERO (240 geoms, fixtures built from many boxes on one body) the
+# sweep's AABB test passes 377-500 pairs per lane against the 256-candidate
+# cap — EVERY lane overflowed and went to the serial fallback, so the block
+# kernel listed, gave up, and the per-env serial kernel did all the work —
+# while only 25-127 of those pairs survive these three rejects (the report,
+# 4 lanes, Apple). The plane phase already gates its candidates the same way
+# (`_sap_plane_gate`); the sweep did not.
+comptime COLL_PREFILTER: Bool = False
+comptime COLL_REPORT_HDR: Int = 11
+comptime COLL_REPORT_WORDS: Int = COLL_REPORT_HDR + COLL_NCAND_CAP
+
 # The single-row spelling, for host callers that collide one pair at a time
 # (every gate and probe in `tests/physics3d`). The engine binds
 # `[BATCH, CCD_WS_SIZE]` instead and passes the env index as `wrow`.
