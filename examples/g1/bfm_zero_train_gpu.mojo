@@ -133,6 +133,7 @@ from mojo_rl.envs.robots.g1_motion_priority import (
     g1_fill_window_table,
 )
 from mojo_rl.envs.robots.g1_tracking_eval import (
+    G1_D, G1_H, G1_L, G1_HB, G1_HD,
     G1_SEG_ROWS, G1TrackScore, g1_n_segments, g1_segment_row, g1_score_segment,
 )
 from mojo_rl.envs.robots.unitree_g1_rsi import (
@@ -145,11 +146,11 @@ from mojo_rl.envs.robots.unitree_g1_rsi import (
 comptime N_ENVS: Int = 1024
 comptime OBS: Int = UNITREE_G1_OBS_DIM        # 527
 comptime ACT: Int = UnitreeG1Model.ACTION_DIM  # 29
-comptime D: Int = 256
-comptime H: Int = 1024
-comptime L: Int = 3
-comptime HB: Int = 256
-comptime HD: Int = 1024
+comptime D: Int = G1_D
+comptime H: Int = G1_H
+comptime L: Int = G1_L
+comptime HB: Int = G1_HB
+comptime HD: Int = G1_HD
 comptime BATCH: Int = 1024
 comptime CAP: Int = 2_000_000
 comptime SEQ: Int = 8
@@ -624,10 +625,13 @@ def main() raises:
     var prio_emd = List[Float64]()
 
     # ── the in-loop tracking eval ─────────────────────────────────────
-    # ⚠ HOST RAM. The CPU `FBTrainer` is the nets + targets + Adam moments
-    # again on the host (~2 GB) and is allocated WHETHER OR NOT the eval runs;
-    # `--eval-segments 0` skips the scoring and the ~63 MB `qpos` column, not
-    # that allocation. Say so rather than let the flag imply otherwise.
+    # ⚠ HOST RAM, AND IT SCALES WITH THE TOWER. The CPU `FBTrainer` is the
+    # nets + targets + Adam moments again on the HOST: 4 copies x 4 B x the
+    # F/B/actor parameter count. At `G1_H = 2048, G1_L = 6` that is ~2.7 GB
+    # (it was ~0.35 GB at 1024/3), and it is allocated WHETHER OR NOT the eval
+    # runs — `--eval-segments 0` skips the scoring and the ~63 MB `qpos`
+    # column, not that allocation. Say so rather than let the flag imply
+    # otherwise.
     var eval_on = eval_segments > 0
     var eval_env = UnitreeG1[DType.float64]()
     var eval_t = EvalTrainer.make(

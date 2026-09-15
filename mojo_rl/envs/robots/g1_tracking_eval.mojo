@@ -46,6 +46,36 @@ from mojo_rl.envs.robots.unitree_g1_xml import (
 from mojo_rl.envs.robots.unitree_g1_rsi import G1RsiTable, G1_RSI_NQ, G1_RSI_NV
 
 
+# ── the G1 network dims, in ONE place ─────────────────────────────────────
+# The trainer and the standalone eval must agree on these EXACTLY or a
+# checkpoint will not load into the eval — they used to be declared in both
+# files with a comment asking the reader to keep them in sync by hand.
+#
+# BFM-Zero's own tower is `hidden_dim 2048, hidden_layers 6`
+# (`released/new_model/config.yaml`), 299 M parameters across F x2, Q_D x2,
+# actor, B and D. Measured budget on a 32 GiB card (docs §12.21):
+#
+#     weights + target + Adam   4.46 GiB
+#     activations (rough)       2.62 GiB
+#     replay ring, expert and tracking tables   11.22 GiB
+#     ----------------------------------------------------
+#     ~18.3 GiB of 32
+#
+# ⚠ The REPLAY RING is the big term, not the model: 9.98 GiB at CAP = 2 M,
+# because every transition stores `obs` TWICE (2*527 + 29 + 256 + 1 floats =
+# 5360 B). The reference's own CAP of 5.12 M would be 25.6 GiB of ring alone
+# and does NOT fit beside this tower — that scale-down is forced by the card.
+#
+# Smaller alternatives, if compile time or throughput bites:
+#     H = 1536, L = 4  -> 111 M params, ~14.4 GiB
+#     H = 1024, L = 3  ->  40 M params, ~12.7 GiB   (what runs 1-5 used)
+comptime G1_D: Int = 256          # z_dim
+comptime G1_H: Int = 2048         # hidden_dim
+comptime G1_L: Int = 6            # hidden_layers
+comptime G1_HB: Int = 256         # backward map hidden
+comptime G1_HD: Int = 1024        # discriminator hidden
+
+
 # ── the protocol's constants (oracle lines 95-97) ─────────────────────────
 comptime G1_SEG_ROWS: Int = 499      # ceil((300 - 1) / 30 / 0.02)
 comptime G1_SEG_STRIDE: Int = 500    # 10 s at 50 Hz

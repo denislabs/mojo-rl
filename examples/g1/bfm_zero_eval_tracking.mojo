@@ -29,8 +29,10 @@ release in Isaac at 440 M; Fig. 13's 60 M point ≈ 0.91). `--random` is the
 null the plan asks for: a random-init net must score like a random policy,
 far from any of those.
 
-⚠ SAME DIMS AS THE DRIVER. `H`, `L`, `HB`, `D` must equal
-`bfm_zero_train_gpu.mojo`'s — a checkpoint of another size fails to load.
+The dims come from `g1_tracking_eval.mojo` (`G1_H`, `G1_L`, ...), which the
+trainer imports too — they used to be declared in BOTH files with a note asking
+the reader to keep them in sync, and a mismatch shows up only as a checkpoint
+that will not load.
 ⚠ `-Xlinker -ld_classic` ON macOS (the trainer's nested generics exceed
 Apple's ld symbol-name limit; see the agent smoke).
 ⚠ Five-rung scoring: score several checkpoints of a run, never one
@@ -49,6 +51,7 @@ from mojo_rl.core.cont_action import ContAction
 from mojo_rl.core.assignment import emd_uniform
 from mojo_rl.envs.robots.unitree_g1_rsi import G1RsiTable
 from mojo_rl.envs.robots.g1_tracking_eval import (
+    G1_D, G1_H, G1_L, G1_HB, G1_HD,
     G1_SEG_ROWS, g1_n_segments, g1_segment_row, g1_score_segment,
 )
 from mojo_rl.data.store import TrajectoryStore
@@ -63,10 +66,10 @@ from mojo_rl.envs.robots.unitree_g1_xml import (
 
 comptime OBS: Int = UNITREE_G1_OBS_DIM
 comptime ACT: Int = UnitreeG1Model.ACTION_DIM
-comptime D: Int = 256
-comptime H: Int = 1024
-comptime L: Int = 3
-comptime HB: Int = 256
+comptime D: Int = G1_D
+comptime H: Int = G1_H
+comptime L: Int = G1_L
+comptime HB: Int = G1_HB
 comptime BATCH: Int = 64        # the trainer's batch — unused at eval, kept small
 comptime NQ = UnitreeG1Model.NQ
 comptime NV = UnitreeG1Model.NV
