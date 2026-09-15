@@ -65,6 +65,9 @@ from ..gpu.constants import (
     GEOM_IDX_MESH_ID,
     GEOM_IDX_GROUP,
     GEOM_IDX_RAY_VISIBLE,
+    GEOM_IDX_BODY,
+    GEOM_IDX_RADIUS,
+    GEOM_IDX_HALF_LENGTH,
     MODEL_MESH_META_SIZE,
     MESH_META_IDX_TRIADR,
     MESH_META_IDX_TRINUM,
@@ -103,6 +106,9 @@ struct VisualModel[DTYPE: DType](Movable):
     """
 
     var ngeom: Int
+    var ncond: Int
+    """Conditional-site rows after the `ngeom` ordinary ones — see
+    `APP_IDX_COND_QADR`. `geoms` and `appearance` hold `ngeom + ncond` rows."""
     var nmesh: Int
     var ntri: Int
     var nmat: Int
@@ -138,6 +144,7 @@ struct VisualModel[DTYPE: DType](Movable):
 
     def __init__(out self):
         self.ngeom = 0
+        self.ncond = 0
         self.nmesh = 0
         self.ntri = 0
         self.nmat = 0
@@ -180,6 +187,68 @@ struct VisualModel[DTYPE: DType](Movable):
 
 
 # ─── the build ───────────────────────────────────────────────────────────────
+
+
+@fieldwise_init
+struct SiteCondition(Copyable, Movable):
+    """A site the camera draws, when a joint says so.
+
+    `site` and `joint` are the COMPILED names (prefixes included). The site
+    is visible in a lane when that lane's `qpos` at the joint's address is at
+    least `min_qpos`; an empty `joint` makes it always visible. What decides
+    which sites qualify is the benchmark's business, not the tracer's —
+    LIBERO's rule lives in `tasks/libero_visual.mojo`."""
+
+    var site: String
+    var joint: String
+    var min_qpos: Float64
+
+
+def append_mip_chain(mut texels: List[UInt8], adr: Int, w: Int, h: Int) -> Int:
+    """Append levels 1.. of the RGB image at `texels[adr:]` and return how many
+    levels the texture now has, level 0 included.
+
+    `glGenerateMipmap`, which `render_context.c` calls on every texture it
+    uploads. OpenGL leaves the filter to the implementation; this is the 2x2
+    box every desktop driver uses for a power-of-two level. ⚠ AN ODD SIZE
+    DROPS ITS LAST ROW OR COLUMN INTO THE CLAMP: level `k+1` is
+    `max(1, dim >> 1)` (OpenGL's `floor(dim / 2)`), and a 1-wide level
+    averages its single column with itself. Averaging in the stored space is
+    correct because the atlas is LINEAR — an sRGB PNG was decoded before this
+    ran, and `GL_SRGB8` mipmaps are filtered in linear too.
+
+    ⚠ ROUNDED, NOT TRUNCATED: `(a + b + c + d + 2) // 4`. Truncating darkens
+    every level by half a step, and twelve levels of it is six grey levels on
+    the far end of a floor.
+    """
+    var levels = 1
+    var pw = w
+    var ph = h
+    var padr = adr
+    while pw > 1 or ph > 1:
+        var nw = pw >> 1 if pw > 1 else 1
+        var nh = ph >> 1 if ph > 1 else 1
+        var nadr = len(texels)
+        texels.reserve(nadr + nw * nh * 3)
+        for y in range(nh):
+            var y0 = 2 * y if 2 * y < ph else ph - 1
+            var y1 = 2 * y + 1 if 2 * y + 1 < ph else ph - 1
+            for x in range(nw):
+                var x0 = 2 * x if 2 * x < pw else pw - 1
+                var x1 = 2 * x + 1 if 2 * x + 1 < pw else pw - 1
+                for c in range(3):
+                    var sum = (
+                        Int(texels[padr + (y0 * pw + x0) * 3 + c])
+                        + Int(texels[padr + (y0 * pw + x1) * 3 + c])
+                        + Int(texels[padr + (y1 * pw + x0) * 3 + c])
+                        + Int(texels[padr + (y1 * pw + x1) * 3 + c])
+                    )
+                    texels.append(UInt8((sum + 2) // 4))
+        padr = nadr
+        pw = nw
+        ph = nh
+        levels += 1
+    return levels
 
 
 @always_inline
@@ -242,6 +311,7 @@ def build_visual_model[
     mut m: Model[DTYPE, D],
     group_mask: Int = 0b111,
     verbose: Bool = False,
+    conditions: List[SiteCondition] = List[SiteCondition](),
 ) raises -> VisualModel[DTYPE]:
     """Everything a camera needs, from the parse and the built `Model`.
 
@@ -468,6 +538,7 @@ def build_visual_model[
                 " MAX_VIS_TEXTURES in raytrace/visual_records.mojo — it sizes"
                 " one small table."
             )
+        var nlevels = append_mip_chain(texels, adr, w, h)
         tex_slot[t] = len(tex_rows) // VIS_TEX_WORDS
         var row = List[Scalar[DTYPE]](
             length=VIS_TEX_WORDS, fill=Scalar[DTYPE](0)
@@ -478,6 +549,7 @@ def build_visual_model[
         row[TEX_IDX_TYPE] = Scalar[DTYPE](td.tex_type)
         row[TEX_IDX_ACTIVE] = Scalar[DTYPE](1)
         row[TEX_IDX_NCHAN] = Scalar[DTYPE](3)
+        row[TEX_IDX_NLEVELS] = Scalar[DTYPE](nlevels)
         for i in range(VIS_TEX_WORDS):
             tex_rows.append(row[i])
     vis.ntex = len(tex_rows) // VIS_TEX_WORDS
@@ -664,6 +736,75 @@ def build_visual_model[
         mrows[o + MESH_META_IDX_TRINUM] = Scalar[DTYPE](trinum[i])
         mrows[o + MESH_META_IDX_BVHADR] = Scalar[DTYPE](bvhadr[i])
         mrows[o + MESH_META_IDX_BVHNUM] = Scalar[DTYPE](bvhnum[i])
+
+    # ── 8b. conditional sites, after every ordinary geom ─────────────────
+    #
+    # A site becomes a geom record of its own type, size and pose, and an
+    # appearance row with its rgba and no material — MuJoCo draws a site with
+    # the `mjvGeom` defaults, specular and shininess 0.5, which is exactly
+    # what `shade_hit` uses for a geom with no material.
+    var qadr_of = List[Int]()
+    var qa = 0
+    for j in range(len(fmd.joints)):
+        qadr_of.append(qa)
+        qa += fmd.joints[j].nq
+    for c in range(len(conditions)):
+        var si = -1
+        for k in range(len(fmd.site_names)):
+            if fmd.site_names[k] == conditions[c].site:
+                si = k
+                break
+        if si < 0:
+            raise Error(
+                "build_visual_model: no site '" + conditions[c].site
+                + "' for a SiteCondition — the camera would never show it"
+            )
+        var qadr = -1
+        if conditions[c].joint.byte_length() > 0:
+            for j in range(len(fmd.joint_names)):
+                if fmd.joint_names[j] == conditions[c].joint:
+                    qadr = qadr_of[j]
+                    break
+            if qadr < 0:
+                raise Error(
+                    "build_visual_model: no joint '" + conditions[c].joint
+                    + "' for the condition on site '" + conditions[c].site + "'"
+                )
+        var sd = fmd.sites[si]
+        var row = List[Scalar[DTYPE]](length=MODEL_GEOM_SIZE, fill=Scalar[DTYPE](0))
+        row[GEOM_IDX_BODY] = Scalar[DTYPE](sd.body_id)
+        row[GEOM_IDX_TYPE] = Scalar[DTYPE](sd.site_type)
+        row[GEOM_IDX_POS_X] = Scalar[DTYPE](sd.pos_x)
+        row[GEOM_IDX_POS_Y] = Scalar[DTYPE](sd.pos_y)
+        row[GEOM_IDX_POS_Z] = Scalar[DTYPE](sd.pos_z)
+        row[GEOM_IDX_QUAT_X] = Scalar[DTYPE](sd.quat_x)
+        row[GEOM_IDX_QUAT_Y] = Scalar[DTYPE](sd.quat_y)
+        row[GEOM_IDX_QUAT_Z] = Scalar[DTYPE](sd.quat_z)
+        row[GEOM_IDX_QUAT_W] = Scalar[DTYPE](sd.quat_w)
+        # The size in `ray_model`'s per-type spelling (see its dispatch):
+        # sphere radius, capsule/cylinder radius + half-length, box and
+        # ellipsoid half-extents.
+        row[GEOM_IDX_RADIUS] = Scalar[DTYPE](sd.size_0)
+        row[GEOM_IDX_HALF_LENGTH] = Scalar[DTYPE](sd.size_1)
+        row[GEOM_IDX_HALF_X] = Scalar[DTYPE](sd.size_0)
+        row[GEOM_IDX_HALF_Y] = Scalar[DTYPE](sd.size_1 if sd.size_1 > 0 else sd.size_0)
+        row[GEOM_IDX_HALF_Z] = Scalar[DTYPE](sd.size_2 if sd.size_2 > 0 else sd.size_0)
+        row[GEOM_IDX_RAY_VISIBLE] = Scalar[DTYPE](1)
+        row[GEOM_IDX_MESH_ID] = Scalar[DTYPE](-1)
+        for i in range(MODEL_GEOM_SIZE):
+            grows.append(row[i])
+        var ap = List[Scalar[DTYPE]](length=VIS_GEOM_APPEARANCE, fill=Scalar[DTYPE](0))
+        ap[APP_IDX_R] = Scalar[DTYPE](sd.rgba_r)
+        ap[APP_IDX_G] = Scalar[DTYPE](sd.rgba_g)
+        ap[APP_IDX_B] = Scalar[DTYPE](sd.rgba_b)
+        ap[APP_IDX_A] = Scalar[DTYPE](sd.rgba_a)
+        ap[APP_IDX_MATID] = Scalar[DTYPE](-1)
+        ap[APP_IDX_UVADR] = Scalar[DTYPE](-1)
+        ap[APP_IDX_COND_QADR] = Scalar[DTYPE](qadr)
+        ap[APP_IDX_COND_MIN] = Scalar[DTYPE](conditions[c].min_qpos)
+        for i in range(VIS_GEOM_APPEARANCE):
+            arows.append(ap[i])
+    vis.ncond = len(conditions)
 
     # ── 9. into the tensors ──────────────────────────────────────────────
     for i in range(len(bvh)):

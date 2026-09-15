@@ -47,14 +47,18 @@ from ..gpu.constants import (
     GEOM_IDX_BODY,
 )
 from ..ray.model import RayHit, ray_model
-from .camera import CameraFrame, camera_pixel_ray
+from .camera import CameraFrame, camera_pixel_ray, camera_sample_ray
 from .appearance import (
     _clamp01,
     geom_uv,
-    sample_texture,
+    sample_texture_lod,
+    texture_lod,
     shade_lights,
     Texel,
+    UV,
 )
+from ..parser.flat_model import TEX_CUBE
+from ..gpu.constants import MESH_ARENA_RECORD
 from .visual_records import *
 
 
@@ -148,6 +152,52 @@ def _geom_world_pose[
     return (bp + bq.rotate_vec(lp), bq * lq)
 
 
+@always_inline
+def _tri_bary[
+    DTYPE: DType, L_TRI: Layout
+](
+    mesh_tris: LayoutTensor[DTYPE, L_TRI, MutAnyOrigin],
+    tri: Int,
+    p: Vec3Generic[DTYPE],
+) -> UV[DTYPE] where DTYPE.is_floating_point():
+    """Barycentric weights `(bu, bv)` of `v0`, `v1` for a point in the
+    triangle's PLANE, `ray_triangle`'s convention (`v2` takes the rest).
+
+    ⚠ NOT CLAMPED TO THE TRIANGLE, ON PURPOSE. It is evaluated at a
+    neighbouring pixel's footprint, which is usually outside the hit triangle;
+    extrapolating that triangle's UV map is what keeps the derivative
+    continuous across a UV seam, where the neighbouring triangle's own UVs
+    would jump to the other side of the atlas."""
+    var o = tri * MESH_ARENA_RECORD
+    var v2 = Vec3Generic[DTYPE](
+        rebind[Scalar[DTYPE]](mesh_tris[o + 6]),
+        rebind[Scalar[DTYPE]](mesh_tris[o + 7]),
+        rebind[Scalar[DTYPE]](mesh_tris[o + 8]),
+    )
+    var e0 = Vec3Generic[DTYPE](
+        rebind[Scalar[DTYPE]](mesh_tris[o + 0]),
+        rebind[Scalar[DTYPE]](mesh_tris[o + 1]),
+        rebind[Scalar[DTYPE]](mesh_tris[o + 2]),
+    ) - v2
+    var e1 = Vec3Generic[DTYPE](
+        rebind[Scalar[DTYPE]](mesh_tris[o + 3]),
+        rebind[Scalar[DTYPE]](mesh_tris[o + 4]),
+        rebind[Scalar[DTYPE]](mesh_tris[o + 5]),
+    ) - v2
+    var d = p - v2
+    var a00 = e0.dot(e0)
+    var a01 = e0.dot(e1)
+    var a11 = e1.dot(e1)
+    var r0 = d.dot(e0)
+    var r1 = d.dot(e1)
+    var det = a00 * a11 - a01 * a01
+    if det == Scalar[DTYPE](0):
+        return UV[DTYPE](Scalar[DTYPE](0), Scalar[DTYPE](0))
+    return UV[DTYPE](
+        (r0 * a11 - r1 * a01) / det, (r1 * a00 - r0 * a01) / det
+    )
+
+
 def shade_hit[
     DTYPE: DType,
     SHADOWS: Bool,
@@ -189,8 +239,16 @@ def shade_hit[
     eye: Vec3Generic[DTYPE],
     gaze: Vec3Generic[DTYPE],
     base_scale: Scalar[DTYPE],
+    ray_org: Vec3Generic[DTYPE],
+    ray_dx: Vec3Generic[DTYPE],
+    ray_dy: Vec3Generic[DTYPE],
 ) -> Vec3Generic[DTYPE] where DTYPE.is_floating_point():
     """The colour of one surface point: material, texel, then the lights.
+
+    `ray_org` with `ray_dx` / `ray_dy` are the rays of the pixels one to the
+    RIGHT and one BELOW, from the origin this hit's ray left — the texture's
+    level of detail is measured with them (see the texel block below). For a
+    reflection they are the mirrored eye and the mirrored neighbours.
 
     `base_scale` multiplies the geom's rgba BEFORE the shading, which is
     `renderGeomReflection`'s whole body:
@@ -253,11 +311,79 @@ def shade_hit[
         var inv = pose[1].conjugate()
         var lp = inv.rotate_vec(hitpoint - pose[0])
         var ln = inv.rotate_vec(hit.normal)
-        var uv = geom_uv[DTYPE](
-            geoms, mesh_uv, g, hit.tri, hit.bu, hit.bv,
-            lp, ln, ttype, repeat_u, repeat_v, texuniform,
+        # ⚠⚠ THE LEVEL OF DETAIL IS A RASTERISER'S, MEASURED WITH RAYS.
+        # OpenGL takes lambda from how far the texture coordinates move
+        # between neighbouring pixels. Here the neighbouring pixels' rays are
+        # intersected with this hit's TANGENT PLANE — not with the scene, so a
+        # silhouette cannot hand a pixel a derivative from a geom behind it —
+        # and `geom_uv` is evaluated there with this hit's own normal (so a
+        # box keeps its face) and this triangle's own UV map (so a mesh keeps
+        # its chart). Pass 0 is the hit itself, passes 1 and 2 the right and
+        # lower neighbours: ONE `geom_uv` call site (see `trace_visual`).
+        var uv = UV[DTYPE](Scalar[DTYPE](0), Scalar[DTYPE](0))
+        var dux = Scalar[DTYPE](0)
+        var dvx = Scalar[DTYPE](0)
+        var duy = Scalar[DTYPE](0)
+        var dvy = Scalar[DTYPE](0)
+        var okx = False
+        var oky = False
+        var nrm = hit.normal
+        var plane_d = (hitpoint - ray_org).dot(nrm)
+        for pass_ in range(3):
+            var lq = lp
+            var qbu = hit.bu
+            var qbv = hit.bv
+            if pass_ > 0:
+                var dd = ray_dx if pass_ == 1 else ray_dy
+                var den = dd.dot(nrm)
+                if abs(den) <= Scalar[DTYPE](1e-12):
+                    continue
+                var tt = plane_d / den
+                if tt <= Scalar[DTYPE](0):
+                    continue
+                lq = inv.rotate_vec(ray_org + dd * tt - pose[0])
+                if hit.tri >= 0:
+                    var bq = _tri_bary[DTYPE](mesh_tris, hit.tri, lq)
+                    qbu = bq.u
+                    qbv = bq.v
+            var uq = geom_uv[DTYPE](
+                geoms, mesh_uv, g, hit.tri, qbu, qbv,
+                lq, ln, ttype, repeat_u, repeat_v, texuniform,
+            )
+            if pass_ == 0:
+                uv = uq
+                continue
+            var du = uq.u - uv.u
+            var dv = uq.v - uv.v
+            # ⚠ A CUBE FACE CAN SWITCH BETWEEN TWO PIXELS, and the jump is a
+            # face change, not a footprint. Its (s, t) live in [0, 1] per
+            # face, so a step over half a face is discarded rather than read
+            # as a 12-level minification. Every other mapping here is
+            # continuous across the tangent plane and keeps what it gets.
+            if ttype == TEX_CUBE and (
+                abs(du) > Scalar[DTYPE](0.5) or abs(dv) > Scalar[DTYPE](0.5)
+            ):
+                continue
+            if pass_ == 1:
+                dux = du
+                dvx = dv
+                okx = True
+            else:
+                duy = du
+                dvy = dv
+                oky = True
+        # A missing axis (grazing, or a discarded face switch) borrows the
+        # other one: an isotropic footprint is the better guess than none.
+        if okx and not oky:
+            duy = dux
+            dvy = dvx
+        elif oky and not okx:
+            dux = duy
+            dvx = dvy
+        var lod = texture_lod[DTYPE](textures, texid, dux, dvx, duy, dvy)
+        tx = sample_texture_lod[DTYPE](
+            textures, texels, texid, uv.u, uv.v, lod
         )
-        tx = sample_texture[DTYPE](textures, texels, texid, uv.u, uv.v)
 
     var lit = shade_lights[DTYPE, SHADOWS](
         lights, nlight, geoms, ngeom, bodies, xpos, xquat, env,
@@ -281,6 +407,70 @@ def shade_hit[
     return lit
 
 
+def trace_visual[
+    DTYPE: DType,
+    L_GEOMS: Layout,
+    L_APP: Layout,
+    L_BODIES: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_MESH_META: Layout,
+    L_TRI: Layout,
+    L_HF_META: Layout,
+    L_HF: Layout,
+    L_QPOS: Layout,
+](
+    geoms: LayoutTensor[DTYPE, L_GEOMS, MutAnyOrigin],
+    ngeom: Int,
+    ncond: Int,
+    appearance: LayoutTensor[DTYPE, L_APP, MutAnyOrigin],
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
+    xquat: LayoutTensor[DTYPE, L_XQUAT, MutAnyOrigin],
+    env: Int,
+    mesh_meta: LayoutTensor[DTYPE, L_MESH_META, MutAnyOrigin],
+    mesh_tris: LayoutTensor[DTYPE, L_TRI, MutAnyOrigin],
+    hfield_meta: LayoutTensor[DTYPE, L_HF_META, MutAnyOrigin],
+    hfield_data: LayoutTensor[DTYPE, L_HF, MutAnyOrigin],
+    hf_stride: Int,
+    pnt: Vec3Generic[DTYPE],
+    vec: Vec3Generic[DTYPE],
+) -> RayHit[DTYPE] where DTYPE.is_floating_point():
+    """`ray_model` over the ordinary geoms, then each CONDITIONAL SITE row
+    whose lane-local condition holds (`APP_IDX_COND_QADR`). The nearest wins,
+    and a site's hit reports its row index, `>= ngeom`, as the geom."""
+    # ⚠ ONE `ray_model` CALL SITE, IN A LOOP: pass 0 is the ordinary geoms
+    # `[0, ngeom)`, pass `k` the one conditional row `ngeom + k - 1`. Mojo
+    # inlines every call site of a generic kernel function, and two sites of
+    # `ray_model` (mesh BVH, hfield and primitives each) measurably multiplied
+    # the Metal compile of the camera kernel.
+    var hit = RayHit[DTYPE](
+        Scalar[DTYPE](-1), -1, Vec3Generic[DTYPE](0, 0, 0), -1,
+        Scalar[DTYPE](0), Scalar[DTYPE](0),
+    )
+    for k in range(1 + ncond):
+        var g0 = 0
+        var g1 = ngeom
+        if k > 0:
+            g0 = ngeom + k - 1
+            g1 = g0 + 1
+            var ab = g0 * VIS_GEOM_APPEARANCE
+            var qadr = Int(rebind[Scalar[DTYPE]](appearance[ab + APP_IDX_COND_QADR]))
+            if qadr >= 0:
+                var qv = rebind[Scalar[DTYPE]](qpos[env, qadr])
+                if not (qv >= rebind[Scalar[DTYPE]](appearance[ab + APP_IDX_COND_MIN])):
+                    continue
+        var h = ray_model[DTYPE](
+            geoms, g1, bodies, xpos, xquat, env,
+            mesh_meta, mesh_tris, hfield_meta, hfield_data, hf_stride,
+            pnt, vec, -1, True, False, 0x3F, g0,
+        )
+        if h.geom >= 0 and (hit.geom < 0 or h.t < hit.t):
+            hit = h
+    return hit
+
+
 def render_pixel[
     DTYPE: DType,
     SHADOWS: Bool,
@@ -299,6 +489,8 @@ def render_pixel[
     L_TEX: Layout,
     L_TEXELS: Layout,
     L_LIGHTS: Layout,
+    L_QPOS: Layout,
+    SAMPLES: Int = 1,
 ](
     geoms: LayoutTensor[DTYPE, L_GEOMS, MutAnyOrigin],
     ngeom: Int,
@@ -318,6 +510,8 @@ def render_pixel[
     texels: LayoutTensor[DType.uint8, L_TEXELS, MutAnyOrigin],
     lights: LayoutTensor[DTYPE, L_LIGHTS, MutAnyOrigin],
     nlight: Int,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    ncond: Int,
     frame: CameraFrame[DTYPE],
     width: Int,
     height: Int,
@@ -325,7 +519,142 @@ def render_pixel[
     py: Int,
     background: Vec3Generic[DTYPE],
 ) -> PixelHit[DTYPE] where DTYPE.is_floating_point():
-    """Primary ray, material, texel, lights, and MuJoCo's reflection pass.
+    """One pixel: the centre ray, and with `SAMPLES = 4` OpenGL's 4x MSAA.
+
+    ⚠⚠ LIBERO'S PICTURES ARE MULTISAMPLED, AND THAT IS MOST OF THE GAP A
+    SINGLE RAY LEAVES. `mjr_makeContext` allocates the offscreen buffer with
+    `vis.quality.offsamples` samples — 4 by default, and 4 in every LIBERO
+    `model_file` — and robosuite records through it. Rendering LIBERO's own
+    model in MuJoCo 3.12 and scoring against the recorded frames: 43.13 dB at
+    4 samples, 28.85 dB at none (measured on all 10 `libero_goal` demos). One
+    ray per pixel is the second picture, whatever the shading.
+
+    What MSAA does, and what this does: COVERAGE is tested at 4 sub-pixel
+    positions, SHADING runs once per primitive at the pixel centre, and the 4
+    samples are averaged. So the centre ray is shaded as before (and alone
+    supplies `depth`, `geom` and `refl_geom`); each sample ray is only TRACED,
+    and reuses the centre colour when it lands on the centre's geom — the
+    interior of a surface costs 4 extra traces and no extra shading, and only
+    a sample across an edge is shaded itself. Positions are the standard 4x
+    rotated grid, (±1/8, ±3/8) and (±3/8, ∓1/8) of a pixel, with `y` flipped
+    because row 0 here is the TOP while OpenGL's is the bottom.
+
+    ⚠ ARRAY-FREE ON PURPOSE: the offsets are an if-chain on the sample index,
+    not a table — a per-thread array read by a runtime index is the storage
+    class Metal has silently miscomputed in this engine.
+    """
+    # The neighbours' rays, for the texture level of detail only.
+    var dir_dx = camera_pixel_ray[DTYPE](frame, width, height, px + 1, py)
+    var dir_dy = camera_pixel_ray[DTYPE](frame, width, height, px, py + 1)
+    # ⚠ ONE TRACE AND ONE SHADE CALL SITE for the centre and every sample:
+    # pass 0 is the centre, passes 1-4 the samples (see `trace_visual` for
+    # why a second call site is a compile-time cost, not a style point).
+    comptime NS: Int = 0 if SAMPLES <= 1 else 4
+    comptime assert SAMPLES == 1 or SAMPLES == 4, (
+        "render_pixel: SAMPLES must be 1 or 4"
+    )
+    var centre_rgb = background
+    var centre_depth = Scalar[DTYPE](0)
+    var centre_geom = -1
+    var centre_refl = -1
+    var acc = Vec3Generic[DTYPE](0, 0, 0)
+    for k in range(1 + NS):
+        var ox = Scalar[DTYPE](0)
+        var oy = Scalar[DTYPE](0)
+        if k == 1:
+            ox = Scalar[DTYPE](-0.125)
+            oy = Scalar[DTYPE](0.375)
+        elif k == 2:
+            ox = Scalar[DTYPE](0.375)
+            oy = Scalar[DTYPE](0.125)
+        elif k == 3:
+            ox = Scalar[DTYPE](-0.375)
+            oy = Scalar[DTYPE](-0.125)
+        elif k == 4:
+            ox = Scalar[DTYPE](0.125)
+            oy = Scalar[DTYPE](-0.375)
+        var sdir = camera_sample_ray[DTYPE](
+            frame, width, height, px, py, ox, oy
+        )
+        var sh = trace_visual[DTYPE](
+            geoms, ngeom, ncond, appearance, qpos, bodies, xpos, xquat, env,
+            mesh_meta, mesh_tris, hfield_meta, hfield_data, hf_stride,
+            frame.pos, sdir,
+        )
+        if k > 0 and sh.geom == centre_geom:
+            acc = acc + centre_rgb
+            continue
+        var ph = _shade_ray[DTYPE, SHADOWS, REFLECT](
+            geoms, ngeom, appearance, bodies, xpos, xquat, env,
+            mesh_meta, mesh_tris, mesh_uv, hfield_meta, hfield_data,
+            hf_stride, materials, textures, texels, lights, nlight, qpos,
+            ncond, frame, sdir, dir_dx, dir_dy, sh, background,
+        )
+        if k == 0:
+            centre_rgb = ph.rgb
+            centre_depth = ph.depth
+            centre_geom = ph.geom
+            centre_refl = ph.refl_geom
+        else:
+            acc = acc + ph.rgb
+    comptime if NS == 0:
+        return PixelHit[DTYPE](centre_rgb, centre_depth, centre_geom, centre_refl)
+    else:
+        return PixelHit[DTYPE](
+            acc * Scalar[DTYPE](0.25), centre_depth, centre_geom, centre_refl
+        )
+
+
+def _shade_surface[
+    DTYPE: DType,
+    SHADOWS: Bool,
+    REFLECT: Bool,
+    L_GEOMS: Layout,
+    L_APP: Layout,
+    L_BODIES: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_MESH_META: Layout,
+    L_TRI: Layout,
+    L_UV: Layout,
+    L_HF_META: Layout,
+    L_HF: Layout,
+    L_MAT: Layout,
+    L_TEX: Layout,
+    L_TEXELS: Layout,
+    L_LIGHTS: Layout,
+    L_QPOS: Layout,
+](
+    geoms: LayoutTensor[DTYPE, L_GEOMS, MutAnyOrigin],
+    ngeom: Int,
+    appearance: LayoutTensor[DTYPE, L_APP, MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
+    xquat: LayoutTensor[DTYPE, L_XQUAT, MutAnyOrigin],
+    env: Int,
+    mesh_meta: LayoutTensor[DTYPE, L_MESH_META, MutAnyOrigin],
+    mesh_tris: LayoutTensor[DTYPE, L_TRI, MutAnyOrigin],
+    mesh_uv: LayoutTensor[DTYPE, L_UV, MutAnyOrigin],
+    hfield_meta: LayoutTensor[DTYPE, L_HF_META, MutAnyOrigin],
+    hfield_data: LayoutTensor[DTYPE, L_HF, MutAnyOrigin],
+    hf_stride: Int,
+    materials: LayoutTensor[DTYPE, L_MAT, MutAnyOrigin],
+    textures: LayoutTensor[DTYPE, L_TEX, MutAnyOrigin],
+    texels: LayoutTensor[DType.uint8, L_TEXELS, MutAnyOrigin],
+    lights: LayoutTensor[DTYPE, L_LIGHTS, MutAnyOrigin],
+    nlight: Int,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    ncond: Int,
+    frame: CameraFrame[DTYPE],
+    dir: Vec3Generic[DTYPE],
+    dir_dx: Vec3Generic[DTYPE],
+    dir_dy: Vec3Generic[DTYPE],
+    hit: RayHit[DTYPE],
+    background: Vec3Generic[DTYPE],
+) -> PixelHit[DTYPE] where DTYPE.is_floating_point():
+    """One camera ray's colour, given its hit: material, texel, lights, and
+    MuJoCo's reflection pass. `dir_dx` / `dir_dy` are the neighbouring
+    pixels' rays, for the texture level of detail.
 
     ⚠ EVERY GEOM IN `geoms` IS DRAWN. The group filter and the alpha-zero
     filter both ran when `VisualModel` was built, so there is no mask here and
@@ -353,14 +682,6 @@ def render_pixel[
     miss contributes nothing at all — not the background this function
     returns for a primary miss.
     """
-    var dir = camera_pixel_ray[DTYPE](frame, width, height, px, py)
-
-    var hit = ray_model[DTYPE](
-        geoms, ngeom, bodies, xpos, xquat, env,
-        mesh_meta, mesh_tris, hfield_meta, hfield_data, hf_stride,
-        frame.pos, dir,
-    )
-
     if hit.geom < 0:
         return PixelHit[DTYPE](background, Scalar[DTYPE](0), -1, -1)
 
@@ -377,6 +698,7 @@ def render_pixel[
         mesh_meta, mesh_tris, mesh_uv, hfield_meta, hfield_data, hf_stride,
         materials, textures, texels, lights, nlight,
         hit, hitpoint, frame.pos, gaze, Scalar[DTYPE](1),
+        frame.pos, dir_dx, dir_dy,
     )
 
     var seen = -1
@@ -429,9 +751,10 @@ def render_pixel[
                 var tp = side / (-along)
                 var org = frame.pos + dir * tp
                 var rdir = dir - n * (Scalar[DTYPE](2) * along)
-                var rhit = ray_model[DTYPE](
-                    geoms, ngeom, bodies, xpos, xquat, env,
-                    mesh_meta, mesh_tris, hfield_meta, hfield_data, hf_stride,
+                var rhit = trace_visual[DTYPE](
+                    geoms, ngeom, ncond, appearance, qpos, bodies, xpos,
+                    xquat, env, mesh_meta, mesh_tris, hfield_meta,
+                    hfield_data, hf_stride,
                     org + n * Scalar[DTYPE](1.0e-6), rdir,
                 )
                 # `i != j` in the reference's loop: the mirror does not
@@ -464,6 +787,10 @@ def render_pixel[
                         mesh_meta, mesh_tris, mesh_uv, hfield_meta,
                         hfield_data, hf_stride, materials, textures, texels,
                         lights, nlight, rhit, rp, meye, gaze, refl,
+                        # The mirrored neighbours leave the mirrored eye.
+                        meye,
+                        dir_dx - n * (Scalar[DTYPE](2) * dir_dx.dot(n)),
+                        dir_dy - n * (Scalar[DTYPE](2) * dir_dy.dot(n)),
                     )
 
     return PixelHit[DTYPE](
@@ -476,3 +803,138 @@ def render_pixel[
         hit.geom,
         seen,
     )
+
+
+def _shade_ray[
+    DTYPE: DType,
+    SHADOWS: Bool,
+    REFLECT: Bool,
+    L_GEOMS: Layout,
+    L_APP: Layout,
+    L_BODIES: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_MESH_META: Layout,
+    L_TRI: Layout,
+    L_UV: Layout,
+    L_HF_META: Layout,
+    L_HF: Layout,
+    L_MAT: Layout,
+    L_TEX: Layout,
+    L_TEXELS: Layout,
+    L_LIGHTS: Layout,
+    L_QPOS: Layout,
+](
+    geoms: LayoutTensor[DTYPE, L_GEOMS, MutAnyOrigin],
+    ngeom: Int,
+    appearance: LayoutTensor[DTYPE, L_APP, MutAnyOrigin],
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
+    xquat: LayoutTensor[DTYPE, L_XQUAT, MutAnyOrigin],
+    env: Int,
+    mesh_meta: LayoutTensor[DTYPE, L_MESH_META, MutAnyOrigin],
+    mesh_tris: LayoutTensor[DTYPE, L_TRI, MutAnyOrigin],
+    mesh_uv: LayoutTensor[DTYPE, L_UV, MutAnyOrigin],
+    hfield_meta: LayoutTensor[DTYPE, L_HF_META, MutAnyOrigin],
+    hfield_data: LayoutTensor[DTYPE, L_HF, MutAnyOrigin],
+    hf_stride: Int,
+    materials: LayoutTensor[DTYPE, L_MAT, MutAnyOrigin],
+    textures: LayoutTensor[DTYPE, L_TEX, MutAnyOrigin],
+    texels: LayoutTensor[DType.uint8, L_TEXELS, MutAnyOrigin],
+    lights: LayoutTensor[DTYPE, L_LIGHTS, MutAnyOrigin],
+    nlight: Int,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    ncond: Int,
+    frame: CameraFrame[DTYPE],
+    dir: Vec3Generic[DTYPE],
+    dir_dx: Vec3Generic[DTYPE],
+    dir_dy: Vec3Generic[DTYPE],
+    hit: RayHit[DTYPE],
+    background: Vec3Generic[DTYPE],
+) -> PixelHit[DTYPE] where DTYPE.is_floating_point():
+    """`_shade_surface` for the first hit, composited over what is behind it
+    when that surface is TRANSPARENT.
+
+    ⚠⚠ MuJoCo DRAWS EVERY TRANSPARENT GEOM TWICE. `mjr_render` marks a geom
+    transparent at `rgba[3] < 0.995`, then renders the transparent list
+    front-to-back AND back-to-front with `glBlendFunc(GL_SRC_ALPHA,
+    GL_ONE_MINUS_SRC_ALPHA)`, depth writes off, back faces culled
+    (`mjRND_CULL_FACE`, on by default). A surface therefore lands with
+    opacity `a * (2 - a)`, not `a`: LIBERO's wine-rack stoppers
+    (`rgba="0 .345 .545 .1"`) cover 19% of what is behind them, not 10%, and
+    drawn opaque they were a bright blue line across the rack.
+
+    Up to three surfaces are composited front to back; the third is taken as
+    opaque. Depth, segmentation and the mirror geom stay the FIRST surface's,
+    which is what the existing outputs have always meant.
+    """
+    # ⚠ ONE `_shade_surface` CALL SITE: pass 0 shades the first surface and,
+    # when it is opaque, returns — the common case costs what it always did.
+    var one = Scalar[DTYPE](1)
+    var acc = Vec3Generic[DTYPE](0, 0, 0)
+    var keep = one
+    var cur = hit
+    var first_depth = Scalar[DTYPE](0)
+    var first_geom = -1
+    var first_refl = -1
+    for layer in range(3):
+        var ph = _shade_surface[DTYPE, SHADOWS, REFLECT](
+            geoms, ngeom, appearance, bodies, xpos, xquat, env,
+            mesh_meta, mesh_tris, mesh_uv, hfield_meta, hfield_data,
+            hf_stride, materials, textures, texels, lights, nlight, qpos,
+            ncond, frame, dir, dir_dx, dir_dy, cur, background,
+        )
+        if layer == 0:
+            first_depth = ph.depth
+            first_geom = ph.geom
+            first_refl = ph.refl_geom
+            if cur.geom < 0:
+                return ph^
+        var cur_a = rebind[Scalar[DTYPE]](
+            appearance[cur.geom * VIS_GEOM_APPEARANCE + APP_IDX_A]
+        )
+        var opaque = layer == 2 or not (cur_a < Scalar[DTYPE](0.995))
+        if opaque:
+            if layer == 0:
+                return ph^
+            acc = acc + ph.rgb * keep
+            break
+        var eff = cur_a * (Scalar[DTYPE](2) - cur_a)
+        if eff < Scalar[DTYPE](0):
+            eff = Scalar[DTYPE](0)
+        acc = acc + ph.rgb * (keep * eff)
+        keep = keep * (one - eff)
+        # Behind this surface: the same ray, just past it. ⚠ PAST ITS BACK
+        # FACES TOO: the continuation starts INSIDE a closed geom, so the
+        # next thing it meets is that geom's own far side, which MuJoCo
+        # never draws (`mjRND_CULL_FACE`). A back face is one whose normal
+        # points along the ray; a few are stepped over before giving up.
+        var tpos = cur.t
+        var nxt = RayHit[DTYPE](
+            Scalar[DTYPE](-1), -1, Vec3Generic[DTYPE](0, 0, 0), -1,
+            Scalar[DTYPE](0), Scalar[DTYPE](0),
+        )
+        for _ in range(4):
+            tpos = tpos + Scalar[DTYPE](1.0e-5)
+            nxt = trace_visual[DTYPE](
+                geoms, ngeom, ncond, appearance, qpos, bodies, xpos, xquat,
+                env, mesh_meta, mesh_tris, hfield_meta, hfield_data,
+                hf_stride, frame.pos + dir * tpos, dir,
+            )
+            if nxt.geom < 0:
+                break
+            tpos = tpos + nxt.t
+            if not (nxt.normal.dot(dir) > Scalar[DTYPE](0)):
+                break
+            nxt = RayHit[DTYPE](
+                Scalar[DTYPE](-1), -1, Vec3Generic[DTYPE](0, 0, 0), -1,
+                Scalar[DTYPE](0), Scalar[DTYPE](0),
+            )
+        if nxt.geom < 0:
+            acc = acc + background * keep
+            break
+        # `t` is measured from the camera from here on.
+        cur = RayHit[DTYPE](
+            tpos, nxt.geom, nxt.normal, nxt.tri, nxt.bu, nxt.bv,
+        )
+    return PixelHit[DTYPE](acc, first_depth, first_geom, first_refl)

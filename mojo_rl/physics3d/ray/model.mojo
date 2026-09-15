@@ -150,6 +150,11 @@ def ray_model[
     # engine). Six bits in an `Int` is the same information with no thread
     # storage: bit `g` set means group `g` is visible.
     group_mask: Int = 0x3F,
+    # Rows `[g_start, ngeom)` are tested. The camera tracer's conditional
+    # sites sit past its ordinary geoms and are tested one row at a time
+    # with this, through the SAME dispatch — a second copy of the per-type
+    # size spelling below is how two ray paths drift apart.
+    g_start: Int = 0,
 ) -> RayHit[DTYPE] where DTYPE.is_floating_point():
     """Nearest intersection of `pnt + x*vec` with the model.
 
@@ -169,7 +174,7 @@ def ray_model[
     var best_bu = Scalar[DTYPE](0)
     var best_bv = Scalar[DTYPE](0)
 
-    for g in range(ngeom):
+    for g in range(g_start, ngeom):
 
         # ── ray_eliminate ────────────────────────────────────────────────
         var body = Int(rebind[Scalar[DTYPE]]((geoms[g, GEOM_IDX_BODY])))

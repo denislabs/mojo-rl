@@ -263,7 +263,7 @@ def camera_world_frame[
 
 
 @always_inline
-def camera_pixel_ray[
+def camera_sample_ray[
     DTYPE: DType
 ](
     frame: CameraFrame[DTYPE],
@@ -271,8 +271,13 @@ def camera_pixel_ray[
     height: Int,
     px: Int,
     py: Int,
+    ox: Scalar[DTYPE],
+    oy: Scalar[DTYPE],
 ) -> Vec3Generic[DTYPE] where DTYPE.is_floating_point():
-    """The world-space direction of pixel `(px, py)`, NORMALISED.
+    """The world-space direction through pixel `(px, py)` offset by
+    `(ox, oy)` pixels from its centre (`+oy` is DOWN the image), NORMALISED.
+    `camera_pixel_ray` is this at `(0, 0)`; the multisample positions use it
+    (`render.render_pixel`'s `SAMPLES`).
 
     `render_util.compute_ray`'s `fovy` branch. The intrinsics branch (a
     `<camera sensorsize=... focal=...>`) is not carried yet: nothing in this
@@ -298,8 +303,8 @@ def camera_pixel_ray[
     var half_h = frame.tan_half_fovy
     var half_w = half_h * (Scalar[DTYPE](width) / Scalar[DTYPE](height))
 
-    var u = (Scalar[DTYPE](px) + Scalar[DTYPE](0.5)) / Scalar[DTYPE](width)
-    var v = (Scalar[DTYPE](py) + Scalar[DTYPE](0.5)) / Scalar[DTYPE](height)
+    var u = (Scalar[DTYPE](px) + Scalar[DTYPE](0.5) + ox) / Scalar[DTYPE](width)
+    var v = (Scalar[DTYPE](py) + Scalar[DTYPE](0.5) + oy) / Scalar[DTYPE](height)
     var lx = -half_w + Scalar[DTYPE](2) * half_w * u
     var ly = half_h - Scalar[DTYPE](2) * half_h * v
 
@@ -310,3 +315,20 @@ def camera_pixel_ray[
     if n > Scalar[DTYPE](0):
         return d / n
     return -frame.zaxis
+
+
+@always_inline
+def camera_pixel_ray[
+    DTYPE: DType
+](
+    frame: CameraFrame[DTYPE],
+    width: Int,
+    height: Int,
+    px: Int,
+    py: Int,
+) -> Vec3Generic[DTYPE] where DTYPE.is_floating_point():
+    """The world-space direction of pixel `(px, py)`'s CENTRE, NORMALISED —
+    `camera_sample_ray` at offset `(0, 0)`. See it for the conventions."""
+    return camera_sample_ray[DTYPE](
+        frame, width, height, px, py, Scalar[DTYPE](0), Scalar[DTYPE](0)
+    )

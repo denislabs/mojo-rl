@@ -78,19 +78,37 @@ GROUP_VISUAL = 1
 def visual_only():
     """MuJoCo's scene options with only the VISUAL geom group on, and no sites.
 
-    ⚠ SITES OFF, AND NOT BECAUSE THEY LOOK UNTIDY. LIBERO's fixtures carry
-    marker sites with an opaque rgba in the XML — `flat_stove`'s `burner` is
-    `0.9 0.05 0.05 1` — and hides them at runtime by writing `site_rgba[..][3]
-    = 0` (`set_visualization` in each problem class). A gate that renders them
-    puts a red disc on the hob that the recording does not have, and our
-    tracer draws no sites at all, so leaving them on would compare our scene
-    against a picture neither renderer produces.
+    ⚠ SITES OFF HERE; `libero_sites` TURNS ON THE ONE LIBERO SHOWS. LIBERO's
+    fixtures carry marker sites with an opaque rgba in the XML — `flat_stove`'s
+    `burner` is `0.9 0.05 0.05 1` — and LIBERO writes `site_rgba[..][3]` every
+    step (`set_visualization` in each problem class): 0 while the stove is off,
+    1 once its knob is at 0.5 or more. Rendering the XML's alpha puts a red disc
+    on every hob; rendering none misses the lit burner that
+    `turn_on_the_stove`'s last frames show.
     """
     o = mujoco.MjvOption()
     o.geomgroup[:] = 0
     o.geomgroup[GROUP_VISUAL] = 1
     o.sitegroup[:] = 0
     return o
+
+
+def libero_sites(m, d, opt):
+    """LIBERO's runtime site visibility, applied to `m.site_rgba` for `d`.
+
+    The same rule as `mojo_rl/tasks/libero_visual.mojo`: a `*burner` site is
+    visible when its sibling `*button` hinge is at 0.5 or more
+    (`FlatStove.turn_on`), and every other site is hidden — robosuite hides the
+    robot's at construction. Enables site group 0, where the burner lives."""
+    opt.sitegroup[0] = 1
+    for i in range(m.nsite):
+        name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_SITE, i) or ""
+        alpha = 0.0
+        if name.endswith("burner"):
+            j = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, name[: -len("burner")] + "button")
+            if j >= 0 and d.qpos[m.jnt_qposadr[j]] >= 0.5:
+                alpha = 1.0
+        m.site_rgba[i][3] = alpha
 
 
 def psnr(a, b):
@@ -108,6 +126,7 @@ def render(m, d, r, opt, cam, qpos, qvel):
     d.qpos[:] = qpos
     d.qvel[:] = qvel
     mujoco.mj_forward(m, d)
+    libero_sites(m, d, opt)
     r.update_scene(d, camera=cam, scene_option=opt)
     # `Renderer` hands back row 0 = top; the recording is flipped. See header.
     return r.render()[::-1]

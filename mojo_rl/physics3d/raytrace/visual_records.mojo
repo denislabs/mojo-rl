@@ -42,7 +42,7 @@ comptime MAT_IDX_ACTIVE: Int = 11
 # ── textures ─────────────────────────────────────────────────────────────────
 comptime MAX_VIS_TEXTURES: Int = 64
 
-comptime VIS_TEX_WORDS: Int = 6
+comptime VIS_TEX_WORDS: Int = 7
 comptime TEX_IDX_ADR: Int = 0
 """Offset of this texture's first BYTE in the atlas — see `VisualModel.texels`.
 Three bytes per texel, row-major, row 0 first, exactly as the PNG decodes."""
@@ -58,6 +58,16 @@ when no `gridlayout` says otherwise (`mjr_uploadTexture`), and the arena's
 wood grain out of the top sixth of the image and tile it."""
 comptime TEX_IDX_ACTIVE: Int = 4
 comptime TEX_IDX_NCHAN: Int = 5
+comptime TEX_IDX_NLEVELS: Int = 6
+"""Mip levels stored for this texture, level 0 included; 0 reads as 1.
+
+⚠ THE LEVELS FOLLOW THE BASE IMAGE IN THE ATLAS, AND THEIR OFFSETS ARE NOT
+STORED. Level `k` is `max(1, w >> k)` by `max(1, h >> k)` — OpenGL's
+`floor(w / 2^k)` — and starts where level `k-1` ends, so `TEX_IDX_ADR`,
+`TEX_IDX_WIDTH` and `TEX_IDX_HEIGHT` are enough to find any of them
+(`appearance.mip_level_adr`). Built by `visual.append_mip_chain`, because
+`render_context.c` calls `glGenerateMipmap` on every 2D and cube texture and
+samples with `GL_LINEAR_MIPMAP_LINEAR`."""
 
 # ── lights ───────────────────────────────────────────────────────────────────
 comptime LIGHT_BODY_HEADLIGHT: Int = -2
@@ -107,7 +117,7 @@ else."""
 
 
 # ── the geom's appearance row ────────────────────────────────────────────────
-comptime VIS_GEOM_APPEARANCE: Int = 8
+comptime VIS_GEOM_APPEARANCE: Int = 9
 comptime APP_IDX_R: Int = 0
 comptime APP_IDX_G: Int = 1
 comptime APP_IDX_B: Int = 2
@@ -147,3 +157,18 @@ comptime APP_IDX_UVADR: Int = 5
 """Where this geom's mesh UVs start, in TRIANGLES, or -1 when it has none.
 A duplicate of `MESH_META_IDX_TRIADR` for the geom's mesh, hoisted so the
 sampler does not need a second mesh-table read after the hit."""
+
+comptime APP_IDX_COND_QADR: Int = 7
+"""For a CONDITIONAL SITE row — a row at index `>= VisualModel.ngeom` — the
+`qpos` address its visibility reads, or -1 for always visible. Unread on an
+ordinary geom row.
+
+⚠ WHY A SITE IS A ROW HERE AT ALL. MuJoCo draws sites, and a benchmark can
+make one appear: LIBERO's `FlatStove` shows its red `burner` site only once
+the knob is turned on (`set_visualization` toggles `site_rgba[3]` every step
+from `turn_on(qpos)`), and `turn_on_the_stove`'s recorded frames end with it
+lit. The rows sit AFTER the ordinary geoms so `ray_model`'s loop over
+`ngeom` never sees them; `render.trace_visual` tests each one, per lane,
+against this lane's `qpos`."""
+comptime APP_IDX_COND_MIN: Int = 8
+"""Visible when `qpos[COND_QADR] >= COND_MIN`."""

@@ -1057,6 +1057,13 @@ struct SiteData(Copyable, ImplicitlyCopyable, Movable):
     var size_0: Float64  # radius (sphere/capsule/cylinder) or half-x (box)
     var size_1: Float64  # half-length (capsule/cylinder) or half-y (box)
     var size_2: Float64  # half-z (box only)
+    var rgba_r: Float64
+    """`<site rgba>`, MuJoCo's default `0.5 0.5 0.5 1`. Read by the camera
+    tracer's conditionally visible sites (`raytrace.visual.SiteCondition`) —
+    LIBERO's stove burner is a red site, not a geom."""
+    var rgba_g: Float64
+    var rgba_b: Float64
+    var rgba_a: Float64
 
     def __init__(
         out self,
@@ -1072,6 +1079,10 @@ struct SiteData(Copyable, ImplicitlyCopyable, Movable):
         size_0: Float64 = 0.005,
         size_1: Float64 = 0.0,
         size_2: Float64 = 0.0,
+        rgba_r: Float64 = 0.5,
+        rgba_g: Float64 = 0.5,
+        rgba_b: Float64 = 0.5,
+        rgba_a: Float64 = 1.0,
     ):
         self.body_id = body_id
         self.site_type = site_type
@@ -1085,6 +1096,10 @@ struct SiteData(Copyable, ImplicitlyCopyable, Movable):
         self.size_0 = size_0
         self.size_1 = size_1
         self.size_2 = size_2
+        self.rgba_r = rgba_r
+        self.rgba_g = rgba_g
+        self.rgba_b = rgba_b
+        self.rgba_a = rgba_a
 
 
 # =============================================================================
@@ -1622,6 +1637,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var tendon_rgba_s: String
     var site_type_s: String
     var site_size_s: String
+    var site_rgba_s: String
     # POSE from a default class. `type`/`size` were enough until manipulator,
     # whose five touch zones get BOTH their offset and their orientation from
     # `<default class="hand"><site pos=".022 0 -.002" euler="0 15 0"/>` — the
@@ -1790,6 +1806,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.tendon_rgba_s = ""
         self.site_type_s = ""
         self.site_size_s = ""
+        self.site_rgba_s = ""
         self.site_pos_s = ""
         self.site_quat_s = ""
         self.site_axisangle_s = ""

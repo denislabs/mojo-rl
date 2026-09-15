@@ -47,6 +47,7 @@ from mojo_rl.physics3d.raytrace.camera import camera_world_frame, camera_pixel_r
 from mojo_rl.physics3d.fields.rt_layout import DYN1, DYN2, rl1, rl2
 from mojo_rl.tasks.spec import load_family
 from mojo_rl.tasks.family import scene_path
+from mojo_rl.tasks.libero_visual import libero_site_conditions
 from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
@@ -203,9 +204,12 @@ def main() raises:
     print("  scene:", scene_path(f), "| nq", nq, "nv", nv,
           "ngeom", dims.get_ngeom())
 
+    # LIBERO's runtime site toggles (the stove burner) — `tasks/libero_visual`.
     var vis = build_visual_model[DT, DynDims](
-        fmd, m, group_mask=VISUAL_GROUP_MASK
+        fmd, m, group_mask=VISUAL_GROUP_MASK,
+        conditions=libero_site_conditions(f),
     )
+    print("  conditional sites:", vis.ncond)
     print("  " + vis.describe())
 
     # The camera the family's arena declares under LIBERO's own name.
@@ -300,7 +304,9 @@ def main() raises:
         var depth = List[Scalar[DT]]()
         var seg = List[Scalar[DT]]()
         var refl = List[Scalar[DT]]()
-        render_lane_cpu[DT, DynDims, 1, False, True](
+        # ⚠ 4 SAMPLES: LIBERO's `model_file`s keep MuJoCo's default
+        # `offsamples=4`, and robosuite records through that buffer.
+        render_lane_cpu[DT, DynDims, 1, False, True, 4](
             d, m, vis, cam, 0, width, height,
             Vec3[DT](0.60, 0.72, 0.90), rgb, depth, seg, refl,
         )

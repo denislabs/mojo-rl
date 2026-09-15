@@ -49,7 +49,11 @@ from mojo_rl.physics3d.gpu.constants import (
 from mojo_rl.physics3d.raytrace.appearance import (
     geom_uv,
     sample_texture,
+    sample_texture_lod,
+    texture_lod,
+    mip_level_adr,
 )
+from mojo_rl.physics3d.raytrace.visual import append_mip_chain
 from mojo_rl.physics3d.raytrace.camera import CameraFrame
 from mojo_rl.physics3d.raytrace.render import render_pixel
 from mojo_rl.physics3d.raytrace.visual_records import (
@@ -77,6 +81,7 @@ from mojo_rl.physics3d.raytrace.visual_records import (
     TEX_IDX_ADR,
     TEX_IDX_HEIGHT,
     TEX_IDX_NCHAN,
+    TEX_IDX_NLEVELS,
     TEX_IDX_TYPE,
     TEX_IDX_WIDTH,
     VIS_TEX_WORDS,
@@ -159,7 +164,7 @@ def _look(fx: Float64, fy: Float64, fz: Float64) -> CameraFrame[DT]:
 
 
 def _shoot[
-    REFLECT: Bool
+    REFLECT: Bool, SAMPLES: Int = 1
 ](
     geoms: LayoutTensor[DT, DYN2, MutAnyOrigin],
     app: LayoutTensor[DT, DYN1, MutAnyOrigin],
@@ -180,10 +185,11 @@ def _shoot[
     with "Could not infer capture convention of the captured value" — the
     same footgun the LIBERO viewer hit; the fix is the same one.
     """
-    var h = render_pixel[DT, False, REFLECT](
+    var h = render_pixel[DT, False, REFLECT, SAMPLES=SAMPLES](
         geoms, 2, app, bodies, xpos, xquat, 0,
         empty, empty, empty, empty, empty, 1,
-        mats, texs, texels, lights, 1, frame, 1, 1, 0, 0, bg,
+        # `bodies` stands in for `qpos`: with 0 conditional sites it is never read.
+        mats, texs, texels, lights, 1, bodies, 0, frame, 1, 1, 0, 0, bg,
     )
     return Float64(h.rgb.x)
 
@@ -266,6 +272,104 @@ def main() raises:
     var miss = sample_texture[DT](mv, pv, 7, Scalar[DT](0.5), Scalar[DT](0.5))
     t.check(not miss.hit, "an inactive texture slot reports a miss")
     t.near(Float64(miss.r), 1.0, 1e-12, "a miss is white, not black")
+
+    # ── the mip chain and the trilinear sampler ───────────────────────────
+    #
+    # A 4x4 with a known 2x2 box per quadrant, so every level is a closed
+    # form: level 1 is the four quadrant means, level 2 the image mean.
+    var mip = List[UInt8]()
+    for y in range(4):
+        for x in range(4):
+            var q = (0 if x < 2 else 1) + (0 if y < 2 else 2)
+            # quadrant q holds 4 values averaging to 40 + 60*q, spread +-10
+            var jitter = ((x % 2) + 2 * (y % 2)) * 20 - 30
+            for c in range(3):
+                mip.append(UInt8(40 + 60 * q + jitter + c))
+    var nlev = append_mip_chain(mip, 0, 4, 4)
+    t.check(nlev == 3, "a 4x4 texture has 3 levels (4, 2, 1)")
+    t.check(len(mip) == (16 + 4 + 1) * 3, "the chain appends 4 + 1 texels")
+    t.check(mip_level_adr(0, 4, 4, 1) == 48, "level 1 starts after level 0")
+    t.check(mip_level_adr(0, 4, 4, 2) == 60, "level 2 starts after level 1")
+    for q in range(4):
+        t.check(
+            Int(mip[48 + q * 3]) == 40 + 60 * q,
+            "level 1 texel " + String(q) + " is its quadrant's mean",
+        )
+    # levels 1's mean is 130; level 2 is that, rounded
+    t.check(Int(mip[60]) == 130, "level 2 is the whole image's mean")
+    # ⚠ ROUNDED, not truncated: (1 + 2 + 2 + 2 + 2) // 4 would be 1.
+    var rnd = List[UInt8]()
+    rnd.append(1); rnd.append(0); rnd.append(0)
+    rnd.append(2); rnd.append(0); rnd.append(0)
+    rnd.append(2); rnd.append(0); rnd.append(0)
+    rnd.append(2); rnd.append(0); rnd.append(0)
+    _ = append_mip_chain(rnd, 0, 2, 2)
+    t.check(Int(rnd[12]) == 2, "a mip texel ROUNDS (7/4 -> 2, not 1)")
+    # An ODD size clamps: a 3x2's level 1 is 1x1 and averages columns 0-1.
+    var odd = List[UInt8]()
+    for y in range(2):
+        for x in range(3):
+            for _ in range(3):
+                odd.append(UInt8(10 if x < 2 else 250))
+    t.check(append_mip_chain(odd, 0, 3, 2) == 2, "a 3x2 has levels 3x2, 1x1")
+    t.check(Int(odd[18]) == 10, "an odd width drops its last column (GL floor)")
+
+    var mmeta = TensorImpl[DT].alloc(MAX_VIS_TEXTURES * VIS_TEX_WORDS)
+    mmeta.data[TEX_IDX_ADR] = 0
+    mmeta.data[TEX_IDX_WIDTH] = 4
+    mmeta.data[TEX_IDX_HEIGHT] = 4
+    mmeta.data[TEX_IDX_TYPE] = Scalar[DT](TEX_2D)
+    mmeta.data[TEX_IDX_ACTIVE] = 1
+    mmeta.data[TEX_IDX_NCHAN] = 3
+    mmeta.data[TEX_IDX_NLEVELS] = Scalar[DT](nlev)
+    var mpx = TensorImpl[DType.uint8].alloc(len(mip))
+    for i in range(len(mip)):
+        mpx.data[i] = mip[i]
+    var mmv = mmeta.lt_dyn["cpu", DYN1](rl1(mmeta.n))
+    var mpv = mpx.lt_dyn["cpu", DYN1](rl1(mpx.n))
+    # At a level-1 texel centre (0.25, 0.25) the sample IS that texel.
+    var l1 = sample_texture_lod[DT](
+        mmv, mpv, 0, Scalar[DT](0.25), Scalar[DT](0.25), Scalar[DT](1)
+    )
+    t.near(Float64(l1.r), 40.0 / 255.0, 1e-9, "lod 1 reads level 1")
+    # ⚠ AT A LEVEL-0 TEXEL CENTRE, NOT AT (0.25, 0.25): there level 0's
+    # bilinear weights average exactly the quadrant's four texels, which IS
+    # level 1's texel, and the two levels cannot be told apart.
+    var c0 = sample_texture_lod[DT](
+        mmv, mpv, 0, Scalar[DT](0.125), Scalar[DT](0.125), Scalar[DT](0)
+    )
+    var c1 = sample_texture_lod[DT](
+        mmv, mpv, 0, Scalar[DT](0.125), Scalar[DT](0.125), Scalar[DT](1)
+    )
+    var ch = sample_texture_lod[DT](
+        mmv, mpv, 0, Scalar[DT](0.125), Scalar[DT](0.125), Scalar[DT](0.5)
+    )
+    t.near(Float64(c0.r), 10.0 / 255.0, 1e-9, "lod 0 at a texel centre is that texel")
+    t.near(
+        Float64(ch.r), 0.5 * (Float64(c0.r) + Float64(c1.r)), 1e-9,
+        "lod 0.5 is the mean of the two levels (GL_LINEAR_MIPMAP_LINEAR)",
+    )
+    t.check(Float64(c0.r) != Float64(c1.r), "levels 0 and 1 differ (anti-vacuity)")
+    var l0 = c0
+    var lbig = sample_texture_lod[DT](
+        mmv, mpv, 0, Scalar[DT](0.9), Scalar[DT](0.1), Scalar[DT](40)
+    )
+    t.near(Float64(lbig.r), 130.0 / 255.0, 1e-9, "lod past the last level clamps to it")
+    var lneg = sample_texture_lod[DT](
+        mmv, mpv, 0, Scalar[DT](0.125), Scalar[DT](0.125), Scalar[DT](-3)
+    )
+    t.near(Float64(lneg.r), Float64(l0.r), 1e-12, "lod <= 0 is level 0 (c = 0)")
+
+    # OpenGL's lambda: one texel per pixel is 0, four is 2, and the LARGER
+    # axis wins.
+    t.near(Float64(texture_lod[DT](mmv, 0, 0.25, 0.0, 0.0, 0.25)), 0.0, 1e-9,
+           "1 texel per pixel -> lod 0")
+    t.near(Float64(texture_lod[DT](mmv, 0, 1.0, 0.0, 0.0, 1.0)), 2.0, 1e-9,
+           "4 texels per pixel -> lod 2")
+    t.near(Float64(texture_lod[DT](mmv, 0, 0.25, 0.0, 0.0, 2.0)), 3.0, 1e-9,
+           "anisotropic: the larger derivative decides")
+    t.near(Float64(texture_lod[DT](mmv, 0, 0.0, 0.5, 0.0, 0.0)), 1.0, 1e-9,
+           "v is scaled by the height")
 
     # ── texgen ────────────────────────────────────────────────────────────
     var geoms = TensorImpl[DT].alloc(2 * MODEL_GEOM_SIZE)
@@ -461,6 +565,48 @@ def main() raises:
         abs(_shoot[True](gv3, av, bv, xv, qv, e1, eu, mtv, ttv, ltv, side, bg) - _shoot[True](gv3, av, bv, xv, qv, e1, eu, mtv, ttv, ltv, top, bg)) > 0.1,
         "the two rays land on different faces (anti-vacuity)",
     )
+
+    # ── multisampling ────────────────────────────────────────────────────
+    # A pixel wholly inside one surface: every sample lands on the centre's
+    # geom, so 4x MSAA reuses the centre's shading and the answer is the
+    # single-sample one EXACTLY (shading runs once per primitive).
+    # ⚠ AIMED AT THE 8 m LID, NOT THE MIRROR: `_shoot` is a 1x1 image at 45
+    # degrees, so a 3/8-pixel sample offset swings the ray ~16 degrees and
+    # would miss the 0.4 m mirror entirely.
+    var up = _look(0.0, 0.3, 1.0)
+    var one_s = _shoot[False, 1](gv3, av, bv, xv, qv, e1, eu, mtv, ttv, ltv, up, bg)
+    t.check(one_s > 0.1, "the up-looking ray hits the lid (anti-vacuity)")
+    t.near(
+        _shoot[False, 4](gv3, av, bv, xv, qv, e1, eu, mtv, ttv, ltv, up, bg),
+        one_s, 1e-12, "4x MSAA inside a surface equals one sample",
+    )
+    # And at the mirror, where every sample misses: 4x MSAA is the COVERAGE
+    # average, so a pixel whose samples all miss is the background, even
+    # though its centre ray hit.
+    t.near(
+        _shoot[True, 4](gv3, av, bv, xv, qv, e1, eu, mtv, ttv, ltv, top, bg),
+        0.0, 1e-12, "4x MSAA: a centre hit with no covered sample is background",
+    )
+
+    # ── transparency ─────────────────────────────────────────────────────
+    # The mirror at alpha 0.5, against a WHITE background, reflection off.
+    # Its top face is ambient-only (0.2 * 0.4 = 0.08). MuJoCo blends a
+    # transparent geom TWICE (front-to-back and back-to-front passes), so
+    # it lands at 0.5 * (2 - 0.5) = 0.75. Below the top face the ray is
+    # INSIDE the box: its bottom face is a BACK face, culled, and must not be
+    # composited — the lid is above, so what shows through is the white.
+    av[APP_IDX_A] = Scalar[DT](0.5)
+    var white = Vec3[DT](1, 1, 1)
+    var tr = _shoot[False](gv3, av, bv, xv, qv, e1, eu, mtv, ttv, ltv, top, white)
+    t.near(tr, 0.75 * 0.08 + 0.25 * 1.0, 1e-9,
+           "a transparent surface: opacity a(2-a), over what is behind")
+    # Drawn with the box's lit bottom face composited, it would read
+    # 0.75*0.08 + 0.25*(0.75*0.48 + 0.25) — the back-face guard is the difference.
+    t.check(abs(tr - (0.06 + 0.25 * (0.75 * 0.48 + 0.25))) > 1e-3,
+            "the transparent box's own back face is not composited")
+    t.check(abs(tr - (0.5 * 0.08 + 0.5)) > 1e-3,
+            "the opacity is a(2-a), not a (anti-vacuity)")
+    av[APP_IDX_A] = Scalar[DT](1)
 
     print()
     print(t.n, "checks,", t.bad, "failed")

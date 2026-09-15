@@ -1029,6 +1029,9 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var ss_s = _extract_attr(stag, "size")
         if ss_s.byte_length() > 0:
             d.site_size_s = ss_s
+        var srgba_s = _extract_attr(stag, "rgba")
+        if srgba_s.byte_length() > 0:
+            d.site_rgba_s = srgba_s
         # POSE. Sites take the same five orientation spellings as geoms and
         # bodies, and a default class may set any of them. Each is captured
         # separately so the child tag can override one without clearing the
@@ -3736,6 +3739,18 @@ def _fill_model(
                     sd.size_1 = _parse_float(parts[1])
                 if len(parts) >= 3:
                     sd.size_2 = _parse_float(parts[2])
+
+            var srgba = _extract_attr(tag, "rgba")
+            if srgba.byte_length() == 0:
+                srgba = site_defaults.site_rgba_s
+            if srgba.byte_length() > 0:
+                var rp = List[String]()
+                _split_spaces(srgba, rp)
+                if len(rp) >= 4:
+                    sd.rgba_r = _parse_float(rp[0])
+                    sd.rgba_g = _parse_float(rp[1])
+                    sd.rgba_b = _parse_float(rp[2])
+                    sd.rgba_a = _parse_float(rp[3])
 
             # `fromto` OVERRIDES the size read above: MuJoCo sets
             # size[1] to half the segment length, and for a box or an

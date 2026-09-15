@@ -111,6 +111,7 @@ struct BatchedCameraRenderer[
     HEIGHT: Int,
     SHADOWS: Bool = True,
     REFLECT: Bool = True,
+    SAMPLES: Int = 1,
 ](Movable):
     """RGB + depth + segmentation for one camera, over every lane.
 
@@ -120,6 +121,12 @@ struct BatchedCameraRenderer[
     over cameras in the innermost hot path, and it buys a case — cameras of
     DIFFERENT resolutions in one launch — that nothing here has. Two cameras
     are two renderers and two launches.
+
+    ⚠ `SAMPLES = 4` IS WHAT A LIBERO (OR ANY DEFAULT MuJoCo) PICTURE IS: the
+    offscreen buffer is 4x multisampled (`vis.quality.offsamples`), and one
+    ray per pixel scores 28.9 dB against LIBERO's recording where MuJoCo's own
+    4-sample render scores 43.1. It costs up to five traces a pixel, so it is
+    a choice and not the default — see `render.render_pixel`.
     """
 
     comptime NPIX: Int = Self.WIDTH * Self.HEIGHT
@@ -132,6 +139,7 @@ struct BatchedCameraRenderer[
     comptime L_BODIES = Layout.row_major(Self.D.NBODY, MODEL_BODY_SIZE)
     comptime L_B3 = Layout.row_major(Self.BATCH, Self.D.NBODY * 3)
     comptime L_B4 = Layout.row_major(Self.BATCH, Self.D.NBODY * 4)
+    comptime L_QPOS = Layout.row_major(Self.BATCH, _pos(Self.D.NQ))
     comptime L_CAM = Layout.row_major(MAX_GPU_CAMERAS * MODEL_CAM_SIZE)
     comptime L_MESH_META = Layout.row_major(
         MAX_GPU_MESHES * MODEL_MESH_META_SIZE
@@ -303,15 +311,24 @@ struct BatchedCameraRenderer[
         camera OBSERVATION is an off-by-one in the MDP and not a visual
         artefact anyone would notice.
 
-        ⚠⚠ NINETEEN BUFFERS AND FOUR SCALARS. Metal's argument table fails
-        SILENTLY at 29 and ships at 27
+        ⚠⚠ TWENTY BUFFERS AND SIX SCALARS — 26 OPERANDS. Metal's argument
+        table fails SILENTLY at 29 and ships at 27
         (`_metals_limit_is_the_argument_table_not_the_stack`), so the headroom
-        here is four operands and it is why the headlight is a row of the
-        light table rather than the six scalars it would otherwise be. Adding
-        an operand to this kernel is a decision, not a detail.
+        here is ONE operand and it is why the headlight is a row of the light
+        table rather than six scalars. `qpos` was the twentieth buffer (the
+        conditional sites read it per lane), and the conditional-site COUNT
+        rides in `ng`'s high bits rather than taking a scalar of its own.
+        Adding an operand to this kernel is a decision, not a detail.
         """
         var nvg = self.vis.ngeom
         var nlight = self.vis.nlight
+        var ncond = self.vis.ncond
+        if nvg >= 65536 or ncond >= 32768:
+            raise Error(
+                "BatchedCameraRenderer: " + String(nvg) + " geoms and "
+                + String(ncond) + " conditional sites do not fit `ng`'s"
+                " 16/15-bit packing"
+            )
 
         @parameter
         @always_inline
@@ -334,6 +351,7 @@ struct BatchedCameraRenderer[
             textures: LayoutTensor[Self.DTYPE, DYN1, MutAnyOrigin],
             texels: LayoutTensor[DType.uint8, DYN1, MutAnyOrigin],
             lights: LayoutTensor[Self.DTYPE, DYN1, MutAnyOrigin],
+            qpos: LayoutTensor[Self.DTYPE, Self.L_QPOS, MutAnyOrigin],
             rgb_out: LayoutTensor[Self.DTYPE, Self.L_RGB, MutAnyOrigin],
             depth_out: LayoutTensor[
                 Self.DTYPE, Self.L_SCALARPIX, MutAnyOrigin
@@ -376,11 +394,16 @@ struct BatchedCameraRenderer[
                 var frame = camera_world_frame[Self.DTYPE](
                     cameras, xpos, xquat, subtree_com, env, Int(cam)
                 )
+                # `ng` = geoms in the low 16 bits, conditional sites above.
+                var ngi = Int(ng)
+                var n_geom = ngi & 0xFFFF
+                var n_cond = ngi >> 16
                 var hit = render_pixel[
-                    Self.DTYPE, Self.SHADOWS, Self.REFLECT
+                    Self.DTYPE, Self.SHADOWS, Self.REFLECT,
+                    SAMPLES=Self.SAMPLES,
                 ](
                     geoms,
-                    Int(ng),
+                    n_geom,
                     appearance,
                     bodies,
                     xpos,
@@ -397,6 +420,8 @@ struct BatchedCameraRenderer[
                     texels,
                     lights,
                     Int(nl),
+                    qpos,
+                    n_cond,
                     frame,
                     Self.WIDTH,
                     Self.HEIGHT,
@@ -412,7 +437,9 @@ struct BatchedCameraRenderer[
 
         var total = Self.BATCH * Self.NPIX
         ctx.enqueue_function[cam_kernel](
-            self.vis.geoms.lt_dyn["gpu", DYN2](rl2(nvg, MODEL_GEOM_SIZE)),
+            self.vis.geoms.lt_dyn["gpu", DYN2](
+                rl2(nvg + ncond, MODEL_GEOM_SIZE)
+            ),
             self.vis.appearance.lt_dyn["gpu", DYN1](
                 rl1(self.vis.appearance.n)
             ),
@@ -430,11 +457,12 @@ struct BatchedCameraRenderer[
             self.vis.textures.lt_dyn["gpu", DYN1](rl1(self.vis.textures.n)),
             self.vis.texels.lt_dyn["gpu", DYN1](rl1(self.vis.texels.n)),
             self.vis.lights.lt_dyn["gpu", DYN1](rl1(self.vis.lights.n)),
+            d.qpos.lt["gpu", Self.L_QPOS](),
             LayoutTensor[Self.DTYPE, Self.L_RGB](self.rgb),
             LayoutTensor[Self.DTYPE, Self.L_SCALARPIX](self.depth),
             LayoutTensor[Self.DTYPE, Self.L_SCALARPIX](self.seg),
             Int32(self.cam),
-            Int32(nvg),
+            Int32(nvg + (ncond << 16)),
             Int32(nlight),
             self.background.x,
             self.background.y,
@@ -556,9 +584,11 @@ struct BatchedCameraRenderer[
         # ⚠ THE POSITIVE BRANCH, for the same reason as the kernel above.
         comptime if Self.DTYPE.is_floating_point():
             var nvg = self.vis.ngeom
+            var ncond = self.vis.ncond
             var geoms_c = self.vis.geoms.lt_dyn["cpu", DYN2](
-                rl2(nvg, MODEL_GEOM_SIZE)
+                rl2(nvg + ncond, MODEL_GEOM_SIZE)
             )
+            var qpos_c = d.qpos.lt["cpu", Self.L_QPOS]()
             var app_c = self.vis.appearance.lt_dyn["cpu", DYN1](
                 rl1(self.vis.appearance.n)
             )
@@ -600,7 +630,8 @@ struct BatchedCameraRenderer[
                     for pxx in range(Self.WIDTH):
                         var pix = py * Self.WIDTH + pxx
                         var hit = render_pixel[
-                            Self.DTYPE, Self.SHADOWS, Self.REFLECT
+                            Self.DTYPE, Self.SHADOWS, Self.REFLECT,
+                            SAMPLES=Self.SAMPLES,
                         ](
                             geoms_c,
                             nvg,
@@ -620,6 +651,8 @@ struct BatchedCameraRenderer[
                             txl_c,
                             lit_c,
                             nlight,
+                            qpos_c,
+                            ncond,
                             frame,
                             Self.WIDTH,
                             Self.HEIGHT,

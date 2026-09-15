@@ -66,11 +66,16 @@ TEXTURE COORDINATES, and the four cases `settexture` actually has
 4. **Anything else with a 2D texture** — the object-linear fallback
    `s = 0.5*scl0*x - 0.5`, `t = -0.5*scl1*y - 0.5`.
 
-⚠ BILINEAR, NO MIPMAPS. MuJoCo uploads with `GL_LINEAR_MIPMAP_LINEAR`, so a
-surface seen at a glancing angle is filtered over a footprint this sampler
-does not compute. It shows as aliasing on the floor tiles and the wall, not as
-a colour shift, and a ray tracer's honest fix is more rays rather than a
-mip pyramid it has no derivatives for.
+⚠⚠ TRILINEAR, WITH MUJOCO'S MIP CHAIN. `render_context.c` calls
+`glGenerateMipmap` on every texture and samples `GL_LINEAR_MIPMAP_LINEAR`, so
+at 128x128 a 4096-texel plate map is averaged over the hundreds of texels a
+pixel covers. Sampling level 0 only drew the plate's rim pattern and the
+bowl's glaze sharp and sparkling where the reference is smooth — most of the
+camera gate's remaining error in 2026-09. The level is OpenGL's own lambda:
+`render.shade_hit` gets the derivatives by intersecting the NEIGHBOURING
+pixels' rays with the hit's tangent plane and evaluating `geom_uv` there,
+which is what a rasteriser's 2x2 finite difference measures
+(`texture_lod`, `sample_texture_lod`).
 
 ⚠ WRAP IS REPEAT, which is MuJoCo's default for a 2D texture
 (`GL_REPEAT`)... except that `mjr_uploadTexture` sets `GL_CLAMP_TO_EDGE` for
@@ -161,49 +166,20 @@ struct Texel[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
     var hit: Bool
 
 
-def sample_texture[
-    DTYPE: DType, L_TEX: Layout, L_TEXELS: Layout
+@always_inline
+def _bilinear_level[
+    DTYPE: DType, L_TEXELS: Layout
 ](
-    textures: LayoutTensor[DTYPE, L_TEX, MutAnyOrigin],
     texels: LayoutTensor[DType.uint8, L_TEXELS, MutAnyOrigin],
-    texid: Int,
-    u: Scalar[DTYPE],
-    v: Scalar[DTYPE],
+    adr: Int,
+    w: Int,
+    h: Int,
+    ttype: Int,
+    uu: Scalar[DTYPE],
+    vv: Scalar[DTYPE],
 ) -> Texel[DTYPE] where DTYPE.is_floating_point():
-    """Bilinear RGB from the atlas, `[0, 1]`.
-
-    ⚠ ROW 0 IS `v = 0`. The PNG decodes top row first and the atlas keeps that
-    order, and MuJoCo's own UVs are written with `v` already flipped
-    (`1 - (y+sy)/2sy` for a plane) — so no flip belongs here. A flip in this
-    function would be a second one, and the two would cancel on a plane and
-    NOT on a mesh.
-    """
-    var miss = Texel[DTYPE](
-        Scalar[DTYPE](1), Scalar[DTYPE](1), Scalar[DTYPE](1), False
-    )
-    if texid < 0 or texid >= MAX_VIS_TEXTURES:
-        return miss
-    var tb = texid * VIS_TEX_WORDS
-    if rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_ACTIVE]) == 0:
-        return miss
-    var w = Int(rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_WIDTH]))
-    var h = Int(rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_HEIGHT]))
-    var adr = Int(rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_ADR]))
-    var ttype = Int(rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_TYPE]))
-    if w <= 0 or h <= 0:
-        return miss
-
-    var uu = u
-    var vv = v
-    if ttype == TEX_CUBE:
-        # `mjr_uploadTexture` clamps a cube face; a repeat would show the
-        # opposite edge of the wood grain across the table's silhouette.
-        uu = _clamp01[DTYPE](uu)
-        vv = _clamp01[DTYPE](vv)
-    else:
-        uu = _wrap01[DTYPE](uu)
-        vv = _wrap01[DTYPE](vv)
-
+    """`GL_LINEAR` on ONE level of `w` x `h` texels starting at `adr`. `uu`,
+    `vv` are already wrapped or clamped to [0, 1]."""
     # Half-texel offsets: a sample at u = 0 sits at the CENTRE of texel 0, not
     # on its left edge. Getting this wrong shifts the whole image by half a
     # texel, which is invisible on a 4096 map and obvious on a 1x1 builtin.
@@ -240,6 +216,152 @@ def sample_texture[
             g += wgt * Scalar[DTYPE](Int(texels[o + 1])) * inv
             b += wgt * Scalar[DTYPE](Int(texels[o + 2])) * inv
     return Texel[DTYPE](r, g, b, True)
+
+
+@always_inline
+def mip_level_adr(adr: Int, w: Int, h: Int, level: Int) -> Int:
+    """Atlas offset of mip `level` — see `TEX_IDX_NLEVELS` for the layout.
+    A loop of at most `log2(max(w, h))` steps, integer only, kernel-safe."""
+    var o = adr
+    var lw = w
+    var lh = h
+    for _ in range(level):
+        o += lw * lh * 3
+        lw = lw >> 1 if lw > 1 else 1
+        lh = lh >> 1 if lh > 1 else 1
+    return o
+
+
+def sample_texture_lod[
+    DTYPE: DType, L_TEX: Layout, L_TEXELS: Layout
+](
+    textures: LayoutTensor[DTYPE, L_TEX, MutAnyOrigin],
+    texels: LayoutTensor[DType.uint8, L_TEXELS, MutAnyOrigin],
+    texid: Int,
+    u: Scalar[DTYPE],
+    v: Scalar[DTYPE],
+    lod: Scalar[DTYPE],
+) -> Texel[DTYPE] where DTYPE.is_floating_point():
+    """`GL_LINEAR_MIPMAP_LINEAR` RGB from the atlas, `[0, 1]`, at level of
+    detail `lod` (OpenGL's lambda, `texture_lod`).
+
+    The GL 2.1 rules (§3.8.8-3.8.9), with MuJoCo's filters: the magnification
+    filter is `GL_LINEAR` and the minification one `GL_LINEAR_MIPMAP_LINEAR`,
+    so the switch-over constant `c` is 0 — `lod <= 0` is plain bilinear on
+    level 0, and above it the two levels `floor(lod)` and `floor(lod) + 1`
+    (clamped to the last one) are each sampled bilinearly and blended by the
+    fraction.
+
+    ⚠ ROW 0 IS `v = 0`. The PNG decodes top row first and the atlas keeps that
+    order, and MuJoCo's own UVs are written with `v` already flipped
+    (`1 - (y+sy)/2sy` for a plane) — so no flip belongs here. A flip in this
+    function would be a second one, and the two would cancel on a plane and
+    NOT on a mesh.
+    """
+    var miss = Texel[DTYPE](
+        Scalar[DTYPE](1), Scalar[DTYPE](1), Scalar[DTYPE](1), False
+    )
+    if texid < 0 or texid >= MAX_VIS_TEXTURES:
+        return miss
+    var tb = texid * VIS_TEX_WORDS
+    if rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_ACTIVE]) == 0:
+        return miss
+    var w = Int(rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_WIDTH]))
+    var h = Int(rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_HEIGHT]))
+    var adr = Int(rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_ADR]))
+    var ttype = Int(rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_TYPE]))
+    var nlevels = Int(rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_NLEVELS]))
+    if w <= 0 or h <= 0:
+        return miss
+    if nlevels < 1:
+        nlevels = 1
+
+    var uu = u
+    var vv = v
+    if ttype == TEX_CUBE:
+        # `mjr_uploadTexture` clamps a cube face; a repeat would show the
+        # opposite edge of the wood grain across the table's silhouette.
+        uu = _clamp01[DTYPE](uu)
+        vv = _clamp01[DTYPE](vv)
+    else:
+        uu = _wrap01[DTYPE](uu)
+        vv = _wrap01[DTYPE](vv)
+
+    var q = nlevels - 1
+    if not (lod > Scalar[DTYPE](0)) or q == 0:
+        return _bilinear_level[DTYPE](texels, adr, w, h, ttype, uu, vv)
+    var d1 = Int(floor(lod))
+    var frac = lod - Scalar[DTYPE](d1)
+    if d1 >= q:
+        d1 = q
+        frac = Scalar[DTYPE](0)
+    var w1 = w >> d1 if (w >> d1) > 0 else 1
+    var h1 = h >> d1 if (h >> d1) > 0 else 1
+    var a1 = mip_level_adr(adr, w, h, d1)
+    var t1 = _bilinear_level[DTYPE](texels, a1, w1, h1, ttype, uu, vv)
+    if frac <= Scalar[DTYPE](0):
+        return t1
+    var d2 = d1 + 1
+    var w2 = w >> d2 if (w >> d2) > 0 else 1
+    var h2 = h >> d2 if (h >> d2) > 0 else 1
+    var a2 = a1 + w1 * h1 * 3
+    var t2 = _bilinear_level[DTYPE](texels, a2, w2, h2, ttype, uu, vv)
+    var k = Scalar[DTYPE](1) - frac
+    return Texel[DTYPE](
+        t1.r * k + t2.r * frac,
+        t1.g * k + t2.g * frac,
+        t1.b * k + t2.b * frac,
+        True,
+    )
+
+
+def sample_texture[
+    DTYPE: DType, L_TEX: Layout, L_TEXELS: Layout
+](
+    textures: LayoutTensor[DTYPE, L_TEX, MutAnyOrigin],
+    texels: LayoutTensor[DType.uint8, L_TEXELS, MutAnyOrigin],
+    texid: Int,
+    u: Scalar[DTYPE],
+    v: Scalar[DTYPE],
+) -> Texel[DTYPE] where DTYPE.is_floating_point():
+    """Bilinear on level 0 — `sample_texture_lod` at `lod = 0`."""
+    return sample_texture_lod[DTYPE](
+        textures, texels, texid, u, v, Scalar[DTYPE](0)
+    )
+
+
+def texture_lod[
+    DTYPE: DType, L_TEX: Layout
+](
+    textures: LayoutTensor[DTYPE, L_TEX, MutAnyOrigin],
+    texid: Int,
+    dudx: Scalar[DTYPE],
+    dvdx: Scalar[DTYPE],
+    dudy: Scalar[DTYPE],
+    dvdy: Scalar[DTYPE],
+) -> Scalar[DTYPE] where DTYPE.is_floating_point():
+    """OpenGL's lambda from the texture-coordinate derivatives across one
+    pixel, in [0, 1] units: `log2(max(|d(uv)/dx|, |d(uv)/dy|))` with `u`
+    scaled by the width and `v` by the height (GL 2.1 §3.8.8, the isotropic
+    `rho` every driver implements). Returns 0 for a texture that is not there.
+    """
+    if texid < 0 or texid >= MAX_VIS_TEXTURES:
+        return Scalar[DTYPE](0)
+    var tb = texid * VIS_TEX_WORDS
+    var w = rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_WIDTH])
+    var h = rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_HEIGHT])
+    var ax = dudx * w
+    var bx = dvdx * h
+    var ay = dudy * w
+    var by = dvdy * h
+    var rx = ax * ax + bx * bx
+    var ry = ay * ay + by * by
+    var rho2 = rx if rx > ry else ry
+    if not (rho2 > Scalar[DTYPE](1)):
+        return Scalar[DTYPE](0)
+    # log2(sqrt(rho2)) = 0.5 * ln(rho2) / ln(2). `log` lowers on the device
+    # (`_powi` relies on the same); `log2` is not assumed to.
+    return Scalar[DTYPE](0.5) * log(rho2) / Scalar[DTYPE](0.6931471805599453)
 
 
 @fieldwise_init

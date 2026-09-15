@@ -45,7 +45,7 @@ comptime RGB_CHANNELS_HOST: Int = 3
 
 def render_lane_cpu[
     DTYPE: DType, D: DimsLike, BATCH: Int, SHADOWS: Bool = False,
-    REFLECT: Bool = True
+    REFLECT: Bool = True, SAMPLES: Int = 1
 ](
     mut d: Data[DTYPE, D, BATCH],
     mut m: Model[DTYPE, D],
@@ -76,7 +76,11 @@ def render_lane_cpu[
     comptime if DTYPE.is_floating_point():
         var nb = m.dims.get_nbody()
         var nvg = vis.ngeom
-        var geoms_c = vis.geoms.lt_dyn["cpu", DYN2](rl2(nvg, MODEL_GEOM_SIZE))
+        # ⚠ `ngeom + ncond` ROWS: the conditional sites follow the geoms.
+        var geoms_c = vis.geoms.lt_dyn["cpu", DYN2](
+            rl2(nvg + vis.ncond, MODEL_GEOM_SIZE)
+        )
+        var qpos_c = d.qpos.lt_dyn["cpu", DYN2](rl2(BATCH, m.dims.get_nq()))
         var app_c = vis.appearance.lt_dyn["cpu", DYN1](rl1(vis.appearance.n))
         var bodies_c = m.bodies.lt_dyn["cpu", DYN2](rl2(nb, MODEL_BODY_SIZE))
         var xpos_c = d.xpos.lt_dyn["cpu", DYN2](rl2(BATCH, nb * 3))
@@ -105,7 +109,7 @@ def render_lane_cpu[
         )
         for py in range(height):
             for px in range(width):
-                var hit = render_pixel[DTYPE, SHADOWS, REFLECT](
+                var hit = render_pixel[DTYPE, SHADOWS, REFLECT, SAMPLES=SAMPLES](
                     geoms_c,
                     nvg,
                     app_c,
@@ -124,6 +128,8 @@ def render_lane_cpu[
                     txl_c,
                     lit_c,
                     vis.nlight,
+                    qpos_c,
+                    vis.ncond,
                     frame,
                     width,
                     height,
