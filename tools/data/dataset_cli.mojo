@@ -22,7 +22,12 @@ from std.sys import argv
 from std.time import sleep
 
 from mojo_rl.core.project import project_dataset_dir, projects_root
-from mojo_rl.data.dataset_sync import HashCache, pull_dataset, push_dataset
+from mojo_rl.data.dataset_sync import (
+    HashCache,
+    pull_dataset,
+    push_dataset,
+    watch_is_done,
+)
 from mojo_rl.data.remote import RemoteCatalog
 
 
@@ -62,20 +67,40 @@ def cmd_push() raises:
     var cache = HashCache()
     var watch = _has(String("--watch"))
     var every = Int(_flag(String("--every"), String("60")))
+    var idle_announced = False
     while True:
         var rep = push_dataset(cat, project, dataset, root, cache)
-        # ⚠ THE UNCHANGED COUNT BESIDE THE UPLOADED ONE. "0 uploaded" is also
-        # what a pass that found no files prints.
-        print(
-            "dataset " + project + "/" + dataset + ": " + String(rep.n_episodes)
-            + " episodes — " + String(rep.uploaded) + " uploaded ("
-            + String(rep.bytes // 1_000_000) + " MB), " + String(rep.unchanged)
-            + " unchanged, " + String(rep.held)
-            + " held back (still recording)"
-            + (", " + String(rep.passes) + " passes: an episode ended mid-push" if rep.passes > 1 else "")
-        )
+        var done = watch_is_done(rep, root)
+        # ⚠ AN IDLE PASS PRINTS NOTHING after the first. The first session's
+        # terminal filled with identical "0 uploaded" lines and read as a push
+        # that would not finish.
+        if rep.uploaded > 0 or rep.held > 0 or not watch or not idle_announced:
+            # The unchanged count beside the uploaded one: "0 uploaded" is
+            # also what a pass that found no files prints.
+            print(
+                "dataset " + project + "/" + dataset + ": " + String(rep.n_episodes)
+                + " episodes — " + String(rep.uploaded) + " uploaded ("
+                + String(rep.bytes // 1_000_000) + " MB), " + String(rep.unchanged)
+                + " unchanged"
+                + (", " + String(rep.held) + " held back (episode still recording)" if rep.held > 0 else "")
+                + (", " + String(rep.passes) + " passes: an episode ended mid-push" if rep.passes > 1 else "")
+            )
         if not watch:
             break
+        if done:
+            print(
+                "  ✓ the recording is finished and fully mirrored on the platform"
+                " — stopping."
+            )
+            break
+        if rep.uploaded == 0 and rep.held == 0 and not idle_announced:
+            print(
+                "  up to date — re-checking every " + String(every)
+                + " s until the recorder finishes (Ctrl-C is safe)"
+            )
+            idle_announced = True
+        elif rep.uploaded > 0:
+            idle_announced = False
         sleep(Float64(every))
 
 

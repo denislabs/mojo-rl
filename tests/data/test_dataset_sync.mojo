@@ -23,11 +23,12 @@ from mojo_rl.data.dataset_sync import (
     dataset_path_refusal,
     pull_dataset,
     push_dataset,
+    watch_is_done,
 )
 from mojo_rl.data.lerobot import import_lerobot_v3
 from mojo_rl.data.lerobot_push import dataset_files
 from mojo_rl.data.lerobot_write import LeRobotWriter
-from mojo_rl.data.recording_files import plan_upload, video_file_index
+from mojo_rl.data.recording_files import plan_upload, recording_finished, video_file_index
 from mojo_rl.data.remote import RemoteCatalog
 from mojo_rl.data.store import TrajectoryStore
 from mojo_rl.io.fileio import remove_file
@@ -200,8 +201,18 @@ def part_b(url: String) raises -> Int:
     _check(r3.n_episodes == 3 and r3.held == 0, "B3: expected 3 episodes and nothing held")
     print("  B3 episode 3 ends: " + String(r3.uploaded) + " files re-sent (its videos + rewritten metadata), old videos untouched")
     n += 3
+    _check(not recording_finished(A), "B3b: a checkpoint must not mark the recording finished")
+    var r3b = push_dataset(cat, String(SLUG), String(NAME), A, cache, verbose=False)
+    _check(not watch_is_done(r3b, A), "B3b: --watch must not stop before the recorder finishes")
     w.close(verbose=False)
-    _ = push_dataset(cat, String(SLUG), String(NAME), A, cache, verbose=False)
+    _check(recording_finished(A), "B3b: close() must mark the recording finished")
+    var r3c = push_dataset(cat, String(SLUG), String(NAME), A, cache, verbose=False)
+    # close() rewrote the metadata, so this pass still had work: not done yet.
+    _check(r3c.uploaded > 0 and not watch_is_done(r3c, A), "B3b: the pass that sends close()'s rewrite is not the last")
+    var r3d = push_dataset(cat, String(SLUG), String(NAME), A, cache, verbose=False)
+    _check(watch_is_done(r3d, A), "B3b: finished + nothing left to send must stop --watch")
+    print("  B3b --watch: idle mid-session keeps going; stops only after close() and its rewrite are pushed")
+    n += 5
 
     # ── 4. pull on another box: byte for byte, and it imports ──────────
     var p4 = pull_dataset(cat, String(SLUG), String(NAME), B)

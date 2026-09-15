@@ -30,7 +30,12 @@ from std.os import makedirs
 from std.os.path import exists
 
 from mojo_rl.data.lerobot_push import dataset_files
-from mojo_rl.data.recording_files import PushPlan, plan_upload, total_episodes
+from mojo_rl.data.recording_files import (
+    PushPlan,
+    plan_upload,
+    recording_finished,
+    total_episodes,
+)
 from mojo_rl.data.remote import RemoteCatalog
 from mojo_rl.io.fetch import fetch_to_cache
 from mojo_rl.io.fileio import file_size
@@ -161,6 +166,17 @@ def push_dataset(
     return rep^
 
 
+def watch_is_done(ref rep: PushReport, root: String) raises -> Bool:
+    """Whether `--watch` can stop: the recorder finished, and this pass found
+    nothing left to send or hold back.
+
+    ⚠ ALL THREE, because each alone lies: a pass with 0 uploads happens between
+    every two episodes, and `finished` is written by `close()` BEFORE the last
+    push has sent what `close()` rewrote.
+    """
+    return rep.uploaded == 0 and rep.held == 0 and recording_finished(root)
+
+
 def _total_frames(root: String) raises -> Int:
     var doc = load_json(root + "/meta/info.json")
     var n = doc.field(doc.root(), String("total_frames"))
@@ -202,7 +218,7 @@ def pull_dataset(
     """
     var doc = cat.dataset_files(slug, name)
     var rep = PullReport()
-    var files = -1
+    var files: Int
     try:
         files = doc.field(doc.root(), String("files"))
     except:

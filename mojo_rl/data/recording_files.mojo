@@ -32,6 +32,19 @@ def total_episodes(root: String) raises -> Int:
     return doc.integer(n) if n >= 0 else -1
 
 
+def recording_finished(root: String) raises -> Bool:
+    """True once the recorder has exited through `finish`.
+
+    A dataset without the writer's side file was only ever written at close, so
+    it is finished by construction.
+    """
+    if not exists(root + "/" + WRITER_STATS):
+        return exists(root + "/meta/info.json")
+    var doc = load_json(root + "/" + WRITER_STATS)
+    var node = doc.field(doc.root(), String("finished"))
+    return node >= 0 and doc.boolean(node)
+
+
 def video_file_index(rel: String) -> Int:
     """`videos/<cam>/chunk-000/file-004.mp4` -> 4; -1 for anything else."""
     if not rel.startswith("videos/") or not rel.endswith(".mp4"):

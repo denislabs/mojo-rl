@@ -823,19 +823,25 @@ struct LeRobotWriter(Movable):
                     + String(self.n_rows()) + " rows"
                 )
 
-    def _write_all(mut self) raises:
+    def _write_all(mut self, finished: Bool = False) raises:
         self._write_data()
         self._write_tasks()
         self._write_episodes()
         self._write_info()
         self._write_stats_json()
         if self.checkpoint:
-            self._write_resume_state()
+            self._write_resume_state(finished)
 
-    def _write_resume_state(self) raises:
+    def _write_resume_state(self, finished: Bool) raises:
+        """⚠ `finished` is what lets `dataset-push --watch` stop by itself: a
+        checkpoint after an episode and the final `close()` write the same
+        files, and only this flag tells a watcher which one it is looking at.
+        A resumed session writes `false` again at its first checkpoint."""
         var w = JsonWriter()
         w.begin_object()
         w.member(String("schema_version"), 1)
+        w.key(String("finished"))
+        w.boolean(finished)
         w.member(String("n_episodes"), self.n_episodes())
         w.key(String("ep_stats"))
         w.begin_array()
@@ -940,7 +946,7 @@ struct LeRobotWriter(Movable):
                 self._accepted[c] += self._enc[c].stop()
 
         self._check_frame_counts()
-        self._write_all()
+        self._write_all(finished=True)
         self.closed = True
         if verbose:
             print(
