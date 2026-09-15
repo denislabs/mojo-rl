@@ -61,6 +61,22 @@ axis, so it reports `length * H * W / 16` — the same rate LeRobot uses. That
 is not cosmetic agreement; walking every pixel cost **45.8 ms of a 33.3 ms
 tick** in the record loop.
 
+## ⚠⚠ Checkpoints: a crash loses one episode, not the session
+
+`checkpoint=True` (what the recorders use) makes `end_episode` close each
+camera's mp4 — ONE FILE PER EPISODE, `from_timestamp` always 0 — and rewrite
+every metadata file. The directory is then a complete, importable dataset after
+every episode. Without it, all rows and metadata lived in memory until
+`close()`, and a crash, a kill or a power cut at episode 45 lost all 45.
+
+`LeRobotWriter.resume(root, ...)` reopens such a directory and carries on:
+rows, episode index and tasks are read back through the importer's own readers
+(`FrameTable`, `EpisodeIndex`, `read_task_table`); the per-episode statistics,
+which cannot be recomputed without decoding the videos, come from
+`meta/mojo_rl_writer_stats.json`, written at every checkpoint. A directory
+written without checkpoints is refused: its episodes share video files, and a
+resumed writer would have to append to a closed mp4.
+
 ## What is not implemented
 
 ⚠ **ONE `data/` FILE AND ONE CHUNK.** `data_files_size_in_mb` rolling is not
@@ -75,8 +91,11 @@ from std.math import sqrt
 from std.os import makedirs
 from std.os.path import exists
 
-from mojo_rl.io.fileio import file_size, write_text_atomic
-from mojo_rl.io.json import JsonWriter
+from mojo_rl.io.fileio import file_size, remove_file, write_text_atomic
+from mojo_rl.io.json import J_ARRAY, JsonWriter, load_json
+
+from .lerobot import EpisodeIndex, FrameTable, LeRobotInfo, read_task_table
+from .lerobot_rejected import refuse_existing_dataset
 from mojo_rl.io.parquet.writer import (
     ParquetWriter, PQ_F32, PQ_F64, PQ_I64, PQ_STR, PqColumn, pq_list,
     pq_list3, pq_scalar,
@@ -94,6 +113,9 @@ comptime STATS_STRIDE = 4
 """Sample every 4th pixel in each axis for the per-episode image histogram —
 1/16 of the pixels, the same rate LeRobot uses. See `_ImgStats.add_frame`:
 every pixel cost 45.8 ms of a 33.3 ms tick."""
+
+comptime RESUME_FILE = "meta/mojo_rl_writer_stats.json"
+"""The per-episode statistics a resumed writer needs. See the module header."""
 
 comptime N_STATS = 10
 """Min, max, mean, std, count, q01, q10, q50, q90, q99 — in that order, which
@@ -130,6 +152,16 @@ def _pad3(v: Int) -> String:
 
 def _sort_f64(mut xs: List[Float64]):
     """Insertion sort. An episode is hundreds of rows, once per feature dim."""
+    for i in range(1, len(xs)):
+        var v = xs[i]
+        var j = i - 1
+        while j >= 0 and xs[j] > v:
+            xs[j + 1] = xs[j]
+            j -= 1
+        xs[j + 1] = v
+
+
+def _sort_strings(mut xs: List[String]):
     for i in range(1, len(xs)):
         var v = xs[i]
         var j = i - 1
@@ -346,6 +378,8 @@ struct LeRobotWriter(Movable):
     var _accepted: List[Int]
     """Frames ffmpeg accepted, accumulated as encoders are closed."""
     var closed: Bool
+    var checkpoint: Bool
+    """Close each episode's video and rewrite all metadata at `end_episode`."""
 
     def __init__(
         out self,
@@ -358,7 +392,12 @@ struct LeRobotWriter(Movable):
         width: Int,
         var robot_type: String = String("so_follower"),
         video_mb: Int = DEFAULT_VIDEO_MB,
+        checkpoint: Bool = False,
+        _resume_at: Int = 0,
     ) raises:
+        """`_resume_at` is for `resume()` only: the first video file index to
+        write, with NO encoder started here — starting one at file 0 would
+        overwrite the first recorded episode."""
         if len(cameras) == 0:
             raise Error(
                 "lerobot_write: a v3 dataset needs at least one camera —"
@@ -401,6 +440,7 @@ struct LeRobotWriter(Movable):
         self._submitted = List[Int]()
         self._accepted = List[Int]()
         self.closed = False
+        self.checkpoint = checkpoint
 
         makedirs(self.root + "/meta/episodes/chunk-000", exist_ok=True)
         makedirs(self.root + "/data/chunk-000", exist_ok=True)
@@ -410,16 +450,27 @@ struct LeRobotWriter(Movable):
                 exist_ok=True,
             )
             self._img.append(_ImgStats())
-            self._enc_file.append(0)
+            self._enc_file.append(_resume_at)
             self._enc_frames.append(0)
+            self._submitted.append(0)
+            self._accepted.append(0)
+            if _resume_at > 0:
+                # A placeholder that is never started: `_enc_pending` makes
+                # `begin_episode` replace it with the real encoder.
+                self._enc.append(
+                    VideoEncoderThread(
+                        self._video_path(c, _resume_at), self.width,
+                        self.height, self.fps,
+                    )
+                )
+                self._enc_pending.append(True)
+                continue
             self._enc_pending.append(False)
             var e = VideoEncoderThread(
                 self._video_path(c, 0), self.width, self.height, self.fps
             )
             e.start()
             self._enc.append(e^)
-            self._submitted.append(0)
-            self._accepted.append(0)
 
     def __init__(out self, *, deinit move: Self):
         self.root = move.root^
@@ -455,6 +506,140 @@ struct LeRobotWriter(Movable):
         self._submitted = move._submitted^
         self._accepted = move._accepted^
         self.closed = move.closed
+        self.checkpoint = move.checkpoint
+
+    @staticmethod
+    def resume(
+        var root: String,
+        fps: Int,
+        var state_names: List[String],
+        var action_names: List[String],
+        var cameras: List[String],
+        height: Int,
+        width: Int,
+        var robot_type: String = String("so_follower"),
+    ) raises -> Self:
+        """Reopen a checkpointed dataset and continue adding episodes.
+
+        ⚠⚠ EVERYTHING THE NEW EPISODES MUST AGREE WITH IS CHECKED, AND A
+        MISMATCH IS REFUSED rather than written: a resumed session with a
+        different fps, camera set, resolution or joint list would produce a
+        dataset whose episodes disagree about what a row means, and the
+        importer reads the schema once.
+        """
+        var what = String("lerobot_write.resume(") + root + ")"
+        if not exists(root + "/meta/info.json"):
+            raise Error(what + ": no dataset here (meta/info.json is missing)")
+        if not exists(root + "/" + RESUME_FILE):
+            raise Error(
+                what + ": this dataset was not recorded with per-episode"
+                " checkpoints (" + RESUME_FILE + " is missing), so its episodes"
+                " share video files and it cannot be appended to"
+            )
+
+        var info = LeRobotInfo(root)
+        if info.fps != fps:
+            raise Error(what + ": recorded at " + String(info.fps) + " fps, resuming at " + String(fps))
+        if info.state_dim != len(state_names) or info.action_dim != len(action_names):
+            raise Error(what + ": the recorded state/action dimensions differ from this session's")
+        var want_cams = cameras.copy()
+        _sort_strings(want_cams)
+        var have_cams = info.cameras.copy()
+        _sort_strings(have_cams)
+        var same = len(want_cams) == len(have_cams)
+        if same:
+            for i in range(len(want_cams)):
+                if want_cams[i] != have_cams[i]:
+                    same = False
+        if not same:
+            var h = String("")
+            for c in info.cameras:
+                h += " " + c
+            raise Error(what + ": recorded with cameras [" + h + " ], resuming with a different set")
+        var doc = load_json(root + "/meta/info.json")
+        var feats = doc.field(doc.root(), String("features"))
+        for is_action in [True, False]:
+            ref names = action_names if is_action else state_names
+            var node = doc.field(
+                doc.field(feats, String("action") if is_action else String("observation.state")),
+                String("names"),
+            )
+            for i in range(len(names)):
+                if doc.string(doc.at(node, i)) != names[i]:
+                    raise Error(what + ": joint '" + names[i] + "' does not match the recording's names")
+        for c in cameras:
+            var shape = doc.field(doc.field(feats, c), String("shape"))
+            if doc.integer(doc.at(shape, 0)) != height or doc.integer(doc.at(shape, 1)) != width:
+                raise Error(what + ": camera '" + c + "' was recorded at a different resolution")
+
+        var n_ep = info.total_episodes
+        var frames = FrameTable(root, info.state_dim, info.action_dim)
+        var index = EpisodeIndex(root, cameras)
+        if index.n_episodes() != n_ep or frames.n_rows != info.total_frames or index.total_rows() != frames.n_rows:
+            raise Error(
+                what + ": info.json, the episode index and the data disagree —"
+                " the last checkpoint was interrupted while it was being"
+                " written. The dataset needs repair before it can be resumed."
+            )
+        for c in range(len(cameras)):
+            for e in range(n_ep):
+                if index.vid_file[c][e] != e or index.vid_from_ts[c][e] != 0.0:
+                    raise Error(
+                        what + ": episode " + String(e) + " of camera '"
+                        + cameras[c] + "' is not alone in its own video file;"
+                        " only a checkpointed recording can be resumed"
+                    )
+
+        var st = load_json(root + "/" + RESUME_FILE)
+        var sroot = st.root()
+        if st.integer(st.field(sroot, String("n_episodes"))) != n_ep:
+            raise Error(what + ": " + RESUME_FILE + " describes a different number of episodes")
+
+        var w = Self(
+            root^, fps, state_names^, action_names^, cameras^, height, width,
+            robot_type^, DEFAULT_VIDEO_MB, True, n_ep,
+        )
+
+        var tasks = read_task_table(w.root)
+        for i in range(len(tasks)):
+            for j in range(len(tasks)):
+                if tasks[j][0] == i:
+                    w.tasks.append(String(tasks[j][1]))
+        for r in range(frames.n_rows):
+            for d in range(info.state_dim):
+                w.state.append(Float64(frames.qpos[r * info.state_dim + d]))
+            for d in range(info.action_dim):
+                w.action.append(Float64(frames.action[r * info.action_dim + d]))
+        for e in range(n_ep):
+            w.ep_length.append(index.length[e])
+            w.ep_from.append(index.from_index[e])
+            w.ep_to.append(index.to_index[e])
+            w.ep_task.append(Int(frames.task_index[index.from_index[e]]))
+            for c in range(len(w.cameras)):
+                w.ep_vid_file.append(e)
+                w.ep_vid_from.append(0.0)
+
+        var es = st.field(sroot, String("ep_stats"))
+        var eis = st.field(sroot, String("ep_img_stats"))
+        var num_stride = N_STATS * (info.action_dim + info.state_dim + 5)
+        var img_stride = len(w.cameras) * N_STATS * 3
+        if st.size(es) != n_ep * num_stride or st.size(eis) != n_ep * img_stride:
+            raise Error(what + ": " + RESUME_FILE + " holds the wrong number of statistics")
+        for i in range(st.size(es)):
+            w.ep_stats.append(st.number(st.at(es, i)))
+        for i in range(st.size(eis)):
+            w.ep_img_stats.append(st.number(st.at(eis, i)))
+
+        for c in range(len(w.cameras)):
+            w._submitted[c] = frames.n_rows
+            w._accepted[c] = frames.n_rows
+            # ⚠ A CRASH MID-EPISODE LEFT A PARTIAL mp4 at the next index. It
+            # is unreferenced; remove it so the resumed episode starts clean.
+            var k = n_ep
+            while exists(w._video_path(c, k)):
+                remove_file(w._video_path(c, k))
+                k += 1
+        return w^
 
     def _video_path(self, cam: Int, file_index: Int) -> String:
         return (
@@ -597,7 +782,73 @@ struct LeRobotWriter(Movable):
 
         self._collect_stats()
         self._open = False
-        self._maybe_roll()
+        if self.checkpoint:
+            self._checkpoint()
+        else:
+            self._maybe_roll()
+
+    def _checkpoint(mut self) raises:
+        """Finish this episode's video files and write the whole dataset.
+
+        ⚠ THE VIDEO IS CLOSED BEFORE THE METADATA NAMES IT. An mp4 is only
+        readable once ffmpeg has written its index at close; metadata pointing
+        at a file still being encoded would describe a dataset that cannot be
+        opened if the process dies in the next millisecond.
+        """
+        for c in range(len(self.cameras)):
+            self._accepted[c] += self._enc[c].stop()
+            self._enc_file[c] += 1
+            self._enc_frames[c] = 0
+            self._enc_pending[c] = True
+        self._check_frame_counts()
+        self._write_all()
+
+    def _check_frame_counts(self) raises:
+        # ⚠ THE VIDEO MUST HOLD EXACTLY THE ROWS THE PARQUET CLAIMS. A frame
+        # lost between here and ffmpeg is not a degraded recording, it is a
+        # MISALIGNED one: every episode after the gap reads another episode's
+        # frames, and nothing downstream can detect it.
+        for c in range(len(self.cameras)):
+            if self._submitted[c] != self._accepted[c]:
+                raise Error(
+                    "lerobot_write: camera '" + self.cameras[c] + "' was sent "
+                    + String(self._submitted[c]) + " frames but ffmpeg"
+                    " accepted " + String(self._accepted[c])
+                    + " — the video and the data would not line up"
+                )
+            if self._submitted[c] != self.n_rows():
+                raise Error(
+                    "lerobot_write: camera '" + self.cameras[c] + "' has "
+                    + String(self._submitted[c]) + " frames for "
+                    + String(self.n_rows()) + " rows"
+                )
+
+    def _write_all(mut self) raises:
+        self._write_data()
+        self._write_tasks()
+        self._write_episodes()
+        self._write_info()
+        self._write_stats_json()
+        if self.checkpoint:
+            self._write_resume_state()
+
+    def _write_resume_state(self) raises:
+        var w = JsonWriter()
+        w.begin_object()
+        w.member(String("schema_version"), 1)
+        w.member(String("n_episodes"), self.n_episodes())
+        w.key(String("ep_stats"))
+        w.begin_array()
+        for v in self.ep_stats:
+            w.number(v)
+        w.end_array()
+        w.key(String("ep_img_stats"))
+        w.begin_array()
+        for v in self.ep_img_stats:
+            w.number(v)
+        w.end_array()
+        w.end_object()
+        write_text_atomic(self.root + "/" + RESUME_FILE, w.done())
 
     def _collect_stats(mut self) raises:
         """Freeze the open episode's statistics, in the file's feature order."""
@@ -688,31 +939,8 @@ struct LeRobotWriter(Movable):
             if not self._enc_pending[c]:
                 self._accepted[c] += self._enc[c].stop()
 
-        # ⚠ THE VIDEO MUST HOLD EXACTLY THE ROWS THE PARQUET CLAIMS. A frame
-        # lost between here and ffmpeg is not a degraded recording, it is a
-        # MISALIGNED one: every episode after the gap reads another episode's
-        # frames, and nothing downstream can detect it. Checked once, here,
-        # where the counts are finally settled.
-        for c in range(len(self.cameras)):
-            if self._submitted[c] != self._accepted[c]:
-                raise Error(
-                    "lerobot_write: camera '" + self.cameras[c] + "' was sent "
-                    + String(self._submitted[c]) + " frames but ffmpeg"
-                    " accepted " + String(self._accepted[c])
-                    + " — the video and the data would not line up"
-                )
-            if self._submitted[c] != self.n_rows():
-                raise Error(
-                    "lerobot_write: camera '" + self.cameras[c] + "' has "
-                    + String(self._submitted[c]) + " frames for "
-                    + String(self.n_rows()) + " rows"
-                )
-
-        self._write_data()
-        self._write_tasks()
-        self._write_episodes()
-        self._write_info()
-        self._write_stats_json()
+        self._check_frame_counts()
+        self._write_all()
         self.closed = True
         if verbose:
             print(
@@ -1079,3 +1307,29 @@ struct LeRobotWriter(Movable):
         w.end_object()
 
         write_text_atomic(self.root + "/meta/stats.json", w.done())
+
+
+def open_recording(
+    var root: String,
+    fps: Int,
+    var state_names: List[String],
+    var action_names: List[String],
+    var cameras: List[String],
+    height: Int,
+    width: Int,
+    resume: Bool,
+) raises -> LeRobotWriter:
+    """The writer a recorder uses: checkpointed, new or resumed.
+
+    ⚠ ONE PLACE FOR BOTH RECORDERS. Whether an existing directory is refused
+    or continued is exactly the kind of rule that drifts when written twice.
+    """
+    if resume:
+        return LeRobotWriter.resume(
+            root^, fps, state_names^, action_names^, cameras^, height, width
+        )
+    refuse_existing_dataset(root)
+    return LeRobotWriter(
+        root^, fps, state_names^, action_names^, cameras^, height, width,
+        checkpoint=True,
+    )

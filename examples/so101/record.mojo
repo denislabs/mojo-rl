@@ -77,12 +77,12 @@ alignment and refuses to write a dataset where it fails.
 from std.sys import argv
 from std.time import perf_counter_ns
 
-from mojo_rl.data.lerobot_write import LeRobotWriter
+from mojo_rl.data.lerobot_write import LeRobotWriter, open_recording
 from mojo_rl.io.fileio import StdinReader
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name, joint_short
 from mojo_rl.utils.fmt import col, fixed
 from mojo_rl.core.project import project_dataset_dir
-from mojo_rl.data.lerobot_rejected import refuse_existing_dataset, reject_episode
+from mojo_rl.data.lerobot_rejected import is_rejected, load_rejected_episodes, reject_episode
 from mojo_rl.vision.camera_thread import CameraReader
 
 
@@ -124,6 +124,7 @@ def main() raises:
     var out_root = String("")
     var project = String("")
     var dataset = String("")
+    var resume = False
     var task = String("")
     var n_episodes = 5
     var seconds = 20
@@ -165,6 +166,8 @@ def main() raises:
             for k in range(len(parts)):
                 if parts[k] != "":
                     cam_names.append(parts[k])
+        elif a == "--resume":
+            resume = True
         elif a == "--arm":
             arm = True
         elif a == "--dry-run":
@@ -261,16 +264,17 @@ def main() raises:
     for i in range(SO101_N):
         joint_names.append(joint_name(i) + ".pos")
 
-    refuse_existing_dataset(out_root)
-    var writer = LeRobotWriter(
-        out_root.copy(),
-        HZ,
-        joint_names.copy(),
-        joint_names.copy(),
-        cam_names.copy(),
-        HEIGHT,
-        WIDTH,
+    # ⚠ CHECKPOINTED: every finished episode is on disk as a complete dataset,
+    # so a crash loses only the episode in progress, and `--resume` continues.
+    var writer = open_recording(
+        out_root.copy(), HZ, joint_names.copy(), joint_names.copy(),
+        cam_names.copy(), HEIGHT, WIDTH, resume,
     )
+    if resume:
+        print(
+            "resuming " + out_root + ": " + String(writer.n_episodes())
+            + " episodes / " + String(writer.n_rows()) + " frames already recorded"
+        )
 
     var frames = List[List[UInt8]]()
     for i in range(n_cam):
@@ -281,9 +285,9 @@ def main() raises:
     var goals = Array[Int32, SO101_N](fill=0)
 
     var stdin = StdinReader()
-    var kept = 0
+    var kept = writer.n_episodes()
     """Episodes WRITTEN, rejected ones included: it is the writer's index."""
-    var rejected = 0
+    var rejected = len(load_rejected_episodes(out_root))
     var total_dropped = 0
     var total_refused = 0
 
@@ -303,6 +307,10 @@ def main() raises:
                 print("  finishing early at " + String(kept - rejected) + " episode(s)")
                 break
 
+            # ⚠ The episode's encoders start before the drain: one mp4 per
+            # episode now, and frames queued while ffmpeg starts are not the
+            # episode's first frames.
+            writer.begin_episode(task.copy())
             # ⚠ DRAIN FIRST. Frames captured while the operator was reading
             # that prompt are not part of the episode; leaving them queued
             # would prepend someone walking past to every recording.
@@ -342,7 +350,6 @@ def main() raises:
             if stale > 0:
                 print("  (dropped " + String(stale) + " stale frames)")
 
-            writer.begin_episode(task.copy())
             var ticks = HZ * seconds
             var dropped = 0
             var refused = 0

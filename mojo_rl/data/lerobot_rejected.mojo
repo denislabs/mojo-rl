@@ -94,7 +94,8 @@ def refuse_existing_dataset(root: String) raises:
         if exists(root + "/" + rel):
             raise Error(
                 root + " already holds a recording (" + rel + " exists)."
-                " Choose a new --out; this refuses rather than overwrite it."
+                " Add --resume to continue it, or choose another dataset name;"
+                " this refuses rather than overwrite it."
             )
 
 

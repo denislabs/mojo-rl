@@ -54,6 +54,7 @@ from mojo_rl.data.lerobot_rejected import (
 )
 from mojo_rl.data.lerobot_write import LeRobotWriter
 from mojo_rl.io.fileio import remove_file
+from mojo_rl.io.proc import run_capture
 from mojo_rl.data.store import TrajectoryStore
 
 
@@ -244,6 +245,168 @@ def _check(root: String, h5: String, label: String) raises -> Int:
     return compared + routed
 
 
+def _names() -> Tuple[List[String], List[String], List[String]]:
+    var sn = List[String]()
+    for n in [
+        String("shoulder_pan.pos"), String("shoulder_lift.pos"),
+        String("elbow_flex.pos"),
+    ]:
+        sn.append(n)
+    var an = List[String]()
+    for n in [String("gripper.pos"), String("wrist_flex.pos")]:
+        an.append(n)
+    var cams = List[String]()
+    cams.append(String("observation.images.front"))
+    cams.append(String("observation.images.side"))
+    return (sn^, an^, cams^)
+
+
+def _record_episode(mut w: LeRobotWriter, ep: Int, n: Int, end: Bool = True) raises:
+    """Episode `ep`'s deterministic rows and frames — the same formulas as
+    `_write_dataset`, so `_verify` can recognise every row by its source."""
+    w.begin_episode(String("episode task ") + String(ep % 2))
+    for t in range(n):
+        var st = List[Float64]()
+        var ac = List[Float64]()
+        for d in range(SDIM):
+            st.append(Float64(ep * 16 + t * 4 + d) + 0.25)
+        for d in range(ADIM):
+            ac.append(Float64(ep * 16 + t * 4 + d) * -1.0 - 0.5)
+        var frames = List[List[UInt8]]()
+        for cam in range(2):
+            var sig = _signature(ep, t, cam)
+            var f = List[UInt8](unsafe_uninit_length = W * H * 3)
+            for p in range(W * H):
+                f[p * 3] = UInt8(sig[0])
+                f[p * 3 + 1] = UInt8(sig[1])
+                f[p * 3 + 2] = UInt8(sig[2])
+            frames.append(f^)
+        w.add_frame(st, ac, frames)
+    if end:
+        w.end_episode()
+
+
+def _verify(h5: String, ref eps: List[Int], ref lens: List[Int], label: String) raises -> Int:
+    """The store holds exactly source episodes `eps`, in order: row counts,
+    qpos values and which frame sits in every row."""
+    var s = TrajectoryStore(h5)
+    var rows = 0
+    for l in lens:
+        rows += l
+    if s.n_episodes() != len(eps) or s.n_rows() != rows:
+        raise Error(
+            label + ": store has " + String(s.n_episodes()) + " episodes / "
+            + String(s.n_rows()) + " rows, expected " + String(len(eps))
+            + " / " + String(rows)
+        )
+    var qpos = List[Float32](unsafe_uninit_length = rows * SDIM)
+    s.read_range[DType.float32](
+        String("qpos"), 0, rows,
+        qpos.unsafe_ptr().unsafe_bitcast[Scalar[DType.float32]]()
+        .as_unsafe_any_origin(),
+    )
+    var img = List[UInt8](unsafe_uninit_length = 2 * 3 * H * W)
+    var n = 0
+    var row = 0
+    for k in range(len(eps)):
+        var ep = eps[k]
+        for t in range(lens[k]):
+            if qpos[row * SDIM] != Float32(Float64(ep * 16 + t * 4) + 0.25):
+                raise Error(label + ": row " + String(row) + " is not episode " + String(ep) + " t=" + String(t))
+            s.read_range[DType.uint8](
+                String("images"), row, row + 1,
+                img.unsafe_ptr().unsafe_bitcast[Scalar[DType.uint8]]()
+                .as_unsafe_any_origin(),
+            )
+            for cam in range(2):
+                var base = cam * 3 * H * W
+                var acc = 0
+                for p in range(H * W):
+                    acc += Int(img[base + p])
+                var d = acc // (H * W) - _signature(ep, t, cam)[0]
+                if d < -8 or d > 8:
+                    raise Error(label + ": row " + String(row) + " camera " + String(cam) + " holds another episode's frame")
+            n += 3
+            row += 1
+    return n
+
+
+def _check_checkpoint_resume() raises -> Int:
+    """Crash mid-episode, import what survived, resume, finish, import again.
+
+    ⚠⚠ THE CRASH IS SIMULATED BY NEVER CALLING `close()`. The writer is
+    abandoned with episode 2 half-recorded, exactly the state a killed
+    recorder leaves: its video file exists and is unreferenced, and all
+    metadata is whatever the last `end_episode` wrote.
+    """
+    var root = String("/tmp/mojo_rl_lw_ckpt")
+    _ = run_capture(String("rm -rf ") + root)
+    var n = 0
+    var names = _names()
+
+    # ── session 1: two episodes, then a crash inside the third ────────
+    var w = LeRobotWriter(
+        root, FPS, names[0].copy(), names[1].copy(), names[2].copy(), H, W,
+        checkpoint=True,
+    )
+    _record_episode(w, 0, 4)
+    _record_episode(w, 1, 7)
+    _record_episode(w, 2, 3, end=False)
+    for c in range(2):
+        _ = w._enc[c].stop()  # release ffmpeg; nothing else is finished
+
+    if not exists(root + "/meta/mojo_rl_writer_stats.json"):
+        raise Error("checkpoint: no resume state after two episodes")
+    import_lerobot_v3(root, String("/tmp/mojo_rl_lw_ckpt_crash.h5"), H, W, verbose=False)
+    var e1 = List[Int]()
+    e1.append(0)
+    e1.append(1)
+    var l1 = List[Int]()
+    l1.append(4)
+    l1.append(7)
+    n += _verify(String("/tmp/mojo_rl_lw_ckpt_crash.h5"), e1, l1, String("after crash"))
+    print("  checkpoint: crash inside episode 3 -> the dataset imports with episodes 0 and 1 intact")
+
+    # ── session 2: resume, record two more, finish ────────────────────
+    var r = LeRobotWriter.resume(
+        root, FPS, names[0].copy(), names[1].copy(), names[2].copy(), H, W
+    )
+    if r.n_episodes() != 2 or r.n_rows() != 11:
+        raise Error("resume: expected 2 episodes / 11 rows, got " + String(r.n_episodes()) + " / " + String(r.n_rows()))
+    _record_episode(r, 2, 3)
+    _record_episode(r, 3, 5)
+    r.close(verbose=False)
+    import_lerobot_v3(root, String("/tmp/mojo_rl_lw_ckpt_resumed.h5"), H, W, verbose=False)
+    var e2 = List[Int]()
+    var l2 = List[Int]()
+    for pair in [(0, 4), (1, 7), (2, 3), (3, 5)]:
+        e2.append(pair[0])
+        l2.append(pair[1])
+    n += _verify(String("/tmp/mojo_rl_lw_ckpt_resumed.h5"), e2, l2, String("resumed"))
+    print("  resume: 2 recorded + 2 resumed -> 4 episodes, every row and frame from its own episode")
+
+    # ── refusals ──────────────────────────────────────────────────────
+    var refused = 0
+    try:
+        _ = LeRobotWriter.resume(root, FPS + 1, names[0].copy(), names[1].copy(), names[2].copy(), H, W)
+    except:
+        refused += 1
+    var one_cam = List[String]()
+    one_cam.append(String("observation.images.front"))
+    try:
+        _ = LeRobotWriter.resume(root, FPS, names[0].copy(), names[1].copy(), one_cam^, H, W)
+    except:
+        refused += 1
+    try:
+        _ = LeRobotWriter.resume(String("/tmp/mojo_rl_lw_packed"), FPS, names[0].copy(), names[1].copy(), names[2].copy(), H, W)
+    except:
+        refused += 1
+    if refused != 3:
+        raise Error("resume: expected 3 refusals (fps, camera set, non-checkpointed), got " + String(refused))
+    print("  resume refuses: another fps, another camera set, a dataset recorded without checkpoints")
+    return n + 3
+
+
 def _check_rejected(root: String, h5: String) raises -> Int:
     """Discard episode 1 of `root`, import, and verify the store holds exactly
     episodes 0 and 2 — rows, values and frames.
@@ -392,6 +555,7 @@ def main() raises:
     print("  rolling: the rolled dataset really produced one file per episode")
 
     total += _check_rejected(r1, String("/tmp/mojo_rl_lw_rejected.h5"))
+    total += _check_checkpoint_resume()
 
     if total < 100:
         raise Error("only " + String(total) + " checks ran")

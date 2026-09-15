@@ -18,6 +18,11 @@
 `--project P --dataset D` records into `projects/P/datasets/D/` (the project
 must exist); `--out DIR` still works for a recording outside any project.
 
+⚠ EVERY FINISHED EPISODE IS SAVED AS IT ENDS (one mp4 per episode, metadata
+rewritten), so a crash or a closed window loses only the episode in progress.
+Add `--resume` to continue a dataset — after a crash, or to add episodes to a
+finished one. Without it an existing dataset is refused, never overwritten.
+
 ## ⚠⚠ The follower is ENGAGED once, and stays engaged
 
 With `--arm`, "engage follower" turns torque on and the follower follows the
@@ -60,7 +65,7 @@ from std.sys import argv
 from std.time import perf_counter_ns
 
 from mojo_rl.core.project import project_dataset_dir
-from mojo_rl.data.lerobot_write import LeRobotWriter
+from mojo_rl.data.lerobot_write import LeRobotWriter, open_recording
 from mojo_rl.render.imgui import (
     IgTexture, ig_begin_child, ig_begin_panel, ig_begin_window, ig_button,
     ig_end, ig_end_child, ig_framerate, ig_last_item_rect, ig_overlay_line,
@@ -70,7 +75,7 @@ from mojo_rl.render.imgui import (
 from mojo_rl.render.renderer3d import Renderer3D
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name, joint_short
 from mojo_rl.utils.fmt import fixed
-from mojo_rl.data.lerobot_rejected import refuse_existing_dataset, reject_episode
+from mojo_rl.data.lerobot_rejected import is_rejected, load_rejected_episodes, reject_episode
 from mojo_rl.vision.camera_thread import CameraReader
 
 
@@ -231,6 +236,7 @@ def main() raises:
     var out_root = String("")
     var project = String("")
     var dataset = String("")
+    var resume = False
     var task = String("")
     var seconds = 120
     """A CAP, not a schedule: an episode is normally ended with a button."""
@@ -270,6 +276,8 @@ def main() raises:
             for k in range(len(parts)):
                 if parts[k] != "":
                     cam_names.append(parts[k])
+        elif a == "--resume":
+            resume = True
         elif a == "--arm":
             arm = True
 
@@ -327,11 +335,17 @@ def main() raises:
     for i in range(SO101_N):
         joint_names.append(joint_name(i) + ".pos")
 
-    refuse_existing_dataset(out_root)
-    var writer = LeRobotWriter(
+    # ⚠ CHECKPOINTED: every finished episode is on disk as a complete dataset,
+    # so a crash loses only the episode in progress, and `--resume` continues.
+    var writer = open_recording(
         out_root.copy(), HZ, joint_names.copy(), joint_names.copy(),
-        cam_names.copy(), HEIGHT, WIDTH,
+        cam_names.copy(), HEIGHT, WIDTH, resume,
     )
+    if resume:
+        print(
+            "resuming " + out_root + ": " + String(writer.n_episodes())
+            + " episodes / " + String(writer.n_rows()) + " frames already recorded"
+        )
 
     var r = Renderer3D(WIN_W, WIN_H)
     var title = String("SO-101 recorder — ") + out_root
@@ -369,11 +383,12 @@ def main() raises:
     var engaged = False
     """Follower torque ON and following the leader. Independent of recording."""
     var ep_frames = 0
-    var kept = 0
+    var kept = writer.n_episodes()
     """Episodes WRITTEN, discarded ones included: it is the writer's index."""
-    var rejected = 0
-    var last_rejected = -1
-    var total_frames = 0
+    var rejected_list = load_rejected_episodes(out_root)
+    var rejected = len(rejected_list)
+    var last_rejected = kept - 1 if is_rejected(rejected_list, kept - 1) else -1
+    var total_frames = writer.n_rows()
     var tick = 0
     var bus_skipped = 0
     var worst_work = 0.0
@@ -522,13 +537,15 @@ def main() raises:
                     ep_frames = 0
             else:
                 if ig_button(String("start episode"), 150.0, 30.0):
-                    # Frames captured while the operator was setting up are
-                    # not part of the episode — same drain as record.mojo.
-                    for i in range(n_cam):
-                        _ = cams[i].drain()
                     if arm and not engaged:
                         engaged = _engage(follower, present)
+                    # ⚠ The episode's encoders start FIRST (one mp4 per
+                    # episode now, ~a few hundred ms), THEN the drain — so the
+                    # frames queued while ffmpeg started are not the
+                    # episode's first frames.
                     writer.begin_episode(task.copy())
+                    for i in range(n_cam):
+                        _ = cams[i].drain()
                     recording = True
                     ep_frames = 0
                     status = String("recording")
