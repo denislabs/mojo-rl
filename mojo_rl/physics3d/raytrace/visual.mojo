@@ -397,6 +397,19 @@ def build_visual_model[
 
     var tex_slot = List[Int](length=len(fmd.textures), fill=-1)
     var texels = List[UInt8]()
+    # ⚠⚠ sRGB TEXELS ARE DECODED TO LINEAR HERE, ONCE, BEFORE ANY FILTERING.
+    # A PNG with an `sRGB` chunk compiles to `mjCOLORSPACE_SRGB` under
+    # `colorspace="auto"` (`mjCTexture::Load2D`), and `render_context.c`
+    # uploads it as `GL_SRGB8`: the GPU turns each texel linear BEFORE the
+    # bilinear filter, and the framebuffer is not sRGB, so nothing encodes it
+    # back. LIBERO's floor tile is such a PNG. Decoding into 8-bit linear
+    # quantises only below sRGB ~12, where the linear value is under 1/255 —
+    # the same resolution the 8-bit output has, so no picture loses anything.
+    var srgb_lut = List[UInt8](length=256, fill=UInt8(0))
+    for i in range(256):
+        var c = Float64(i) / 255.0
+        var lin = c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+        srgb_lut[i] = UInt8(Int(lin * 255.0 + 0.5))
     var tex_rows = List[Scalar[DTYPE]]()
     for t in range(len(fmd.textures)):
         if not tex_want[t]:
@@ -411,10 +424,24 @@ def build_visual_model[
             h = img.height
             texels.reserve(len(texels) + w * h * 3)
             var nc = img.channels
+            # `<texture colorspace>`: 1 linear, 2 sRGB, 0 auto = the file's
+            # own `sRGB` chunk. The same rule as `render.png_loader`.
+            var srgb = img.srgb
+            if td.colorspace == 1:
+                srgb = False
+            elif td.colorspace == 2:
+                srgb = True
             for i in range(w * h):
-                texels.append(img.pixels[i * nc + 0])
-                texels.append(img.pixels[i * nc + 1 if nc >= 3 else i * nc])
-                texels.append(img.pixels[i * nc + 2 if nc >= 3 else i * nc])
+                var r = img.pixels[i * nc + 0]
+                var gch = img.pixels[i * nc + 1 if nc >= 3 else i * nc]
+                var b = img.pixels[i * nc + 2 if nc >= 3 else i * nc]
+                if srgb:
+                    r = srgb_lut[Int(r)]
+                    gch = srgb_lut[Int(gch)]
+                    b = srgb_lut[Int(b)]
+                texels.append(r)
+                texels.append(gch)
+                texels.append(b)
         elif td.builtin != TEX_BUILTIN_NONE:
             var blk = List[UInt8](length=w * h * 3, fill=UInt8(0))
             _builtin_texels(
@@ -493,12 +520,11 @@ def build_visual_model[
     #
     # ⚠⚠ `mjv_makeLights` PUTS THE HEADLIGHT AT INDEX 0 AND SO DOES THIS.
     # It is directional, along the camera's gaze, and it carries
-    # `mjModel.vis.headlight`'s colours. Nothing in this tree declares
-    # `<visual><headlight>` with anything but the defaults, and
-    # `FlatModelDef` carries only its AMBIENT — so diffuse and specular are
-    # MuJoCo's own defaults, 0.4 and 0.5 grey, written here rather than left
-    # at zero. ⚠ `<headlight active="0">` is NOT carried by the parse and
-    # would need a field there before it could be honoured here.
+    # `mjModel.vis.headlight`'s colours, which `FlatModelDef` carries in
+    # full (ambient, diffuse, specular, active), each at MuJoCo's default when
+    # the model declares no `<headlight>`. The row is still WRITTEN when the
+    # headlight is off, with `LIGHT_IDX_ACTIVE` 0, so index 0 keeps meaning
+    # "the headlight" for every reader.
     var nlight = len(fmd.lights) + 1
     if nlight > MAX_VIS_LIGHTS:
         raise Error(
@@ -516,13 +542,15 @@ def build_visual_model[
     light_rows[LIGHT_IDX_AMBIENT_R] = Scalar[DTYPE](fmd.vis_headlight_ambient_r)
     light_rows[LIGHT_IDX_AMBIENT_G] = Scalar[DTYPE](fmd.vis_headlight_ambient_g)
     light_rows[LIGHT_IDX_AMBIENT_B] = Scalar[DTYPE](fmd.vis_headlight_ambient_b)
-    light_rows[LIGHT_IDX_DIFFUSE_R] = Scalar[DTYPE](0.4)
-    light_rows[LIGHT_IDX_DIFFUSE_G] = Scalar[DTYPE](0.4)
-    light_rows[LIGHT_IDX_DIFFUSE_B] = Scalar[DTYPE](0.4)
-    light_rows[LIGHT_IDX_SPECULAR_R] = Scalar[DTYPE](0.5)
-    light_rows[LIGHT_IDX_SPECULAR_G] = Scalar[DTYPE](0.5)
-    light_rows[LIGHT_IDX_SPECULAR_B] = Scalar[DTYPE](0.5)
-    light_rows[LIGHT_IDX_ACTIVE] = Scalar[DTYPE](1)
+    light_rows[LIGHT_IDX_DIFFUSE_R] = Scalar[DTYPE](fmd.vis_headlight_diffuse_r)
+    light_rows[LIGHT_IDX_DIFFUSE_G] = Scalar[DTYPE](fmd.vis_headlight_diffuse_g)
+    light_rows[LIGHT_IDX_DIFFUSE_B] = Scalar[DTYPE](fmd.vis_headlight_diffuse_b)
+    light_rows[LIGHT_IDX_SPECULAR_R] = Scalar[DTYPE](fmd.vis_headlight_specular_r)
+    light_rows[LIGHT_IDX_SPECULAR_G] = Scalar[DTYPE](fmd.vis_headlight_specular_g)
+    light_rows[LIGHT_IDX_SPECULAR_B] = Scalar[DTYPE](fmd.vis_headlight_specular_b)
+    light_rows[LIGHT_IDX_ACTIVE] = Scalar[DTYPE](
+        1 if fmd.vis_headlight_active else 0
+    )
     for i in range(len(fmd.lights)):
         var ld = fmd.lights[i]
         var o = (i + 1) * VIS_LIGHT_WORDS
@@ -760,6 +788,7 @@ def visual_model_from_model[
     light_rows[LIGHT_IDX_AMBIENT_R] = Scalar[DTYPE](0.1)
     light_rows[LIGHT_IDX_AMBIENT_G] = Scalar[DTYPE](0.1)
     light_rows[LIGHT_IDX_AMBIENT_B] = Scalar[DTYPE](0.1)
+    # No parse here, so MuJoCo's default headlight (`mjv_defaultVisual`).
     light_rows[LIGHT_IDX_DIFFUSE_R] = Scalar[DTYPE](0.4)
     light_rows[LIGHT_IDX_DIFFUSE_G] = Scalar[DTYPE](0.4)
     light_rows[LIGHT_IDX_DIFFUSE_B] = Scalar[DTYPE](0.4)

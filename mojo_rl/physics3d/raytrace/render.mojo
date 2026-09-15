@@ -53,6 +53,7 @@ from .appearance import (
     geom_uv,
     sample_texture,
     shade_lights,
+    Texel,
 )
 from .visual_records import *
 
@@ -242,6 +243,9 @@ def shade_hit[
                     rebind[Scalar[DTYPE]](textures[tb + TEX_IDX_TYPE])
                 )
 
+    var tx = Texel[DTYPE](
+        Scalar[DTYPE](1), Scalar[DTYPE](1), Scalar[DTYPE](1), False
+    )
     if texid >= 0:
         # ⚠ THE HIT POINT AND THE NORMAL GO BACK INTO THE GEOM'S FRAME, which
         # is where every one of `settexture`'s texgen planes lives.
@@ -253,19 +257,28 @@ def shade_hit[
             geoms, mesh_uv, g, hit.tri, hit.bu, hit.bv,
             lp, ln, ttype, repeat_u, repeat_v, texuniform,
         )
-        var tx = sample_texture[DTYPE](textures, texels, texid, uv.u, uv.v)
-        if tx.hit:
-            # `GL_MODULATE`: the texel multiplies the material colour.
-            base = Vec3Generic[DTYPE](
-                base.x * tx.r, base.y * tx.g, base.z * tx.b
-            )
+        tx = sample_texture[DTYPE](textures, texels, texid, uv.u, uv.v)
 
-    return shade_lights[DTYPE, SHADOWS](
+    var lit = shade_lights[DTYPE, SHADOWS](
         lights, nlight, geoms, ngeom, bodies, xpos, xquat, env,
         mesh_meta, mesh_tris, hfield_meta, hfield_data, hf_stride,
         hitpoint, hit.normal, eye, gaze, base, specular, shininess,
         Scalar[DTYPE](0),
     )
+    # ⚠⚠ `GL_MODULATE` MULTIPLIES THE *LIT* COLOUR, NOT THE MATERIAL COLOUR.
+    # `render_gl3.c:699` sets it with the default single-colour specular, so
+    # OpenGL lights the vertex colour (highlight included), clamps the sum to
+    # [0, 1], and only then multiplies by the texel. Modulating `base` before
+    # the lights instead added every textured surface's highlight on top of
+    # the texture at full strength: LIBERO's wood table came out ~7% bright
+    # and the metal stove base (shininess 1, specular .5) near white.
+    if tx.hit:
+        lit = Vec3Generic[DTYPE](
+            _clamp01[DTYPE](lit.x) * tx.r,
+            _clamp01[DTYPE](lit.y) * tx.g,
+            _clamp01[DTYPE](lit.z) * tx.b,
+        )
+    return lit
 
 
 def render_pixel[

@@ -477,9 +477,16 @@ def shade_lights[
         view = -gaze
 
     var acc = base * emission
-    if nlight <= 0:
-        # `mjr_render`: "create some ambient light if no supported lights are
-        # present" — `float global = nsupported ? 0 : 0.3f`.
+    # `mjr_render`: "create some ambient light if no supported lights are
+    # present" — `float global = nsupported ? 0 : 0.3f`. ⚠ COUNTED BY
+    # `ACTIVE`, not by rows: the headlight's row is always written (index 0),
+    # so `<headlight active="0">` on a model with no `<light>` has one row
+    # and no light, and MuJoCo gives it the 0.3.
+    var nactive = 0
+    for li in range(nlight):
+        if rebind[Scalar[DTYPE]](lights[li * VIS_LIGHT_WORDS + LIGHT_IDX_ACTIVE]) != 0:
+            nactive += 1
+    if nactive == 0:
         acc = acc + base * Scalar[DTYPE](0.3)
 
     var shine = shininess * Scalar[DTYPE](128)
