@@ -316,6 +316,26 @@ def main() raises:
     print("  --no-push keeps a promotion local, as every check above assumed")
     checks += 1
 
+    # ── 13. the normalization travels with the weights ──────────────
+    #
+    # A policy's checkpoint is not deployable without its run's norm.json;
+    # promotion is what carries it to `policies/<name>.norm.json`, where
+    # `project-push` syncs it and a deployment elsewhere finds it.
+    var rid_n = String("2026-09-15_act-so101_n0rm0001")
+    var dn = _make_run(rid_n, 91)
+    _blob(dn + "/checkpoints/norm.json", 5, 300)
+    _ = _promote(rid_n, String("best"), String("deployed"), String(""))
+    var pol_norm = String(TMP) + "/projects/so101/policies/deployed.norm.json"
+    if not exists(pol_norm) or sha256_file(pol_norm) != sha256_file(dn + "/checkpoints/norm.json"):
+        raise Error("promote did not carry the run's norm.json to " + pol_norm)
+    # ...and a later promotion of a run WITHOUT one must not leave the old
+    # statistics beside new weights — the one mix-up nothing downstream detects.
+    _ = _promote(rid_a, String("best"), String("deployed"), String(""))
+    if exists(pol_norm):
+        raise Error("promoting a run with no norm.json left the previous policy's statistics in place")
+    print("  norm.json is carried to policies/<role>.norm.json, and removed when the new holder has none")
+    checks += 2
+
     _ = run_capture("rm -rf " + quote_arg(String(TMP)))
     print("[PASS] policy (" + String(checks) + " checks)")
 
@@ -332,3 +352,5 @@ def main() raises:
 #   E9  resolve_policy raises instead of falling back -> check 9
 #   E10 project-show hides missing weights      -> check 11
 #   E11 --no-push is ignored                    -> check 12
+#   E12 promote does not copy norm.json        -> check 13
+#   E13 promote leaves a stale norm.json        -> check 13

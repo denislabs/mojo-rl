@@ -284,6 +284,9 @@ from mojo_rl.deep_agents.act.trainer import (
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.core.project import project_exists
+from mojo_rl.deep_agents.act.norm_file import act_norm_from
+from mojo_rl.io.json import load_json
+from std.os import makedirs
 from mojo_rl.core.run import RunContext, register_run
 from mojo_rl.deep_agents.training.checkpoint import announce_checkpoint
 from mojo_rl.io.artifact_sink import ArtifactSink, close_sink, sink_for_run
@@ -405,6 +408,22 @@ comptime T = ACTTrainer[
     BATCH, 0.1, "gpu",
 ]
 comptime IMG_ELEMS = N_CAM * 3 * IMG_H * IMG_W
+
+
+def _store_cameras(store: String) raises -> List[String]:
+    """Slot-ordered camera keys from the importer's `<store>.json`, or none."""
+    var out = List[String]()
+    if not store.endswith(".h5"):
+        return out^
+    var side = String(store[byte=0 : store.byte_length() - 3]) + ".json"
+    if not exists(side):
+        return out^
+    var doc = load_json(side)
+    var cams = doc.field(doc.root(), String("cameras"))
+    if cams >= 0:
+        for i in range(doc.size(cams)):
+            out.append(doc.string(doc.at(cams, i)))
+    return out^
 
 
 def act_project() raises -> String:
@@ -651,6 +670,21 @@ def main() raises:
     var stale = 0
     """Validations since the best. See PATIENCE."""
     var best_ckpt = run.checkpoint_path(String("best"))
+
+    # ⚠⚠ norm.json BESIDE THE CHECKPOINTS, written before the first one. A
+    # checkpoint carries no normalization statistics; a deployment used to
+    # need this whole store for them. See `deep_agents/act/norm_file.mojo`.
+    var norm_path = run.checkpoint_path(String("best"))
+    norm_path = String(norm_path[byte=0 : norm_path.rfind("/")]) + "/norm.json"
+    var norm = act_norm_from(
+        ds.qpos_raw, ds.action_raw, ds.n_rows(), ds.n_episodes(),
+        ds.qpos_mean, ds.qpos_std, ds.action_mean, ds.action_std,
+        _store_cameras(path), IMG_H, IMG_W, path,
+    )
+    makedirs(String(norm_path[byte=0 : norm_path.rfind("/")]), exist_ok=True)
+    norm.save(norm_path)
+    announce_checkpoint(norm_path, artifacts, run.dir)
+    print("  norm    " + norm_path)
     var last_ckpt = run.checkpoint_path(String("last"))
 
     var train_frames = 0

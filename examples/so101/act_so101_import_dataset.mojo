@@ -39,7 +39,10 @@ from std.os.path import exists
 from std.sys import argv
 
 from mojo_rl.core.project import project_dataset_dir
+from mojo_rl.io.fileio import write_text_atomic
+from mojo_rl.io.json import JsonWriter
 from mojo_rl.data.lerobot import (
+    LeRobotInfo,
     import_lerobot_v3, mojo_rl_cache, repo_slug, resolve_dataset_root,
 )
 
@@ -120,3 +123,28 @@ def main() raises:
         pinned,
         True,
     )
+
+    # ⚠ THE SIDE FILE `<out>.json`: which camera fills which slot. The store
+    # itself records an `images` column of N cameras and no names, and the
+    # Python converter this replaced wrote this file; without it a deployment
+    # (and `norm.json`) can only say "slot 0". Slot order is the importer's:
+    # `LeRobotInfo.cameras`, alphabetical by feature key.
+    var info = LeRobotInfo(root)
+    var jw = JsonWriter()
+    jw.begin_object()
+    jw.member(String("source"), (String("hf:") + repo) if repo != "" else root)
+    jw.key(String("cameras"))
+    jw.begin_array()
+    for c in info.cameras:
+        jw.string(c)
+    jw.end_array()
+    jw.member(String("height"), height)
+    jw.member(String("width"), width)
+    jw.member(String("fps"), info.fps)
+    jw.member(String("state_dim"), info.state_dim)
+    jw.member(String("action_dim"), info.action_dim)
+    jw.end_object()
+    if out.endswith(".h5"):
+        var side = String(out[byte=0 : out.byte_length() - 3]) + ".json"
+        write_text_atomic(side, jw.done())
+        print("  cameras: " + side)

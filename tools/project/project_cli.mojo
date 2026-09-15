@@ -488,6 +488,27 @@ def cmd_promote() raises:
             + "  " + sha + "\n  " + dst + "  " + dst_sha
         )
 
+    # ⚠⚠ THE NORMALIZATION TRAVELS WITH THE WEIGHTS. A checkpoint alone is not
+    # deployable: its statistics live in the training store (9 GB). The run's
+    # `checkpoints/norm.json` is copied to `policies/<name>.norm.json` — a
+    # small .json, so `project-push` syncs it as definition, and a deployment
+    # on another machine finds it beside the weights.
+    var norm_src = run_dir + "/checkpoints/norm.json"
+    var norm_dst = pdir + "/policies/" + name + ".norm.json"
+    if exists(norm_src):
+        _ = run_capture(
+            "cp " + quote_arg(norm_src) + " " + quote_arg(norm_dst) + ".tmp && mv "
+            + quote_arg(norm_dst) + ".tmp " + quote_arg(norm_dst)
+        )
+        print("normalization  " + norm_dst)
+    else:
+        _ = run_capture("rm -f " + quote_arg(norm_dst))
+        print(
+            "  ⚠ no " + norm_src + " — a deployment will need --store. Write it"
+            " with examples/so101/act_so101_export_norm.mojo --store <store>"
+            " --run " + rid + ", then promote again."
+        )
+
     var pol = PolicyRecord(name)
     pol.run = rec.run_id if rec.run_id else rid
     pol.checkpoint = which
