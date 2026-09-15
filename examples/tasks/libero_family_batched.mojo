@@ -549,6 +549,11 @@ def run[T: PlacementTable, M: ModelDefLike](
     var null_action = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
     var window_worst = 0.0
     var end_worst = 0.0
+    # qpos word -> "<joint>[k]", so a lane over the bound names what moved
+    var word_name = List[String]()
+    for k in range(len(fmd.joints)):
+        for w in range(fmd.joints[k].nq):
+            word_name.append(fmd.joint_names[k] + "[" + String(w) + "]")
     for c in range(cpu_lanes):
         var e = c
         var ti = e % n_tasks
@@ -574,6 +579,8 @@ def run[T: PlacementTable, M: ModelDefLike](
                 for w in range(7):
                     cmp[addrs[si].qadr + w] = False
         var lane_window = 0.0
+        var lane_window_k = -1
+        var lane_window_step = -1
         var lane_end = 0.0
         for step in range(steps):
             for s in range(SUBSTEPS):
@@ -586,17 +593,26 @@ def run[T: PlacementTable, M: ModelDefLike](
                 apply_actions_fields[H](sf, d, ctrl, act, fmd.timestep)
                 integ.step["cpu"](d, m)
             var worst = 0.0
+            var worst_k = -1
             for k in range(NQ):
                 if not cmp[k]:
                     continue
                 var dv = abs(Float64(d.qpos.data[k]) - dev_traj[e][step * NQ + k])
                 if dv > worst:
                     worst = dv
+                    worst_k = k
             if step < window and worst > lane_window:
                 lane_window = worst
+                lane_window_k = worst_k
+                lane_window_step = step
             lane_end = worst
+        var wname = (
+            word_name[lane_window_k] if lane_window_k >= 0
+            and lane_window_k < len(word_name) else String("-")
+        )
         print("     cpu lane", e, names[ti], ": |dq| first", window, "steps",
-              lane_window, "| at step", steps, lane_end)
+              lane_window, "(", wname, "at step", lane_window_step, ") | at step",
+              steps, lane_end)
         if lane_window > window_worst:
             window_worst = lane_window
         if lane_end > end_worst:
