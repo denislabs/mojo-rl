@@ -487,7 +487,7 @@ struct RK4Integrator[
     # and the kernel that indexes it cannot drift apart.
     comptime JE_WS = je_ws_size[
         Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.D.NTENDON, Self.D.NEQUALITY,
-        Self.D.MAX_CONTACTS, Self.MAX_CONDIM,
+        Self.D.MAX_CONTACTS, Self.MAX_CONDIM, CONE_TYPE=Self.CONE_TYPE,
     ]()
 
     var cscratch: ContactScratch[Self.DTYPE, Self.D, Self.BATCH, Self.JE_WS]

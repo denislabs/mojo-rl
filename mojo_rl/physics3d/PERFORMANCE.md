@@ -4931,3 +4931,172 @@ stack space") for the LIBERO driver; the committed HEAD runs, and HEAD plus
 this section's changes runs at HEAD's speed (1.106 vs 1.109 s per batch
 step at 4 lanes). The failure is the in-flight tasks change, not the
 counters — noted so nobody bisects the wrong diff.
+
+**The box's answer (2026-09-15, RTX 5090, 256 lanes, 60 control steps,
+384 000 solves — `solver_log_summary.py` on the run above):**
+
+    every solve:   1.27 Newton iterations, 3.99 line-search evals/iteration,
+                   36.5 contacts, 0 of 384 000 at the cap
+    last-substep sample (15 360 solves): p50 1, p90 2, p99 5, max 11 iterations
+    along the demo (t=0 -> 59):  iters/solve 1.39 -> 1.04 (settled) -> 1.61 (t=50)
+                                 lsev/iter    3.35 -> 2.5 -> 5.9
+                                 ncon mean flat at 35-38; the MAX lane 37 -> 77 (t=25),
+                                 89 in the sample — ABOVE the 64 budget
+    per task: iters/solve 1.03 (tasks 0, 7) .. 1.46 (task 9)
+
+**Verdict: lever 4 is dead, lever 3 is the work.** A solve is ONE Newton
+iteration and a line search of three or four evaluations; nothing runs to
+the cap. The 23.6 ms per substep is therefore the per-solve SETUP — the
+constraint rows, the Hessian build, the Cholesky factor — on one thread,
+which is the term §13.42 priced at 94.8% of the pyramidal per-env kernel,
+and the term the blocked layout parallelises across the block. An
+elliptic port of `solve_newton_blocked` keeps the benchmark's physics and
+attacks the whole 60%.
+
+Two things the distribution adds that the means hid:
+
+1. **The launch time is the SLOWEST lane's, not the mean's.** With one
+   thread per block (`NS_TPB = 1`) the kernel returns when its last lane
+   does, so the tail — p99 5 and max 11 iterations, 89 contacts on a lane
+   while the mean sits at 37 — is what the 14.6 -> 44.3 ms spread of the
+   Newton instances measures. A blocked kernel shortens every lane; the tail
+   lanes then set the time by their row count, which is the next thing to
+   read off the log (rows with `ncon_last > 48`, by task and step).
+2. **The 64-contact budget is EXCEEDED late in the demos — a fidelity
+   finding, not a performance one.** `META_IDX_NUM_CONTACTS` is the
+   collision kernel's raw count and reads 77-89 on some lanes from t≈25
+   (the grasp: mesh fingers on a mesh object), 32 of 15 360 last-substep
+   samples at or above 64. The solve is handed 64 of them and drops the
+   rest silently (`tools/tasks/libero_contact_budget.mojo`'s warning, on
+   the demonstrations it measured a RESTING count for). Which lanes, which
+   tasks and whether they are the replay's 1-of-20 miss are in the CSV
+   (`ncon_last > 64` by `task`, `t`); if they are, `LIBERO_GOAL_MAX_CONTACTS`
+   goes to 96 — and the per-lane setup cost scales with it, which the
+   blocked kernel absorbs and the per-env one does not.
+
+**The CSV, queried (2026-09-15) — who is over budget, and who sets the
+launch time. They are different lanes.**
+
+- **Over the 64-contact budget:** 29 of 15 360 last-substep samples, four
+  tasks — `put_the_bowl_on_top_of_the_cabinet` (11, max 89),
+  `put_the_wine_bottle_on_top_of_the_cabinet` (9, max 77),
+  `put_the_bowl_on_the_plate` (7, max 69), `put_the_bowl_on_the_stove` (2,
+  max 67) — steps 25-43, i.e. the bowl or bottle grasped and carried past the
+  cabinet or the stove. 25 rows were handed 64 on all 25 substeps of their
+  step (truncated throughout). The other six tasks never exceed 56. These
+  four are where the replay's 1-of-20 miss should be looked for first.
+- **The launch time is set by a DIFFERENT tail.** The heaviest (step, lane)
+  rows by iterations — 166, 165, 163 summed over 25 substeps against a mean
+  of 27-40 — hold 19-36 contacts, not 64+: `put_the_cream_cheese_in_the_bowl`
+  and `put_the_bowl_on_the_stove`, steps 41-53, at 6-7 iterations and 40-50
+  line-search evaluations per substep (7 per iteration). That is a friction
+  cone at its edge — a held object sliding — and it is the line search doing
+  the work, not the row count. Per step the slowest lane runs 2.5-3.3x the
+  mean's iterations (max `it_sum` 133 against 40 at t=50), which under
+  `NS_TPB = 1` is the launch time.
+
+So the blocked port has two terms to parallelise, and they belong to
+different lanes: the setup, which every lane pays once per solve (37 rows,
+1 iteration — the mean), and the line search's evaluations on the sliding
+lanes (the tail). The blocked kernel's line search is thread-0 serial
+(§13.42 could not even price it: arm 9 blew the compiler), so the tail
+lanes stay serial after the port and become the kernel's floor; the
+elliptic `ell_line_eval` is per-row work over `nc` cone rows and is the
+candidate for a cooperative evaluation if that floor is what the 5090 then
+shows.
+
+### 13.54 LANDED ON METAL, BOX RUN PENDING (2026-09-15): the blocked Newton kernel's ELLIPTIC leg — bit-identical to the per-env kernel on the slam chain
+
+**What §13.53 asked for (lever 3), built.** `_newton_blocked_fields_kernel`
+now carries the ELLIPTIC cone: `solve_newton` routes ELLIPTIC on NVIDIA to
+`solve_newton_blocked` whenever the model sets no `noslip_iterations`
+(LIBERO: none; dm_control's manipulation models: kept on the per-env
+kernel, `noslip_elliptic` has no cooperative port). The skeleton is shared
+with the pyramidal leg — workspace init, the two producer phases, the row
+builders, `build_dof_segments`, the cooperative matvecs / factor / block
+solves, the thread-0 `PrimalSearch` driver, the accept and cost tail —
+and the cone-specific pieces live in `solver/newton_ell_coop.mojo`:
+
+- **Rows.** An elliptic contact `c` owns `RPC = NT + 1` rows of `Je_sh` at
+  `c * RPC` (normal, then `dim-1` tangential); `De_sh`/`bias_e_sh` hold
+  `D_n`/`D_t` and `pos_bias`/`bt`; a new `fr_e_sh` holds `friction[t]`;
+  `mu_sh`, `ntc_sh`, `cact_sh`, `cs_sh` are per contact; `hb_sh` holds each
+  contact's `(NT+1)^2` cone Hessian block. `RPC <= NE`, so `Je_sh` and
+  `je_budget`'s `ME` are unchanged; the extras are counted under a new
+  `CONE_TYPE` parameter of `newton_shared_elems` / `je_spills` /
+  `je_ws_size` (default PYRAMIDAL — every existing pin unchanged; the
+  three integrators pass their cone).
+- **The cone arithmetic is `elliptic_cone.mojo`'s, not repeated:** the
+  helpers take NT-sized `Scratch` arrays, so the leg copies a contact's
+  `nt` tangential entries out of the shared rows into NT-sized locals
+  (exact), calls `ell_state_force` / `ell_row_cost` /
+  `ell_hessian_block` / `ell_line_eval`, and copies the forces back.
+- **Cooperative:** the load (thread per contact), `_ell_recompute_coop`
+  (jar / zone / forces per contact and per dense row, then `qfrc` per dof
+  with the per-env leg's per-contact grouping), the Hessian block phase
+  (thread per contact into `hb_sh`), and the entry loop
+  (`_ell_entry_contact_term`: `ell_add_contact_hessian` entry by entry, in
+  its summation order, recomputing `JH` per entry rather than staging
+  `MC * RPC * NV` scalars). **Thread 0:** the warm-start candidate costs
+  from scratch (`_ell_trial_cost`, as the per-env leg), the line search's
+  contact terms (`_ell_contact_line_eval`), the total cost
+  (`_bl_cost`, now ONE closure for both cones and both evaluations).
+
+**Gates, all on this Mac (Metal), all green:**
+
+| gate | what it says |
+|---|---|
+| `test_newton_blocked_elliptic` (NEW) | slam chain, `cone="elliptic" impratio="20"`, condim 3 + 4, limits + friction dofs, 2 lanes: blocked-GPU vs per-env-GPU **0.0** on qacc, all six force slots, iteration and evaluation counts (3/66 and 3/61 per lane); vs per-env-CPU 3.5e-07; non-vacuity: 6 contacts a lane, tangential AND torsional forces live |
+| `test_noslip_blocked_kernel` | pyramidal blocked-GPU vs per-env-GPU still **0.0**, pass on and off |
+| `test_newton_blocked_fields` | pyramidal golden fingerprint unchanged |
+| `test_newton_shared_budget` | 25/25 — the four ptxas pins unchanged; NEW arm F pins the elliptic LIBERO footprint to the sm_120 PTX (39,892 B + the elided `Je` backing scalar) |
+| cross-emit `sm_120` of `libero_demo_batched` | both Newton kernels instantiated (the elliptic dispatch is a runtime NVIDIA test inside the comptime branch), **no `.extern`**; the blocked elliptic kernel declares 24 `.shared` arrays, 39,892 B — under the 101,376 B limit, over the 16 KB budget so `Je` spills, as the G1 does |
+
+**Two counter fixes that fell out of gating at equality.** The blocked
+kernel evaluated `p0` before its decrement / NaN exit and so read
+`META_IDX_LS_EVAL` one higher than the per-env legs on every such solve —
+guarded now, both cones. And the per-env elliptic leg's `search_ok_gpu`
+(a NaN direction ends the solve) had no blocked twin; it has one.
+
+**Two findings on the way, neither mine to fix here:**
+
+1. **`libero_goal_xml.mojo`'s model def sets no `max_condim`**, so the
+   composed LIBERO model runs at the default 3 while
+   `libero_goal_dims.mojo` records 4 and the gripper's finger pads are
+   `condim="4"` in robosuite: their TORSIONAL row is dropped on the batched
+   env (and on the CPU replay, which builds from the same def). The PTX
+   footprint above is the condim-3 one. Raising it to 4 is a one-line
+   change that grows `ME` (`NE` 4 -> 6) and the elliptic extras
+   (`HN` 9 -> 16) — and changes the friction physics the replay gate
+   measured 19/20 against. It should be the user's call, made with that
+   gate.
+2. **The blocked kernel never wrote `d.efc_eq_force` /
+   `META_IDX_EQ_FORCE_LIVE`** (AUD-48 reached the per-env legs only), so on
+   NVIDIA + PYRAMIDAL a connect/weld model's `_cfrc_ext_env` wrote NaN on
+   the loop bodies. Fixed for both cones in the tail (a new `eq_force`
+   kernel operand); no in-tree gate exercises it on NVIDIA yet.
+
+**Metal cannot host LIBERO's blocked kernel** (39.9 KB against the 32 KB
+threadgroup limit), so the end-to-end replay gate is the box's:
+
+    # the fidelity gate — success word exact, |dq| <= 1e-3 vs the CPU replay
+    sed "s/^comptime LANES = .*/comptime LANES = 256/" \
+        examples/tasks/libero_demo_batched.mojo > /tmp/libero_lanes_256.mojo
+    pixi run -e nvidia mojo build -I . -o /tmp/libero_256 /tmp/libero_lanes_256.mojo
+    pixi run -e nvidia /tmp/libero_256 --cpu-lanes 10
+    # the number §13.53 priced: 1.706 s per batch control step at 256 lanes
+    pixi run -e nvidia /tmp/libero_256 --timing-only --steps 60
+    # and the kernel's share
+    pixi run -e nvidia nsys profile -t cuda --sample=none -o /tmp/libero_256_blk \
+        --force-overwrite=true /tmp/libero_256 --timing-only --steps 15
+    pixi run -e nvidia nsys stats -r cuda_gpu_kern_sum /tmp/libero_256_blk.nsys-rep
+
+What to expect and what would falsify it: the Newton launch should drop
+from 23.6 ms per substep toward the pyramidal blocked kernel's range
+(§13.43: 1.2 ms at nv 84 / k=13 on the park scene; LIBERO is nv 37 with
+37-89 contacts, so the row count, not nv, sets it), and the launch time
+is the SLOWEST lane's (§13.53's tail: 11 iterations, 89 contacts). The
+line search stays thread-0 serial, so the sliding lanes (`t` 41-53,
+6-7 iterations, 40-50 evaluations a substep) are the floor after this
+change; `ell_line_eval` over `nc` cone rows is the next cooperative
+candidate if that floor is what the trace shows.

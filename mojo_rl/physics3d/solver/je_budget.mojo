@@ -48,6 +48,9 @@ mujoco_warp does, or pack the triple by block).
 
 from std.sys.info import size_of
 
+from ..types import ConeType
+from ..constraints.elliptic_layout import ell_nt
+
 
 # ⚠⚠ THE LAUNCH-SHAPE KNOB — F3 step 2, and it is an OCCUPANCY experiment, not
 # a work-division one. The blocked kernel holds ~88 KB of shared memory per
@@ -233,6 +236,23 @@ def je_elems[
     )
 
 
+def newton_elliptic_extra_elems[MAX_CONTACTS: Int, MAX_CONDIM: Int]() -> Int:
+    """Scalars of THREADGROUP memory the blocked kernel's ELLIPTIC leg adds
+    on top of the pyramidal list (2026-09-15), in the order it declares them:
+
+        fr_e_sh                   ME            `con->friction[t]` per contact row
+        mu_sh/ntc_sh/cact_sh/cs_sh 4 * MC       per-contact cone data and state
+        hb_sh                     MC * (NT+1)^2  the cone Hessian block per contact
+
+    ⚠ ZERO FOR THE PYRAMIDAL CONE — the kernel sizes these arrays at 1 there
+    (the same `1 when spilled` trick `Je_sh` uses), so every pyramidal
+    footprint `test_newton_shared_budget` pins against `ptxas` is unchanged.
+    """
+    comptime MC = _max_one[MAX_CONTACTS]()
+    comptime HN = (ell_nt[MAX_CONDIM]() + 1) * (ell_nt[MAX_CONDIM]() + 1)
+    return 4 * MC + MC * HN
+
+
 def newton_shared_elems[
     NV: Int,
     NJOINT: Int,
@@ -241,6 +261,7 @@ def newton_shared_elems[
     MAX_CONTACTS: Int,
     MAX_CONDIM: Int,
     JE_IN_SHARED: Bool,
+    CONE_TYPE: Int = ConeType.PYRAMIDAL,
 ]() -> Int:
     """Scalars of THREADGROUP memory `_newton_blocked_fields_kernel` asks for.
 
@@ -258,6 +279,8 @@ def newton_shared_elems[
         Jv_e/jar                  9 * ME
         search/Mv/qacc/qfrc       4 * max(1, NV)
         ctrl_sh                   3
+        + the ELLIPTIC leg's extras (`newton_elliptic_extra_elems`, and one
+          more `ME` for `fr_e_sh`) when `CONE_TYPE` is ELLIPTIC — 0 otherwise
 
     ⚠ VERIFIED AGAINST `ptxas` ON FOUR POINTS, not derived and hoped for — see
     `tests/physics3d/test_newton_shared_budget.mojo`, which pins it to the byte
@@ -279,6 +302,14 @@ def newton_shared_elems[
             NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM
         ]()
         + 3
+        + (
+            (
+                je_edge_rows[
+                    NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM
+                ]()
+                + newton_elliptic_extra_elems[MAX_CONTACTS, MAX_CONDIM]()
+            ) if CONE_TYPE == ConeType.ELLIPTIC else 0
+        )
     )
 
 
@@ -290,6 +321,7 @@ def je_spills[
     NEQUALITY: Int,
     MAX_CONTACTS: Int,
     MAX_CONDIM: Int,
+    CONE_TYPE: Int = ConeType.PYRAMIDAL,
 ]() -> Bool:
     """Does the kernel's TOTAL threadgroup footprint force `Je` out?
 
@@ -305,7 +337,8 @@ def je_spills[
     """
     return (
         newton_shared_elems[
-            NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM, True
+            NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM, True,
+            CONE_TYPE,
         ]()
         * size_of[Scalar[DTYPE]]()
     ) > SOLVER_SHARED_BUDGET
@@ -319,6 +352,11 @@ def je_ws_size[
     NEQUALITY: Int,
     MAX_CONTACTS: Int,
     MAX_CONDIM: Int,
+    # ⚠ THE CONE IS PART OF THE FOOTPRINT since the ELLIPTIC leg landed in
+    # the blocked kernel (2026-09-15): its extra shared arrays can tip a
+    # model over the budget. Every integrator passes its `CONE_TYPE`; the
+    # default keeps pyramidal callers and their pins exactly as they were.
+    CONE_TYPE: Int = ConeType.PYRAMIDAL,
 ]() -> Int:
     """Per-env spill-buffer size: `ME*NV` when spilling, else 0.
 
@@ -326,7 +364,8 @@ def je_ws_size[
     spill pays one scalar per env, not a buffer.
     """
     comptime if je_spills[
-        DTYPE, NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM
+        DTYPE, NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM,
+        CONE_TYPE,
     ]():
         return je_elems[
             NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM

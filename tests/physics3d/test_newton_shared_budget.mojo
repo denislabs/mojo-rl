@@ -37,6 +37,7 @@ from mojo_rl.physics3d.solver.je_budget import (
     newton_shared_elems, je_spills, je_elems, SOLVER_SHARED_BUDGET,
     SOLVER_SHARED_LIMIT,
 )
+from mojo_rl.physics3d.types import ConeType
 
 comptime DT = DType.float32          # the park probe's dtype
 comptime MC = 16                     # PARK_MAX_CONTACTS
@@ -179,6 +180,40 @@ def main() raises:
             "dog             (nv 79) still SPILLS")
     t.truth(je_spills[DT, 85, 227, 0, 0, 28, CONDIM](),
             "dog_fetch       (nv 85) still SPILLS")
+
+    # ── F: the ELLIPTIC leg's footprint, vs the PTX (2026-09-15) ─────────
+    # The blocked kernel's elliptic leg adds `fr_e_sh` (ME), four MC arrays
+    # and the cone Hessian blocks (`MC * (NT+1)^2`). Pinned to an EXTERNAL
+    # oracle the same way arm A is: `mojo build --target-accelerator sm_120
+    # --emit asm` of `examples/tasks/libero_demo_batched.mojo` (LIBERO goal:
+    # nv 37, njoint 17, `LIBERO_GOAL_MAX_CONTACTS` 144, the model def's
+    # default `max_condim` 3, no tendon or equality) declared 24 `.shared`
+    # arrays totalling 39,892 B for the elliptic kernel. The formula counts
+    # one scalar more: the spilled `Je`'s one-element threadgroup backing,
+    # which nothing reads once `Je` lives in global memory and which the
+    # PTX therefore does not declare. Same dims, PYRAMIDAL: the extras are
+    # exactly zero, which is what keeps arms A-E as they were.
+    print("--- F: the elliptic leg's extras, vs the LIBERO PTX ---")
+    var ell_libero = newton_shared_elems[
+        37, 17, 0, 0, 144, 3, False, ConeType.ELLIPTIC
+    ]() * size_of[Scalar[DT]]()
+    var pyr_libero = newton_shared_elems[
+        37, 17, 0, 0, 144, 3, False, ConeType.PYRAMIDAL
+    ]() * size_of[Scalar[DT]]()
+    t.truth(ell_libero == 39892 + 4,
+            String("LIBERO goal, ELLIPTIC: ", ell_libero, " == 39892 (the"
+                   " sm_120 PTX's 24 .shared arrays) + 4 (the elided Je"
+                   " backing scalar)"))
+    t.truth(ell_libero - pyr_libero
+            == (10 * 647 - 9 * 647 + 4 * 144 + 144 * 9) * size_of[Scalar[DT]](),
+            String("the elliptic extras are fr_e_sh (ME=647) + 4*MC +"
+                   " MC*(NT+1)^2 = ", ell_libero - pyr_libero, " B"))
+    t.truth(newton_shared_elems[42, 12, 0, 0, MC, CONDIM, True]()
+            == newton_shared_elems[
+                42, 12, 0, 0, MC, CONDIM, True, ConeType.PYRAMIDAL
+            ](),
+            "the CONE_TYPE default is PYRAMIDAL, so every pin above reads"
+            " the same formula it always did")
 
     print("===", t.checks - t.fails, "/", t.checks, "passed ===")
     if t.fails != 0:
