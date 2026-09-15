@@ -40,6 +40,8 @@ the pair routine, and it agrees — so a failure below is the pair path, not
 the harness.
 """
 
+from std.sys import argv
+from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
@@ -219,25 +221,68 @@ def _ncon[M: ModelDefFromXML](use_sap: Bool, on_gpu: Bool) raises -> Int:
     return Int(d.meta.data[META_IDX_NUM_CONTACTS])
 
 
-def _row[M: ModelDefFromXML](label: String, mut failures: Int) raises:
-    var sc = _ncon[M](True, False)
-    var sg = _ncon[M](True, True)
-    var nc = _ncon[M](False, False)
-    var ng = _ncon[M](False, True)
+def _leg[M: ModelDefFromXML](
+    label: String, use_sap: Bool, on_gpu: Bool
+) raises -> Int:
+    """One leg, announced BEFORE it runs and timed after — so a leg that never
+    returns is named by the last line printed, not hidden in a silent row."""
+    var what = (
+        String("SAP " if use_sap else "N^2 ") + ("gpu" if on_gpu else "cpu")
+    )
+    print("    ...", what, "|", label, flush=True)
+    var t0 = perf_counter_ns()
+    var n = _ncon[M](use_sap, on_gpu)
+    print("       ", what, "ncon", n, "in",
+          Float64(perf_counter_ns() - t0) / 1e9, "s", flush=True)
+    return n
+
+
+def _row[M: ModelDefFromXML](
+    label: String, sap_only: Bool, mut failures: Int
+) raises:
+    var sc = _leg[M](label, True, False)
+    var sg = _leg[M](label, True, True)
+    var nc = sc
+    var ng = sg
+    if not sap_only:
+        nc = _leg[M](label, False, False)
+        ng = _leg[M](label, False, True)
     var ok = sc > 0 and sg == sc and nc == sc and ng == nc
     print("  " + ("ok  " if ok else "FAIL") + "  SAP cpu", sc, "gpu", sg,
-          "| N^2 cpu", nc, "gpu", ng, "|", label)
+          "| N^2 cpu", nc, "gpu", ng, "|", label, flush=True)
     if not ok:
         failures += 1
 
 
 def main() raises:
-    print("=== box/box contacts: CPU vs GPU, SAP and N^2 ===")
+    # `--first`: only the first fixture; `--sap-only`: skip the N^2 control
+    # legs. Together they are ONE GPU kernel — the quickest answer on NVIDIA.
+    var first = False
+    var sap_only = False
+    var args = argv()
+    for i in range(1, len(args)):
+        var a = String(args[i])
+        if a == "--first":
+            first = True
+        elif a == "--sap-only":
+            sap_only = True
+        else:
+            raise Error("unknown argument '" + a + "' (--first, --sap-only)")
+    print("=== box/box contacts: CPU vs GPU, SAP and N^2 ===", flush=True)
     var failures = 0
-    _row[M_BOX_ON_WORLD_BOX]("box on a worldbody box (0.5 mm into it)", failures)
-    _row[M_BOX_ON_BODY_BOX]("box on a static body's box", failures)
-    _row[M_MOKA_POT_ON_TABLE]("LIBERO's moka pot (15 boxes) on the kitchen table", failures)
-    _row[M_BOX_ON_PLANE]("CONTROL: box on a plane (the plane path, not the pair path)", failures)
+    _row[M_BOX_ON_WORLD_BOX](
+        "box on a worldbody box (0.5 mm into it)", sap_only, failures
+    )
+    if not first:
+        _row[M_BOX_ON_BODY_BOX]("box on a static body's box", sap_only, failures)
+        _row[M_MOKA_POT_ON_TABLE](
+            "LIBERO's moka pot (15 boxes) on the kitchen table", sap_only,
+            failures,
+        )
+        _row[M_BOX_ON_PLANE](
+            "CONTROL: box on a plane (the plane path, not the pair path)",
+            sap_only, failures,
+        )
     if failures > 0:
         raise Error(
             String(failures) + " fixture(s) disagree — see the header: the"
