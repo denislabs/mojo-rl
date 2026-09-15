@@ -13,6 +13,14 @@
     # and one checked run at scale, the success word on every lane
     pixi run -e nvidia mojo run -I . /tmp/libero_lanes_256.mojo --cpu-lanes 10
 
+`--solver-log PATH` (PERFORMANCE.md §13.53's measurement) downloads `meta`
+after every control step and writes one CSV row per (step, lane): the last
+substep's contact count, Newton iterations and line-search evaluations, and
+the SUMS of those over the step's `SUBSTEPS` solves (the solver keeps running
+sums on `meta`; the driver differences them). Combine with `--timing-only`
+to skip the checked run's other downloads; the one `meta` download per step
+sits outside the timed span. Read it with `tools/tasks/solver_log_summary.py`.
+
 `--timing-only` skips the per-step downloads, the success word and the CPU leg,
 and times only the action upload + `step_batch` + synchronize after
 `WARMUP_STEPS`. ⚠ READ THROUGHPUT FROM A `--timing-only` RUN. The checked run
@@ -109,6 +117,9 @@ from mojo_rl.physics3d.dynamics.osc_pose_gpu import (
 from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
     META_IDX_GOAL_HELD, META_IDX_NUM_CONTACTS, META_IDX_INIT_REGION_0,
+    META_IDX_LS_EVAL, META_IDX_NEWTON_ITER, META_IDX_SOLVER_ACC_ITER,
+    META_IDX_SOLVER_ACC_LSEV, META_IDX_SOLVER_ACC_NCON,
+    META_IDX_SOLVER_ACC_CAPPED,
     META_INIT_SLOTS, META_IDX_JINIT_0, META_JINIT_SLOTS, META_JINIT_WORDS,
     META_IDX_SHAPE_W_GOAL, META_IDX_SHAPE_W_REACH, MODEL_CURRICULUM_SIZE,
     CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
@@ -247,6 +258,7 @@ def main() raises:
     var window = 10
     var cpu_lanes = -1
     var timing_only = False
+    var solver_log = String("")
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -264,6 +276,9 @@ def main() raises:
             i += 1
         elif s == "--timing-only":
             timing_only = True
+        elif s == "--solver-log" and i + 1 < len(args):
+            solver_log = String(args[i + 1])
+            i += 1
         else:
             # ⚠ REFUSED, NOT IGNORED — `_a_silently_ignored_argument_runs_the_
             # wrong_experiment_for_an_hour`.
@@ -496,6 +511,21 @@ def main() raises:
     var eval_bad = 0
     var eval_true = 0
     var singular_steps = 0
+    # ── `--solver-log`: the solver's counters, per step and lane ──────────
+    var log_on = solver_log.byte_length() > 0
+    # the four running sums as last read, per lane: iters, lsev, ncon, capped
+    var acc_prev = List[Float64](length=N_ENVS * 4, fill=0.0)
+    var csv = String(
+        "t,lane,task,in_demo,ncon_last,it_last,lsev_last,"
+        "it_sum,lsev_sum,ncon_sum,capped_sum\n"
+    )
+    var run_solves = 0
+    var run_it = 0.0
+    var run_lsev = 0.0
+    var run_ncon = 0.0
+    var run_capped = 0.0
+    var run_it_last_max = 0
+    var run_ncon_max = 0
     for t in range(horizon):
         var ap = act_h.unsafe_ptr()
         for e in range(N_ENVS):
@@ -513,6 +543,73 @@ def main() raises:
         if t >= WARMUP_STEPS:
             timed_ns += Int(perf_counter_ns() - t0)
             timed_steps += 1
+        if log_on:
+            env.d.meta.download(ctx)
+            ctx.synchronize()
+            var st_it = 0.0
+            var st_lsev = 0.0
+            var st_ncon = 0.0
+            var st_capped = 0.0
+            var st_it_last_max = 0
+            var st_ncon_last_max = 0
+            var st_ncon_last_sum = 0
+            var in_demo = 0
+            for e in range(N_ENVS):
+                var mb = e * METADATA_SIZE
+                var ncon_last = Int(env.d.meta.data[mb + META_IDX_NUM_CONTACTS])
+                var it_last = Int(env.d.meta.data[mb + META_IDX_NEWTON_ITER])
+                var lsev_last = Int(env.d.meta.data[mb + META_IDX_LS_EVAL])
+                var a_it = Float64(env.d.meta.data[mb + META_IDX_SOLVER_ACC_ITER])
+                var a_ls = Float64(env.d.meta.data[mb + META_IDX_SOLVER_ACC_LSEV])
+                var a_nc = Float64(env.d.meta.data[mb + META_IDX_SOLVER_ACC_NCON])
+                var a_cap = Float64(env.d.meta.data[mb + META_IDX_SOLVER_ACC_CAPPED])
+                var d_it = a_it - acc_prev[e * 4 + 0]
+                var d_ls = a_ls - acc_prev[e * 4 + 1]
+                var d_nc = a_nc - acc_prev[e * 4 + 2]
+                var d_cap = a_cap - acc_prev[e * 4 + 3]
+                acc_prev[e * 4 + 0] = a_it
+                acc_prev[e * 4 + 1] = a_ls
+                acc_prev[e * 4 + 2] = a_nc
+                acc_prev[e * 4 + 3] = a_cap
+                var live = 1 if t < lane_T[e] else 0
+                in_demo += live
+                csv += (
+                    String(t) + "," + String(e) + "," + String(lane_task[e])
+                    + "," + String(live) + "," + String(ncon_last) + ","
+                    + String(it_last) + "," + String(lsev_last) + ","
+                    + String(Int(d_it)) + "," + String(Int(d_ls)) + ","
+                    + String(Int(d_nc)) + "," + String(Int(d_cap)) + "\n"
+                )
+                st_it += d_it
+                st_lsev += d_ls
+                st_ncon += d_nc
+                st_capped += d_cap
+                st_ncon_last_sum += ncon_last
+                if it_last > st_it_last_max:
+                    st_it_last_max = it_last
+                if ncon_last > st_ncon_last_max:
+                    st_ncon_last_max = ncon_last
+            var solves = N_ENVS * SUBSTEPS
+            run_solves += solves
+            run_it += st_it
+            run_lsev += st_lsev
+            run_ncon += st_ncon
+            run_capped += st_capped
+            if st_it_last_max > run_it_last_max:
+                run_it_last_max = st_it_last_max
+            if st_ncon_last_max > run_ncon_max:
+                run_ncon_max = st_ncon_last_max
+            var lsev_per_it = st_lsev / st_it if st_it > 0 else 0.0
+            print(
+                "  [solver] t", _pad(String(t), 3), "in-demo lanes",
+                _pad(String(in_demo), 5),
+                "| ncon/solve", _num(st_ncon / Float64(solves)),
+                "last max", _pad(String(st_ncon_last_max), 3),
+                "| iters/solve", _num(st_it / Float64(solves)),
+                "last max", _pad(String(st_it_last_max), 4),
+                "| lsev/iter", _num(lsev_per_it),
+                "| capped", Int(st_capped), "of", solves,
+            )
         if timing_only:
             continue
         env.d.qpos.download(ctx)
@@ -572,6 +669,30 @@ def main() raises:
               Int(Float64(N_ENVS) / per_step), "lane control steps/s |",
               Int(Float64(N_ENVS * SUBSTEPS) / per_step), "physics substeps/s |",
               _num(per_step / Float64(N_ENVS) * 1e6), "us per lane step")
+    if log_on:
+        with open(solver_log, "w") as fh:
+            fh.write(csv)
+        print()
+        print("=== SOLVER LOG —", run_solves, "solves on", N_ENVS, "lanes x",
+              horizon, "control steps x", SUBSTEPS, "substeps ===")
+        if run_solves > 0:
+            print("  contacts handed to the solve: mean",
+                  _num(run_ncon / Float64(run_solves)), "| max seen (last"
+                  " substeps)", run_ncon_max, "| budget", MC)
+            print("  Newton iterations per solve: mean",
+                  _num(run_it / Float64(run_solves)), "| max seen (last"
+                  " substeps)", run_it_last_max)
+            print("  line-search evaluations per iteration:",
+                  _num(run_lsev / run_it if run_it > 0 else 0.0))
+            print("  solves at the iteration cap:", Int(run_capped), "of",
+                  run_solves, "(",
+                  _num(100.0 * run_capped / Float64(run_solves)), "% )")
+        print("  rows:", solver_log,
+              "— tools/tasks/solver_log_summary.py for the distributions")
+        if timed_steps > 0:
+            print("  ⚠ the throughput above was timed with a meta download"
+                  " per step OUTSIDE the span; re-time without --solver-log"
+                  " before quoting it")
     if timing_only:
         if env.osc_singular_lanes(ctx) > 0:
             raise Error("a lane ended the timing run singular")

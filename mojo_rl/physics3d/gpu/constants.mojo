@@ -123,13 +123,14 @@ comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime METADATA_SIZE: Int = 48
+comptime METADATA_SIZE: Int = 53
 """Per-env metadata words: 4 fixed slots, `META_IDX_TASK_PARAM_0..11`,
 `META_IDX_ACTDAMP_LIVE`, `META_IDX_SIM_TIME`, `META_IDX_TASK_ACTIVE`, three
 RETIRED words (19..21), `META_IDX_GOAL_HELD`, the four shaping words,
 `META_IDX_EQ_FORCE_LIVE`, `META_IDX_LS_EVAL`, the `META_INIT_SLOTS`-word
-init block `META_IDX_INIT_REGION_0..12` (29..41), and the joint-init block
-`META_IDX_JINIT_0` (42..47, `META_JINIT_WORDS` per draw).
+init block `META_IDX_INIT_REGION_0..12` (29..41), the joint-init block
+`META_IDX_JINIT_0` (42..47, `META_JINIT_WORDS` per draw), and the
+`META_SOLVER_WORDS` solver counters `META_IDX_NEWTON_ITER..` (48..52).
 
 ⚠ RAISED FROM 29 TO 42 FOR THE LIBERO DEVICE RESET, by APPENDING. The init
 block was three words at 19..21, one per `so101_tabletop` free slot, and
@@ -423,12 +424,46 @@ a gate over `qacc` cannot tell them apart while one does 72% more work
 word is what makes the difference observable — see
 `test_elliptic_linesearch_evals_vs_mujoco`.
 
-⚠ WRITTEN BY THE ELLIPTIC PER-ENV LEG ONLY, so far. The pyramidal helper
-already returns its count to its caller (`lsiter`), and the blocked kernel
-prints it as `[lseval]`; neither publishes it here yet. A reader that finds
-0 on a pyramidal model is looking at an unwritten slot, not at a solve that
-did no work.
+⚠ WRITTEN BY ALL THREE NEWTON LEGS since 2026-09-14 (the elliptic per-env
+leg, the pyramidal per-env leg, the blocked kernel), through ONE helper —
+`newton_solve._publish_solver_counters` — together with the five counter
+words below. A reader that finds 0 on a model with contacts is looking at a
+solve that did no work (no rows), or at a solver that is not Newton.
 """
+
+# ── THE SOLVER'S COUNTERS — `METADATA_SIZE` 48 -> 53, APPENDED (2026-09-14) ──
+#
+# What §13.53 of `physics3d/PERFORMANCE.md` asked for: the iteration count
+# and the line-search work of every solve, per lane, readable from a driver
+# without a print per solve (`NEWTON_ITER_REPORT` serialises the block and
+# reports env 0 only). One "last solve" word and four RUNNING SUMS, so a
+# driver that reads `meta` once per CONTROL step still sees every substep:
+# it differences the sums against its previous read.
+#
+# ⚠ THE SUMS ARE NEVER RESET BY THE ENGINE. `Data.__init__` uploads a
+# zero-filled `meta` and nothing on the device zeroes them afterwards, so
+# they count from the allocation. They are `DTYPE` words: exact below 2^24
+# in float32 (a 60-step, 25-substep replay at the 100-iteration cap is
+# 1.5e5), and a driver that runs longer than that must difference often or
+# re-zero them itself (download, zero, upload — between steps).
+#
+# ⚠ `META_IDX_SOLVER_ACC_NCON` IS THE COUNT THE SOLVE WAS HANDED — `nc`
+# clamped to `MAX_CONTACTS` — not the collision kernel's raw count, which
+# `META_IDX_NUM_CONTACTS` still holds. The two differ only when the budget
+# truncates.
+comptime META_IDX_NEWTON_ITER: Int = 48
+"""Newton iterations the LAST solve of this env ran (MuJoCo `solver_niter`)."""
+comptime META_IDX_SOLVER_ACC_ITER: Int = 49
+"""Running sum of `META_IDX_NEWTON_ITER` over every solve since allocation."""
+comptime META_IDX_SOLVER_ACC_LSEV: Int = 50
+"""Running sum of `META_IDX_LS_EVAL` over every solve since allocation."""
+comptime META_IDX_SOLVER_ACC_NCON: Int = 51
+"""Running sum of the contact count each solve was handed."""
+comptime META_IDX_SOLVER_ACC_CAPPED: Int = 52
+"""Running count of solves that ran to the model's `iterations` cap."""
+comptime META_SOLVER_WORDS: Int = 5
+"""The five words above, contiguous from `META_IDX_NEWTON_ITER`; they END
+`meta` — `test_device_placement` pins the layout."""
 
 
 # =============================================================================

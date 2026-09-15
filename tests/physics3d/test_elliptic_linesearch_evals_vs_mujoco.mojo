@@ -58,7 +58,12 @@ from mojo_rl.physics3d.fields import Model, Data, Dims
 from mojo_rl.physics3d.fields.spec_fields import SpecFields
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.gpu.constants import META_IDX_LS_EVAL
+from mojo_rl.physics3d.gpu.constants import (
+    META_IDX_LS_EVAL, META_IDX_NEWTON_ITER, META_IDX_SOLVER_ACC_ITER,
+    META_IDX_SOLVER_ACC_LSEV, META_IDX_SOLVER_ACC_NCON,
+    META_IDX_SOLVER_ACC_CAPPED, META_IDX_NUM_CONTACTS,
+    MODEL_META_IDX_SOLVER_ITERATIONS,
+)
 
 comptime DTYPE = DType.float64
 comptime N_SETTLE = 600
@@ -123,11 +128,16 @@ def _mj_slammed() raises -> Tuple[PythonObject, PythonObject]:
     return (m^, d^)
 
 
-def _run() raises -> Tuple[Int, Int, Float64, Int]:
+def _run() raises -> Tuple[Int, Int, Float64, Int, Int, Int]:
     """Step ours and MuJoCo together from the same slammed state.
 
     Returns (our line-search evaluations, MuJoCo's, worst |d qvel|, contacting
-    steps).
+    steps, our Newton iterations, MuJoCo's `solver_niter`).
+
+    Also gates the four running sums the solver keeps on `d.meta` against
+    the per-step words it publishes, here rather than in a test of their
+    own: this is the one fixture that steps the elliptic leg with the
+    reference beside it.
     """
     var mujoco = Python.import_module("mujoco")
     var pair = _mj_slammed()
@@ -159,14 +169,35 @@ def _run() raises -> Tuple[Int, Int, Float64, Int]:
     var theirs = 0
     var worst_v = 0.0
     var contact_steps = 0
+    var our_iters = 0
+    var their_iters = 0
+    var ncon_sum = 0
+    var capped = 0
+    # The solver's cap: the model's `<option iterations>`, which the parser
+    # writes as MuJoCo's default 100 when the XML (this one) sets none.
+    var cap = Int(Float64(mf.meta.data[MODEL_META_IDX_SOLVER_ITERATIONS]))
+    assert_true(
+        cap > 0,
+        "the model carries no solver iteration cap — `fields_build` writes"
+        " MuJoCo's default there; the `capped` word below would be untestable",
+    )
     for _s in range(N_STEPS):
         for i in range(CM.NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)
         integ.step["cpu"](d, mf)
         mujoco.mj_step(m, md)
 
-        ours += Int(Float64(d.meta.data[META_IDX_LS_EVAL]))
+        var lsev = Int(Float64(d.meta.data[META_IDX_LS_EVAL]))
+        var iters = Int(Float64(d.meta.data[META_IDX_NEWTON_ITER]))
+        ours += lsev
+        our_iters += iters
+        # ⚠ THE COUNT THE SOLVE WAS HANDED, which on this fixture (16 <
+        # cap) is the collision count itself.
+        ncon_sum += Int(Float64(d.meta.data[META_IDX_NUM_CONTACTS]))
+        if iters > 0 and iters >= cap:
+            capped += 1
         var niter = Int(py=md.solver_niter[0])
+        their_iters += niter
         for k in range(niter):
             theirs += Int(py=md.solver[k].neval)
         if Int(py=md.ncon) > 0:
@@ -177,7 +208,23 @@ def _run() raises -> Tuple[Int, Int, Float64, Int]:
             var e = abs(Float64(d.qvel.data[i]) - Float64(py=mv[i]))
             if e > worst_v:
                 worst_v = e
-    return (ours, theirs, worst_v, contact_steps)
+    # The running sums are the per-step words added up — exactly, the
+    # words are small integers in a float64 `meta` here.
+    var acc_it = Int(Float64(d.meta.data[META_IDX_SOLVER_ACC_ITER]))
+    var acc_ls = Int(Float64(d.meta.data[META_IDX_SOLVER_ACC_LSEV]))
+    var acc_nc = Int(Float64(d.meta.data[META_IDX_SOLVER_ACC_NCON]))
+    var acc_cap = Int(Float64(d.meta.data[META_IDX_SOLVER_ACC_CAPPED]))
+    assert_true(
+        acc_it == our_iters and acc_ls == ours and acc_nc == ncon_sum
+        and acc_cap == capped,
+        "the solver's running sums on `meta` (iters " + String(acc_it)
+        + ", ls " + String(acc_ls) + ", ncon " + String(acc_nc) + ", capped "
+        + String(acc_cap) + ") are not the per-step words added up ("
+        + String(our_iters) + ", " + String(ours) + ", " + String(ncon_sum)
+        + ", " + String(capped) + ") — `_publish_solver_counters` is not"
+        " accumulating what it publishes",
+    )
+    return (ours, theirs, worst_v, contact_steps, our_iters, their_iters)
 
 
 def test_the_fixture_is_in_contact_and_brackets() raises:
@@ -269,9 +316,34 @@ def test_the_answer_did_not_pay_for_the_speed() raises:
     )
 
 
+def test_our_iteration_count_is_mujocos() raises:
+    """`META_IDX_NEWTON_ITER` against MuJoCo's `solver_niter`, summed over
+    the rollout. The evaluation count above is EQUAL to MuJoCo's, and it is
+    summed per iteration, so the iteration counts cannot differ without the
+    evaluation counts differing too — this is the same fact read off the
+    word §13.53's measurement depends on, and it is what makes that word
+    trustworthy on the LIBERO box.
+    """
+    print("=== our Newton iterations vs MuJoCo's solver_niter ===")
+    var r = _run()
+    print("  ours:", r[4], " MuJoCo:", r[5])
+    assert_true(
+        r[4] > 0,
+        "our iteration count is 0 over a contacting rollout —"
+        " `META_IDX_NEWTON_ITER` is not being written",
+    )
+    assert_true(
+        r[4] == r[5],
+        "our solves ran " + String(r[4]) + " Newton iterations where MuJoCo"
+        " ran " + String(r[5]) + " over the same " + String(N_STEPS)
+        + " steps — the counter or the loop's exit tests moved",
+    )
+
+
 def main() raises:
     var suite = TestSuite()
     suite.test[test_the_fixture_is_in_contact_and_brackets]()
     suite.test[test_our_line_search_costs_what_mujocos_costs]()
+    suite.test[test_our_iteration_count_is_mujocos]()
     suite.test[test_the_answer_did_not_pay_for_the_speed]()
     suite^.run()

@@ -216,6 +216,11 @@ from ..gpu.constants import (
     META_IDX_NUM_CONTACTS,
     META_IDX_EQ_FORCE_LIVE,
     META_IDX_LS_EVAL,
+    META_IDX_NEWTON_ITER,
+    META_IDX_SOLVER_ACC_ITER,
+    META_IDX_SOLVER_ACC_LSEV,
+    META_IDX_SOLVER_ACC_NCON,
+    META_IDX_SOLVER_ACC_CAPPED,
     MODEL_META_IDX_MEANINERTIA,
     MODEL_META_IDX_NOSLIP_TOLERANCE,
     MODEL_META_IDX_NOSLIP_ITERATIONS,
@@ -265,6 +270,47 @@ from ..gpu.constants import (
 from ..constraints.constraint_data import refsafe_timeconst, solref_spring_damper
 
 comptime NS_TPB: Int = 1
+
+
+@always_inline
+def _publish_solver_counters[
+    DTYPE: DType, L_SMETA: Layout
+](
+    smeta: LayoutTensor[DTYPE, L_SMETA, MutAnyOrigin],
+    env: Int,
+    iters: Int,
+    ls_evals: Int,
+    nc: Int,
+    niter_rt: Int,
+):
+    """The solve's counters onto `d.meta` — ONE rule for the three Newton
+    legs (elliptic per-env, pyramidal per-env, blocked), so the words cannot
+    drift apart by leg (`_a_rule_written_inline_twice_drifts`).
+
+    `META_IDX_LS_EVAL` and `META_IDX_NEWTON_ITER` are the LAST solve; the
+    four `ACC` words are running sums (see `gpu/constants.mojo`). A solve
+    that broke out with no rows publishes zeros and adds nothing — MuJoCo
+    reports `solver_niter = 0` there too.
+    """
+    smeta[env, META_IDX_LS_EVAL] = Scalar[DTYPE](ls_evals)
+    smeta[env, META_IDX_NEWTON_ITER] = Scalar[DTYPE](iters)
+    smeta[env, META_IDX_SOLVER_ACC_ITER] = (
+        rebind[Scalar[DTYPE]](smeta[env, META_IDX_SOLVER_ACC_ITER])
+        + Scalar[DTYPE](iters)
+    )
+    smeta[env, META_IDX_SOLVER_ACC_LSEV] = (
+        rebind[Scalar[DTYPE]](smeta[env, META_IDX_SOLVER_ACC_LSEV])
+        + Scalar[DTYPE](ls_evals)
+    )
+    smeta[env, META_IDX_SOLVER_ACC_NCON] = (
+        rebind[Scalar[DTYPE]](smeta[env, META_IDX_SOLVER_ACC_NCON])
+        + Scalar[DTYPE](nc)
+    )
+    if iters > 0 and iters >= niter_rt:
+        smeta[env, META_IDX_SOLVER_ACC_CAPPED] = (
+            rebind[Scalar[DTYPE]](smeta[env, META_IDX_SOLVER_ACC_CAPPED])
+            + Scalar[DTYPE](1)
+        )
 
 
 # =============================================================================
@@ -2054,6 +2100,8 @@ def _newton_solve_env[
         var prev_state = Scratch[Int, N_CAP](me if TREE_AWARE else 1, uninitialized=0)
         var upd = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
         # Newton iterations
+        var pyr_iters = 0
+        var pyr_ls_evals = 0
         for iter_n in range(NEWTON_ITER_GPU):
             # ⚠⚠ NO CONSTRAINT ROWS: MUJOCO RETURNS, AND WE USED TO SOLVE.
             # `mj_fwdConstraint` (engine_forward.c:884) is explicit —
@@ -2285,6 +2333,7 @@ def _newton_solve_env[
                 lsiter_rt,
                 tol_rt * lstol_rt / scale,
             )
+            pyr_ls_evals += ls_evals
 
             comptime if _CPU_PROBE:
                 var _p_now = Int(perf_counter_ns())
@@ -2300,6 +2349,8 @@ def _newton_solve_env[
             else:
                 if alpha < Scalar[DTYPE](1e-10):
                     break
+            # A step taken — MuJoCo's `iter++` position; see the elliptic twin.
+            pyr_iters += 1
 
             # Save old state for cost revert (matching CPU solver)
             var old_qacc = Scratch[Scalar[DTYPE], V_CAP](nv, uninitialized=Scalar[DTYPE](0))
@@ -2588,6 +2639,9 @@ def _newton_solve_env[
         # the weld one because `build_weld_equality_rows` feeds the edge list
         # above — the same defect-29a conversion the ELLIPTIC path got in
         # `d22144ee`.
+        _publish_solver_counters[DTYPE](
+            smeta, env, pyr_iters, pyr_ls_evals, nc, niter_rt
+        )
         return  # PYRAMIDAL path complete
 
     # === ELLIPTIC path ===
@@ -3183,6 +3237,7 @@ def _newton_solve_env[
     # gate can see it. The line search's ANSWER barely moves between
     # algorithms; its WORK does, and that is what AUD-40 changed.
     var ls_eval_total = 0
+    var newton_iters = 0
     for _iter in range(NEWTON_ITER_GPU):
         # ⚠⚠ NO CONSTRAINT ROWS: MUJOCO RETURNS, AND WE USED TO SOLVE.
         # `mj_fwdConstraint` (engine_forward.c:884) is explicit —
@@ -3634,6 +3689,12 @@ def _newton_solve_env[
         else:
             if alpha < Scalar[DTYPE](1e-12):
                 break
+        # ⚠ COUNTED HERE, NOT AT THE LOOP HEAD — `mj_solPrimal`'s `iter++`
+        # (engine_solver.c:2476) follows the `alpha == 0` exit and precedes
+        # the termination test, so `solver_niter` is the number of steps
+        # TAKEN. Counting entries read one higher on every converged solve
+        # (38 against MuJoCo's 26 over the line-search fixture's 12 steps).
+        newton_iters += 1
 
         # Update qacc and Ma
         for i in range(nv):
@@ -3931,7 +3992,9 @@ def _newton_solve_env[
             break
         eq_force[env, r] = eq_f[eq_weld_base + r]
     smeta[env, META_IDX_EQ_FORCE_LIVE] = Scalar[DTYPE](eq_weld_n)
-    smeta[env, META_IDX_LS_EVAL] = Scalar[DTYPE](ls_eval_total)
+    _publish_solver_counters[DTYPE](
+        smeta, env, newton_iters, ls_eval_total, nc, niter_rt
+    )
 
     # NOTHING RUNS AFTER THE SOLVE ON THIS PATH ANY MORE. Joint limits,
     # dry-friction dofs, tendon equalities (`build_scalar_rows` /
@@ -5609,6 +5672,9 @@ def _newton_blocked_fields_kernel[
     # === Newton iterations — ALL threads execute the loop ===
     var iters_done = 0
     var ls_evals = 0
+    # MuJoCo's `iter`: steps TAKEN (thread 0 counts it where the step is
+    # accepted). `iters_done` above counts ENTRIES, for the report print.
+    var steps_taken = 0
     # ⚠ THE GRADIENT CRITERION, CARRIED ACROSS THE ITERATION (AUD-39). 3.12's
     # zero-iteration certificate is a CONJUNCTION — gap AND gradient — and the
     # two halves are computed at opposite ends of this loop body: the gradient
@@ -6224,8 +6290,9 @@ def _newton_blocked_fields_kernel[
             # tid-0 block and that test lives further down the loop body. And
             # anchored on `alpha = p2_a` because the bare `if alpha < 1e-10`
             # appears TWICE: the per-env solver carries the same guard.
-            comptime if NEWTON_ITER_REPORT:
-                ls_evals += lsiter_b
+            # ⚠ UNCONDITIONAL since 2026-09-14: `META_IDX_LS_EVAL` is published
+            # from this count below; under the report knob only, it read 0.
+            ls_evals += lsiter_b
             # `mj_solPrimal` breaks on `alpha == 0` EXACTLY
             # (engine_solver.c:2432) — a tiny nonzero step is taken, not
             # discarded. The 1e-10 floor is the pre-3.12 rule, kept behind the
@@ -6240,6 +6307,7 @@ def _newton_blocked_fields_kernel[
                 ctrl_sh[1] = Scalar[DTYPE](1)  # done (break next iter)
             else:
                 ctrl_sh[1] = Scalar[DTYPE](0)
+                steps_taken += 1
 
                 # Save old state for revert.
                 for i in range(NV):
@@ -6367,6 +6435,13 @@ def _newton_blocked_fields_kernel[
             # SAME run — which is exactly what the discarded "54%" figure was
             # not: that subtracted an unpinned slope from a pinned fraction.
             print("[niter]", iters_done, "[lseval]", ls_evals)
+    # The same five words the per-env legs publish, from thread 0 of the
+    # block. `iters_done` and `ls_evals` are block-uniform (every thread
+    # ran the loop); the write is one thread's so it is not a race.
+    if valid_env and tid == 0:
+        _publish_solver_counters[DTYPE](
+            smeta, env, steps_taken, ls_evals, nc, niter_rt
+        )
 
     # ⚠ STAGE 5 — after the Newton LOOP, before the write-back tail. This is the
     # stage that had to exist: stages 1-4 bisect the SETUP and stop at the loop,

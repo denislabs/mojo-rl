@@ -4828,3 +4828,106 @@ Metal).
         /tmp/libero_256.nsys-rep
     # the fidelity gate for any lever: the full checked replay
     pixi run -e nvidia /tmp/libero_256 --cpu-lanes 10
+
+**Trace read (2026-09-14, from the source and the stats file; nothing
+re-run):**
+
+- **The profile window is not the timing window.** The kernels sum to
+  14.69 s over 375 substeps = 39.2 ms per substep = 0.98 s per control
+  step, against the timing run's 1.706 s at the same 256 lanes. The profile
+  is control steps 1-15, the timing run 6-60, and the Newton kernel's
+  instances span 14.6-44.3 ms (mean 23.6, sd 2.8): the solve gets heavier
+  along the demonstration as contacts and iterations do. The 60/29/5 split
+  is the early-demo split; price a lever against a late window (profile
+  `--steps 60`, or log ncon + Newton iterations + line-search evals per
+  substep) before trusting it at 1.706 s.
+- **The host side is clean.** 29 launches per substep at 8 us, 87 ms over
+  the run; `cuStreamIsCapturing` twice per launch (the graph probe,
+  3.9 ms); 15 long synchronizes of ~0.9 s (one per control step, max
+  1.08 s) — the rest of the 259 are setup at 3 us median. The 1.5 s
+  `cuMemAllocHost` and 1.0 s of module loads are paid once.
+- **Why the step is flat in the lane count, from the source.** `NS_TPB = 1`
+  (`newton_solve.mojo:267`): the per-env kernel launches ONE THREAD PER
+  BLOCK, so 256 lanes are 256 single-thread blocks over 170 SMs — one lane
+  of one warp on each. The block collision kernel is `COLL_TPB = 32`, one
+  env per block: 256 blocks, the same shape. Neither is SM- or
+  bandwidth-bound; the launch time is one env's serial chain and stays so
+  until ~170 x (resident blocks per SM) envs are in flight — thousands.
+- **Lever 0, zero code: more lanes.** The table above already shows it
+  (16x the lanes for 1.53x the time). At 4096 lanes the batch step should
+  still sit near 2-2.5 s, i.e. ~2 000 lane control steps/s, before any
+  engine work. The bound is device memory — `Data.ccd_ws` is per lane x
+  `COLL_TPB` rows (1.49 GB at 1024 G1 lanes; LIBERO has 240 geoms) — so
+  read `nvidia-smi` at 2048 first. Unmeasured.
+- **Lever 1's first question is answered: nothing there.** The block kernel
+  drops every geom with `contype == 0 and conaffinity == 0` (unless a
+  `<pair>` names it) BEFORE the sort and the sweep
+  (`broadphase_sap.mojo` step 4a, ~:3374); the plane phase gates each
+  (plane, geom) through `_sap_plane_gate`, which rejects on the mask
+  before any geometry. The 84 visual-only geoms cost the sweep nothing.
+  The mesh question stands: the gripper fingers are meshes at
+  `condim="4"` (robosuite `panda_gripper.xml`) and the objects are meshes,
+  so the kernel's rounds are GJK rounds, as on the G1.
+- **Lever 3 sized.** The elliptic per-env path is `_newton_solve_env`
+  :2593-:3947 (~1 350 lines); the cone-specific pieces are
+  `elliptic_cone.mojo` (`ell_state_force`, `ell_row_cost`,
+  `ell_hessian_block`, `ell_add_contact_hessian`, `ell_line_eval`; 639
+  lines) and `noslip_elliptic`. The blocked kernel's skeleton — shared
+  `L_sh`, the cooperative factor and matvecs, the thread-0 line search — is
+  cone-agnostic; its pyramidal-specific lines number ~20. The per-thread
+  frame the per-env kernel carries (`Jn_c` MC x NV + `Jt_c` MC x NT x NV =
+  9 472 floats at MC 64 / NV 37 / NT 3, plus H and L) is the ~60 KB local
+  frame; the blocked layout is what moves it into shared and global rows.
+- **Lever 4 sized.** robosuite's `base.xml` sets only `impratio="20"
+  cone="elliptic"`; `iterations`, `tolerance`, `ls_iterations` are
+  MuJoCo's defaults (100 / 1e-8 / 50). The 3x spread between Newton
+  instances is the iteration count moving, so the per-substep log named
+  under the first bullet is the measurement that decides between lever 3
+  and lever 4 — and it is the cheapest thing to run on the box next.
+
+**The measurement, built (2026-09-14) — run it on the box next.** The
+solver now publishes five words per lane on `d.meta` from all three Newton
+legs through one helper (`_publish_solver_counters`):
+`META_IDX_NEWTON_ITER` (the last solve's iterations, MuJoCo's
+`solver_niter` rule — steps TAKEN, gated equal to MuJoCo's 26 over the
+line-search fixture; counting loop ENTRIES read 38), `META_IDX_LS_EVAL`
+(already there; the blocked kernel's count was under the report knob and
+read 0 — now unconditional), and four running sums (`..._ACC_ITER`,
+`_ACC_LSEV`, `_ACC_NCON`, `_ACC_CAPPED`; exact below 2^24 in float32,
+never reset by the engine — `gpu/constants.mojo` has the rules).
+`METADATA_SIZE` 48 -> 53, appended; `test_device_placement` pins the
+layout, `test_elliptic_linesearch_evals_vs_mujoco` gates the sums against
+the per-step words and the count against MuJoCo. The driver's
+`--solver-log PATH` reads `meta` once per control step (outside the timed
+span), differences the sums, and writes one row per (step, lane);
+`tools/tasks/solver_log_summary.py` prints the distributions and the
+lever-3-or-4 verdict.
+
+    sed "s/^comptime LANES = .*/comptime LANES = 256/" \
+        examples/tasks/libero_demo_batched.mojo > /tmp/libero_lanes_256.mojo
+    pixi run -e nvidia mojo build -I . -o /tmp/libero_256 /tmp/libero_lanes_256.mojo
+    pixi run -e nvidia /tmp/libero_256 --timing-only --steps 60 --solver-log /tmp/libero_256_solver.csv
+    pixi run python tools/tasks/solver_log_summary.py /tmp/libero_256_solver.csv
+    # re-time without --solver-log before quoting a throughput
+
+Cross-emitted to `sm_120` from the Mac: the LIBERO driver (elliptic
+per-env kernel) and `test_newton_blocked_fields` (blocked kernel), no
+`.extern` in either.
+
+**An early reading, NOT the box's** — M1 Pro, 4 lanes, the first 8 control
+steps of demo 0 of tasks 0-3, 800 solves: **37 contacts on every solve**
+(constant — the resting set, budget 64), **1.14 Newton iterations per
+solve** (p90 2, max 2), 2.8 line-search evaluations per iteration, **0 at
+the cap**. If the 5090's 60-step window reads the same shape, lever 4
+(the budget) is dead: a solve that takes one iteration spends its 23.6 ms
+in the SETUP — rows, Hessian build, factor — which is the term §13.42
+priced at 94.8% of the pyramidal kernel and the term the blocked layout
+parallelises. That is lever 3's case; the late-demo window (a grasp adds
+contacts and iterations) is what the box must add.
+
+⚠ On this Mac the MAIN tree with its in-flight `mojo_rl/tasks/*` edits
+fails at Metal pipeline creation ("Compute function exceeds available
+stack space") for the LIBERO driver; the committed HEAD runs, and HEAD plus
+this section's changes runs at HEAD's speed (1.106 vs 1.109 s per batch
+step at 4 lanes). The failure is the in-flight tasks change, not the
+counters — noted so nobody bisects the wrong diff.
