@@ -58,6 +58,7 @@ tests/data/test_lerobot_import.mojo
 # that are flat colours encoding their own (episode, t, camera) so a routing
 # error is detectable through lossy H.264. Needs `ffmpeg`.
 tests/data/test_lerobot_write.mojo
+tests/data/test_dataset_sync.mojo
 # CIFAR-10 preparation end to end — the same parquet read by `io/parquet`'s
 # BYTE_ARRAY path, decoded by `io/png.mojo` and laid out channel-major, against
 # a .bin that `pyarrow` + `PIL` produced. 30,730,000 bytes compared.
