@@ -50,11 +50,13 @@ the COUPLING — "is `s` on the trajectory `z` encodes" — which is the
 conditional signal §15.3 asks for and the reason `D(s)` alone is worse
 than nothing.
 
-⚠ `Q_D`'s actor gradient goes through twin 1 alone. The FB actor's no longer
-does — since §12.19 `Q_fb` is `min(F1·z, F2·z)` (`actor_pessimism` 0.5,
-`agent.py:275`), so THIS is now the only place an actor gradient is taken from
-a single twin. The reference's `mean − 0.5·spread` of two members is exactly
-`min`; `Q_D`'s TARGET already uses it, only its actor path does not.
+Every ensemble read here is the reference's `mean − 0.5·spread`, which at two
+members is exactly `min`: `Q_D`'s TD target (`CRITIC_PESSIMISM`), `Q_D`'s actor
+gradient (`ACTOR_PESSIMISM`, §12.20) and the FB actor's `Q_fb`
+(`actor_pessimism`, §12.19). Both of the latter two went through twin 1 alone
+until then — the twins were trained and half-consulted, so one critic had two
+readers that disagreed about what it meant, and the actor always got the
+optimistic one.
 
 Checkpoint: `save_state(p)` writes the FB nets to `p` in `FBTrainer`'s own
 layout (so `fb_eval_walker_online.mojo` loads it unchanged) and `D` +
@@ -92,6 +94,7 @@ from .kernels import (
     scale_t,
     fill_t,
     pessimism_blend_t,
+    pessimism_row_weights_t,
     smooth_action_t,
     slice_cols_t,
     mean_into_t,
@@ -166,6 +169,9 @@ struct FBCPRHead[
     # `critic_pessimism_penalty` (`train.py:652`). At an ensemble of two the
     # reference's uncertainty reduction makes 0.5 exactly the twin-min.
     comptime CRITIC_PESSIMISM: Float64 = 0.5
+    # `actor_pessimism_penalty` (`train.py:639`). The actor reads Q_D through
+    # the SAME reduction as Q_D's own target — one critic, one meaning.
+    comptime ACTOR_PESSIMISM: Float64 = 0.5
     comptime D_IN: Int = Self.OBS + Self.D          # [s | z]
     comptime Q_IN: Int = Self.OBS + Self.ACT + Self.D  # [s | a | z], F's layout
     comptime _NA: Int = Self.BATCH * Self.ACT
@@ -222,6 +228,11 @@ struct FBCPRHead[
     var pi: Tensor
     var qin_pi: Tensor
     var q_pi: Tensor
+    var q_pi2: Tensor
+    var q_pi_p: Tensor
+    var w_q1: Tensor
+    var w_q2: Tensor
+    var gx2: Tensor
     var cot_pi: Tensor
     var g_qin: Tensor
     var acc_dpos: Tensor
@@ -288,6 +299,11 @@ struct FBCPRHead[
         self.pi = Tensor()
         self.qin_pi = Tensor()
         self.q_pi = Tensor()
+        self.q_pi2 = Tensor()
+        self.q_pi_p = Tensor()
+        self.w_q1 = Tensor()
+        self.w_q2 = Tensor()
+        self.gx2 = Tensor()
         self.cot_pi = Tensor()
         self.g_qin = Tensor()
         self.acc_dpos = Tensor()
@@ -354,6 +370,11 @@ struct FBCPRHead[
         self.pi = move.pi^
         self.qin_pi = move.qin_pi^
         self.q_pi = move.q_pi^
+        self.q_pi2 = move.q_pi2^
+        self.q_pi_p = move.q_pi_p^
+        self.w_q1 = move.w_q1^
+        self.w_q2 = move.w_q2^
+        self.gx2 = move.gx2^
         self.cot_pi = move.cot_pi^
         self.g_qin = move.g_qin^
         self.acc_dpos = move.acc_dpos^
@@ -498,6 +519,11 @@ struct FBCPRHead[
         ensure_t[T](self.pi, Self._NA, c)
         ensure_t[T](self.qin_pi, Self.BATCH * Self.Q_IN, c)
         ensure_t[T](self.q_pi, Self.BATCH, c)
+        ensure_t[T](self.q_pi2, Self.BATCH, c)
+        ensure_t[T](self.q_pi_p, Self.BATCH, c)
+        ensure_t[T](self.w_q1, Self.BATCH, c)
+        ensure_t[T](self.w_q2, Self.BATCH, c)
+        ensure_t[T](self.gx2, Self._NA, c)
         ensure_t[T](self.cot_pi, Self.BATCH, c)
         ensure_t[T](self.g_qin, Self.BATCH * Self.Q_IN, c)
         ensure_t[T](self.acc_dpos, 1, c)
@@ -679,8 +705,14 @@ struct FBCPRHead[
         self.opt_q1.step[T](self.qd1.online, c)
         self.opt_q2.step[T](self.qd2.online, c)
 
-        # ── 3. the style term for the actor: −reg/BATCH · ∂Q_D1/∂a ───────
+        # ── 3. the style term for the actor: −reg/BATCH · ∂Q_D/∂a ───────
         # Same weights the inner actor step will forward, so the two π agree.
+        # Q_D is the PESSIMISTIC reduction over its twin, which at
+        # `ACTOR_PESSIMISM` 0.5 is `min(Q_D1, Q_D2)` (`agent.py:266`). This
+        # read Q_D1 ALONE until §12.20 — the twin was Bellman-trained and its
+        # own TARGET already used the min, so one critic had two readers that
+        # disagreed about what "Q_D" meant, and the actor's was the optimistic
+        # one.
         if self.reg_coeff > 0.0:
             pack2_t[T, Self.OBS, Self.D, Self.BATCH](self.ain, t.bs, t.bz, c)
             call_forward[T, Self.BATCH](
@@ -692,12 +724,26 @@ struct FBCPRHead[
             call_forward[T, Self.BATCH](
                 self.qd1.online, TensorRefs[1, MutAnyOrigin](self.qin_pi), self.q_pi, c
             )
-            mean_into_t[T, Self.BATCH](self.q_pi, self.acc_qpi, c)
-            fill_t[T, Self.BATCH](
-                self.cot_pi, Scalar[DT](-self.reg_coeff / Float64(Self.BATCH)), c
+            call_forward[T, Self.BATCH](
+                self.qd2.online, TensorRefs[1, MutAnyOrigin](self.qin_pi), self.q_pi2, c
             )
-            # Through Q_D1 WITHOUT keeping its parameter grads (already
+            pessimism_blend_t[T, Self.BATCH](
+                self.q_pi_p, self.q_pi, self.q_pi2, Scalar[DT](1.0),
+                Scalar[DT](Self.ACTOR_PESSIMISM), c,
+            )
+            mean_into_t[T, Self.BATCH](self.q_pi_p, self.acc_qpi, c)
+            # per-row share of that reduction: at 0.5 the whole gradient goes
+            # to whichever twin is the min on that row
+            pessimism_row_weights_t[T, Self.BATCH](
+                self.w_q1, self.w_q2, self.q_pi, self.q_pi2,
+                Scalar[DT](Self.ACTOR_PESSIMISM), c,
+            )
+            # the cotangent was a CONSTANT fill; it is that constant scaled by
+            # the row's weight now, so no new kernel is needed
+            var cq = Scalar[DT](-self.reg_coeff / Float64(Self.BATCH))
+            # Through Q_D WITHOUT keeping its parameter grads (already
             # stepped above) — zeroed right after, as F1 is in the inner step.
+            scale_t[T, Self.BATCH](self.cot_pi, self.w_q1, cq, c)
             call_vjp[T, Self.BATCH](
                 self.qd1.online, TensorRefs[1, MutAnyOrigin](self.qin_pi), self.cot_pi,
                 TensorRefs[1, MutAnyOrigin](self.g_qin), c,
@@ -705,6 +751,18 @@ struct FBCPRHead[
             self.qd1.online.zero_grad[T](c)
             slice_cols_t[T, Self.Q_IN, Self.OBS, Self.ACT, Self.BATCH](
                 t.g_pi_extra, self.g_qin, c
+            )
+            scale_t[T, Self.BATCH](self.cot_pi, self.w_q2, cq, c)
+            call_vjp[T, Self.BATCH](
+                self.qd2.online, TensorRefs[1, MutAnyOrigin](self.qin_pi), self.cot_pi,
+                TensorRefs[1, MutAnyOrigin](self.g_qin), c,
+            )
+            self.qd2.online.zero_grad[T](c)
+            slice_cols_t[T, Self.Q_IN, Self.OBS, Self.ACT, Self.BATCH](
+                self.gx2, self.g_qin, c
+            )
+            axpy_t[T, Self.BATCH * Self.ACT](
+                t.g_pi_extra, self.gx2, Scalar[DT](1.0), c
             )
 
         # ── 4. the FB step, unchanged, reading `g_pi_extra` ──────────────
