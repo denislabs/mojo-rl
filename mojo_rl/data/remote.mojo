@@ -324,6 +324,89 @@ struct RemoteCatalog(Movable & Deinitable):
             + String(done.status) + ": " + done.text
         )
 
+    # ── project datasets (recordings mirrored on the platform) ────────
+
+    def upsert_dataset(
+        mut self, slug: String, name: String, n_episodes: Int, n_frames: Int, fps: Int
+    ) raises:
+        var w = JsonWriter()
+        w.begin_object()
+        w.member(String("n_episodes"), n_episodes)
+        w.member(String("n_frames"), n_frames)
+        w.member(String("fps"), fps)
+        w.end_object()
+        var a = self._call(
+            String("PUT"), String("/projects/") + slug + "/datasets/" + name, w.done()
+        )
+        if a.status == 404:
+            raise Error(
+                "project '" + slug + "' is not on the platform — push it first:"
+                " pixi run project-push " + slug
+            )
+        if a.status != 200:
+            raise Error("PUT dataset " + name + " -> " + String(a.status) + ": " + a.text)
+
+    def dataset_files(mut self, slug: String, name: String) raises -> JsonDoc:
+        """`{dataset, files: [{path, sha256, sizeBytes, status, download_url}]}`.
+        An unknown dataset answers an EMPTY doc rather than raising: a first
+        push has nothing to compare against yet."""
+        var a = self._call(
+            String("GET"),
+            String("/projects/") + slug + "/datasets/" + name + "/files",
+            String(""),
+        )
+        if a.status == 404:
+            return JsonDoc()
+        if a.status != 200:
+            raise Error("GET dataset files -> " + String(a.status) + ": " + a.text)
+        return a^.take_doc()
+
+    def list_datasets(mut self, slug: String) raises -> JsonDoc:
+        return self._request(
+            String("GET"), String("/projects/") + slug + "/datasets", String(""), 200
+        )
+
+    def push_dataset_file(
+        mut self,
+        slug: String,
+        name: String,
+        rel_path: String,
+        local_path: String,
+        sha256: String,
+        size_bytes: Int,
+    ) raises -> String:
+        """Upload one dataset file. Returns `uploaded` or `unchanged`.
+
+        ⚠ `unchanged` IS DECIDED BY THE SERVER (same path, ready, same sha and
+        size) — decision 18 — so a watch loop re-offering every file costs one
+        small request per file and no bytes.
+        """
+        var w = JsonWriter()
+        w.begin_object()
+        w.member(String("path"), rel_path)
+        w.member(String("sha256"), sha256)
+        w.member(String("size_bytes"), size_bytes)
+        w.end_object()
+        var body = w.done()
+        var base = String("/projects/") + slug + "/datasets/" + name + "/files"
+        var reg = self._call(String("POST"), base, body)
+        if reg.status == 200:
+            return String("unchanged")
+        if reg.status != 201:
+            raise Error(
+                "POST " + base + " (" + rel_path + ") -> " + String(reg.status)
+                + ": " + reg.text
+            )
+        var url = _opt_string(reg.doc, reg.doc.root(), String("upload_url"))
+        _ = upload_file(url, local_path, rel_path, quiet=True)
+        var done = self._call(String("POST"), base + "/complete", body)
+        if done.status != 200:
+            raise Error(
+                "POST " + base + "/complete (" + rel_path + ") -> "
+                + String(done.status) + ": " + done.text
+            )
+        return String("uploaded")
+
     # ── read ──────────────────────────────────────────────────────────
 
     def list_datasets(mut self) raises -> JsonDoc:

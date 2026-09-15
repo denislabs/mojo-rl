@@ -42,6 +42,7 @@ mtime.
 from std.os import listdir
 from std.os.path import exists, isdir
 
+from mojo_rl.data.recording_files import plan_upload
 from mojo_rl.io.hf_push import HubPush, HubUpload
 from mojo_rl.io.fileio import write_text_atomic
 from mojo_rl.io.json import JsonDoc, load_json
@@ -167,7 +168,11 @@ def push_lerobot_dataset(
     if card and not exists(root + "/README.md"):
         write_dataset_card(root, repo)
 
-    var rels = dataset_files(root)
+    # ⚠ NOT every file: a mid-session backup must hold back the video of the
+    # episode still being recorded (`recording_files.plan_upload`).
+    var all_files = dataset_files(root)
+    var plan = plan_upload(all_files, root)
+    var rels = plan.send.copy()
     if message == "":
         message = String("Add ") + String(len(rels)) + " files"
 

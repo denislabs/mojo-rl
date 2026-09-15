@@ -73,6 +73,8 @@ LOCK = threading.Lock()
 
 # slug -> {"description": str, "files": {path: sha256}}
 PROJECTS = {}
+# (slug, name) -> {"n_episodes", "n_frames", "fps", "files": {path: {sha, size, status}}}
+DATASETS = {}
 PROJECT_FILE_MAX = 4096
 _SEG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -123,6 +125,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         u = urlparse(self.path)
         blob = self._body()
+        m = re.match(r"^/projects/([^/]+)/datasets/([^/]+)$", u.path)
+        if m:
+            self._record("PUT", blob.decode("utf-8", "replace"))
+            d = json.loads(blob or b"{}")
+            with LOCK:
+                if m.group(1) not in PROJECTS:
+                    return self._json(404, {"error": "unknown project"})
+                ds = DATASETS.setdefault((m.group(1), m.group(2)), {"files": {}})
+                for k in ("n_episodes", "n_frames", "fps"):
+                    if k in d:
+                        ds[k] = d[k]
+            return self._json(200, {"name": m.group(2)})
         m = re.match(r"^/projects/([^/]+)$", u.path)
         if m:
             self._record("PUT", blob.decode("utf-8", "replace"))
@@ -145,6 +159,44 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/__shutdown":
             os._exit(0)
+        m = re.match(r"^/projects/([^/]+)/datasets/([^/]+)/files$", u.path)
+        if m:
+            self._record("GET", "")
+            slug, name = m.group(1), m.group(2)
+            with LOCK:
+                ds = DATASETS.get((slug, name))
+                if ds is None:
+                    return self._json(404, {"error": "unknown dataset"})
+                files = [
+                    {
+                        "path": path,
+                        "sha256": f["sha"] if f["status"] == "ready" else None,
+                        "sizeBytes": f["size"] if f["status"] == "ready" else None,
+                        "status": f["status"],
+                        "download_url": (
+                            f"http://127.0.0.1:{PORT}/r2/ds/{slug}/{name}/{path}"
+                            if f["status"] == "ready" else ""
+                        ),
+                    }
+                    for path, f in sorted(ds["files"].items())
+                ]
+                return self._json(200, {"dataset": {"name": name, "nEpisodes": ds.get("n_episodes")}, "files": files})
+        m = re.match(r"^/projects/([^/]+)/datasets$", u.path)
+        if m:
+            self._record("GET", "")
+            with LOCK:
+                rows = []
+                for (slug, name), ds in sorted(DATASETS.items()):
+                    if slug != m.group(1):
+                        continue
+                    fs = ds["files"].values()
+                    rows.append({
+                        "name": name, "nEpisodes": ds.get("n_episodes"),
+                        "fileCount": len(fs),
+                        "readyCount": sum(1 for f in fs if f["status"] == "ready"),
+                        "sizeBytes": sum((f["size"] or 0) for f in fs),
+                    })
+            return self._json(200, rows)
         m = re.match(r"^/projects/([^/]+)/files$", u.path)
         if m:
             self._record("GET", "")
@@ -216,6 +268,41 @@ class Handler(BaseHTTPRequestHandler):
                     "expires_at": "2099-01-01T00:00:00Z",
                 },
             )
+
+        if u.path == "/__inject_dataset_file":
+            d = json.loads(text)
+            with LOCK:
+                ds = DATASETS.setdefault((d["slug"], d["name"]), {"files": {}})
+                body = d.get("body", "x").encode()
+                ds["files"][d["path"]] = {"sha": d["sha256"], "size": len(body), "status": "ready"}
+                OBJECTS[f"/r2/ds/{d['slug']}/{d['name']}/{d['path']}"] = body
+            return self._json(200, {"ok": True})
+
+        m = re.match(r"^/projects/([^/]+)/datasets/([^/]+)/files(/complete)?$", u.path)
+        if m:
+            slug, name, complete = m.group(1), m.group(2), m.group(3)
+            d = json.loads(text)
+            path, sha, size = d["path"], d["sha256"], d["size_bytes"]
+            key = f"/r2/ds/{slug}/{name}/{path}"
+            with LOCK:
+                ds = DATASETS.get((slug, name))
+                if ds is None:
+                    return self._json(404, {"error": "unknown dataset"})
+                if not _path_ok(path):
+                    return self._json(400, {"error": f"bad path {path!r}"})
+                cur = ds["files"].get(path)
+                if not complete:
+                    if cur and cur["status"] == "ready" and cur["sha"] == sha and cur["size"] == size:
+                        return self._json(200, {"path": path, "unchanged": True})
+                    ds["files"][path] = {"sha": None, "size": None, "status": "pending"}
+                    return self._json(201, {"path": path, "upload_url": f"http://127.0.0.1:{PORT}{key}"})
+                if cur is None:
+                    return self._json(404, {"error": "not registered"})
+                blob = OBJECTS.get(key)
+                if blob is None or len(blob) != size:
+                    return self._json(422, {"error": "size mismatch"})
+                ds["files"][path] = {"sha": sha, "size": size, "status": "ready"}
+            return self._json(200, {"path": path, "status": "ready"})
 
         if u.path == "/__inject_file":
             d = json.loads(text)
