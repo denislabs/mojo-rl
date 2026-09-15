@@ -79,20 +79,30 @@ struct PngImage(Movable):
     var height: Int
     var channels: Int
     var pixels: List[UInt8]
+    var srgb: Bool
+    """The file carries an `sRGB` chunk. The bytes are NOT converted — this
+    is the flag MuJoCo's loader reads (`lodepng`'s `info_png.srgb_defined`,
+    `user_objects.cc`) to give a `colorspace="auto"` texture
+    `mjCOLORSPACE_SRGB`, which the renderer then uploads as `GL_SRGB8` and
+    samples LINEARIZED. LIBERO's floor tile has one and its plaster and wood
+    do not; ignoring it drew the floor at 1.4-1.7x MuJoCo's brightness."""
 
     def __init__(
-        out self, width: Int, height: Int, channels: Int, var pixels: List[UInt8]
+        out self, width: Int, height: Int, channels: Int, var pixels: List[UInt8],
+        srgb: Bool = False,
     ):
         self.width = width
         self.height = height
         self.channels = channels
         self.pixels = pixels^
+        self.srgb = srgb
 
     def __init__(out self, *, deinit move: Self):
         self.width = move.width
         self.height = move.height
         self.channels = move.channels
         self.pixels = move.pixels^
+        self.srgb = move.srgb
 
 
 def _be32(ref b: List[UInt8], off: Int) -> Int:
@@ -134,6 +144,7 @@ def decode_png(ref data: List[UInt8]) raises -> PngImage:
     var plte = List[UInt8]()
     var trns = List[UInt8]()
     var saw_ihdr = False
+    var saw_srgb = False
     var pos = 8
 
     while pos + 8 <= len(data):
@@ -194,6 +205,9 @@ def decode_png(ref data: List[UInt8]) raises -> PngImage:
         elif t0 == 0x74 and t1 == 0x52 and t2 == 0x4E and t3 == 0x53:
             for i in range(length):
                 trns.append(data[body + i])
+        # sRGB — presence is all MuJoCo reads (see `PngImage.srgb`)
+        elif t0 == 0x73 and t1 == 0x52 and t2 == 0x47 and t3 == 0x42:
+            saw_srgb = True
         # IDAT — one zlib stream, split across chunks at arbitrary offsets
         elif t0 == 0x49 and t1 == 0x44 and t2 == 0x41 and t3 == 0x54:
             for i in range(length):
@@ -265,7 +279,7 @@ def decode_png(ref data: List[UInt8]) raises -> PngImage:
             unfiltered[dst + x] = UInt8(v & 0xFF)
 
     if colour != PNG_PALETTE:
-        return PngImage(width, height, channels, unfiltered^)
+        return PngImage(width, height, channels, unfiltered^, srgb=saw_srgb)
 
     # ── palette expansion ────────────────────────────────────────────
     # Out comes RGBA, whatever the stored depth: see the module docstring on
@@ -295,7 +309,7 @@ def decode_png(ref data: List[UInt8]) raises -> PngImage:
             # tRNS may be SHORTER than the palette; the rest are opaque.
             rgba[o + 3] = trns[idx] if idx < len(trns) else UInt8(255)
 
-    return PngImage(width, height, 4, rgba^)
+    return PngImage(width, height, 4, rgba^, srgb=saw_srgb)
 
 
 def to_rgba(ref img: PngImage) raises -> List[UInt8]:

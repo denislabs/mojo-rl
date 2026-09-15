@@ -787,6 +787,9 @@ struct TextureData(Copyable, ImplicitlyCopyable, Movable):
     var width: Int
     var height: Int
     var random: Float64  # random mark density (0..1)
+    var colorspace: Int
+    """`<texture colorspace>`: 0 auto (the PNG's `sRGB` chunk decides), 1
+    linear, 2 sRGB — `mjtColorSpace`'s numbering."""
 
     def __init__(
         out self,
@@ -805,6 +808,7 @@ struct TextureData(Copyable, ImplicitlyCopyable, Movable):
         width: Int = 512,
         height: Int = 512,
         random: Float64 = 0.01,
+        colorspace: Int = 0,
         name: String = "",
         file: String = "",
     ):
@@ -825,6 +829,7 @@ struct TextureData(Copyable, ImplicitlyCopyable, Movable):
         self.width = width
         self.height = height
         self.random = random
+        self.colorspace = colorspace
 
 
 # =============================================================================
@@ -909,6 +914,12 @@ struct LightData(Copyable, ImplicitlyCopyable, Movable):
     var castshadow: Bool
     var cutoff: Float64  # spot cone half-angle in degrees (100 = point light)
     var exponent: Float64  # spot exponent
+    var attenuation_0: Float64
+    """`<light attenuation="c l q">` — OpenGL's constant / linear / quadratic
+    distance attenuation, MuJoCo's default `1 0 0` (none). Spot lights only;
+    `render_gl3.c:initLights` pins a directional light's to 1/0/0."""
+    var attenuation_1: Float64
+    var attenuation_2: Float64
     var mode: Int  # LIGHT_MODE_*
 
     def __init__(
@@ -933,6 +944,9 @@ struct LightData(Copyable, ImplicitlyCopyable, Movable):
         castshadow: Bool = True,
         cutoff: Float64 = 45.0,
         exponent: Float64 = 10.0,
+        attenuation_0: Float64 = 1.0,
+        attenuation_1: Float64 = 0.0,
+        attenuation_2: Float64 = 0.0,
         mode: Int = LIGHT_MODE_FIXED,
     ):
         self.body_id = body_id
@@ -955,6 +969,9 @@ struct LightData(Copyable, ImplicitlyCopyable, Movable):
         self.castshadow = castshadow
         self.cutoff = cutoff
         self.exponent = exponent
+        self.attenuation_0 = attenuation_0
+        self.attenuation_1 = attenuation_1
+        self.attenuation_2 = attenuation_2
         self.mode = mode
 
 
@@ -2532,6 +2549,21 @@ struct FlatModelDef(Movable):
     var vis_headlight_ambient_r: Float64
     var vis_headlight_ambient_g: Float64
     var vis_headlight_ambient_b: Float64
+    var vis_headlight_diffuse_r: Float64
+    var vis_headlight_diffuse_g: Float64
+    var vis_headlight_diffuse_b: Float64
+    var vis_headlight_specular_r: Float64
+    var vis_headlight_specular_g: Float64
+    var vis_headlight_specular_b: Float64
+    var vis_headlight_active: Bool
+    """`<visual><headlight active=>` — MuJoCo's default is ON (1), and the
+    headlight it turns on is `ambient .1 diffuse .4 specular .5` aimed along
+    the camera. ⚠ A MODEL THAT DECLARES NO `<headlight>` STILL HAS ONE. Until
+    2026-09-15 the renderer read only `vis_has_headlight` (presence) and lit a
+    LIBERO arena — two 45-degree spots, no `<visual>` — with nothing but those
+    spots, so every wall the cones missed came out black. `mjv_makeLights`
+    adds the headlight whenever `m->vis.headlight.active`, which is 1 unless
+    the model says otherwise."""
     var vis_has_headlight: Bool
 
     var num_mesh_assets: Int
@@ -2654,6 +2686,13 @@ struct FlatModelDef(Movable):
         self.vis_headlight_ambient_r = 0.1
         self.vis_headlight_ambient_g = 0.1
         self.vis_headlight_ambient_b = 0.1
+        self.vis_headlight_diffuse_r = 0.4
+        self.vis_headlight_diffuse_g = 0.4
+        self.vis_headlight_diffuse_b = 0.4
+        self.vis_headlight_specular_r = 0.5
+        self.vis_headlight_specular_g = 0.5
+        self.vis_headlight_specular_b = 0.5
+        self.vis_headlight_active = True
         self.vis_has_headlight = False
         self.num_mesh_assets = 0
 

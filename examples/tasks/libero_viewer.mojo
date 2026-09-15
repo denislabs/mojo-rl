@@ -5,6 +5,7 @@
     pixi run mojo run -I . examples/tasks/libero_viewer.mojo libero_spatial
     pixi run mojo run -I . examples/tasks/libero_viewer.mojo libero_goal put_the_bowl_on_the_plate 7
     pixi run mojo run -I . examples/tasks/libero_viewer.mojo libero_goal --check
+    pixi run mojo run -I . examples/tasks/libero_viewer.mojo libero_goal --shot 30
 
 argv picks the FAMILY (first argument) and which of its tasks opens first;
 every task of that family is in the sidebar and switching is instant,
@@ -55,6 +56,24 @@ demonstrations.
 
 ⚠ RUN THIS ON THE LAPTOP. It opens an SDL3 window and blocks on it. CPU
 physics: one env at 60 Hz needs no GPU.
+
+## ⚠ WHAT IT DRAWS IS ROBOSUITE'S PICTURE, NOT MuJoCo's DEFAULT
+
+`renderer.set_group_shown(0, False)`: robosuite renders with
+`render_collision_mesh=False` (`environments/base.py`: `vopt.geomgroup[0] = 0`),
+and so does every LIBERO camera observation. It matters here more than it
+sounds — the Panda's group-0 collision meshes are the SAME surfaces as its
+visual meshes, so with both drawn every link z-fights into a speckle, and the
+bowl's convex hull is forty translucent boxes that the solid pass draws opaque.
+The MuJoCo default (groups 0-2) is what `physics_studio` shows, with a
+checkbox per group.
+
+`--shot N` renders N frames, writes `screenshot_<k>.jpg` in the cwd and quits
+— the instrument for comparing against `mujoco.Renderer` on the same scene
+without sitting at the window. `--cam-free ex ey ez tx ty tz` puts the free
+camera at an exact eye/target, so the two images share a pose: a MuJoCo free
+camera (`lookat L, distance d, azimuth a, elevation e`) has
+`eye = L - d * (cos e cos a, cos e sin a, sin e)` and `target = L`.
 """
 
 from std.os import listdir
@@ -260,10 +279,28 @@ def main() raises:
     var check_only = False
     var run_seed = UInt64(0)
     var positional = 0
-    for i in range(1, len(args)):
+    var shot_after = -1
+    var cam_free = List[Float64]()
+    var i = 1
+    while i < len(args):
         var s = String(args[i])
         if s == "--check":
             check_only = True
+        elif s == "--shot":
+            if i + 1 >= len(args):
+                raise Error("libero viewer: --shot takes a frame count")
+            shot_after = Int(String(args[i + 1]))
+            i += 1
+        elif s == "--cam-free":
+            if i + 6 >= len(args):
+                raise Error("libero viewer: --cam-free takes ex ey ez tx ty tz")
+            for k in range(6):
+                cam_free.append(Float64(String(args[i + 1 + k])))
+            i += 6
+        elif s.startswith("--"):
+            # ⚠ REFUSED, NOT SKIPPED: a mistyped flag that falls through to
+            # the positionals runs a different task for an hour.
+            raise Error("libero viewer: unknown option '" + s + "'")
         elif positional == 0:
             suite = s
             positional += 1
@@ -272,6 +309,7 @@ def main() raises:
             positional += 1
         else:
             run_seed = UInt64(Int(s))
+        i += 1
     seed_rng(0)
 
     print("=" * 72)
@@ -486,11 +524,18 @@ def main() raises:
         adopt_rf=Optional(rf.copy()),
     )
     renderer.init(None)
+    # robosuite's `render_collision_mesh=False` — see the module docstring.
+    renderer.set_group_shown(0, False)
     # ⚠ FREE CAMERA. The composed scene ships LIBERO's `agentview` and
     # `frontview` plus the Panda's two, and the renderer opens on camera 0 —
     # a body-attached one is re-aimed every frame, so the mouse would fight
     # it. `task_viewer` records the same trap on the SO-101's wrist cam.
     renderer.request_free_camera()
+    if len(cam_free) == 6:
+        renderer.set_free_camera(
+            Vec3(cam_free[0], cam_free[1], cam_free[2]),
+            Vec3(cam_free[3], cam_free[4], cam_free[5]),
+        )
 
     var have_ui = renderer.imgui_init()
     if have_ui:
@@ -512,9 +557,15 @@ def main() raises:
     _ = do_reset(d, m, osc, scratch, t, f, addrs, rsites, jq_adr, jv_adr, nq, nv, ns, run_seed, lane)
     episode = 1
 
+    var frame = 0
     while renderer.is_open():
         if renderer.check_quit():
             break
+        if shot_after >= 0 and frame == shot_after:
+            renderer.request_screenshot()
+        if shot_after >= 0 and frame > shot_after:
+            break
+        frame += 1
 
         # ── one POLICY step per frame, at the benchmark's clocks ──────────
         if not paused:

@@ -57,110 +57,168 @@ struct GPUVertex(TrivialRegisterPassable):
 # --- Uniform structs (std140-aligned, all Float32) ---
 
 
-struct SceneUniforms(ImplicitlyCopyable, Movable):
-    """Scene-wide uniforms: 240 bytes.
+comptime MAX_SCENE_LIGHTS: Int = 4
+"""Model lights packed per frame, headlight excluded. MuJoCo's `mjMAXLIGHT`
+is 8 with the headlight in slot 0; four model lights cover every model in
+the tree (LIBERO arenas declare two)."""
 
-    Layout (std140):
-      view_proj:      mat4  (64 bytes)
-      camera_pos:     vec4  (16 bytes) - w = num_active_lights (float)
-      light0_dir:     vec4  (16 bytes) - w = ambient0
-      light0_color:   vec4  (16 bytes) - w = cast_shadow (0/1)
-      light1_dir:     vec4  (16 bytes) - w = ambient1
-      light1_color:   vec4  (16 bytes) - w = cast_shadow1
-      light2_dir:     vec4  (16 bytes) - w = ambient2
-      light2_color:   vec4  (16 bytes) - w = cast_shadow2
-      light3_dir:     vec4  (16 bytes) - w = ambient3
-      light3_color:   vec4  (16 bytes) - w = cast_shadow3
-      ground_params:  vec4  (16 bytes) - xyz = checker_color2, w = ground_z
-      fog_params:     vec4  (16 bytes) - x = fogstart, y = fogend, z = unused, w = unused
+comptime SCENE_UNIFORMS_BYTES: UInt32 = 560
+"""`size_of[SceneUniforms]`, spelled once. ⚠ THE SHADERS DECLARE THE SAME
+STRUCT BY HAND — `gpu_shaders.mojo:_SCENE_UNIFORMS_MSL` and every
+`shaders/*.glsl` — and SDL copies exactly this many bytes at each push, so
+the three must move together. It was a bare `240` at seven push sites."""
+
+comptime OBJECT_UNIFORMS_BYTES: UInt32 = 128
+"""`size_of[ObjectUniforms]`; same warning, four push sites and three GLSL
+vertex shaders."""
+
+
+struct SceneUniforms(ImplicitlyCopyable, Movable):
+    """Scene-wide uniforms: 560 bytes, `SCENE_UNIFORMS_BYTES`.
+
+    Layout (std140; every vec4 array has a 16-byte stride, so a
+    `float4 x[4]` is one `Array[Float32, 16]` here, light `i` at `4*i`):
+      view_proj:          mat4     (64)
+      camera_pos:         vec4     (16) xyz eye; w = number of model lights
+      light_pos[4]:       vec4 x4  (64) xyz world pos; w = 1 spot, 0 directional
+      light_dir[4]:       vec4 x4  (64) xyz unit dir; w = cos(cutoff), -2 = no cone
+      light_diffuse[4]:   vec4 x4  (64) rgb; w = cast_shadow (0/1)
+      light_specular[4]:  vec4 x4  (64) rgb; w = spot exponent
+      light_ambient[4]:   vec4 x4  (64) rgb; w = 0
+      light_atten[4]:     vec4 x4  (64) constant, linear, quadratic; w = 0
+      headlight_ambient:  vec4     (16) rgb; w = active (0/1)
+      headlight_diffuse:  vec4     (16) rgb; w = GLOBAL ambient (0.3 when no
+                                              light at all, else 0 — `initLights`)
+      headlight_specular: vec4     (16) rgb; w = 0
+      camera_fwd:         vec4     (16) xyz unit view direction; the headlight
+                                        shines along it
+      ground_params:      vec4     (16) see `draw_ground_grid`
+      fog_params:         vec4     (16) x = fogstart, y = fogend,
+                                        z = ground reflectance (mirror blend)
+
+    The light model these feed is MuJoCo's — `render_gl3.c:initLights` /
+    `adjustLight` on OpenGL's fixed-function pipeline — transcribed in
+    `gpu_shaders.mojo:_MJ_SHADE_MSL`.
     """
 
     var view_proj: Array[Float32, 16]
     var camera_pos: Array[Float32, 4]
-    var light0_dir: Array[Float32, 4]
-    var light0_color: Array[Float32, 4]
-    var light1_dir: Array[Float32, 4]
-    var light1_color: Array[Float32, 4]
-    var light2_dir: Array[Float32, 4]
-    var light2_color: Array[Float32, 4]
-    var light3_dir: Array[Float32, 4]
-    var light3_color: Array[Float32, 4]
+    var light_pos: Array[Float32, 16]
+    var light_dir: Array[Float32, 16]
+    var light_diffuse: Array[Float32, 16]
+    var light_specular: Array[Float32, 16]
+    var light_ambient: Array[Float32, 16]
+    var light_atten: Array[Float32, 16]
+    var headlight_ambient: Array[Float32, 4]
+    var headlight_diffuse: Array[Float32, 4]
+    var headlight_specular: Array[Float32, 4]
+    var camera_fwd: Array[Float32, 4]
     var ground_params: Array[Float32, 4]
     var fog_params: Array[Float32, 4]
 
     def __init__(out self):
         self.view_proj = Array[Float32, 16](fill=Float32(0))
         self.camera_pos = Array[Float32, 4](fill=Float32(0))
-        self.light0_dir = Array[Float32, 4](fill=Float32(0))
-        self.light0_color = Array[Float32, 4](fill=Float32(0))
-        self.light1_dir = Array[Float32, 4](fill=Float32(0))
-        self.light1_color = Array[Float32, 4](fill=Float32(0))
-        self.light2_dir = Array[Float32, 4](fill=Float32(0))
-        self.light2_color = Array[Float32, 4](fill=Float32(0))
-        self.light3_dir = Array[Float32, 4](fill=Float32(0))
-        self.light3_color = Array[Float32, 4](fill=Float32(0))
+        self.light_pos = Array[Float32, 16](fill=Float32(0))
+        self.light_dir = Array[Float32, 16](fill=Float32(0))
+        self.light_diffuse = Array[Float32, 16](fill=Float32(0))
+        self.light_specular = Array[Float32, 16](fill=Float32(0))
+        self.light_ambient = Array[Float32, 16](fill=Float32(0))
+        self.light_atten = Array[Float32, 16](fill=Float32(0))
+        self.headlight_ambient = Array[Float32, 4](fill=Float32(0))
+        self.headlight_diffuse = Array[Float32, 4](fill=Float32(0))
+        self.headlight_specular = Array[Float32, 4](fill=Float32(0))
+        self.camera_fwd = Array[Float32, 4](fill=Float32(0))
         self.ground_params = Array[Float32, 4](fill=Float32(0))
         self.fog_params = Array[Float32, 4](fill=Float32(0))
 
     def __init__(out self, *, copy: Self):
         self.view_proj = copy.view_proj.copy()
         self.camera_pos = copy.camera_pos.copy()
-        self.light0_dir = copy.light0_dir.copy()
-        self.light0_color = copy.light0_color.copy()
-        self.light1_dir = copy.light1_dir.copy()
-        self.light1_color = copy.light1_color.copy()
-        self.light2_dir = copy.light2_dir.copy()
-        self.light2_color = copy.light2_color.copy()
-        self.light3_dir = copy.light3_dir.copy()
-        self.light3_color = copy.light3_color.copy()
+        self.light_pos = copy.light_pos.copy()
+        self.light_dir = copy.light_dir.copy()
+        self.light_diffuse = copy.light_diffuse.copy()
+        self.light_specular = copy.light_specular.copy()
+        self.light_ambient = copy.light_ambient.copy()
+        self.light_atten = copy.light_atten.copy()
+        self.headlight_ambient = copy.headlight_ambient.copy()
+        self.headlight_diffuse = copy.headlight_diffuse.copy()
+        self.headlight_specular = copy.headlight_specular.copy()
+        self.camera_fwd = copy.camera_fwd.copy()
         self.ground_params = copy.ground_params.copy()
         self.fog_params = copy.fog_params.copy()
 
     def __init__(out self, *, deinit move: Self):
         self.view_proj = move.view_proj^
         self.camera_pos = move.camera_pos^
-        self.light0_dir = move.light0_dir^
-        self.light0_color = move.light0_color^
-        self.light1_dir = move.light1_dir^
-        self.light1_color = move.light1_color^
-        self.light2_dir = move.light2_dir^
-        self.light2_color = move.light2_color^
-        self.light3_dir = move.light3_dir^
-        self.light3_color = move.light3_color^
+        self.light_pos = move.light_pos^
+        self.light_dir = move.light_dir^
+        self.light_diffuse = move.light_diffuse^
+        self.light_specular = move.light_specular^
+        self.light_ambient = move.light_ambient^
+        self.light_atten = move.light_atten^
+        self.headlight_ambient = move.headlight_ambient^
+        self.headlight_diffuse = move.headlight_diffuse^
+        self.headlight_specular = move.headlight_specular^
+        self.camera_fwd = move.camera_fwd^
         self.ground_params = move.ground_params^
         self.fog_params = move.fog_params^
 
 
 struct ObjectUniforms(ImplicitlyCopyable, Movable):
-    """Per-object uniforms: 96 bytes.
+    """Per-object uniforms: 128 bytes, `OBJECT_UNIFORMS_BYTES`.
 
     Layout (std140):
-      model: mat4 (64 bytes)
-      color: vec4 (16 bytes)
-      material: vec4 (16 bytes) — x=shininess, y=specular, z=reflectance, w=emission
+      model:      mat4 (64)
+      color:      vec4 (16)
+      material:   vec4 (16) — x=shininess, y=specular, z=has_texture (1) else
+                              reflectance, w=emission
+      tex_params: vec4 (16) — x,y = texture repeat applied to the mesh UVs;
+                              z = mapping: 0 = mesh UVs, 1 = CUBE (the object-
+                              space position picks a cube face, as
+                              `render_gl3.c:settexture` does with
+                              `GL_TEXTURE_CUBE_MAP` + object-linear texgen);
+                              w = 0
+      tex_scale:  vec4 (16) — xyz multiplies the object-space position before
+                              the cube lookup (`texuniform` uses the geom
+                              size, else 1); w = 0
     """
 
     var model: Array[Float32, 16]
     var color: Array[Float32, 4]
     var material: Array[Float32, 4]
+    var tex_params: Array[Float32, 4]
+    var tex_scale: Array[Float32, 4]
 
     def __init__(out self):
         self.model = Array[Float32, 16](fill=Float32(0))
         self.color = Array[Float32, 4](fill=Float32(0))
         self.material = Array[Float32, 4](fill=Float32(0))
+        self.tex_params = Array[Float32, 4](fill=Float32(0))
+        self.tex_scale = Array[Float32, 4](fill=Float32(0))
         # Defaults: shininess=0.5, specular=0.5, reflectance=0.0, emission=0.0
         self.material[0] = 0.5
         self.material[1] = 0.5
+        # Defaults: repeat 1x1 on the mesh UVs, unit texture scale.
+        self.tex_params[0] = 1.0
+        self.tex_params[1] = 1.0
+        self.tex_scale[0] = 1.0
+        self.tex_scale[1] = 1.0
+        self.tex_scale[2] = 1.0
 
     def __init__(out self, *, copy: Self):
         self.model = copy.model.copy()
         self.color = copy.color.copy()
         self.material = copy.material.copy()
+        self.tex_params = copy.tex_params.copy()
+        self.tex_scale = copy.tex_scale.copy()
 
     def __init__(out self, *, deinit move: Self):
         self.model = move.model^
         self.color = move.color^
         self.material = move.material^
+        self.tex_params = move.tex_params^
+        self.tex_scale = move.tex_scale^
 
 
 struct SkyboxUniforms(ImplicitlyCopyable, Movable):

@@ -25,7 +25,7 @@ from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 from std.random.philox import Random as PhiloxRandom
-from mojo_rl.render import Color, Renderer3D, Light, Camera3D
+from mojo_rl.render import Color, Renderer3D, Light, LightMode, Camera3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
 from mojo_rl.physics3d.types import ConeType
@@ -108,6 +108,7 @@ from .fields_build import (
     apply_auto_spring_damper,
 )
 from .flat_model import (
+    TEX_CUBE,
     ACT_KIND_MOTOR,
     ACT_KIND_POSITION,
     ACT_KIND_VELOCITY,
@@ -1951,7 +1952,14 @@ struct ModelDefFromXML[
 
         var lights = List[Light]()
         for i in range(len(rf.light_dir_x)):
-            var mode = Int(1) if _m_light_directional[i] else Int(0)
+            # ⚠ `directional="false"` (the MJCF default) IS A SPOT — position,
+            # 45-degree cone, exponent, attenuation — and MuJoCo lights nothing
+            # outside its cone. This line used to read
+            # `1 if directional else 0` against a `LightMode` whose 0 is
+            # DIRECTIONAL: inverted, and harmless only because the renderer
+            # ignored the mode and treated every light as directional. Both
+            # are fixed together; see `render/light.mojo`.
+            var mode = LightMode.DIRECTIONAL if _m_light_directional[i] else LightMode.SPOT
             var amb = (_m_light_ambient_r[i] + _m_light_ambient_g[i] + _m_light_ambient_b[i]) / 3.0
             var spec_int = (_m_light_specular_r[i] + _m_light_specular_g[i] + _m_light_specular_b[i]) / 3.0
             lights.append(
@@ -1967,6 +1975,22 @@ struct ModelDefFromXML[
                     specular_intensity=spec_int,
                     specular_exponent=_m_light_exponent[i],
                     cast_shadow=_m_light_castshadow[i],
+                    # ⚠ BODY-LOCAL, like `cam_pos`; `ModelRenderer.render`
+                    # re-poses a light on a moving body every frame.
+                    pos_x=rf.light_pos_x[i],
+                    pos_y=rf.light_pos_y[i],
+                    pos_z=rf.light_pos_z[i],
+                    cutoff=rf.light_cutoff[i],
+                    exponent=_m_light_exponent[i],
+                    attenuation_0=rf.light_att_0[i],
+                    attenuation_1=rf.light_att_1[i],
+                    attenuation_2=rf.light_att_2[i],
+                    ambient_r=_m_light_ambient_r[i],
+                    ambient_g=_m_light_ambient_g[i],
+                    ambient_b=_m_light_ambient_b[i],
+                    specular_r=_m_light_specular_r[i],
+                    specular_g=_m_light_specular_g[i],
+                    specular_b=_m_light_specular_b[i],
                 )
             )
         return lights^
@@ -2587,8 +2611,18 @@ struct ModelDefFromXML[
                 var tex_file = String("")
                 var texrep_u = Float64(1.0)
                 var texrep_v = Float64(1.0)
+                var texuni = False
+                var g_cs = 0
+                var g_shin = Float32(0.5)
+                var g_spec = Float32(0.5)
+                # MuJoCo's default material reflectance is 0: no material, no mirror.
+                var g_refl = Float32(0.0)
                 var mid = _m_geom_material_id[i]
                 if mid >= 0 and mid < len(rf.mat_rgba_r):
+                    texuni = rf.mat_texuniform[mid]
+                    g_shin = Float32(rf.mat_shininess[mid])
+                    g_spec = Float32(rf.mat_specular[mid])
+                    g_refl = Float32(rf.mat_reflectance[mid])
                     var tex_id = _m_mat_tex_id[mid]
                     # ⚠ THIS WAS A `comptime for` OVER EVERY TEXTURE.
                     # Pulling a String out of `_rcd` needed
@@ -2600,12 +2634,16 @@ struct ModelDefFromXML[
                     if tex_id >= 0 and tex_id < rf.ntex:
                         tex_name = rf.tex_names[tex_id]
                         tex_file = rf.tex_files[tex_id]
+                        g_cs = rf.tex_colorspace[tex_id]
                     texrep_u = _m_mat_texrepeat_u[mid]
                     texrep_v = _m_mat_texrepeat_v[mid]
                 renderer.draw_ground_grid(
                     grid_cx, height=ground_offset,
                     texture_name=tex_name, texture_path=tex_file,
                     texrepeat_u=texrep_u, texrepeat_v=texrep_v,
+                    texuniform=texuni, plane_half_x=hx, plane_half_y=hy,
+                    shininess=g_shin, specular=g_spec,
+                    texture_colorspace=g_cs, reflectance=g_refl,
                 )
         if not has_plane:
             # No ground plane defined in XML — skip ground rendering.
@@ -2705,6 +2743,23 @@ struct ModelDefFromXML[
             # Resolve material → texture chain for this geom
             var tex_name_str = String("")
             var tex_file_str = String("")
+            # ⚠ THE MAPPING, TRANSCRIBED FROM `render_gl3.c:settexture`:
+            #   * a 2D texture on a builtin shape uses the shape's UVs scaled
+            #     by `texrepeat`, times the geom's `size[0]`/`size[1]` when
+            #     `texuniform` — so the LIBERO walls (`texrepeat="3 3"
+            #     texuniform="true"`, size 1.75 x 1.5) tile 5.25 x 4.5 times,
+            #     not once;
+            #   * a CUBE texture is looked up by object-space POSITION
+            #     (cube-map texgen), scaled by `size` when `texuniform`;
+            #   * a mesh with its own texcoords (LIBERO's `.msh`) uses them,
+            #     scaled by `texrepeat`.
+            # Both were "UVs, once" before, which drew the 3x3 plaster as one
+            # stretched tile and the wood table as a single texel row.
+            var rep_u = Float32(1.0)
+            var rep_v = Float32(1.0)
+            var tex_cube = False
+            var tex_cs = 0
+            var tex_scale = _RVec3(1.0, 1.0, 1.0)
             if mid >= 0 and mid < len(rf.mat_rgba_r):
                 var tex_id = _m_mat_tex_id[mid]
                 # Same collapse as in `render_ground_geoms` — one index
@@ -2712,6 +2767,37 @@ struct ModelDefFromXML[
                 if tex_id >= 0 and tex_id < rf.ntex:
                     tex_name_str = rf.tex_names[tex_id]
                     tex_file_str = rf.tex_files[tex_id]
+                    tex_cube = rf.tex_type[tex_id] == TEX_CUBE
+                    tex_cs = rf.tex_colorspace[tex_id]
+                var tr_u = rf.mat_texrepeat_u[mid]
+                var tr_v = rf.mat_texrepeat_v[mid]
+                rep_u = Float32(tr_u if tr_u > 0.0 else 1.0)
+                rep_v = Float32(tr_v if tr_v > 0.0 else 1.0)
+                if rf.mat_texuniform[mid]:
+                    # MuJoCo's `geom->size` per type: box half-extents,
+                    # sphere radius, capsule/cylinder (radius, half-length).
+                    var s0 = Float64(0.0)
+                    var s1 = Float64(0.0)
+                    var s2 = Float64(0.0)
+                    var gt0 = _m_geom_type[i]
+                    if gt0 == 3 or gt0 == 6:
+                        s0 = _m_geom_half_x[i]
+                        s1 = _m_geom_half_y[i]
+                        s2 = _m_geom_half_z[i]
+                    elif gt0 == 1:
+                        s0 = _m_geom_radius[i]
+                        s1 = _m_geom_radius[i]
+                        s2 = _m_geom_radius[i]
+                    elif gt0 == 2 or gt0 == 4:
+                        s0 = _m_geom_radius[i]
+                        s1 = _m_geom_half_length[i]
+                        s2 = _m_geom_half_length[i]
+                    if s0 > 0.0:
+                        rep_u *= Float32(s0)
+                    if s1 > 0.0:
+                        rep_v *= Float32(s1)
+                    if s0 > 0.0 and s1 > 0.0 and s2 > 0.0:
+                        tex_scale = _RVec3(s0, s1, s2)
 
             var gt = _m_geom_type[i]
             if gt == 2:  # CAPSULE
@@ -2719,23 +2805,31 @@ struct ModelDefFromXML[
                     radius=_m_geom_radius[i] * visual_radius_scale,
                     half_height=_m_geom_half_length[i], axis=2,
                     color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
-                    texture_name=tex_name_str, texture_path=tex_file_str)
+                    texture_name=tex_name_str, texture_path=tex_file_str,
+                    texrepeat_u=rep_u, texrepeat_v=rep_v, tex_cube=tex_cube, texture_colorspace=tex_cs,
+                    tex_scale=tex_scale)
             elif gt == 1:  # SPHERE
                 renderer.draw_sphere(center=geom_pos,
                     radius=_m_geom_radius[i] * visual_radius_scale,
                     color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
-                    texture_name=tex_name_str, texture_path=tex_file_str)
+                    texture_name=tex_name_str, texture_path=tex_file_str,
+                    texrepeat_u=rep_u, texrepeat_v=rep_v, tex_cube=tex_cube, texture_colorspace=tex_cs,
+                    tex_scale=tex_scale)
             elif gt == 3:  # BOX
                 renderer.draw_box(center=geom_pos, orientation=geom_quat,
                     half_extents=_RVec3(_m_geom_half_x[i], _m_geom_half_y[i], _m_geom_half_z[i]),
                     color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
-                    texture_name=tex_name_str, texture_path=tex_file_str)
+                    texture_name=tex_name_str, texture_path=tex_file_str,
+                    texrepeat_u=rep_u, texrepeat_v=rep_v, tex_cube=tex_cube, texture_colorspace=tex_cs,
+                    tex_scale=tex_scale)
             elif gt == 4:  # CYLINDER
                 renderer.draw_cylinder(center=geom_pos, orientation=geom_quat,
                     radius=_m_geom_radius[i] * visual_radius_scale,
                     half_height=_m_geom_half_length[i], axis=2,
                     color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
-                    texture_name=tex_name_str, texture_path=tex_file_str)
+                    texture_name=tex_name_str, texture_path=tex_file_str,
+                    texrepeat_u=rep_u, texrepeat_v=rep_v, tex_cube=tex_cube, texture_colorspace=tex_cs,
+                    tex_scale=tex_scale)
             elif gt == 6:  # ELLIPSOID
                 # ⚠ THIS BRANCH DID NOT EXIST until 2026-08-03, and there is no
                 # trailing `else`, so every ellipsoid geom was silently skipped
@@ -2780,6 +2874,16 @@ struct ModelDefFromXML[
                         specular=specular, reflectance=reflectance,
                         texture_name=tex_name_str,
                         texture_path=tex_file_str,
+                        texrepeat_u=rep_u, texrepeat_v=rep_v,
+                        tex_cube=tex_cube, texture_colorspace=tex_cs,
+                        # A cube lookup on a mesh reads its unscaled
+                        # vertices; the `<mesh scale>` ratios are what
+                        # MuJoCo's compiled (pre-scaled) mesh would carry.
+                        tex_scale=_RVec3(
+                            rf.geom_mesh_scale[i * 3 + 0],
+                            rf.geom_mesh_scale[i * 3 + 1],
+                            rf.geom_mesh_scale[i * 3 + 2],
+                        ),
                     )
 
     @staticmethod

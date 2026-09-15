@@ -109,6 +109,25 @@ struct RenderFields(Copyable, Movable):
     var light_directional: List[Bool]
     var light_castshadow: List[Bool]
     var light_exponent: List[Float64]
+    var light_pos_x: List[Float64]
+    """`<light pos>` in the LIGHT'S BODY frame, like `cam_pos` — see
+    `light_body`. MuJoCo's spot lights (`directional="false"`, the MJCF
+    default) have a position, a 45-degree cone and an exponent, and a wall
+    outside every cone is lit by the headlight alone. The renderer treated
+    every light as directional until 2026-09-15, which is how a LIBERO arena's
+    two `diffuse=".8"` spots summed to 1.6 on the table (flat white) while its
+    walls went black."""
+    var light_pos_y: List[Float64]
+    var light_pos_z: List[Float64]
+    var light_body: List[Int]
+    """Body each light is attached to (`mjModel.light_bodyid`); 0 = world.
+    A light on a moving body is re-posed every frame from that body's pose,
+    exactly as `cam_body` is for cameras."""
+    var light_cutoff: List[Float64]
+    """Spot cone half-angle, DEGREES (`mjModel.light_cutoff`, default 45)."""
+    var light_att_0: List[Float64]
+    var light_att_1: List[Float64]
+    var light_att_2: List[Float64]
     var cam_pos_x: List[Float64]
     var cam_pos_y: List[Float64]
     var cam_pos_z: List[Float64]
@@ -144,6 +163,9 @@ struct RenderFields(Copyable, Movable):
     var tex_markrgb_g: List[Float64]
     var tex_markrgb_b: List[Float64]
     var tex_random: List[Float64]
+    var tex_colorspace: List[Int]
+    """`<texture colorspace>`, `mjtColorSpace` numbering; 0 = auto (the PNG's
+    `sRGB` chunk decides, in `render.png_loader.load_texture_png`)."""
     var mat_rgba_r: List[Float64]
     var mat_rgba_g: List[Float64]
     var mat_rgba_b: List[Float64]
@@ -154,6 +176,11 @@ struct RenderFields(Copyable, Movable):
     var mat_tex_id: List[Int]
     var mat_texrepeat_u: List[Float64]
     var mat_texrepeat_v: List[Float64]
+    var mat_texuniform: List[Bool]
+    """`<material texuniform>`: repeat per SPATIAL unit rather than per
+    face. `render_gl3.c:settexture` multiplies the repeat by the geom's
+    `size[0]`/`size[1]` when set. Parsed since the runtime parser existed,
+    dropped at this boundary until 2026-09-15."""
     var site_body_id: List[Int]
     var site_pos_x: List[Float64]
     var site_pos_y: List[Float64]
@@ -173,7 +200,31 @@ struct RenderFields(Copyable, Movable):
     var vis_headlight_ambient_r: Float64
     var vis_headlight_ambient_g: Float64
     var vis_headlight_ambient_b: Float64
+    var vis_headlight_diffuse_r: Float64
+    var vis_headlight_diffuse_g: Float64
+    var vis_headlight_diffuse_b: Float64
+    var vis_headlight_specular_r: Float64
+    var vis_headlight_specular_g: Float64
+    var vis_headlight_specular_b: Float64
+    var vis_headlight_active: Bool
+    """See `FlatModelDef.vis_headlight_active`: ON unless the model says
+    `<headlight active="0">`. `vis_has_headlight` below is only "the element
+    was written", and is NOT the switch."""
     var vis_has_headlight: Bool
+
+    var group_shown: List[Bool]
+    """`mjvOption.geomgroup` — which of the six geom groups are DRAWN.
+
+    Six flags, MuJoCo's default (`mjv_defaultOption`): 1 for groups 0-2, 0
+    for 3-5. `body_geom_visible` reads them, so the renderer, the picker and
+    the selection outline agree by construction.
+
+    ⚠ NOT MODEL DATA — a VIEW setting that lives here because the predicate
+    that needs it takes only `rf`. `ModelRenderer.set_group_shown` is the way
+    to change it; robosuite/LIBERO hide group 0 (`render_collision_mesh=False`
+    in `robosuite/environments/base.py`), and the Panda's collision meshes are
+    the SAME surfaces as its visual ones, so drawing both z-fights into a
+    speckle over every link."""
 
     # ── the model's SOURCE ────────────────────────────────────────────────
     var xml_text: String
@@ -243,6 +294,14 @@ struct RenderFields(Copyable, Movable):
         self.light_directional = List[Bool]()
         self.light_castshadow = List[Bool]()
         self.light_exponent = List[Float64]()
+        self.light_pos_x = List[Float64]()
+        self.light_pos_y = List[Float64]()
+        self.light_pos_z = List[Float64]()
+        self.light_body = List[Int]()
+        self.light_cutoff = List[Float64]()
+        self.light_att_0 = List[Float64]()
+        self.light_att_1 = List[Float64]()
+        self.light_att_2 = List[Float64]()
         self.cam_pos_x = List[Float64]()
         self.cam_pos_y = List[Float64]()
         self.cam_pos_z = List[Float64]()
@@ -269,6 +328,7 @@ struct RenderFields(Copyable, Movable):
         self.tex_markrgb_g = List[Float64]()
         self.tex_markrgb_b = List[Float64]()
         self.tex_random = List[Float64]()
+        self.tex_colorspace = List[Int]()
         self.mat_rgba_r = List[Float64]()
         self.mat_rgba_g = List[Float64]()
         self.mat_rgba_b = List[Float64]()
@@ -279,6 +339,7 @@ struct RenderFields(Copyable, Movable):
         self.mat_tex_id = List[Int]()
         self.mat_texrepeat_u = List[Float64]()
         self.mat_texrepeat_v = List[Float64]()
+        self.mat_texuniform = List[Bool]()
         self.site_body_id = List[Int]()
         self.site_pos_x = List[Float64]()
         self.site_pos_y = List[Float64]()
@@ -298,7 +359,17 @@ struct RenderFields(Copyable, Movable):
         self.vis_headlight_ambient_r = 0.0
         self.vis_headlight_ambient_g = 0.0
         self.vis_headlight_ambient_b = 0.0
+        self.vis_headlight_diffuse_r = 0.4
+        self.vis_headlight_diffuse_g = 0.4
+        self.vis_headlight_diffuse_b = 0.4
+        self.vis_headlight_specular_r = 0.5
+        self.vis_headlight_specular_g = 0.5
+        self.vis_headlight_specular_b = 0.5
+        self.vis_headlight_active = True
         self.vis_has_headlight = False
+        self.group_shown = List[Bool]()
+        for g in range(6):
+            self.group_shown.append(g < 3)
 
 
 def build_render_fields(
@@ -439,6 +510,14 @@ def build_render_fields(
         rf.light_directional.append(l.directional)
         rf.light_castshadow.append(l.castshadow)
         rf.light_exponent.append(l.exponent)
+        rf.light_pos_x.append(l.pos_x)
+        rf.light_pos_y.append(l.pos_y)
+        rf.light_pos_z.append(l.pos_z)
+        rf.light_body.append(l.body_id)
+        rf.light_cutoff.append(l.cutoff)
+        rf.light_att_0.append(l.attenuation_0)
+        rf.light_att_1.append(l.attenuation_1)
+        rf.light_att_2.append(l.attenuation_2)
 
     # ── cameras ───────────────────────────────────────────────────────────
     for i in range(len(fmd.cameras)):
@@ -474,6 +553,7 @@ def build_render_fields(
         rf.tex_markrgb_g.append(t.markrgb_g)
         rf.tex_markrgb_b.append(t.markrgb_b)
         rf.tex_random.append(t.random)
+        rf.tex_colorspace.append(t.colorspace)
         rf.tex_names.append(t.name)
         rf.tex_files.append(t.file)
 
@@ -490,6 +570,7 @@ def build_render_fields(
         rf.mat_tex_id.append(m.tex_id)
         rf.mat_texrepeat_u.append(m.texrepeat_u)
         rf.mat_texrepeat_v.append(m.texrepeat_v)
+        rf.mat_texuniform.append(m.texuniform)
 
     # ── sites ─────────────────────────────────────────────────────────────
     for i in range(len(fmd.sites)):
@@ -540,6 +621,13 @@ def build_render_fields(
     rf.vis_headlight_ambient_r = fmd.vis_headlight_ambient_r
     rf.vis_headlight_ambient_g = fmd.vis_headlight_ambient_g
     rf.vis_headlight_ambient_b = fmd.vis_headlight_ambient_b
+    rf.vis_headlight_diffuse_r = fmd.vis_headlight_diffuse_r
+    rf.vis_headlight_diffuse_g = fmd.vis_headlight_diffuse_g
+    rf.vis_headlight_diffuse_b = fmd.vis_headlight_diffuse_b
+    rf.vis_headlight_specular_r = fmd.vis_headlight_specular_r
+    rf.vis_headlight_specular_g = fmd.vis_headlight_specular_g
+    rf.vis_headlight_specular_b = fmd.vis_headlight_specular_b
+    rf.vis_headlight_active = fmd.vis_headlight_active
     rf.vis_has_headlight = fmd.vis_has_headlight
 
     return rf^
@@ -568,7 +656,10 @@ def body_geom_visible(rf: RenderFields, g: Int) -> Bool:
        (engine_vis_init.c) sets `geomgroup` to 1 for groups 0-2 and 0 for the
        rest, so 3+ is hidden by default. Skipping this check is what drew
        dm_control's dog as a teal skeleton: it parks its collision capsules in
-       group 3 and its 162 bone meshes in group 5.
+       group 3 and its 162 bone meshes in group 5. The flags are
+       `rf.group_shown`, so a viewer can flip one the way `mjvOption` does —
+       LIBERO hides group 0, where the Panda's collision meshes coincide with
+       its visual ones and z-fight into a speckle.
 
     3. ALPHA ZERO IS INVISIBLE, and NOTHING ELSE IS. `mjc_` renders a
        translucent geom translucent; only `rgba[3] == 0` removes it.
@@ -592,7 +683,10 @@ def body_geom_visible(rf: RenderFields, g: Int) -> Bool:
     """
     if rf.geom_type[g] == _RF_PLANE:
         return False
-    if rf.geom_group[g] >= 3:
+    var grp = rf.geom_group[g]
+    if grp < 0 or grp >= len(rf.group_shown):
+        return False
+    if not rf.group_shown[grp]:
         return False
     if rf.geom_rgba_a[g] <= 0.0:
         return False

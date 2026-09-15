@@ -1,7 +1,7 @@
 """MSL Shader Source Strings for GPU 3D Renderer.
 
 Seven shader pairs as comptime string constants:
-  1. Solid object shaders (Blinn-Phong lighting + shadow sampling + per-object material)
+  1. Solid object shaders (MuJoCo's fixed-function light model + shadow sampling + per-object material)
   2. Ground shaders (procedural checkerboard + shadow sampling + material)
   3. Line shaders (flat color, no lighting)
   4. Shadow map shaders (depth-only pass from light POV)
@@ -18,44 +18,168 @@ SDL_GPU MSL binding convention:
 
 
 # --- Shared SceneUniforms MSL struct definition (used in multiple shaders) ---
-# 240B: view_proj(64) + camera_pos(16) + 4 lights*2 vec4(128) + ground_params(16) + fog_params(16)
+# 560B — `gpu_types.SCENE_UNIFORMS_BYTES`. ⚠ THREE HAND-WRITTEN COPIES OF
+# THIS STRUCT EXIST: here, `gpu_types.SceneUniforms`, and every
+# `shaders/*.glsl`. Move them together.
 
 comptime _SCENE_UNIFORMS_MSL = """
 struct SceneUniforms {
     float4x4 view_proj;
-    float4 camera_pos;      // w = num_active_lights
-    float4 light0_dir;      // w = ambient0
-    float4 light0_color;    // w = cast_shadow (0/1)
-    float4 light1_dir;
-    float4 light1_color;
-    float4 light2_dir;
-    float4 light2_color;
-    float4 light3_dir;
-    float4 light3_color;
-    float4 ground_params;   // xyz = checker_color2, w = ground_z
-    float4 fog_params;      // x = fogstart, y = fogend, z = 0, w = 0
+    float4 camera_pos;          // xyz eye; w = number of model lights (0..4)
+    float4 light_pos[4];        // xyz world; w = 1 spot, 0 directional
+    float4 light_dir[4];        // xyz unit; w = cos(cutoff), -2 = no cone
+    float4 light_diffuse[4];    // rgb; w = cast_shadow
+    float4 light_specular[4];   // rgb; w = spot exponent
+    float4 light_ambient[4];    // rgb
+    float4 light_atten[4];      // constant, linear, quadratic
+    float4 headlight_ambient;   // rgb; w = active
+    float4 headlight_diffuse;   // rgb; w = global ambient
+    float4 headlight_specular;  // rgb
+    float4 camera_fwd;          // xyz unit view direction
+    float4 ground_params;       // see draw_ground_grid
+    float4 fog_params;          // x = fogstart, y = fogend, z = ground reflectance
 };
 """
 
-# Helper to get light dir/color by index in MSL
-comptime _LIGHT_ACCESS_MSL = """
-float4 get_light_dir(constant SceneUniforms &scene, int i) {
-    if (i == 0) return scene.light0_dir;
-    if (i == 1) return scene.light1_dir;
-    if (i == 2) return scene.light2_dir;
-    return scene.light3_dir;
+# --- MuJoCo's light model, shared by the solid, ground and reflection passes ---
+#
+# ⚠ A TRANSCRIPTION, NOT A DESIGN. `render_gl3.c:initLights` / `adjustLight`
+# program OpenGL's fixed-function lighting and this is that equation
+# (GL 2.1 spec 2.14.1) with the values MuJoCo feeds it:
+#
+#   * material: ambient = diffuse = rgba (GL_COLOR_MATERIAL), specular =
+#     (mat.specular,)*3, shininess = mat.shininess * 128, emission =
+#     mat.emission * rgba  (`render_gl3.c:302-316`)
+#   * per light: ambient/diffuse/specular RGB; a DIRECTIONAL light has no
+#     position and no cone; a SPOT has position, cutoff, exponent and
+#     constant/linear/quadratic attenuation  (`initLights`)
+#   * the headlight is one more DIRECTIONAL light at the eye, aimed along the
+#     view, with `<visual headlight>`'s colours  (`mjv_makeLights`)
+#   * global ambient is 0.3 only when there is no light at all
+#     (`initLights`, "create some ambient light if no supported lights")
+#   * LOCAL_VIEWER = 1, so the half-vector uses the true eye direction
+#   * the specular term is zero where N.L <= 0 (the spec's "f")
+#
+# Shadow: MuJoCo's shadow map removes the shadow-casting light's DIFFUSE and
+# SPECULAR where the fragment is occluded and keeps its ambient; the first
+# light with `castshadow` is the one with a map here, as before.
+#
+# The old shader was a Blinn-Phong of its own — every light directional,
+# ambient summed as a scalar, shininess remapped 4..128 — and on a scene lit
+# by two 45-degree spots it put both at full strength on the table (1.6 =
+# flat white) and neither on the walls (black).
+
+comptime _MJ_SHADE_MSL = """
+static inline float3 mj_light_term(constant SceneUniforms &scene, int li,
+                                   float3 N, float3 V, float3 P,
+                                   float3 base_rgb, float3 mat_spec,
+                                   float spec_exp, float shadow_factor) {
+    float4 lpos = scene.light_pos[li];
+    float4 ldir = scene.light_dir[li];
+    float3 L;
+    float att = 1.0;
+    float spot = 1.0;
+    if (lpos.w > 0.5) {
+        float3 d = lpos.xyz - P;
+        float dist = length(d);
+        L = d / max(dist, 1e-6);
+        float4 a = scene.light_atten[li];
+        att = 1.0 / max(a.x + a.y * dist + a.z * dist * dist, 1e-6);
+        if (ldir.w > -1.5) {
+            float sd = dot(-L, ldir.xyz);
+            spot = sd < ldir.w ? 0.0 : pow(max(sd, 1e-6), scene.light_specular[li].w);
+        }
+    } else {
+        L = normalize(-ldir.xyz);
+    }
+    float ndl = max(dot(N, L), 0.0);
+    float3 H = normalize(L + V);
+    float spec = ndl > 0.0 ? pow(max(dot(N, H), 1e-6), spec_exp) : 0.0;
+    float sh = (li == 0 && scene.light_diffuse[li].w > 0.5) ? shadow_factor : 1.0;
+    return att * spot * (scene.light_ambient[li].rgb * base_rgb
+                         + sh * (ndl * scene.light_diffuse[li].rgb * base_rgb
+                                 + spec * scene.light_specular[li].rgb * mat_spec));
 }
 
-float4 get_light_color(constant SceneUniforms &scene, int i) {
-    if (i == 0) return scene.light0_color;
-    if (i == 1) return scene.light1_color;
-    if (i == 2) return scene.light2_color;
-    return scene.light3_color;
+static inline float3 mj_shade(constant SceneUniforms &scene,
+                              float3 N, float3 V, float3 P, float3 base_rgb,
+                              float mat_specular, float mat_shininess,
+                              float mat_emission, float shadow_factor) {
+    float spec_exp = mat_shininess * 128.0;
+    float3 mat_spec = float3(mat_specular);
+    float3 color = base_rgb * (mat_emission + scene.headlight_diffuse.w);
+    if (scene.headlight_ambient.w > 0.5) {
+        float3 L = normalize(-scene.camera_fwd.xyz);
+        float ndl = max(dot(N, L), 0.0);
+        float3 H = normalize(L + V);
+        float spec = ndl > 0.0 ? pow(max(dot(N, H), 1e-6), spec_exp) : 0.0;
+        color += scene.headlight_ambient.rgb * base_rgb
+               + ndl * scene.headlight_diffuse.rgb * base_rgb
+               + spec * scene.headlight_specular.rgb * mat_spec;
+    }
+    int n = clamp(int(scene.camera_pos.w), 0, 4);
+    for (int li = 0; li < n; li++) {
+        color += mj_light_term(scene, li, N, V, P, base_rgb, mat_spec, spec_exp, shadow_factor);
+    }
+    return color;
+}
+
+// GL_TEXTURE_CUBE_MAP's face selection (GL 2.1 spec table 3.19) on an
+// object-space position, then the face's (s, t) as a 2D lookup — MuJoCo
+// uploads a square `type="cube"` image to all six faces
+// (`render_context.c`: "assign data: repeated"), so one 2D texture is the
+// whole cube.
+static inline float2 mj_cube_uv(float3 p) {
+    float3 a = abs(p);
+    float ma;
+    float sc;
+    float tc;
+    if (a.x >= a.y && a.x >= a.z) {
+        ma = a.x;
+        sc = p.x > 0.0 ? -p.z : p.z;
+        tc = -p.y;
+    } else if (a.y >= a.z) {
+        ma = a.y;
+        sc = p.x;
+        tc = p.y > 0.0 ? p.z : -p.z;
+    } else {
+        ma = a.z;
+        sc = p.z > 0.0 ? p.x : -p.x;
+        tc = -p.y;
+    }
+    ma = max(ma, 1e-6);
+    return float2(0.5 * (sc / ma + 1.0), 0.5 * (tc / ma + 1.0));
 }
 """
 
+# The per-object block, shared by every vertex shader that draws geometry.
+# 128B — `gpu_types.OBJECT_UNIFORMS_BYTES`.
+comptime _OBJECT_UNIFORMS_MSL = """
+struct ObjectUniforms {
+    float4x4 model;
+    float4 color;
+    float4 material;    // x=shininess, y=specular, z=has_texture (>0), w=emission
+    float4 tex_params;  // xy = uv repeat, z = 1 for cube mapping
+    float4 tex_scale;   // xyz scales the object-space position for the cube lookup
+};
+"""
 
-# --- Solid Object Shaders (Blinn-Phong + Shadows + Material) ---
+# What the solid vertex shader hands the solid AND reflection fragments.
+comptime _SOLID_VERTEX_OUT_MSL = """
+struct VertexOut {
+    float4 position  [[position]];
+    float3 world_pos;
+    float3 world_normal;
+    float3 local_pos;
+    float2 uv;
+    float4 obj_color;
+    float4 obj_material;
+    float4 tex_params;
+};
+"""
+
+
+# --- Solid Object Shaders (MuJoCo lighting + Shadows + Material) ---
 
 comptime SOLID_VERTEX_MSL = """
 #include <metal_stdlib>
@@ -67,22 +191,7 @@ struct VertexIn {
     float2 uv       [[attribute(2)]];
 };
 
-struct VertexOut {
-    float4 position  [[position]];
-    float3 world_pos;
-    float3 world_normal;
-    float2 uv;
-    float4 obj_color;
-    float4 obj_material;
-};
-
-""" + _SCENE_UNIFORMS_MSL + """
-
-struct ObjectUniforms {
-    float4x4 model;
-    float4 color;
-    float4 material;  // x=shininess, y=specular, z=reflectance (>0 = has texture), w=emission
-};
+""" + _SOLID_VERTEX_OUT_MSL + _SCENE_UNIFORMS_MSL + _OBJECT_UNIFORMS_MSL + """
 
 vertex VertexOut solid_vertex(
     VertexIn in [[stage_in]],
@@ -95,37 +204,25 @@ vertex VertexOut solid_vertex(
     out.world_pos = world.xyz;
     // Transform normal by upper 3x3 of model matrix
     out.world_normal = (obj.model * float4(in.normal, 0.0)).xyz;
+    out.local_pos = in.position * obj.tex_scale.xyz;
     out.uv = in.uv;
     out.obj_color = obj.color;
     out.obj_material = obj.material;
+    out.tex_params = obj.tex_params;
     return out;
 }
 """
 
-comptime SOLID_FRAGMENT_MSL = """
-#include <metal_stdlib>
-using namespace metal;
-
-struct VertexOut {
-    float4 position  [[position]];
-    float3 world_pos;
-    float3 world_normal;
-    float2 uv;
-    float4 obj_color;
-    float4 obj_material;
-};
-
-""" + _SCENE_UNIFORMS_MSL + _LIGHT_ACCESS_MSL + """
-
+comptime _SHADOW_SAMPLE_MSL = """
 struct ShadowUniforms {
     float4x4 light_view_proj;
     float4 params;  // x=shadow_intensity, y=bias, z=shadow map size
 };
 
-float compute_shadow(float3 world_pos,
-                     constant ShadowUniforms &shadow,
-                     depth2d<float> shadow_map,
-                     sampler shadow_sampler) {
+static inline float compute_shadow(float3 world_pos,
+                                   constant ShadowUniforms &shadow,
+                                   depth2d<float> shadow_map,
+                                   sampler shadow_sampler) {
     float4 light_pos = shadow.light_view_proj * float4(world_pos, 1.0);
     float3 proj = light_pos.xyz / light_pos.w;
 
@@ -162,6 +259,13 @@ float compute_shadow(float3 world_pos,
     float intensity = shadow.params.x;
     return 1.0 - intensity * (1.0 - shadow_val);
 }
+"""
+
+comptime SOLID_FRAGMENT_MSL = """
+#include <metal_stdlib>
+using namespace metal;
+
+""" + _SOLID_VERTEX_OUT_MSL + _SCENE_UNIFORMS_MSL + _MJ_SHADE_MSL + _SHADOW_SAMPLE_MSL + """
 
 fragment float4 solid_fragment(
     VertexOut in [[stage_in]],
@@ -176,56 +280,30 @@ fragment float4 solid_fragment(
     float3 V = normalize(scene.camera_pos.xyz - in.world_pos);
 
     // Per-object material properties
-    float mat_shininess = in.obj_material.x;  // 0-1, maps to specular exponent
-    float mat_specular = in.obj_material.y;    // 0-1, specular intensity
+    float mat_shininess = in.obj_material.x;
+    float mat_specular = in.obj_material.y;
     float has_texture = in.obj_material.z;     // >0 = sample obj_texture
-    float mat_emission = in.obj_material.w;    // 0-1, emissive intensity
+    float mat_emission = in.obj_material.w;
 
-    // Map shininess [0,1] to specular exponent: 0.0->4, 0.5->32, 1.0->128
-    float spec_exp = mix(4.0, 128.0, mat_shininess);
-
-    // Sample texture if enabled (material.z > 0)
+    // ⚠ LIGHT FIRST, TEXTURE SECOND — `GL_MODULATE` with the default
+    // single-colour specular (`render_gl3.c:699`). OpenGL lights the vertex
+    // colour, clamps the sum (highlight included) to [0,1], and only then
+    // multiplies by the texel. Texturing first and adding the highlight on
+    // top made every textured surface brighter than MuJoCo's by its
+    // specular term — ~7% on LIBERO's wood table.
     float4 base_color = in.obj_color;
+    float shadow_factor = compute_shadow(in.world_pos, shadow, shadow_map, shadow_sampler);
+    float3 color = mj_shade(scene, N, V, in.world_pos, base_color.rgb,
+                            mat_specular, mat_shininess, mat_emission, shadow_factor);
     if (has_texture > 0.5) {
-        float4 tex_color = obj_texture.sample(obj_sampler, in.uv);
-        base_color = float4(base_color.rgb * tex_color.rgb, base_color.a * tex_color.a);
-    }
-
-    int num_lights = int(scene.camera_pos.w);
-    if (num_lights < 1) num_lights = 1;
-    if (num_lights > 4) num_lights = 4;
-
-    float3 total_color = float3(0.0);
-    float total_ambient = 0.0;
-
-    for (int li = 0; li < num_lights; li++) {
-        float4 l_dir = get_light_dir(scene, li);
-        float4 l_color = get_light_color(scene, li);
-
-        float3 L = normalize(-l_dir.xyz);
-        float3 H = normalize(L + V);
-
-        float ambient = l_dir.w;
-        float diffuse = max(dot(N, L), 0.0);
-        float specular = pow(max(dot(N, H), 0.0), spec_exp) * mat_specular;
-
-        // Shadow only for first shadow-casting light
-        float shadow_factor = 1.0;
-        if (li == 0 && l_color.w > 0.5) {
-            shadow_factor = compute_shadow(in.world_pos, shadow, shadow_map, shadow_sampler);
+        float2 uv = in.uv * in.tex_params.xy;
+        if (in.tex_params.z > 0.5) {
+            uv = mj_cube_uv(in.local_pos);
         }
-
-        float3 light_col = l_color.xyz;
-        total_color += base_color.rgb * shadow_factor * diffuse * light_col
-                     + shadow_factor * specular * light_col;
-        total_ambient += ambient;
+        float4 tex_color = obj_texture.sample(obj_sampler, uv);
+        color = clamp(color, 0.0, 1.0) * tex_color.rgb;
+        base_color.a *= tex_color.a;
     }
-
-    // Clamp ambient to avoid over-brightening with multiple lights
-    total_ambient = min(total_ambient, 1.0);
-
-    float3 color = base_color.rgb * total_ambient + total_color
-                 + base_color.rgb * mat_emission;
 
     // Linear fog: blend towards fog color (use skybox-like grey) based on distance
     float fog_start = scene.fog_params.x;
@@ -241,7 +319,17 @@ fragment float4 solid_fragment(
 }
 """
 
-# --- Ground Shaders (Procedural Checkerboard + Shadows) ---
+# --- Ground Shaders (Procedural Checkerboard / texture + Shadows) ---
+
+comptime _GROUND_VERTEX_OUT_MSL = """
+struct VertexOut {
+    float4 position  [[position]];
+    float3 world_pos;
+    float3 world_normal;
+    float2 uv;
+    float4 obj_material;
+};
+"""
 
 comptime GROUND_VERTEX_MSL = """
 #include <metal_stdlib>
@@ -253,20 +341,7 @@ struct VertexIn {
     float2 uv       [[attribute(2)]];
 };
 
-struct VertexOut {
-    float4 position  [[position]];
-    float3 world_pos;
-    float3 world_normal;
-    float2 uv;
-};
-
-""" + _SCENE_UNIFORMS_MSL + """
-
-struct ObjectUniforms {
-    float4x4 model;
-    float4 color;
-    float4 material;  // x=shininess, y=specular, z=reflectance, w=emission
-};
+""" + _GROUND_VERTEX_OUT_MSL + _SCENE_UNIFORMS_MSL + _OBJECT_UNIFORMS_MSL + """
 
 vertex VertexOut ground_vertex(
     VertexIn in [[stage_in]],
@@ -279,6 +354,7 @@ vertex VertexOut ground_vertex(
     out.world_pos = world.xyz;
     out.world_normal = float3(0.0, 0.0, 1.0);
     out.uv = in.uv;
+    out.obj_material = obj.material;
     return out;
 }
 """
@@ -287,58 +363,7 @@ comptime GROUND_FRAGMENT_MSL = """
 #include <metal_stdlib>
 using namespace metal;
 
-struct VertexOut {
-    float4 position  [[position]];
-    float3 world_pos;
-    float3 world_normal;
-    float2 uv;
-};
-
-""" + _SCENE_UNIFORMS_MSL + _LIGHT_ACCESS_MSL + """
-
-struct ShadowUniforms {
-    float4x4 light_view_proj;
-    float4 params;  // x=shadow_intensity, y=bias, z=shadow map size
-};
-
-float compute_shadow_ground(float3 world_pos,
-                            constant ShadowUniforms &shadow,
-                            depth2d<float> shadow_map,
-                            sampler shadow_sampler) {
-    float4 light_pos = shadow.light_view_proj * float4(world_pos, 1.0);
-    float3 proj = light_pos.xyz / light_pos.w;
-
-    // Map NDC [-1,1] XY to UV [0,1]
-    float2 shadow_uv = proj.xy * 0.5 + 0.5;
-    shadow_uv.y = 1.0 - shadow_uv.y;  // Metal Y-flip
-
-    if (shadow_uv.x < 0.0 || shadow_uv.x > 1.0 || shadow_uv.y < 0.0 || shadow_uv.y > 1.0 || proj.z < 0.0 || proj.z > 1.0) {
-        return 1.0;
-    }
-
-    float bias = shadow.params.y;
-    float current_depth = proj.z - bias;
-
-    // 3x3 PCF
-    float shadow_val = 0.0;
-    // ⚠ THE REAL MAP SIZE, from `<visual quality shadowsize=>`. This was
-    // hardcoded to 4096 while `quadruped escape` asks for 2048, so every PCF
-    // tap landed half a texel from where it meant to. Zero means "not set" —
-    // fall back rather than divide by it.
-    float smap = shadow.params.z > 0.5 ? shadow.params.z : 4096.0;
-    float texel_size = 1.0 / smap;
-
-    for (int x = -1; x <= 1; x++) {
-        for (int y = -1; y <= 1; y++) {
-            float2 offset = float2(float(x), float(y)) * texel_size;
-            shadow_val += shadow_map.sample_compare(shadow_sampler, shadow_uv + offset, current_depth);
-        }
-    }
-    shadow_val /= 9.0;
-
-    float intensity = shadow.params.x;
-    return 1.0 - intensity * (1.0 - shadow_val);
-}
+""" + _GROUND_VERTEX_OUT_MSL + _SCENE_UNIFORMS_MSL + _MJ_SHADE_MSL + _SHADOW_SAMPLE_MSL + """
 
 fragment float4 ground_fragment(
     VertexOut in [[stage_in]],
@@ -350,19 +375,19 @@ fragment float4 ground_fragment(
     sampler ground_tex_sampler [[sampler(1)]]
 ) {
     // Ground color — three modes based on ground_params encoding:
-    //   ground_params.z > 1.5: texture mode (xy = texrepeat), sample ground_texture
+    //   ground_params.z > 1.5: texture mode, xy = texture repeats PER METRE
     //   ground_params.x < 0: solid color mode, color = abs(ground_params.xyz)
     //   else: checker mode, light tile = ground_params.xyz
     // Note: ground_params.w is reserved for ground_z (reflection clipping)
     float3 base_color;
 
     if (scene.ground_params.z > 1.5) {
-        // Texture mode: tile the texture using world-space XY coordinates
-        // ground_params.xy = texrepeat_u, texrepeat_v (tiles across ground extent)
-        float tex_repeat_u = scene.ground_params.x;
-        float tex_repeat_v = scene.ground_params.y;
-        // Map UVs: use mesh UVs scaled by texrepeat
-        float2 tex_uv = in.uv * float2(tex_repeat_u, tex_repeat_v);
+        // Texture mode. ⚠ WORLD-SPACE, NOT MESH UV: MuJoCo tiles a plane in
+        // the plane's own units (`texrepeat` over its `size`, or per unit
+        // with `texuniform`), and the ground quad here is a 24 m mesh whose
+        // extent has nothing to do with the plane's. `draw_ground_grid`
+        // converts the material to repeats per metre.
+        float2 tex_uv = in.world_pos.xy * scene.ground_params.xy;
         float4 tex_color = ground_texture.sample(ground_tex_sampler, tex_uv);
         base_color = tex_color.rgb;
     } else if (scene.ground_params.x < -0.001) {
@@ -388,40 +413,27 @@ fragment float4 ground_fragment(
         base_color = mix(checker_color1, checker_color2, checker);
     }
 
-    bool is_textured = (scene.ground_params.z > 1.5);
+    // The same light model as every other surface. ⚠ A TEXTURED FLOOR IS LIT
+    // TOO: it used to draw its texels unshaded ("the texture contains its own
+    // shading"), which made a light-grey plank tile glow under a scene whose
+    // spots never reach the floor — MuJoCo shows it dark.
+    // Lit white, clamped, then modulated — `GL_MODULATE`, as for solids.
+    float shadow_factor = compute_shadow(in.world_pos, shadow, shadow_map, shadow_sampler);
+    float3 N = float3(0.0, 0.0, 1.0);
+    float3 V = normalize(scene.camera_pos.xyz - in.world_pos);
+    float3 lit = mj_shade(scene, N, V, in.world_pos, float3(1.0),
+                          in.obj_material.y, in.obj_material.x, in.obj_material.w,
+                          shadow_factor);
+    base_color = clamp(lit, 0.0, 1.0) * base_color;
 
-    // Apply shadow (first shadow-casting light)
-    float shadow_factor = compute_shadow_ground(in.world_pos, shadow, shadow_map, shadow_sampler);
-
-    if (is_textured) {
-        // Textured ground: texture contains its own shading, only apply shadows
-        base_color *= shadow_factor;
-    } else {
-        // Procedural ground: apply multi-light shading + shadows + fog
-        int num_lights = int(scene.camera_pos.w);
-        if (num_lights < 1) num_lights = 1;
-        if (num_lights > 4) num_lights = 4;
-
-        float3 N = float3(0.0, 0.0, 1.0);
-        float lighting = 0.0;
-        for (int li = 0; li < num_lights; li++) {
-            float4 l_dir = get_light_dir(scene, li);
-            float3 L = normalize(-l_dir.xyz);
-            float diffuse = max(dot(N, L), 0.0) * 0.3 + 0.7 / float(num_lights);
-            lighting += diffuse / float(num_lights);
-        }
-        base_color *= lighting;
-        base_color *= shadow_factor;
-
-        // Linear fog for procedural ground only
-        float fog_start = scene.fog_params.x;
-        float fog_end = scene.fog_params.y;
-        if (fog_end > fog_start) {
-            float fog_dist = length(in.world_pos - scene.camera_pos.xyz);
-            float fog_factor = clamp((fog_dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
-            float3 fog_color = float3(0.5, 0.495, 0.48);
-            base_color = mix(base_color, fog_color, fog_factor);
-        }
+    // Linear fog
+    float fog_start = scene.fog_params.x;
+    float fog_end = scene.fog_params.y;
+    if (fog_end > fog_start) {
+        float fog_dist = length(in.world_pos - scene.camera_pos.xyz);
+        float fog_factor = clamp((fog_dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
+        float3 fog_color = float3(0.5, 0.495, 0.48);
+        base_color = mix(base_color, fog_color, fog_factor);
     }
 
     // Distance fade for a smooth ground edge. This one STAYS: without it the
@@ -501,13 +513,7 @@ struct VertexOut {
     float4 position [[position]];
 };
 
-""" + _SCENE_UNIFORMS_MSL + """
-
-struct ObjectUniforms {
-    float4x4 model;
-    float4 color;
-    float4 material;
-};
+""" + _SCENE_UNIFORMS_MSL + _OBJECT_UNIFORMS_MSL + """
 
 vertex VertexOut shadow_vertex(
     VertexIn in [[stage_in]],
@@ -537,15 +543,7 @@ comptime REFLECTION_FRAGMENT_MSL = """
 #include <metal_stdlib>
 using namespace metal;
 
-struct VertexOut {
-    float4 position  [[position]];
-    float3 world_pos;
-    float3 world_normal;
-    float4 obj_color;
-    float4 obj_material;
-};
-
-""" + _SCENE_UNIFORMS_MSL + _LIGHT_ACCESS_MSL + """
+""" + _SOLID_VERTEX_OUT_MSL + _SCENE_UNIFORMS_MSL + _MJ_SHADE_MSL + """
 
 fragment float4 reflection_fragment(
     VertexOut in [[stage_in]],
@@ -557,50 +555,23 @@ fragment float4 reflection_fragment(
         discard_fragment();
     }
 
-    // Multi-light reflection shading
     float3 N = normalize(in.world_normal);
     float3 V = normalize(scene.camera_pos.xyz - in.world_pos);
-
-    float mat_shininess = in.obj_material.x;
-    float mat_specular = in.obj_material.y;
-    float spec_exp = mix(4.0, 128.0, mat_shininess);
-
-    int num_lights = int(scene.camera_pos.w);
-    if (num_lights < 1) num_lights = 1;
-    if (num_lights > 4) num_lights = 4;
-
-    float3 total_color = float3(0.0);
-    float total_ambient = 0.0;
-
-    for (int li = 0; li < num_lights; li++) {
-        float4 l_dir = get_light_dir(scene, li);
-        float4 l_color = get_light_color(scene, li);
-
-        float3 L = normalize(-l_dir.xyz);
-        float3 H = normalize(L + V);
-
-        float ambient = l_dir.w;
-        float diffuse = max(dot(N, L), 0.0);
-        float specular = pow(max(dot(N, H), 0.0), spec_exp) * mat_specular * 0.5;
-
-        float3 light_col = l_color.xyz;
-        total_color += in.obj_color.rgb * diffuse * light_col + specular * light_col;
-        total_ambient += ambient;
-    }
-
-    total_ambient = min(total_ambient, 1.0);
-    float3 color = in.obj_color.rgb * total_ambient + total_color;
+    // Unshadowed and untextured — the reflection is a hint, not a second
+    // render, and it is blended at 0.2 below.
+    float3 color = mj_shade(scene, N, V, in.world_pos, in.obj_color.rgb,
+                            in.obj_material.y, in.obj_material.x,
+                            in.obj_material.w, 1.0);
 
     // ⚠ ALPHA IS THE REFLECTANCE, and it is the ONLY attenuation. The colour
     // used to be pre-darkened (`color *= 0.35`) as well as blended at 0.35,
     // which double-counted: MuJoCo's mirror term is
     // `floor*(1-reflectance) + reflected*reflectance`, one factor, not two.
     //
-    // 0.2 is dm_control's own number — `<material name="grid" reflectance=".2">`
-    // in `suite/common/materials.xml`, which every suite floor uses. It is a
-    // constant here rather than a uniform because no model we ship differs; a
-    // model that did would need it threaded through SceneUniforms.
-    float alpha = 0.2;
+    // The plane material's `reflectance`, carried in `fog_params.z`. It was a
+    // constant 0.2 (dm_control's `grid` material) until LIBERO's floor, whose
+    // material says 0, showed a ghost robot under the table.
+    float alpha = scene.fog_params.z;
 
     // Fade out near the edges of the ground. ⚠ LOAD-BEARING NOW THAT THIS PASS
     // RUNS WITH THE DEPTH TEST OFF (see `render_frame` Phase B2): nothing else

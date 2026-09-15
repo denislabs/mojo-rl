@@ -103,6 +103,14 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     DOES NOT DIFF THE GRID ITSELF: escape's is 40,401 samples and comparing them
     every frame costs more than the draw does."""
 
+    var light_bodies: List[Int]
+    """Body each light is ATTACHED to (`mjModel.light_bodyid`); 0 = world.
+    With `light_local_pos` / `light_local_dir` this is what re-poses a light
+    riding a body every frame, exactly as the three camera lists below do
+    for a wrist camera. Parallel to the renderer's `lights`, up to the
+    fallback light `__init__` appends when a model declares none."""
+    var light_local_pos: List[Vec3]
+    var light_local_dir: List[Vec3]
     var camera_bodies: List[Int]
     """Body each camera is ATTACHED to (`mjModel.cam_bodyid`); 0 = worldbody."""
     var camera_local_pos: List[Vec3]
@@ -270,16 +278,36 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
 
         # Setup all lights from spec (fallback to default if none defined)
         var lights = Self.MODEL_DEF.setup_lights(rf)
+        self.light_bodies = List[Int]()
+        self.light_local_pos = List[Vec3]()
+        self.light_local_dir = List[Vec3]()
+        for li in range(len(lights)):
+            var lb = rf.light_body[li] if li < len(rf.light_body) else 0
+            self.light_bodies.append(lb)
+            self.light_local_pos.append(
+                Vec3(lights[li].pos_x, lights[li].pos_y, lights[li].pos_z)
+            )
+            self.light_local_dir.append(
+                Vec3(lights[li].dir_x, lights[li].dir_y, lights[li].dir_z)
+            )
         if len(lights) == 0:
-            # No lights in XML — add default directional light
+            # ⚠ NO `<light>` MEANS HEADLIGHT ONLY, as in MuJoCo — not an
+            # invented sun. This slot used to hold a 0.7-diffuse,
+            # 0.3-ambient directional light, which with the headlight now
+            # lit (below) would light such a model twice. It stays as a DARK
+            # placeholder because `Renderer3D` reads an empty list as "make
+            # your own default light". Its ambient carries
+            # `render_gl3.c:initLights`'s global 0.3, which MuJoCo adds only
+            # when there is no light at all — headlight included.
+            var global_amb = 0.0 if rf.vis_headlight_active else 0.3
             lights.append(Light(
                 mode=0,  # directional
                 dir_x=0.5, dir_y=0.5, dir_z=-1.0,
-                color_r=0.7, color_g=0.7, color_b=0.7,
-                ambient=0.3,
-                specular_intensity=0.3,
+                color_r=0.0, color_g=0.0, color_b=0.0,
+                ambient=global_amb,
+                specular_intensity=0.0,
                 specular_exponent=10.0,
-                cast_shadow=True,
+                cast_shadow=False,
             ))
 
         # Read visual settings from model (znear, fog, shadow, headlight)
@@ -300,15 +328,6 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 fog_start = Float32(vis[1])
                 fog_end = Float32(vis[2])
             shadow_size = Int(vis[3])
-            # Headlight ambient: add to all lights
-            var has_hl = vis[7] > 0.5
-            if has_hl:
-                var hl_r = vis[4]
-                var hl_g = vis[5]
-                var hl_b = vis[6]
-                var hl_avg = (hl_r + hl_g + hl_b) / 3.0
-                for li in range(len(lights)):
-                    lights[li].ambient = lights[li].ambient + hl_avg
 
         self.visual_radius_scale = visual_radius_scale
         self.axes_offset = axes_offset
@@ -336,6 +355,26 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             shadow_size=shadow_size,
             fog_start=fog_start,
             fog_end=fog_end,
+        )
+
+        # ⚠ THE HEADLIGHT, WHETHER OR NOT THE MODEL WROTE ONE. MuJoCo's is on
+        # by default (`mjv_defaultVisual`; `mjv_makeLights` adds it whenever
+        # `vis.headlight.active`), and `rf` carries the defaults when the
+        # element is absent. Until 2026-09-15 only a DECLARED headlight's
+        # ambient was honoured, folded into every light's ambient as a scalar
+        # — which left a LIBERO arena (two spots, no `<visual>`) with black
+        # walls, since nothing but the headlight reaches them.
+        self.renderer.set_headlight(
+            rf.vis_headlight_active,
+            Float32(rf.vis_headlight_ambient_r),
+            Float32(rf.vis_headlight_ambient_g),
+            Float32(rf.vis_headlight_ambient_b),
+            Float32(rf.vis_headlight_diffuse_r),
+            Float32(rf.vis_headlight_diffuse_g),
+            Float32(rf.vis_headlight_diffuse_b),
+            Float32(rf.vis_headlight_specular_r),
+            Float32(rf.vis_headlight_specular_g),
+            Float32(rf.vis_headlight_specular_b),
         )
 
         # Configure skybox from GradientTexture (if model defines one)
@@ -402,6 +441,9 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.hfield_grid = move.hfield_grid^
         self.hfield_meta = move.hfield_meta^
         self.hfield_rev = move.hfield_rev
+        self.light_bodies = move.light_bodies^
+        self.light_local_pos = move.light_local_pos^
+        self.light_local_dir = move.light_local_dir^
         self.camera_bodies = move.camera_bodies^
         self.camera_local_pos = move.camera_local_pos^
         self.camera_local_quat = move.camera_local_quat^
@@ -540,6 +582,23 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             self.renderer.camera.far = new_cam.far
 
         var torso_pos = positions[1]  # Body 1 = torso (body 0 = worldbody)
+
+        # ── lights riding a body: world pose from this frame's FK ─────────
+        # `mj_camlight` does the same for `light_xpos` / `light_xdir`. A
+        # world light (body 0) keeps its declared pose, which the local
+        # lists already hold.
+        for li in range(len(self.light_bodies)):
+            var lb = self.light_bodies[li]
+            if lb <= 0 or lb >= len(positions) or li >= len(self.renderer.lights):
+                continue
+            var wp = positions[lb] + quaternions[lb].rotate_vec(self.light_local_pos[li])
+            var wd = quaternions[lb].rotate_vec(self.light_local_dir[li])
+            self.renderer.lights[li].pos_x = wp.x
+            self.renderer.lights[li].pos_y = wp.y
+            self.renderer.lights[li].pos_z = wp.z
+            self.renderer.lights[li].dir_x = wd.x
+            self.renderer.lights[li].dir_y = wd.y
+            self.renderer.lights[li].dir_z = wd.z
 
         # ── free camera ──────────────────────────────────────────────────
         # `active_camera == -1` is dm_control's free camera (its viewer starts
@@ -896,6 +955,21 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     def is_free_camera(self) -> Bool:
         return self.active_camera < 0
 
+    def set_free_camera(mut self, eye: Vec3, target: Vec3):
+        """The free camera at an EXACT pose — no 3/4-view reframe.
+
+        For putting this renderer's eye where another renderer's was: a
+        `mujoco.Renderer` free camera (`lookat`, `distance`, `azimuth`,
+        `elevation`) converts to eye/target in `mjv_cameraInModel`'s
+        convention, and a same-pose pair of images is what a rendering
+        comparison needs.
+        """
+        self.active_camera = -1
+        self.free_cam_reframe = False
+        self.renderer.camera.eye = eye
+        self.renderer.camera.target = target
+        self.renderer.camera.up = Vec3(0.0, 0.0, 1.0)
+
     def request_screenshot(mut self):
         self.renderer.request_screenshot()
 
@@ -948,6 +1022,18 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     def set_show_sites(mut self, on: Bool):
         """Show or hide the site markers."""
         self.show_sites = on
+
+    def set_group_shown(mut self, group: Int, on: Bool):
+        """`mjvOption.geomgroup[group]` — draw (or not) geoms of that group.
+
+        MuJoCo's default shows 0-2. robosuite and LIBERO hide group 0
+        (`render_collision_mesh=False`), where the Panda's collision meshes
+        coincide with its visual ones and z-fight into a speckle over every
+        link. Read by `body_geom_visible`, so the picker and the selection
+        outline follow.
+        """
+        if group >= 0 and group < len(self.rf.group_shown):
+            self.rf.group_shown[group] = on
 
     def set_show_hud(mut self, on: Bool):
         """Show or hide the built-in text HUD."""

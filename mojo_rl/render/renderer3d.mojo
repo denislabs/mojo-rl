@@ -140,6 +140,7 @@ from .sdl import (
     bind_gpu_fragment_samplers,
     upload_to_gpu_buffer,
     upload_to_gpu_texture,
+    generate_mipmaps_for_gpu_texture,
     map_gpu_transfer_buffer,
     unmap_gpu_transfer_buffer,
     release_gpu_buffer,
@@ -165,9 +166,12 @@ from .imgui import (
     ig_want_keyboard,
     imgui_shim_available,
 )
-from .light import Light
+from .light import Light, LightMode
 from .video_recorder import VideoRecorder
 from .gpu_types import (
+    SCENE_UNIFORMS_BYTES,
+    OBJECT_UNIFORMS_BYTES,
+    MAX_SCENE_LIGHTS,
     GPUVertex,
     SceneUniforms,
     ObjectUniforms,
@@ -216,7 +220,7 @@ from .gpu_shaders import (
     TEXT_FRAGMENT_MSL,
 )
 from .font_atlas import build_font_atlas_r8, glyph_uv, solid_uv
-from .png_loader import load_png, TextureData
+from .png_loader import load_png, load_texture_png, TextureData
 from .gpu_shaders_spirv import load_spirv_shaders, SPIRVShaders
 
 comptime Vec3 = Vec3Generic[DType.float64]
@@ -527,6 +531,12 @@ struct Renderer3D(Movable):
     var shadow_sampler: Optional[Ptr[GPUSampler, MutUntrackedOrigin]]
     var shadow_uniforms: ShadowUniforms
     var ground_z: Float64
+    var ground_reflectance: Float32
+    """The ground plane material's `reflectance`: the mirror pass's blend
+    weight, and 0 skips the pass. MuJoCo draws a reflection only when the
+    plane's material has one (`render_gl3.c`, `reflectance > 0`); the pass ran
+    at a hard-coded 0.2 on every ground, which put a ghost of the LIBERO Panda
+    under a floor whose material says 0.0."""
 
     # Cached static meshes
     var sphere_mesh: Optional[MeshHandle]
@@ -595,6 +605,16 @@ struct Renderer3D(Movable):
 
     # Configurable light parameters (up to 4 lights)
     var lights: List[Light]
+    var headlight_active: Bool
+    """MuJoCo's headlight: a directional light at the eye, aimed along the
+    view (`mjv_defaultVisual`: ambient .1, diffuse .4, specular .5). OFF on a
+    bare `Renderer3D`; `ModelRenderer` calls `set_headlight` from the model,
+    where it is ON unless `<headlight active="0">` — a model with no
+    `<visual><headlight>` still has one. Without it every surface the
+    model's own lights do not reach is black — the LIBERO walls were."""
+    var headlight_ambient: Array[Float32, 3]
+    var headlight_diffuse: Array[Float32, 3]
+    var headlight_specular: Array[Float32, 3]
 
     # Swapchain format
     var swapchain_format: GPUTextureFormat
@@ -767,6 +787,7 @@ struct Renderer3D(Movable):
         self.shadow_sampler = None
         self.shadow_uniforms = ShadowUniforms()
         self.ground_z = 0.0
+        self.ground_reflectance = 0.0
         self.line_vertex_buffer = None
         self.line_transfer_buffer = None
         self.text_pipeline = None
@@ -832,6 +853,12 @@ struct Renderer3D(Movable):
         self.capture_scene_only = True
         self.imgui_on = False
         self.imgui_frame_open = False
+        # OFF for a bare renderer: a hand-built scene passes its own `lights`
+        # and was tuned without one. `ModelRenderer` turns it on from the model.
+        self.headlight_active = False
+        self.headlight_ambient = Array[Float32, 3](fill=Float32(0.1))
+        self.headlight_diffuse = Array[Float32, 3](fill=Float32(0.4))
+        self.headlight_specular = Array[Float32, 3](fill=Float32(0.5))
         if len(lights) > 0:
             self.lights = lights.copy()
         else:
@@ -867,6 +894,7 @@ struct Renderer3D(Movable):
         self.shadow_sampler = move.shadow_sampler^
         self.shadow_uniforms = move.shadow_uniforms
         self.ground_z = move.ground_z
+        self.ground_reflectance = move.ground_reflectance
         self.sphere_mesh = move.sphere_mesh^
         self.box_mesh = move.box_mesh^
         self.ground_mesh = move.ground_mesh^
@@ -904,6 +932,10 @@ struct Renderer3D(Movable):
         self.draw_skybox = move.draw_skybox
         self.swapchain_format = move.swapchain_format
         self.lights = move.lights^
+        self.headlight_active = move.headlight_active
+        self.headlight_ambient = move.headlight_ambient^
+        self.headlight_diffuse = move.headlight_diffuse^
+        self.headlight_specular = move.headlight_specular^
         self.shadow_size = move.shadow_size
         self.fog_start = move.fog_start
         self.fog_end = move.fog_end
@@ -2641,7 +2673,7 @@ struct Renderer3D(Movable):
         submit_gpu_command_buffer(cmd)
         release_gpu_transfer_buffer(self.device.value(), tb)
 
-        # Create LINEAR sampler with REPEAT address mode
+        # Create LINEAR sampler with REPEAT address mode (1x1: no mip chain)
         var samp_info = GPUSamplerCreateInfo(
             min_filter=GPUFilter.GPU_FILTER_LINEAR,
             mag_filter=GPUFilter.GPU_FILTER_LINEAR,
@@ -2709,15 +2741,37 @@ struct Renderer3D(Movable):
         var h = UInt32(texture_data.height)
         var byte_size = UInt32(texture_data.byte_size())
 
-        # Create GPU texture
+        # ⚠ A FULL MIP CHAIN. LIBERO's scanned objects carry 4096x4096
+        # textures on a 10 cm bowl; sampled at level 0 only, a screen pixel
+        # lands on one of ~400 texels at random and the surface sparkles.
+        # `render_context.c` calls `glGenerateMipmap` on every texture it
+        # uploads, so the reference picture is the filtered one. The chain
+        # is built on the GPU below (`generate_mipmaps_for_gpu_texture`),
+        # which is why the usage also carries COLOR_TARGET: SDL's Metal and
+        # Vulkan backends generate mips through blits/render, and both refuse
+        # a sampler-only texture.
+        var levels = UInt32(1)
+        var dim = Int(w if w > h else h)
+        while dim > 1:
+            dim //= 2
+            levels += 1
+        # ⚠ sRGB IS A FORMAT, NOT A CONVERSION. `render_context.c` uploads an
+        # `mjCOLORSPACE_SRGB` texture as `GL_SRGB8`: the GPU linearizes each
+        # texel on sampling (and filters in linear), and the framebuffer is
+        # NOT sRGB so nothing re-encodes it. `*_UNORM_SRGB` is that exactly;
+        # decoding on the CPU into 8-bit linear would band the darks.
+        var tex_format = GPUTextureFormat.GPU_TEXTUREFORMAT_R8G8B8A8_UNORM
+        if texture_data.srgb:
+            tex_format = GPUTextureFormat.GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB
         var tex_info = GPUTextureCreateInfo(
             type=GPUTextureType.GPU_TEXTURETYPE_2D,
-            format=GPUTextureFormat.GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-            usage=GPUTextureUsageFlags.GPU_TEXTUREUSAGE_SAMPLER,
+            format=tex_format,
+            usage=GPUTextureUsageFlags.GPU_TEXTUREUSAGE_SAMPLER
+            | GPUTextureUsageFlags.GPU_TEXTUREUSAGE_COLOR_TARGET,
             width=w,
             height=h,
             layer_count_or_depth=1,
-            num_levels=1,
+            num_levels=levels,
             sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
             props=PropertiesID(0),
         )
@@ -2757,14 +2811,18 @@ struct Renderer3D(Movable):
         )
         upload_to_gpu_texture(cp, Ptr(to=src), Ptr(to=dst), False)
         end_gpu_copy_pass(cp)
+        # Outside any pass, as SDL requires; same command buffer, so the
+        # chain is complete before the first draw that samples it.
+        if levels > 1:
+            generate_mipmaps_for_gpu_texture(cmd, gpu_tex)
         submit_gpu_command_buffer(cmd)
         release_gpu_transfer_buffer(self.device.value(), tb)
 
-        # Create LINEAR sampler with REPEAT address mode
+        # Create a trilinear sampler with REPEAT address mode
         var samp_info = GPUSamplerCreateInfo(
             min_filter=GPUFilter.GPU_FILTER_LINEAR,
             mag_filter=GPUFilter.GPU_FILTER_LINEAR,
-            mipmap_mode=GPUSamplerMipmapMode.GPU_SAMPLERMIPMAPMODE_NEAREST,
+            mipmap_mode=GPUSamplerMipmapMode.GPU_SAMPLERMIPMAPMODE_LINEAR,
             address_mode_u=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
             address_mode_v=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
             address_mode_w=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
@@ -2772,7 +2830,7 @@ struct Renderer3D(Movable):
             max_anisotropy=1.0,
             compare_op=GPUCompareOp.GPU_COMPAREOP_ALWAYS,
             min_lod=0.0,
-            max_lod=0.0,
+            max_lod=Float32(levels),
             enable_anisotropy=False,
             enable_compare=False,
             padding1=0,
@@ -2890,6 +2948,11 @@ struct Renderer3D(Movable):
         emission: Float32 = 0.0,
         texture_name: String = String(""),
         texture_path: String = String(""),
+        texture_colorspace: Int = 0,
+        texrepeat_u: Float32 = 1.0,
+        texrepeat_v: Float32 = 1.0,
+        tex_cube: Bool = False,
+        tex_scale: Vec3 = Vec3(1.0, 1.0, 1.0),
     ) raises:
         """Draw a solid sphere, optionally textured.
 
@@ -2913,7 +2976,7 @@ struct Renderer3D(Movable):
                     break
             if tex_idx < 0:
                 try:
-                    var tex_data = load_png(texture_path)
+                    var tex_data = load_texture_png(texture_path, texture_colorspace)
                     tex_idx = self.upload_texture(texture_name, tex_data)
                     print(
                         "Loaded texture '",
@@ -2937,6 +3000,12 @@ struct Renderer3D(Movable):
         uniforms.material[1] = specular
         uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
+        uniforms.tex_params[0] = texrepeat_u
+        uniforms.tex_params[1] = texrepeat_v
+        uniforms.tex_params[2] = Float32(1.0) if tex_cube else Float32(0.0)
+        uniforms.tex_scale[0] = Float32(tex_scale.x)
+        uniforms.tex_scale[1] = Float32(tex_scale.y)
+        uniforms.tex_scale[2] = Float32(tex_scale.z)
 
         self.solid_draws.append(
             SolidDrawCommand(0, uniforms, texture_cache_idx=tex_idx)
@@ -3211,6 +3280,11 @@ struct Renderer3D(Movable):
         emission: Float32 = 0.0,
         texture_name: String = String(""),
         texture_path: String = String(""),
+        texture_colorspace: Int = 0,
+        texrepeat_u: Float32 = 1.0,
+        texrepeat_v: Float32 = 1.0,
+        tex_cube: Bool = False,
+        tex_scale: Vec3 = Vec3(1.0, 1.0, 1.0),
     ) raises:
         """Draw a solid capsule, optionally textured.
 
@@ -3237,7 +3311,7 @@ struct Renderer3D(Movable):
                     break
             if tex_idx < 0:
                 try:
-                    var tex_data = load_png(texture_path)
+                    var tex_data = load_texture_png(texture_path, texture_colorspace)
                     tex_idx = self.upload_texture(texture_name, tex_data)
                     print(
                         "Loaded texture '",
@@ -3293,6 +3367,12 @@ struct Renderer3D(Movable):
         uniforms.material[1] = specular
         uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
+        uniforms.tex_params[0] = texrepeat_u
+        uniforms.tex_params[1] = texrepeat_v
+        uniforms.tex_params[2] = Float32(1.0) if tex_cube else Float32(0.0)
+        uniforms.tex_scale[0] = Float32(tex_scale.x)
+        uniforms.tex_scale[1] = Float32(tex_scale.y)
+        uniforms.tex_scale[2] = Float32(tex_scale.z)
 
         self.solid_draws.append(
             SolidDrawCommand(
@@ -3318,6 +3398,11 @@ struct Renderer3D(Movable):
         emission: Float32 = 0.0,
         texture_name: String = String(""),
         texture_path: String = String(""),
+        texture_colorspace: Int = 0,
+        texrepeat_u: Float32 = 1.0,
+        texrepeat_v: Float32 = 1.0,
+        tex_cube: Bool = False,
+        tex_scale: Vec3 = Vec3(1.0, 1.0, 1.0),
     ) raises:
         """Draw a solid cylinder with flat disc caps, optionally textured.
 
@@ -3344,7 +3429,7 @@ struct Renderer3D(Movable):
                     break
             if tex_idx < 0:
                 try:
-                    var tex_data = load_png(texture_path)
+                    var tex_data = load_texture_png(texture_path, texture_colorspace)
                     tex_idx = self.upload_texture(texture_name, tex_data)
                     print(
                         "Loaded texture '",
@@ -3396,6 +3481,12 @@ struct Renderer3D(Movable):
         # material.z > 0 tells the shader to sample the texture
         uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
+        uniforms.tex_params[0] = texrepeat_u
+        uniforms.tex_params[1] = texrepeat_v
+        uniforms.tex_params[2] = Float32(1.0) if tex_cube else Float32(0.0)
+        uniforms.tex_scale[0] = Float32(tex_scale.x)
+        uniforms.tex_scale[1] = Float32(tex_scale.y)
+        uniforms.tex_scale[2] = Float32(tex_scale.z)
 
         self.solid_draws.append(
             SolidDrawCommand(
@@ -3421,6 +3512,11 @@ struct Renderer3D(Movable):
         emission: Float32 = 0.0,
         texture_name: String = String(""),
         texture_path: String = String(""),
+        texture_colorspace: Int = 0,
+        texrepeat_u: Float32 = 1.0,
+        texrepeat_v: Float32 = 1.0,
+        tex_cube: Bool = False,
+        tex_scale: Vec3 = Vec3(1.0, 1.0, 1.0),
     ) raises:
         """Draw a solid mesh loaded from an STL file, optionally textured.
 
@@ -3479,7 +3575,7 @@ struct Renderer3D(Movable):
                     break
             if tex_idx < 0:
                 try:
-                    var tex_data = load_png(texture_path)
+                    var tex_data = load_texture_png(texture_path, texture_colorspace)
                     tex_idx = self.upload_texture(texture_name, tex_data)
                     print(
                         "Loaded texture '",
@@ -3514,6 +3610,12 @@ struct Renderer3D(Movable):
         # material.z > 0 tells the shader to sample the texture
         uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
+        uniforms.tex_params[0] = texrepeat_u
+        uniforms.tex_params[1] = texrepeat_v
+        uniforms.tex_params[2] = Float32(1.0) if tex_cube else Float32(0.0)
+        uniforms.tex_scale[0] = Float32(tex_scale.x)
+        uniforms.tex_scale[1] = Float32(tex_scale.y)
+        uniforms.tex_scale[2] = Float32(tex_scale.z)
 
         self.solid_draws.append(
             SolidDrawCommand(
@@ -3988,6 +4090,11 @@ struct Renderer3D(Movable):
         emission: Float32 = 0.0,
         texture_name: String = String(""),
         texture_path: String = String(""),
+        texture_colorspace: Int = 0,
+        texrepeat_u: Float32 = 1.0,
+        texrepeat_v: Float32 = 1.0,
+        tex_cube: Bool = False,
+        tex_scale: Vec3 = Vec3(1.0, 1.0, 1.0),
     ) raises:
         """Draw a solid box, optionally textured.
 
@@ -4012,7 +4119,7 @@ struct Renderer3D(Movable):
                     break
             if tex_idx < 0:
                 try:
-                    var tex_data = load_png(texture_path)
+                    var tex_data = load_texture_png(texture_path, texture_colorspace)
                     tex_idx = self.upload_texture(texture_name, tex_data)
                     print(
                         "Loaded texture '",
@@ -4042,10 +4149,36 @@ struct Renderer3D(Movable):
         # material.z > 0 tells the shader to sample the texture
         uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
+        uniforms.tex_params[0] = texrepeat_u
+        uniforms.tex_params[1] = texrepeat_v
+        uniforms.tex_params[2] = Float32(1.0) if tex_cube else Float32(0.0)
+        uniforms.tex_scale[0] = Float32(tex_scale.x)
+        uniforms.tex_scale[1] = Float32(tex_scale.y)
+        uniforms.tex_scale[2] = Float32(tex_scale.z)
 
         self.solid_draws.append(
             SolidDrawCommand(1, uniforms, texture_cache_idx=tex_idx)
         )
+
+    def set_headlight(
+        mut self,
+        active: Bool,
+        ambient_r: Float32, ambient_g: Float32, ambient_b: Float32,
+        diffuse_r: Float32, diffuse_g: Float32, diffuse_b: Float32,
+        specular_r: Float32, specular_g: Float32, specular_b: Float32,
+    ):
+        """MuJoCo's `<visual><headlight>`: a directional light at the eye,
+        along the view. Defaults are MuJoCo's (`mjv_defaultVisual`)."""
+        self.headlight_active = active
+        self.headlight_ambient[0] = ambient_r
+        self.headlight_ambient[1] = ambient_g
+        self.headlight_ambient[2] = ambient_b
+        self.headlight_diffuse[0] = diffuse_r
+        self.headlight_diffuse[1] = diffuse_g
+        self.headlight_diffuse[2] = diffuse_b
+        self.headlight_specular[0] = specular_r
+        self.headlight_specular[1] = specular_g
+        self.headlight_specular[2] = specular_b
 
     def set_skybox(
         mut self,
@@ -4141,8 +4274,15 @@ struct Renderer3D(Movable):
         height: Float64 = 0.0,
         texture_name: String = String(""),
         texture_path: String = String(""),
+        texture_colorspace: Int = 0,
         texrepeat_u: Float64 = 1.0,
         texrepeat_v: Float64 = 1.0,
+        texuniform: Bool = False,
+        plane_half_x: Float64 = 0.0,
+        plane_half_y: Float64 = 0.0,
+        shininess: Float32 = 0.5,
+        specular: Float32 = 0.5,
+        reflectance: Float32 = 0.2,
     ) raises:
         """Draw the ground plane with procedural checkerboard or texture.
 
@@ -4154,6 +4294,24 @@ struct Renderer3D(Movable):
             texture_path: Path to the PNG texture file (empty = checker/solid).
             texrepeat_u: Texture repeat in U direction.
             texrepeat_v: Texture repeat in V direction.
+            texuniform: `<material texuniform>` — repeats per spatial unit.
+            plane_half_x: The plane geom's `size[0]` (0 = infinite).
+            plane_half_y: The plane geom's `size[1]` (0 = infinite).
+            shininess: The plane material's shininess (0-1).
+            specular: The plane material's specular (0-1).
+            reflectance: The plane material's reflectance; 0 = no mirror.
+                The 0.2 default is the value the pass was hard-coded to.
+
+        ⚠ THE REPEAT IS CONVERTED TO TILES PER METRE HERE, and the shader
+        tiles in WORLD space. `render_gl3.c:settexture` scales a plane's
+        [0,1] texture coordinates by `texrepeat`, times `size` when
+        `texuniform`, over a plane `2*size` across — so a tile is
+        `2*size/texrepeat` m, or `2/texrepeat` m uniform. It used to scale the
+        24 m ground mesh's own UVs by `texrepeat`, which for LIBERO's
+        `texrepeat="3 3" texuniform="true"` floor made each tile 8 m instead
+        of 0.67 m: one stretched plank across the whole room. An INFINITE
+        plane (size 0) keeps the old mesh-relative reading, which is the only
+        extent it has.
         """
         # Load and cache ground texture if provided
         self.ground_texture_idx = -1
@@ -4164,7 +4322,7 @@ struct Renderer3D(Movable):
                     break
             if self.ground_texture_idx < 0:
                 try:
-                    var tex_data = load_png(texture_path)
+                    var tex_data = load_texture_png(texture_path, texture_colorspace)
                     self.ground_texture_idx = self.upload_texture(
                         texture_name, tex_data
                     )
@@ -4182,17 +4340,32 @@ struct Renderer3D(Movable):
 
         if self.ground_texture_idx >= 0:
             # Signal texture mode: ground_params.z > 1.5 (colors are always 0-1)
-            # xy = texrepeat. Note: ground_params.w is reserved for ground_z
-            self.scene_uniforms.ground_params[0] = Float32(texrepeat_u)
-            self.scene_uniforms.ground_params[1] = Float32(texrepeat_v)
+            # xy = tiles PER METRE. Note: ground_params.w is reserved for ground_z
+            var rep_u = texrepeat_u if texrepeat_u > 0.0 else 1.0
+            var rep_v = texrepeat_v if texrepeat_v > 0.0 else 1.0
+            var per_m_u = rep_u / 24.0
+            var per_m_v = rep_v / 24.0
+            if texuniform:
+                per_m_u = rep_u / 2.0
+                per_m_v = rep_v / 2.0
+            else:
+                if plane_half_x > 0.0:
+                    per_m_u = rep_u / (2.0 * plane_half_x)
+                if plane_half_y > 0.0:
+                    per_m_v = rep_v / (2.0 * plane_half_y)
+            self.scene_uniforms.ground_params[0] = Float32(per_m_u)
+            self.scene_uniforms.ground_params[1] = Float32(per_m_v)
             self.scene_uniforms.ground_params[2] = Float32(2.0)
 
         var model = Mat4.from_translation(Vec3(center_x, 0.0, height))
         self.ground_uniforms = ObjectUniforms()
         self.ground_uniforms.model = mat4_to_gpu_f32(model)
         self.ground_uniforms.color = color_to_vec4(255, 255, 255)
+        self.ground_uniforms.material[0] = shininess
+        self.ground_uniforms.material[1] = specular
         self.has_ground = True
         self.ground_z = height
+        self.ground_reflectance = reflectance
 
     def draw_coordinate_axes(
         mut self,
@@ -4454,7 +4627,7 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=light_scene).unsafe_bitcast[NoneType](),
-                240,
+                SCENE_UNIFORMS_BYTES,
             )
 
             for i in range(len(self.solid_draws)):
@@ -4462,7 +4635,7 @@ struct Renderer3D(Movable):
                     cmd_buf,
                     1,
                     Ptr(to=self.solid_draws[i].uniforms).unsafe_bitcast[NoneType](),
-                    96,
+                    OBJECT_UNIFORMS_BYTES,
                 )
                 self._select_and_draw(shadow_pass, self.solid_draws[i])
 
@@ -4590,13 +4763,13 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
-                240,
+                SCENE_UNIFORMS_BYTES,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
-                240,
+                SCENE_UNIFORMS_BYTES,
             )
             # Push shadow uniforms to fragment slot 1
             push_gpu_fragment_uniform_data(
@@ -4609,7 +4782,7 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 1,
                 Ptr(to=self.ground_uniforms).unsafe_bitcast[NoneType](),
-                96,
+                OBJECT_UNIFORMS_BYTES,
             )
 
             # Bind shadow map + sampler to fragment sampler slot 0
@@ -4673,7 +4846,7 @@ struct Renderer3D(Movable):
         # `_create_pipelines`) — the ground has written depth by now and would
         # otherwise reject every fragment of its own reflection.
         # ------------------------------------------------------------------
-        if self.has_ground and len(self.solid_draws) > 0:
+        if self.has_ground and self.ground_reflectance > 0.0 and len(self.solid_draws) > 0:
             bind_gpu_graphics_pipeline(render_pass, self.reflection_pipeline.value())
 
             # Push scene uniforms (fragment slot 0 for reflection clipping)
@@ -4681,13 +4854,13 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
-                240,
+                SCENE_UNIFORMS_BYTES,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
-                240,
+                SCENE_UNIFORMS_BYTES,
             )
 
             for i in range(len(self.solid_draws)):
@@ -4710,7 +4883,7 @@ struct Renderer3D(Movable):
                     cmd_buf,
                     1,
                     Ptr(to=mirrored_uniforms).unsafe_bitcast[NoneType](),
-                    96,
+                    OBJECT_UNIFORMS_BYTES,
                 )
                 self._select_and_draw(render_pass, self.solid_draws[i])
 
@@ -4724,13 +4897,13 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
-                240,
+                SCENE_UNIFORMS_BYTES,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
-                240,
+                SCENE_UNIFORMS_BYTES,
             )
             # Push shadow uniforms to fragment slot 1
             push_gpu_fragment_uniform_data(
@@ -4750,7 +4923,7 @@ struct Renderer3D(Movable):
                     cmd_buf,
                     1,
                     Ptr(to=self.solid_draws[i].uniforms).unsafe_bitcast[NoneType](),
-                    96,
+                    OBJECT_UNIFORMS_BYTES,
                 )
                 # Bind texture at fragment sampler slot 1
                 var ti = self.solid_draws[i].texture_cache_idx
@@ -5091,75 +5264,85 @@ struct Renderer3D(Movable):
         self.skybox_uniforms.cam_fwd[2] = Float32(fwd.z)
         self.skybox_uniforms.cam_fwd[3] = 0.0
 
-        # Camera position + num_active_lights in w
+        # ── lights, MuJoCo's way (see `gpu_shaders._MJ_SHADE_MSL`) ──────────
         var num_lights = len(self.lights)
-        if num_lights < 1:
-            num_lights = 1
-        if num_lights > 4:
-            num_lights = 4
+        if num_lights > MAX_SCENE_LIGHTS:
+            num_lights = MAX_SCENE_LIGHTS
         self.scene_uniforms.camera_pos[0] = Float32(self.camera.eye.x)
         self.scene_uniforms.camera_pos[1] = Float32(self.camera.eye.y)
         self.scene_uniforms.camera_pos[2] = Float32(self.camera.eye.z)
         self.scene_uniforms.camera_pos[3] = Float32(num_lights)
+        self.scene_uniforms.camera_fwd[0] = Float32(fwd.x)
+        self.scene_uniforms.camera_fwd[1] = Float32(fwd.y)
+        self.scene_uniforms.camera_fwd[2] = Float32(fwd.z)
+        self.scene_uniforms.camera_fwd[3] = 0.0
 
-        # Fill light slots from self.lights (up to 4)
         for li in range(num_lights):
-            var light = self.lights[li].copy()
+            ref light = self.lights[li]
             var lx = Float32(light.dir_x)
             var ly = Float32(light.dir_y)
             var lz = Float32(light.dir_z)
             var ll = sqrt(lx * lx + ly * ly + lz * lz)
             if ll < 1e-6:
                 ll = 1.0
+            var o = li * 4
+            var is_spot = light.mode == LightMode.SPOT
+            self.scene_uniforms.light_pos[o + 0] = Float32(light.pos_x)
+            self.scene_uniforms.light_pos[o + 1] = Float32(light.pos_y)
+            self.scene_uniforms.light_pos[o + 2] = Float32(light.pos_z)
+            self.scene_uniforms.light_pos[o + 3] = 1.0 if is_spot else 0.0
+            self.scene_uniforms.light_dir[o + 0] = lx / ll
+            self.scene_uniforms.light_dir[o + 1] = ly / ll
+            self.scene_uniforms.light_dir[o + 2] = lz / ll
+            # ⚠ cos(cutoff) IS THE CONE TEST, and 180 degrees means NO CONE
+            # (OpenGL's special value, which MuJoCo gives directional lights).
+            # -2 can never be beaten by a dot product, which is how the shader
+            # reads "none".
+            var cutoff = light.cutoff
+            if cutoff >= 180.0 or not is_spot:
+                self.scene_uniforms.light_dir[o + 3] = -2.0
+            else:
+                self.scene_uniforms.light_dir[o + 3] = Float32(
+                    cos(cutoff * 3.14159265358979 / 180.0)
+                )
+            self.scene_uniforms.light_diffuse[o + 0] = Float32(light.color_r)
+            self.scene_uniforms.light_diffuse[o + 1] = Float32(light.color_g)
+            self.scene_uniforms.light_diffuse[o + 2] = Float32(light.color_b)
+            self.scene_uniforms.light_diffuse[o + 3] = (
+                1.0 if light.cast_shadow else 0.0
+            )
+            self.scene_uniforms.light_specular[o + 0] = Float32(light.specular_r)
+            self.scene_uniforms.light_specular[o + 1] = Float32(light.specular_g)
+            self.scene_uniforms.light_specular[o + 2] = Float32(light.specular_b)
+            self.scene_uniforms.light_specular[o + 3] = Float32(light.exponent)
+            self.scene_uniforms.light_ambient[o + 0] = Float32(light.ambient_r)
+            self.scene_uniforms.light_ambient[o + 1] = Float32(light.ambient_g)
+            self.scene_uniforms.light_ambient[o + 2] = Float32(light.ambient_b)
+            self.scene_uniforms.light_ambient[o + 3] = 0.0
+            self.scene_uniforms.light_atten[o + 0] = Float32(light.attenuation_0)
+            self.scene_uniforms.light_atten[o + 1] = Float32(light.attenuation_1)
+            self.scene_uniforms.light_atten[o + 2] = Float32(light.attenuation_2)
+            self.scene_uniforms.light_atten[o + 3] = 0.0
 
-            if li == 0:
-                self.scene_uniforms.light0_dir[0] = lx / ll
-                self.scene_uniforms.light0_dir[1] = ly / ll
-                self.scene_uniforms.light0_dir[2] = lz / ll
-                self.scene_uniforms.light0_dir[3] = Float32(light.ambient)
-                self.scene_uniforms.light0_color[0] = Float32(light.color_r)
-                self.scene_uniforms.light0_color[1] = Float32(light.color_g)
-                self.scene_uniforms.light0_color[2] = Float32(light.color_b)
-                self.scene_uniforms.light0_color[3] = Float32(
-                    1.0 if light.cast_shadow else 0.0
-                )
-            elif li == 1:
-                self.scene_uniforms.light1_dir[0] = lx / ll
-                self.scene_uniforms.light1_dir[1] = ly / ll
-                self.scene_uniforms.light1_dir[2] = lz / ll
-                self.scene_uniforms.light1_dir[3] = Float32(light.ambient)
-                self.scene_uniforms.light1_color[0] = Float32(light.color_r)
-                self.scene_uniforms.light1_color[1] = Float32(light.color_g)
-                self.scene_uniforms.light1_color[2] = Float32(light.color_b)
-                self.scene_uniforms.light1_color[3] = Float32(
-                    1.0 if light.cast_shadow else 0.0
-                )
-            elif li == 2:
-                self.scene_uniforms.light2_dir[0] = lx / ll
-                self.scene_uniforms.light2_dir[1] = ly / ll
-                self.scene_uniforms.light2_dir[2] = lz / ll
-                self.scene_uniforms.light2_dir[3] = Float32(light.ambient)
-                self.scene_uniforms.light2_color[0] = Float32(light.color_r)
-                self.scene_uniforms.light2_color[1] = Float32(light.color_g)
-                self.scene_uniforms.light2_color[2] = Float32(light.color_b)
-                self.scene_uniforms.light2_color[3] = Float32(
-                    1.0 if light.cast_shadow else 0.0
-                )
-            elif li == 3:
-                self.scene_uniforms.light3_dir[0] = lx / ll
-                self.scene_uniforms.light3_dir[1] = ly / ll
-                self.scene_uniforms.light3_dir[2] = lz / ll
-                self.scene_uniforms.light3_dir[3] = Float32(light.ambient)
-                self.scene_uniforms.light3_color[0] = Float32(light.color_r)
-                self.scene_uniforms.light3_color[1] = Float32(light.color_g)
-                self.scene_uniforms.light3_color[2] = Float32(light.color_b)
-                self.scene_uniforms.light3_color[3] = Float32(
-                    1.0 if light.cast_shadow else 0.0
-                )
+        for k in range(3):
+            self.scene_uniforms.headlight_ambient[k] = self.headlight_ambient[k]
+            self.scene_uniforms.headlight_diffuse[k] = self.headlight_diffuse[k]
+            self.scene_uniforms.headlight_specular[k] = self.headlight_specular[k]
+        self.scene_uniforms.headlight_ambient[3] = (
+            1.0 if self.headlight_active else 0.0
+        )
+        # `render_gl3.c:initLights`: "create some ambient light if no
+        # supported lights are present" — 0.3, and only then.
+        self.scene_uniforms.headlight_diffuse[3] = (
+            0.3 if (num_lights == 0 and not self.headlight_active) else 0.0
+        )
+        self.scene_uniforms.headlight_specular[3] = 0.0
 
         # Fog params
         self.scene_uniforms.fog_params[0] = self.fog_start
         self.scene_uniforms.fog_params[1] = self.fog_end
+        # z = the ground's reflectance, the reflection pass's blend weight.
+        self.scene_uniforms.fog_params[2] = self.ground_reflectance
 
     def _build_light_view_proj(mut self):
         """Build light's orthographic view-projection matrix for shadow mapping.
@@ -5168,10 +5351,12 @@ struct Renderer3D(Movable):
         """
         # Find first shadow-casting light direction
         var light_dir = Vec3(
-            Float64(self.scene_uniforms.light0_dir[0]),
-            Float64(self.scene_uniforms.light0_dir[1]),
-            Float64(self.scene_uniforms.light0_dir[2]),
+            Float64(self.scene_uniforms.light_dir[0]),
+            Float64(self.scene_uniforms.light_dir[1]),
+            Float64(self.scene_uniforms.light_dir[2]),
         )
+        if light_dir.length() < 1e-6:
+            light_dir = Vec3(0.3, -0.4, -0.8).normalized()
         for li in range(len(self.lights)):
             if self.lights[li].cast_shadow:
                 var lx = self.lights[li].dir_x

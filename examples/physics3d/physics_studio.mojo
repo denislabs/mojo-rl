@@ -1007,6 +1007,12 @@ def run_studio(
             panel.want_save = 1
         renderer.set_show_hud(panel.show_hud)
         renderer.set_show_sites(panel.show_sites)
+        # ⚠ THE SIX CHECKBOXES WERE DEAD until 2026-09-15: `panel.group_shown`
+        # was written by the panel and read by nothing, so toggling group 3
+        # to see dog's collision capsules did nothing. `body_geom_visible`
+        # now reads `rf.group_shown`, which this is the one writer of.
+        for g in range(len(panel.group_shown)):
+            renderer.set_group_shown(g, panel.group_shown[g])
         if ui.quit:
             break
         # ── the transform gizmo — V2.10 ───────────────────────────────────

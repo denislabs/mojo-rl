@@ -1946,6 +1946,12 @@ def _fill_assets(
         # `tex_files`, which trims neither.
         td.name = _extract_attr(tag, "name")
         td.file = _extract_attr(tag, "file")
+        # `colorspace`: absent / "auto" leaves 0 and the PNG decides at load.
+        var cs_s = _extract_attr(tag, "colorspace")
+        if cs_s == "linear":
+            td.colorspace = 1
+        elif cs_s == "sRGB":
+            td.colorspace = 2
 
         result.textures.append(td)
         tex_count += 1
@@ -3546,6 +3552,13 @@ def _fill_model(
             var exp_s = _extract_attr(tag, "exponent")
             if exp_s.byte_length() > 0:
                 ld.exponent = _parse_float(exp_s)
+
+            var att_s = _extract_attr(tag, "attenuation")
+            if att_s.byte_length() > 0:
+                var av = _parse_vec3(att_s)
+                ld.attenuation_0 = av[0]
+                ld.attenuation_1 = av[1]
+                ld.attenuation_2 = av[2]
 
             var mode_s = _extract_attr(tag, "mode")
             if mode_s.byte_length() > 0:
@@ -6686,6 +6699,32 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
                 result.vis_headlight_ambient_g = _parse_float(ap[1])
                 result.vis_headlight_ambient_b = _parse_float(ap[2])
                 result.vis_has_headlight = True
+        # ⚠ THE OTHER THREE ATTRIBUTES, each optional and each keeping
+        # MuJoCo's default when absent (`mjv_defaultVisual`: diffuse .4,
+        # specular .5, active 1). `ambient` alone was read for a year while
+        # the renderer had no headlight to give them to.
+        var dif_s = _trim(_extract_attr(hl_tag, "diffuse"))
+        if dif_s.byte_length() > 0:
+            var dp = List[String]()
+            _split_spaces(dif_s, dp)
+            if len(dp) >= 3:
+                result.vis_headlight_diffuse_r = _parse_float(dp[0])
+                result.vis_headlight_diffuse_g = _parse_float(dp[1])
+                result.vis_headlight_diffuse_b = _parse_float(dp[2])
+                result.vis_has_headlight = True
+        var spc_s = _trim(_extract_attr(hl_tag, "specular"))
+        if spc_s.byte_length() > 0:
+            var sp = List[String]()
+            _split_spaces(spc_s, sp)
+            if len(sp) >= 3:
+                result.vis_headlight_specular_r = _parse_float(sp[0])
+                result.vis_headlight_specular_g = _parse_float(sp[1])
+                result.vis_headlight_specular_b = _parse_float(sp[2])
+                result.vis_has_headlight = True
+        var act_s = _trim(_extract_attr(hl_tag, "active"))
+        if act_s.byte_length() > 0:
+            result.vis_headlight_active = Int(_parse_float(act_s)) != 0
+            result.vis_has_headlight = True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
