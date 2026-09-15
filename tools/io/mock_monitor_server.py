@@ -68,6 +68,7 @@ PORT = 0
 # key -> bytes, and the artifact rows the "Worker" has seen.
 OBJECTS = {}
 ARTIFACTS = {}
+ARTIFACT_ROWS = {}  # id -> row, for GET /artifacts?run_id= and /artifacts/<id>
 SLOW_PUT_MS = 150
 LOCK = threading.Lock()
 
@@ -222,6 +223,22 @@ class Handler(BaseHTTPRequestHandler):
                         "files": files,
                     },
                 )
+        if u.path == "/artifacts":
+            self._record("GET", "")
+            run_id = parse_qs(u.query).get("run_id", [""])[0]
+            with LOCK:
+                rows = [dict(r) for r in ARTIFACT_ROWS.values() if r["runId"] == run_id]
+            return self._json(200, rows)
+        m = re.match(r"^/artifacts/([^/]+)$", u.path)
+        if m:
+            self._record("GET", "")
+            with LOCK:
+                row = ARTIFACT_ROWS.get(m.group(1))
+            if row is None:
+                return self._json(404, {"error": "not found"})
+            if row["status"] != "ready":
+                return self._json(409, {"error": "artifact upload never completed"})
+            return self._json(200, dict(row, download_url=f"http://127.0.0.1:{PORT}{row['key']}"))
         if u.path.startswith("/r2/"):
             with LOCK:
                 blob = OBJECTS.get(u.path)
@@ -257,6 +274,8 @@ class Handler(BaseHTTPRequestHandler):
             # back for a re-registration, which is what supersede relies on.
             with LOCK:
                 aid = ARTIFACTS.setdefault(key, f"art-{len(ARTIFACTS) + 1}")
+                ARTIFACT_ROWS[aid] = {"id": aid, "runId": run_id, "path": path, "key": key,
+                                      "status": "pending", "sha256": None, "sizeBytes": None}
             return self._json(
                 201,
                 {
@@ -340,6 +359,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(422, {"error": "bytes do not match sha256/size"})
                 p["files"][path] = sha
             return self._json(200, {"path": path, "sha256": sha, "size_bytes": size})
+
+        m = re.match(r"^/artifacts/([^/]+)/complete$", u.path)
+        if m:
+            d = json.loads(text or "{}")
+            with LOCK:
+                row = ARTIFACT_ROWS.get(m.group(1))
+                if row is not None:
+                    row.update(status="ready", sha256=d.get("sha256"), sizeBytes=d.get("size_bytes"))
+            return self._json(200, {"ok": True, "status": "ready"})
 
         if u.path.endswith("/complete"):
             return self._json(200, {"ok": True, "status": "ready"})

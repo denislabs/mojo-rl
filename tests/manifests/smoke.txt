@@ -434,6 +434,7 @@ tests/core/test_project.mojo
 # unpromoted one falls back rather than raising. Mutation-checked.
 tests/core/test_policy.mojo
 tests/core/test_project_sync.mojo
+tests/core/test_policy_weights.mojo
 tests/deep_agents/act/test_act_norm_file.mojo
 # Asset packs (§9 infrastructure; NOTHING is migrated yet). The declaration
 # grammar and its eight refusals, the CREDENTIAL decision — which is the whole

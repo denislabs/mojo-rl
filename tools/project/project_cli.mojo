@@ -9,6 +9,7 @@
         (add --no-push to keep it local; the box is the record either way)
     pixi run project-push so101 [<run_id>] [--kind checkpoint] [--force]
     pixi run project-pull so101 [<run_id>] [--kind checkpoint] [--force]
+    pixi run project-pull so101 --weights   # definition + promoted policies' weights
     pixi run project-list --remote
 
 ⚠⚠ PROJECTS ARE PRIVATE AND NOT IN GIT. `projects/` is ignored, so a project's
@@ -52,6 +53,7 @@ from mojo_rl.core.policy import (
     write_policy,
 )
 from mojo_rl.core.run import RunRecord, epoch_seconds, iso8601_utc, load_run
+from mojo_rl.data.policy_weights import pull_policy_weights
 from mojo_rl.data.project_sync import pull_definition, push_definition
 from mojo_rl.data.remote import RemoteCatalog
 from mojo_rl.io.fetch import fetch_to_cache
@@ -747,6 +749,18 @@ def cmd_pull() raises:
         print("definition  " + root + "/" + project + "/")
         var rep = pull_definition(cat0, project, root, _has("--force"))
         rep.print_all(String("pulled"))
+        if _has("--weights"):
+            # ⚠ OPT-IN: a training box pulling a project wants its calibration,
+            # not hundreds of MB of policy weights it will not run.
+            print()
+            print("policy weights")
+            var wr = pull_policy_weights(cat0, root + "/" + project)
+            for l in wr.lines:
+                print("  " + l)
+            print(
+                String(wr.pulled) + " pulled, " + String(wr.present) + " already here, "
+                + String(wr.failed) + " not available"
+            )
         return
     var kind = _flag(String("--kind"), String(""))
     var dest_root = projects_root() + "/" + project + "/runs/" + rid
