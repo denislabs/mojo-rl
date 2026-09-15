@@ -26,6 +26,16 @@ pixi install -e act-ref     # PyTorch, ~3 GB. ONLY for step 4b — skip it
 # fails mid-solve and leaves the environment unusable.
 df -h .
 
+# ── 1b. a PROJECT's dataset from the platform (instead of 2-3 below) ──────
+# Needs `.env` (step 6) first. The project definition, then its recording:
+#   pixi run -e nvidia project-pull so101-tower
+#   pixi run -e nvidia dataset-pull -- --project so101-tower --dataset cube-in-bowl
+#   pixi run -e nvidia mojo run -I . examples/so101/act_so101_import_dataset.mojo \\
+#       --project so101-tower --dataset cube-in-bowl
+#   export ACT_PROJECT=so101-tower
+#   export ACT_STORE=~/.cache/mojo_rl/act_so101/so101-tower__cube-in-bowl_240x320.h5
+# Then skip to step 4.
+
 # ── 2. HuggingFace auth — ONLY if the dataset repo is private ─────────────
 pixi run -e nvidia hf auth login          # or: export HF_TOKEN=hf_...
 
@@ -99,6 +109,7 @@ binary aborts with `symbol not found: H5PLprepend` anywhere else. It also reads
 
 | | |
 |---|---|
+| `ACT_PROJECT` | the project the run is filed under (default `so101`). It must exist on the box — `project-pull` it first — or the run is refused rather than filed outside it |
 | `ACT_STORE` | the `.h5` to train on; default is the 5-episode recording |
 | `ACT_PRETRAINED` | **defaults to `hub`** — the ImageNet backbone, fetched with no PyTorch and cached. A `dump_resnet18_imagenet.py` directory uses the torchvision dump; `random` trains a from-scratch backbone |
 | `ACT_STEPS` | step count, **without a rebuild** — the graph takes ~6 min to compile, so "run it longer" must not mean "build it again" |
@@ -272,6 +283,7 @@ from mojo_rl.deep_agents.act.trainer import (
 )
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
+from mojo_rl.core.project import project_exists
 from mojo_rl.core.run import RunContext, register_run
 from mojo_rl.deep_agents.training.checkpoint import announce_checkpoint
 from mojo_rl.io.artifact_sink import ArtifactSink, close_sink, sink_for_run
@@ -395,6 +407,28 @@ comptime T = ACTTrainer[
 comptime IMG_ELEMS = N_CAM * 3 * IMG_H * IMG_W
 
 
+def act_project() raises -> String:
+    """`$ACT_PROJECT`, else `so101` — the project this run is filed under.
+
+    ⚠⚠ A NAMED PROJECT MUST EXIST ON THIS BOX. `RunContext` falls back to the
+    flat `runs/` root when the project directory is missing, which is right for
+    a driver that never named one and wrong for a run someone pointed at
+    `so101-tower`: its checkpoints would land outside the project, and
+    `project-promote` would not find them. So the default keeps the fallback,
+    and an explicit name refuses instead.
+    """
+    var env = getenv("ACT_PROJECT")
+    if env.byte_length() == 0:
+        return String("so101")
+    if not project_exists(env):
+        raise Error(
+            "ACT_PROJECT=" + env + " but there is no projects/" + env
+            + "/project.kv on this box — run `pixi run project-pull " + env
+            + "` first, or the run would be filed outside the project"
+        )
+    return env^
+
+
 def store_path() raises -> String:
     """`$ACT_STORE` if set, else the recording the header names.
 
@@ -423,6 +457,9 @@ def main() raises:
         " work, and the host sampler is host work."
     )
 
+    # ⚠ FIRST, before the store: a wrong project must fail in a second, not
+    # after minutes of loading 7 GB onto the device.
+    var project = act_project()
     var path = store_path()
     if not exists(path):
         print("MISSING STORE: " + path)
@@ -476,8 +513,9 @@ def main() raises:
     # driver — the dashboard showed a column of indistinguishable rows, which
     # is pain 2 of `docs/PROJECT_LAYER_PLAN.md` exactly. The run's id is unique
     # and sortable; grouping comes back with project scoping in P2.
+    print("  project " + project)
     var run = RunContext(
-        project=String("so101"),
+        project=project,
         driver=String("examples/so101/act_so101_train_gpu.mojo"),
         slug=String("act-so101"),
         env=String("builtin:so_arm101"),

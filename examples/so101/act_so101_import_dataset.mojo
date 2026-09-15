@@ -20,6 +20,9 @@ Options
 -------
 --repo REPO        HuggingFace dataset repo id (downloaded if not cached)
 --root DIR         a local dataset directory; skips resolution entirely
+--project P --dataset D
+                   a project's recording: `projects/P/datasets/D`, output to
+                   `~/.cache/mojo_rl/act_so101/P__D_<H>x<W>.h5`
 --out PATH         output .h5 (default: the cache path above)
 --height / --width resize target (default 240x320; the recording is 480x640)
 --revision REV     branch or commit (default `main`)
@@ -35,6 +38,7 @@ from std.os import makedirs
 from std.os.path import exists
 from std.sys import argv
 
+from mojo_rl.core.project import project_dataset_dir
 from mojo_rl.data.lerobot import (
     import_lerobot_v3, mojo_rl_cache, repo_slug, resolve_dataset_root,
 )
@@ -62,6 +66,14 @@ def main() raises:
 
     var repo = _opt(args, String("--repo"), String(""))
     var root = _opt(args, String("--root"), String(""))
+    var project = _opt(args, String("--project"), String(""))
+    var dataset = _opt(args, String("--dataset"), String(""))
+    var slug = String("")
+    if project != "" or dataset != "":
+        if project == "" or dataset == "" or repo != "" or root != "":
+            raise Error("--project and --dataset go together, and replace --repo / --root")
+        root = project_dataset_dir(project, dataset)
+        slug = project + "__" + dataset
     var revision = _opt(args, String("--revision"), String("main"))
     # `source_commit` records what was ASKED FOR, and only when it was asked
     # for: "main" is a moving reference, not a commit, so writing it into the
@@ -80,14 +92,13 @@ def main() raises:
 
     var out = _opt(args, String("--out"), String(""))
     if out == "":
-        if repo == "":
+        if repo == "" and slug == "":
             raise Error("--out is required when only --root is given")
+        if slug == "":
+            slug = repo_slug(repo)
         var dir = mojo_rl_cache() + "/act_so101"
         makedirs(dir, exist_ok=True)
-        out = (
-            dir + "/" + repo_slug(repo) + "_" + String(height) + "x"
-            + String(width) + ".h5"
-        )
+        out = dir + "/" + slug + "_" + String(height) + "x" + String(width) + ".h5"
 
     print("LeRobot v3 -> TrajectoryStore")
     print("  out: " + out)
