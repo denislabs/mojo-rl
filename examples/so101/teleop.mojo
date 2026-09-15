@@ -50,6 +50,12 @@ comptime MAX_STEP_TICKS = 80
 how far ahead of the arm the goal may sit, which is what turns a large
 leader/follower mismatch into a ramp. Tighter is smoother and laggier."""
 
+comptime TRACK_STEP_TICKS = 512
+"""~45 degrees: the clamp once the follower has caught up with the leader.
+See `SO101Arm.track_step_ticks` — one 80-tick clamp made the follower lag the
+leader by 300 ms."""
+
+
 
 def _sleep_until(deadline_ns: Int):
     """Hold the period by spinning.
@@ -80,7 +86,9 @@ def _sleep_until(deadline_ns: Int):
 def main() raises:
     print("opening follower:", FOLLOWER_PORT)
     var follower = SO101Arm(
-        String(FOLLOWER_PORT), max_step_ticks=MAX_STEP_TICKS
+        String(FOLLOWER_PORT),
+        max_step_ticks=MAX_STEP_TICKS,
+        track_step_ticks=TRACK_STEP_TICKS,
     )
     print("opening leader:  ", LEADER_PORT)
     var leader = SO101Arm(String(LEADER_PORT), max_step_ticks=0)

@@ -458,6 +458,7 @@ tests/io/test_tar.mojo
 # gate IMPORTS the rule from `robot/so101/calibration.mojo` rather than
 # restating it, so the two cannot drift apart.
 tests/soarm/test_span_guard.mojo
+tests/robot/test_so101_step_clamp.mojo
 
 # `_im2col_cpu` against an independent reference, at ResNet18's real shapes
 # plus seven chosen to break a bounds computation — including one DERIVED to

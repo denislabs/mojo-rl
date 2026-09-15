@@ -222,6 +222,13 @@ but the policy's output is not — so a clamp that binds is a deploy/train gap,
 exactly as `deploy_reach_real.mojo` found the hard way (its first live run was
 rate-limited by the clamp for its whole duration and looked like a bad policy)."""
 
+comptime TRACK_STEP_TICKS = 512
+"""~45 degrees: the clamp once the follower has caught up with the policy's
+first goal. The SAME two phases the recorders use (`SO101Arm.track_step_ticks`),
+so the arm the policy drives moves like the arm that recorded its
+demonstrations: those were no longer lagging the leader by 300 ms behind an
+80-tick clamp."""
+
 comptime ACTION_BOX_MARGIN = 0.05
 """Widen the dataset's action box by 5% of its own span before clamping.
 
@@ -298,6 +305,10 @@ def return_and_release(
         )
         var hold = arm.max_step_ticks
         arm.max_step_ticks = RETURN_STEP_TICKS
+        # ⚠ The return is a deliberate slow move: the tracking phase would
+        # otherwise lift its clamp to TRACK_STEP_TICKS the moment it engaged.
+        var hold_track = arm.track_step_ticks
+        arm.track_step_ticks = 0
         var goals = Array[Int32, SO101_N](fill=0)
         for i in range(SO101_N):
             goals[i] = start[i]
@@ -330,6 +341,7 @@ def return_and_release(
                 break
             _spin_until(t0 + period)
         arm.max_step_ticks = hold
+        arm.track_step_ticks = hold_track
         if not arrived:
             print(
                 "⚠⚠ DID NOT REACH THE START POSE (worst joint still "
@@ -767,7 +779,11 @@ def main() raises:
     # ── the arm ───────────────────────────────────────────────────────────
     print("")
     print("follower    " + String(FOLLOWER_PORT))
-    var follower = SO101Arm(String(FOLLOWER_PORT), max_step_ticks=step_ticks)
+    var follower = SO101Arm(
+        String(FOLLOWER_PORT),
+        max_step_ticks=step_ticks,
+        track_step_ticks=TRACK_STEP_TICKS,
+    )
     follower.bus.timeout_ms = 20
 
     var raw = Array[Int32, SO101_N](fill=0)

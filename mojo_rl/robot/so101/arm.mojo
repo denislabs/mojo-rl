@@ -47,6 +47,7 @@ from mojo_rl.robot.feetech.control_table import (
     STS_LOCK,
     STS_MAX_POSITION_LIMIT,
     STS_MIN_POSITION_LIMIT,
+    STS_ACCELERATION,
     STS_OPERATING_MODE,
     STS_PRESENT_POSITION,
     STS_PRESENT_VELOCITY,
@@ -197,6 +198,35 @@ struct SO101Calibration(Copyable, Movable):
         return self.raw_from_degrees(i, value * 180.0 / pi)
 
 
+comptime ALIGN_TICKS = 57
+"""~5 degrees. Every joint within this of its goal ends the catch-up phase."""
+
+comptime LEROBOT_ACCELERATION = 254
+"""What lerobot writes to `Acceleration` on every connect
+(`FeetechMotorsBus.configure_motors`). A RAM register: it reads 0 after a power
+cycle, so writing it once at calibration time is not enough."""
+
+
+def step_limit(tracking: Bool, catch_up_ticks: Int, track_ticks: Int) -> Int:
+    """The per-write clamp for the current phase. 0 means no clamp."""
+    if tracking and track_ticks > 0:
+        return track_ticks
+    return catch_up_ticks
+
+
+def is_aligned(
+    ref goals: Array[Int32, SO101_N],
+    ref present: Array[Int32, SO101_N],
+    align_ticks: Int,
+) -> Bool:
+    """Every joint within `align_ticks` of its goal."""
+    for i in range(SO101_N):
+        var d = Int(goals[i]) - Int(present[i])
+        if d > align_ticks or d < -align_ticks:
+            return False
+    return True
+
+
 struct SO101Arm(Movable):
     var bus: FeetechBus
     var cal: SO101Calibration
@@ -209,16 +239,35 @@ struct SO101Arm(Movable):
     — no clamp at all — so the first bad goal a policy emits is a full-speed
     slam into the table. 200 ticks is ~17 degrees. Set it to 0 to disable the
     clamp deliberately; do not leave it off by accident.
+
+    ⚠ WITH `track_step_ticks` SET, THIS IS ONLY THE CATCH-UP LIMIT. See below.
     """
+    var track_step_ticks: Int
+    """The clamp once the follower has CAUGHT UP. 0 (default) = no second phase.
+
+    ⚠⚠ ONE SMALL CLAMP IS A SPEED LIMIT. The servo's speed is proportional to
+    how far its goal leads its position, so capping that lead at 80 ticks (7
+    deg) capped the follower at ~1.4 deg per 30 Hz tick: recorded demos lagged
+    the leader by 300 ms on shoulder_lift, 50.9 deg at worst (2026-09-15,
+    trial-01). The small clamp is only needed while the follower closes a
+    LARGE gap — just after torque on — so a lunge becomes a ramp. Once every
+    joint is within `ALIGN_TICKS`, this larger limit applies until torque is
+    next turned on. It still bounds a bad reading or a glitched goal.
+    """
+    var tracking: Bool
+    """True once caught up; reset by `set_torque(True)`."""
 
     def __init__(
         out self,
         var path: String,
         baud: Int = 1000000,
         max_step_ticks: Int = 200,
+        track_step_ticks: Int = 0,
     ) raises:
         self.bus = FeetechBus(path^, baud)
         self.max_step_ticks = max_step_ticks
+        self.track_step_ticks = track_step_ticks
+        self.tracking = False
         self.ids = Array[UInt8, SO101_N](fill=0)
         for i in range(SO101_N):
             self.ids[i] = UInt8(i + 1)
@@ -302,6 +351,8 @@ struct SO101Arm(Movable):
     # ── writing ────────────────────────────────────────────────────────────
 
     def set_torque(mut self, on: Bool) raises:
+        # ⚠ Every engage starts in CATCH-UP: the leader may be anywhere.
+        self.tracking = False
         var v = TORQUE_ENABLED if on else TORQUE_DISABLED
         for i in range(SO101_N):
             self.bus.write_register(self.ids[i], STS_TORQUE_ENABLE, v, SIZE_1)
@@ -312,9 +363,19 @@ struct SO101Arm(Movable):
                 self.bus.write_register(self.ids[i], STS_LOCK, 0, SIZE_1)
 
     def set_position_mode(mut self) raises:
+        """Position mode, with lerobot's on-connect `Acceleration`.
+
+        ⚠ `Acceleration` read 0 on every joint of the 2026-09 follower while
+        lerobot's gains (P 16, D 32, I 0) were still in EEPROM: lerobot writes
+        254 on EVERY connect because the register does not survive a power
+        cycle. Every arming path here calls this first, so they all match.
+        """
         for i in range(SO101_N):
             self.bus.write_register(
                 self.ids[i], STS_OPERATING_MODE, MODE_POSITION, SIZE_1
+            )
+            self.bus.write_register(
+                self.ids[i], STS_ACCELERATION, LEROBOT_ACCELERATION, SIZE_1
             )
 
     def write_goals[
@@ -341,7 +402,7 @@ struct SO101Arm(Movable):
             var hi = Int(self.cal.range_max[i])
             safe[i] = Int32(min(hi, max(lo, Int(goals[i]))))
 
-        if self.max_step_ticks > 0:
+        if self.max_step_ticks > 0 or self.track_step_ticks > 0:
             var present = Array[Int32, SO101_N](fill=0)
             var got = self.read_positions(Span(present))
             if got != SO101_N:
@@ -353,13 +414,19 @@ struct SO101Arm(Movable):
                     + " motors reported a position, so the step clamp cannot"
                     " be applied"
                 )
-            for i in range(SO101_N):
-                var p = Int(present[i])
-                var step = Int(safe[i]) - p
-                if step > self.max_step_ticks:
-                    safe[i] = Int32(p + self.max_step_ticks)
-                elif step < -self.max_step_ticks:
-                    safe[i] = Int32(p - self.max_step_ticks)
+            if not self.tracking and self.track_step_ticks > 0:
+                self.tracking = is_aligned(safe, present, ALIGN_TICKS)
+            var limit = step_limit(
+                self.tracking, self.max_step_ticks, self.track_step_ticks
+            )
+            if limit > 0:
+                for i in range(SO101_N):
+                    var p = Int(present[i])
+                    var step = Int(safe[i]) - p
+                    if step > limit:
+                        safe[i] = Int32(p + limit)
+                    elif step < -limit:
+                        safe[i] = Int32(p - limit)
 
         self.bus.sync_write(
             STS_GOAL_POSITION, SIZE_2, Span(self.ids), Span(safe)

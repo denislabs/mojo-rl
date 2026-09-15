@@ -97,6 +97,12 @@ comptime MAX_STEP_TICKS = 80
 arm the goal may sit, which is what turns a large leader/follower mismatch
 into a ramp. Same value `teleop.mojo` measured with."""
 
+comptime TRACK_STEP_TICKS = 512
+"""~45 degrees: the clamp once the follower has caught up with the leader.
+See `SO101Arm.track_step_ticks` — one 80-tick clamp made the follower lag the
+leader by 300 ms."""
+
+
 comptime CAMERA_NAMES = "observation.images.front,observation.images.side"
 
 
@@ -238,7 +244,9 @@ def main() raises:
     # ── the arms ──────────────────────────────────────────────────────
     print("opening follower: " + String(FOLLOWER_PORT))
     var follower = SO101Arm(
-        String(FOLLOWER_PORT), max_step_ticks=MAX_STEP_TICKS
+        String(FOLLOWER_PORT),
+        max_step_ticks=MAX_STEP_TICKS,
+        track_step_ticks=TRACK_STEP_TICKS,
     )
     print("opening leader:   " + String(LEADER_PORT))
     var leader = SO101Arm(String(LEADER_PORT), max_step_ticks=0)

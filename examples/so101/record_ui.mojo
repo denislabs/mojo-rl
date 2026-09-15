@@ -88,6 +88,12 @@ comptime UI_EVERY = 3
 """Draw every 3rd tick — 10 Hz. See the header: the tick belongs to the
 camera, and the draw has to fit in what is left of it."""
 
+comptime TRACK_STEP_TICKS = 512
+"""~45 degrees: the clamp once the follower has caught up with the leader.
+See `SO101Arm.track_step_ticks` — one 80-tick clamp made the follower lag the
+leader by 300 ms."""
+
+
 comptime CAMERA_NAMES = "observation.images.front,observation.images.side"
 
 comptime TRACE_CAP = 300
@@ -308,7 +314,9 @@ def main() raises:
 
     print("opening arms ...")
     var follower = SO101Arm(
-        String(FOLLOWER_PORT), max_step_ticks=MAX_STEP_TICKS
+        String(FOLLOWER_PORT),
+        max_step_ticks=MAX_STEP_TICKS,
+        track_step_ticks=TRACK_STEP_TICKS,
     )
     var leader = SO101Arm(String(LEADER_PORT), max_step_ticks=0)
     follower.bus.timeout_ms = 20

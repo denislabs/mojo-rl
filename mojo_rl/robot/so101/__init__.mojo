@@ -13,11 +13,12 @@ a policy has to speak at both ends of sim-to-real.
 
 from mojo_rl.robot.so101.sim_map import SimJointMap
 from mojo_rl.robot.so101.arm import (
+    ALIGN_TICKS,
     SO101Arm,
     SO101Calibration,
     SO101_N,
     GRIPPER,
-    joint_name, joint_short,
+    is_aligned, joint_name, joint_short, step_limit,
 )
 
 from mojo_rl.robot.so101.calibration import (
