@@ -29,11 +29,17 @@ right 4. A result that moves with an unrelated edit is the symptom
 kernel family, so this is filed as a Metal miscompute of the block kernel,
 NOT a located logic defect.
 
-⚠ NOT YET RUN ON NVIDIA. Whether CUDA drops the pair too is the open question
-this file answers there. `libero_goal`'s props rest on the device in
-`libero_demo_batched` on both backends, which does not settle it: a lane the
-block kernel cannot finish is marked and re-run by the serial kernel, and a
-240-geom scene may take that path.
+⚠⚠ METAL ONLY — RTX 5090, 2026-09-15: every row 4/4, 4/4, 28/28, 4/4 on both
+broadphases, each GPU leg 3-9 ms. So the block kernel is CORRECT on CUDA, and
+a LIBERO scene on the Mac batch can drop a prop through a table while the same
+build on NVIDIA does not. `libero_goal`'s props rested on Metal in
+`libero_demo_batched`, which is consistent with that scene taking the serial
+fallback (a lane the block kernel cannot finish is marked and re-run by the
+serial kernel) — not measured.
+
+⚠ ONE `DeviceContext` FOR THE RUN. The first NVIDIA run built a context per
+leg and hung for good right after the CPU leg's `cuStreamDestroy`; sharing one
+context, the same legs return in milliseconds.
 
 The plane row is the CONTROL: box/plane goes through `_sap_plane_narrow`, not
 the pair routine, and it agrees — so a failure below is the pair path, not
