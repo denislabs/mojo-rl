@@ -32,6 +32,7 @@ by, and MuJoCo's own allocation (`5 + iterations` verts, `6*iterations`
 faces) is far larger.
 """
 
+from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout
 
 
@@ -338,22 +339,29 @@ comptime COLL_NO_FALLBACK: Bool = False
 # bench_libero_collision.mojo` decodes it.
 comptime COLL_CAND_REPORT: Bool = False
 
-# ⚠ A CANDIDATE FIX UNDER MEASUREMENT, OFF (PERFORMANCE.md §13.55). True makes
-# the block kernel's thread-0 sweep drop a pair BEFORE listing it when the
-# narrow phase would reject it at once — the predefined-pair lookup, then
-# `pair_body_filtered`, then the contype/conaffinity mask, through the
-# helper `broadphase_sap._sap_pair_listable`. Exact by construction: such a
-# pair emits no contact and touches no warm slot, and the survivors keep
-# their emission order, so the compacted `contacts` are the same list.
+# ⚠⚠ ON FOR NVIDIA, OFF FOR METAL — PRODUCTION SINCE 2026-09-15 (§13.55).
+# True makes the block kernel's thread-0 sweep drop a pair BEFORE listing it
+# when the narrow phase would reject it at once — the predefined-pair lookup,
+# then `_sap_pair_filter_rejects` (body filter + mask), through
+# `broadphase_sap._sap_pair_listable`, which decides with the same function
+# `_sap_pair_narrow` does. Exact by construction: such a pair emits no
+# contact and touches no warm slot, and the survivors keep their emission
+# order, so the compacted `contacts` are the same list.
 #
 # WHY: on LIBERO (240 geoms, fixtures built from many boxes on one body) the
-# sweep's AABB test passes 377-500 pairs per lane against the 256-candidate
-# cap — EVERY lane overflowed and went to the serial fallback, so the block
-# kernel listed, gave up, and the per-env serial kernel did all the work —
-# while only 25-127 of those pairs survive these three rejects (the report,
-# 4 lanes, Apple). The plane phase already gates its candidates the same way
-# (`_sap_plane_gate`); the sweep did not.
-comptime COLL_PREFILTER: Bool = False
+# sweep passed 377-550 pairs per lane against the 256-candidate cap, so EVERY
+# lane overflowed and the serial per-env kernel did its collision. Only
+# 26-198 survive these rejects. RTX 5090, 256 lanes, recorded demo poses:
+# the launch 10.1 / 26.3 / 34.4 ms -> 0.97 / 1.86 / 1.80 (10-19x), CPU check
+# identical to the unfiltered build on every window.
+#
+# WHY NOT METAL: once the block kernel actually runs LIBERO's box/box pairs,
+# Metal returns NO contacts for them — the miscompute
+# `tests/physics3d/test_box_box_sap_gpu_parity.mojo` records (CUDA is
+# correct). The overflow was what kept Metal's `libero_goal` props on the
+# table. Flip this to True for Metal only once that test passes there. The
+# arm script's `nopre` arm sets it False to A/B the old production.
+comptime COLL_PREFILTER: Bool = has_nvidia_gpu_accelerator()
 comptime COLL_REPORT_HDR: Int = 11
 comptime COLL_REPORT_WORDS: Int = COLL_REPORT_HDR + COLL_NCAND_CAP
 

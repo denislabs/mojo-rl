@@ -23,9 +23,10 @@ sweep passes 377-500 AABB pairs against the 256-candidate cap, so every lane
 overflows, is marked, and the serial per-env kernel does its collision —
 the block kernel never runs its narrow phase on LIBERO. Only 25-127 of those
 pairs survive the narrow phase's first rejects, which `COLL_PREFILTER`
-applies at listing. ⚠ On Metal the block kernel then drops the box/box
-contacts (`test_box_box_sap_gpu_parity`, a Metal miscompute; CUDA is
-correct), which the overflow had been hiding — the CPU check shows it.
+applies at listing — production on NVIDIA since the 5090 measured it exact
+and 10-19x on this launch (PERFORMANCE.md §13.55). ⚠ Off on Metal: there
+the block kernel drops the box/box contacts (`test_box_box_sap_gpu_parity`,
+a Metal miscompute), which the overflow had been hiding.
 
 WHAT IT DOES.
 
@@ -88,7 +89,7 @@ from mojo_rl.physics3d.collision.broadphase_sap import (
 from mojo_rl.physics3d.collision.ccd_workspace import (
     COLL_BLOCK_KERNEL, COLL_TPB, COLL_NCAND_CAP, COLL_NO_FALLBACK,
     COLL_STAGE_SLOTS, HILL_WARM_ACROSS_STEPS, COLL_CAND_REPORT,
-    COLL_REPORT_HDR,
+    COLL_REPORT_HDR, COLL_PREFILTER,
 )
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE, METADATA_SIZE, META_IDX_NUM_CONTACTS,
@@ -505,7 +506,8 @@ def main() raises:
           " snaps", snaps, " rounds", rounds, " MAX_CONTACTS", MAXC)
     print(
         "ARM COLL_BLOCK_KERNEL=", COLL_BLOCK_KERNEL, " COLL_TPB=", COLL_TPB,
-        " COLL_NO_FALLBACK=", COLL_NO_FALLBACK, " COLL_STOP_AFTER=",
+        " COLL_NO_FALLBACK=", COLL_NO_FALLBACK, " COLL_PREFILTER=",
+        COLL_PREFILTER, " COLL_STOP_AFTER=",
         COLL_STOP_AFTER, " COLL_CAND_REPORT=", COLL_CAND_REPORT,
         " HILL_WARM_ACROSS_STEPS=", HILL_WARM_ACROSS_STEPS, sep="",
     )
@@ -635,5 +637,6 @@ def main() raises:
             " cpu_lanes=", cpu_lanes, " cpu_ncon_mismatch=", cpu_mismatch,
             " cpu_worst=", cpu_worst,
             " tpb=", COLL_TPB, " nofb=", COLL_NO_FALLBACK,
-            " stop=", COLL_STOP_AFTER, " report=", COLL_CAND_REPORT, sep="",
+            " stop=", COLL_STOP_AFTER, " report=", COLL_CAND_REPORT,
+            " prefilter=", COLL_PREFILTER, sep="",
         )

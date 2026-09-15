@@ -1,59 +1,47 @@
 #!/usr/bin/env bash
-# LIBERO COLLISION ARMS — PERFORMANCE.md §13.55. Nine builds of
+# LIBERO COLLISION ARMS — PERFORMANCE.md §13.55. Builds of
 # benchmarks/physics3d_gpu/bench_libero_collision.mojo, one knob set each,
 # run INTERLEAVED, MIN over rounds.
 #
-#   pixi run -e nvidia bash scripts/libero_collision_arms.sh build   # ~9 compiles
+#   pixi run -e nvidia bash scripts/libero_collision_arms.sh build   # ~8 compiles
 #   pixi run -e nvidia bash scripts/libero_collision_arms.sh run
 #   pixi run python scripts/libero_collision_arms.py                 # the table
 #
 #   OUT=libero_coll  LANES=256  ROUNDS=3  WINDOWS=5,30,45  SNAPS=8
-#   ARMS="base nofb pre pre_nofb pre_stop1 pre_stop2 pre_stop3 pre_tpb64 report"
+#   ARMS="base nofb nopre stop1 stop2 stop3 tpb64 report"
 #   are the knobs (defaults shown).
 #
-# WHAT THE MAC ALREADY SAID (4 lanes, the report): EVERY lane's sweep passes
-# 377-500 AABB pairs against the 256-candidate cap, so every lane overflows
-# and the block kernel hands it to the serial kernel — while only 25-127 of
-# those pairs survive the narrow phase's first rejects. So the arms are
-# about the PREFILTER (`COLL_PREFILTER`), which drops those pairs at listing.
+# ⚠ NVIDIA ARMS. Production `base` carries `COLL_PREFILTER` on NVIDIA only
+# (`ccd_workspace.mojo`, 2026-09-15): on Metal `base` and `nopre` are the SAME
+# binary and `build` refuses them, which is the md5 guard doing its job.
 #
 # THE ARMS, and the question each answers:
 #
-#   base       production                    the reference time
-#   nofb       COLL_NO_FALLBACK              the block launch ALONE; `flagged`
-#              = lanes that overflowed (expect all of them), base - nofb =
-#              the serial kernel doing every lane's collision
-#   pre        COLL_PREFILTER                THE CANDIDATE FIX; base / pre is
-#              its speedup, and its CPU check must match base's
-#   pre_nofb   pre + COLL_NO_FALLBACK        flagged must be 0; pre - pre_nofb
-#              = the flagged-only serial launch paid for nothing
-#   pre_stop1  pre_nofb + COLL_STOP_AFTER=1  phase 0: poses + AABBs (+ launch)
-#   pre_stop2  pre_nofb + COLL_STOP_AFTER=2  + phase 1: thread 0's listing
-#   pre_stop3  pre_nofb + COLL_STOP_AFTER=3  + phase 2: the narrow phase
-#              (pre_nofb - pre_stop3 = phase 3, compaction + contact sort)
-#   pre_tpb64  pre + COLL_TPB=64             fewer rounds, twice the CCD rows
-#   report     pre + COLL_CAND_REPORT        per lane: uncapped AABB passes,
-#              survivors, listed candidates, rounds, kinds (a counting arm,
-#              run once — its times are not the kernel's)
+#   base   production                     the reference time
+#   nofb   COLL_NO_FALLBACK               `flagged` must stay 0; base - nofb =
+#          the flagged-only serial launch that runs every substep
+#   nopre  COLL_PREFILTER=False           the production before §13.55: every
+#          LIBERO lane overflows into the serial kernel; nopre / base is the
+#          prefilter's win, and base's CPU check must equal nopre's
+#   stop1  nofb + COLL_STOP_AFTER=1       phase 0: poses + AABBs (+ launch)
+#   stop2  nofb + COLL_STOP_AFTER=2       + phase 1: thread 0's listing
+#   stop3  nofb + COLL_STOP_AFTER=3       + phase 2: the narrow phase
+#          (nofb - stop3 = phase 3, compaction + contact sort)
+#   tpb64  COLL_TPB=64                    fewer rounds, twice the CCD rows
+#   report COLL_CAND_REPORT               per lane: uncapped AABB passes,
+#          survivors, listed candidates, rounds, kinds (a counting arm, run
+#          once — its times are not the kernel's)
 #
-# optional:  report_nopre (the overflow, as production lists it),
+# optional:  nopre_nofb (the old production's flagged count),
+#            report_nopre (the overflow, as the old production listed it),
 #            c1024 (COLL_NCAND_CAP=1024 without the prefilter)
 #
-# ⚠ THE KNOBS ARE FLIPPED IN THE TREE, ONE BUILD AT A TIME, AND PUT BACK FROM
-# THIS SCRIPT'S OWN COPY — never `git checkout`. The script refuses to start
-# if either knob file has uncommitted edits, restores on EXIT/INT/TERM, and
-# checks the restored bytes against the copy after every build. Do not edit
-# those two files, or run a second build, while `build` runs.
-#
-# ⚠ SAME RULES AS p0_ab.sh: nothing else on the GPU during `run`; the arms are
-# BINARIES, and two arms with the same md5 are refused — a delta of zero is
-# the shape of an unchanged binary, not of a null result.
 set -euo pipefail
 
 CMD=${1:?usage: libero_collision_arms.sh build|run}
 OUT=${OUT:-libero_coll}
 LANES=${LANES:-256}
-ARMS=${ARMS:-base nofb pre pre_nofb pre_stop1 pre_stop2 pre_stop3 pre_tpb64 report}
+ARMS=${ARMS:-base nofb nopre stop1 stop2 stop3 tpb64 report}
 ROUNDS=${ROUNDS:-3}
 WINDOWS=${WINDOWS:-5,30,45}
 SNAPS=${SNAPS:-8}
@@ -70,17 +58,17 @@ _md5() { (md5sum "$1" 2>/dev/null || md5 -q "$1") | awk '{print $1}'; }
 # "file knob value" lines for an arm
 _knobs() {
   case "$1" in
-    base)      ;;
-    nofb)      echo "$CCD COLL_NO_FALLBACK True" ;;
-    pre)       echo "$CCD COLL_PREFILTER True" ;;
-    pre_nofb)  echo "$CCD COLL_PREFILTER True"; echo "$CCD COLL_NO_FALLBACK True" ;;
-    pre_stop1) echo "$CCD COLL_PREFILTER True"; echo "$CCD COLL_NO_FALLBACK True"; echo "$SAP COLL_STOP_AFTER 1" ;;
-    pre_stop2) echo "$CCD COLL_PREFILTER True"; echo "$CCD COLL_NO_FALLBACK True"; echo "$SAP COLL_STOP_AFTER 2" ;;
-    pre_stop3) echo "$CCD COLL_PREFILTER True"; echo "$CCD COLL_NO_FALLBACK True"; echo "$SAP COLL_STOP_AFTER 3" ;;
-    pre_tpb64) echo "$CCD COLL_PREFILTER True"; echo "$CCD COLL_TPB 64" ;;
-    report)    echo "$CCD COLL_PREFILTER True"; echo "$CCD COLL_CAND_REPORT True" ;;
-    report_nopre) echo "$CCD COLL_CAND_REPORT True" ;;
-    c1024)     echo "$CCD COLL_NCAND_CAP 1024" ;;
+    base)         ;;
+    nofb)         echo "$CCD COLL_NO_FALLBACK True" ;;
+    nopre)        echo "$CCD COLL_PREFILTER False" ;;
+    nopre_nofb)   echo "$CCD COLL_PREFILTER False"; echo "$CCD COLL_NO_FALLBACK True" ;;
+    stop1)        echo "$CCD COLL_NO_FALLBACK True"; echo "$SAP COLL_STOP_AFTER 1" ;;
+    stop2)        echo "$CCD COLL_NO_FALLBACK True"; echo "$SAP COLL_STOP_AFTER 2" ;;
+    stop3)        echo "$CCD COLL_NO_FALLBACK True"; echo "$SAP COLL_STOP_AFTER 3" ;;
+    tpb64)        echo "$CCD COLL_TPB 64" ;;
+    report)       echo "$CCD COLL_CAND_REPORT True" ;;
+    report_nopre) echo "$CCD COLL_CAND_REPORT True"; echo "$CCD COLL_PREFILTER False" ;;
+    c1024)        echo "$CCD COLL_PREFILTER False"; echo "$CCD COLL_NCAND_CAP 1024" ;;
     *) echo "!! unknown arm '$1'" >&2; exit 1 ;;
   esac
 }

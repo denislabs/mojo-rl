@@ -5235,3 +5235,90 @@ What decides:
    and sweep are next; if phase 2 does, `pre_tpb64` says whether fewer
    rounds pay; `pre - pre_nofb` prices the flagged-only launch that runs
    every substep with nothing flagged.
+
+**The 5090 (2026-09-15, 256 lanes, 3 windows x 8 snapshots, MIN of 3
+interleaved rounds, `scripts/libero_collision_arms.py`):**
+
+    ms per collision launch      window 5   window 30   window 45
+    base (production)              10.107      26.308      34.433
+    nofb (block kernel alone)       0.761       0.785       0.788   flagged 2048 of 2048
+    pre  (COLL_PREFILTER)           0.971       1.863       1.796
+      speedup                      10.4x       14.1x       19.2x
+    pre_tpb64                       0.959       1.731       1.621   0.99 / 0.93 / 0.90
+
+1. **Confirmed: production LIBERO is the serial kernel.** Every lane of
+   every snapshot is flagged; the serial fallback is 92.5-97.7% of the
+   launch. It also explains the gap between §13.54's trace (9.47 ms, the
+   first 15 control steps) and the step's 32 ms per substep over 60 steps:
+   the serial kernel climbs to 26-34 ms as the grasp begins, which is most
+   of the step.
+2. **The prefilter is exact on CUDA.** Its CPU check is production's to the
+   lane and the digit — 0 / 12 / 73 mismatches of 2048 with the same worst
+   field (the float32 manifold band) and the same `ncon` — on every arm that
+   ran the narrow phase. No `!!` line. So the Metal loss is the box/box
+   miscompute alone.
+3. **The prefiltered kernel, phase by phase:**
+
+       phase                                   w5      w30     w45
+       0  poses + AABBs (+ launch)            0.020   0.020   0.020
+       1  thread-0 listing (sort, sweep)      0.712   0.860   0.865   73 / 46 / 48%
+       2  narrow phase, 1-7 rounds            0.105   0.507   0.509
+       3  compaction + contact sort           0.134   0.476   0.395
+          flagged-only launch, nothing flagged 0.000  0.000   0.007
+
+   The listing is thread-0 serial: ~3 000 AABB tests and ~5 300
+   insertion-sort shifts per lane over 155 geoms, rebuilt from geom order on
+   every launch. Candidates 26 / 59 / 86 mean, max 198; no overflow.
+
+**What it predicts for the step** (to be measured, not claimed): §13.54's
+801 ms per control step is ~32 ms per substep, of which Newton ~2.1, CRBA
+~1.6 and the rest ~1 — leaving ~27 ms of collision, which the late windows
+here reproduce. At ~1.8 ms the substep would be ~6.5 ms: ~160 ms per
+control step, ~5x.
+
+**Next, in order:**
+
+1. **Ship `COLL_PREFILTER` — on NVIDIA.** On Metal it drops box/box contacts
+   until `test_box_box_sap_gpu_parity` passes there; Metal's `libero_goal`
+   currently survives only BECAUSE every lane overflows, and any scene
+   under the cap (kitchen_scene3) already drops props through tables.
+   Then `_sap_pair_narrow` should call `_sap_pair_listable` instead of
+   keeping its own copy of those rejects. Gate: `libero_demo_batched
+   --cpu-lanes 10` (replay) and `--timing-only --steps 60` on the box.
+2. **Phase 1, the thread-0 listing (half the remaining launch).** The
+   insertion sort starts from geom order every launch; carrying the
+   previous launch's order per env turns ~5 300 shifts into ~n on a scene
+   that barely moves between substeps, and the sweep's ~3 000 tests are
+   the next term.
+3. `COLL_TPB 64` buys 7-10% late — after 1 and 2, not before.
+
+**SHIPPED, NVIDIA ONLY (2026-09-15).** `ccd_workspace.COLL_PREFILTER =
+has_nvidia_gpu_accelerator()`, a compile-time query (the idiom
+`cuda/graph.mojo` uses), so each platform builds one instantiation. The
+body filter and the mask are now ONE function, `_sap_pair_filter_rejects`,
+which `_sap_pair_narrow` decides with and the listing helper
+`_sap_pair_listable` calls — so a reject relaxed in the narrow phase can no
+longer leave the listing dropping a pair that collides. The arms moved with
+production: `base` is the prefiltered kernel on NVIDIA, `nopre` the old one
+(on Metal the two are the same binary and `build` refuses them).
+
+Gates, this Mac (a worktree at 1f9972597 plus these files, so none of the
+in-flight parser/render edits of the tree are in them):
+
+| gate | result |
+|---|---|
+| `bench_libero_collision`, 4 lanes, Metal (prefilter off there) vs the HEAD build | all 24 snapshot checksums IDENTICAL; CPU check unchanged — the refactored narrow phase is bit-exact on the serial path |
+| `test_contact_pair_vs_mujoco` | 7 / 7 (pairs bypassing masks and excludes, margins) |
+| `test_sap_fields` | 3 / 3 goldens (humanoid, sawyer mesh, walker2d dispatch) |
+| `test_narrow_phase_pairs` | 2 / 2 (vs MuJoCo, GPU vs CPU) |
+| cross-emit `sm_120`, shipped vs `COLL_PREFILTER = False` | the block kernel's PTX differs (1 087 622 B vs 1 081 449 B) — the query is True for the target; the serial kernel identical; 0 `.extern` in either |
+
+The prefilter's own exactness on CUDA is the 5090 arm run above (CPU check
+equal to the unfiltered build's on every window). **Still the box's:** the
+end-to-end replay and the step time with it —
+
+    sed "s/^comptime LANES = .*/comptime LANES = 256/" \
+        examples/tasks/libero_demo_batched.mojo > /tmp/libero_lanes_256.mojo
+    pixi run -e nvidia mojo build -I . -o /tmp/libero_256 /tmp/libero_lanes_256.mojo
+    pixi run -e nvidia /tmp/libero_256 --cpu-lanes 10              # the gate
+    pixi run -e nvidia /tmp/libero_256 --timing-only --steps 60   # was 801 ms

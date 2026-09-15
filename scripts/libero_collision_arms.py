@@ -6,17 +6,17 @@ Reads `$OUT/<arm>.r<round>.log`, takes each arm's `ms_mean` per window and
 the MIN over rounds (the p0_ab discipline: the 5090's run-to-run noise is
 ~0.5% median with single-row flukes), then derives:
 
-    production:  the serial fallback's share         = base - nofb
-    the prefilter's speedup                           = base / pre
-    the prefiltered kernel, phase by phase:
-      phase 0  world poses + AABBs (+ launch)         = pre_stop1
-      phase 1  thread 0's candidate listing           = pre_stop2 - pre_stop1
-      phase 2  the narrow phase, in rounds            = pre_stop3 - pre_stop2
-      phase 3  compaction + the contact sort          = pre_nofb  - pre_stop3
-      the flagged-only serial launch, for nothing     = pre - pre_nofb
-    COLL_TPB 64 on the prefiltered kernel             = pre_tpb64 / pre
+    the prefilter's win (the production before it)   = nopre / base
+    production, phase by phase (NVIDIA: prefiltered):
+      phase 0  world poses + AABBs (+ launch)         = stop1
+      phase 1  thread 0's candidate listing           = stop2 - stop1
+      phase 2  the narrow phase, in rounds            = stop3 - stop2
+      phase 3  compaction + the contact sort          = nofb  - stop3
+      the flagged-only serial launch                  = base  - nofb
+    COLL_TPB 64                                       = tpb64 / base
 
-and prints the `report` arm's per-window candidate summary verbatim.
+and prints the `report` arms' per-window candidate summaries verbatim.
+Any arm whose round-1 CPU check departs from `base`'s is flagged first.
 """
 import glob
 import os
@@ -25,8 +25,8 @@ import sys
 from collections import defaultdict
 
 OUT = os.environ.get("OUT", sys.argv[1] if len(sys.argv) > 1 else "libero_coll")
-ARMS = ["base", "nofb", "pre", "pre_nofb", "pre_stop1", "pre_stop2",
-        "pre_stop3", "pre_tpb64", "c1024", "report", "report_nopre"]
+ARMS = ["base", "nofb", "nopre", "nopre_nofb", "stop1", "stop2", "stop3",
+        "tpb64", "c1024", "report", "report_nopre"]
 
 
 def parse(path):
@@ -101,16 +101,14 @@ def main():
     print()
     print("the derivations, ms per launch")
     for w in windows:
-        base, nofb, pre = get("base", w), get("nofb", w), get("pre", w)
-        pn = get("pre_nofb", w)
-        s1, s2, s3 = get("pre_stop1", w), get("pre_stop2", w), get("pre_stop3", w)
-        print(f"  window {w}:")
-        if base is not None and nofb is not None:
-            print(f"    production: block launch alone {nofb:.3f}, the serial"
-                  f" fallback {base - nofb:.3f} ({100 * (base - nofb) / base:.1f}% of base)")
-        if base is not None and pre is not None:
-            print(f"    COLL_PREFILTER: {base:.3f} -> {pre:.3f}  ({base / pre:.2f}x)")
-        ref = pre if pre is not None else None
+        base, nofb, nopre = get("base", w), get("nofb", w), get("nopre", w)
+        s1, s2, s3 = get("stop1", w), get("stop2", w), get("stop3", w)
+        print(f"  window {w}:  base {base:.3f} ms" if base is not None else f"  window {w}:")
+        if nopre is not None and base is not None:
+            print(f"    COLL_PREFILTER: {nopre:.3f} (without) -> {base:.3f}  ({nopre / base:.2f}x)")
+        nn = get("nopre_nofb", w)
+        if nn is not None and nopre is not None:
+            print(f"    without it, the serial fallback was {nopre - nn:.3f} of {nopre:.3f}")
         parts = []
         if s1 is not None:
             parts.append(("phase 0  poses + AABBs (+ launch)", s1))
@@ -118,19 +116,19 @@ def main():
             parts.append(("phase 1  thread-0 listing: plane, sort, sweep", s2 - s1))
         if s2 is not None and s3 is not None:
             parts.append(("phase 2  narrow phase (rounds of COLL_TPB)", s3 - s2))
-        if s3 is not None and pn is not None:
-            parts.append(("phase 3  compaction + contact sort", pn - s3))
-        if pn is not None and pre is not None:
-            parts.append(("flagged-only serial launch (nothing flagged)", pre - pn))
+        if s3 is not None and nofb is not None:
+            parts.append(("phase 3  compaction + contact sort", nofb - s3))
+        if nofb is not None and base is not None:
+            parts.append(("flagged-only serial launch", base - nofb))
         for name, v in parts:
-            share = f"  {100 * v / ref:5.1f}% of pre" if ref else ""
+            share = f"  {100 * v / base:5.1f}% of base" if base else ""
             print(f"    {name:<48} {v:7.3f}{share}")
-        t64 = get("pre_tpb64", w)
-        if t64 is not None and pre is not None:
-            print(f"    COLL_TPB 64 / 32 on the prefiltered kernel = {t64 / pre:.3f}")
+        t64 = get("tpb64", w)
+        if t64 is not None and base is not None:
+            print(f"    COLL_TPB 64 / 32 = {t64 / base:.3f}")
         c1 = get("c1024", w)
-        if c1 is not None and base is not None:
-            print(f"    COLL_NCAND_CAP 1024 without the prefilter: {base:.3f} -> {c1:.3f}")
+        if c1 is not None and nopre is not None:
+            print(f"    COLL_NCAND_CAP 1024 without the prefilter: {nopre:.3f} -> {c1:.3f}")
 
     print()
     print("round-1 checks per arm: lanes flagged for the fallback, and the CPU check")

@@ -1202,6 +1202,42 @@ def _sap_plane_narrow[
 
 
 @always_inline
+def _sap_pair_filter_rejects[
+    DTYPE: DType,
+    EX_CAP: Int,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_EXCLUDES: Layout,
+](
+    gi_body: Int,
+    gj_body: Int,
+    gi_contype: Int,
+    gi_conaffinity: Int,
+    gj_contype: Int,
+    gj_conaffinity: Int,
+    bodies: LayoutTensor[DTYPE, L_BODIES, MutAnyOrigin],
+    mmeta: LayoutTensor[DTYPE, L_MMETA, MutAnyOrigin],
+    excludes: LayoutTensor[DTYPE, L_EXCLUDES, MutAnyOrigin],
+    ex_sig: Scratch[Int, EX_CAP],
+    n_sig: Int,
+    nbody: Int,
+) -> Bool:
+    """True = the SAP pair path discards this NON-predefined pair before
+    any geometry: `pair_body_filtered` (weld, weld-parent, exclude), then
+    the contype/conaffinity mask. Pass the pair CANONICALISED as
+    `_sap_pair_narrow` does. The narrow phase and the block kernel's listing
+    (`_sap_pair_listable`) both decide through this — see the note at the
+    narrow phase's call."""
+    if pair_body_filtered[DTYPE, EX_CAP=EX_CAP](
+        gi_body, gj_body, bodies, mmeta, excludes, ex_sig, n_sig, nbody,
+    ):
+        return True
+    return (gi_contype & gj_conaffinity) == 0 and (
+        gj_contype & gi_conaffinity
+    ) == 0
+
+
+@always_inline
 def _sap_pair_narrow[
     DTYPE: DType,
     BATCH: Int,
@@ -1396,30 +1432,28 @@ def _sap_pair_narrow[
         pr._c_ppair += Int(perf_counter_ns()) - pr._c_t0
         pr._n_ppair += 1
     if ipair < 0:
-        # MuJoCo's body-pair filter — weld, weld-parent and exclude.
-        # See `pair_body_filtered`; shared with the O(N^2) loop and
-        # the plane loop above, which had no body filter at all
-        # (defect 24).
+        # MuJoCo's body-pair filter — weld, weld-parent and exclude — then
+        # the contype/conaffinity mask, through `_sap_pair_filter_rejects`.
+        # ⚠ ONE FUNCTION FOR TWO READERS: this narrow phase, and the block
+        # kernel's listing (`_sap_pair_listable`, `COLL_PREFILTER`), which
+        # drops a pair BEFORE it is a candidate on the promise that this
+        # call would reject it. A reject added here without going through
+        # that function would make the listing keep a pair this rejects
+        # (harmless); a reject RELAXED here without it would make the
+        # listing drop a pair this collides — a silently missing contact.
+        # (`_c_pbf` / `_n_pbf` time both tests since 2026-09-15.)
         comptime if _COLL_PROBE:
             pr._c_t0 = Int(perf_counter_ns())
-        var _pbf = pair_body_filtered[DTYPE, EX_CAP=EX_CAP](
-            gi_body, gj_body, bodies, mmeta, excludes,
-            ex_sig, n_sig, nbody,
+        var _rej = _sap_pair_filter_rejects[DTYPE, EX_CAP=EX_CAP](
+            gi_body, gj_body, gi_contype, gi_conaffinity,
+            Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])),
+            Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])),
+            bodies, mmeta, excludes, ex_sig, n_sig, nbody,
         )
         comptime if _COLL_PROBE:
             pr._c_pbf += Int(perf_counter_ns()) - pr._c_t0
             pr._n_pbf += 1
-        if _pbf:
-            return
-        var gj_contype = Int(
-            rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
-        )
-        var gj_conaffinity = Int(
-            rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
-        )
-        if (gi_contype & gj_conaffinity) == 0 and (
-            gj_contype & gi_conaffinity
-        ) == 0:
+        if _rej:
             return
 
     var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
@@ -3052,14 +3086,11 @@ def _sap_pair_listable[
     ⚠ A TRANSCRIPTION OF THAT FUNCTION'S HEAD, IN ITS ORDER, THROUGH THE
     FUNCTIONS IT CALLS: the pair canonicalised by (`mj_geom_type_rank`,
     geom index); a predefined `<pair>` skips the filters; otherwise
-    `pair_body_filtered`, then the contype/conaffinity mask. False means
-    the narrow phase returns before any geometry, emitting nothing and
-    touching no warm slot — so dropping the pair from the list is exact.
-    Read by `COLL_CAND_REPORT` (the survivor count) and `COLL_PREFILTER`
-    (the listing itself). If the prefilter ships, `_sap_pair_narrow` should
-    call this rather than keep its own copy (`_a_rule_written_inline_twice
-    _drifts`); until then the benchmark's CPU check is what holds the two
-    together."""
+    `_sap_pair_filter_rejects` — the SAME function `_sap_pair_narrow`
+    decides with. False means the narrow phase returns before any geometry,
+    emitting nothing and touching no warm slot — so dropping the pair from
+    the list is exact. Read by `COLL_CAND_REPORT` (the survivor count) and
+    `COLL_PREFILTER` (the listing itself)."""
     var lo = si if si < sj else sj
     var hi = sj if si < sj else si
     var lo_type = si_type if si < sj else sj_type
@@ -3072,17 +3103,15 @@ def _sap_pair_listable[
     if find_predefined_pair[DTYPE](gi, gj, dims, pairs, mmeta) >= 0:
         return True
     var gi_is_si = gi == si
-    var gi_body = si_body if gi_is_si else sj_body
-    var gj_body = sj_body if gi_is_si else si_body
-    if pair_body_filtered[DTYPE, EX_CAP=EX_CAP](
-        gi_body, gj_body, bodies, mmeta, excludes, ex_sig, n_sig, nbody,
-    ):
-        return False
-    if (si_contype & sj_conaffinity) == 0 and (
-        sj_contype & si_conaffinity
-    ) == 0:
-        return False
-    return True
+    return not _sap_pair_filter_rejects[DTYPE, EX_CAP=EX_CAP](
+        si_body if gi_is_si else sj_body,
+        sj_body if gi_is_si else si_body,
+        si_contype if gi_is_si else sj_contype,
+        si_conaffinity if gi_is_si else sj_conaffinity,
+        sj_contype if gi_is_si else si_contype,
+        sj_conaffinity if gi_is_si else si_conaffinity,
+        bodies, mmeta, excludes, ex_sig, n_sig, nbody,
+    )
 
 
 def _detect_contacts_sap_block_kernel[
