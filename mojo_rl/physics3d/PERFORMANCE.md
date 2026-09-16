@@ -5526,6 +5526,26 @@ Default-path gates: `test_newton_blocked_elliptic` PASS (blocked vs per-env
 caught, `test_noslip_blocked_kernel` PASS (blocked vs per-env 0.0 with the pass
 both on and off), `test_noslip_elliptic_vs_mujoco` 3/3.
 
-**Still open:** `Jn_c` (11.3 KB) is untouched — it was not needed and is the
-next 12% if a bigger family needs it. `libero_goal` (nv 37, 144 contacts) and
-`libero_spatial` (nv 43, 272) are not expected to fit on this lever alone.
+**Independently verified** by the LIBERO port at 26318ac16 on its own run:
+kitchen_scene3 PASS on Metal, every line digit-for-digit equal to the numbers
+above, gate unmodified. That run also produced a NULL RESULT worth keeping for
+the condim decision itself — at this family's size, condim 4's torsional rows
+change nothing measurable under a null action: the reset, the success word and
+both `|dq|` figures are identical to the condim-3 baseline.
+
+**WHERE THE LEVER RUNS OUT, measured not predicted.** `libero_goal` (nv 37,
+`max_contacts` 144) on the same build is STILL over: the reset passes (592
+words, 8.118896488440441e-08) and the first step dies at pipeline creation with
+the same "exceeds available stack space". So `Jt_c` alone clears 128 x 22 and
+does NOT clear 144 x 37 — the frame scales with `MC*NV`, and goal's is 1.9x
+kitchen_scene3's on every contact-proportional array at once.
+
+**Still open:** `Jn_c` is untouched — 11.3 KB at kitchen_scene3's size, 21.3 KB
+at goal's (`144*37*4`) — and is the next item on the same lever, by the same
+argument: its readers also have `c` fixed. Nobody needs it today
+(kitchen_scene3 is the local device-vs-CPU gate, and goal and spatial run on
+CUDA), so it is NOT done. If it is ever taken, the bar for goal is reset
+8.118896488440441e-08 over 592 words and 400 lane-steps 0 disagreeing, against
+a CUDA `|dq|` baseline of 1.239815717224424e-05 over the first 5 steps and
+1.79e-06 at step 25; `--cpu-lanes K` keeps the iteration cheap.
+`libero_spatial` (nv 43, 272) is further out still.
