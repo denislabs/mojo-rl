@@ -64,6 +64,7 @@ from mojo_rl.physics3d.parser.runtime_load import (
     spec_fields_runtime,
 )
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
 from mojo_rl.physics3d.studio.stepping import StudioIntegEll
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
 from mojo_rl.physics3d.dynamics.osc_pose import (
@@ -77,7 +78,8 @@ from mojo_rl.physics3d.gpu.constants import (
     META_IDX_GOAL_HELD, META_IDX_NUM_CONTACTS, META_IDX_INIT_REGION_0,
     META_INIT_SLOTS, META_IDX_JINIT_0, META_JINIT_SLOTS, META_JINIT_WORDS,
     META_IDX_SHAPE_W_GOAL, META_IDX_SHAPE_W_REACH, MODEL_CURRICULUM_SIZE,
-    CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
+    CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B, CONTACT_IDX_POS_X,
+    CONTACT_IDX_DIST, CONTACT_IDX_NX,
 )
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.tasks.spec import (
@@ -505,10 +507,18 @@ def run[T: PlacementTable, M: ModelDefLike](
     # the device's BODY PAIRS per lane per step, encoded `min * 4096 + max` and
     # sorted — what a count mismatch needs to be diagnosable: WHICH pair.
     var dev_pairs = List[List[List[Int]]]()
+    var dev_points = List[List[List[Float64]]]()
+    # ⚠ PER STEP, LIKE THE TRAJECTORY. The dump below runs in the CPU leg,
+    # AFTER the device loop, so reading `env.d.xpos` there gives the LAST
+    # step's poses — which silently compared step 8's qpos against step 24's
+    # FK and invented a 4 um "FK error" that was not there.
+    var dev_xpos = List[List[Float64]]()
     for _ in range(LANES):
         dev_traj.append(List[Float64]())
         dev_ncon.append(List[Int]())
         dev_pairs.append(List[List[Int]]())
+        dev_points.append(List[List[Float64]]())
+        dev_xpos.append(List[Float64]())
     var eval_cmp = 0
     var eval_bad = 0
     var eval_true = 0
@@ -546,6 +556,7 @@ def run[T: PlacementTable, M: ModelDefLike](
             dev_ncon[e].append(nc)
             var pr = List[Int]()
             var nshow = nc if nc < MC else MC
+            var pts = List[Float64]()
             for c in range(nshow):
                 var cb = e * MC * CONTACT_SIZE + c * CONTACT_SIZE
                 var ba = Int(env.d.contacts.data[cb + CONTACT_IDX_BODY_A])
@@ -553,11 +564,22 @@ def run[T: PlacementTable, M: ModelDefLike](
                 pr.append(
                     (ba * 4096 + bb) if ba <= bb else (bb * 4096 + ba)
                 )
+                # pos (3), dist, normal (3) — the manifold, for the dump below
+                pts.append(Float64(env.d.contacts.data[cb + CONTACT_IDX_POS_X]))
+                pts.append(Float64(env.d.contacts.data[cb + CONTACT_IDX_POS_X + 1]))
+                pts.append(Float64(env.d.contacts.data[cb + CONTACT_IDX_POS_X + 2]))
+                pts.append(Float64(env.d.contacts.data[cb + CONTACT_IDX_DIST]))
+                pts.append(Float64(env.d.contacts.data[cb + CONTACT_IDX_NX]))
+                pts.append(Float64(env.d.contacts.data[cb + CONTACT_IDX_NX + 1]))
+                pts.append(Float64(env.d.contacts.data[cb + CONTACT_IDX_NX + 2]))
+            dev_points[e].append(pts^)
             for a in range(len(pr)):
                 for b in range(a + 1, len(pr)):
                     if pr[b] < pr[a]:
                         pr[a], pr[b] = pr[b], pr[a]
             dev_pairs[e].append(pr^)
+            for k in range(NB * 3):
+                dev_xpos[e].append(Float64(env.d.xpos.data[e * NB * 3 + k]))
             if nc > peak_ncon:
                 peak_ncon = nc
             if nc >= MC:
@@ -627,6 +649,9 @@ def run[T: PlacementTable, M: ModelDefLike](
         var jq = joint_init_addresses(tasks[ti], fmd.joint_names, nqs)
         var jd = joint_init_dof_addresses(tasks[ti], fmd.joint_names, jvn)
         var d = Data[H, DynDims, 1](dims)
+        # a SECOND Data, only ever holding the device's dumped pose — the CPU
+        # lane's own state must not be disturbed by the re-detection.
+        var d2 = Data[H, DynDims, 1](dims)
         var scratch = DynamicsScratch[H, DynDims, 1](dims)
         var integ = StudioIntegEll(dims)
         _host_reset(d, m, tasks[ti], f, rsites, addrs, jq, jd, NQ, NV, e)
@@ -646,6 +671,10 @@ def run[T: PlacementTable, M: ModelDefLike](
                 for w in range(7):
                     cmp[addrs[si].qadr + w] = False
         var ncon_diff = 0
+        var ncon_pose_diff = 0
+        var ncon_pose_first = -1
+        var ncon_pose_dev = 0
+        var ncon_pose_cpu = 0
         var ncon_first = -1
         var ncon_dev = 0
         var ncon_cpu = 0
@@ -663,12 +692,24 @@ def run[T: PlacementTable, M: ModelDefLike](
                     d.qfrc.data[k] = Scalar[H](0)
                 apply_actions_fields[H](sf, d, ctrl, act, fmd.timestep)
                 integ.step["cpu"](d, m)
-            # ⚠⚠ THE CONTACT COUNT FIRST: the device and the CPU take
-            # DIFFERENT collision kernels (`COLL_PREFILTER` is NVIDIA-only, and
-            # the block kernel is not the serial per-env loop), so a lane that
-            # diverges may be disagreeing about the CONTACT SET before any
-            # solver arithmetic. A count mismatch names collision; matching
-            # counts with diverging qpos names the solve.
+            # ⚠⚠ TWO COMPARISONS, AND ONLY THE SECOND IS ABOUT THE COLLIDER.
+            #
+            # `ncc` is this CPU lane's own count at its own state, against the
+            # device's at the device's state — a LANE-vs-LANE difference, which
+            # after any divergence says nothing about which engine is right.
+            # ⚠ AND THE DEVICE'S LIST LAGS ITS OWN qpos BY ONE SUBSTEP:
+            # `SYNC_FK_AFTER_STEP` re-runs FK and velocities after a step, NOT
+            # the collision, so `d.contacts` describes the state before the
+            # last integration. Comparing it against a post-step pose is what
+            # made an earlier version of this gate report a device "defect"
+            # that was not there.
+            #
+            # `ncon_pose_diff` is the honest one: the CPU detector re-run on the
+            # DEVICE's own qpos, against the device's list at that step. It
+            # still carries the one-substep lag on the device side, so it is a
+            # SCREEN, not a proof — but when it is 0 the two colliders agree
+            # wherever the poses agree, and a NONZERO count is what deserves the
+            # three-way (`tools/tasks/contact_pairs_at_state.mojo`).
             var ncc = Int(d.meta.data[META_IDX_NUM_CONTACTS])
             if ncc != dev_ncon[e][step]:
                 ncon_diff += 1
@@ -698,6 +739,16 @@ def run[T: PlacementTable, M: ModelDefLike](
                     _print_pair_diff(
                         e, step, dev_pairs[e][step], cpu_pr, fmd.body_names
                     )
+                    # the device's own manifold for every contact of that step
+                    ref dp = dev_points[e][step]
+                    var np_ = len(dp) // 7
+                    for c in range(np_):
+                        var code = dev_pairs[e][step][c]
+                        print("       dev pt",
+                              _pair_label(code, fmd.body_names), " pos",
+                              dp[c * 7], dp[c * 7 + 1], dp[c * 7 + 2],
+                              " dist", dp[c * 7 + 3], " n", dp[c * 7 + 4],
+                              dp[c * 7 + 5], dp[c * 7 + 6])
                     # ⚠ THE DEVICE'S OWN qpos AT THAT STEP, for a third
                     # opinion: MuJoCo and our CPU detector on the SAME poses
                     # say whether the point count differs AT THAT POSE (a
@@ -709,8 +760,34 @@ def run[T: PlacementTable, M: ModelDefLike](
                         line += String(step)
                         for k in range(NQ):
                             line += " " + String(dev_traj[e][step * NQ + k])
+                        # ⚠⚠ AND THE DEVICE'S OWN `xpos`. Feeding the dumped
+                        # qpos to a float64 FK (ours or MuJoCo's) compares a
+                        # float32 COLLIDER against float64 POSES, and a few
+                        # micrometres of FK difference is enough to flip a
+                        # near-tangent box pair into contact. With both lines
+                        # the FK and the narrow phase can be told apart.
+                        var xl = String("XPOS lane ") + String(e) + " step "
+                        xl += String(step)
+                        for k in range(NB * 3):
+                            xl += " " + String(
+                                dev_xpos[e][step * NB * 3 + k]
+                            )
                         with open(dump_state, "a") as fh:
-                            fh.write(line + "\n")
+                            fh.write(line + "\n" + xl + "\n")
+            # the CPU detector at the DEVICE's pose for this step
+            for k in range(NQ):
+                d2.qpos.data[k] = Scalar[H](dev_traj[e][step * NQ + k])
+            for k in range(NV):
+                d2.qvel.data[k] = Scalar[H](0)
+            forward_kinematics["cpu", H, DynDims, 1](d2, m)
+            detect_contacts_sap["cpu", H, DynDims, 1](d2, m)
+            var n_at_pose = Int(d2.meta.data[META_IDX_NUM_CONTACTS])
+            if n_at_pose != dev_ncon[e][step]:
+                ncon_pose_diff += 1
+                if ncon_pose_first < 0:
+                    ncon_pose_first = step
+                    ncon_pose_dev = dev_ncon[e][step]
+                    ncon_pose_cpu = n_at_pose
             var worst = 0.0
             var worst_k = -1
             for k in range(NQ):
@@ -730,10 +807,17 @@ def run[T: PlacementTable, M: ModelDefLike](
             and lane_window_k < len(word_name) else String("-")
         )
         var nct = (
-            String("ncon same") if ncon_diff == 0
-            else "ncon differs on " + String(ncon_diff) + " steps, first at "
+            String("ncon(lane) same") if ncon_diff == 0
+            else "ncon(lane) differs on " + String(ncon_diff) + " steps, first at "
             + String(ncon_first) + " (dev " + String(ncon_dev) + " cpu "
             + String(ncon_cpu) + ")"
+        )
+        nct += (
+            " | ncon(at the device's pose) same" if ncon_pose_diff == 0
+            else " | ncon(at the device's pose) differs on "
+            + String(ncon_pose_diff) + " steps, first at "
+            + String(ncon_pose_first) + " (dev " + String(ncon_pose_dev)
+            + " cpu " + String(ncon_pose_cpu) + ")"
         )
         print("     cpu lane", e, names[ti], ": |dq| first", window, "steps",
               lane_window, "(", wname, "at step", lane_window_step, ") | at step",

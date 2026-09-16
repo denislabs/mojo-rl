@@ -10,6 +10,13 @@ own `qpos` at the first step where its contact count differs from the CPU leg's.
 this runs MuJoCo on the same words, printing the same per-pair shape so the
 three can be read side by side.
 
+⚠⚠ THE DEVICE COLUMN IN THE TABLE BELOW IS A LAGGED LIST — see
+`tools/tasks/contact_pairs_at_state.mojo`. The batched env does not refresh
+`d.contacts` after a step, so it describes the state before the last
+integration. At EQUAL poses (`tools/tasks/collision_at_pose.mojo`) the GPU
+agrees with our CPU and with MuJoCo on these very pairs; the earlier reading of
+these rows as a GPU defect is withdrawn.
+
 ⚠⚠ WHY THE POSE MATTERS MORE THAN THE COUNT. Two engines stepping the same
 scene diverge, and by the time their contact counts differ their STATES already
 differ — so a count mismatch says nothing about which one is wrong. Feeding one

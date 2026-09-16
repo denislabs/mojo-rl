@@ -11,18 +11,28 @@ at three drifted states. The MuJoCo leg is four lines of h5-free Python
 (`mujoco.MjModel.from_xml_path`, set `qpos`, `mj_forward`, count
 `d.contact[i]` by body pair).
 
-⚠ WHY THIS EXISTS. A count mismatch between two legs can mean either engine is
-wrong, or neither — by the time it shows, the two states have already drifted.
-Only the same pose in all three says which. Measured on libero_living_room_
-scene3 (Metal, 2026-09-16, after the box/box per-thread-array fix 8fea21fb9):
+⚠⚠ WHAT THIS CANNOT SHOW, AND AN EARLIER VERSION OF THIS HEADER CLAIMED IT DID.
+The numbers below were read as "the GPU box/box manifold keeps two extra points
+where our CPU is exact". THAT CONCLUSION IS WITHDRAWN. The batched env's
+`d.contacts` is NOT refreshed after a step (`SYNC_FK_AFTER_STEP` re-runs FK and
+velocities only), so the device's contact list describes the state BEFORE the
+last integration while the dumped `qpos` is post-step — a contact set compared
+against a pose one substep later. Run at EQUAL poses
+(`tools/tasks/collision_at_pose.mojo`: the same scene, one lane, no stepping)
+the GPU agrees with our CPU and with MuJoCo, four points and the same
+distances, on exactly these pairs.
 
-    lane 0 step 8  table x alphabet_soup   device 6  our CPU 4  MuJoCo 4
-    lane 1 step 4  table x ketchup         device 2  our CPU 4  MuJoCo 4
-    lane 2 step 2  table x wooden_tray     device 3  our CPU 3  MuJoCo 3
+So this tool answers "what does our CPU say at this pose", which is one leg of
+three; it does not by itself convict the device. Kept because the CPU-vs-MuJoCo
+agreement at a dumped pose is worth one command.
 
-Whole-scene totals: our CPU 21/17/13 == MuJoCo 21/17/13; the device 23/15/13.
-So the GPU box/box manifold keeps two EXTRA points in one case and drops two in
-another, at a pose where our CPU is exact.
+MEASURED (Metal, 2026-09-16, the lane-0/1/2 poses of libero_living_room_scene3;
+the device column is its LAGGED list and is why the rows differ):
+
+    lane 0 step 8   table x alphabet_soup   our CPU 4   MuJoCo 4   (device 6)
+    lane 1 step 4   table x ketchup         our CPU 4   MuJoCo 4   (device 2)
+    lane 2 step 2   table x wooden_tray     our CPU 3   MuJoCo 3   (device 3)
+
 """
 from std.sys import argv
 from mojo_rl.physics3d.fields import Data, Model, DynDims
@@ -34,6 +44,7 @@ from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
+    CONTACT_IDX_POS_X, CONTACT_IDX_DIST, CONTACT_IDX_NX,
 )
 from mojo_rl.tasks.spec import load_family
 from mojo_rl.tasks.family import scene_path
@@ -102,3 +113,24 @@ def main() raises:
                 per += "  " + fmd.body_names[ba] + " x " + fmd.body_names[bb] + " = " + String(n)
         print(out)
         print("   table pairs:" + per)
+        # ⚠ THE POINTS, NOT ONLY THE COUNT: two engines that agree on the pair
+        # and differ on the count differ in the MANIFOLD — which vertex was
+        # kept or clipped, or whether two points are the same point inside the
+        # distinctness tolerance. Only the positions say which.
+        if len(a) > 3 and String(a[3]) == "--points":
+            detect_contacts_sap["cpu", H, DynDims, 1](d, m)
+            var nn = Int(d.meta.data[META_IDX_NUM_CONTACTS])
+            for c in range(nn):
+                var ba = Int(d.contacts.data[c * CONTACT_SIZE + CONTACT_IDX_BODY_A])
+                var bb = Int(d.contacts.data[c * CONTACT_SIZE + CONTACT_IDX_BODY_B])
+                if ba != want_a and bb != want_a:
+                    continue
+                var o = c * CONTACT_SIZE
+                print("     cpu pt", fmd.body_names[ba], "x", fmd.body_names[bb],
+                      " pos", Float64(d.contacts.data[o + CONTACT_IDX_POS_X]),
+                      Float64(d.contacts.data[o + CONTACT_IDX_POS_X + 1]),
+                      Float64(d.contacts.data[o + CONTACT_IDX_POS_X + 2]),
+                      " dist", Float64(d.contacts.data[o + CONTACT_IDX_DIST]),
+                      " n", Float64(d.contacts.data[o + CONTACT_IDX_NX]),
+                      Float64(d.contacts.data[o + CONTACT_IDX_NX + 1]),
+                      Float64(d.contacts.data[o + CONTACT_IDX_NX + 2]))
