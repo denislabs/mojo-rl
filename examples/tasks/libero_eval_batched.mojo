@@ -73,6 +73,10 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.checkpoint import load_params
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.physics3d.fields import Data, Model, DynDims
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.parser.runtime_load import (
@@ -105,6 +109,7 @@ from mojo_rl.tasks.init_table import load_init_table, InitTable
 from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
 from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
 from mojo_rl.tasks.active import active_mask, init_region_words
+from mojo_rl.tasks.bc_policy import BcNet, BcNorm, load_bc_norm
 from mojo_rl.tasks.placement.table import PlacementTable
 from mojo_rl.tasks.placement.check import (
     joint_init_words, require_device_placement,
@@ -173,21 +178,19 @@ def _pad(s: String, n: Int) -> String:
     return out^
 
 
-def _policy_action(obs: List[Float64]) raises -> List[Float64]:
-    """THE POLICY — `zeros(7)` today, `metric.py`'s own `dummy`.
-
-    ⚠ THE ONE PLACE A POLICY PLUGS IN. `obs` is this lane's observation row as
-    the env wrote it (`task_hooks.write_task_obs`: qpos, qvel, one active word
-    per free slot, then the nine goal words), and the return is OSC_POSE's
-    seven words — six end-effector deltas and one gripper word, NOT normalised
-    (`libero_osc_config` says why). A policy that ignores `obs` is what the
-    null run is."""
-    _ = len(obs)
-    return List[Float64](length=OSC_ACTION_DIM, fill=0.0)
+def _clamp(x: Float64) -> Float64:
+    """OSC_POSE's action box. ⚠ THE FIT HAS NO OUTPUT SQUASH (`bc_policy`), so
+    a regression head can step outside [-1, 1]; robosuite clips there too."""
+    if x > 1.0:
+        return 1.0
+    if x < -1.0:
+        return -1.0
+    return x
 
 
 def run[T: PlacementTable, M: ModelDefLike](
-    n_inits: Int, max_steps: Int, check_lanes: Int, sampled: Bool
+    n_inits: Int, max_steps: Int, check_lanes: Int, sampled: Bool,
+    policy_path: String,
 ) raises:
     comptime E = Phyics3dBatchedEnv[
         M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
@@ -312,7 +315,20 @@ def run[T: PlacementTable, M: ModelDefLike](
     print("  tasks :", n_tasks, "| rows", n_rows, "| horizon", SETTLE_STEPS,
           "settle +", max_steps, "steps", "(LIBERO's own)" if max_steps
           == LIBERO_MAX_STEPS else "(REDUCED)")
-    print("  policy: ZERO ACTION —", "the L6 gate is that the rate is 0")
+    # ⚠⚠ THE POLICY IS BUILT FROM `tasks/bc_policy.BcNet`, the SAME
+    # declaration `libero_bc_train` fitted, and `load_params` validates every
+    # layer's name and size — a checkpoint of a different shape raises here
+    # rather than loading the layers that happen to match.
+    comptime POLICY = BcNet[OD, OSC_ACTION_DIM]
+    var have_policy = policy_path != ""
+    var net = POLICY.make["cpu", Kaiming](None)
+    var norm = BcNorm()
+    if have_policy:
+        load_params["cpu"](net, policy_path, None)
+        norm = load_bc_norm(policy_path + ".norm", OD, OSC_ACTION_DIM)
+        print("  policy:", policy_path, "| obs", OD, "-> 7, clamped to [-1, 1]")
+    else:
+        print("  policy: ZERO ACTION —", "the L6 gate is that the rate is 0")
     if not have_table:
         # ⚠ AND ON THE BOX THE TABLE IS SIMPLY NOT THERE: it is a gitignored
         # build artifact (642 KB), so a machine that pulled the repo has the
@@ -374,6 +390,8 @@ def run[T: PlacementTable, M: ModelDefLike](
     # ⚠ `env._obs` IS A DEVICE BUFFER, copied into a host one — the same
     # `enqueue_copy` `libero_osc_batched` does, at `M.OBS_DIM` per lane.
     var obs_h = ctx.enqueue_create_host_buffer[DT](LANES * OD)
+    var pol_x = Tensor.alloc(LANES * OD)
+    var pol_y = Tensor.alloc(LANES * OSC_ACTION_DIM)
     var solved = List[Bool](length=n_rows, fill=False)
     var first_step = List[Int](length=n_rows, fill=-1)
     var at_settle = List[Bool](length=n_rows, fill=False)
@@ -452,7 +470,9 @@ def run[T: PlacementTable, M: ModelDefLike](
         var action = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
         for step in range(SETTLE_STEPS + max_steps):
             var ap = act_h.unsafe_ptr()
-            if step < SETTLE_STEPS:
+            # ⚠ THE SETTLE STEPS ARE ZEROS EVEN WITH A POLICY — `metric.py`
+            # steps its `dummy` through them, and the props are still falling.
+            if step < SETTLE_STEPS or not have_policy:
                 for k in range(LANES * OSC_ACTION_DIM):
                     ap[unsafe_offset=k] = Scalar[DT](0)
             else:
@@ -460,14 +480,22 @@ def run[T: PlacementTable, M: ModelDefLike](
                 ctx.enqueue_copy(obs_h, env._obs)
                 ctx.synchronize()
                 var op = obs_h.unsafe_ptr()
+                # every lane in ONE forward: the net's batch is LANES
                 for e in range(LANES):
                     obs_row.clear()
                     for k in range(OD):
                         obs_row.append(Float64(op[unsafe_offset = e * OD + k]))
-                    var a = _policy_action(obs_row)
+                    var z = List[Float64]()
+                    norm.apply(obs_row, z)
+                    for k in range(OD):
+                        pol_x.data[e * OD + k] = Scalar[DT](z[k])
+                net.forward["cpu", LANES](
+                    TensorRefs[1](pol_x), pol_y, None
+                )
+                for e in range(LANES):
                     for k in range(OSC_ACTION_DIM):
                         ap[unsafe_offset = e * OSC_ACTION_DIM + k] = Scalar[DT](
-                            a[k] if k < len(a) else 0.0
+                            _clamp(Float64(pol_y.data[e * OSC_ACTION_DIM + k]))
                         )
             ctx.enqueue_copy(env._action, act_h)
             env.step_batch[LANES](ctx, UInt64(step + 1))
@@ -598,9 +626,11 @@ def run[T: PlacementTable, M: ModelDefLike](
         fails.append(String(nonfinite) + " non-finite qpos words")
     if saturated > 0:
         fails.append(String(saturated) + " lane-steps saturated max_contacts")
-    # ⚠⚠ THE L6 GATE: the null action solves nothing. A task above 0 here is a
-    # goal defect (G3-G6), not a policy result — `libero_eval.mojo`'s header.
-    if n_solved > 0:
+    # ⚠⚠ THE L6 GATE APPLIES TO THE NULL RUN ONLY: the null action must solve
+    # nothing (a task above 0 is a goal defect, not a policy result). With a
+    # policy the solved count is THE RESULT, and gating it at 0 would fail the
+    # run for succeeding.
+    if n_solved > 0 and not have_policy:
         fails.append(
             String(n_solved) + " episodes solved by the NULL action"
         )
@@ -615,7 +645,9 @@ def run[T: PlacementTable, M: ModelDefLike](
     # itself is not comparable with anything.
     print("=== PASS —", family,
           "(LIBERO's frozen inits)" if have_table
-          else "(SAMPLED inits — NOT a benchmark number)", ", null rate 0 ===")
+          else "(SAMPLED inits — NOT a benchmark number)",
+          ", success " + String(n_solved) + " / " + String(n_rows) if have_policy
+          else ", null rate 0", "===")
 
 
 def main() raises:
@@ -624,6 +656,7 @@ def main() raises:
     var max_steps = LIBERO_MAX_STEPS
     var check_lanes = 2
     var sampled = False
+    var policy_path = String("")
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -636,34 +669,37 @@ def main() raises:
         elif s == "--check-lanes" and i + 1 < len(args):
             check_lanes = Int(String(args[i + 1]))
             i += 1
+        elif s == "--policy" and i + 1 < len(args):
+            policy_path = String(args[i + 1])
+            i += 1
         elif s == "--sampled":
             sampled = True
         else:
             raise Error(
                 "libero eval batched: unknown argument '" + s + "' (--inits N,"
-                " --steps N, --check-lanes K, --sampled)"
+                " --steps N, --check-lanes K, --sampled, --policy PATH)"
             )
         i += 1
 
     comptime if FAMILY == "libero_goal":
         run[LiberoGoalPlacement, LiberoGoalModel](
-            n_inits, max_steps, check_lanes, sampled
+            n_inits, max_steps, check_lanes, sampled, policy_path
         )
     elif FAMILY == "libero_object":
         run[LiberoObjectPlacement, LiberoObjectModel](
-            n_inits, max_steps, check_lanes, sampled
+            n_inits, max_steps, check_lanes, sampled, policy_path
         )
     elif FAMILY == "libero_spatial":
         run[LiberoSpatialPlacement, LiberoSpatialModel](
-            n_inits, max_steps, check_lanes, sampled
+            n_inits, max_steps, check_lanes, sampled, policy_path
         )
     elif FAMILY == "libero_kitchen_scene3":
         run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](
-            n_inits, max_steps, check_lanes, sampled
+            n_inits, max_steps, check_lanes, sampled, policy_path
         )
     elif FAMILY == "libero_kitchen_scene5":
         run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](
-            n_inits, max_steps, check_lanes, sampled
+            n_inits, max_steps, check_lanes, sampled, policy_path
         )
     else:
         comptime assert False, (
