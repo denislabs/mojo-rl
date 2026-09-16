@@ -57,8 +57,7 @@ from max.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.checkpoint import save_params
-from mojo_rl.nn.core.param import walk_params
+from mojo_rl.nn.core.checkpoint import save_params, load_params
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
 
@@ -437,8 +436,18 @@ def main() raises:
             net.vjp["gpu", BATCH](
                 TensorRefs[1](bx), gout, TensorRefs[1](gin), Optional(ctx)
             )
-            opt.begin_step()
-            walk_params["gpu"](net, opt, Optional(ctx))
+            # ⚠⚠ `opt.step`, NOT A BARE PARAM WALK. `step` bumps every param
+            # value's `version` after updating it, and `Linear`'s GPU forward
+            # re-pads its cached weight ONLY when that version moves
+            # (`_ensure_w_pad`). Driving the walk directly updates `val` and
+            # leaves the pad at the INITIAL weights, so the padded layers
+            # (here the 91 -> 256 input, K_PAD 128) train against a frozen
+            # forward while `val` drifts away underneath — the loss still
+            # falls, because the unpadded layers learn, and the checkpoint
+            # then behaves like a different network everywhere else. Measured:
+            # reloaded val MSE 0.305 against the fit's 0.132, identical
+            # weights, different predictions.
+            opt.step["gpu"](net, Optional(ctx))
 
         # ── validation, in whole batches ──────────────────────────────────
         var va_loss = 0.0
@@ -476,8 +485,52 @@ def main() raises:
     print()
     print("  wrote", out_path, "and", out_path + ".norm")
 
+    # ⚠⚠ THE CHECKPOINT IS RE-SCORED, ON THE CPU, THROUGH THE DRIVER'S PATH.
+    # The fit lives on the device; what the eval runs is this file reloaded
+    # into a CPU network. Anything between the two — a save that wrote the
+    # wrong copy, a load that filled nothing, a shape that drifted — leaves a
+    # policy that trains well and acts nothing like it, which is exactly the
+    # shape this run would otherwise report as a success.
+    var check = NET.make["cpu", Kaiming](None)
+    load_params["cpu"](check, out_path, None)
+    var cx = Tensor.alloc(BATCH * OBS)
+    var cy = Tensor.alloc(BATCH * ACT)
+    var cy_pred = Tensor.alloc(BATCH * ACT)
+    var re_loss = 0.0
+    var re_abs = 0.0
+    var re_batches = n_va // BATCH
+    for b in range(re_batches):
+        for r in range(BATCH):
+            var src = b * BATCH + r
+            for j in range(OBS):
+                cx.data[r * OBS + j] = x_va[src * OBS + j]
+            for j in range(ACT):
+                cy.data[r * ACT + j] = y_va[src * ACT + j]
+        check.forward["cpu", BATCH](TensorRefs[1](cx), cy_pred, None)
+        for k in range(BATCH * ACT):
+            var e2 = Float64(cy_pred.data[k]) - Float64(cy.data[k])
+            re_loss += e2 * e2
+            re_abs += abs(Float64(cy_pred.data[k]))
+    re_loss /= Float64(re_batches * BATCH * ACT)
+    re_abs /= Float64(re_batches * BATCH * ACT)
+    var tgt_abs = 0.0
+    for r in range(re_batches * BATCH):
+        for j in range(ACT):
+            tgt_abs += abs(Float64(y_va[r * ACT + j]))
+    tgt_abs /= Float64(re_batches * BATCH * ACT)
+    print("  reloaded on CPU: val MSE", re_loss, "| mean |a| predicted",
+          re_abs, "recorded", tgt_abs)
+
     # ── the verdict ───────────────────────────────────────────────────────
     print()
+    # ⚠ THE RELOADED NUMBER IS THE ONE THAT MATTERS: it is what the eval
+    # driver will run. A device fit that does not survive the round trip is a
+    # failure of this run, not a detail.
+    if re_loss > best_val * 1.5 + 1.0e-9:
+        print("  FAIL: the RELOADED checkpoint scores", re_loss,
+              "against the fit's", best_val, "— the file is not the network"
+              " that trained")
+        raise Error("libero bc train: the checkpoint does not reproduce the fit")
     if best_val >= mse_mean:
         print("  FAIL: val MSE", best_val, ">= the TRAINING-MEAN baseline",
               mse_mean, "— the fit learned nothing")

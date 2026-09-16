@@ -595,7 +595,8 @@ def run[T: PlacementTable, M: ModelDefLike](
         for r in range(n_rows):
             report.record(r, solved[r])
         report.show(
-            String("LIBERO success — ") + family + ", null policy"
+            String("LIBERO success — ") + family
+            + (", policy " + policy_path if have_policy else ", null policy")
         )
     else:
         var per_task = List[Int](length=n_tasks, fill=0)
