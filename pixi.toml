@@ -5,6 +5,7 @@ preview = ["pixi-build"]
 name = "mojo-rl"
 platforms = [
     { platform = "linux-64", cuda = "12" },
+    { platform = "linux-aarch64", cuda = "12" },
     { platform = "osx-arm64", macos = "15.0" },
 ]
 version = "0.1.0"
@@ -33,6 +34,43 @@ cudnn = ">=9.14.0.64,<10"     # cuDNN for conv_gpu/conv_cudnn
 # and works with any CUDA container (12.x or 13.x) on driver >= 570.
 # On CUDA 13 containers (RTX 5090): ptxas 13.x → supports sm_120 (Blackwell) ✅
 # On CUDA 12.8 containers (RTX 4090): ptxas 12.x → supports sm_89 (Ada) ✅
+env = { MODULAR_NVPTX_COMPILER_PATH = "/usr/local/cuda/bin/ptxas", LD_PRELOAD = "$PIXI_PROJECT_ROOT/mojo_rl/cuda/libcuda_intercept.so" }
+scripts = ["scripts/build_cuda_intercept.sh"]
+
+# ---------------------------------------------------------------------------
+# JETSON — Orin NX 16GB, sm_87, linux-aarch64.
+#
+# DELIBERATELY NOT `nvidia`. That feature pulls cuda-toolkit / cudnn /
+# nsight-compute from the `nvidia` channel; on aarch64 those resolve to SBSA
+# (ARM *server*, Grace/Thor) builds, which do not match a Tegra driver. On a
+# Jetson the CUDA that matters is the one JetPack already installed in
+# /usr/local/cuda — here 12.6 (ptxas V12.6.68, knows sm_87). Adding a conda
+# CUDA next to it is how you end up with two toolchains disagreeing about the
+# driver, so this feature declares NO cuda package at all.
+#
+# ⚠ NO `platforms` KEY HERE. `linux-aarch64` is already declared on the
+# workspace's own `platforms` list above (with its `cuda = "12"` virtual
+# package), and pixi 0.76.1 does NOT cross-check a FEATURE-level
+# `platforms = ["linux-aarch64"]` against that table form: it reports
+# "feature 'jetson' references platform 'linux-aarch64' which is not declared
+# in the workspace" and every environment fails to resolve — apple and cpu
+# included, not just this one. The workspace entry is what scopes the solve.
+# Everything else (mojo 1.0.0, max 26.5.0, and every conda-forge dep in
+# [dependencies]) is published for linux-aarch64 — checked 2026-09-16 — so the
+# default feature is inherited as-is.
+[feature.jetson]
+
+[feature.jetson.target.linux-aarch64.dependencies]
+# Same 3.13 pin and the same reason as the nvidia feature: it has to match the
+# `libpython3.13.so` activation string below.
+python = ">=3.13.14,<3.14"
+
+[feature.jetson.activation]
+# The SAME ptxas indirection as [feature.nvidia.activation], for the same
+# reason: it bypasses MAX's built-in libnvptxcompiler (tied to CUDA 13 +
+# driver >= 580). JetPack 6.2 ships driver 540.4.0, so WITHOUT this line the
+# board would need a JetPack 7.2 reflash — which needs an x86 host, which is
+# the thing we are avoiding. /usr/local/cuda/bin/ptxas is JetPack's own.
 env = { MODULAR_NVPTX_COMPILER_PATH = "/usr/local/cuda/bin/ptxas", LD_PRELOAD = "$PIXI_PROJECT_ROOT/mojo_rl/cuda/libcuda_intercept.so" }
 scripts = ["scripts/build_cuda_intercept.sh"]
 
@@ -161,8 +199,12 @@ env = { MOJO_PYTHON_LIBRARY = "$CONDA_PREFIX/lib/libpython3.13.dylib" }
 [target.linux-64.activation]
 env = { MOJO_PYTHON_LIBRARY = "$CONDA_PREFIX/lib/libpython3.13.so" }
 
+[target.linux-aarch64.activation]
+env = { MOJO_PYTHON_LIBRARY = "$CONDA_PREFIX/lib/libpython3.13.so" }
+
 [environments]
 nvidia = { features = ["nvidia"], solve-group = "nvidia" }
+jetson = { features = ["jetson"], solve-group = "jetson" }
 amd = { features = ["amd"], solve-group = "amd" }
 apple = { features = ["apple"], solve-group = "apple" }
 cpu = { features = ["cpu"], solve-group = "cpu" }
