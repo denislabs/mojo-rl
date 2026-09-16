@@ -152,7 +152,21 @@ comptime L: Int = G1_L
 comptime HB: Int = G1_HB
 comptime HD: Int = G1_HD
 comptime BATCH: Int = 1024
-comptime CAP: Int = 2_000_000
+# ⚠ THE RING IS THE LARGEST THING ON THE CARD, not the model. Measured from
+# `MOJO_RL_ALLOC_TRACE=1` at H=2048/L=6 (docs §12.22): `r_obs` and `r_nxt` are
+# 4020.7 MB EACH (CAP x 527 x 4) and `r_z` another 1953 MB — 9.76 GiB of a
+# 25.9 GiB Tensor peak, against a 28.5 GiB pool that still OOM'd, so there is
+# >= 2.6 GiB of non-Tensor overhead (MAX workspaces, the graph, cuBLAS) on top.
+#
+#     CAP 2.0 M -> ring 9.76 GiB -> peak 25.9 -> OOM
+#     CAP 1.5 M -> ring 7.32 GiB -> peak 23.4 -> ~2.5 GiB margin
+#
+# The reference's own buffer is 5_120_000 and does not fit beside this tower on
+# 32 GB; this is 3.4x below it. ⚠ The RIGHT fix is not a smaller CAP: `r_nxt`
+# is `r_obs` shifted by one within a lane, so dropping it frees 4.02 GiB with
+# NO loss of diversity and would let CAP go UP. It is a real change to the ring
+# (episode boundaries, the 1024-lane interleave), so it is not done here.
+comptime CAP: Int = 1_500_000
 comptime SEQ: Int = 8
 comptime ZBUF: Int = 8192
 comptime T_EPISODE: Int = 500
@@ -356,7 +370,7 @@ def _upload_floats(ctx: DeviceContext, xs: List[Int]) raises -> Tensor:
     ensure_t["gpu"](t, len(xs), Optional(ctx))
     for i in range(len(xs)):
         t.data[i] = Scalar[DT](xs[i])
-    t.upload(ctx)
+    t.upload_resident(ctx)
     return t^
 
 
@@ -578,6 +592,14 @@ def main() raises:
     var n_rows = store.n_rows()
     var st = store.load_column[DType.float32](String("state"))
     var pv = store.load_column[DType.float32](String("privileged"))
+    # ⚠ `upload` REALLOCATES the device buffer on every call (by design — it
+    # is the resize path), so `ensure_t["gpu"]` + `upload` allocates the table
+    # TWICE and leaves both live across the copy. At 441 131 x 527 that is
+    # 886.8 MB of pure transient, and the alloc trace showed it: one id, two
+    # allocations. `upload_resident` fills the buffer `ensure_t` already made.
+    # Same pattern applied to every one-shot table below, and to the
+    # prioritization refresh — where `upload` would ALSO hand the RSI kernel a
+    # new pointer every 9.6 M steps.
     var eobs = Tensor()
     ensure_t["gpu"](eobs, n_rows * OBS, Optional(ctx))
     for r in range(n_rows):
@@ -585,7 +607,7 @@ def main() raises:
             eobs.data[r * OBS + i] = Scalar[DT](st[r * UNITREE_G1_STATE_DIM + i])
         for i in range(UNITREE_G1_PRIV_DIM):
             eobs.data[r * OBS + UNITREE_G1_STATE_DIM + i] = Scalar[DT](pv[r * UNITREE_G1_PRIV_DIM + i])
-    eobs.upload(ctx)
+    eobs.upload_resident(ctx)
     var starts8 = _valid_starts(store, SEQ)
     var starts250 = _valid_starts(store, TRACK_LEN + 1)
     # motion prioritization rebuilds these two tables clip by clip
@@ -601,9 +623,9 @@ def main() raises:
     ensure_t["gpu"](rsi.rows, rsi.n_rows * (G1_RSI_NQ + G1_RSI_NV), Optional(ctx))
     ensure_t["gpu"](rsi.ep_offset, rsi.n_ep, Optional(ctx))
     ensure_t["gpu"](rsi.ep_len, rsi.n_ep, Optional(ctx))
-    rsi.rows.upload(ctx)
-    rsi.ep_offset.upload(ctx)
-    rsi.ep_len.upload(ctx)
+    rsi.rows.upload_resident(ctx)
+    rsi.ep_offset.upload_resident(ctx)
+    rsi.ep_len.upload_resident(ctx)
     print("  store:", n_rows, "rows,", store.n_episodes(), "clips;", len(starts8), "expert windows,", len(starts250), "tracking windows")
 
     # ── motion prioritization tables ──────────────────────────────────
@@ -719,7 +741,7 @@ def main() raises:
     ensure_t["gpu"](lane_table, N_ENVS, Optional(ctx))
     for l in range(N_ENVS):
         lane_table.data[l] = Scalar[DT](l)
-    lane_table.upload(ctx)
+    lane_table.upload_resident(ctx)
     # the B forward runs in whole chunks, so the row-id table and the B
     # output are PADDED to N_CHUNKS * B_CHUNK: the tail rows past
     # N_TRACK * TRACK_LEN gather row 0 and are never read by the mean
@@ -1051,7 +1073,7 @@ def main() raises:
                     )
                     for i in range(len(prio_tbl)):
                         prio_motion.data[i] = Scalar[DT](prio_tbl[i])
-                    prio_motion.upload(ctx)
+                    prio_motion.upload_resident(ctx)
                     n_prio_motion = len(prio_tbl)
                     # 2. the tracking-z windows, same length, in place
                     g1_fill_window_table(
@@ -1060,7 +1082,7 @@ def main() raises:
                     )
                     for i in range(len(prio_tbl)):
                         starts250_t.data[i] = Scalar[DT](prio_tbl[i])
-                    starts250_t.upload(ctx)
+                    starts250_t.upload_resident(ctx)
                     # 3. the expert windows the discriminator certifies —
                     #    SAME buffer, SAME length. `attach_expert_windows`
                     #    would hand the agent a new one and the captured
