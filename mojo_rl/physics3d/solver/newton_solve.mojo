@@ -922,6 +922,54 @@ def _recompute_jfq_coop[
 
 
 @always_inline
+@always_inline
+def _jt_load[
+    DTYPE: DType, JTL_CAP: Int, L_WS: Layout
+](
+    mut jt_l: Scratch[Scalar[DTYPE], JTL_CAP],
+    solver: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    env: Int,
+    ws_Jt_idx: Int,
+    c: Int,
+    nt_c: Int,
+    mc: Int,
+    nv: Int,
+):
+    """Contact `c`'s `nt_c` tangent Jacobian rows, workspace -> local.
+
+    The workspace is BLOCK-major (`t*mc + c`, `elliptic_layout.ell_jt`) and
+    the local buffer is this contact's rows only (`t*nv + i`). Called at the
+    top of each `for c` body under `_newton_solve_env`'s `JT_PC`; see that
+    parameter for why the all-contact cache cannot live on Metal's stack.
+    """
+    for t in range(nt_c):
+        for i in range(nv):
+            jt_l[t * nv + i] = rebind[Scalar[DTYPE]](
+                solver[env, ws_Jt_idx + t * mc * nv + c * nv + i]
+            )
+
+
+@always_inline
+def _jt_rd[
+    DTYPE: DType, NT: Int, JT_CAP: Int, JTL_CAP: Int, JT_PC: Bool
+](
+    Jt_c: Scratch[Scalar[DTYPE], JT_CAP],
+    jt_l: Scratch[Scalar[DTYPE], JTL_CAP],
+    c: Int,
+    t: Int,
+    i: Int,
+    nv: Int,
+) -> Scalar[DTYPE]:
+    """Row `t`, dof `i` of contact `c`'s tangent Jacobian — from the
+    all-contact cache, or from `jt_l` when `JT_PC` (one `comptime if`, so
+    exactly one of the two is compiled and the other's bound never applies).
+    """
+    comptime if JT_PC:
+        return jt_l[t * nv + i]
+    else:
+        return Jt_c[(c * NT + t) * nv + i]
+
+
 def _newton_solve_env[
     DTYPE: DType,
     CONE_TYPE: Int,
@@ -959,6 +1007,28 @@ def _newton_solve_env[
     # to what every GPU leg compiles today, which is why the GPU legs keep
     # the default rather than take a per-thread index list they cannot afford.
     TREE_AWARE: Bool = False,
+    # ⚠ APPLE GPU ONLY (the per-env GPU kernel passes
+    # `not has_nvidia_gpu_accelerator()`; both CPU legs keep the default).
+    # The ELLIPTIC path caches every contact's tangent Jacobian rows in
+    # `Jt_c`, `T_CAP*V_CAP` floats — 33.8 KB for LIBERO's
+    # `libero_kitchen_scene3` (128 contacts, nv 22, condim 4) out of a ~91 KB
+    # per-thread frame. Metal then refuses the kernel: "Compute function
+    # exceeds available stack space", at PIPELINE CREATION, after the reset
+    # and before the first step. Condim 3 fit at ~77 KB, so the ceiling is
+    # between the two — only ~15-20 KB has to come back, which `Jt_c` alone
+    # more than covers. (The 32 KB of §13.54 is THREADGROUP memory for the
+    # BLOCKED kernel, a different resource; do not size this frame against
+    # it. `Je` and its six neighbours are inside `comptime if CONE_TYPE ==
+    # PYRAMIDAL` and do not exist here at all.)
+    #
+    # Under it `Jt_c` is not built. Every read site is inside a
+    # `for c in range(nc)` loop with `c` fixed, so each loads just THIS
+    # contact's `NT*nv` rows (264 B) from the workspace it was always copied
+    # from (`ws_Jt_idx`, block-major `t*mc + c`). The cost is the reads the
+    # cache existed to avoid: the workspace is re-read once per contact per
+    # pass rather than once per solve, ~4 passes an iteration. That is why
+    # this is not the default — CUDA and both CPU legs are untouched.
+    JT_PC: Bool = False,
 ](
     env: Int,
     dims: D,
@@ -2686,7 +2756,21 @@ def _newton_solve_env[
     # `cap[D.CAP_MAX_CONTACTS] * NT` are numerically equal and distinct types.
     comptime T_CAP = cap[D.CAP_MAX_CONTACTS * NT]()
     var tn = max_contacts * NT
-    var Jt_c = Scratch[Scalar[DTYPE], T_CAP * V_CAP](max_contacts * NT * nv, uninitialized=Scalar[DTYPE](0))
+    # `JT_PC` (see the parameter): off, the all-contact cache below; on, a
+    # 1-element placeholder and `jt_l` carries one contact at a time.
+    # ⚠ `JT_PC` DOES NOT COVER THE NOSLIP PASS — `noslip_elliptic`'s loops
+    # were not converted. It does not read `Jt_c` either: under
+    # `NOSLIP_ITER > 0` it gets `jt_ns`, its own full-size copy read from the
+    # workspace (see that call). So the placeholder below is never indexed,
+    # and the two arenas are never live at once.
+    comptime JT_CAP = 1 if JT_PC else T_CAP * V_CAP
+    var Jt_c = Scratch[Scalar[DTYPE], JT_CAP](
+        1 if JT_PC else max_contacts * NT * nv, uninitialized=Scalar[DTYPE](0)
+    )
+    comptime JTL_CAP = NT * V_CAP if JT_PC else 1
+    var jt_l = Scratch[Scalar[DTYPE], JTL_CAP](
+        NT * nv if JT_PC else 1, fill=Scalar[DTYPE](0)
+    )
     # ── TREE_AWARE: each contact's nonzero-dof list (union of its normal and
     # tangent rows' supports), built below from the cached Jacobians and
     # walked by every `J·v`, `Jᵀf` and Hessian pass in this path. Off, both
@@ -2735,16 +2819,19 @@ def _newton_solve_env[
             Jn_c[c * nv + i] = rebind[Scalar[DTYPE]](
                 solver[env, ws_J_n_idx + c * nv + i]
             )
-            for t in range(NT):
-                Jt_c[(c * NT + t) * nv + i] = rebind[Scalar[DTYPE]](
-                    solver[env, ws_Jt_idx + t * max_contacts * nv + c * nv + i]
-                )
+            comptime if not JT_PC:
+                for t in range(NT):
+                    Jt_c[(c * NT + t) * nv + i] = rebind[Scalar[DTYPE]](
+                        solver[env, ws_Jt_idx + t * max_contacts * nv + c * nv + i]
+                    )
+        comptime if JT_PC:
+            _jt_load(jt_l, solver, env, ws_Jt_idx, c, NT, max_contacts, nv)
         comptime if TREE_AWARE:
             var n_c = 0
             for i in range(nv):
                 var nz = Jn_c[c * nv + i] != Scalar[DTYPE](0)
                 for t in range(NT):
-                    if Jt_c[(c * NT + t) * nv + i] != Scalar[DTYPE](0):
+                    if _jt_rd[DTYPE, NT, JT_CAP, JTL_CAP, JT_PC](Jt_c, jt_l, c, t, i, nv) != Scalar[DTYPE](0):
                         nz = True
                 if nz:
                     cn_ix[c * nv + n_c] = i
@@ -3004,6 +3091,8 @@ def _newton_solve_env[
                 if dist_cache[c] >= Scalar[DTYPE](0):
                     continue
                 var nt_c = nt_cache[c]
+                comptime if JT_PC:
+                    _jt_load(jt_l, solver, env, ws_Jt_idx, c, nt_c, max_contacts, nv)
                 var jn = pb_cache[c]
                 for t in range(nt_c):
                     jar_t_arr[c * NT + t] = bt_cache[c * NT + t]
@@ -3013,7 +3102,7 @@ def _newton_solve_env[
                     jn += Jn_c[c * nv + i] * qa_i
                     for t in range(nt_c):
                         jar_t_arr[c * NT + t] += (
-                            Jt_c[(c * NT + t) * nv + i] * qa_i
+                            _jt_rd[DTYPE, NT, JT_CAP, JTL_CAP, JT_PC](Jt_c, jt_l, c, t, i, nv) * qa_i
                         )
                 var f_n_try = Scalar[DTYPE](0)
                 var zone = ell_state_force[DTYPE, NT, T_CAP](
@@ -3082,6 +3171,8 @@ def _newton_solve_env[
             cs_arr[c] = ELL_SATISFIED
             continue
 
+        comptime if JT_PC:
+            _jt_load(jt_l, solver, env, ws_Jt_idx, c, nt_c, max_contacts, nv)
         var jar_n: Scalar[DTYPE] = pb_cache[c]
         for t in range(nt_c):
             jar_t_arr[c * NT + t] = bt_cache[c * NT + t]
@@ -3090,7 +3181,7 @@ def _newton_solve_env[
             var qa_i = qacc[i]
             jar_n += Jn_c[c * nv + i] * qa_i
             for t in range(nt_c):
-                jar_t_arr[c * NT + t] += Jt_c[(c * NT + t) * nv + i] * qa_i
+                jar_t_arr[c * NT + t] += _jt_rd[DTYPE, NT, JT_CAP, JTL_CAP, JT_PC](Jt_c, jt_l, c, t, i, nv) * qa_i
         jar_n_arr[c] = jar_n
 
         var f_n_c = Scalar[DTYPE](0)
@@ -3195,11 +3286,12 @@ def _newton_solve_env[
                 H[a * nv + b] += eq_D[e] * Ja * eq_J[e * nv + b]
     comptime HN = (NT + 1) * (NT + 1)
     ell_add_contact_hessian[
-        DTYPE, MC_CAP, NT, T_CAP, V_CAP, M_CAP, HN,
-        CN_CAP, CIX_CAP, SPARSE=TREE_AWARE,
+        DTYPE, MC_CAP, NT, T_CAP, V_CAP, M_CAP, HN, JT_CAP, L_SOLVER,
+        CN_CAP, CIX_CAP, SPARSE=TREE_AWARE, JT_PC=JT_PC,
     ](
         nc, cs_arr, nt_cache, Jn_c, Jt_c, jar_n_arr, jar_t_arr,
         mu_cache, D_n_cache, D_t_cache, fr_cache, H, nv, cn_n, cn_ix,
+        solver, env, ws_Jt_idx, max_contacts,
     )
 
     # Cholesky factorize H (with regularization on rank deficiency)
@@ -3225,11 +3317,13 @@ def _newton_solve_env[
     for c in range(nc):
         if cs_arr[c] == ELL_SATISFIED:
             continue
+        comptime if JT_PC:
+            _jt_load(jt_l, solver, env, ws_Jt_idx, c, nt_cache[c], max_contacts, nv)
         for a in range(_cn_len[TREE_AWARE](cn_n, c, nv)):
             var i = _cn_dof[TREE_AWARE](cn_ix, c, a, nv)
             var acc = Jn_c[c * nv + i] * fn_arr[c]
             for t in range(nt_cache[c]):
-                acc += Jt_c[(c * NT + t) * nv + i] * ft_arr[c * NT + t]
+                acc += _jt_rd[DTYPE, NT, JT_CAP, JTL_CAP, JT_PC](Jt_c, jt_l, c, t, i, nv) * ft_arr[c * NT + t]
             qfrc_c[i] += acc
     for s in range(ns):
         qfrc_c[sr_dof[s]] += sr_sign[s] * sr_f[s]
@@ -3340,6 +3434,8 @@ def _newton_solve_env[
                 for t in range(NT):
                     Js_t[c * NT + t] = 0
                 continue
+            comptime if JT_PC:
+                _jt_load(jt_l, solver, env, ws_Jt_idx, c, nt_c, max_contacts, nv)
             var js_n: Scalar[DTYPE] = 0
             for t in range(NT):
                 Js_t[c * NT + t] = 0
@@ -3348,7 +3444,7 @@ def _newton_solve_env[
                 var s_i = search[i]
                 js_n += Jn_c[c * nv + i] * s_i
                 for t in range(nt_c):
-                    Js_t[c * NT + t] += Jt_c[(c * NT + t) * nv + i] * s_i
+                    Js_t[c * NT + t] += _jt_rd[DTYPE, NT, JT_CAP, JTL_CAP, JT_PC](Jt_c, jt_l, c, t, i, nv) * s_i
             Js_n[c] = js_n
         for s in range(ns):
             sr_Js[s] = sr_sign[s] * search[sr_dof[s]]
@@ -3717,6 +3813,8 @@ def _newton_solve_env[
                 continue
             var old_cs = cs_arr[c]
             var nt_c = nt_cache[c]
+            comptime if JT_PC:
+                _jt_load(jt_l, solver, env, ws_Jt_idx, c, nt_c, max_contacts, nv)
             var jar_n: Scalar[DTYPE] = pb_cache[c]
             for t in range(nt_c):
                 jar_t_arr[c * NT + t] = bt_cache[c * NT + t]
@@ -3725,7 +3823,7 @@ def _newton_solve_env[
                 var qa_i = qacc[i]
                 jar_n += Jn_c[c * nv + i] * qa_i
                 for t in range(nt_c):
-                    jar_t_arr[c * NT + t] += Jt_c[(c * NT + t) * nv + i] * qa_i
+                    jar_t_arr[c * NT + t] += _jt_rd[DTYPE, NT, JT_CAP, JTL_CAP, JT_PC](Jt_c, jt_l, c, t, i, nv) * qa_i
             jar_n_arr[c] = jar_n
 
             var f_n_c = Scalar[DTYPE](0)
@@ -3773,11 +3871,13 @@ def _newton_solve_env[
         for c in range(nc):
             if cs_arr[c] == ELL_SATISFIED:
                 continue
+            comptime if JT_PC:
+                _jt_load(jt_l, solver, env, ws_Jt_idx, c, nt_cache[c], max_contacts, nv)
             for a in range(_cn_len[TREE_AWARE](cn_n, c, nv)):
                 var i = _cn_dof[TREE_AWARE](cn_ix, c, a, nv)
                 var acc = Jn_c[c * nv + i] * fn_arr[c]
                 for t in range(nt_cache[c]):
-                    acc += Jt_c[(c * NT + t) * nv + i] * ft_arr[c * NT + t]
+                    acc += _jt_rd[DTYPE, NT, JT_CAP, JTL_CAP, JT_PC](Jt_c, jt_l, c, t, i, nv) * ft_arr[c * NT + t]
                 qfrc_c[i] += acc
         for s in range(ns):
             qfrc_c[sr_dof[s]] += sr_sign[s] * sr_f[s]
@@ -3864,11 +3964,12 @@ def _newton_solve_env[
                     for b in range(a + 1):  # lower triangle, see elliptic_cone
                         H[a * nv + b] += eq_D[e] * Ja * eq_J[e * nv + b]
             ell_add_contact_hessian[
-                DTYPE, MC_CAP, NT, T_CAP, V_CAP, M_CAP, HN,
-                CN_CAP, CIX_CAP, SPARSE=TREE_AWARE,
+                DTYPE, MC_CAP, NT, T_CAP, V_CAP, M_CAP, HN, JT_CAP, L_SOLVER,
+                CN_CAP, CIX_CAP, SPARSE=TREE_AWARE, JT_PC=JT_PC,
             ](
                 nc, cs_arr, nt_cache, Jn_c, Jt_c, jar_n_arr, jar_t_arr,
                 mu_cache, D_n_cache, D_t_cache, fr_cache, H, nv, cn_n, cn_ix,
+                solver, env, ws_Jt_idx, max_contacts,
             )
             var chol_ok_gpu2 = chol_factor_inline[DTYPE, M_CAP](
                 H, L_chol, nv
@@ -3897,6 +3998,25 @@ def _newton_solve_env[
         _p_hrebuild += _p_now - _p_last
         _p_last = _p_now
     comptime if NOSLIP_ITER > 0:
+        # ⚠ `noslip_elliptic` WANTS THE ALL-CONTACT CACHE and its loops were
+        # not converted to the per-contact form, so it gets its own full-size
+        # copy, read straight from the workspace. Under `JT_PC` this branch
+        # cannot exist — the `constrained` beside `JT_CAP` refuses the pair —
+        # so the two tangent arenas are never live at once, and on the legs
+        # that DO run noslip (dm_control's, CPU and CUDA) the frame is the one
+        # they have always had plus this copy.
+        var jt_ns = Scratch[Scalar[DTYPE], T_CAP * V_CAP](
+            max_contacts * NT * nv, uninitialized=Scalar[DTYPE](0)
+        )
+        for c in range(nc):
+            for t in range(NT):
+                for i in range(nv):
+                    jt_ns[(c * NT + t) * nv + i] = rebind[Scalar[DTYPE]](
+                        solver[
+                            env,
+                            ws_Jt_idx + t * max_contacts * nv + c * nv + i,
+                        ]
+                    )
         noslip_elliptic[
             DTYPE, MC_CAP, NT, T_CAP, V_CAP, S_CAP, EQ_CAP,
             SPARSE=TREE_AWARE, CACHE=TREE_AWARE, TREE=TREE_AWARE,
@@ -3909,7 +4029,7 @@ def _newton_solve_env[
             m_inv,
             ldl_L, ldl_D, par, tree_ok,
             nt_cache,
-            Jn_c, Jt_c,
+            Jn_c, jt_ns,
             fr_cache, D_n_cache, D_t_cache,
             pb_cache, bt_cache,
             sr_dof, sr_kind, sr_sign, sr_R, sr_bias, sr_floss,
@@ -4110,7 +4230,13 @@ def _newton_solve_fields_kernel[
         DTYPE,
         CONE_TYPE,
         BATCH,
-        SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER](
+        SOLVER_WS, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER,
+        # ⚠ APPLE ONLY. See `JT_PC` on `_newton_solve_env`: Metal refuses this
+        # kernel at condim 4 ("exceeds available stack space") because the
+        # all-contact tangent cache is 33.8 KB of a ~91 KB frame. CUDA keeps
+        # the cache, so its numbers and its timings do not move.
+        JT_PC = not has_nvidia_gpu_accelerator(),
+    ](
         env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
         bodies, mmeta, trees, equality, tendons, sites, geoms_w, body_invweight0,
         dof_invweight0, cdof, M, m_inv, ldl_L, ldl_D, dof_parent, qacc_constrained, qacc_warmstart,

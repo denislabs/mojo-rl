@@ -5457,3 +5457,75 @@ above is a genuinely distinct kernel.
 **Still open:** `COLL_PREFILTER` is still `has_nvidia_gpu_accelerator()`. The
 reason it was NVIDIA-only is now fixed, so flipping it on Metal is a
 measurement, not a risk — but it has not been measured on Metal yet.
+
+### 13.57 CLOSED (2026-09-16): LIBERO on Metal at condim 4 — the per-env elliptic kernel's tangent cache leaves the stack
+
+1f9972597 took every LIBERO model def to `max_condim=4` (the gripper's finger
+pads). On Metal `libero_kitchen_scene3` then died at PIPELINE CREATION —
+"Compute function exceeds available stack space" — after the reset and before
+the first step, so the Mac had no LIBERO batched env at all and no local
+device-vs-CPU reference. Reported by the LIBERO port; reproduced here in 42 s.
+
+**Where the frame goes** (nv 22, `max_contacts` 128, NT 3; 96 `Scratch`
+declarations in `_newton_solve_env`, ELLIPTIC path only):
+
+    elliptic frame                      91.3 KB
+      Jt_c    T_CAP*V_CAP               33.8 KB   36%
+      Jn_c    MC_CAP*V_CAP              11.3 KB   12%
+      every other array                 under 3.3 KB each
+    without Jt_c                        58.3 KB
+    without both                        47.3 KB
+
+⚠ **METAL'S PER-THREAD LIMIT IS NOT THE 32 KB OF §13.54.** That figure is
+THREADGROUP memory for the BLOCKED kernel, a different resource. Condim 3 ran
+this same kernel at ~77 KB and condim 4 fails at ~91 KB, so the per-thread
+ceiling lies between them and only ~15-20 KB has to come back — which `Jt_c`
+alone more than covers.
+
+⚠ **SIZE THIS FRAME BY CONE BRANCH OR YOU WILL CHASE AN ARRAY THAT IS NOT
+THERE.** The first measurement here read 150 KB with `Je` (71 KB) on top. `Je`
+and six neighbours are inside `comptime if CONE_TYPE == ConeType.PYRAMIDAL`
+and do not exist on the elliptic path at all.
+
+**The fix — and it is not a spill, because there is nothing to spill.** `Jn_c`
+and `Jt_c` are pure CACHES of data already in the per-lane workspace
+(`ws_J_n_idx`, `ws_Jt_idx`), loaded once per solve "to avoid ~1000 workspace
+reads/iter"; the cache is CONTACT-major and the workspace BLOCK-major, which
+is the only reason it is a copy and not a view. Every one of the seven read
+sites is inside a `for c in range(nc)` loop with `c` fixed, so the ALL-CONTACT
+cache was never needed: under the new `JT_PC` parameter each loop loads just
+THIS contact's `NT*nv` rows — **264 B against 33,792** — through `_jt_load`,
+and every read goes through `_jt_rd`, one `comptime if` so exactly one leg is
+compiled.
+
+`JT_PC` is APPLE GPU ONLY: the per-env GPU kernel passes
+`not has_nvidia_gpu_accelerator()` and both CPU legs keep the default. The cost
+is the reads the cache existed to avoid — the workspace is re-read once per
+contact per pass rather than once per solve, ~4 passes an iteration — so CUDA
+and CPU keep the cache and neither their numbers nor their timings move.
+`noslip_elliptic`'s loops were NOT converted; under `NOSLIP_ITER > 0` it gets
+`jt_ns`, its own full-size copy read from the workspace, so the two arenas are
+never live at once and that path is untouched.
+
+**The gate** (M1 Pro, `examples/tasks/libero_family_batched.mojo`, unmodified —
+`JT_PC` needs no flag to flip, which is why it is keyed on the target):
+
+    reset          368 words | worst 8.118896488440441e-08 | over 2e-05: 0
+    success word   400 lane-steps compared | 0 disagreeing
+    contacts       peak 32 of 128 | saturated 0
+    ncon           "ncon same" on all 5 CPU-checked lanes
+    |dq|           1.0031e-05 over the first 5 steps, 1.157e-06 at step 25
+    non-finite 0 | singular 0                     === PASS ===
+    356.0 ms per batch step | 44 lane control steps/s
+
+The reset and success-word lines are UNCHANGED from the condim-3 run the port
+recorded before this, which is the bar that mattered; `|dq|` sits where that
+run sat (~1e-05 / ~1.2e-06) despite condim 4's different friction rows.
+Default-path gates: `test_newton_blocked_elliptic` PASS (blocked vs per-env
+0.0), `test_newton_both_legs` 14 checks 0 failures with both planted mutants
+caught, `test_noslip_blocked_kernel` PASS (blocked vs per-env 0.0 with the pass
+both on and off), `test_noslip_elliptic_vs_mujoco` 3/3.
+
+**Still open:** `Jn_c` (11.3 KB) is untouched — it was not needed and is the
+next 12% if a bigger family needs it. `libero_goal` (nv 37, 144 contacts) and
+`libero_spatial` (nv 43, 272) are not expected to fit on this lever alone.

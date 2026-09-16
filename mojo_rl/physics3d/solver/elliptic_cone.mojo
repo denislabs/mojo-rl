@@ -39,6 +39,8 @@ one-sided normal constraint MuJoCo emits as `mjCNSTR_CONTACT_FRICTIONLESS`.
 
 from std.math import sqrt
 
+from layout import Layout, LayoutTensor
+
 from ..fields.scratch import Scratch
 
 
@@ -336,15 +338,18 @@ def ell_add_contact_hessian[
     V_CAP: Int,
     M_CAP: Int,
     HN: Int,
+    JT_CAP: Int,
+    L_WS: Layout,
     N_CAP: Int = 1,
     IX_CAP: Int = 1,
     SPARSE: Bool = False,
+    JT_PC: Bool = False,
 ](
     nc: Int,
     cs_arr: Scratch[Int, MC_CAP],
     nt_cache: Scratch[Int, MC_CAP],
     Jn_c: Scratch[Scalar[DTYPE], MC_CAP * V_CAP],
-    Jt_c: Scratch[Scalar[DTYPE], T_CAP * V_CAP],
+    Jt_c: Scratch[Scalar[DTYPE], JT_CAP],
     jar_n_arr: Scratch[Scalar[DTYPE], MC_CAP],
     jar_t_arr: Scratch[Scalar[DTYPE], T_CAP],
     mu_cache: Scratch[Scalar[DTYPE], MC_CAP],
@@ -355,6 +360,10 @@ def ell_add_contact_hessian[
     nv: Int,
     cn_n: Scratch[Int, N_CAP],
     cn_ix: Scratch[Int, IX_CAP],
+    solver: LayoutTensor[DTYPE, L_WS, MutAnyOrigin],
+    env: Int,
+    ws_Jt_idx: Int,
+    mc: Int,
 ):
     """Add every contact's `J^T Hb J` to the `nv x nv` Newton Hessian.
 
@@ -381,12 +390,26 @@ def ell_add_contact_hessian[
     # dynamic. Not every comptime size in this file is a model dimension.
     var Hb = Array[Scalar[DTYPE], HN](fill=ZERO)
     var JH = Scratch[Scalar[DTYPE], DIM * V_CAP](DIM * nv, fill=ZERO)
+    # ⚠ `JT_PC`: this contact's NT tangent rows, re-read from the workspace
+    # per contact instead of indexing an all-contact stack cache. `NT*nv`
+    # floats against the caller's `T_CAP*V_CAP` — see `_newton_solve_env`'s
+    # note. Declared once, refilled at the top of each contact.
+    comptime JTL_CAP = NT * V_CAP if JT_PC else 1
+    var jt_l = Scratch[Scalar[DTYPE], JTL_CAP](
+        NT * nv if JT_PC else 1, fill=ZERO
+    )
 
     for c in range(nc):
         var cs = cs_arr[c]
         if cs == ELL_SATISFIED:
             continue
         var nt_c = nt_cache[c]
+        comptime if JT_PC:
+            for t in range(nt_c):
+                for i in range(nv):
+                    jt_l[t * nv + i] = rebind[Scalar[DTYPE]](
+                        solver[env, ws_Jt_idx + t * mc * nv + c * nv + i]
+                    )
         ell_hessian_block[DTYPE, NT, T_CAP, HN](
             cs, nt_c, c * NT, jar_n_arr[c], jar_t_arr,
             mu_cache[c], D_n_cache[c], D_t_cache, fr_cache, Hb,
@@ -406,16 +429,28 @@ def ell_add_contact_hessian[
                         var i = _cn_dof[SPARSE](cn_ix, c, a, nv)
                         JH[k * nv + i] += h * Jn_c[c * nv + i]
                 else:
-                    var jb = (c * NT + j - 1) * nv
+                    var jb = (j - 1) * nv if JT_PC else (c * NT + j - 1) * nv
                     for a in range(n_c):
                         var i = _cn_dof[SPARSE](cn_ix, c, a, nv)
-                        JH[k * nv + i] += h * Jt_c[jb + i]
+                        comptime if JT_PC:
+                            JH[k * nv + i] += h * jt_l[jb + i]
+                        else:
+                            JH[k * nv + i] += h * Jt_c[jb + i]
 
         for k in range(nt_c + 1):
-            var kb = c * nv if k == 0 else (c * NT + k - 1) * nv
+            var kb = c * nv if k == 0 else (
+                (k - 1) * nv if JT_PC else (c * NT + k - 1) * nv
+            )
             for a in range(n_c):
                 var i = _cn_dof[SPARSE](cn_ix, c, a, nv)
-                var jki = Jn_c[kb + i] if k == 0 else Jt_c[kb + i]
+                var jki = Scalar[DTYPE](0)
+                if k == 0:
+                    jki = Jn_c[kb + i]
+                else:
+                    comptime if JT_PC:
+                        jki = jt_l[kb + i]
+                    else:
+                        jki = Jt_c[kb + i]
                 if jki == ZERO:
                     continue
                 # ⚠ LOWER TRIANGLE ONLY. Every reader of `H` is a Cholesky
