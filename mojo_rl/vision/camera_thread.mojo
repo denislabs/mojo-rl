@@ -55,6 +55,7 @@ built the worker, and the thread then reads freed memory
 """
 
 from std.memory import Pointer, unsafe_memcpy
+from std.os.path import exists
 
 from ..core.concurrent.thread import sleep_us
 from ..core.concurrent.block import SharedBlock
@@ -79,12 +80,120 @@ def _erase(mut lst: List[UInt8]) -> Pointer[UInt8, MutUntrackedOrigin]:
     )
 
 
+def _pack_fourcc(code: String) -> Int64:
+    """Four characters into an Int64, little-endian; 0 when absent."""
+    if code.byte_length() != 4:
+        return Int64(0)
+    var b = code.as_bytes()
+    var v = Int64(0)
+    for i in range(4):
+        v |= Int64(Int(b[i])) << Int64(8 * i)
+    return v
+
+
+def _unpack_fourcc(v: Int64) -> String:
+    if v == 0:
+        return String("")
+    var out = String("")
+    for i in range(4):
+        var c = Int((v >> Int64(8 * i)) & Int64(0xFF))
+        if c < 32 or c > 126:
+            return String("")
+        out += chr(c)
+    return out^
+
+
+def _open_hint(path: String) -> String:
+    """Why a named camera might not have opened — the udev case, said once."""
+    if path.byte_length() == 0:
+        return String("")
+    if exists(path):
+        return String(
+            " (the path exists, so it is in use by another process, or it is a"
+            " metadata node rather than a capture one — only the node with"
+            " ID_V4L_CAPABILITIES=:capture: streams)"
+        )
+    return String(
+        " — " + path + " does not exist. On the board these are udev symlinks:"
+        " check `ls -l /dev/soarm_cam_*` and"
+        " /etc/udev/rules.d/99-soarm.rules (docs/JETSON_DEPLOYMENT.md §3)."
+    )
+
+
+def camera_spec_is_path(spec: String) -> Bool:
+    """Whether `spec` names a device PATH rather than an index.
+
+    ⚠ THE TEST IS "NOT ALL DIGITS", not "starts with /". A relative path is
+    still a path, and an index is never anything but digits — so this errs
+    toward treating an odd argument as a path, where the failure names the
+    string the operator typed instead of silently opening camera 0.
+    """
+    if spec.byte_length() == 0:
+        return False
+    var b = spec.as_bytes()
+    for i in range(spec.byte_length()):
+        var c = Int(b[i])
+        if c < 48 or c > 57:
+            return True
+    return False
+
+
+def open_camera_spec(
+    spec: String,
+    width: Int = 0,
+    height: Int = 0,
+    fps: Float64 = 0.0,
+    fourcc: String = String(""),
+) raises -> VideoCapture:
+    """Open one `--devices` entry — index or path — WITHOUT a reader thread.
+
+    ⚠ THE SAME RESOLUTION AS `CameraReader.from_spec`, written once. The tools
+    that drive a `VideoCapture` directly (the tick-budget bench, the extrinsics
+    fit, the camera studio) must agree with the recorders about what `0` and
+    what `/dev/soarm_cam_wrist` mean, or the rig is calibrated through one
+    camera and recorded through another.
+    """
+    if camera_spec_is_path(spec):
+        return VideoCapture.device_path(spec, width, height, fps, fourcc)
+    return VideoCapture.device(Int(spec), width, height, fps)
+
+
+def parse_camera_specs(csv: String) raises -> List[String]:
+    """Split `--devices` into per-slot specs: indices, paths, or a mix.
+
+    ⚠ COMMAS, NOT SPACES. A space-separated list is consumed by the shell as
+    separate arguments and the recorder then sees one camera; the error for
+    that used to say only "count mismatch".
+    """
+    var out = List[String]()
+    var parts = csv.split(",")
+    for i in range(len(parts)):
+        var s = String(String(parts[i]).strip())
+        if s.byte_length() > 0:
+            out.append(s^)
+    if len(out) == 0:
+        raise Error(
+            "camera_thread: --devices '" + csv + "' names no camera. Give"
+            " COMMA-separated indices or paths, e.g. `0,1` or"
+            " `/dev/soarm_cam_overhead,/dev/soarm_cam_wrist`."
+        )
+    return out^
+
+
 comptime CELL_STATE = 0
 """0 = starting, 1 = open and reading, -1 = the camera never opened."""
 comptime CELL_READ_FAIL = 8
 comptime CELL_GEOMETRY = 16
 """`height * 100000 + width`, published once the device reports it."""
-comptime N_CELLS = 24
+comptime CELL_FOURCC = 24
+"""The negotiated pixel format's four characters, packed little-endian into an
+Int64, or 0 when the device did not report one.
+
+⚠ PUBLISHED THROUGH A CELL BECAUSE THE WORKER CANNOT RAISE OR PRINT. It is the
+owner that reports it, and it is worth reporting: recording in MJPEG and
+deploying in YUYV shows a policy different pixels than it trained on
+(`docs/JETSON_DEPLOYMENT.md` §3.2)."""
+comptime N_CELLS = 32
 
 comptime DEFAULT_SLOTS = 8
 """Frames of slack. At 30 fps that is 0.27 s — long enough to ride out a slow
@@ -98,6 +207,9 @@ struct _CamWorker(BackgroundWorker):
     var ring: SharedRing
     var block: SharedBlock
     var device: Int
+    var path: String
+    """Non-empty means OPEN BY PATH; `device` is then unused."""
+    var fourcc: String
     var width: Int
     var height: Int
     var fps: Float64
@@ -111,6 +223,8 @@ struct _CamWorker(BackgroundWorker):
         var ring: SharedRing,
         var block: SharedBlock,
         device: Int,
+        var path: String,
+        var fourcc: String,
         width: Int,
         height: Int,
         fps: Float64,
@@ -119,6 +233,8 @@ struct _CamWorker(BackgroundWorker):
         self.ring = ring^
         self.block = block^
         self.device = device
+        self.path = path^
+        self.fourcc = fourcc^
         self.width = width
         self.height = height
         self.fps = fps
@@ -134,6 +250,8 @@ struct _CamWorker(BackgroundWorker):
         self.ring = move.ring^
         self.block = move.block^
         self.device = move.device
+        self.path = move.path^
+        self.fourcc = move.fourcc^
         self.width = move.width
         self.height = move.height
         self.fps = move.fps
@@ -146,8 +264,16 @@ struct _CamWorker(BackgroundWorker):
         # ⚠ THE DEVICE IS OPENED HERE, ON THE THREAD THAT WILL READ IT — the
         # same rule `io/http_sink.mojo` follows for its libcurl handle.
         try:
-            self.cap = VideoCapture.device(
-                self.device, self.width, self.height, self.fps
+            if self.path.byte_length() > 0:
+                self.cap = VideoCapture.device_path(
+                    self.path, self.width, self.height, self.fps, self.fourcc
+                )
+            else:
+                self.cap = VideoCapture.device(
+                    self.device, self.width, self.height, self.fps
+                )
+            self.block.release_store(
+                CELL_FOURCC, _pack_fourcc(self.cap.fourcc())
             )
             self.width = self.cap.width
             self.height = self.cap.height
@@ -230,6 +356,11 @@ struct CameraReader(Movable):
     var ring: SharedRing
     var block: SharedBlock
     var device: Int
+    var path: String
+    """Non-empty when the camera was named by PATH; `device` is then unused."""
+    var fourcc: String
+    """The pixel format REQUESTED for a path-opened camera ("" = the device's
+    own default). What was negotiated is `negotiated_fourcc()`, after `start`."""
     var width: Int
     var height: Int
     var fps: Float64
@@ -248,6 +379,57 @@ struct CameraReader(Movable):
         slots: Int = DEFAULT_SLOTS,
         rgb: Bool = False,
     ) raises:
+        self = Self(
+            String(""), device, width, height, fps, slots, rgb, String("")
+        )
+
+    @staticmethod
+    def at_path(
+        path: String,
+        width: Int = 640,
+        height: Int = 480,
+        fps: Float64 = 30.0,
+        slots: Int = DEFAULT_SLOTS,
+        rgb: Bool = False,
+        fourcc: String = String(""),
+    ) raises -> Self:
+        """A camera named by device path — `/dev/soarm_cam_overhead`.
+
+        ⚠ A PATH IS THE ONLY STABLE NAME ON THE BOARD. Both SO-101 cameras
+        report the same burned-in serial, so only the USB topology separates
+        them and `video0`/`video2` are assigned in enumeration order; the udev
+        rules in `docs/JETSON_DEPLOYMENT.md` §3 turn that into a fixed name.
+        Opening by index throws the distinction away, and the failure is not a
+        crash — it is the policy confidently acting on the wrong camera.
+        """
+        return Self(path, 0, width, height, fps, slots, rgb, fourcc)
+
+    @staticmethod
+    def from_spec(
+        spec: String,
+        width: Int = 640,
+        height: Int = 480,
+        fps: Float64 = 30.0,
+        slots: Int = DEFAULT_SLOTS,
+        rgb: Bool = False,
+        fourcc: String = String(""),
+    ) raises -> Self:
+        """An index or a path, as `--devices` gives it."""
+        if camera_spec_is_path(spec):
+            return Self.at_path(spec, width, height, fps, slots, rgb, fourcc)
+        return Self(Int(spec), width, height, fps, slots, rgb)
+
+    def __init__(
+        out self,
+        var path: String,
+        device: Int,
+        width: Int,
+        height: Int,
+        fps: Float64,
+        slots: Int,
+        rgb: Bool,
+        var fourcc: String,
+    ) raises:
         if not opencv_shim_available():
             raise Error(
                 "camera_thread: the OpenCV shim is not built — `pixi run"
@@ -255,9 +437,16 @@ struct CameraReader(Movable):
             )
         if width <= 0 or height <= 0:
             raise Error("camera_thread: a camera needs a positive size")
+        if fourcc.byte_length() != 0 and fourcc.byte_length() != 4:
+            raise Error(
+                "camera_thread: a fourcc is four characters (got '" + fourcc
+                + "')"
+            )
         self.ring = SharedRing(slots, width * height * 3)
         self.block = SharedBlock(N_CELLS)
         self.device = device
+        self.path = path^
+        self.fourcc = fourcc^
         self.width = width
         self.height = height
         self.fps = fps
@@ -270,6 +459,8 @@ struct CameraReader(Movable):
         self.ring = move.ring^
         self.block = move.block^
         self.device = move.device
+        self.path = move.path^
+        self.fourcc = move.fourcc^
         self.width = move.width
         self.height = move.height
         self.fps = move.fps
@@ -277,6 +468,17 @@ struct CameraReader(Movable):
         self._starved = move._starved
         self.running = move.running
         self.rgb = move.rgb
+
+    def label(self) -> String:
+        """How this camera is named in a message: the path, or `device N`."""
+        if self.path.byte_length() > 0:
+            return self.path
+        return String("device ") + String(self.device)
+
+    def negotiated_fourcc(self) -> String:
+        """The pixel format the device settled on, or "" — valid after `start`.
+        """
+        return _unpack_fourcc(self.block.acquire_load(CELL_FOURCC))
 
     def frame_bytes(self) -> Int:
         return self.width * self.height * 3
@@ -294,8 +496,8 @@ struct CameraReader(Movable):
             raise Error("camera_thread: already started")
         self._thread = BackgroundThread(
             _CamWorker(
-                self.ring, self.block, self.device, self.width, self.height,
-                self.fps, self.rgb,
+                self.ring, self.block, self.device, self.path, self.fourcc,
+                self.width, self.height, self.fps, self.rgb,
             )
         )
         self.running = True
@@ -314,7 +516,7 @@ struct CameraReader(Movable):
                 if w != self.width or h != self.height:
                     self.stop()
                     raise Error(
-                        "camera_thread: device " + String(self.device)
+                        "camera_thread: " + self.label()
                         + " negotiated " + String(w) + "x" + String(h)
                         + ", not the " + String(self.width) + "x"
                         + String(self.height) + " that sized the ring."
@@ -325,15 +527,15 @@ struct CameraReader(Movable):
             if st == -1:
                 self.stop()
                 raise Error(
-                    "camera_thread: device " + String(self.device)
-                    + " did not open"
+                    "camera_thread: " + self.label() + " did not open"
+                    + _open_hint(self.path)
                 )
             _sleep_ms(10)
             waited += 10
         self.stop()
         raise Error(
-            "camera_thread: device " + String(self.device) + " did not report"
-            " ready within " + String(wait_ms) + " ms"
+            "camera_thread: " + self.label() + " did not report ready within "
+            + String(wait_ms) + " ms"
         )
 
     def take(mut self, mut out: List[UInt8]) raises -> Bool:

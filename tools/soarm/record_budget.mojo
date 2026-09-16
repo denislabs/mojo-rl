@@ -40,12 +40,14 @@ from mojo_rl.core.concurrent.thread import sleep_us
 
 from mojo_rl.io.video import VideoEncoder, VideoEncoderThread
 from mojo_rl.robot.so101 import SO101Arm, SO101_N
+from mojo_rl.robot.so101.ports import leader_port
 from mojo_rl.utils.fmt import fixed
-from mojo_rl.vision.camera_thread import CameraReader
+from mojo_rl.vision.camera_thread import (
+    CameraReader, open_camera_spec, parse_camera_specs,
+)
 from mojo_rl.vision.opencv import VideoCapture, opencv_shim_available
 
 
-comptime LEADER_PORT = "/dev/cu.usbmodem5B910455171"
 comptime HZ = 30
 comptime WARMUP = 15
 """Frames discarded before timing. Consumer webcams take a moment to settle,
@@ -94,6 +96,7 @@ def _row(label: String, ref s: Stat, budget_ms: Float64) raises:
     )
 
 
+
 def main() raises:
     if not opencv_shim_available():
         raise Error(
@@ -101,28 +104,20 @@ def main() raises:
             " build-opencv`"
         )
 
-    var devices = List[Int]()
+    var devices = List[String]()
     var seconds = 8
     var args = argv()
     for i in range(len(args)):
         if String(args[i]) == "--devices" and i + 1 < len(args):
-            var spec = String(args[i + 1])
-            var cur = String("")
-            for k in range(spec.byte_length()):
-                var c = chr(Int(spec.as_bytes()[k]))
-                if c == ",":
-                    if cur != "":
-                        devices.append(Int(cur))
-                    cur = String("")
-                else:
-                    cur += c
-            if cur != "":
-                devices.append(Int(cur))
+            # ⚠ WAS A HAND-ROLLED SPLIT. One parser for `--devices`, shared
+            # with the recorders, or the three drift — this one accepted a
+            # trailing comma the others rejected.
+            devices = parse_camera_specs(String(args[i + 1]))
         elif String(args[i]) == "--seconds" and i + 1 < len(args):
             seconds = Int(String(args[i + 1]))
     if len(devices) == 0:
-        devices.append(0)
-        devices.append(1)
+        devices.append(String("0"))
+        devices.append(String("1"))
 
     var budget_ms = 1000.0 / Float64(HZ)
     print("=" * 72)
@@ -135,8 +130,8 @@ def main() raises:
     # ── open the cameras ──────────────────────────────────────────────
     var caps = List[VideoCapture]()
     for i in range(len(devices)):
-        print("opening camera " + String(devices[i]) + " ...")
-        var c = VideoCapture.device(devices[i], 640, 480, 30.0)
+        print("opening camera " + devices[i] + " ...")
+        var c = open_camera_spec(devices[i], 640, 480, 30.0)
         # ⚠ READ BACK, DO NOT ECHO. `VideoCapture.device`'s own header says
         # the size and rate are REQUESTS; a camera is free to ignore them and
         # OpenCV reports no error when it does.
@@ -218,7 +213,7 @@ def main() raises:
     var c_bus = Stat()
     var opened = True
     try:
-        var leader = SO101Arm(String(LEADER_PORT), max_step_ticks=0)
+        var leader = SO101Arm(leader_port(), max_step_ticks=0)
         leader.bus.timeout_ms = 20
         leader.set_torque(False)
         var pos = Array[Int32, SO101_N](fill=0)
@@ -248,7 +243,7 @@ def main() raises:
           + String(HZ) + " Hz ──")
     var readers = List[CameraReader]()
     for i in range(len(devices)):
-        var rd = CameraReader(devices[i], 640, 480, 30.0)
+        var rd = CameraReader.from_spec(devices[i], 640, 480, 30.0)
         rd.start()
         readers.append(rd^)
     var d_encs = List[VideoEncoder]()
@@ -271,7 +266,7 @@ def main() raises:
     var d_work = Stat()
     var d_starve = 0
     var period_ns = 1_000_000_000 // HZ
-    var d_leader = SO101Arm(String(LEADER_PORT), max_step_ticks=0)
+    var d_leader = SO101Arm(leader_port(), max_step_ticks=0)
     d_leader.bus.timeout_ms = 20
     d_leader.set_torque(False)
     var dpos = Array[Int32, SO101_N](fill=0)
@@ -312,7 +307,7 @@ def main() raises:
           + String(HZ) + " Hz ──")
     var e_readers = List[CameraReader]()
     for i in range(len(devices)):
-        var rd = CameraReader(devices[i], 640, 480, 30.0)
+        var rd = CameraReader.from_spec(devices[i], 640, 480, 30.0)
         rd.start()
         e_readers.append(rd^)
     var e_encs = List[VideoEncoderThread]()
@@ -332,7 +327,7 @@ def main() raises:
 
     var e_work = Stat()
     var e_starve = 0
-    var e_leader = SO101Arm(String(LEADER_PORT), max_step_ticks=0)
+    var e_leader = SO101Arm(leader_port(), max_step_ticks=0)
     e_leader.bus.timeout_ms = 20
     e_leader.set_torque(False)
     var epos = Array[Int32, SO101_N](fill=0)

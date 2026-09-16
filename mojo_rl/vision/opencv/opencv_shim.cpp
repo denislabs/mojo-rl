@@ -222,6 +222,86 @@ void* mrl_cv_cap_open(int index, int width, int height, double fps) {
     }
 }
 
+// A live device named by PATH rather than by index — `/dev/soarm_cam_wrist`.
+//
+// ⚠ WHY THIS IS NOT `mrl_cv_cap_open_file` WITH A /dev PATH.  That one opens
+// with CAP_ANY, and CAP_ANY on a filename walks the backend list in priority
+// order: FFMPEG is ahead of V4L2 and it WILL open /dev/video0 through its own
+// v4l2 demuxer.  It succeeds, so nothing reports a problem — but it is a
+// different capture path with its own format negotiation, and the pixels a
+// policy sees would then depend on which backend happened to win.  Naming
+// CAP_V4L2 makes the answer the same every time.
+//
+// ⚠ THE FOURCC IS REQUESTED BEFORE THE SIZE, and that order is required by
+// V4L2: the frame-size table is per pixel format, so setting the size first
+// and the format second re-negotiates the size against the new format and
+// silently discards what was asked for.  `fourcc` may be NULL to leave the
+// device's own default alone.  Like the size it is a REQUEST — read it back
+// with `mrl_cv_cap_fourcc` rather than assuming it took.
+void* mrl_cv_cap_open_path(const char* path, int width, int height,
+                           double fps, const char* fourcc) {
+    if (path == nullptr) {
+        mrl_cv_set_error("VideoCapture: null device path");
+        return nullptr;
+    }
+    try {
+        MrlCapture* c = new MrlCapture();
+#ifdef __linux__
+        int backend = cv::CAP_V4L2;
+#else
+        int backend = cv::CAP_ANY;
+#endif
+        if (!c->cap.open(std::string(path), backend)) {
+            mrl_cv_set_error(
+                (std::string("VideoCapture: cannot open device ") + path).c_str());
+            delete c;
+            return nullptr;
+        }
+        if (fourcc != nullptr && std::strlen(fourcc) == 4) {
+            c->cap.set(cv::CAP_PROP_FOURCC,
+                       cv::VideoWriter::fourcc(fourcc[0], fourcc[1],
+                                               fourcc[2], fourcc[3]));
+        }
+        if (width  > 0) c->cap.set(cv::CAP_PROP_FRAME_WIDTH,  width);
+        if (height > 0) c->cap.set(cv::CAP_PROP_FRAME_HEIGHT, height);
+        if (fps    > 0) c->cap.set(cv::CAP_PROP_FPS,          fps);
+        return c;
+    } catch (const cv::Exception& e) {
+        mrl_cv_set_error(e.what());
+        return nullptr;
+    } catch (...) {
+        mrl_cv_set_error("VideoCapture: unknown C++ exception");
+        return nullptr;
+    }
+}
+
+// What pixel format the device actually settled on, as its four characters.
+//
+// ⚠ THIS IS A TRAIN/DEPLOY GATE, NOT DIAGNOSTICS.  Recording in MJPEG and
+// deploying in YUYV shows the policy different pixels than it was trained on —
+// a small systematic shift that reads later as "the policy transfers badly"
+// rather than as a configuration error (docs/JETSON_DEPLOYMENT.md §3.2).  The
+// only way to know is to ask the device after it has negotiated.
+int mrl_cv_cap_fourcc(void* h, char* out, int cap) {
+    MrlCapture* c = as_capture(h);
+    if (c == nullptr) { mrl_cv_set_error("bad capture handle"); return MRL_CV_ERR_ARG; }
+    if (out == nullptr || cap < 5) return MRL_CV_ERR_CAPACITY;
+    MRL_CV_TRY({
+        int v = static_cast<int>(c->cap.get(cv::CAP_PROP_FOURCC));
+        out[0] = static_cast<char>( v        & 0xFF);
+        out[1] = static_cast<char>((v >>  8) & 0xFF);
+        out[2] = static_cast<char>((v >> 16) & 0xFF);
+        out[3] = static_cast<char>((v >> 24) & 0xFF);
+        out[4] = '\0';
+        // A device that reports nothing gives 0, which would be four NULs and
+        // would print as an empty string rather than as "unknown".
+        for (int i = 0; i < 4; ++i) {
+            if (out[i] < 32 || out[i] > 126) { out[0] = '\0'; break; }
+        }
+        return MRL_CV_OK;
+    })
+}
+
 // A file, which is what the GATE uses.  A capture path tested only against a
 // live camera is a capture path with no gate at all — the frames are never the
 // same twice, so there is nothing to compare against.  Decoding a committed

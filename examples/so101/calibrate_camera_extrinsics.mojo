@@ -106,10 +106,12 @@ from mojo_rl.render.imgui import (
 )
 from mojo_rl.render.renderer3d import Renderer3D
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_short
+from mojo_rl.robot.so101.ports import follower_port
 from mojo_rl.robot.so101.sim_map import SimJointMap
 from mojo_rl.utils.fmt import fixed
 from mojo_rl.vision.calib_file import CameraCalib, read_calib, write_calib
 from mojo_rl.vision.extrinsics import RigidFit, fit_rigid
+from mojo_rl.vision.camera_thread import open_camera_spec
 from mojo_rl.vision.opencv import (
     ArucoDetector,
     DICT_4X4_50,
@@ -123,7 +125,6 @@ comptime Vec3d = Vec3Generic[DType.float64]
 comptime Mat3d = Mat3Generic[DType.float64]
 comptime Quatd = QuatGeneric[DType.float64]
 
-comptime FOLLOWER_PORT = "/dev/cu.usbmodem5B8E1139971"
 
 comptime WIN_W = 1220
 comptime WIN_H = 780
@@ -163,20 +164,20 @@ def _fmt3(v: Vec3d, scale: Float64, digits: Int) -> String:
 def main() raises:
     # ── arguments ───────────────────────────────────────────────────────────
     var cam_name = String("front")
-    var device_index = 0
+    var device_spec = String("0")
     var calib_path = String("")
     var marker_mm = 30.0
     var marker_id = -1
     var body = GRIPPER_BODY_IDX
     var off = Vec3d.zero()
-    var port = String(FOLLOWER_PORT)
+    var port = follower_port()
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
         if a == "--camera" and i + 1 < len(args):
             cam_name = String(args[i + 1])
         elif a == "--device" and i + 1 < len(args):
-            device_index = Int(String(args[i + 1]))
+            device_spec = String(args[i + 1])
         elif a == "--calib" and i + 1 < len(args):
             calib_path = String(args[i + 1])
         elif a == "--marker-mm" and i + 1 < len(args):
@@ -210,7 +211,7 @@ def main() raises:
     except e:
         print("could not read the intrinsics for camera", cam_name, "-", e)
         print("  Expected a mojo-rl-camera-calibration file at:", calib_path)
-        print("  Produce one with:  pixi run camera-studio --device", device_index)
+        print("  Produce one with:  pixi run camera-studio --device", device_spec)
         print("  ⚠ WITHOUT IT solve_pnp has a guessed focal length, every")
         print("    marker distance carries that error, and a scale error in")
         print("    the correspondences becomes a ROTATION error in the fit.")
@@ -239,12 +240,12 @@ def main() raises:
     var bgr = List[UInt8]()
     var cap = VideoCapture.closed()
     try:
-        cap = VideoCapture.device(device_index, REQ_W, REQ_H, 30.0)
+        cap = open_camera_spec(device_spec, REQ_W, REQ_H, 30.0)
     except e:
-        print("could not open camera", device_index, "-", e)
+        print("could not open camera", device_spec, "-", e)
         return
     if not cap.read(bgr):
-        print("camera", device_index, "opened but produced no frame")
+        print("camera", device_spec, "opened but produced no frame")
         cap.close()
         return
     var fw = cap.width
@@ -257,7 +258,7 @@ def main() raises:
         print(e)
         cap.close()
         return
-    print("camera:", device_index, "->", fw, "x", fh)
+    print("camera:", device_spec, "->", fw, "x", fh)
 
     # ── the arm, released ──────────────────────────────────────────────────
     print("opening", port, "...")

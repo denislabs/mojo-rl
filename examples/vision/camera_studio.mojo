@@ -108,6 +108,7 @@ from mojo_rl.render.imgui import (
 from mojo_rl.render.renderer3d import Renderer3D
 from mojo_rl.utils.fmt import fixed
 from mojo_rl.vision.calib_file import CameraCalib, read_calib, write_calib
+from mojo_rl.vision.camera_thread import open_camera_spec
 from mojo_rl.vision.opencv import (
     ArucoDetector,
     CALIB_FIX_K3,
@@ -181,7 +182,7 @@ def _plot_push(mut buf: List[Float32], v: Float32, cap: Int = 180):
 
 def main() raises:
     # ── arguments ───────────────────────────────────────────────────────────
-    var device_index = 0
+    var device_spec = String("0")
     var path = String("")
     var is_image = False
     var board_sx = BOARD_SX
@@ -194,7 +195,7 @@ def main() raises:
     for i in range(1, len(args)):
         var a = String(args[i])
         if a == "--device" and i + 1 < len(args):
-            device_index = Int(String(args[i + 1]))
+            device_spec = String(args[i + 1])
         elif a == "--file" and i + 1 < len(args):
             path = String(args[i + 1])
         elif a == "--image" and i + 1 < len(args):
@@ -220,7 +221,7 @@ def main() raises:
     # two-camera rig ends up with the front camera's intrinsics applied to the
     # side one — which fails no check and simply mis-ranges everything.
     if cam_name == "":
-        cam_name = String("cam") + String(device_index)
+        cam_name = String("cam") + String(device_spec)
     if calib_path == "":
         calib_path = String("scratch/camera_") + cam_name + ".txt"
 
@@ -258,8 +259,8 @@ def main() raises:
                 cap = VideoCapture.from_file(path)
                 source_label = String("file: ") + path
             else:
-                cap = VideoCapture.device(device_index, 1280, 720, 30.0)
-                source_label = String("camera ") + String(device_index)
+                cap = open_camera_spec(device_spec, 1280, 720, 30.0)
+                source_label = String("camera ") + String(device_spec)
         except e:
             print("could not open the source:", e)
             if path.byte_length() == 0:
@@ -442,7 +443,7 @@ def main() raises:
                 if path.byte_length() > 0:
                     cap = VideoCapture.from_file(path)
                 else:
-                    cap = VideoCapture.device(device_index, 1280, 720, 30.0)
+                    cap = open_camera_spec(device_spec, 1280, 720, 30.0)
                 _ = cap.read(bgr)
             last_cap_ms = Float32(Float64(perf_counter_ns() - t0) / 1_000_000.0)
             _plot_push(cap_ms_hist, last_cap_ms)
@@ -743,7 +744,7 @@ def main() raises:
             try:
                 var out_cal = CameraCalib(
                     cam_name.copy(),
-                    device_index,
+                    device_spec,
                     frame_w,
                     frame_h,
                     cal_k[0],

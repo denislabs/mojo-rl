@@ -37,10 +37,9 @@ from std.ffi import external_call
 from std.time import perf_counter_ns
 
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
+from mojo_rl.robot.so101.ports import follower_port, leader_port, port_refusal
 from mojo_rl.utils.fmt import col, fixed
 
-comptime FOLLOWER_PORT = "/dev/cu.usbmodem5B8E1139971"
-comptime LEADER_PORT = "/dev/cu.usbmodem5B910455171"
 
 comptime HZ = 50
 comptime SECONDS = 30
@@ -84,14 +83,20 @@ def _sleep_until(deadline_ns: Int):
 
 
 def main() raises:
-    print("opening follower:", FOLLOWER_PORT)
+    var f_port = follower_port()
+    var l_port = leader_port()
+    for pair in [(f_port, String("follower")), (l_port, String("leader"))]:
+        var why = port_refusal(pair[0], pair[1])
+        if why.byte_length() > 0:
+            raise Error("teleop: " + why)
+    print("opening follower:", f_port)
     var follower = SO101Arm(
-        String(FOLLOWER_PORT),
+        f_port,
         max_step_ticks=MAX_STEP_TICKS,
         track_step_ticks=TRACK_STEP_TICKS,
     )
-    print("opening leader:  ", LEADER_PORT)
-    var leader = SO101Arm(String(LEADER_PORT), max_step_ticks=0)
+    print("opening leader:  ", l_port)
+    var leader = SO101Arm(l_port, max_step_ticks=0)
 
     # A control loop drops a tick rather than stalling one, so the 50 ms
     # default (lerobot's patched single-transaction timeout, right for setup)

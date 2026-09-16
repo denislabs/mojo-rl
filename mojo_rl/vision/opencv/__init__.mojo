@@ -337,6 +337,83 @@ struct VideoCapture(Movable):
             ) + ": " + cv_last_error()
         return Self(h)
 
+    @staticmethod
+    def device_path(
+        path: String,
+        width: Int = 0,
+        height: Int = 0,
+        fps: Float64 = 0.0,
+        fourcc: String = String(""),
+    ) raises -> Self:
+        """Open a live camera by DEVICE PATH — `/dev/soarm_cam_wrist`.
+
+        ⚠ WHY A PATH AT ALL. A camera index is what moves between boots: the
+        two SO-101 cameras are the same model with the same burned-in serial,
+        so only the USB topology tells them apart, and `video0`/`video2` are
+        assigned in enumeration order. `/etc/udev/rules.d/99-soarm.rules` gives
+        each a stable name; opening by index throws that away
+        (`docs/JETSON_DEPLOYMENT.md` §3). Feeding the policy the WRONG CAMERA
+        is not a crash — it is a well-formed observation of the wrong thing.
+
+        ⚠ NOT `from_file`. That opens with CAP_ANY, which on a `/dev/video*`
+        path can be won by FFMPEG's v4l2 demuxer instead of the V4L2 backend —
+        a different capture path with its own format negotiation. This names
+        the backend; see `opencv_shim.cpp`.
+
+        `fourcc` is a four-character pixel format (`"MJPG"`, `"YUYV"`), empty
+        to leave the device's default alone. Like the size it is a REQUEST:
+        read back what was negotiated with `fourcc()`.
+        """
+        var p = path
+        var f = fourcc
+        var h = _get_dylib_function[
+            lib,
+            "mrl_cv_cap_open_path",
+            def(
+                Ptr[c_char, MutUntrackedOrigin],
+                Int32,
+                Int32,
+                Float64,
+                Ptr[c_char, MutUntrackedOrigin],
+            ) thin -> Int,
+        ]()
+        # ⚠ An empty fourcc is passed as an empty STRING, not NULL: the shim
+        # checks the length, so "" leaves the device's format alone exactly as
+        # NULL would, and nothing here has to build a null pointer.
+        var handle = h(
+            untracked(p.as_c_string_slice().unsafe_ptr()),
+            Int32(width),
+            Int32(height),
+            fps,
+            untracked(f.as_c_string_slice().unsafe_ptr()),
+        )
+        if handle == 0:
+            raise String("opencv: cannot open device ") + path + ": " + cv_last_error()
+        return Self(handle)
+
+    def fourcc(self) raises -> String:
+        """The pixel format the device actually negotiated, or "" if unknown.
+
+        ⚠ WORTH PRINTING BEFORE A POLICY RUNS. Recording in one format and
+        deploying in another shows the policy different pixels than it trained
+        on, and nothing else in the stack reports it.
+        """
+        if self._h == 0:
+            return String("")
+        var buf = List[UInt8](length=5, fill=0)
+        var st = _get_dylib_function[
+            lib,
+            "mrl_cv_cap_fourcc",
+            def(Int, Ptr[UInt8, MutUntrackedOrigin], Int32) thin -> Int32,
+        ]()(self._h, untracked(Ptr(to=buf[0])), Int32(5))
+        _check(st, "cap_fourcc")
+        var out = String("")
+        for i in range(4):
+            if buf[i] == 0:
+                break
+            out += chr(Int(buf[i]))
+        return out^
+
     def _refresh_props(mut self) raises:
         var w = Int32(0)
         var h = Int32(0)

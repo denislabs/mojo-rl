@@ -41,10 +41,9 @@ from mojo_rl.robot.feetech.control_table import (
 )
 from mojo_rl.robot.feetech.packet import error_names
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
+from mojo_rl.robot.so101.ports import follower_port, leader_port
 from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
 
-comptime FOLLOWER = "/dev/cu.usbmodem5B8E1139971"
-comptime LEADER = "/dev/cu.usbmodem5B910455171"
 
 
 def dump(var path: String, label: String) raises:
@@ -127,5 +126,5 @@ def dump(var path: String, label: String) raises:
 
 
 def main() raises:
-    dump(String(FOLLOWER), String("FOLLOWER"))
-    dump(String(LEADER), String("LEADER"))
+    dump(follower_port(), String("FOLLOWER"))
+    dump(leader_port(), String("LEADER"))

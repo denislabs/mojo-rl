@@ -55,10 +55,10 @@ from mojo_rl.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
 from mojo_rl.render.imgui import imgui_shim_available
 from mojo_rl.render.renderer3d import Renderer3D
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
+from mojo_rl.robot.so101.ports import leader_port, port_refusal
 from mojo_rl.robot.so101.sim_map import SimJointMap
 from mojo_rl.utils.fmt import col, fixed
 
-comptime LEADER_PORT = "/dev/cu.usbmodem5B910455171"
 comptime SEED: Int = 0
 
 
@@ -172,8 +172,12 @@ def main() raises:
         print("Dear ImGui shim not built.  Run:  pixi run build-imgui")
         return
 
-    print("opening leader:", LEADER_PORT)
-    var src = LeaderArmSource(String(LEADER_PORT))
+    var l_port = leader_port()
+    var why_l = port_refusal(l_port, String("leader"))
+    if why_l.byte_length() > 0:
+        raise Error("teleop_sim: " + why_l)
+    print("opening leader:", l_port)
+    var src = LeaderArmSource(l_port)
 
     print("\n" + src.map.range_report(src.arm.cal))
     print(src.map.describe())

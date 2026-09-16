@@ -25,6 +25,17 @@ same two cameras the demonstrations were recorded with.
     # whose cameras have been moved.
     /tmp/act_deploy --project so101-tower --store <...> --snap /tmp/snap
 
+    # ON THE JETSON. Cameras by PATH (the udev symlinks — both cameras report
+    # the same serial, so an index is not a name), the arm ports resolved from
+    # the platform defaults, and the policy on the GPU:
+    pixi run -e jetson act-deploy-jetson -- --project so101-tower \
+        --devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist
+
+⚠ THE INFERENCE DEVICE IS A BUILD-TIME CHOICE: `-DACT_GPU=1` (see
+`DEPLOY_TARGET`). `--devices` takes camera indices OR device paths, `--port`
+names the follower (else `$SOARM_FOLLOWER_PORT`, else the platform default),
+and `--fourcc` requests a pixel format from a path-opened V4L2 camera.
+
 ⚠ The normalization comes from `norm.json` beside the weights
 (`policies/<role>.norm.json`, or `<run>/checkpoints/norm.json` for `--ckpt`),
 `--norm` names another, and `--store` recomputes it — both given must agree.
@@ -136,7 +147,10 @@ bring-up should not also be the debut of a cross-thread inference pipeline.
 from std.os import getenv
 from std.os.path import exists
 from std.sys import argv
+from std.sys.defines import is_defined
 from std.time import perf_counter_ns
+
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.act.config import (
@@ -169,13 +183,30 @@ from mojo_rl.io.fileio import StdinReader, stdin_is_tty
 from mojo_rl.io.json import load_json
 from mojo_rl.io.png import save_png
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
+from mojo_rl.robot.so101.ports import follower_port, port_refusal
 from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
-from mojo_rl.vision.camera_thread import CameraReader
+from mojo_rl.vision.camera_thread import CameraReader, parse_camera_specs
 from mojo_rl.vision.preprocess import camera_frame_to_chw_rgb
 from mojo_rl.core.policy import describe_policy, resolve_policy
 
 
-comptime FOLLOWER_PORT = "/dev/cu.usbmodem5B8E1139971"
+comptime DEPLOY_TARGET: StaticString = "gpu" if is_defined["ACT_GPU"]() else "cpu"
+"""⚠⚠ THE INFERENCE DEVICE, CHOSEN AT BUILD TIME — `-DACT_GPU=1`.
+
+A BUILD-time switch and not a `--device` flag, because `target` is a parameter
+of `ACTTrainer`: a runtime flag means instantiating the whole ACT graph TWICE
+in one binary, and the baseline build is already 145 s on an M1 Pro (measured).
+One target per binary costs nothing; two would be paid on every rebuild, on the
+slowest machine in the loop.
+
+⚠ THE DEFAULT IS CPU BECAUSE OF A MEASUREMENT, NOT A PREFERENCE — see the
+header: on this M1, Metal at BATCH=1 was 155 ms against the CPU's 95 ms. That
+number is about METAL's command-buffer retirement floor and it does NOT
+transfer to CUDA. On the Jetson the comparison is a weak ARM CPU against a
+1024-core Ampere, so GPU is the one to try — but `--seconds 0` prints the
+forward latency of whichever binary you built, and THAT is the number to
+believe. Build both, run both, read the two numbers."""
+
 comptime POLICY_PROJECT = "so101"
 comptime POLICY_ROLE = "act"
 comptime DEFAULT_CKPT = "act_so101_best_gpu.ckpt"
@@ -207,7 +238,7 @@ comptime BATCH = 1
 
 comptime T = ACTTrainer[
     QPOS, ADIM, N_CAM, IMG_H, IMG_W, K, DIM, HEADS, FF, LATENT, N_ENC,
-    N_DEC, BATCH,
+    N_DEC, BATCH, target=DEPLOY_TARGET,
 ]
 comptime CAM_ELEMS = 3 * IMG_H * IMG_W
 comptime IMG_ELEMS = N_CAM * CAM_ELEMS
@@ -222,6 +253,11 @@ window GROWS with the reduction factor, so 640x480 -> 320x240 and 1280x720 ->
 scene. Feeding the second to a model trained on the first is a silent
 train/deploy gap. `--width` / `--height` exist for a different rig, not for
 convenience."""
+
+comptime WARMUP_QUERIES = 5
+"""Forwards run before anything is checked or armed — enough to separate the
+first (which compiles kernels) from the steady state, few enough that a CPU
+build at ~95 ms still starts in under a second."""
 
 comptime MAX_STEP_TICKS = 80
 """~7 degrees per tick of the CONTROL loop. Same value `teleop.mojo` and
@@ -543,7 +579,9 @@ def main() raises:
     var step_ticks = MAX_STEP_TICKS
     var smooth = 1.0
     var check_steps = 30
-    var devices = List[Int]()
+    var devices = List[String]()
+    var port_arg = String("")
+    var cam_fourcc = String("")
     var cam_w = CAM_W
     var cam_h = CAM_H
     var snap = String("")
@@ -600,10 +638,15 @@ def main() raises:
         elif a == "--snap-from" and i + 1 < len(args):
             snap_from = String(args[i + 1])
         elif a == "--devices" and i + 1 < len(args):
-            var parts = _split(String(args[i + 1]), String(","))
-            for k in range(len(parts)):
-                if parts[k] != "":
-                    devices.append(Int(parts[k]))
+            # Indices, device PATHS, or a mix — see `parse_camera_specs`.
+            devices = parse_camera_specs(String(args[i + 1]))
+        elif a == "--port" and i + 1 < len(args):
+            port_arg = String(args[i + 1])
+        elif a == "--fourcc" and i + 1 < len(args):
+            # ⚠ ONLY MEANINGFUL FOR A PATH-OPENED CAMERA (V4L2). It must match
+            # what the DEMONSTRATIONS were recorded in; see §3.2 of the Jetson
+            # document for why a format change is a train/deploy gap.
+            cam_fourcc = String(args[i + 1])
     if store == "":
         store = getenv("ACT_STORE")
     if ckpt == "":
@@ -622,8 +665,8 @@ def main() raises:
                 + role + "' role of project '" + project + "')"
             )
     if len(devices) == 0:
-        devices.append(0)
-        devices.append(1)
+        devices.append(String("0"))
+        devices.append(String("1"))
     if len(devices) != N_CAM:
         raise Error(
             "act deploy: the policy takes " + String(N_CAM) + " cameras but "
@@ -732,7 +775,15 @@ def main() raises:
 
     # ── the policy ────────────────────────────────────────────────────────
     print("checkpoint  " + ckpt)
-    var tr = T.make()
+    # ⚠ THE CONTEXT IS CREATED ONLY ON A GPU BUILD, and it must outlive `tr`:
+    # the trainer's device buffers are allocated from it.
+    var dev_ctx = Optional[DeviceContext](None)
+    comptime if DEPLOY_TARGET != "cpu":
+        dev_ctx = DeviceContext()
+        print("device      " + String(dev_ctx.value().name()) + "  (-DACT_GPU=1)")
+    else:
+        print("device      CPU")
+    var tr = T.make(ctx=dev_ctx)
     tr.load(ckpt)
     print(
         "            K=" + String(K) + " dim=" + String(DIM) + " enc="
@@ -753,6 +804,38 @@ def main() raises:
     var chunk = List[Scalar[DT]](length=BATCH * K * ADIM, fill=Scalar[DT](0.0))
     var pred_n = List[Scalar[DT]](length=ADIM, fill=Scalar[DT](0.0))
     var pred = List[Scalar[DT]](length=ADIM, fill=Scalar[DT](0.0))
+
+    # ── warm-up: pay the first-forward cost HERE, not in the control loop ──
+    #
+    # ⚠⚠ THE FIRST FORWARD IS NOT THE PRICE OF THE OTHERS. On a GPU build it
+    # compiles and caches every kernel it touches the first time it runs them —
+    # measured at ~2.4 s for a small MLP on the Orin
+    # (`docs/JETSON_DEPLOYMENT.md` §2.4), and ACT is a much larger graph. Paid
+    # inside the loop, that lands as one command arriving SECONDS late with the
+    # arm already energised, which is a safety problem and not a slow tick.
+    #
+    # The CPU build warms up too, for a smaller reason (allocation, first-touch
+    # paging) and for a bigger one: the two numbers below are the whole basis
+    # for choosing a device, so they have to be measured the same way on both.
+    var warm_ms = 0.0
+    var t_warm0 = perf_counter_ns()
+    tr.predict(qpos_n, images_n, dummy_actions, dummy_valid, chunk)
+    var first_ms = Float64(perf_counter_ns() - t_warm0) / 1e6
+    for _ in range(WARMUP_QUERIES):
+        var t_w = perf_counter_ns()
+        tr.predict(qpos_n, images_n, dummy_actions, dummy_valid, chunk)
+        warm_ms += Float64(perf_counter_ns() - t_w) / 1e6
+    print(
+        "            forward " + fixed(warm_ms / Float64(WARMUP_QUERIES), 1)
+        + " ms warm (first " + fixed(first_ms, 1) + " ms, "
+        + String(DEPLOY_TARGET) + ")"
+    )
+    if warm_ms / Float64(WARMUP_QUERIES) > 1000.0 / Float64(SO101_FPS) * 6.0:
+        print(
+            "   ⚠ a forward costs more than six 30 Hz steps. The arm will be"
+            " driven mostly by\n     the ensemble's extrapolation between"
+            " queries — read the `ensemble` line in the report."
+        )
 
     # ── check 1: does THIS checkpoint go with THIS store? ─────────────────
     if check_steps > 0 and snap == "" and not have_store:
@@ -832,7 +915,7 @@ def main() raises:
         var label = names[i] if i < len(names) else String("slot ") + String(i)
         print(
             "camera slot " + String(i) + " = " + pad_right(label, 26)
-            + " <- device " + String(devices[i])
+            + " <- " + devices[i]
         )
         # ⚠ rgb=FALSE, UNLIKE `record.mojo`. `camera_frame_to_chw_rgb` does
         # the BGR->RGB swap during its HWC->CHW transpose, a pass that already
@@ -840,14 +923,20 @@ def main() raises:
         # would swap twice and feed the policy inverted colour channels — a
         # failure that looks like a bad policy, not like a bug. The recorder
         # wants rgb=True because its consumer is an encoder, not this.
-        var c = CameraReader(
-            devices[i], cam_w, cam_h, Float64(SO101_FPS), rgb=False
+        var c = CameraReader.from_spec(
+            devices[i], cam_w, cam_h, Float64(SO101_FPS), rgb=False,
+            fourcc=cam_fourcc,
         )
         # ⚠ 8 s, NOT THE 4 s DEFAULT. Measured on this rig: a camera that has
         # been idle takes longer than 4 s to report ready on its first open,
         # and `CameraReader.start` reports that as "device 0 did not report
         # ready" — which reads exactly like a camera that is not there.
         c.start(wait_ms=8000)
+        # ⚠ SAY WHICH PIXEL FORMAT, because a format that differs from the
+        # recording's is a silent train/deploy gap and nothing else reports it.
+        var got = c.negotiated_fourcc()
+        if got.byte_length() > 0:
+            print("            format " + got)
         cams.append(c^)
     print(
         "            " + String(cam_w) + "x" + String(cam_h) + " native ->"
@@ -906,7 +995,7 @@ def main() raises:
             # device i, right now, through the SAME resize the policy sees
             if not cams[i].take_blocking(snap_frames):
                 raise Error(
-                    "act deploy: camera " + String(devices[i])
+                    "act deploy: camera " + devices[i]
                     + " delivered no frame for --snap"
                 )
             camera_frame_to_chw_rgb(
@@ -937,9 +1026,13 @@ def main() raises:
 
     # ── the arm ───────────────────────────────────────────────────────────
     print("")
-    print("follower    " + String(FOLLOWER_PORT))
+    var f_port = follower_port(port_arg)
+    print("follower    " + f_port)
+    var why_port = port_refusal(f_port, String("follower"))
+    if why_port.byte_length() > 0:
+        raise Error("act deploy: " + why_port)
     var follower = SO101Arm(
-        String(FOLLOWER_PORT),
+        f_port,
         max_step_ticks=step_ticks,
         track_step_ticks=TRACK_STEP_TICKS,
     )
@@ -1089,7 +1182,7 @@ def main() raises:
                     stale_ticks += 1
                     if not cams[i].take_blocking(frames[i]):
                         raise Error(
-                            "act deploy: camera " + String(devices[i])
+                            "act deploy: camera " + devices[i]
                             + " stopped delivering frames"
                         )
             var t_c1 = perf_counter_ns()

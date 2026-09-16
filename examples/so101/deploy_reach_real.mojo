@@ -73,11 +73,11 @@ from mojo_rl.physics3d.gpu.constants import (
     META_IDX_TASK_PARAM_6,
 )
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
+from mojo_rl.robot.so101.ports import follower_port, port_refusal
 from mojo_rl.robot.so101.sim_map import SimJointMap
 from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
 from mojo_rl.core.policy import describe_policy, resolve_policy
 
-comptime FOLLOWER_PORT = "/dev/cu.usbmodem5B8E1139971"
 comptime POLICY_PROJECT = "so101"
 comptime POLICY_ROLE = "reach"
 comptime CHECKPOINT_FALLBACK = "sac_so_arm101_reach.ckpt"
@@ -286,8 +286,12 @@ def main() raises:
     var jmap = SimJointMap.identity(lo^, hi^)
 
     # ── the arm ───────────────────────────────────────────────────────────
-    print("  opening         =", FOLLOWER_PORT)
-    var arm = SO101Arm(String(FOLLOWER_PORT), max_step_ticks=step_ticks)
+    var f_port = follower_port()
+    var why_f = port_refusal(f_port, String("follower"))
+    if why_f.byte_length() > 0:
+        raise Error("deploy_reach: " + why_f)
+    print("  opening         =", f_port)
+    var arm = SO101Arm(f_port, max_step_ticks=step_ticks)
     arm.bus.timeout_ms = 20
     print("  target          = (", TARGET_X, TARGET_Y, TARGET_Z, ")")
     print("=" * 70)

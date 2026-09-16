@@ -74,13 +74,12 @@ from mojo_rl.render.imgui import (
 )
 from mojo_rl.render.renderer3d import Renderer3D
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name, joint_short
+from mojo_rl.robot.so101.ports import follower_port, leader_port, port_refusal
 from mojo_rl.utils.fmt import fixed
 from mojo_rl.data.lerobot_rejected import is_rejected, load_rejected_episodes, reject_episode
-from mojo_rl.vision.camera_thread import CameraReader
+from mojo_rl.vision.camera_thread import CameraReader, parse_camera_specs
 
 
-comptime FOLLOWER_PORT = "/dev/cu.usbmodem5B8E1139971"
-comptime LEADER_PORT = "/dev/cu.usbmodem5B910455171"
 
 comptime HZ = 30
 comptime WIDTH = 640
@@ -240,7 +239,8 @@ def main() raises:
     var task = String("")
     var seconds = 120
     """A CAP, not a schedule: an episode is normally ended with a button."""
-    var devices = List[Int]()
+    var devices = List[String]()
+    var cam_fourcc = String("")
     var cam_names = List[String]()
     var arm = False
 
@@ -267,10 +267,13 @@ def main() raises:
         elif a == "--seconds" and i + 1 < len(args):
             seconds = Int(String(args[i + 1]))
         elif a == "--devices" and i + 1 < len(args):
-            var parts = _split(String(args[i + 1]), String(","))
-            for k in range(len(parts)):
-                if parts[k] != "":
-                    devices.append(Int(parts[k]))
+            # Indices, device PATHS, or a mix — see `parse_camera_specs`.
+            devices = parse_camera_specs(String(args[i + 1]))
+        elif a == "--fourcc" and i + 1 < len(args):
+            # ⚠ WHAT IS RECORDED IS WHAT MUST BE DEPLOYED. A dataset recorded
+            # in one pixel format and a policy deployed in another differ by a
+            # small systematic shift that reads later as bad transfer.
+            cam_fourcc = String(args[i + 1])
         elif a == "--cameras" and i + 1 < len(args):
             var parts = _split(String(args[i + 1]), String(","))
             for k in range(len(parts)):
@@ -295,8 +298,8 @@ def main() raises:
     if task == "":
         raise Error("record_ui: --task \"<what you are doing>\" is required")
     if len(devices) == 0:
-        devices.append(0)
-        devices.append(1)
+        devices.append(String("0"))
+        devices.append(String("1"))
     if len(cam_names) == 0:
         cam_names = _split(String(CAMERA_NAMES), String(","))
     if len(cam_names) != len(devices):
@@ -313,20 +316,32 @@ def main() raises:
     var cams = List[CameraReader]()
     for i in range(len(devices)):
         print("opening camera " + String(devices[i]) + " ...")
-        var c = CameraReader(
-            devices[i], WIDTH, HEIGHT, Float64(HZ), rgb=True
+        var c = CameraReader.from_spec(
+            devices[i], WIDTH, HEIGHT, Float64(HZ), rgb=True,
+            fourcc=cam_fourcc,
         )
         c.start()
+        var got = c.negotiated_fourcc()
+        print(
+            "  camera " + String(i) + ": " + c.label()
+            + ("  format " + got if got.byte_length() > 0 else String(""))
+        )
         cams.append(c^)
     var n_cam = len(cams)
 
-    print("opening arms ...")
+    var f_port = follower_port()
+    var l_port = leader_port()
+    for pair in [(f_port, String("follower")), (l_port, String("leader"))]:
+        var why = port_refusal(pair[0], pair[1])
+        if why.byte_length() > 0:
+            raise Error("record_ui: " + why)
+    print("opening arms ... " + f_port + " / " + l_port)
     var follower = SO101Arm(
-        String(FOLLOWER_PORT),
+        f_port,
         max_step_ticks=MAX_STEP_TICKS,
         track_step_ticks=TRACK_STEP_TICKS,
     )
-    var leader = SO101Arm(String(LEADER_PORT), max_step_ticks=0)
+    var leader = SO101Arm(l_port, max_step_ticks=0)
     follower.bus.timeout_ms = 20
     leader.bus.timeout_ms = 20
     leader.set_torque(False)

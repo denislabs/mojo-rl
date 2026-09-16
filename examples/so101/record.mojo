@@ -80,14 +80,13 @@ from std.time import perf_counter_ns
 from mojo_rl.data.lerobot_write import LeRobotWriter, open_recording
 from mojo_rl.io.fileio import StdinReader
 from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name, joint_short
+from mojo_rl.robot.so101.ports import follower_port, leader_port, port_refusal
 from mojo_rl.utils.fmt import col, fixed
 from mojo_rl.core.project import project_dataset_dir
 from mojo_rl.data.lerobot_rejected import is_rejected, load_rejected_episodes, reject_episode
-from mojo_rl.vision.camera_thread import CameraReader
+from mojo_rl.vision.camera_thread import CameraReader, parse_camera_specs
 
 
-comptime FOLLOWER_PORT = "/dev/cu.usbmodem5B8E1139971"
-comptime LEADER_PORT = "/dev/cu.usbmodem5B910455171"
 
 comptime HZ = 30
 comptime WIDTH = 640
@@ -128,7 +127,8 @@ def main() raises:
     var task = String("")
     var n_episodes = 5
     var seconds = 20
-    var devices = List[Int]()
+    var devices = List[String]()
+    var cam_fourcc = String("")
     var cam_names = List[String]()
     var arm = False
 
@@ -157,10 +157,13 @@ def main() raises:
         elif a == "--seconds" and i + 1 < len(args):
             seconds = Int(String(args[i + 1]))
         elif a == "--devices" and i + 1 < len(args):
-            var parts = _split(String(args[i + 1]), String(","))
-            for k in range(len(parts)):
-                if parts[k] != "":
-                    devices.append(Int(parts[k]))
+            # Indices, device PATHS, or a mix — see `parse_camera_specs`.
+            devices = parse_camera_specs(String(args[i + 1]))
+        elif a == "--fourcc" and i + 1 < len(args):
+            # ⚠ WHAT IS RECORDED IS WHAT MUST BE DEPLOYED. A dataset recorded
+            # in one pixel format and a policy deployed in another differ by a
+            # small systematic shift that reads later as bad transfer.
+            cam_fourcc = String(args[i + 1])
         elif a == "--cameras" and i + 1 < len(args):
             var parts = _split(String(args[i + 1]), String(","))
             for k in range(len(parts)):
@@ -193,8 +196,8 @@ def main() raises:
             " not trainable"
         )
     if len(devices) == 0:
-        devices.append(0)
-        devices.append(1)
+        devices.append(String("0"))
+        devices.append(String("1"))
     if len(cam_names) == 0:
         cam_names = _split(String(CAMERA_NAMES), String(","))
     if len(cam_names) != len(devices):
@@ -237,22 +240,34 @@ def main() raises:
         print("opening camera " + String(devices[i]) + " ...")
         # rgb=True: the swap happens on the camera thread, which is idle
         # anyway. Inline it cost 9.8 ms worst of a 33.3 ms tick.
-        var c = CameraReader(
-            devices[i], WIDTH, HEIGHT, Float64(HZ), rgb=True
+        var c = CameraReader.from_spec(
+            devices[i], WIDTH, HEIGHT, Float64(HZ), rgb=True,
+            fourcc=cam_fourcc,
         )
         c.start()
+        var got = c.negotiated_fourcc()
+        print(
+            "  camera " + String(i) + ": " + c.label()
+            + ("  format " + got if got.byte_length() > 0 else String(""))
+        )
         cams.append(c^)
     var n_cam = len(cams)
 
     # ── the arms ──────────────────────────────────────────────────────
-    print("opening follower: " + String(FOLLOWER_PORT))
+    var f_port = follower_port()
+    var l_port = leader_port()
+    for pair in [(f_port, String("follower")), (l_port, String("leader"))]:
+        var why = port_refusal(pair[0], pair[1])
+        if why.byte_length() > 0:
+            raise Error("record: " + why)
+    print("opening follower: " + f_port)
     var follower = SO101Arm(
-        String(FOLLOWER_PORT),
+        f_port,
         max_step_ticks=MAX_STEP_TICKS,
         track_step_ticks=TRACK_STEP_TICKS,
     )
-    print("opening leader:   " + String(LEADER_PORT))
-    var leader = SO101Arm(String(LEADER_PORT), max_step_ticks=0)
+    print("opening leader:   " + l_port)
+    var leader = SO101Arm(l_port, max_step_ticks=0)
     # One period, not the 50 ms setup default and not the 1.3 ms a sync_read
     # takes back-to-back: a duty-cycled loop pays host-controller latency on
     # top, and 5 ms produced "0 of 6 motors reported a position" in teleop.

@@ -85,6 +85,9 @@ from mojo_rl.robot.so101 import (
     load_calibration_json,
     save_calibration_json, span_regressions,
 )
+from mojo_rl.robot.so101.ports import (
+    default_follower_port, default_leader_port,
+)
 from mojo_rl.utils.fmt import fixed
 
 
@@ -396,10 +399,17 @@ def main() raises:
         _ = continuous.pop(found)
 
     if port == "":
+        # ⚠ STILL REQUIRED, DELIBERATELY — unlike every other entry point,
+        # this one does NOT fall back to the platform default. It writes
+        # EEPROM, and the two arms are indistinguishable on the bus, so the
+        # operator has to say which one out loud. The defaults are only
+        # quoted here so that on the board the message names the udev
+        # symlinks rather than a macOS path that exists nowhere.
         raise Error(
-            "calibrate: --port </dev/cu.usbmodem...> is required. Both arms"
-            " look alike on the bus and calibrating the wrong one is"
-            " silently destructive."
+            "calibrate: --port is required (the follower is normally "
+            + default_follower_port() + ", the leader "
+            + default_leader_port() + "). Both arms look alike on the bus and"
+            " calibrating the wrong one is silently destructive."
         )
 
     print("=" * 72)

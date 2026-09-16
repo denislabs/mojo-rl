@@ -84,6 +84,27 @@ scripts = ["scripts/build_cuda_intercept.sh"]
 #   pixi run -e jetson run-jetson examples/nn/mlp/mlp_mnist_training_storage_gpu.mojo
 # Verified 2026-09-16 on the Orin NX: that MLP reaches 97.75% with the flag.
 run-jetson = { cmd = "mojo run -I . --target-accelerator sm_87", description = "mojo run for the Orin (sm_87 — MAX cannot detect it without NVML)" }
+build-jetson = { cmd = "mojo build -I . --target-accelerator sm_87", description = "mojo build for the Orin (sm_87; AOT needs the flag too)" }
+
+# ── ACT on the board ───────────────────────────────────────────────────────
+# ⚠ TWO TASKS, ONE SOURCE, AND THAT IS THE POINT. The inference device is a
+# PARAMETER of ACTTrainer, so it is chosen at build time with `-DACT_GPU=1`
+# rather than by a runtime flag: a flag would mean instantiating the whole ACT
+# graph twice in one binary, and the build is already ~145 s on an M1 Pro —
+# paid on the Orin's A78AE cores, which is the slowest compiler in the loop.
+#
+# ⚠⚠ RUN BOTH AND READ BOTH NUMBERS BEFORE CHOOSING. The "Metal is slower"
+# measurement in the deploy script's header is about Metal's command-buffer
+# retirement floor on an M1; it says NOTHING about CUDA on a Tegra, where the
+# comparison is a weak ARM CPU against 1024 Ampere cores. Each binary prints
+# `forward N ms warm` before anything is armed — that line is the measurement.
+#
+# ⚠ NO `-ld_classic` HERE, unlike the macOS task: that is an ld64 flag and the
+# board links with lld.
+#   pixi run -e jetson act-deploy-jetson -- --project so101-tower \
+#       --devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist
+act-deploy-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -DACT_GPU=1 -o /tmp/act_deploy_gpu examples/so101/act_so101_deploy_real.mojo && /tmp/act_deploy_gpu", depends-on = ["build-serial", "build-opencv"], description = "ACT on the Orin's GPU (-- --project P; --arm to move it)" }
+act-deploy-jetson-cpu = { cmd = "mojo build -I . --target-accelerator sm_87 -o /tmp/act_deploy_cpu examples/so101/act_so101_deploy_real.mojo && /tmp/act_deploy_cpu", depends-on = ["build-serial", "build-opencv"], description = "The same policy on the Orin's CPU — the other half of the A/B" }
 
 [feature.amd]
 
