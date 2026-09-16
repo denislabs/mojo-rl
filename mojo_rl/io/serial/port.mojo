@@ -24,52 +24,147 @@ from std.ffi import external_call
 from std.sys import CompilationTarget
 from std.time import perf_counter_ns
 
-from mojo_rl.io.serial.native import set_speed
+from mojo_rl.io.serial.native import (
+    baud_constant, layout_from_headers, layout_names, set_speed,
+)
 
 # ═══════════════════════════════════════════════════════════════════════════
-# libc constants — Darwin/arm64
+# libc constants — Darwin/arm64 and Linux/glibc
 # ═══════════════════════════════════════════════════════════════════════════
+#
+# ⚠⚠ ALMOST NOTHING IS SHARED BETWEEN THE TWO. It is not only the struct
+# layout: `tcflag_t` is 64-bit on Darwin and 32-bit on Linux, VMIN/VTIME swap
+# places, O_NOCTTY and O_NONBLOCK differ, EAGAIN is 35 against 11, AT_FDCWD is
+# -2 against -100, errno lives behind a different symbol, and a Linux Bxxx is
+# a small ORDINAL where a BSD one is the baud number itself. A table that got
+# any one of these right by accident is the dangerous case, which is why
+# `native/mrl_serial.c` reports all of them from the real headers and
+# `assert_layout` refuses to open a port that disagrees.
 
-comptime AT_FDCWD = -2
+comptime IS_MAC = CompilationTarget.is_macos()
+
+comptime AT_FDCWD = -2 if IS_MAC else -100
 comptime O_RDWR = 2
-comptime O_NOCTTY = 131072
-comptime O_NONBLOCK = 4
+comptime O_NOCTTY = 131072 if IS_MAC else 0o400
+comptime O_NONBLOCK = 4 if IS_MAC else 0o4000
 
 comptime TCSANOW = 0
-comptime TCIFLUSH = 1
-comptime TCOFLUSH = 2
-comptime TCIOFLUSH = 3
+comptime TCIOFLUSH = 3 if IS_MAC else 2
 
-# `struct termios`, verified by a C `offsetof` probe rather than assumed:
-#   4 x tcflag_t(8) | cc_t[NCCS=20] | 4 pad | speed_t c_ispeed | c_ospeed
-# = 72 bytes. A wrong offset here is silent — it writes into c_cc and the
-# port merely misbehaves — so the layout is asserted against a live tty by
-# `tests/robot/test_serial_termios_layout.mojo`.
-comptime TERMIOS_SIZE = 72
+# `struct termios`, from a C `offsetof` probe rather than assumed.
+#
+#   Darwin: 4 x tcflag_t(8) | cc_t[NCCS=20] | 4 pad | c_ispeed | c_ospeed = 72
+#   Linux:  4 x tcflag_t(4) | c_line(1) | cc_t[NCCS=32] | 3 pad
+#                                               | c_ispeed | c_ospeed  = 60
+#
+# A wrong offset here is SILENT — it writes into c_cc and the port merely
+# misbehaves — so these are gated twice: `assert_layout` checks them against
+# the shim's `offsetof` at every open, and
+# `tests/robot/test_serial_termios_layout.mojo` checks the speed offsets
+# against libc's own `cfgetospeed` on a pty.
+comptime TERMIOS_SIZE = 72 if IS_MAC else 60
 comptime OFF_IFLAG = 0
-comptime OFF_OFLAG = 8
-comptime OFF_CFLAG = 16
-comptime OFF_LFLAG = 24
-comptime OFF_CC = 32
-comptime OFF_ISPEED = 56
-comptime OFF_OSPEED = 64
-comptime VMIN = 16
-comptime VTIME = 17
+comptime OFF_OFLAG = 8 if IS_MAC else 4
+comptime OFF_CFLAG = 16 if IS_MAC else 8
+comptime OFF_LFLAG = 24 if IS_MAC else 12
+comptime OFF_CC = 32 if IS_MAC else 17
+comptime OFF_ISPEED = 56 if IS_MAC else 52
+comptime OFF_OSPEED = 64 if IS_MAC else 56
+comptime TCFLAG_SIZE = 8 if IS_MAC else 4
+comptime NCCS = 20 if IS_MAC else 32
+# ⚠ THESE TWO ARE SWAPPED BETWEEN THE PLATFORMS, not merely different.
+comptime VMIN = 16 if IS_MAC else 6
+comptime VTIME = 17 if IS_MAC else 5
 
-comptime CSIZE = 0x300
-comptime CS8 = 0x300
-comptime CLOCAL = 0x8000
-comptime CREAD = 0x800
-comptime PARENB = 0x1000
-comptime CSTOPB = 0x400
-comptime CRTSCTS = 0x30000
+comptime CSIZE = 0x300 if IS_MAC else 0o60
+comptime CS8 = 0x300 if IS_MAC else 0o60
+comptime CLOCAL = 0x8000 if IS_MAC else 0o4000
+comptime CREAD = 0x800 if IS_MAC else 0o200
+comptime PARENB = 0x1000 if IS_MAC else 0o400
+comptime CSTOPB = 0x400 if IS_MAC else 0o100
+comptime CRTSCTS = 0x30000 if IS_MAC else 0x80000000
 
 comptime EINTR = 4
-comptime EAGAIN = 35
+comptime EAGAIN = 35 if IS_MAC else 11
 
 
 def errno() -> Int32:
-    return external_call["__error", Pointer[Int32, MutAnyOrigin]]()[]
+    # ⚠ DIFFERENT SYMBOL, SAME MEANING. glibc has no `__error`; a build that
+    # picked the wrong one fails to link rather than misreporting, which is
+    # the one merciful failure in this file.
+    comptime if IS_MAC:
+        return external_call["__error", Pointer[Int32, MutAnyOrigin]]()[]
+    else:
+        return external_call[
+            "__errno_location", Pointer[Int32, MutAnyOrigin]
+        ]()[]
+
+
+def _read_flag(p: Pointer[UInt8, MutAnyOrigin], off: Int) -> UInt64:
+    """One `tcflag_t`, whatever width this platform gives it."""
+    comptime if TCFLAG_SIZE == 8:
+        return p.unsafe_offset(off).unsafe_bitcast[UInt64]()[]
+    else:
+        return UInt64(p.unsafe_offset(off).unsafe_bitcast[UInt32]()[])
+
+
+def _write_flag(p: Pointer[UInt8, MutAnyOrigin], off: Int, v: UInt64):
+    comptime if TCFLAG_SIZE == 8:
+        p.unsafe_offset(off).unsafe_bitcast[UInt64]()[] = v
+    else:
+        p.unsafe_offset(off).unsafe_bitcast[UInt32]()[] = UInt32(v)
+
+
+def raw_speed_at(p: Pointer[UInt8, MutAnyOrigin], off: Int) -> Int:
+    """The raw `speed_t` at `off` — a Bxxx ORDINAL on Linux, the baud on BSD.
+
+    `speed_t` is as wide as `tcflag_t` on both platforms, so one width test
+    serves. Raw on purpose: the gate compares this against `cfgetospeed`, and
+    decoding either side first would make them agree for the wrong reason.
+    """
+    comptime if TCFLAG_SIZE == 8:
+        return Int(p.unsafe_offset(off).unsafe_bitcast[UInt64]()[])
+    else:
+        return Int(p.unsafe_offset(off).unsafe_bitcast[UInt32]()[])
+
+
+def expected_layout() -> List[Int]:
+    """This file's constants, in the shim table's order."""
+    return [
+        TERMIOS_SIZE, OFF_IFLAG, OFF_OFLAG, OFF_CFLAG, OFF_LFLAG, OFF_CC,
+        TCFLAG_SIZE, NCCS, VMIN, VTIME, CSIZE, CS8, CLOCAL, CREAD, PARENB,
+        CSTOPB, CRTSCTS, TCSANOW, TCIOFLUSH, O_NOCTTY, O_NONBLOCK, EAGAIN,
+        AT_FDCWD,
+    ]
+
+
+def assert_layout() raises:
+    """Refuse to touch a tty if our constants disagree with `<termios.h>`.
+
+    ⚠ AT EVERY OPEN, NOT ONLY IN A TEST. A port is opened once per process and
+    the check is a dlsym plus one call, so the cost is nothing next to what it
+    prevents: an offset that is wrong by eight bytes configures the port with
+    garbage, opens anyway, and surfaces as unexplained bus timeouts. The names
+    come back with the numbers so the message says WHICH field is wrong.
+    """
+    var actual = layout_from_headers()
+    var want = expected_layout()
+    var names = layout_names()
+    var bad = String("")
+    for i in range(len(want)):
+        if actual[i] != want[i]:
+            bad += (
+                "\n  " + names[i] + ": libc says " + String(actual[i])
+                + ", port.mojo has " + String(want[i])
+            )
+    if bad.byte_length() > 0:
+        raise Error(
+            "serial: `struct termios` on this platform does not match the"
+            " layout `mojo_rl/io/serial/port.mojo` was written for."
+            + bad
+            + "\nThe C headers are right and the Mojo constants are wrong."
+            " Fix them there — do NOT relax this check."
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -87,13 +182,14 @@ struct SerialPort(Movable):
     def __init__(out self, var path: String, baud: Int = 1000000) raises:
         """Open and configure. Raises rather than returning a bad fd, so a
         caller that got a `SerialPort` has a usable one."""
-        comptime assert CompilationTarget.is_macos(), (
-            "SerialPort's `struct termios` offsets are Darwin/arm64 only."
-            " Linux has a DIFFERENT layout (32-bit tcflag_t, NCCS=32) and"
-            " spells 1 Mbaud B1000000 in termios with no ioctl at all."
-            " Fill in the layout and drop this assert when a Linux box is"
-            " available to verify it against — do not guess the offsets."
-        )
+        # ⚠⚠ THE LAYOUT IS CHECKED AGAINST THE HEADERS BEFORE THE FIRST
+        # `open`, NOT ASSUMED. This used to be a `comptime assert` pinning the
+        # whole file to Darwin, with the note "do not guess the offsets" — the
+        # right instinct, because a wrong offset writes into `c_cc` and the
+        # port still opens. Guessing is still not allowed; the difference is
+        # that `assert_layout` MEASURES, so Linux is supported on the same
+        # terms Darwin always was rather than on a remembered table.
+        assert_layout()
 
         self._path = path^
         self.baud = baud
@@ -157,9 +253,32 @@ struct SerialPort(Movable):
         p[unsafe_offset = OFF_CC + VMIN] = 0
         p[unsafe_offset = OFF_CC + VTIME] = 0
 
-        # Park at a speed termios accepts; IOSSIOSPEED sets the real one.
-        _ = external_call["cfsetispeed", Int32](p, UInt64(9600))
-        _ = external_call["cfsetospeed", Int32](p, UInt64(9600))
+        # ⚠ THE TWO PLATFORMS REACH THE SAME BAUD BY DIFFERENT ROUTES.
+        # Darwin's termios tops out at B230400 and REJECTS a literal 1000000
+        # with EINVAL, so the struct is parked at a speed it accepts and
+        # IOSSIOSPEED sets the real one afterwards. Linux has B1000000 and
+        # takes it here, with no ioctl at all — but as an ORDINAL (4104), not
+        # as the number, which is also what `cfgetospeed` hands back.
+        comptime if IS_MAC:
+            _ = external_call["cfsetispeed", Int32](p, UInt64(9600))
+            _ = external_call["cfsetospeed", Int32](p, UInt64(9600))
+        else:
+            var code = baud_constant(self.baud)
+            if code < 0:
+                raise Error(
+                    "serial: this libc has no Bxxx constant for "
+                    + String(self.baud)
+                    + " baud. A rate outside the standard table needs"
+                    " TCSETS2/BOTHER, which the shim does not implement yet."
+                )
+            if (
+                external_call["cfsetispeed", Int32](p, UInt32(code)) != 0
+                or external_call["cfsetospeed", Int32](p, UInt32(code)) != 0
+            ):
+                raise Error(
+                    "serial: cfsetspeed rejected " + String(self.baud)
+                    + " (B=" + String(code) + "), errno=" + String(errno())
+                )
         if external_call["tcsetattr", Int32](self.fd, Int32(TCSANOW), p) != 0:
             raise Error("serial: tcsetattr failed, errno=" + String(errno()))
 
@@ -183,11 +302,37 @@ struct SerialPort(Movable):
             )
 
     def speed(mut self) -> Int:
-        """`c_ospeed` as the driver currently reports it."""
+        """The output line speed the driver reports, IN BITS PER SECOND.
+
+        ⚠ NOT THE RAW FIELD ON LINUX. There `c_ospeed` holds the `Bxxx`
+        ordinal (4104 for 1 Mbaud), so returning it raw would make the
+        readback check in `_configure` compare 4104 against 1000000 and refuse
+        every port. The units are the caller's, on both platforms.
+        """
         var tio = Array[UInt8, TERMIOS_SIZE](fill=0)
         var p = tio.unsafe_ptr()
         _ = external_call["tcgetattr", Int32](self.fd, p)
-        return Int(p.unsafe_offset(OFF_OSPEED).unsafe_bitcast[UInt64]()[])
+        var raw = raw_speed_at(p.as_unsafe_any_origin(), OFF_OSPEED)
+        comptime if IS_MAC:
+            # BSD's Bxxx constants ARE the baud numbers, and IOSSIOSPEED
+            # writes the true rate here, so the field needs no decoding.
+            return raw
+        else:
+            # The inverse of `baud_constant`, over the rates anything on this
+            # bus uses. Unknown ordinals come back as themselves, which the
+            # caller's comparison then reports rather than hiding.
+            for b in [
+                Int(9600), Int(19200), Int(38400), Int(57600), Int(115200),
+                Int(230400), Int(460800), Int(500000), Int(576000),
+                Int(921600), Int(1000000), Int(1152000), Int(1500000),
+                Int(2000000), Int(3000000), Int(4000000),
+            ]:
+                try:
+                    if baud_constant(b) == raw:
+                        return b
+                except:
+                    break
+            return raw
 
     def flush(mut self):
         """Discard everything queued in BOTH directions.
@@ -242,7 +387,7 @@ struct SerialPort(Movable):
                 continue
             if n < 0:
                 var e = errno()
-                if e != EAGAIN and e != EINTR:
+                if e != Int32(EAGAIN) and e != Int32(EINTR):
                     raise Error("serial: read failed, errno=" + String(e))
             if perf_counter_ns() >= deadline:
                 break

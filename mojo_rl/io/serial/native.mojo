@@ -109,6 +109,81 @@ def _init_serial_handle() -> OwnedDLHandle:
 comptime lib = _Global["MOJO_RL_SERIAL", _init_serial_handle]()
 
 
+comptime LAYOUT_N = 23
+"""Rows in the shim's layout table. ⚠ APPEND-ONLY, and it is an ABI: the
+readers index it. See `mrl_serial_layout` in `native/mrl_serial.c`."""
+
+def layout_names() -> List[String]:
+    """Row labels for the shim's table, in its order."""
+    return [
+        String("sizeof(struct termios)"),
+        String("offsetof(c_iflag)"),
+        String("offsetof(c_oflag)"),
+        String("offsetof(c_cflag)"),
+        String("offsetof(c_lflag)"),
+        String("offsetof(c_cc)"),
+        String("sizeof(tcflag_t)"),
+        String("NCCS"),
+        String("VMIN"),
+        String("VTIME"),
+        String("CSIZE"),
+        String("CS8"),
+        String("CLOCAL"),
+        String("CREAD"),
+        String("PARENB"),
+        String("CSTOPB"),
+        String("CRTSCTS"),
+        String("TCSANOW"),
+        String("TCIOFLUSH"),
+        String("O_NOCTTY"),
+        String("O_NONBLOCK"),
+        String("EAGAIN"),
+        String("AT_FDCWD"),
+    ]
+
+
+def layout_from_headers() raises -> List[Int]:
+    """What THIS machine's `<termios.h>` actually says, via the shim.
+
+    ⚠ THE POINT IS THAT IT IS NOT A MOJO CONSTANT. `port.mojo` has to
+    hardcode offsets to reach libc at all, and a wrong one corrupts the tty
+    settings silently. This is the same C `offsetof` probe those numbers were
+    originally written from, kept runnable so the answer is measured on the
+    machine rather than remembered from another one.
+    """
+    var out = List[Int64](length=LAYOUT_N, fill=Int64(0))
+    var n = _get_dylib_function[
+        lib,
+        "mrl_serial_layout",
+        def (Pointer[Int64, MutAnyOrigin], Int32) thin -> Int32,
+    ]()(out.unsafe_ptr().as_unsafe_any_origin(), Int32(LAYOUT_N))
+    if Int(n) != LAYOUT_N:
+        raise Error(
+            "serial: the shim reported " + String(Int(n)) + " layout values,"
+            " expected " + String(LAYOUT_N) + " — libmrl_serial is older than"
+            " this source. Rebuild it: pixi run build-serial --force"
+        )
+    var vals = List[Int]()
+    for i in range(LAYOUT_N):
+        vals.append(Int(out[i]))
+    return vals^
+
+
+def baud_constant(baud: Int) raises -> Int:
+    """The `Bxxx` this libc spells `baud` with, or -1 if it has none.
+
+    ⚠ ON LINUX THIS IS NOT THE BAUD NUMBER. `B1000000` is 4104; `cfsetospeed`
+    rejects a literal 1000000 with EINVAL and `cfgetospeed` hands back the
+    ordinal. On BSD the constant IS the number, so this is the identity and
+    the caller's arithmetic is unchanged.
+    """
+    return Int(
+        _get_dylib_function[
+            lib, "mrl_serial_baud_constant", def (Int64) thin -> Int64
+        ]()(Int64(baud))
+    )
+
+
 def set_speed(fd: Int32, baud: Int) raises -> Int32:
     """`ioctl(fd, IOSSIOSPEED, &baud)` on macOS; a no-op elsewhere.
 
