@@ -73,7 +73,7 @@ def dataset_path_refusal(rel: String) -> String:
 
 
 struct HashCache(Movable):
-    """sha256 of large files, keyed by path and size, across watch cycles."""
+    """SHA-256 of large files, keyed by path and size, across watch cycles."""
 
     var sizes: Dict[String, Int]
     var shas: Dict[String, String]

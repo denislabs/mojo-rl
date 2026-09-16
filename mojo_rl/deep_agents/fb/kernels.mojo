@@ -268,7 +268,7 @@ def pessimism_row_weights_kernel[N: Int](
     b: Pointer[Scalar[DT], MutAnyOrigin],
     penalty: Scalar[DT],
 ):
-    """d/da and d/db of `mean(a,b) - penalty*|a-b|`, per row.
+    """The partials d/da and d/db of `mean(a,b) - penalty*|a-b|`, per row.
 
     The same reduction `pessimism_blend_kernel` applies to the VALUE, applied
     to its GRADIENT: written as `lo*(0.5+p) + hi*(0.5-p)`, the derivative is

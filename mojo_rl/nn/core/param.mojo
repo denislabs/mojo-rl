@@ -69,7 +69,7 @@ trait ParamVisitorRT(Deinitable):
         ...
 
 
-comptime _VisitState = UnsafePointer[NoneType, MutUntrackedOrigin]
+comptime _VisitState = Pointer[NoneType, MutUntrackedOrigin]
 comptime _VisitFn = def(
     _VisitState, String, mut Tensor, mut Tensor, mut Tensor, mut Tensor,
     Int, Bool, Optional[DeviceContext],
@@ -87,7 +87,7 @@ def _visit_thunk[V: ParamVisitorRT, target: StaticString](
     apply_decay: Bool,
     ctx: Optional[DeviceContext],
 ) raises:
-    state.bitcast[V]()[].visit_rt[target](
+    state.unsafe_bitcast[V]()[].visit_rt[target](
         name, param, grad, m, v, n, apply_decay, ctx
     )
 
@@ -106,8 +106,8 @@ struct ParamVisitorRef(ParamVisitor):
     @staticmethod
     def of[V: ParamVisitorRT, target: StaticString](mut v: V) -> ParamVisitorRef:
         return ParamVisitorRef(
-            UnsafePointer(to=v)
-            .bitcast[NoneType]()
+            Pointer(to=v)
+            .unsafe_bitcast[NoneType]()
             .unsafe_origin_cast[MutUntrackedOrigin](),
             _visit_thunk[V, target],
         )

@@ -129,7 +129,7 @@ def _m(a: Float32, b: Float32) -> Float32:
 
 
 def aa_to_quat_wxyz(ax: Float32, ay: Float32, az: Float32) -> Array[Float32, 4]:
-    """pytorch3d `axis_angle_to_quaternion` in float32: (cos(θ/2), axis·sin(θ/2)/θ),
+    """PyTorch3D `axis_angle_to_quaternion` in float32: (cos(θ/2), axis·sin(θ/2)/θ),
     with the small-angle series below 1e-6."""
     var angle = sqrt((_m(ax, ax) + _m(ay, ay)) + _m(az, az))
     var half = angle * Float32(0.5)
@@ -147,7 +147,7 @@ def aa_to_quat_wxyz(ax: Float32, ay: Float32, az: Float32) -> Array[Float32, 4]:
 
 
 def quat_to_matrix_wxyz(r: Float32, i: Float32, j: Float32, k: Float32) -> Array[Float32, 9]:
-    """pytorch3d `quaternion_to_matrix` (row-major 3×3)."""
+    """PyTorch3D `quaternion_to_matrix` (row-major 3×3)."""
     var two_s = Float32(2.0) / (((_m(r, r) + _m(i, i)) + _m(j, j)) + _m(k, k))
     var m = Array[Float32, 9](fill=Float32(0))
     m[0] = Float32(1) - _m(two_s, _m(j, j) + _m(k, k))
@@ -169,7 +169,7 @@ def _sqrt_pos(x: Float32) -> Float32:
 
 
 def matrix_to_quat_wxyz(m: Array[Float32, 9]) -> Array[Float32, 4]:
-    """pytorch3d `matrix_to_quaternion`: four candidates, the one whose
+    """PyTorch3D `matrix_to_quaternion`: four candidates, the one whose
     diagonal magnitude is largest, divided by `2·max(q_abs, 0.1)`."""
     var m00 = m[0]
     var m01 = m[1]

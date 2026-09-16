@@ -169,14 +169,11 @@ def _osc_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    try:
-        _osc_lane[DTYPE](
-            state, work, refs, ctrl, actions, qpos, qvel, xquat, site_xpos,
-            subtree_com, cdof, mass, bias, joints, bodies, sites, mmeta,
-            env, Int(nv), Int(policy_step),
-        )
-    except:
-        pass
+    _osc_lane[DTYPE](
+        state, work, refs, ctrl, actions, qpos, qvel, xquat, site_xpos,
+        subtree_com, cdof, mass, bias, joints, bodies, sites, mmeta,
+        env, Int(nv), Int(policy_step),
+    )
 
 
 def _osc_reset_kernel[
@@ -194,12 +191,9 @@ def _osc_reset_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    try:
-        osc_reset_gpu[DTYPE](
-            state, work, refs, qpos, xquat, site_xpos, sites, env
-        )
-    except:
-        pass
+    osc_reset_gpu[DTYPE](
+        state, work, refs, qpos, xquat, site_xpos, sites, env
+    )
 
 
 def osc_reset_batch[

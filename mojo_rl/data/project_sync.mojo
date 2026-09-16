@@ -55,7 +55,7 @@ struct SyncReport(Movable):
     var same: Int
     var conflicts: Int
     var other: Int
-    """behind / ahead / remote-only / local-only / deleted-locally."""
+    """One of behind / ahead / remote-only / local-only / deleted-locally."""
 
     def __init__(out self):
         self.lines = List[String]()

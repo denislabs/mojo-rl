@@ -35,10 +35,10 @@ def _sgd_kernel_rt(
     var apply_decay = Int(apply_decay_arg)
     var i = Int(global_idx.x)
     if i < Int(n_arg):
-        var d = grad[i]
+        var d = grad[unsafe_offset=i]
         if apply_decay != 0:
-            d += wd * param[i]
-        param[i] -= lr * d
+            d += wd * param[unsafe_offset=i]
+        param[unsafe_offset=i] -= lr * d
 
 
 def _grouped_sgd_kernel(

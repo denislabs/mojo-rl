@@ -219,7 +219,7 @@ def op_is_tier_a(op: Int) -> Bool:
 
 def op_reads_contacts(op: Int) -> Bool:
     """Does the op read the lane's contact list? (Box regions may too — that
-    is a REGION property, `RegionSpec.contact`, not an op property.)"""
+    is a REGION property, `RegionSpec.contact`, not an op property)."""
     return op == OP_TOUCHING or op == OP_GRASPED or op == OP_ON_BODY
 
 

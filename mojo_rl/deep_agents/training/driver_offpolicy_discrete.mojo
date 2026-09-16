@@ -356,6 +356,8 @@ def run_offpolicy_discrete_train[
         diag_every: Diagnostic logging cadence (env-steps). 0 disables.
         checkpoint_every: Checkpoint writing cadence (env-steps). 0 disables.
         checkpoint_path: Path to write checkpoints to.
+        artifacts: Sink each written checkpoint is offered to (None: not offered).
+        run_dir: Run directory the offered checkpoint path is made relative to.
         base_step: Base step counter for the training loop.
         eval_env: Optional separate env used for greedy evaluation.
         eval_every: Greedy-eval cadence (env steps; 0 disables).
@@ -712,6 +714,8 @@ def run_offpolicy_discrete_train_gpu_batched[
         diag_every: Diagnostics flush cadence (env steps; 0 disables).
         checkpoint_every: Checkpoint cadence (env steps; 0 disables).
         checkpoint_path: Destination path for periodic checkpoints.
+        artifacts: Sink each written checkpoint is offered to (None: not offered).
+        run_dir: Run directory the offered checkpoint path is made relative to.
         eval_env: Optional separate env used for greedy evaluation.
         eval_every: Greedy-eval cadence (env steps; 0 disables).
         eval_episodes: Episodes per greedy-eval pass.

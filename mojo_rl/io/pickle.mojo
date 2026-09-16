@@ -418,7 +418,7 @@ struct JoblibPickle(Movable):
             raise Error("pickle: array is '" + dn + "', not f4")
         var n = self.nodes[node].nbytes // 4
         var out = List[Float32](unsafe_uninit_length=n)
-        var p = self.buf.unsafe_ptr() + self.nodes[node].off
+        var p = self.buf.unsafe_ptr().unsafe_offset(self.nodes[node].off)
         var fp = p.unsafe_bitcast[Float32]()
         for i in range(n):
             out[i] = fp[unsafe_offset=i]
@@ -433,7 +433,7 @@ struct JoblibPickle(Movable):
             raise Error("pickle: array is '" + dn + "', not f8")
         var n = self.nodes[node].nbytes // 8
         var out = List[Float64](unsafe_uninit_length=n)
-        var fp = (self.buf.unsafe_ptr() + self.nodes[node].off).unsafe_bitcast[Float64]()
+        var fp = self.buf.unsafe_ptr().unsafe_offset(self.nodes[node].off).unsafe_bitcast[Float64]()
         for i in range(n):
             out[i] = fp[unsafe_offset=i]
         return out^
@@ -446,7 +446,7 @@ struct JoblibPickle(Movable):
             raise Error("pickle: array is '" + dn + "', not i8")
         var n = self.nodes[node].nbytes // 8
         var out = List[Int64](unsafe_uninit_length=n)
-        var ip = (self.buf.unsafe_ptr() + self.nodes[node].off).unsafe_bitcast[Int64]()
+        var ip = self.buf.unsafe_ptr().unsafe_offset(self.nodes[node].off).unsafe_bitcast[Int64]()
         for i in range(n):
             out[i] = ip[unsafe_offset=i]
         return out^
@@ -459,7 +459,7 @@ struct JoblibPickle(Movable):
             raise Error("pickle: array is '" + dn + "', not i4")
         var n = self.nodes[node].nbytes // 4
         var out = List[Int32](unsafe_uninit_length=n)
-        var ip = (self.buf.unsafe_ptr() + self.nodes[node].off).unsafe_bitcast[Int32]()
+        var ip = self.buf.unsafe_ptr().unsafe_offset(self.nodes[node].off).unsafe_bitcast[Int32]()
         for i in range(n):
             out[i] = ip[unsafe_offset=i]
         return out^

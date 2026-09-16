@@ -32,7 +32,7 @@ from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.param import Param, ParamVisitor
+from mojo_rl.nn.core.param import Param, ParamVisitor, ParamWalkable
 from mojo_rl.nn.core.initializer import Initializer
 from mojo_rl.nn.core.walkers import for_each_param_auto, zero_grad_auto
 
@@ -112,7 +112,7 @@ def _te_grad_table_kernel[
     gtab.ptr[unsafe_offset=ed] = rebind[Scalar[DT]](gtab.ptr[unsafe_offset=ed]) + acc
 
 
-struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
+struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](ParamWalkable):
     comptime AG_DIM: Int = Self.NAGENT * Self.D
 
     var task_table: Param["task_table", True, Self.NTASK * Self.D]
@@ -288,3 +288,14 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
         target: StaticString
     ](mut self, ctx: Optional[DeviceContext]) raises:
         zero_grad_auto[Self, target](self, ctx)
+
+    def for_each_state[
+        target: StaticString, V: ParamVisitor
+    ](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        """No State: the table and the base are both trainable Params."""
+        pass

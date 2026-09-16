@@ -48,7 +48,7 @@ from .placement.table import PlacementTable
 
 
 comptime TASK_GOAL_WORDS: Int = 9
-"""gripper(3), subject - gripper(3), target - subject(3)."""
+"""Gripper(3), subject - gripper(3), target - subject(3)."""
 
 
 @always_inline

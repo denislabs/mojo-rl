@@ -197,7 +197,7 @@ def pred_ontop[T: DType = DType.float64](
     bx: Scalar[T], by: Scalar[T], bz: Scalar[T],
     touching: Bool,
 ) -> Bool:
-    """`On(a, b)` for two OBJECTS — LIBERO's `b.check_ontop(a)`, verbatim:
+    """`On(a, b)` for two OBJECTS — LIBERO's `b.check_ontop(a)`, verbatim.
 
         this = b, other = a
         this_z <= other_z  and  contact(this, other)  and  |xy(this)-xy(a)| < 0.03

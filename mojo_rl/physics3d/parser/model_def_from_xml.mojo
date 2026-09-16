@@ -434,6 +434,10 @@ struct ModelDefFromXML[
         xml:           Inline MJCF, for FIXTURES (must be comptime-known).
             Assets inside one resolve against the process CWD, since there is
             no model file to be relative to.
+        nsensor:       MuJoCo's `m->nsensor`. Hand supplied on the same terms
+            as `na`; `init_fields` raises if the model declares more (default 0).
+        nsensordata:   MuJoCo's `m->nsensordata`, the `sensordata` length
+            (default 0 allocates none).
     """
 
     # === Dimensions required by ModelDefLike ===

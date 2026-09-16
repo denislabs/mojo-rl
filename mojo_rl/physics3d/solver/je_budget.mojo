@@ -238,7 +238,7 @@ def je_elems[
 
 def newton_elliptic_extra_elems[MAX_CONTACTS: Int, MAX_CONDIM: Int]() -> Int:
     """Scalars of THREADGROUP memory the blocked kernel's ELLIPTIC leg adds
-    on top of the pyramidal list (2026-09-15), in the order it declares them:
+    on top of the pyramidal list (2026-09-15), in the order it declares them.
 
         fr_e_sh                   ME            `con->friction[t]` per contact row
         mu_sh/ntc_sh/cact_sh/cs_sh 4 * MC       per-contact cone data and state

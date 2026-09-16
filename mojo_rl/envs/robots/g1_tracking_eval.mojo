@@ -96,7 +96,7 @@ def g1_segment_row(ep_offset: Int, seg: Int) -> Int:
 
 
 @fieldwise_init
-struct G1TrackScore(Copyable & Movable):
+struct G1TrackScore(Copyable):
     """One segment's numbers, or a mean over several."""
 
     var distance: Float64

@@ -3587,9 +3587,10 @@ def _newton_solve_env[
         # 0 = degenerate direction, 1 = converged on the first Newton step,
         # 2 = one-sided search, 3 = the bracket. ⚠ WRITTEN ONLY UNDER THE
         # TRACE, because it is read only there — an unconditional write is a
-        # dead store the compiler warns about on every build.
-        comptime if _ELL_TRACE:
-            var ls_phase = 0
+        # dead store the compiler warns about on every build. DECLARED
+        # unconditionally: a `var` inside a `comptime if` is scoped to it, so
+        # the writes below would be implicit declarations.
+        var ls_phase = 0
         if snorm >= Scalar[DTYPE](PRIMAL_MINVAL_GPU):
             var p0_a = Scalar[DTYPE](0)
             var p0_c = Scalar[DTYPE](0)
@@ -3783,6 +3784,8 @@ def _newton_solve_env[
             # reads as coverage.
             print("       alpha", alpha, "lseval", lsiter,
                   "phase", ls_phase)
+        else:
+            _ = ls_phase
         # If alpha is negligible, stop
         comptime if _CPU_PROBE:
             var _p_now = Int(perf_counter_ns())

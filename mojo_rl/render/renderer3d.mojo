@@ -2966,6 +2966,11 @@ struct Renderer3D(Movable):
             emission: Emissive intensity (0-1).
             texture_name: Cache key for the texture (empty = no texture).
             texture_path: Path to the PNG texture file (empty = no texture).
+            texture_colorspace: `<texture colorspace>` (`COLORSPACE_AUTO` reads the PNG).
+            texrepeat_u: Texture repeat in U direction.
+            texrepeat_v: Texture repeat in V direction.
+            tex_cube: Sample as a cube/box texture from the object-space position.
+            tex_scale: Object-space position scale for the cube lookup.
         """
         # Load and cache texture if provided
         var tex_idx = -1
@@ -3301,6 +3306,11 @@ struct Renderer3D(Movable):
             emission: Emissive intensity (0-1).
             texture_name: Cache key for the texture (empty = no texture).
             texture_path: Path to the PNG texture file (empty = no texture).
+            texture_colorspace: `<texture colorspace>` (`COLORSPACE_AUTO` reads the PNG).
+            texrepeat_u: Texture repeat in U direction.
+            texrepeat_v: Texture repeat in V direction.
+            tex_cube: Sample as a cube/box texture from the object-space position.
+            tex_scale: Object-space position scale for the cube lookup.
         """
         # Load and cache texture if provided
         var tex_idx = -1
@@ -3419,6 +3429,11 @@ struct Renderer3D(Movable):
             emission: Emissive intensity (0-1).
             texture_name: Cache key for the texture (empty = no texture).
             texture_path: Path to the PNG texture file (empty = no texture).
+            texture_colorspace: `<texture colorspace>` (`COLORSPACE_AUTO` reads the PNG).
+            texrepeat_u: Texture repeat in U direction.
+            texrepeat_v: Texture repeat in V direction.
+            tex_cube: Sample as a cube/box texture from the object-space position.
+            tex_scale: Object-space position scale for the cube lookup.
         """
         # Load and cache texture if provided
         var tex_idx = -1
@@ -3536,6 +3551,11 @@ struct Renderer3D(Movable):
             emission: Emissive intensity (0-1).
             texture_name: Cache key for the texture (empty = no texture).
             texture_path: Path to the PNG texture file (empty = no texture).
+            texture_colorspace: `<texture colorspace>` (`COLORSPACE_AUTO` reads the PNG).
+            texrepeat_u: Texture repeat in U direction.
+            texrepeat_v: Texture repeat in V direction.
+            tex_cube: Sample as a cube/box texture from the object-space position.
+            tex_scale: Object-space position scale for the cube lookup.
         """
         # Look up or create mesh in cache
         var cache_idx = -1
@@ -4109,6 +4129,11 @@ struct Renderer3D(Movable):
             emission: Emissive intensity (0-1).
             texture_name: Cache key for the texture (empty = no texture).
             texture_path: Path to the PNG texture file (empty = no texture).
+            texture_colorspace: `<texture colorspace>` (`COLORSPACE_AUTO` reads the PNG).
+            texrepeat_u: Texture repeat in U direction.
+            texrepeat_v: Texture repeat in V direction.
+            tex_cube: Sample as a cube/box texture from the object-space position.
+            tex_scale: Object-space position scale for the cube lookup.
         """
         # Load and cache texture if provided
         var tex_idx = -1
@@ -4292,6 +4317,7 @@ struct Renderer3D(Movable):
             height: Z-coordinate of the ground plane.
             texture_name: Cache key for the ground texture (empty = checker/solid).
             texture_path: Path to the PNG texture file (empty = checker/solid).
+            texture_colorspace: `<texture colorspace>` (`COLORSPACE_AUTO` reads the PNG).
             texrepeat_u: Texture repeat in U direction.
             texrepeat_v: Texture repeat in V direction.
             texuniform: `<material texuniform>` — repeats per spatial unit.

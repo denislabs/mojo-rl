@@ -219,7 +219,7 @@ comptime INIT_TARGET_SLOT: Int = 1
 whose own placement is drawn first. LIBERO's `ObjectBasedSampler`."""
 
 comptime STACK_Z_OFFSET: Float64 = 0.01
-"""robosuite's `ObjectBasedSampler(z_offset=0.01)` — the gap it leaves between
+"""The robosuite `ObjectBasedSampler(z_offset=0.01)` — the gap it leaves between
 a stacked object's bottom and the surface it stands on.
 
 ⚠ QUOTED, NOT CHOSEN, and it is not zero for a reason: the reference's

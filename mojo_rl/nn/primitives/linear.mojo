@@ -67,7 +67,7 @@ def _bias_add_kernel[
     var n_out = Int(out_arg)
     var idx = Int(global_idx.x)
     if idx < Int(b_arg) * n_out:
-        o[idx] += bias[idx % n_out]
+        o[unsafe_offset=idx] += bias[unsafe_offset=idx % n_out]
 
 
 # Naive grad_w transpose (one thread/elem, strided read). Still used by
@@ -84,7 +84,7 @@ def _transpose_kernel(
     if idx < rows * cols:
         var r = idx // cols
         var c = idx % cols
-        dst[c * rows + r] = src[idx]
+        dst[unsafe_offset=c * rows + r] = src[unsafe_offset=idx]
 
 
 comptime _T_TILE = 32
@@ -123,14 +123,14 @@ def _transpose_tiled_kernel[
     comptime for r in range(0, _T_TILE, _T_BR):
         var rr = cy + ty + r
         if rr < ROWS and c < COLS:
-            tile[ty + r, tx] = src[rr * COLS + c]
+            tile[ty + r, tx] = src[unsafe_offset=rr * COLS + c]
     barrier()
 
     var r2 = cy + tx  # dst col (coalesced, stride 1)
     comptime for r in range(0, _T_TILE, _T_BR):
         var c2 = cx + ty + r  # dst row
         if r2 < ROWS and c2 < COLS:
-            dst[(c2) * ROWS + (r2)] = rebind[Scalar[ADT]](tile[tx, ty + r])
+            dst[unsafe_offset=(c2) * ROWS + (r2)] = rebind[Scalar[ADT]](tile[tx, ty + r])
 
 
 def _accum_kernel(
@@ -140,7 +140,7 @@ def _accum_kernel(
 ):
     var i = Int(global_idx.x)
     if i < Int(n_arg):
-        dst[i] += src[i]
+        dst[unsafe_offset=i] += src[unsafe_offset=i]
 
 
 # grad_b += colsum(go). Dtype-parametric on the grad_output activation (`ADT`):
@@ -160,8 +160,8 @@ def _lin_gb_kernel[
     if j < n_out:
         var s: Scalar[DT] = 0
         for b in range(Int(b_arg)):
-            s += go[b * n_out + j].cast[DT]()
-        gb[j] += s
+            s += go[unsafe_offset=b * n_out + j].cast[DT]()
+        gb[unsafe_offset=j] += s
 
 
 comptime BF16 = DType.bfloat16
@@ -174,7 +174,7 @@ def _cast_f2b_kernel(
 ):
     var i = Int(global_idx.x)
     if i < Int(n_arg):
-        dst[i] = src[i].cast[BF16]()
+        dst[unsafe_offset=i] = src[unsafe_offset=i].cast[BF16]()
 
 
 def _cast_b2f_kernel(
@@ -184,7 +184,7 @@ def _cast_b2f_kernel(
 ):
     var i = Int(global_idx.x)
     if i < Int(n_arg):
-        dst[i] = src[i].cast[DT]()
+        dst[unsafe_offset=i] = src[unsafe_offset=i].cast[DT]()
 
 
 def _pad_cols_kernel(
@@ -204,9 +204,9 @@ def _pad_cols_kernel(
         var r = i // dst_cols
         var c = i % dst_cols
         if c < src_cols:
-            dst[i] = src[r * src_cols + c]
+            dst[unsafe_offset=i] = src[unsafe_offset=r * src_cols + c]
         else:
-            dst[i] = Scalar[DT](0)
+            dst[unsafe_offset=i] = Scalar[DT](0)
 
 
 def _pad_2d_kernel(
@@ -226,9 +226,9 @@ def _pad_2d_kernel(
         var r = i // dst_cols
         var c = i % dst_cols
         if r < src_rows and c < src_cols:
-            dst[i] = src[r * src_cols + c]
+            dst[unsafe_offset=i] = src[unsafe_offset=r * src_cols + c]
         else:
-            dst[i] = Scalar[DT](0)
+            dst[unsafe_offset=i] = Scalar[DT](0)
 
 
 def _bias_add_slice_kernel(
@@ -246,7 +246,7 @@ def _bias_add_slice_kernel(
     if i < Int(b_arg) * n_out:
         var b = i // n_out
         var j = i % n_out
-        dst[i] = ypad[b * n_pad + j] + bias[j]
+        dst[unsafe_offset=i] = ypad[unsafe_offset=b * n_pad + j] + bias[unsafe_offset=j]
 
 
 def _slice_cols_kernel(
@@ -264,7 +264,7 @@ def _slice_cols_kernel(
     if i < Int(rows_arg) * dst_cols:
         var r = i // dst_cols
         var cc = i % dst_cols
-        dst[i] = src[r * src_cols + cc]
+        dst[unsafe_offset=i] = src[unsafe_offset=r * src_cols + cc]
 
 
 def _accum_2d_kernel(
@@ -282,7 +282,7 @@ def _accum_2d_kernel(
     if i < Int(rows_arg) * cols:
         var r = i // cols
         var cc = i % cols
-        dst[i] += src[r * src_cols + cc]
+        dst[unsafe_offset=i] += src[unsafe_offset=r * src_cols + cc]
 
 
 # ── Linear ─────────────────────────────────────────────────────────────

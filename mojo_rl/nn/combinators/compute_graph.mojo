@@ -68,7 +68,7 @@ def _cg_accum_kernel_rt[
     kernel for every fan-out edge instead of one instantiation per size."""
     var i = Int(global_idx.x)
     if i < Int(n_arg):
-        dst[i] = dst[i] + src[i]
+        dst[unsafe_offset=i] = dst[unsafe_offset=i] + src[unsafe_offset=i]
 
 
 struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph & ParamWalkable):

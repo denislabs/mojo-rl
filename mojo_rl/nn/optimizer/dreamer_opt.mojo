@@ -87,8 +87,8 @@ def _agc_partials_kernel_rt(
     var p_sum: Scalar[DT] = 0.0
     var k = b * AGC_TPB + t
     while k < n:
-        var g = grad[k]
-        var pv = param[k]
+        var g = grad[unsafe_offset=k]
+        var pv = param[unsafe_offset=k]
         g_sum += g * g
         p_sum += pv * pv
         k += STRIDE
@@ -151,15 +151,15 @@ def _dreamer_update_kernel_rt(
     var bc1 = one - rebind[Scalar[DT]](powbuf[0])
     var bc2 = one - rebind[Scalar[DT]](powbuf[1])
     var sc = rebind[Scalar[DT]](scale_buf[0])
-    var g = grad[i] * sc
-    var nu_new = beta2 * v[i] + (one - beta2) * g * g
-    v[i] = nu_new
+    var g = grad[unsafe_offset=i] * sc
+    var nu_new = beta2 * v[unsafe_offset=i] + (one - beta2) * g * g
+    v[unsafe_offset=i] = nu_new
     var nu_hat = nu_new / bc2
     var g_rms = g / (sqrt(nu_hat) + eps)
-    var mu_new = beta1 * m[i] + (one - beta1) * g_rms
-    m[i] = mu_new
+    var mu_new = beta1 * m[unsafe_offset=i] + (one - beta1) * g_rms
+    m[unsafe_offset=i] = mu_new
     var mu_hat = mu_new / bc1
-    param[i] = param[i] - lr * mu_hat
+    param[unsafe_offset=i] = param[unsafe_offset=i] - lr * mu_hat
 
 
 def _dreamer_advance_pow_kernel(

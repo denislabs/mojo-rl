@@ -615,7 +615,7 @@ struct LeRobotWriter(Movable):
             w.ep_from.append(index.from_index[e])
             w.ep_to.append(index.to_index[e])
             w.ep_task.append(Int(frames.task_index[index.from_index[e]]))
-            for c in range(len(w.cameras)):
+            for _ in range(len(w.cameras)):
                 w.ep_vid_file.append(e)
                 w.ep_vid_from.append(0.0)
 

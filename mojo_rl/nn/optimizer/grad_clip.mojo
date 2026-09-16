@@ -49,12 +49,12 @@ def _sum_sq_kernel_rt(
     var my_sum: Scalar[DT] = 0.0
     var k = t
     while k < n:
-        var g = grad[k]
+        var g = grad[unsafe_offset=k]
         my_sum += g * g
         k += GC_TPB
     var total = block.sum[block_size=GC_TPB, broadcast=False](val=my_sum)
     if t == 0:
-        out_sum[0] = total[0]
+        out_sum[unsafe_offset=0] = total[0]
 
 
 def _scale_kernel_rt(
@@ -65,7 +65,7 @@ def _scale_kernel_rt(
     var i = Int(global_idx.x)
     if i < Int(n_arg):
         var s = scale
-        grad[i] = grad[i] * s if s != Scalar[DT](0.0) else Scalar[DT](0.0)
+        grad[unsafe_offset=i] = grad[unsafe_offset=i] * s if s != Scalar[DT](0.0) else Scalar[DT](0.0)
 
 
 struct _SumSqCPU(ParamVisitor, ParamVisitorRT):

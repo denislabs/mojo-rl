@@ -58,17 +58,17 @@ def _adam_update_kernel_rt(
     if i >= Int(n_arg):
         return
     var one = Scalar[DT](1.0)
-    var p = param[i]
+    var p = param[unsafe_offset=i]
     if apply_decay != 0:
         p -= lr * wd * p
-    var g = grad[i]
-    var m_new = beta1 * m[i] + (one - beta1) * g
-    var v_new = beta2 * v[i] + (one - beta2) * g * g
-    m[i] = m_new
-    v[i] = v_new
+    var g = grad[unsafe_offset=i]
+    var m_new = beta1 * m[unsafe_offset=i] + (one - beta1) * g
+    var v_new = beta2 * v[unsafe_offset=i] + (one - beta2) * g * g
+    m[unsafe_offset=i] = m_new
+    v[unsafe_offset=i] = v_new
     var m_hat = m_new / bc1
     var v_hat = v_new / bc2
-    param[i] = p - lr * m_hat / (sqrt(v_hat) + eps)
+    param[unsafe_offset=i] = p - lr * m_hat / (sqrt(v_hat) + eps)
 
 
 def _adam_advance_pow_kernel(

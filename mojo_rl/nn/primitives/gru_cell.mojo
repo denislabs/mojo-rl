@@ -449,20 +449,22 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
 
             # Capture xᵀ / h_prevᵀ before dx/dh writes (defensive; packs don't
             # alias under the storage surface, but mirrors LSTM/Linear).
-            comptime txk = _transpose_tiled_kernel[B, Self.IN0_DIM]
-            c.enqueue_function[txk](
-                x_in.lt["gpu", Layout.row_major(B, Self.IN0_DIM)](),
-                self._xT.lt["gpu", Layout.row_major(Self.IN0_DIM, B)](),
+            c.enqueue_function[_transpose_tiled_kernel[DT]](
+                x_in.dev.value(),
+                self._xT.dev.value(),
+                Int64(B),
+                Int64(Self.IN0_DIM),
                 grid_dim=(
                     (Self.IN0_DIM + _T_TILE - 1) // _T_TILE,
                     (B + _T_TILE - 1) // _T_TILE,
                 ),
                 block_dim=(_T_TILE, _T_BR),
             )
-            comptime thk = _transpose_tiled_kernel[B, H]
-            c.enqueue_function[thk](
-                h_lt,
-                self._hT.lt["gpu", Layout.row_major(H, B)](),
+            c.enqueue_function[_transpose_tiled_kernel[DT]](
+                h_in.dev.value(),
+                self._hT.dev.value(),
+                Int64(B),
+                Int64(H),
                 grid_dim=(
                     (H + _T_TILE - 1) // _T_TILE,
                     (B + _T_TILE - 1) // _T_TILE,

@@ -388,6 +388,8 @@ def run_onpolicy_discrete_train_batched[
         diag_every=diag_every,
         checkpoint_every=checkpoint_every,
         checkpoint_path=checkpoint_path,
+        artifacts=artifacts,
+        run_dir=run_dir,
         base_step=base_step,
         progress_label=progress_label,
     )

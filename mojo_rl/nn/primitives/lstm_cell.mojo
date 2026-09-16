@@ -689,20 +689,22 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
 
             # Capture xᵀ / h_prevᵀ BEFORE dx / dh_prev writes (may alias x /
             # h_prev under LSTMSeq's shared buffers). B1' tiled transpose.
-            comptime txk = _transpose_tiled_kernel[BATCH, Self.IN_]
-            c.enqueue_function[txk](
-                LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_), MutAnyOrigin](xb),
-                self._xT.lt["gpu", Layout.row_major(Self.IN_, BATCH)](),
+            c.enqueue_function[_transpose_tiled_kernel[DT]](
+                xb,
+                self._xT.dev.value(),
+                Int64(BATCH),
+                Int64(Self.IN_),
                 grid_dim=(
                     (Self.IN_ + _T_TILE - 1) // _T_TILE,
                     (BATCH + _T_TILE - 1) // _T_TILE,
                 ),
                 block_dim=(_T_TILE, _T_BR),
             )
-            comptime thk = _transpose_tiled_kernel[BATCH, H]
-            c.enqueue_function[thk](
-                LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](hpb),
-                self._hT.lt["gpu", Layout.row_major(H, BATCH)](),
+            c.enqueue_function[_transpose_tiled_kernel[DT]](
+                hpb,
+                self._hT.dev.value(),
+                Int64(BATCH),
+                Int64(H),
                 grid_dim=(
                     (H + _T_TILE - 1) // _T_TILE,
                     (BATCH + _T_TILE - 1) // _T_TILE,

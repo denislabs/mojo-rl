@@ -187,6 +187,8 @@ def run_onpolicy_train[
         diag_every: Diagnostic logging cadence (env-steps). 0 disables.
         checkpoint_every: Checkpoint writing cadence (env-steps). 0 disables.
         checkpoint_path: Path to write checkpoints to.
+        artifacts: Sink each written checkpoint is offered to (None: not offered).
+        run_dir: Run directory the offered checkpoint path is made relative to.
         base_step: Base step counter for the training loop.
         progress_label: Label for the progress bar.
 
@@ -478,6 +480,8 @@ def run_onpolicy_train_batched[
         diag_every=diag_every,
         checkpoint_every=checkpoint_every,
         checkpoint_path=checkpoint_path,
+        artifacts=artifacts,
+        run_dir=run_dir,
         base_step=base_step,
         progress_label=progress_label,
     )
@@ -501,6 +505,8 @@ def _run_onpolicy_batched_body[
     diag_every: Int,
     checkpoint_every: Int,
     checkpoint_path: String,
+    artifacts: Optional[ArtifactSink],
+    run_dir: String,
     base_step: Int,
     progress_label: String,
 ) raises -> List[Scalar[DT]]:

@@ -436,9 +436,9 @@ def geom_uv[
         var asx = abs(s)
         var asy = abs(t)
         var asz = abs(r)
-        var sc = s
-        var tc = -t
-        var ma = asz
+        var sc: Scalar[DTYPE]
+        var tc: Scalar[DTYPE]
+        var ma: Scalar[DTYPE]
         if asx >= asy and asx >= asz:
             sc = -r if s > 0 else r
             tc = -t

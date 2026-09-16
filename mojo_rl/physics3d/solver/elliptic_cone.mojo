@@ -443,7 +443,7 @@ def ell_add_contact_hessian[
             )
             for a in range(n_c):
                 var i = _cn_dof[SPARSE](cn_ix, c, a, nv)
-                var jki = Scalar[DTYPE](0)
+                var jki: Scalar[DTYPE]
                 if k == 0:
                     jki = Jn_c[kb + i]
                 else:
@@ -574,7 +574,7 @@ def ell_line_eval[
     var Dm = D_n / (mu * mu * (ONE + mu * mu))
 
     # ── the zone at alpha = 0 ────────────────────────────────────────────
-    var zone0 = 0
+    var zone0: Int
     var T0 = ZERO
     if UU <= ZERO:
         zone0 = 2 if U0 < ZERO else 1
@@ -590,7 +590,7 @@ def ell_line_eval[
     # ── the zone at alpha ────────────────────────────────────────────────
     var N = U0 + alpha * V0
     var T_sq = UU + alpha * (TWO * UV + alpha * VV)
-    var zone_a = 0
+    var zone_a: Int
     var T = ZERO
     if T_sq <= ZERO:
         zone_a = 2 if N < ZERO else 1

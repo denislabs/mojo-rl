@@ -43,7 +43,7 @@ from mojo_rl.nn.combinators.graph_decl import GraphDecl
 def _scale_k_rt(dst: Pointer[Scalar[DT], MutAnyOrigin], n_arg: Int64, scale: Scalar[DT]):
     var i = Int(global_idx.x)
     if i < Int(n_arg):
-        dst[i] = scale * dst[i]
+        dst[unsafe_offset=i] = scale * dst[unsafe_offset=i]
 
 
 struct _ScaleOutVisitor(ParamVisitor, ParamVisitorRT):
