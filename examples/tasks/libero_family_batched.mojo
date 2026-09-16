@@ -455,8 +455,10 @@ def run[T: PlacementTable, M: ModelDefLike](
     for k in range(LANES * OSC_ACTION_DIM):
         ap[unsafe_offset=k] = Scalar[DT](0)
     var dev_traj = List[List[Float64]]()
+    var dev_ncon = List[List[Int]]()
     for _ in range(LANES):
         dev_traj.append(List[Float64]())
+        dev_ncon.append(List[Int]())
     var eval_cmp = 0
     var eval_bad = 0
     var eval_true = 0
@@ -491,6 +493,7 @@ def run[T: PlacementTable, M: ModelDefLike](
                 if q != q or q > 1.0e6 or q < -1.0e6:
                     nonfinite += 1
             var nc = Int(env.d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
+            dev_ncon[e].append(nc)
             if nc > peak_ncon:
                 peak_ncon = nc
             if nc >= MC:
@@ -578,6 +581,10 @@ def run[T: PlacementTable, M: ModelDefLike](
             if f.slots[si].kind == SLOT_FREE and not tasks[ti].is_active(f.slots[si].name):
                 for w in range(7):
                     cmp[addrs[si].qadr + w] = False
+        var ncon_diff = 0
+        var ncon_first = -1
+        var ncon_dev = 0
+        var ncon_cpu = 0
         var lane_window = 0.0
         var lane_window_k = -1
         var lane_window_step = -1
@@ -592,6 +599,19 @@ def run[T: PlacementTable, M: ModelDefLike](
                     d.qfrc.data[k] = Scalar[H](0)
                 apply_actions_fields[H](sf, d, ctrl, act, fmd.timestep)
                 integ.step["cpu"](d, m)
+            # ⚠⚠ THE CONTACT COUNT FIRST: the device and the CPU take
+            # DIFFERENT collision kernels (`COLL_PREFILTER` is NVIDIA-only, and
+            # the block kernel is not the serial per-env loop), so a lane that
+            # diverges may be disagreeing about the CONTACT SET before any
+            # solver arithmetic. A count mismatch names collision; matching
+            # counts with diverging qpos names the solve.
+            var ncc = Int(d.meta.data[META_IDX_NUM_CONTACTS])
+            if ncc != dev_ncon[e][step]:
+                ncon_diff += 1
+                if ncon_first < 0:
+                    ncon_first = step
+                    ncon_dev = dev_ncon[e][step]
+                    ncon_cpu = ncc
             var worst = 0.0
             var worst_k = -1
             for k in range(NQ):
@@ -610,9 +630,15 @@ def run[T: PlacementTable, M: ModelDefLike](
             word_name[lane_window_k] if lane_window_k >= 0
             and lane_window_k < len(word_name) else String("-")
         )
+        var nct = (
+            String("ncon same") if ncon_diff == 0
+            else "ncon differs on " + String(ncon_diff) + " steps, first at "
+            + String(ncon_first) + " (dev " + String(ncon_dev) + " cpu "
+            + String(ncon_cpu) + ")"
+        )
         print("     cpu lane", e, names[ti], ": |dq| first", window, "steps",
               lane_window, "(", wname, "at step", lane_window_step, ") | at step",
-              steps, lane_end)
+              steps, lane_end, "|", nct)
         if lane_window > window_worst:
             window_worst = lane_window
         if lane_end > end_worst:
