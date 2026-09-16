@@ -178,6 +178,16 @@ struct CheckpointReader(ParamVisitor, ParamVisitorRT):
         self.cur += 1
         return s
 
+    def finish(self) raises:
+        """Every line consumed. ⚠ ALSO THE MENTION THAT KEEPS THE READER ALIVE
+        across the state pass — see `BinaryCheckpointReader.finish`."""
+        if self.cur != len(self.lines):
+            raise Error(
+                "checkpoint: " + String(len(self.lines) - self.cur)
+                + " line(s) left unread — the file holds tensors this build"
+                " does not walk (topology drift)"
+            )
+
     def visit_rt[target: StaticString](
         mut self, name: String, mut param: Tensor, mut grad: Tensor,
         mut m: Tensor, mut v: Tensor, n: Int, apply_decay: Bool,
@@ -301,20 +311,40 @@ struct BinaryCheckpointReader(ParamVisitor, ParamVisitorRT):
     var bytes: List[UInt8]
     var cur: Int
     var mode: Int
+    var seen: Int
+    """Sections consumed, and `want` the one being read — both only so that
+    running out of file NAMES what the model was asking for. "unexpected end
+    of file" alone sent a real deployment looking for a truncated download
+    that was byte-perfect; the file simply held fewer tensors than the model
+    walked."""
+    var want: String
 
     def __init__(out self, var bytes: List[UInt8]):
         self.bytes = bytes^
         self.cur = 0
         self.mode = 0
+        self.seen = 0
+        self.want = String("")
         # Skip the "storage-ckpt v3" header line.
         while self.cur < len(self.bytes) and self.bytes[self.cur] != UInt8(10):
             self.cur += 1
         if self.cur < len(self.bytes):
             self.cur += 1
 
+    def _eof(self, what: String) -> String:
+        return (
+            "checkpoint: unexpected end of file " + what + " — the model asked"
+            " for `" + self.want + "` after " + String(self.seen)
+            + " section(s), and the file has no more. The checkpoint is"
+            " COMPLETE and holds fewer tensors than this build walks: it was"
+            " written by a different model configuration."
+            " [cursor " + String(self.cur) + " of " + String(len(self.bytes))
+            + " bytes, pass " + ("state" if self.mode == 1 else "params") + "]"
+        )
+
     def _next_line(mut self) raises -> String:
         if self.cur >= len(self.bytes):
-            raise Error("checkpoint: unexpected end of file")
+            raise Error(self._eof(String("reading a section header")))
         # ⚠ BYTES — see `core/bytes.mojo`.
         var o = List[UInt8]()
         while self.cur < len(self.bytes) and self.bytes[self.cur] != UInt8(10):
@@ -328,7 +358,7 @@ struct BinaryCheckpointReader(ParamVisitor, ParamVisitorRT):
     def _take_vals(mut self, mut t: Tensor, n: Int) raises:
         comptime SB = size_of[Scalar[DT]]()
         if self.cur + n * SB > len(self.bytes):
-            raise Error("checkpoint: unexpected end of file")
+            raise Error(self._eof(String("reading ") + String(n) + " values"))
         unsafe_memcpy(
             dest=t.data.unsafe_ptr().unsafe_bitcast[UInt8](),
             src=self.bytes.unsafe_ptr().unsafe_offset(self.cur),
@@ -336,12 +366,39 @@ struct BinaryCheckpointReader(ParamVisitor, ParamVisitorRT):
         )
         self.cur += n * SB
 
+    def finish(self) raises:
+        """Every byte accounted for — and the reason this is called at all.
+
+        ⚠⚠ IT ALSO KEEPS THE READER ALIVE. `ParamVisitorRef.of(r)` hands the
+        state pass a POINTER to `r`; if `r` is never mentioned afterwards,
+        that call is its last use and Mojo destroys it there
+        (`_taking_a_view_is_the_owners_last_use`). The state pass then walked
+        freed memory: on 2026-09-16 a deployment loaded 253 tensors and failed
+        on the first BatchNorm buffer with "unexpected end of file" against a
+        file of `0 bytes` — the file was byte-perfect. A mention after the
+        pass is what keeps it alive, so this check must not be dropped as
+        redundant.
+
+        ⚠ AND IT CATCHES THE OTHER DRIFT: bytes left over mean the file holds
+        tensors this build does not walk, which is the same mismatch in the
+        other direction and would otherwise pass silently.
+        """
+        if self.cur != len(self.bytes):
+            raise Error(
+                "checkpoint: " + String(len(self.bytes) - self.cur)
+                + " bytes left unread after " + String(self.seen)
+                + " section(s) — the file holds tensors this build does not"
+                " walk (topology drift)"
+            )
+
     def visit_rt[target: StaticString](
         mut self, name: String, mut param: Tensor, mut grad: Tensor,
         mut m: Tensor, mut v: Tensor, n: Int, apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
+        self.want = name
         var hdr = self._next_line()
+        self.seen += 1
         var toks = hdr.split(" ")
         var expected_kind = String("S") if self.mode == 1 else String("P")
         if len(toks) < 3 or toks[0] != expected_kind:
@@ -423,6 +480,7 @@ def load_params[
         r.mode = 1
         var _sref2 = ParamVisitorRef.of[type_of(r), target](r)
         model.for_each_state[target](_sref2, ctx)
+        r.finish()
         return
     # Legacy v2 text checkpoint.
     var content: String
@@ -441,6 +499,7 @@ def load_params[
     r.mode = 1
     var _sref3 = ParamVisitorRef.of[type_of(r), target](r)
     model.for_each_state[target](_sref3, ctx)
+    r.finish()
 
 
 def save_params_multi[
@@ -504,3 +563,4 @@ def load_params_multi[
         r.mode = 1
         var _sref6 = ParamVisitorRef.of[type_of(r), target](r)
         models[i].for_each_state[target](_sref6, ctx)
+        _ = r.cur  # keep `r` alive past the pointer hand-off; see finish()

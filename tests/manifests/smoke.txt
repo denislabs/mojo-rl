@@ -482,3 +482,4 @@ tests/nn/test_bce_logits.mojo
 # force for n <= 7 (independent of scipy) and bit-identically against scipy at
 # the eval's real (100, 29) shape; the scipy leg skips loudly if it is absent.
 tests/core/test_assignment_emd.mojo
+tests/nn/test_checkpoint_finish.mojo

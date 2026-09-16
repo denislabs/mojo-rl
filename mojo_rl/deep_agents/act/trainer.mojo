@@ -1398,3 +1398,7 @@ struct ACTTrainer[
         r.mode = 1
         var _sref2 = ParamVisitorRef.of[type_of(r), Self.target](r)
         self.graph.for_each_state[Self.target](_sref2, self.ctx)
+        # ⚠ NOT REDUNDANT: the call above hands the state pass a POINTER to
+        # `r`, so without a later mention Mojo destroys `r` at that line and
+        # the pass reads freed memory. See `BinaryCheckpointReader.finish`.
+        r.finish()
