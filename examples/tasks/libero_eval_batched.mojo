@@ -395,6 +395,11 @@ def run[T: PlacementTable, M: ModelDefLike](
     var solved = List[Bool](length=n_rows, fill=False)
     var first_step = List[Int](length=n_rows, fill=-1)
     var at_settle = List[Bool](length=n_rows, fill=False)
+    # ⚠ ANTI-VACUITY ON THE POLICY ITSELF: a checkpoint that emits zeros — a
+    # dead head, a normalisation that flattened its input, a load that filled
+    # nothing — reports exactly like the null run, including its 0 successes.
+    var act_abs = 0.0
+    var act_words = 0
     var eval_cmp = 0
     var eval_bad = 0
     var saturated = 0
@@ -494,9 +499,12 @@ def run[T: PlacementTable, M: ModelDefLike](
                 )
                 for e in range(LANES):
                     for k in range(OSC_ACTION_DIM):
-                        ap[unsafe_offset = e * OSC_ACTION_DIM + k] = Scalar[DT](
-                            _clamp(Float64(pol_y.data[e * OSC_ACTION_DIM + k]))
+                        var a = _clamp(
+                            Float64(pol_y.data[e * OSC_ACTION_DIM + k])
                         )
+                        ap[unsafe_offset = e * OSC_ACTION_DIM + k] = Scalar[DT](a)
+                        act_abs += abs(a)
+                        act_words += 1
             ctx.enqueue_copy(env._action, act_h)
             env.step_batch[LANES](ctx, UInt64(step + 1))
             ctx.synchronize()
@@ -609,6 +617,10 @@ def run[T: PlacementTable, M: ModelDefLike](
           SETTLE_STEPS, "settle steps:", n_settle)
     print("  success word: ", eval_cmp, "host comparisons,", eval_bad,
           "disagreeing")
+    if have_policy:
+        print("  policy: mean |action|",
+              act_abs / Float64(act_words) if act_words > 0 else 0.0, "over",
+              act_words, "words")
     print("  contacts saturated lane-steps", saturated, "| non-finite", nonfinite,
           "| singular steps", singular_steps)
     print("  wall", elapsed, "s for", n_rows, "episodes of", SETTLE_STEPS
@@ -622,6 +634,11 @@ def run[T: PlacementTable, M: ModelDefLike](
         fails.append("the host never checked a success word")
     if eval_bad > 0:
         fails.append(String(eval_bad) + " success words disagree with the host")
+    if have_policy and (act_words == 0 or act_abs == 0.0):
+        fails.append(
+            "the policy emitted only zeros — it is the null run wearing a"
+            " checkpoint"
+        )
     if nonfinite > 0:
         fails.append(String(nonfinite) + " non-finite qpos words")
     if saturated > 0:
