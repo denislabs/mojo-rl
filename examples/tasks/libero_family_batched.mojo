@@ -193,6 +193,52 @@ def _task_names(family: String) raises -> List[String]:
     return out^
 
 
+def _pair_label(code: Int, body_names: List[String]) -> String:
+    var a = code // 4096
+    var b = code - a * 4096
+    var na = body_names[a] if a >= 0 and a < len(body_names) else String("?")
+    var nb = body_names[b] if b >= 0 and b < len(body_names) else String("?")
+    return na + " x " + nb
+
+
+def _print_pair_diff(
+    lane: Int, step: Int, dev: List[Int], cpu: List[Int],
+    body_names: List[String],
+) raises:
+    """Which BODY PAIRS the two legs disagree about, as multiset counts — a
+    count mismatch alone cannot say whether a pair is missing, extra, or the
+    same pair with a different number of manifold points."""
+    var codes = List[Int]()
+    for i in range(len(dev)):
+        var seen = False
+        for k in range(len(codes)):
+            if codes[k] == dev[i]:
+                seen = True
+        if not seen:
+            codes.append(dev[i])
+    for i in range(len(cpu)):
+        var seen = False
+        for k in range(len(codes)):
+            if codes[k] == cpu[i]:
+                seen = True
+        if not seen:
+            codes.append(cpu[i])
+    print("       lane", lane, "step", step, ": device", len(dev),
+          "contacts, cpu", len(cpu))
+    for k in range(len(codes)):
+        var nd = 0
+        var ncp = 0
+        for i in range(len(dev)):
+            if dev[i] == codes[k]:
+                nd += 1
+        for i in range(len(cpu)):
+            if cpu[i] == codes[k]:
+                ncp += 1
+        if nd != ncp:
+            print("         dev", nd, "cpu", ncp, " ",
+                  _pair_label(codes[k], body_names))
+
+
 def _host_reset(
     mut d: Data[H, DynDims, 1],
     mut m: Model[H, DynDims],
@@ -238,7 +284,7 @@ def _host_reset(
 
 
 def run[T: PlacementTable, M: ModelDefLike](
-    steps: Int, window: Int, cpu_lanes_arg: Int
+    steps: Int, window: Int, cpu_lanes_arg: Int, dump_state: String
 ) raises:
     comptime E = Phyics3dBatchedEnv[
         M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
@@ -456,9 +502,13 @@ def run[T: PlacementTable, M: ModelDefLike](
         ap[unsafe_offset=k] = Scalar[DT](0)
     var dev_traj = List[List[Float64]]()
     var dev_ncon = List[List[Int]]()
+    # the device's BODY PAIRS per lane per step, encoded `min * 4096 + max` and
+    # sorted — what a count mismatch needs to be diagnosable: WHICH pair.
+    var dev_pairs = List[List[List[Int]]]()
     for _ in range(LANES):
         dev_traj.append(List[Float64]())
         dev_ncon.append(List[Int]())
+        dev_pairs.append(List[List[Int]]())
     var eval_cmp = 0
     var eval_bad = 0
     var eval_true = 0
@@ -494,6 +544,20 @@ def run[T: PlacementTable, M: ModelDefLike](
                     nonfinite += 1
             var nc = Int(env.d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
             dev_ncon[e].append(nc)
+            var pr = List[Int]()
+            var nshow = nc if nc < MC else MC
+            for c in range(nshow):
+                var cb = e * MC * CONTACT_SIZE + c * CONTACT_SIZE
+                var ba = Int(env.d.contacts.data[cb + CONTACT_IDX_BODY_A])
+                var bb = Int(env.d.contacts.data[cb + CONTACT_IDX_BODY_B])
+                pr.append(
+                    (ba * 4096 + bb) if ba <= bb else (bb * 4096 + ba)
+                )
+            for a in range(len(pr)):
+                for b in range(a + 1, len(pr)):
+                    if pr[b] < pr[a]:
+                        pr[a], pr[b] = pr[b], pr[a]
+            dev_pairs[e].append(pr^)
             if nc > peak_ncon:
                 peak_ncon = nc
             if nc >= MC:
@@ -612,6 +676,41 @@ def run[T: PlacementTable, M: ModelDefLike](
                     ncon_first = step
                     ncon_dev = dev_ncon[e][step]
                     ncon_cpu = ncc
+                    # ⚠ THE FIRST DIVERGING STEP IS THE ONLY ONE WORTH
+                    # DUMPING: after it the two legs are in different states
+                    # and every later difference is downstream of this one.
+                    var cpu_pr = List[Int]()
+                    var ncl = ncc if ncc < MC else MC
+                    for c in range(ncl):
+                        var ba = Int(
+                            d.contacts.data[c * CONTACT_SIZE + CONTACT_IDX_BODY_A]
+                        )
+                        var bb = Int(
+                            d.contacts.data[c * CONTACT_SIZE + CONTACT_IDX_BODY_B]
+                        )
+                        cpu_pr.append(
+                            (ba * 4096 + bb) if ba <= bb else (bb * 4096 + ba)
+                        )
+                    for a in range(len(cpu_pr)):
+                        for b in range(a + 1, len(cpu_pr)):
+                            if cpu_pr[b] < cpu_pr[a]:
+                                cpu_pr[a], cpu_pr[b] = cpu_pr[b], cpu_pr[a]
+                    _print_pair_diff(
+                        e, step, dev_pairs[e][step], cpu_pr, fmd.body_names
+                    )
+                    # ⚠ THE DEVICE'S OWN qpos AT THAT STEP, for a third
+                    # opinion: MuJoCo and our CPU detector on the SAME poses
+                    # say whether the point count differs AT THAT POSE (a
+                    # narrow-phase difference) or only because the two legs
+                    # have drifted apart by then (downstream of an earlier
+                    # one). `tools/tasks/libero_contact_pairs.py` reads it.
+                    if dump_state != "":
+                        var line = String("QPOS lane ") + String(e) + " step "
+                        line += String(step)
+                        for k in range(NQ):
+                            line += " " + String(dev_traj[e][step * NQ + k])
+                        with open(dump_state, "a") as fh:
+                            fh.write(line + "\n")
             var worst = 0.0
             var worst_k = -1
             for k in range(NQ):
@@ -682,6 +781,7 @@ def main() raises:
     var steps = 25
     var window = 5
     var cpu_lanes = -1
+    var dump_state = String("")
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -694,55 +794,58 @@ def main() raises:
         elif s == "--cpu-lanes" and i + 1 < len(args):
             cpu_lanes = Int(String(args[i + 1]))
             i += 1
+        elif s == "--dump-state" and i + 1 < len(args):
+            dump_state = String(args[i + 1])
+            i += 1
         else:
             raise Error("libero family batched: unknown argument '" + s + "'")
         i += 1
 
     comptime if FAMILY == "libero_goal":
-        run[LiberoGoalPlacement, LiberoGoalModel](steps, window, cpu_lanes)
+        run[LiberoGoalPlacement, LiberoGoalModel](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_object":
-        run[LiberoObjectPlacement, LiberoObjectModel](steps, window, cpu_lanes)
+        run[LiberoObjectPlacement, LiberoObjectModel](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_spatial":
-        run[LiberoSpatialPlacement, LiberoSpatialModel](steps, window, cpu_lanes)
+        run[LiberoSpatialPlacement, LiberoSpatialModel](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_kitchen_scene1":
-        run[LiberoKitchenScene1Placement, LiberoKitchenScene1Model](steps, window, cpu_lanes)
+        run[LiberoKitchenScene1Placement, LiberoKitchenScene1Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_kitchen_scene2":
-        run[LiberoKitchenScene2Placement, LiberoKitchenScene2Model](steps, window, cpu_lanes)
+        run[LiberoKitchenScene2Placement, LiberoKitchenScene2Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_kitchen_scene3":
-        run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](steps, window, cpu_lanes)
+        run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_kitchen_scene4":
-        run[LiberoKitchenScene4Placement, LiberoKitchenScene4Model](steps, window, cpu_lanes)
+        run[LiberoKitchenScene4Placement, LiberoKitchenScene4Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_kitchen_scene5":
-        run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](steps, window, cpu_lanes)
+        run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_kitchen_scene6":
-        run[LiberoKitchenScene6Placement, LiberoKitchenScene6Model](steps, window, cpu_lanes)
+        run[LiberoKitchenScene6Placement, LiberoKitchenScene6Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_kitchen_scene7":
-        run[LiberoKitchenScene7Placement, LiberoKitchenScene7Model](steps, window, cpu_lanes)
+        run[LiberoKitchenScene7Placement, LiberoKitchenScene7Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_kitchen_scene8":
-        run[LiberoKitchenScene8Placement, LiberoKitchenScene8Model](steps, window, cpu_lanes)
+        run[LiberoKitchenScene8Placement, LiberoKitchenScene8Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_kitchen_scene9":
-        run[LiberoKitchenScene9Placement, LiberoKitchenScene9Model](steps, window, cpu_lanes)
+        run[LiberoKitchenScene9Placement, LiberoKitchenScene9Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_kitchen_scene10":
-        run[LiberoKitchenScene10Placement, LiberoKitchenScene10Model](steps, window, cpu_lanes)
+        run[LiberoKitchenScene10Placement, LiberoKitchenScene10Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_living_room_scene1":
-        run[LiberoLivingRoomScene1Placement, LiberoLivingRoomScene1Model](steps, window, cpu_lanes)
+        run[LiberoLivingRoomScene1Placement, LiberoLivingRoomScene1Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_living_room_scene2":
-        run[LiberoLivingRoomScene2Placement, LiberoLivingRoomScene2Model](steps, window, cpu_lanes)
+        run[LiberoLivingRoomScene2Placement, LiberoLivingRoomScene2Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_living_room_scene3":
-        run[LiberoLivingRoomScene3Placement, LiberoLivingRoomScene3Model](steps, window, cpu_lanes)
+        run[LiberoLivingRoomScene3Placement, LiberoLivingRoomScene3Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_living_room_scene4":
-        run[LiberoLivingRoomScene4Placement, LiberoLivingRoomScene4Model](steps, window, cpu_lanes)
+        run[LiberoLivingRoomScene4Placement, LiberoLivingRoomScene4Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_living_room_scene5":
-        run[LiberoLivingRoomScene5Placement, LiberoLivingRoomScene5Model](steps, window, cpu_lanes)
+        run[LiberoLivingRoomScene5Placement, LiberoLivingRoomScene5Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_living_room_scene6":
-        run[LiberoLivingRoomScene6Placement, LiberoLivingRoomScene6Model](steps, window, cpu_lanes)
+        run[LiberoLivingRoomScene6Placement, LiberoLivingRoomScene6Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_study_scene1":
-        run[LiberoStudyScene1Placement, LiberoStudyScene1Model](steps, window, cpu_lanes)
+        run[LiberoStudyScene1Placement, LiberoStudyScene1Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_study_scene2":
-        run[LiberoStudyScene2Placement, LiberoStudyScene2Model](steps, window, cpu_lanes)
+        run[LiberoStudyScene2Placement, LiberoStudyScene2Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_study_scene3":
-        run[LiberoStudyScene3Placement, LiberoStudyScene3Model](steps, window, cpu_lanes)
+        run[LiberoStudyScene3Placement, LiberoStudyScene3Model](steps, window, cpu_lanes, dump_state)
     elif FAMILY == "libero_study_scene4":
-        run[LiberoStudyScene4Placement, LiberoStudyScene4Model](steps, window, cpu_lanes)
+        run[LiberoStudyScene4Placement, LiberoStudyScene4Model](steps, window, cpu_lanes, dump_state)
     else:
         comptime assert False, "libero_family_batched: FAMILY names no LIBERO family"
