@@ -355,12 +355,16 @@ comptime COLL_CAND_REPORT: Bool = False
 # the launch 10.1 / 26.3 / 34.4 ms -> 0.97 / 1.86 / 1.80 (10-19x), CPU check
 # identical to the unfiltered build on every window.
 #
-# WHY NOT METAL: once the block kernel actually runs LIBERO's box/box pairs,
-# Metal returns NO contacts for them — the miscompute
-# `tests/physics3d/test_box_box_sap_gpu_parity.mojo` records (CUDA is
-# correct). The overflow was what kept Metal's `libero_goal` props on the
-# table. Flip this to True for Metal only once that test passes there. The
-# arm script's `nopre` arm sets it False to A/B the old production.
+# WHY NOT METAL — the REASON IS FIXED, the MEASUREMENT IS NOT DONE (§13.56,
+# 2026-09-16). It was NVIDIA-only because once the block kernel actually ran
+# LIBERO's box/box pairs, Metal returned NO contacts for them: a per-thread
+# `Array` in `box_box_manifold` read at a RUNTIME index, so the separating-axis
+# test picked an edge axis for a resting box. `collision_primitives.mojo` now
+# has no runtime index there and
+# `tests/physics3d/test_box_box_sap_gpu_parity.mojo` PASSES on Metal (4 = 4,
+# 28 = 28, 4 = 4). So flipping this True on Metal is now a measurement, not a
+# risk — it has simply not been measured there. The arm script's `nopre` arm
+# sets it False to A/B the old production.
 comptime COLL_PREFILTER: Bool = has_nvidia_gpu_accelerator()
 comptime COLL_REPORT_HDR: Int = 11
 comptime COLL_REPORT_WORDS: Int = COLL_REPORT_HDR + COLL_NCAND_CAP

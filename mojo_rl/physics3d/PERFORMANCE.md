@@ -5322,3 +5322,138 @@ end-to-end replay and the step time with it —
     pixi run -e nvidia mojo build -I . -o /tmp/libero_256 /tmp/libero_lanes_256.mojo
     pixi run -e nvidia /tmp/libero_256 --cpu-lanes 10              # the gate
     pixi run -e nvidia /tmp/libero_256 --timing-only --steps 60   # was 801 ms
+
+**The box, with the prefilter (2026-09-15, RTX 5090, 256 lanes, b5b0c3f00 —
+which also carries 1f9972597, LIBERO's models at the scene's `max_condim` 4):**
+
+    replay gate, --cpu-lanes 10, 347 steps          === PASS ===
+      success word: 32 751 comparisons, 0 disagreeing
+      first-10-step |dq| vs the CPU replay: 2.0e-06
+      success over the demo: batch 239 / 256 (was 232); CPU-checked lanes
+      batch 10, cpu 10, agreeing 10 (was 9 / 10 / 9 — lane 0's
+      open_the_middle_drawer now succeeds at 127 like the CPU; the condim-4
+      commit is in the same build, so that is not the prefilter's to claim)
+
+    --timing-only --steps 60                  §13.53    §13.54    now
+      ms per batch control step                1 706      801    226.5
+      lane control steps / s                     150      319    1 130
+      physics substeps / s                     3 750    7 990   28 254
+
+3.5x on this change, 7.5x since §13.53. The step is now ~9.1 ms per
+substep against the ~6.5 predicted from the kernel splits — the ~2.5 ms
+gap is unattributed. Candidates: the Newton kernel at condim 4 (6 rows and a
+4x4 cone block per contact where §13.54 measured 4 and 3x3), and the
+collision's late windows. An nsys `cuda_gpu_kern_sum` of this binary is
+the next number, before any lever.
+
+**Where the 226.5 ms goes now** (nsys of b5b0c3f00, 256 lanes, all 60
+control steps = 1 500 substeps, `cuda_gpu_kern_sum`), ms per substep:
+
+    kernel                          §13.54 (15 steps)   now (60 steps)   share
+    Newton (blocked, elliptic)            2.09          4.46 (1.9-9.5)   50.6%
+    mass matrix (CRBA)                    1.64          1.64 (flat)      18.6%
+    collision (block, prefiltered)        9.47 serial   1.57 (0.95-2.77) 17.8%
+    flagged-only serial collision         0.75          0.001
+    everything else                      ~1.1          ~1.1
+    GPU total                            ~15.1          ~8.8  (step: 9.06)
+
+The ~2.5 ms the kernel splits did not predict is the Newton kernel: 4.46
+against the 2.09 carried over. Two things moved at once, and this trace
+cannot separate them — the WINDOW (§13.54's 2.09 was the first 15 control
+steps; the solve grows along the demo, and this kernel's instances span
+1.9-9.5 ms) and the CONDIM (1f9972597 took LIBERO's models to 4: 6 rows per
+contact for 4, and the entry loop's per-contact cost is `(NT+1)^2`, 16 for
+9). A `--steps 15` profile of this same binary separates them in one run.
+
+The step is now GPU-bound on three kernels in proportion 5 : 2 : 2, and the
+CRBA is a fixed 1.64 ms that does not move with contacts — as large as the
+whole collision phase.
+
+**The split, from a `--steps 15` profile of the same binary:**
+
+    ms per substep          15 steps, condim 3   15 steps, condim 4   60 steps, condim 4
+                            (§13.54)             (now)                (now)
+    Newton                  2.09                 2.66 (1.9-4.7)       4.46 (1.9-9.5)
+    CRBA                    1.64                 1.63                 1.64
+    collision               9.47 (serial)        0.97                 1.57
+
+So of the Newton kernel's 2.09 -> 4.46: condim 4 is **x1.27** in the same
+window (+0.57 ms), and the demo's later, heavier solves are **x1.68**
+(+1.80 ms). The window is the bigger term, which is §13.54's floor showing
+up: the line search stays thread-0 serial, and the sliding lanes of the
+solver log (t 41-53, 6-7 iterations, 40-50 evaluations a substep) set the
+launch. Over the whole demo the step is Newton 4.5 : CRBA 1.6 : collision
+1.6 ms per substep.
+
+### 13.56 CLOSED (2026-09-16): the Metal box/box miscompute — a per-thread array read at a runtime index
+
+§13.55 shipped `COLL_PREFILTER` on NVIDIA only, because flipping it on Metal
+made the block collision kernel actually run and it returned **zero** contacts
+for a box resting on a box. The candidate overflow had been hiding a
+miscompute, not protecting a design: every LIBERO lane was marked and re-run
+by the serial kernel, so the block kernel's box/box path had never executed at
+LIBERO's operating point.
+
+**The defect.** A single-model probe through `detect_contacts_sap["gpu"]`, one
+box resting 0.5 mm into another, read back `box_box_manifold`'s internals:
+
+    Metal, block kernel      code 7 (an EDGE axis)   n_bb 1   dist  0.0      ncon 0
+    CPU, same pose           code 2 (a FACE axis)    n_bb 4   dist -0.0005   ncon 4
+
+The separating-axis test chose an edge axis for a box lying flat on a box, at
+distance exactly 0.0, which the margin test then dropped. The cause is the
+storage class, not the algorithm: the small per-thread `Array`s of
+`box_box_manifold` (`size1[i1]`, `pos21[i2]`, `rot[3*i2+j]`, `axis[code_face]`)
+return the wrong element when the index is a RUNTIME value — the defect
+`_sel3` was written against (defect 27,
+`feedback_metal_wide_per_thread_inlinearray_miscompute`). It is invisible on
+CUDA, where the same source is correct.
+
+**The fix** (`collision_primitives.mojo`): no per-thread array in
+`box_box_manifold` is indexed by a runtime value any more. Every fixed-count
+loop over axes is a `comptime for`, so its indices are constants, and every
+choice that depends on the WINNING axis dispatches over its few possible
+values — `_bb_edge_contact[I, J]` over the 9 edge pairs,
+`_bb_face_contact[CODE]` over the 6 face codes, `_bb_clip_half_plane[COORD]`
+over the clip coordinate. The arithmetic, its order and MuJoCo 3.12's
+`mjc_BoxBox` transcription are unchanged, and the public signature is
+unchanged, so nothing downstream moved.
+
+**The gates** (M1 Pro): `test_box_box_sap_gpu_parity` PASS on Metal, all four
+fixtures, GPU equal to CPU — box on a static body's box 4 = 4, LIBERO's moka
+pot (15 boxes) on the kitchen table **28 = 28**, box on a plane 4 = 4, on both
+the SAP and the N^2 path. `test_box_box_sweep` 2/2 against MuJoCo (worst
+|d n| 5.6e-16), `test_box_box_degenerate_stack` 4/4, `test_sap_fields` 3/3
+golden.
+
+**The cost, and why the shipped shape is the one to keep.** The fix is paid in
+Metal PIPELINE-compile time, once per distinct kernel body and cached
+thereafter. On the one-model probe:
+
+    shape                                              pipeline   ncon
+    HEAD                                                  19 s     0    (wrong)
+    SHIPPED: comptime dispatch, 9 edge + 6 face           56 s     4
+    one face instantiation, runtime-selected axis        564 s then the Metal
+                                                         compiler service crashed
+                                                         (XPC_ERROR_CONNECTION_INTERRUPTED)
+    polygon + outputs in `ccd_ws` rows                   >400 s
+    the same, `@no_inline` on `box_box_manifold`          420 s
+    `ccd_ws` plumbing + HEAD's face stage VERBATIM       >400 s
+
+The last row is the one that decided it: it keeps HEAD's face stage exactly and
+is still slow, so the workspace rewrite's cost was the `ccd_ws` plumbing and
+the extra layout parameter, never the face stage. Two stub builds then showed
+the cost does not track code size at all — removing the 9 edge instantiations
+gives 35 s, removing the 6 face instantiations gives **>300 s**, against 56 s
+for both together. Metal's shader compiler has cliffs here that are not
+monotone in the amount of code, so structural tuning is a lottery at ~1-6
+minutes a pull. The shipped shape sits in a good spot and is correct; 37 s of
+one-time cold compile is the right price for contacts that exist.
+
+⚠ A comment-only edit does NOT force a cold pipeline compile — the cache key is
+the kernel body, so a nudged rebuild reads 1 s and measures nothing. Every row
+above is a genuinely distinct kernel.
+
+**Still open:** `COLL_PREFILTER` is still `has_nvidia_gpu_accelerator()`. The
+reason it was NVIDIA-only is now fixed, so flipping it on Metal is a
+measurement, not a risk — but it has not been measured on Metal yet.

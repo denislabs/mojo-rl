@@ -74,9 +74,10 @@ def main():
 
     # ⚠ A TIME BOUGHT BY LOSING CONTACTS IS NOT A SPEEDUP. Any arm whose round-1
     # CPU check departs from production's is flagged before its numbers are
-    # read — on Metal the block kernel drops box/box pairs
-    # (`tests/physics3d/test_box_box_sap_gpu_parity.mojo`), so a `pre` arm
-    # there returns ~0 contacts in half the time.
+    # read. This caught a real one: the block kernel used to drop every box/box
+    # pair on Metal, so a `pre` arm there returned ~0 contacts in half the time
+    # (fixed in §13.56; `tests/physics3d/test_box_box_sap_gpu_parity.mojo` is
+    # the gate). Keep the check — it is what makes an arm's time mean anything.
     print()
     bad = False
     for a in arms:
