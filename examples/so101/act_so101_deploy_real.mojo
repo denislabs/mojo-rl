@@ -156,7 +156,9 @@ from mojo_rl.deep_agents.act.config import (
     SO101_QPOS,
 )
 from mojo_rl.deep_agents.act.data import ACTDataset
+from mojo_rl.data.lerobot import CameraStream, EpisodeIndex, LeRobotInfo
 from mojo_rl.deep_agents.act.norm_file import ACTNorm, act_norm_from
+from mojo_rl.io.image import resize_bilinear_pil
 from mojo_rl.deep_agents.act.inference import (
     TemporalEnsemble,
     denormalize,
@@ -432,6 +434,57 @@ def camera_names(store: String) raises -> List[String]:
     return out^
 
 
+def recorded_first_row[
+    n_cam: Int, img_h: Int, img_w: Int
+](root: String, ref cameras: List[String]) raises -> List[Scalar[DType.uint8]]:
+    """The first frame of the recording's first episode, per camera, CHW —
+    the same layout and the same resize the store holds.
+
+    ⚠ THE SAME `resize_bilinear_pil` THE IMPORTER USED. A comparison through a
+    different filter would show differences that are not there; this one shows
+    only what the CAMERA changed.
+    """
+    var info = LeRobotInfo(root)
+    var index = EpisodeIndex(root, info.cameras)
+    var out = List[Scalar[DType.uint8]](length=n_cam * 3 * img_h * img_w, fill=0)
+    var hwc = List[UInt8](unsafe_uninit_length = img_h * img_w * 3)
+    var scratch = List[UInt8]()
+    for c in range(n_cam):
+        # ⚠ BY NAME, NOT BY POSITION: the store's slot order is the importer's
+        # (alphabetical), and `cameras` carries it.
+        var which = -1
+        for k in range(len(info.cameras)):
+            if info.cameras[k] == cameras[c]:
+                which = k
+        if which < 0:
+            raise Error(
+                "act deploy: the recording at " + root + " has no camera '"
+                + cameras[c] + "'"
+            )
+        var stream = CameraStream(String(info.cameras[which]), String(root))
+        var first = Int(round(index.vid_from_ts[which][0] * Float64(info.fps)))
+        stream.open_at(index.vid_chunk[which][0], index.vid_file[which][0], first)
+        stream.next_native()
+        resize_bilinear_pil(
+            stream.raw.unsafe_ptr().as_unsafe_any_origin(),
+            stream.height,
+            stream.width,
+            hwc.unsafe_ptr().as_unsafe_any_origin(),
+            img_h,
+            img_w,
+            scratch,
+            3,
+        )
+        var base = c * 3 * img_h * img_w
+        for ch in range(3):
+            for i in range(img_h * img_w):
+                out[base + ch * img_h * img_w + i] = Scalar[DType.uint8](
+                    hwc[i * 3 + ch]
+                )
+        stream.close()
+    return out^
+
+
 def norm_beside(ckpt: String) -> String:
     """The norm.json that goes with a checkpoint, or "" if none exists.
 
@@ -494,6 +547,14 @@ def main() raises:
     var cam_w = CAM_W
     var cam_h = CAM_H
     var snap = String("")
+    var snap_from = String("")
+    """A RECORDING directory for --snap, instead of the training store.
+
+    ⚠ THE STORE IS 9 GB AND THE RECORDING IS ALREADY ON THE ROBOT MACHINE.
+    `projects/<p>/datasets/<d>` holds the same frames the store was built
+    from, so the camera comparison — the check that catches a swapped or
+    moved camera, which nothing else can — does not need the store copied
+    back from the training box."""
     var do_return = True
 
     var args = argv()
@@ -536,6 +597,8 @@ def main() raises:
             do_return = False
         elif a == "--snap" and i + 1 < len(args):
             snap = String(args[i + 1])
+        elif a == "--snap-from" and i + 1 < len(args):
+            snap_from = String(args[i + 1])
         elif a == "--devices" and i + 1 < len(args):
             var parts = _split(String(args[i + 1]), String(","))
             for k in range(len(parts)):
@@ -591,11 +654,14 @@ def main() raises:
     var have_store = store != ""
     if have_store and not exists(store):
         raise Error("act deploy: no store at " + store)
-    if snap != "" and not have_store:
+    if snap != "" and not have_store and snap_from == "":
         raise Error(
-            "act deploy: --snap compares each camera with the STORE's frames,"
-            " so it needs --store"
+            "act deploy: --snap compares each camera with what was RECORDED,"
+            " so it needs --store <the .h5> or --snap-from"
+            " projects/<project>/datasets/<dataset>"
         )
+    if snap_from != "" and not exists(snap_from + "/meta/info.json"):
+        raise Error("act deploy: no LeRobot recording at " + snap_from)
     if not exists(ckpt):
         raise Error(
             "act deploy: no checkpoint at " + ckpt + " — train first"
@@ -815,8 +881,11 @@ def main() raises:
         )
         var snap_chw = List[UInt8](length=CAM_ELEMS, fill=0)
         var row = List[Scalar[DType.uint8]]()
-        ref ds = ds_opt.value()
-        ds.image_row_u8(ds.store.episodes.start_of(ds.val_eps[0]), row)
+        if snap_from == "":
+            ref ds = ds_opt.value()
+            ds.image_row_u8(ds.store.episodes.start_of(ds.val_eps[0]), row)
+        else:
+            row = recorded_first_row[N_CAM, IMG_H, IMG_W](snap_from, names)
         var hwc = List[UInt8](length=IMG_W * IMG_H * 3, fill=0)
         for i in range(N_CAM):
             var label = (
