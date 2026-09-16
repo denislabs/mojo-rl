@@ -158,15 +158,18 @@ comptime BATCH: Int = 1024
 # 25.9 GiB Tensor peak, against a 28.5 GiB pool that still OOM'd, so there is
 # >= 2.6 GiB of non-Tensor overhead (MAX workspaces, the graph, cuBLAS) on top.
 #
-#     CAP 2.0 M -> ring 9.76 GiB -> peak 25.9 -> OOM
-#     CAP 1.5 M -> ring 7.32 GiB -> peak 23.4 -> ~2.5 GiB margin
+# CAP went 2.0 -> 1.5 M to make room for a 2048/6 tower and is BACK AT 2.0 M:
+# that tower needs >30 GiB and does not fit at any CAP, so the buffer was never
+# the thing to cut. At 1536/4 the budget is 23.6 GiB with 7.4 GiB spare, and
+# keeping CAP at the value runs 1-6 used means the tower experiment is not
+# confounded by a smaller ring.
 #
 # The reference's own buffer is 5_120_000 and does not fit beside this tower on
 # 32 GB; this is 3.4x below it. ⚠ The RIGHT fix is not a smaller CAP: `r_nxt`
 # is `r_obs` shifted by one within a lane, so dropping it frees 4.02 GiB with
 # NO loss of diversity and would let CAP go UP. It is a real change to the ring
 # (episode boundaries, the 1024-lane interleave), so it is not done here.
-comptime CAP: Int = 1_500_000
+comptime CAP: Int = 2_000_000
 comptime SEQ: Int = 8
 comptime ZBUF: Int = 8192
 comptime T_EPISODE: Int = 500

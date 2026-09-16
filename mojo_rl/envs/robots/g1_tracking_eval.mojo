@@ -66,12 +66,24 @@ from mojo_rl.envs.robots.unitree_g1_rsi import G1RsiTable, G1_RSI_NQ, G1_RSI_NV
 # 5360 B). The reference's own CAP of 5.12 M would be 25.6 GiB of ring alone
 # and does NOT fit beside this tower — that scale-down is forced by the card.
 #
-# Smaller alternatives, if compile time or throughput bites:
-#     H = 1536, L = 4  -> 111 M params, ~14.4 GiB
-#     H = 1024, L = 3  ->  40 M params, ~12.7 GiB   (what runs 1-5 used)
+# ⚠ 2048/6 DOES NOT FIT ON A 32 GB CARD. Measured, not estimated (§12.22):
+# `MOJO_RL_ALLOC_TRACE=1` shows 30.24 GiB allocated and STILL CLIMBING when it
+# died, on a 31.8 GiB card. Scaling that MEASURED breakdown:
+#
+#     H=2048 L=6  CAP 2.0M   32.73 GiB   -1.73   OOM
+#     H=2048 L=6  CAP 1.5M   30.24 GiB   +0.76   OOM (it wanted more)
+#     H=1536 L=4  CAP 2.0M   23.58 GiB   +7.42   <- this
+#     H=1024 L=3  CAP 2.0M      ~13 GiB           (runs 1-6)
+#
+# ⚠ THE ids IN THAT TRACE ARE NOT ALL DISTINCT BUFFERS. `_alloc_trace`'s id is
+# `Pointer(to=self)`, stable only for a MODULE FIELD; stack temporaries reuse
+# addresses, so "48 allocations under one id" was 48 different buffers, all of
+# ONE size — and `ensure_gpu` is a no-op at the same size, so it cannot have
+# been a realloc. Aggregating by max-per-id UNDERCOUNTS by ~4.7 GiB and makes a
+# capacity wall look like a leak. It is not one.
 comptime G1_D: Int = 256          # z_dim
-comptime G1_H: Int = 2048         # hidden_dim
-comptime G1_L: Int = 6            # hidden_layers
+comptime G1_H: Int = 1536         # hidden_dim
+comptime G1_L: Int = 4            # hidden_layers
 comptime G1_HB: Int = 256         # backward map hidden
 comptime G1_HD: Int = 1024        # discriminator hidden
 
