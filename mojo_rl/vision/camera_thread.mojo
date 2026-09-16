@@ -56,6 +56,7 @@ built the worker, and the thread then reads freed memory
 
 from std.memory import Pointer, unsafe_memcpy
 from std.os.path import exists
+from std.sys import CompilationTarget
 
 from ..core.concurrent.thread import sleep_us
 from ..core.concurrent.block import SharedBlock
@@ -118,6 +119,30 @@ def _open_hint(path: String) -> String:
         " check `ls -l /dev/soarm_cam_*` and"
         " /etc/udev/rules.d/99-soarm.rules (docs/JETSON_DEPLOYMENT.md §3)."
     )
+
+
+def default_fourcc() -> String:
+    """The pixel format a path-opened camera is asked for when none is given.
+
+    ⚠⚠ MJPEG ON LINUX, AND IT IS A BANDWIDTH DECISION, NOT A QUALITY ONE.
+    YUYV 640x480 at 30 fps is 147 Mbit/s PER CAMERA — two of them is 295 of a
+    USB 2.0 bus's ~320 practical Mbit/s — and camera traffic is ISOCHRONOUS,
+    which RESERVES bus time, while the Feetech bus is bulk and takes what is
+    left. On this board the wrist camera shares `tegra-xusb` with both servo
+    links (`docs/JETSON_DEPLOYMENT.md` §3.1), so a YUYV stream is a servo
+    jitter source, and on a 30 Hz control loop jitter costs more than latency.
+    MJPEG is ~15x less. §3.2 had already decided this; nothing was asking for
+    it, so every camera came up YUYV.
+
+    ⚠ Pass `--fourcc none` to leave the device's own default alone, or any
+    four characters to ask for something else. What was NEGOTIATED is printed
+    either way — a request is not a setting.
+
+    macOS opens by index through AVFoundation, where this does not apply.
+    """
+    comptime if CompilationTarget.is_macos():
+        return String("")
+    return String("MJPG")
 
 
 def _node_index(node: String) -> Int:
@@ -434,7 +459,7 @@ struct CameraReader(Movable):
         rgb: Bool = False,
         fourcc: String = String(""),
     ) raises -> Self:
-        """A camera named by device path — `/dev/soarm_cam_overhead`.
+        """A camera named by device path — `/dev/soarm_cam_top`.
 
         ⚠ A PATH IS THE ONLY STABLE NAME ON THE BOARD. Both SO-101 cameras
         report the same burned-in serial, so only the USB topology separates
@@ -478,10 +503,19 @@ struct CameraReader(Movable):
             )
         if width <= 0 or height <= 0:
             raise Error("camera_thread: a camera needs a positive size")
+        # ⚠ "" MEANS "NO PREFERENCE", WHICH IS NOT THE SAME AS "NO REQUEST":
+        # a path-opened camera gets `default_fourcc()`, and only the explicit
+        # word `none` leaves the device to its own default. Without this every
+        # V4L2 camera came up YUYV — see `default_fourcc` for why that matters
+        # on a shared USB bus.
+        if fourcc == "none":
+            fourcc = String("")
+        elif fourcc.byte_length() == 0 and path.byte_length() > 0:
+            fourcc = default_fourcc()
         if fourcc.byte_length() != 0 and fourcc.byte_length() != 4:
             raise Error(
-                "camera_thread: a fourcc is four characters (got '" + fourcc
-                + "')"
+                "camera_thread: a fourcc is four characters, or `none` (got '"
+                + fourcc + "')"
             )
         self.ring = SharedRing(slots, width * height * 3)
         self.block = SharedBlock(N_CELLS)

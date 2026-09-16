@@ -17,8 +17,12 @@ they disagreed: one accepted a trailing comma that another turned into a camera
 named "". That is `_a_rule_written_inline_twice_drifts` with four copies.
 """
 
+from std.sys import CompilationTarget
+
 from mojo_rl.vision.camera_thread import (
+    CameraReader,
     _pack_fourcc,
+    default_fourcc,
     _unpack_fourcc,
     camera_spec_is_path,
     parse_camera_specs,
@@ -112,6 +116,48 @@ def main() raises:
         "  fourcc: MJPG/YUYV round-trip and differ ("
         + String(_pack_fourcc(String("MJPG"))) + " vs "
         + String(_pack_fourcc(String("YUYV"))) + ")"
+    )
+
+    # ── the requested format ─────────────────────────────────────────────
+    # ⚠ NO CAMERA IS OPENED. This gates the REQUEST the reader will make,
+    # which is the part that was silently absent: every V4L2 camera came up
+    # YUYV because nothing asked for anything.
+    comptime if CompilationTarget.is_macos():
+        if default_fourcc() != "":
+            raise Error("macOS opens by index; it must request no format")
+    else:
+        if default_fourcc() != "MJPG":
+            raise Error(
+                "a path-opened V4L2 camera must ask for MJPG — YUYV at 30 fps"
+                " is 147 Mbit/s per camera on a shared USB 2.0 bus"
+            )
+    n += 1
+
+    # `none` is the escape hatch, and it must differ from the empty default.
+    var free = CameraReader.at_path(
+        String("/dev/nope"), 640, 480, 30.0, fourcc=String("none")
+    )
+    if free.fourcc != "":
+        raise Error("`none` must leave the device's own format alone")
+    var defaulted = CameraReader.at_path(String("/dev/nope"), 640, 480, 30.0)
+    if defaulted.fourcc != default_fourcc():
+        raise Error("an unspecified format must become the platform default")
+    # ⚠ AND AN INDEX-OPENED CAMERA ASKS FOR NOTHING: the default is about
+    # V4L2's per-format frame-size table, not about an AVFoundation index.
+    #
+    # ⚠⚠ THIS LEG IS VACUOUS WHERE `default_fourcc()` IS EMPTY — that is,
+    # on macOS, where both sides are "" and deleting the guard changes
+    # nothing. Verified by mutation: removing `and path.byte_length() > 0`
+    # SURVIVES here and is killed only on Linux. It is kept because the board
+    # is where it decides something, and stated because a check that cannot
+    # fail on the machine you are running is not a check on that machine.
+    var by_index = CameraReader(0, 640, 480, 30.0)
+    if by_index.fourcc != "":
+        raise Error("an index-opened camera must not acquire a format request")
+    n += 3
+    print(
+        "  format: `" + default_fourcc() + "` by default for a path, `none`"
+        " opts out, an index asks for nothing"
     )
 
     print("  " + String(n) + " checks, 0 failures")

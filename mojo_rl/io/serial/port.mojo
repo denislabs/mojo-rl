@@ -115,6 +115,56 @@ def _write_flag(p: Pointer[UInt8, MutAnyOrigin], off: Int, v: UInt64):
         p.unsafe_offset(off).unsafe_bitcast[UInt32]()[] = UInt32(v)
 
 
+def _open_advice(e: Int) -> String:
+    """What errno actually means for a tty, on THIS platform.
+
+    ⚠ THE OLD MESSAGE GAVE macOS ADVICE ON EVERY PLATFORM ("prefer /dev/cu.*
+    over /dev/tty.*"), which on the board is not merely useless — it points
+    away from the answer. EACCES on Linux is a GROUP problem and nothing about
+    the cable, and it is the first thing a new board hits.
+    """
+    comptime if IS_MAC:
+        if e == 13:
+            return String(
+                "permission denied. Another process may hold the port, or the"
+                " device needs different permissions."
+            )
+        if e == 2:
+            return String(
+                "no such device — is the arm plugged in? Prefer /dev/cu.* over"
+                " /dev/tty.*: the tty.* callin device blocks in open() waiting"
+                " for carrier detect."
+            )
+        if e == 16:
+            return String("the port is busy — another process has it open.")
+        return String("is the arm plugged in?")
+    else:
+        if e == 13:
+            return String(
+                "permission denied (EACCES). On Linux a tty belongs to the"
+                " `dialout` group, and this user is not in it:\n"
+                "      sudo usermod -aG dialout $USER\n"
+                "  then log out and back in (or `newgrp dialout` for this"
+                " shell only — a fresh login is what makes it stick).\n"
+                "  `ls -l " + String("$(readlink -f <the port>)") + "` shows"
+                " the owning group."
+            )
+        if e == 2:
+            return String(
+                "no such device (ENOENT). On the board these are udev"
+                " symlinks: check `ls -l /dev/soarm_*` and"
+                " /etc/udev/rules.d/99-soarm.rules"
+                " (docs/JETSON_DEPLOYMENT.md §3)."
+            )
+        if e == 16:
+            return String(
+                "the port is busy (EBUSY) — another process has it open."
+                " ModemManager grabs new ttyACM devices on some distros:"
+                " `systemctl status ModemManager`."
+            )
+        return String("is the arm plugged in?")
+
+
 def raw_speed_at(p: Pointer[UInt8, MutAnyOrigin], off: Int) -> Int:
     """The raw `speed_t` at `off` — a Bxxx ORDINAL on Linux, the baud on BSD.
 
@@ -217,14 +267,8 @@ struct SerialPort(Movable):
         if self.fd < 0:
             var e = errno()
             raise Error(
-                "serial: open("
-                + self._path
-                + ") failed, errno="
-                + String(e)
-                + (
-                    "  (is the arm plugged in? prefer /dev/cu.* over"
-                    " /dev/tty.*)"
-                )
+                "serial: open(" + self._path + ") failed, errno=" + String(e)
+                + " — " + _open_advice(Int(e))
             )
         try:
             self._configure()

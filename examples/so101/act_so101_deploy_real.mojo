@@ -585,14 +585,17 @@ def main() raises:
     var cam_w = CAM_W
     var cam_h = CAM_H
     var snap = String("")
+    # A RECORDING directory for --snap, instead of the training store.
+    #
+    # ⚠ THE STORE IS 9 GB AND THE RECORDING IS ALREADY ON THE ROBOT MACHINE.
+    # `projects/<p>/datasets/<d>` holds the same frames the store was built
+    # from, so the camera comparison — the check that catches a swapped or
+    # moved camera, which nothing else can — does not need the store copied
+    # back from the training box.
+    #
+    # ⚠ A COMMENT, NOT A DOCSTRING: Mojo has no docstrings on LOCALS, so the
+    # string was an unused expression and warned on every single build.
     var snap_from = String("")
-    """A RECORDING directory for --snap, instead of the training store.
-
-    ⚠ THE STORE IS 9 GB AND THE RECORDING IS ALREADY ON THE ROBOT MACHINE.
-    `projects/<p>/datasets/<d>` holds the same frames the store was built
-    from, so the camera comparison — the check that catches a swapped or
-    moved camera, which nothing else can — does not need the store copied
-    back from the training box."""
     var do_return = True
 
     var args = argv()
@@ -643,8 +646,9 @@ def main() raises:
         elif a == "--port" and i + 1 < len(args):
             port_arg = String(args[i + 1])
         elif a == "--fourcc" and i + 1 < len(args):
-            # ⚠ ONLY MEANINGFUL FOR A PATH-OPENED CAMERA (V4L2). It must match
-            # what the DEMONSTRATIONS were recorded in; see §3.2 of the Jetson
+            # ⚠ ONLY MEANINGFUL FOR A PATH-OPENED CAMERA (V4L2). Defaults to
+            # MJPG there — `none` leaves the device alone. It must match what
+            # the DEMONSTRATIONS were recorded in; see §3.2 of the Jetson
             # document for why a format change is a train/deploy gap.
             cam_fourcc = String(args[i + 1])
     if store == "":
