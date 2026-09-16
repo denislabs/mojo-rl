@@ -313,6 +313,12 @@ def run[T: PlacementTable, M: ModelDefLike](
           "settle +", max_steps, "steps", "(LIBERO's own)" if max_steps
           == LIBERO_MAX_STEPS else "(REDUCED)")
     print("  policy: ZERO ACTION —", "the L6 gate is that the rate is 0")
+    if not have_table:
+        # ⚠ AND ON THE BOX THE TABLE IS SIMPLY NOT THERE: it is a gitignored
+        # build artifact (642 KB), so a machine that pulled the repo has the
+        # code and not the inits. Copy it or rebuild it.
+        print("          (copy build/init/" + family + ".init.h5 from a"
+              " machine that has it, or rebuild it there)")
 
     # ── the controller record ─────────────────────────────────────────────
     var qadr_all = List[Int]()
@@ -603,7 +609,13 @@ def run[T: PlacementTable, M: ModelDefLike](
         for i in range(len(fails)):
             print("  FAIL:", fails[i])
         raise Error(family + ": " + String(len(fails)) + " check(s) failed")
-    print("=== PASS —", family, ", null rate 0 ===")
+    # ⚠ THE MODE IS ON THE VERDICT LINE. A sampled run's PASS, pasted on its
+    # own, is indistinguishable from the benchmark's otherwise — and the whole
+    # point of the frozen table is that a rate over states the run chose for
+    # itself is not comparable with anything.
+    print("=== PASS —", family,
+          "(LIBERO's frozen inits)" if have_table
+          else "(SAMPLED inits — NOT a benchmark number)", ", null rate 0 ===")
 
 
 def main() raises:
