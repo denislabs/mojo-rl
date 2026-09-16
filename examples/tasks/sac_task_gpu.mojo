@@ -444,6 +444,23 @@ def baselines_for(task: String) -> Tuple[Float64, Float64, Float64, Bool]:
         # against an expectation of 3. A run far below 0.13 at this config is
         # configured differently or has a sick critic; check `cfg/*` and the
         # peak ratio before tuning anything.
+        #
+        # ⚠⚠ AND THE MULTI-TASK BATCH BEATS IT. One policy on
+        # `so101_gather_bricks,so101_settle_brick`, 2M steps so each task's 16
+        # lanes see 1M of their own transitions — the same count the
+        # single-task reference had:
+        #
+        #     gather  0.375 (24/64) any   0.344 (22/64) held   critic 0.995x
+        #     settle  1.000 (64/64) any   1.000 (64/64) held
+        #
+        # p = 4.6e-4 and 1.7e-4 against the single-task rows above.
+        #
+        # ⚠ THIS IS NOT YET A TRANSFER RESULT. The 2M batch ran 1,000,000
+        # gradient updates against the 1M single-task run's 500,000 — gather's
+        # own TRANSITIONS match, the network's UPDATES do not. The control
+        # that separates them is `gather` alone at 2M steps; until that is
+        # run, the claim is "two tasks in one policy, each at or above its
+        # single-task strength", not "multi-task helps".
         return (0.00, 0.00, 0.00, True)
     if task == "so101_reach_clear" or task == "so101_reach_brick":
         # ⚠ THE FINAL-STEP FIGURE IS UNMEASURED AND UNUSED HERE: the switch
