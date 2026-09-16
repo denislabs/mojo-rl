@@ -940,11 +940,23 @@ def main() raises:
         # recording's is a silent train/deploy gap and nothing else reports it.
         var got = c.negotiated_fourcc()
         var where = c.resolved_node()
-        if where.byte_length() > 0 or got.byte_length() > 0:
+        var neg_fps = c.negotiated_fps()
+        if where.byte_length() > 0 or got.byte_length() > 0 or neg_fps > 0.0:
             print(
                 "            " + (where + "  " if where.byte_length() > 0
                                    else String(""))
-                + ("format " + got if got.byte_length() > 0 else String(""))
+                + ("format " + got + "  " if got.byte_length() > 0
+                   else String(""))
+                + (fixed(neg_fps, 1) + " fps" if neg_fps > 0.0
+                   else String(""))
+            )
+        # ⚠ THE RATE IS A REQUEST LIKE THE SIZE. A camera that negotiated less
+        # than the demonstrations were recorded at cannot feed the policy
+        # observations at the cadence it learned, and nothing else says so.
+        if neg_fps > 0.0 and neg_fps < Float64(SO101_FPS) - 1.0:
+            print(
+                "   ⚠ " + fixed(neg_fps, 1) + " fps, below the "
+                + String(SO101_FPS) + " the demonstrations were recorded at."
             )
         cams.append(c^)
     print(
@@ -1367,7 +1379,23 @@ def main() raises:
     )
     print("  bus-skipped ticks = " + String(bus_skipped))
     print("  write refused     = " + String(refused))
-    print("  camera starved    = " + String(stale_ticks))
+    # ⚠ STARVED IS NOT AUTOMATICALLY BAD — it means the ring was empty, so
+    # the loop is FASTER than the camera and the frame it then waits for is
+    # maximally fresh. The failure it would hide is the opposite one, and the
+    # delivered rate is what tells them apart: a camera meeting its negotiated
+    # rate starves a faster consumer honestly; one below it is the bottleneck.
+    print(
+        "  camera starved    = " + String(stale_ticks) + " of "
+        + String(queries * N_CAM) + " frame takes"
+    )
+    for i in range(N_CAM):
+        var delivered = cams[i].frames_delivered()
+        var rate = Float64(delivered) / elapsed if elapsed > 0.0 else 0.0
+        print(
+            "     camera " + String(i) + "      " + pad_left(String(delivered), 5)
+            + " frames = " + fixed(rate, 1) + " fps delivered  (negotiated "
+            + fixed(cams[i].negotiated_fps(), 1) + ")"
+        )
     # ⚠ THE OFF-DISTRIBUTION SIGNAL. Every one of these is the policy asking
     # for a pose no demonstration ever reached.
     print(

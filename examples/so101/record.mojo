@@ -247,11 +247,24 @@ def main() raises:
         c.start()
         var got = c.negotiated_fourcc()
         var where = c.resolved_node()
+        var neg_fps = c.negotiated_fps()
         print(
             "  camera " + String(i) + ": " + c.label()
             + (" -> " + where if where.byte_length() > 0 else String(""))
             + ("  format " + got if got.byte_length() > 0 else String(""))
+            + ("  " + fixed(neg_fps, 1) + " fps" if neg_fps > 0.0
+               else String(""))
         )
+        # ⚠⚠ A RECORDING MADE AT THE WRONG RATE CANNOT BE REPAIRED. Every
+        # timestamp, the action grid a policy learns, and the chunk spacing
+        # all come from HZ; a camera quietly delivering less writes a dataset
+        # that claims a cadence it never had.
+        if neg_fps > 0.0 and neg_fps < Float64(HZ) - 1.0:
+            print(
+                "  ⚠ camera " + String(i) + " negotiated "
+                + fixed(neg_fps, 1) + " fps, below the " + String(HZ)
+                + " this recording claims."
+            )
         cams.append(c^)
     var n_cam = len(cams)
 

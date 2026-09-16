@@ -256,6 +256,17 @@ still means "nothing published"). ⚠ AN INDEX, NOT A NAME: the resolution
 happens on the camera thread and no Mojo-owned String may cross that
 boundary. A udev name is stable and the node behind it is NOT, so which one
 answered is worth saying out loud."""
+comptime CELL_FPS = 26
+"""The frame rate the device NEGOTIATED, x1000, published once at open.
+
+⚠ A REQUEST IS NOT A SETTING, and this is the one property that was never read
+back. The size is checked against the ring and the format is printed, but the
+rate was asked for and forgotten — so a camera quietly running at 15 fps looked
+exactly like one running at 30."""
+comptime CELL_FRAMES = 27
+"""Frames the camera thread has actually delivered. ⚠ THE NEGOTIATED RATE IS
+WHAT THE DRIVER CLAIMS; this is what arrived. They disagree when the bus is
+saturated or the exposure is long, and only the second one is the truth."""
 comptime N_CELLS = 32
 
 comptime DEFAULT_SLOTS = 8
@@ -341,6 +352,9 @@ struct _CamWorker(BackgroundWorker):
             self.block.release_store(
                 CELL_NODE, Int64(_node_index(self.cap.node) + 1)
             )
+            self.block.release_store(
+                CELL_FPS, Int64(self.cap.fps * 1000.0)
+            )
             self.width = self.cap.width
             self.height = self.cap.height
             self.buf = List[UInt8](
@@ -394,6 +408,7 @@ struct _CamWorker(BackgroundWorker):
         # Zero-copy claim, then one memcpy into the slot — the same shape
         # `io/http_sink.mojo:frame_into` uses, and it sidesteps handing a
         # `List`-derived pointer to a `MutUntrackedOrigin` parameter.
+        _ = self.block.fetch_add(CELL_FRAMES, Int64(1))
         var v = self.ring.view()
         var slot = v.begin_push()
         if not slot.ok():
@@ -557,6 +572,20 @@ struct CameraReader(Movable):
         if v <= 0:
             return String("")
         return String("/dev/video") + String(v - 1)
+
+    def negotiated_fps(self) -> Float64:
+        """The rate the device reported, or 0.0 — valid after `start`."""
+        return Float64(self.block.acquire_load(CELL_FPS)) / 1000.0
+
+    def frames_delivered(self) -> Int:
+        """How many frames the camera thread has produced since `start`.
+
+        ⚠ THE MEASUREMENT THAT SETTLES A STARVED CONSUMER. A control loop that
+        finds an empty ring is either faster than the camera (fine — its
+        frames are fresh) or being starved by a camera that is not keeping its
+        claimed rate (not fine). Dividing this by the elapsed time says which.
+        """
+        return Int(self.block.acquire_load(CELL_FRAMES))
 
     def negotiated_fourcc(self) -> String:
         """The pixel format the device settled on, or "" — valid after `start`.
