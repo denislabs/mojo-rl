@@ -74,6 +74,17 @@ python = ">=3.13.14,<3.14"
 env = { MODULAR_NVPTX_COMPILER_PATH = "/usr/local/cuda/bin/ptxas", LD_PRELOAD = "$PIXI_PROJECT_ROOT/mojo_rl/cuda/libcuda_intercept.so" }
 scripts = ["scripts/build_cuda_intercept.sh"]
 
+[feature.jetson.tasks]
+# ⚠ PASS `--target-accelerator sm_87` ON THE BOARD. MAX picks the kernel target
+# through NVML (`nvmlDeviceGetCudaComputeCapability`), which Tegra does not
+# provide; the fallback target compiles through ptxas without complaint and the
+# driver then refuses the image at the first kernel load with
+# CUDA_ERROR_INVALID_SOURCE ("device kernel image is invalid"). MAX reads no
+# environment variable for the target, so the flag has to be on the command:
+#   pixi run -e jetson run-jetson examples/nn/mlp/mlp_mnist_training_storage_gpu.mojo
+# Verified 2026-09-16 on the Orin NX: that MLP reaches 97.75% with the flag.
+run-jetson = { cmd = "mojo run -I . --target-accelerator sm_87", description = "mojo run for the Orin (sm_87 — MAX cannot detect it without NVML)" }
+
 [feature.amd]
 
 [feature.apple]
