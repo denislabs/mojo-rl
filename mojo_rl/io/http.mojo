@@ -117,17 +117,21 @@ def http_shim_available() -> Bool:
 
 
 def _init_handle() -> OwnedDLHandle:
+    # ⚠ A FILE THAT EXISTS CAN STILL FAIL TO LOAD — wrong architecture (a
+    # `.so` copied from an x86 box), or a `libcurl.so.4` its rpath no longer
+    # reaches. Keep dlopen's reason per candidate; "not found" alone sent a
+    # Jetson user looking for a file that was there.
     var c = _candidates()
+    var tried = String("")
     for i in range(len(c)):
         try:
             return OwnedDLHandle(c[i])
-        except:
-            pass
-    var tried = String("")
-    for i in range(len(c)):
-        tried += "\n  - " + c[i]
+        except e:
+            tried += "\n  - " + c[i]
+            if Path(c[i]).exists():
+                tried += "\n      exists but failed to load: " + String(e)
     abort(
-        "http shim not found. Tried:"
+        "http shim not found or not loadable. Tried:"
         + tried
         + "\nBuild it with `pixi run build-http`, or set"
         + " MOJO_RL_HTTP_LIB=/path/to/"

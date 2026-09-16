@@ -57,10 +57,14 @@ echo "  against $PREFIX (OpenCV $(basename "$(ls -1 "$PREFIX"/lib/libopencv_core
 # ⚠ -rpath IS NOT OPTIONAL.  Without it the dylib links fine and then fails to
 # find libopencv_core at the FIRST CALL, as a dlopen abort with no useful
 # message — the ImGui failure mode, one level deeper.
+# ⚠ SOURCE BEFORE $LIBS: see build_http.sh — Linux `--as-needed` drops a
+# library named before its first reference, and the link still succeeds.
+NO_UNDEF=""
+[ "$(uname -s)" = Linux ] && NO_UNDEF="-Wl,--no-undefined"
 "$CXX" -O2 -std=c++17 -fPIC -shared \
     -I "$PREFIX/include/opencv5" \
+    -o "$LIB" "$SRC" \
     -L "$PREFIX/lib" $LIBS \
-    -Wl,-rpath,"$PREFIX/lib" \
-    -o "$LIB" "$SRC"
+    -Wl,-rpath,"$PREFIX/lib" $NO_UNDEF
 
 echo "  $LIB"

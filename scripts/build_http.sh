@@ -41,10 +41,17 @@ echo "  against $PREFIX ($("$PREFIX/bin/curl" --version 2>/dev/null | head -1 ||
 
 # ⚠ -rpath IS NOT OPTIONAL. Without it the dylib links and then fails to find
 # libcurl.4 at the FIRST CALL, as a dlopen abort with no useful message.
+# ⚠ THE SOURCE GOES BEFORE THE -l FLAGS. Ubuntu's toolchain (Jetson) links
+# `--as-needed` by default: a library named before anything references it is
+# DROPPED, and a shared object may leave symbols undefined, so the link
+# succeeds with no NEEDED libcurl and dlopen fails at runtime. macOS ld never
+# drops, so the Mac cannot show this. `--no-undefined` makes it a link error.
+NO_UNDEF=""
+[ "$(uname -s)" = Linux ] && NO_UNDEF="-Wl,--no-undefined"
 "$CC" -O2 -fPIC -shared \
     -I "$PREFIX/include" \
+    -o "$LIB" "$SRC" \
     -L "$PREFIX/lib" -lcurl -lz -lzstd \
-    -Wl,-rpath,"$PREFIX/lib" \
-    -o "$LIB" "$SRC"
+    -Wl,-rpath,"$PREFIX/lib" $NO_UNDEF
 
 echo "  $LIB"
