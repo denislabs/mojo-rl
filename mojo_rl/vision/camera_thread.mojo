@@ -138,6 +138,20 @@ def camera_spec_is_path(spec: String) -> Bool:
     return False
 
 
+def camera_spec_index(spec: String) raises -> Int:
+    """The index in a `--devices` entry, or -1 when it names a PATH.
+
+    ⚠ -1 IS "THERE IS NO INDEX", not a default or an error. `CameraCalib.device`
+    records the index a calibration was measured on as a HINT (its own field
+    note says never as identity), and a camera opened as
+    `/dev/soarm_cam_wrist` genuinely has no stable one — writing 0 there would
+    be inventing a fact about the rig.
+    """
+    if camera_spec_is_path(spec):
+        return -1
+    return Int(spec)
+
+
 def open_camera_spec(
     spec: String,
     width: Int = 0,

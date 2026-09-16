@@ -108,7 +108,9 @@ from mojo_rl.render.imgui import (
 from mojo_rl.render.renderer3d import Renderer3D
 from mojo_rl.utils.fmt import fixed
 from mojo_rl.vision.calib_file import CameraCalib, read_calib, write_calib
-from mojo_rl.vision.camera_thread import open_camera_spec
+from mojo_rl.vision.camera_thread import (
+    camera_spec_index, open_camera_spec,
+)
 from mojo_rl.vision.opencv import (
     ArucoDetector,
     CALIB_FIX_K3,
@@ -221,7 +223,12 @@ def main() raises:
     # two-camera rig ends up with the front camera's intrinsics applied to the
     # side one — which fails no check and simply mis-ranges everything.
     if cam_name == "":
-        cam_name = String("cam") + String(device_spec)
+        # ⚠ THE LAST PATH SEGMENT, NOT THE WHOLE SPEC. `cam_name` becomes a
+        # FILE NAME two lines down, so "cam/dev/soarm_cam_wrist" would ask for
+        # a directory that does not exist — a confusing failure for something
+        # that is only a default.
+        var parts = device_spec.split("/")
+        cam_name = String("cam") + String(parts[len(parts) - 1])
     if calib_path == "":
         calib_path = String("scratch/camera_") + cam_name + ".txt"
 
@@ -744,7 +751,7 @@ def main() raises:
             try:
                 var out_cal = CameraCalib(
                     cam_name.copy(),
-                    device_spec,
+                    camera_spec_index(device_spec),
                     frame_w,
                     frame_h,
                     cal_k[0],
