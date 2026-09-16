@@ -120,6 +120,24 @@ def _open_hint(path: String) -> String:
     )
 
 
+def _node_index(node: String) -> Int:
+    """The N in `/dev/videoN`, or -1 for anything else."""
+    comptime PREFIX = "/dev/video"
+    if not node.startswith(PREFIX):
+        return -1
+    var digits = String(node[byte=PREFIX.byte_length() : node.byte_length()])
+    if digits.byte_length() == 0:
+        return -1
+    var n = 0
+    var b = digits.as_bytes()
+    for i in range(digits.byte_length()):
+        var c = Int(b[i])
+        if c < 48 or c > 57:
+            return -1
+        n = n * 10 + (c - 48)
+    return n
+
+
 def camera_spec_is_path(spec: String) -> Bool:
     """Whether `spec` names a device PATH rather than an index.
 
@@ -207,6 +225,12 @@ Int64, or 0 when the device did not report one.
 owner that reports it, and it is worth reporting: recording in MJPEG and
 deploying in YUYV shows a policy different pixels than it trained on
 (`docs/JETSON_DEPLOYMENT.md` §3.2)."""
+comptime CELL_NODE = 25
+"""The `/dev/videoN` index a path-opened camera resolved to, plus one (so 0
+still means "nothing published"). ⚠ AN INDEX, NOT A NAME: the resolution
+happens on the camera thread and no Mojo-owned String may cross that
+boundary. A udev name is stable and the node behind it is NOT, so which one
+answered is worth saying out loud."""
 comptime N_CELLS = 32
 
 comptime DEFAULT_SLOTS = 8
@@ -288,6 +312,9 @@ struct _CamWorker(BackgroundWorker):
                 )
             self.block.release_store(
                 CELL_FOURCC, _pack_fourcc(self.cap.fourcc())
+            )
+            self.block.release_store(
+                CELL_NODE, Int64(_node_index(self.cap.node) + 1)
             )
             self.width = self.cap.width
             self.height = self.cap.height
@@ -488,6 +515,14 @@ struct CameraReader(Movable):
         if self.path.byte_length() > 0:
             return self.path
         return String("device ") + String(self.device)
+
+    def resolved_node(self) -> String:
+        """The `/dev/videoN` a path-opened camera landed on, or "" — valid
+        after `start`."""
+        var v = Int(self.block.acquire_load(CELL_NODE))
+        if v <= 0:
+            return String("")
+        return String("/dev/video") + String(v - 1)
 
     def negotiated_fourcc(self) -> String:
         """The pixel format the device settled on, or "" — valid after `start`.

@@ -166,6 +166,16 @@ comptime lib = _Global["MOJO_RL_OPENCV", _init_handle]()
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _c_string(ref buf: List[UInt8]) -> String:
+    """A NUL-terminated C buffer as a String, stopping at the NUL."""
+    var out = String("")
+    for i in range(len(buf)):
+        if buf[i] == 0:
+            break
+        out += chr(Int(buf[i]))
+    return out^
+
+
 def cv_last_error() raises -> String:
     """The last message the shim recorded, or "" if it has recorded none.
 
@@ -261,6 +271,11 @@ struct VideoCapture(Movable):
     var fps: Float64
     var frame_count: Int
     """0 for a live device; only meaningful for a file."""
+    var node: String
+    """For a path-opened camera, the `/dev/videoN` the name resolved to —
+    empty otherwise. ⚠ WORTH PRINTING: a udev name is stable, the node behind
+    it is not, and which physical camera answered is the one thing a swapped
+    cable changes silently."""
 
     def __init__(out self, _h: Int) raises:
         """Private — use `from_file`, `device` or `closed`."""
@@ -273,6 +288,7 @@ struct VideoCapture(Movable):
         self.channels = 3
         self.fps = 0.0
         self.frame_count = 0
+        self.node = String("")
         # ⚠ A CLOSED CAPTURE HAS NO PROPERTIES TO READ. Asking the shim about
         # handle 0 is an error, not a zero, so the closed state must skip it.
         if _h != 0:
@@ -355,6 +371,14 @@ struct VideoCapture(Movable):
         (`docs/JETSON_DEPLOYMENT.md` §3). Feeding the policy the WRONG CAMERA
         is not a crash — it is a well-formed observation of the wrong thing.
 
+        ⚠⚠ ON LINUX THE PATH IS RESOLVED TO AN INDEX FIRST, and that is not a
+        shortcut — OpenCV's V4L2 backend CANNOT capture by name. Measured on
+        the Orin (OpenCV 5.0, JetPack 6.2): opening `/dev/soarm_cam_top` by
+        name prints "backend is generally available but can't be used to
+        capture by name" and fails. The udev symlink is still what makes the
+        name stable; it is dereferenced here to whatever `videoN` it points at
+        today, which is all a symlink was ever for.
+
         ⚠ NOT `from_file`. That opens with CAP_ANY, which on a `/dev/video*`
         path can be won by FFMPEG's v4l2 demuxer instead of the V4L2 backend —
         a different capture path with its own format negotiation. This names
@@ -366,6 +390,9 @@ struct VideoCapture(Movable):
         """
         var p = path
         var f = fourcc
+        # The node the name resolved to, filled by the shim so a caller can
+        # SAY which device a stable name landed on this boot.
+        var node = List[UInt8](length=256, fill=0)
         var h = _get_dylib_function[
             lib,
             "mrl_cv_cap_open_path",
@@ -375,6 +402,8 @@ struct VideoCapture(Movable):
                 Int32,
                 Float64,
                 Ptr[c_char, MutUntrackedOrigin],
+                Ptr[UInt8, MutUntrackedOrigin],
+                Int32,
             ) thin -> Int,
         ]()
         # ⚠ An empty fourcc is passed as an empty STRING, not NULL: the shim
@@ -386,10 +415,20 @@ struct VideoCapture(Movable):
             Int32(height),
             fps,
             untracked(f.as_c_string_slice().unsafe_ptr()),
+            untracked(Ptr(to=node[0])),
+            Int32(256),
         )
+        var where = _c_string(node)
         if handle == 0:
-            raise String("opencv: cannot open device ") + path + ": " + cv_last_error()
-        return Self(handle)
+            raise (
+                String("opencv: cannot open device ") + path
+                + (" (-> " + where + ")" if where.byte_length() > 0
+                   and where != path else String(""))
+                + ": " + cv_last_error()
+            )
+        var out = Self(handle)
+        out.node = where^
+        return out^
 
     def fourcc(self) raises -> String:
         """The pixel format the device actually negotiated, or "" if unknown.

@@ -935,8 +935,13 @@ def main() raises:
         # ⚠ SAY WHICH PIXEL FORMAT, because a format that differs from the
         # recording's is a silent train/deploy gap and nothing else reports it.
         var got = c.negotiated_fourcc()
-        if got.byte_length() > 0:
-            print("            format " + got)
+        var where = c.resolved_node()
+        if where.byte_length() > 0 or got.byte_length() > 0:
+            print(
+                "            " + (where + "  " if where.byte_length() > 0
+                                   else String(""))
+                + ("format " + got if got.byte_length() > 0 else String(""))
+            )
         cams.append(c^)
     print(
         "            " + String(cam_w) + "x" + String(cam_h) + " native ->"

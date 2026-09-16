@@ -246,8 +246,10 @@ def main() raises:
         )
         c.start()
         var got = c.negotiated_fourcc()
+        var where = c.resolved_node()
         print(
             "  camera " + String(i) + ": " + c.label()
+            + (" -> " + where if where.byte_length() > 0 else String(""))
             + ("  format " + got if got.byte_length() > 0 else String(""))
         )
         cams.append(c^)

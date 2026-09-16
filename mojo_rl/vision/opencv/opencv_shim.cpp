@@ -40,6 +40,13 @@
 
 #include <string>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <climits>
+
+#if defined(__linux__)
+#include <limits.h>
+#endif
 
 // ─── status codes ───────────────────────────────────────────────────────────
 //
@@ -238,26 +245,93 @@ void* mrl_cv_cap_open(int index, int width, int height, double fps) {
 // silently discards what was asked for.  `fourcc` may be NULL to leave the
 // device's own default alone.  Like the size it is a REQUEST — read it back
 // with `mrl_cv_cap_fourcc` rather than assuming it took.
-void* mrl_cv_cap_open_path(const char* path, int width, int height,
-                           double fps, const char* fourcc) {
-    if (path == nullptr) {
-        mrl_cv_set_error("VideoCapture: null device path");
-        return nullptr;
+/* Resolve a camera PATH to the V4L2 index OpenCV can actually open.
+ *
+ * ⚠⚠ OPENCV'S V4L2 BACKEND CANNOT CAPTURE BY NAME.  Measured on the Orin
+ * (OpenCV 5.0, JetPack 6.2): `cap.open("/dev/soarm_cam_overhead", CAP_V4L2)`
+ * prints "backend is generally available but can't be used to capture by
+ * name" and fails — the backend registers MODE_CAPTURE_BY_INDEX only.  So a
+ * stable udev name has to be turned back into the index it points at TODAY,
+ * which is exactly what the symlink is for and costs nothing: the name is
+ * still what the operator types and what the rig documents.
+ *
+ * Writes the resolved node into `resolved` (e.g. "/dev/video2") so a caller
+ * can SAY which device a name landed on — a swapped cable otherwise shows up
+ * as a policy acting on the wrong scene.  Returns the index, or -1 with
+ * `resolved` holding the realpath attempt for the error message.
+ */
+int mrl_cv_v4l2_index(const char* path, char* resolved, int cap) {
+    if (path == NULL || resolved == NULL || cap < 2) return -1;
+    resolved[0] = '\0';
+#if defined(__linux__)
+    char buf[PATH_MAX];
+    const char* real = realpath(path, buf);
+    if (real == NULL) {
+        snprintf(resolved, (size_t)cap, "%s", path);
+        return -1;
     }
+    snprintf(resolved, (size_t)cap, "%s", real);
+    const char* prefix = "/dev/video";
+    size_t n = strlen(prefix);
+    if (strncmp(real, prefix, n) != 0) return -1;
+    const char* digits = real + n;
+    if (*digits == '\0') return -1;
+    for (const char* d = digits; *d; ++d) {
+        if (*d < '0' || *d > '9') return -1;
+    }
+    return atoi(digits);
+#else
+    (void)cap;
+    return -1;
+#endif
+}
+
+void* mrl_cv_cap_open_path(const char* path, int width, int height,
+                           double fps, const char* fourcc,
+                           char* resolved, int resolved_cap) {
+    if (path == NULL) {
+        mrl_cv_set_error("VideoCapture: null device path");
+        return NULL;
+    }
+    if (resolved != NULL && resolved_cap > 0) resolved[0] = '\0';
     try {
         MrlCapture* c = new MrlCapture();
-#ifdef __linux__
-        int backend = cv::CAP_V4L2;
+        bool ok = false;
+#if defined(__linux__)
+        /* ⚠⚠ BY INDEX, NOT BY NAME — the backend leaves no choice.  See
+         * `mrl_cv_v4l2_index`.  The udev name still does its job: it is
+         * dereferenced HERE, at open time, to whatever videoN it points at
+         * on this boot. */
+        char node[PATH_MAX];
+        int idx = mrl_cv_v4l2_index(path, node, (int)sizeof(node));
+        if (resolved != NULL && resolved_cap > 0)
+            snprintf(resolved, (size_t)resolved_cap, "%s", node);
+        if (idx < 0) {
+            mrl_cv_set_error(
+                (std::string("VideoCapture: ") + path +
+                 " does not resolve to a /dev/videoN node").c_str());
+            delete c;
+            return NULL;
+        }
+        ok = c->cap.open(idx, cv::CAP_V4L2);
 #else
-        int backend = cv::CAP_ANY;
+        if (resolved != NULL && resolved_cap > 0)
+            snprintf(resolved, (size_t)resolved_cap, "%s", path);
+        ok = c->cap.open(std::string(path), cv::CAP_ANY);
 #endif
-        if (!c->cap.open(std::string(path), backend)) {
+        if (!ok) {
             mrl_cv_set_error(
                 (std::string("VideoCapture: cannot open device ") + path).c_str());
             delete c;
-            return nullptr;
+            return NULL;
         }
-        if (fourcc != nullptr && std::strlen(fourcc) == 4) {
+        /* ⚠ FOURCC BEFORE SIZE, and that order is required by V4L2: the
+         * frame-size table is PER PIXEL FORMAT, so setting the size first and
+         * the format second renegotiates the size against the new format and
+         * silently discards what was asked for.  `fourcc` may be NULL or
+         * empty to leave the device's own default alone.  Like the size it is
+         * a REQUEST — read it back with `mrl_cv_cap_fourcc`. */
+        if (fourcc != NULL && strlen(fourcc) == 4) {
             c->cap.set(cv::CAP_PROP_FOURCC,
                        cv::VideoWriter::fourcc(fourcc[0], fourcc[1],
                                                fourcc[2], fourcc[3]));
@@ -268,10 +342,10 @@ void* mrl_cv_cap_open_path(const char* path, int width, int height,
         return c;
     } catch (const cv::Exception& e) {
         mrl_cv_set_error(e.what());
-        return nullptr;
+        return NULL;
     } catch (...) {
         mrl_cv_set_error("VideoCapture: unknown C++ exception");
-        return nullptr;
+        return NULL;
     }
 }
 
