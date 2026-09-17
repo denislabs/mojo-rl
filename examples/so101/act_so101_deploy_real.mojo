@@ -1216,7 +1216,9 @@ def main() raises:
     # elapsed time reports the frames of a minute of idling as if they had
     # arrived during the run. The first board run printed "95.2 fps delivered
     # (negotiated 30.0)", which is not a camera that exists.
+    var loop_ns = 0
     var frames_at_start = List[Int]()
+    var frames_at_end = List[Int]()
     for i in range(N_CAM):
         frames_at_start.append(cams[i].frames_delivered())
     var loop_t0 = perf_counter_ns()
@@ -1379,6 +1381,23 @@ def main() raises:
                     line += " " + col(cmd[j], 7, 1)
                 print(line)
     finally:
+        # ⚠⚠ THE CLOCK STOPS HERE, NOT AFTER THE SHUTDOWN. Everything below —
+        # the ramp back to the start pose, and an operator taking their time
+        # over "press Enter to release torque" — is not part of the control
+        # loop, and counting it reported a 10 s run at 30 Hz as "301 queries
+        # in 24.6 s = 12.2 Hz". A rate is only a rate over the interval that
+        # produced it.
+        #
+        # ⚠ IN THE `finally`, so an exception mid-run still gets an honest
+        # elapsed rather than one that includes the unwind.
+        loop_ns = perf_counter_ns() - loop_t0
+        # ⚠ AND THE FRAME COUNTS WITH IT, at the same instant. The cameras
+        # keep running through the ramp and the Enter wait, so a count read
+        # after them over an elapsed measured before them is two different
+        # intervals in one ratio — the numerator and the denominator have to
+        # end together.
+        for i in range(N_CAM):
+            frames_at_end.append(cams[i].frames_delivered())
         # ⚠ THE SAME SHUTDOWN ON EVERY PATH, including an exception. A camera
         # that stops delivering mid-run leaves the arm extended, and the old
         # code's unconditional `set_torque(False)` would drop it there — the
@@ -1398,7 +1417,7 @@ def main() raises:
             except:
                 pass
 
-    var elapsed = Float64(perf_counter_ns() - loop_t0) / 1e9
+    var elapsed = Float64(loop_ns) / 1e9
     print("=" * 74)
     print("ACT closed-loop run")
     print("  queries           = " + String(queries) + " in "
@@ -1429,7 +1448,10 @@ def main() raises:
         + String(queries * N_CAM) + " frame takes"
     )
     for i in range(N_CAM):
-        var delivered = cams[i].frames_delivered() - frames_at_start[i]
+        var delivered = (
+            frames_at_end[i] - frames_at_start[i]
+            if i < len(frames_at_end) else 0
+        )
         var rate = Float64(delivered) / elapsed if elapsed > 0.0 else 0.0
         var claimed = cams[i].negotiated_fps()
         print(
