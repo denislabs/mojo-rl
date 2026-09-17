@@ -561,7 +561,10 @@ def run[T: PlacementTable, M: ModelDefLike](
         # `--dump-state` fires at the first contact-count mismatch, which is
         # not where two SOLVER LEGS start to disagree; this writes the step you
         # ask for, for every lane, so one solve can be replayed through both.
-        if dump_at_step == step and dump_state != "":
+        # ⚠ `--dump-at-step -2` DUMPS EVERY STEP: the first solve of each
+        # control step can then be replayed through both solver legs
+        # (`tools/tasks/solve_at_pose.mojo`) until one disagrees.
+        if (dump_at_step == step or dump_at_step == -2) and dump_state != "":
             var sl = String("")
             for e in range(LANES):
                 sl += "QPOS lane " + String(e) + " step " + String(step)
