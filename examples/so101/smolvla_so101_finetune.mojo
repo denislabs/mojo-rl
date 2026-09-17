@@ -169,6 +169,7 @@ from mojo_rl.io.hf import hf_download_file, HF_MODEL, HF_DATASET
 from mojo_rl.io.hdf5 import H5Dataset
 
 from mojo_rl.deep_agents.smolvla.policy import SmolVLAPolicy
+from mojo_rl.deep_agents.smolvla.recording import SO101_N_LANG, SO101_TASKS
 from mojo_rl.deep_agents.smolvla.normalize import SmolVLAStats
 from mojo_rl.deep_agents.smolvla.tasks import TaskTokens
 from mojo_rl.deep_agents.smolvla.dataset import SmolVLABatchSampler
@@ -196,8 +197,9 @@ comptime ADIM_REAL = 6
 comptime N_CAM = 2
 comptime SRC_H = 480
 comptime SRC_W = 640
-comptime N_LANG = 6
-"""⚠ Pinned by the instruction table, not chosen. `test_tasks.mojo` refuses a
+comptime N_LANG = SO101_N_LANG
+"""⚠ Pinned by the instruction table, not chosen — and read from
+`deep_agents/smolvla/recording.mojo`, which the deployment reads too. `test_tasks.mojo` refuses a
 table whose tasks tokenise to different lengths, because a comptime N_LANG
 cannot hold two — a multi-task fine-tune needs a padding decision first."""
 
@@ -207,9 +209,7 @@ comptime B = 1
 comptime PAD = SMOLVLA_ACTION_DIM
 
 comptime REPO = String("lerobot/smolvla_base")
-comptime DEFAULT_TASKS = String(
-    "tools/vla/smolvla_tasks_record-test_20260828_092736.tsv"
-)
+comptime DEFAULT_TASKS = String(SO101_TASKS)
 comptime DEFAULT_DATA_REPO = String("DenisLabs/record-test_20260828_092736")
 
 comptime DEFAULT_STEPS = 2000
@@ -403,6 +403,23 @@ def main() raises:
     if stats_path.byte_length() == 0:
         var data_repo = getenv("SMOLVLA_REPO")
         if data_repo.byte_length() == 0:
+            # ⚠⚠ THE FALLBACK'S PROMISE ONLY HOLDS FOR ITS OWN RECORDING.
+            # Fetching `meta/stats.json` from the default repo guarantees the
+            # statistics and the store agree ONLY when the store WAS built from
+            # that repo. For any other store — a project recording, above all —
+            # it silently normalises one dataset with another's scale: every
+            # joint shifted and rescaled, no error, a worse policy. So a store
+            # that is not the default recording must NAME its statistics.
+            var slug = DEFAULT_DATA_REPO.replace("/", "__")
+            if slug not in store_path:
+                raise Error(
+                    "smolvla finetune: " + store_path + " is not "
+                    + DEFAULT_DATA_REPO + ", so its statistics cannot be"
+                    " fetched from there.\n  Set SMOLVLA_STATS to this"
+                    " recording's stats.json — for a project recording,"
+                    " tools/vla/smolvla_stats_from_act_norm.py builds one"
+                    " from the ACT run's exact norm.json."
+                )
             data_repo = DEFAULT_DATA_REPO
         stats_path = hf_download_file(
             data_repo, String("meta/stats.json"), HF_DATASET

@@ -96,6 +96,7 @@ from mojo_rl.deep_agents.smolvla.text import (
 )
 from mojo_rl.deep_agents.smolvla.observation import fill_camera_images
 from mojo_rl.deep_agents.smolvla.policy import SmolVLAPolicy
+from mojo_rl.deep_agents.smolvla.recording import SO101_N_LANG, SO101_TASKS
 from mojo_rl.deep_agents.smolvla.tasks import TaskTokens
 from mojo_rl.io.fileio import StdinReader, stdin_is_tty
 from mojo_rl.io.hf import hf_download_file, HF_MODEL
@@ -122,7 +123,7 @@ laptop down once already (`smolvla_so101_latency_probe.mojo`)."""
 
 comptime BASE_REPO = "lerobot/smolvla_base"
 comptime N_CAM = 2
-comptime N_LANG = 6
+comptime N_LANG = SO101_N_LANG
 comptime CHUNK = 50
 comptime STEPS = 10
 """Euler denoising steps at INFERENCE. Training denoises once; this does not."""
@@ -156,7 +157,7 @@ comptime ACTION_BOX_MARGIN = 0.05
 edges are real poses the arm reached, so clamping exactly at them would fight
 the policy at the extremes of a legitimate motion."""
 
-comptime DEFAULT_TASKS = "tools/vla/smolvla_tasks_record-test_20260828_092736.tsv"
+comptime DEFAULT_TASKS = SO101_TASKS
 
 
 def _stats_vec(
