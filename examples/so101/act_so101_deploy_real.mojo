@@ -1030,6 +1030,18 @@ def main() raises:
             ref ds = ds_opt.value()
             ds.image_row_u8(ds.store.episodes.start_of(ds.val_eps[0]), row)
         else:
+            # ⚠ ffmpeg WILL SHOUT "Broken pipe" HERE, AND IT IS EXPECTED.
+            # Only the FIRST frame of each episode is wanted, so the decoder
+            # is closed while it still has a video to write; it gets EPIPE on
+            # the next packet and says so on stderr before exiting. Its stderr
+            # is deliberately NOT silenced — a genuinely corrupt video
+            # announces itself the same way, and one of those is worth
+            # hearing.
+            print(
+                "  reading the first frame of each episode from " + snap_from
+                + "\n  (ffmpeg prints 'Broken pipe' below — expected: we"
+                " close it after one frame)"
+            )
             row = recorded_first_row[N_CAM, IMG_H, IMG_W](snap_from, names)
         var hwc = List[UInt8](length=IMG_W * IMG_H * 3, fill=0)
         for i in range(N_CAM):
@@ -1064,6 +1076,50 @@ def main() raises:
                 "  " + pad_right(label, 26) + " store -> " + p_store
                 + "   live -> " + p_live
             )
+
+            # ⚠⚠ AND THE NUMBERS, BECAUSE "COMPARE THE PAIR" IS NOT A TEST.
+            # Two PNGs on a headless board are a request for a human to
+            # eyeball a brightness shift over SSH, and a systematic one is
+            # exactly what the eye is worst at — a policy fed images 20%
+            # darker than it trained on has no way to say so, and the failure
+            # arrives as "the policy transfers badly".
+            #
+            # Per-channel means over the SAME tensor the policy consumes,
+            # after the same resize, so this is the actual input distribution
+            # and not a property of the PNG.
+            var s_sum = List[Float64](length=3, fill=0.0)
+            var l_sum = List[Float64](length=3, fill=0.0)
+            var n_px = Float64(IMG_W * IMG_H)
+            for c in range(3):
+                for p in range(IMG_W * IMG_H):
+                    s_sum[c] += Float64(
+                        Int(row[i * CAM_ELEMS + c * IMG_W * IMG_H + p])
+                    )
+                    l_sum[c] += Float64(Int(snap_chw[c * IMG_W * IMG_H + p]))
+            var s_mean = (s_sum[0] + s_sum[1] + s_sum[2]) / (3.0 * n_px)
+            var l_mean = (l_sum[0] + l_sum[1] + l_sum[2]) / (3.0 * n_px)
+            print(
+                "      mean pixel  store " + fixed(s_mean, 1)
+                + "   live " + fixed(l_mean, 1)
+                + "   ratio " + fixed(l_mean / s_mean if s_mean > 0.0 else 0.0, 2)
+                + "   (R " + fixed(s_sum[0] / n_px, 0) + "/"
+                + fixed(l_sum[0] / n_px, 0) + "  G "
+                + fixed(s_sum[1] / n_px, 0) + "/" + fixed(l_sum[1] / n_px, 0)
+                + "  B " + fixed(s_sum[2] / n_px, 0) + "/"
+                + fixed(l_sum[2] / n_px, 0) + ")"
+            )
+            # ⚠ A RATIO, NOT A DIFFERENCE, and no threshold on the scene
+            # content: the cube and the arm move, so the images SHOULD differ.
+            # What must not differ is the overall exposure.
+            var ratio = l_mean / s_mean if s_mean > 0.0 else 1.0
+            if ratio < 0.8 or ratio > 1.25:
+                print(
+                    "      ⚠⚠ the live view is " + fixed(ratio, 2)
+                    + "x the recorded brightness. That is a train/deploy gap"
+                    " in the OBSERVATION,\n         not in the policy — fix"
+                    " the lighting or the exposure before reading anything"
+                    " into how the arm behaves."
+                )
         for i in range(N_CAM):
             try:
                 cams[i].stop()
