@@ -1178,6 +1178,15 @@ def main() raises:
         last_goal[i] = Float64(raw[i])
     var last_t_cmd = -1
 
+    # ⚠⚠ THE FRAME COUNTERS ARE SAMPLED HERE, NOT READ AS TOTALS. The camera
+    # threads started at `c.start()` — before check 2, before the arm section,
+    # and before the operator pressed Enter — so a total divided by the LOOP's
+    # elapsed time reports the frames of a minute of idling as if they had
+    # arrived during the run. The first board run printed "95.2 fps delivered
+    # (negotiated 30.0)", which is not a camera that exists.
+    var frames_at_start = List[Int]()
+    for i in range(N_CAM):
+        frames_at_start.append(cams[i].frames_delivered())
     var loop_t0 = perf_counter_ns()
     var deadline = loop_t0 + seconds * 1_000_000_000
     try:
@@ -1389,13 +1398,23 @@ def main() raises:
         + String(queries * N_CAM) + " frame takes"
     )
     for i in range(N_CAM):
-        var delivered = cams[i].frames_delivered()
+        var delivered = cams[i].frames_delivered() - frames_at_start[i]
         var rate = Float64(delivered) / elapsed if elapsed > 0.0 else 0.0
+        var claimed = cams[i].negotiated_fps()
         print(
             "     camera " + String(i) + "      " + pad_left(String(delivered), 5)
             + " frames = " + fixed(rate, 1) + " fps delivered  (negotiated "
-            + fixed(cams[i].negotiated_fps(), 1) + ")"
+            + fixed(claimed, 1) + ")"
         )
+        # ⚠ V4L2 REPORTS CAP_PROP_FPS AS WHAT WAS ASKED FOR, not always as what
+        # it does. The delivered count is the only one of the two that was
+        # measured, so when they disagree it is the claim that is wrong.
+        if claimed > 0.0 and rate > claimed * 1.2:
+            print(
+                "       ⚠ delivering " + fixed(rate / claimed, 1) + "x its"
+                " claimed rate — the extra frames are decoded and dropped,"
+                " and cost USB bandwidth and CPU for nothing."
+            )
     # ⚠ THE OFF-DISTRIBUTION SIGNAL. Every one of these is the policy asking
     # for a pose no demonstration ever reached.
     print(

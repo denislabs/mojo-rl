@@ -250,24 +250,32 @@ Int64, or 0 when the device did not report one.
 owner that reports it, and it is worth reporting: recording in MJPEG and
 deploying in YUYV shows a policy different pixels than it trained on
 (`docs/JETSON_DEPLOYMENT.md` §3.2)."""
-comptime CELL_NODE = 25
+comptime CELL_NODE = 32
 """The `/dev/videoN` index a path-opened camera resolved to, plus one (so 0
 still means "nothing published"). ⚠ AN INDEX, NOT A NAME: the resolution
 happens on the camera thread and no Mojo-owned String may cross that
 boundary. A udev name is stable and the node behind it is NOT, so which one
 answered is worth saying out loud."""
-comptime CELL_FPS = 26
+comptime CELL_FPS = 40
 """The frame rate the device NEGOTIATED, x1000, published once at open.
 
 ⚠ A REQUEST IS NOT A SETTING, and this is the one property that was never read
 back. The size is checked against the ring and the format is printed, but the
 rate was asked for and forgotten — so a camera quietly running at 15 fps looked
 exactly like one running at 30."""
-comptime CELL_FRAMES = 27
-"""Frames the camera thread has actually delivered. ⚠ THE NEGOTIATED RATE IS
+comptime CELL_FRAMES = 48
+"""Frames the camera thread has actually delivered.
+
+⚠ ITS OWN CACHE LINE, like every other cell here (0, 8, 16, 24, 32, 40, 48 —
+`CELLS_PER_LINE` apart, `block.mojo` states the rule). This one earns it: it
+is `fetch_add`-ed by the camera thread on EVERY frame while the owner reads
+CELL_STATE and CELL_GEOMETRY every tick, so packing them together would
+invalidate the owner's line 30+ times a second per camera. It was written at
+25/26/27 first — four cells in one line, the exact false sharing the padding
+convention exists to prevent. ⚠ THE NEGOTIATED RATE IS
 WHAT THE DRIVER CLAIMS; this is what arrived. They disagree when the bus is
 saturated or the exposure is long, and only the second one is the truth."""
-comptime N_CELLS = 32
+comptime N_CELLS = 56
 
 comptime DEFAULT_SLOTS = 8
 """Frames of slack. At 30 fps that is 0.27 s — long enough to ride out a slow
