@@ -15,11 +15,11 @@ separates the hypotheses, instead of one guess per round trip to the board.
 
 Each variant changes EXACTLY ONE thing relative to the one above it:
 
-    A  `_ba_kernel` as shipped, block 128       the baseline
+    A  the row-per-thread kernel, block 128     the baseline (was shipped)
     B  same kernel, block 32 (one warp)         occupancy        BIT-IDENTICAL
     C  branchless: no `continue`, `max`          lane divergence  BIT-IDENTICAL
     D  one pass, online softmax (C's launch)     duplicated q.k   tolerance
-    E  scores -> softmax -> A.V, element-indexed launch shape     tolerance
+    E  scores -> softmax -> A.V (SHIPS)          launch shape     tolerance
 
 ⚠ READING THE RESULT. The CROSS shape has no mask at all (every prefix key is
 visible), so masking cannot diverge the lanes there. If C beats B on SELF but
@@ -52,7 +52,10 @@ from mojo_rl.deep_agents.smolvla.attn_mask import att_2d_mask, smolvla_ar
 from mojo_rl.deep_agents.smolvla.block_attention import (
     BA_DENOM_FLOOR,
     BA_MASK_NEG,
-    _ba_kernel,
+    BA_ROW_BLOCK,
+    _ba_context_kernel,
+    _ba_scores_kernel,
+    _ba_softmax_kernel,
 )
 
 
@@ -218,92 +221,83 @@ def _d_kernel[
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# E — materialise the scores; three element-indexed kernels
+# A — the row-per-thread kernel the forward USED to launch
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# The scores are tiny at this shape — 15 * 50 * 185 = 138 750 floats, 555 KB —
-# so materialising them costs nothing, and it lets every kernel be indexed by
-# the element it WRITES rather than by a row it loops over. Adjacent lanes then
-# touch adjacent addresses: E1's lanes share q, E3's lanes read neighbouring v.
+# ⚠ KEPT HERE, NOT IN THE LIBRARY. `block_attention.mojo` now launches E; this
+# is the historical baseline every other variant is measured against, and this
+# benchmark is its only consumer. E, on the other hand, is IMPORTED from the
+# library below — so the benchmark keeps measuring the code that ships rather
+# than a copy that could drift from it.
 
 
-def _e_scores_kernel[
-    BATCH: Int, D: Int, NH: Int, Q: Int, KL: Int, H: Int
+def _ba_kernel[
+    BATCH: Int, DIM: Int, N_HEADS: Int, QL: Int, KL: Int, HD: Int
 ](
-    q: LayoutTensor[DT, Layout.row_major(BATCH, Q * D), MutAnyOrigin],
-    k: LayoutTensor[DT, Layout.row_major(BATCH, KL * D), MutAnyOrigin],
-    mask: LayoutTensor[DT, Layout.row_major(Q * KL), MutAnyOrigin],
-    scores: LayoutTensor[DT, Layout.row_major(BATCH * NH * Q * KL), MutAnyOrigin],
+    q: LayoutTensor[DT, Layout.row_major(BATCH, QL * DIM), MutAnyOrigin],
+    k: LayoutTensor[DT, Layout.row_major(BATCH, KL * DIM), MutAnyOrigin],
+    v: LayoutTensor[DT, Layout.row_major(BATCH, KL * DIM), MutAnyOrigin],
+    mask: LayoutTensor[DT, Layout.row_major(QL * KL), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(BATCH, QL * DIM), MutAnyOrigin],
 ):
-    """One thread per (b, h, i, j). Scaled score plus the additive mask."""
+    """One thread per (batch, head, query). Q_LEN is 50 and N_HEADS 15 here, so
+    the row-per-thread map is a few hundred threads — small, but the work per
+    row is KL*HD and the alternative (a tiled BMM) is not worth its complexity
+    until this shows up in a profile."""
     var idx = Int(global_idx.x)
-    if idx >= BATCH * NH * Q * KL:
+    if idx >= BATCH * N_HEADS * QL:
         return
-    var j = idx % KL
-    var r = idx // KL
-    var i = r % Q
-    var r2 = r // Q
-    var h = r2 % NH
-    var b = r2 // NH
-    var qb = b * (Q * D) + i * D + h * H
-    var kb = b * (KL * D) + j * D + h * H
-    var s = Scalar[DT](0)
-    for d in range(H):
-        s += rebind[Scalar[DT]](q.ptr[unsafe_offset = qb + d]) * rebind[
-            Scalar[DT]
-        ](k.ptr[unsafe_offset = kb + d])
-    scores.ptr[unsafe_offset = idx] = s * (
-        Scalar[DT](1.0) / sqrt(Scalar[DT](H))
-    ) + rebind[Scalar[DT]](mask.ptr[unsafe_offset = i * KL + j])
+    var i = idx % QL
+    var r = idx // QL
+    var h = r % N_HEADS
+    var b = r // N_HEADS
+    var scale = Scalar[DT](1.0) / sqrt(Scalar[DT](HD))
+    var qb = b * (QL * DIM) + i * DIM + h * HD
 
-
-def _e_softmax_kernel[BATCH: Int, NH: Int, Q: Int, KL: Int](
-    scores: LayoutTensor[DT, Layout.row_major(BATCH * NH * Q * KL), MutAnyOrigin],
-):
-    """One thread per (b, h, i): stable softmax over one CONTIGUOUS row."""
-    var idx = Int(global_idx.x)
-    if idx >= BATCH * NH * Q:
-        return
-    var base = idx * KL
+    # pass 1: max over masked scores
     var mx = BA_MASK_NEG
     for j in range(KL):
-        mx = max(mx, rebind[Scalar[DT]](scores.ptr[unsafe_offset = base + j]))
+        var m = rebind[Scalar[DT]](mask.ptr[unsafe_offset = i * KL + j])
+        if m <= BA_MASK_NEG:
+            continue
+        var kb = b * (KL * DIM) + j * DIM + h * HD
+        var s = Scalar[DT](0)
+        for d in range(HD):
+            s += rebind[Scalar[DT]](q.ptr[unsafe_offset = qb + d]) * rebind[
+                Scalar[DT]
+            ](k.ptr[unsafe_offset = kb + d])
+        s = s * scale + m
+        if s > mx:
+            mx = s
+
+    # pass 2: exponentiate, accumulate the context vector
     var denom = Scalar[DT](0)
+    for d in range(HD):
+        dst.ptr[unsafe_offset = qb + d] = Scalar[DT](0)
     for j in range(KL):
-        denom += exp(rebind[Scalar[DT]](scores.ptr[unsafe_offset = base + j]) - mx)
-    var inv = Scalar[DT](0)
-    if mx > BA_MASK_NEG * Scalar[DT](0.5) and denom > BA_DENOM_FLOOR:
-        inv = Scalar[DT](1.0) / denom
-    for j in range(KL):
-        scores.ptr[unsafe_offset = base + j] = exp(
-            rebind[Scalar[DT]](scores.ptr[unsafe_offset = base + j]) - mx
+        var m = rebind[Scalar[DT]](mask.ptr[unsafe_offset = i * KL + j])
+        if m <= BA_MASK_NEG:
+            continue
+        var kb = b * (KL * DIM) + j * DIM + h * HD
+        var s = Scalar[DT](0)
+        for d in range(HD):
+            s += rebind[Scalar[DT]](q.ptr[unsafe_offset = qb + d]) * rebind[
+                Scalar[DT]
+            ](k.ptr[unsafe_offset = kb + d])
+        var w = exp(s * scale + m - mx)
+        denom += w
+        for d in range(HD):
+            dst.ptr[unsafe_offset = qb + d] = rebind[Scalar[DT]](
+                dst.ptr[unsafe_offset = qb + d]
+            ) + w * rebind[Scalar[DT]](v.ptr[unsafe_offset = kb + d])
+
+    var inv = Scalar[DT](1.0) / (denom if denom > BA_DENOM_FLOOR else Scalar[DT](1.0))
+    if denom <= BA_DENOM_FLOOR:
+        inv = Scalar[DT](0)   # fully masked row -> zero context, not NaN
+    for d in range(HD):
+        dst.ptr[unsafe_offset = qb + d] = rebind[Scalar[DT]](
+            dst.ptr[unsafe_offset = qb + d]
         ) * inv
-
-
-def _e_context_kernel[
-    BATCH: Int, D: Int, NH: Int, Q: Int, KL: Int, H: Int
-](
-    probs: LayoutTensor[DT, Layout.row_major(BATCH * NH * Q * KL), MutAnyOrigin],
-    v: LayoutTensor[DT, Layout.row_major(BATCH, KL * D), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(BATCH, Q * D), MutAnyOrigin],
-):
-    """One thread per (b, h, i, d): the d-th coordinate of one context vector."""
-    var idx = Int(global_idx.x)
-    if idx >= BATCH * NH * Q * H:
-        return
-    var d = idx % H
-    var r = idx // H
-    var i = r % Q
-    var r2 = r // Q
-    var h = r2 % NH
-    var b = r2 // NH
-    var pbase = ((b * NH + h) * Q + i) * KL
-    var acc = Scalar[DT](0)
-    for j in range(KL):
-        acc += rebind[Scalar[DT]](probs.ptr[unsafe_offset = pbase + j]) * rebind[
-            Scalar[DT]
-        ](v.ptr[unsafe_offset = b * (KL * D) + j * D + h * H + d])
-    dst.ptr[unsafe_offset = b * (Q * D) + i * D + h * H + d] = acc
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -457,12 +451,12 @@ comptime _c_self = _c_kernel[B, DIM, HEADS, QL, KL_SELF, HD]
 comptime _c_cross = _c_kernel[B, DIM, HEADS, QL, KL_CROSS, HD]
 comptime _d_self = _d_kernel[B, DIM, HEADS, QL, KL_SELF, HD]
 comptime _d_cross = _d_kernel[B, DIM, HEADS, QL, KL_CROSS, HD]
-comptime _e_scores_self = _e_scores_kernel[B, DIM, HEADS, QL, KL_SELF, HD]
-comptime _e_scores_cross = _e_scores_kernel[B, DIM, HEADS, QL, KL_CROSS, HD]
-comptime _e_softmax_self = _e_softmax_kernel[B, HEADS, QL, KL_SELF]
-comptime _e_softmax_cross = _e_softmax_kernel[B, HEADS, QL, KL_CROSS]
-comptime _e_context_self = _e_context_kernel[B, DIM, HEADS, QL, KL_SELF, HD]
-comptime _e_context_cross = _e_context_kernel[B, DIM, HEADS, QL, KL_CROSS, HD]
+comptime _e_scores_self = _ba_scores_kernel[B, DIM, HEADS, QL, KL_SELF, HD]
+comptime _e_scores_cross = _ba_scores_kernel[B, DIM, HEADS, QL, KL_CROSS, HD]
+comptime _e_softmax_self = _ba_softmax_kernel[B, HEADS, QL, KL_SELF]
+comptime _e_softmax_cross = _ba_softmax_kernel[B, HEADS, QL, KL_CROSS]
+comptime _e_context_self = _ba_context_kernel[B, DIM, HEADS, QL, KL_SELF, HD]
+comptime _e_context_cross = _ba_context_kernel[B, DIM, HEADS, QL, KL_CROSS, HD]
 
 
 def run_shape(
@@ -587,7 +581,7 @@ def run_shape(
                     )
                     ctx.enqueue_function[_e_softmax_self](
                         probs.lt["gpu", Layout.row_major(B * HEADS * QL * KL_SELF)](),
-                        grid_dim=(ROWS + WARP - 1) // WARP, block_dim=WARP,
+                        grid_dim=(ROWS + BA_ROW_BLOCK - 1) // BA_ROW_BLOCK, block_dim=BA_ROW_BLOCK,
                     )
                     ctx.enqueue_function[_e_context_self](
                         probs.lt["gpu", Layout.row_major(B * HEADS * QL * KL_SELF)](),
@@ -605,7 +599,7 @@ def run_shape(
                     )
                     ctx.enqueue_function[_e_softmax_cross](
                         probs.lt["gpu", Layout.row_major(B * HEADS * QL * KL_CROSS)](),
-                        grid_dim=(ROWS + WARP - 1) // WARP, block_dim=WARP,
+                        grid_dim=(ROWS + BA_ROW_BLOCK - 1) // BA_ROW_BLOCK, block_dim=BA_ROW_BLOCK,
                     )
                     ctx.enqueue_function[_e_context_cross](
                         probs.lt["gpu", Layout.row_major(B * HEADS * QL * KL_CROSS)](),
@@ -629,11 +623,11 @@ def run_shape(
                 base_a.append(out.data[n])
         var cmp = _compare(out, base_a, refv)
         var names: List[String] = [
-            String("A  _ba_kernel, block 128"),
+            String("A  row-per-thread (was shipped)"),
             String("B  same kernel, block 32"),
             String("C  branchless, block 32"),
             String("D  one-pass softmax"),
-            String("E  scores/softmax/context"),
+            String("E  3 kernels (SHIPS now)"),
         ]
         rows.append(
             Row(names[variant], best, _median(times), macs, cmp[0], cmp[1])

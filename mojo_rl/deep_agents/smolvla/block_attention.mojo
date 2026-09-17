@@ -79,75 +79,121 @@ from mojo_rl.nn.core.tensor import Tensor
 
 comptime BA_MASK_NEG: Scalar[DT] = Scalar[DT](-1.0e30)
 comptime BA_DENOM_FLOOR: Scalar[DT] = Scalar[DT](1.0e-30)
+comptime BA_ROW_BLOCK: Int = 32
+"""One warp: the block size the row softmax was measured at on the Orin."""
 
 
-def _ba_kernel[
-    BATCH: Int, DIM: Int, N_HEADS: Int, QL: Int, KL: Int, HD: Int
+# ⚠⚠ THE FORWARD IS THREE ELEMENT-INDEXED KERNELS, NOT ONE ROW-PER-THREAD ONE,
+# AND THAT IS A MEASUREMENT. The previous `_ba_kernel` launched one thread per
+# (batch, head, query) with every key and every head-dim inside the thread. Its
+# own note said "a tiled BMM is not worth its complexity until this shows up in
+# a profile". It showed up: nsys on the Orin put it at 160 calls per SmolVLA
+# query, 1.08 s of 3.24 s, at 0.29% of the board's fp32 peak.
+#
+# `benchmarks/smolvla_block_attention_bench.mojo` then separated the causes in
+# one run on the board (A = that kernel):
+#
+#     block 128 -> 32 (occupancy)            1.18-1.23x
+#     branchless, no `continue`              1.27-1.36x   (NOT mask divergence:
+#                                                          larger on the UNMASKED
+#                                                          cross shape)
+#     one-pass online softmax                no gain over branchless
+#     THESE THREE KERNELS                    6.10x self, 6.55x cross
+#
+# The scores are tiny at this model's shapes — 15 heads x 50 queries x 185 keys
+# = 138 750 floats, 555 KB — so materialising them costs nothing, and it lets
+# each kernel be indexed by the element it WRITES: adjacent lanes then touch
+# adjacent addresses. The row-per-thread shape is the one this repo already
+# recorded as slow (`_row_per_thread_kernels_are_uncoalesced_and_tiny_grid`).
+#
+# ⚠ NOT BIT-IDENTICAL to the old kernel — the context is now a sum of
+# normalised weights rather than a normalised sum. Held to ~2.5e-6 std units of
+# a float64 reference on the board, and to `test_block_attention.mojo`'s
+# GPU-vs-CPU band, which also exercises B = 2 (the benchmark is B = 1).
+
+
+def _ba_scores_kernel[
+    BATCH: Int, D: Int, NH: Int, Q: Int, KL: Int, H: Int
 ](
-    q: LayoutTensor[DT, Layout.row_major(BATCH, QL * DIM), MutAnyOrigin],
-    k: LayoutTensor[DT, Layout.row_major(BATCH, KL * DIM), MutAnyOrigin],
-    v: LayoutTensor[DT, Layout.row_major(BATCH, KL * DIM), MutAnyOrigin],
-    mask: LayoutTensor[DT, Layout.row_major(QL * KL), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(BATCH, QL * DIM), MutAnyOrigin],
+    q: LayoutTensor[DT, Layout.row_major(BATCH, Q * D), MutAnyOrigin],
+    k: LayoutTensor[DT, Layout.row_major(BATCH, KL * D), MutAnyOrigin],
+    mask: LayoutTensor[DT, Layout.row_major(Q * KL), MutAnyOrigin],
+    scores: LayoutTensor[DT, Layout.row_major(BATCH * NH * Q * KL), MutAnyOrigin],
 ):
-    """One thread per (batch, head, query). Q_LEN is 50 and N_HEADS 15 here, so
-    the row-per-thread map is a few hundred threads — small, but the work per
-    row is KL*HD and the alternative (a tiled BMM) is not worth its complexity
-    until this shows up in a profile."""
+    """One thread per (b, h, i, j): scaled score plus the additive mask."""
     var idx = Int(global_idx.x)
-    if idx >= BATCH * N_HEADS * QL:
+    if idx >= BATCH * NH * Q * KL:
         return
-    var i = idx % QL
-    var r = idx // QL
-    var h = r % N_HEADS
-    var b = r // N_HEADS
-    var scale = Scalar[DT](1.0) / sqrt(Scalar[DT](HD))
-    var qb = b * (QL * DIM) + i * DIM + h * HD
+    var j = idx % KL
+    var r = idx // KL
+    var i = r % Q
+    var r2 = r // Q
+    var h = r2 % NH
+    var b = r2 // NH
+    var qb = b * (Q * D) + i * D + h * H
+    var kb = b * (KL * D) + j * D + h * H
+    var s = Scalar[DT](0)
+    for d in range(H):
+        s += rebind[Scalar[DT]](q.ptr[unsafe_offset = qb + d]) * rebind[
+            Scalar[DT]
+        ](k.ptr[unsafe_offset = kb + d])
+    scores.ptr[unsafe_offset = idx] = s * (
+        Scalar[DT](1.0) / sqrt(Scalar[DT](H))
+    ) + rebind[Scalar[DT]](mask.ptr[unsafe_offset = i * KL + j])
 
-    # pass 1: max over masked scores
+
+def _ba_softmax_kernel[BATCH: Int, NH: Int, Q: Int, KL: Int](
+    scores: LayoutTensor[DT, Layout.row_major(BATCH * NH * Q * KL), MutAnyOrigin],
+):
+    """One thread per (b, h, i): stable softmax over one CONTIGUOUS row, in place.
+
+    ⚠ A FULLY MASKED ROW gives zero weights, not NaN: every score is ~-1e30, so
+    the running max never rises above half of `BA_MASK_NEG` and the row is
+    zeroed — the same zero context the CPU path produces.
+    """
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * NH * Q:
+        return
+    var base = idx * KL
     var mx = BA_MASK_NEG
     for j in range(KL):
-        var m = rebind[Scalar[DT]](mask.ptr[unsafe_offset = i * KL + j])
-        if m <= BA_MASK_NEG:
-            continue
-        var kb = b * (KL * DIM) + j * DIM + h * HD
-        var s = Scalar[DT](0)
-        for d in range(HD):
-            s += rebind[Scalar[DT]](q.ptr[unsafe_offset = qb + d]) * rebind[
-                Scalar[DT]
-            ](k.ptr[unsafe_offset = kb + d])
-        s = s * scale + m
-        if s > mx:
-            mx = s
-
-    # pass 2: exponentiate, accumulate the context vector
+        mx = max(mx, rebind[Scalar[DT]](scores.ptr[unsafe_offset = base + j]))
     var denom = Scalar[DT](0)
-    for d in range(HD):
-        dst.ptr[unsafe_offset = qb + d] = Scalar[DT](0)
     for j in range(KL):
-        var m = rebind[Scalar[DT]](mask.ptr[unsafe_offset = i * KL + j])
-        if m <= BA_MASK_NEG:
-            continue
-        var kb = b * (KL * DIM) + j * DIM + h * HD
-        var s = Scalar[DT](0)
-        for d in range(HD):
-            s += rebind[Scalar[DT]](q.ptr[unsafe_offset = qb + d]) * rebind[
-                Scalar[DT]
-            ](k.ptr[unsafe_offset = kb + d])
-        var w = exp(s * scale + m - mx)
-        denom += w
-        for d in range(HD):
-            dst.ptr[unsafe_offset = qb + d] = rebind[Scalar[DT]](
-                dst.ptr[unsafe_offset = qb + d]
-            ) + w * rebind[Scalar[DT]](v.ptr[unsafe_offset = kb + d])
-
-    var inv = Scalar[DT](1.0) / (denom if denom > BA_DENOM_FLOOR else Scalar[DT](1.0))
-    if denom <= BA_DENOM_FLOOR:
-        inv = Scalar[DT](0)   # fully masked row -> zero context, not NaN
-    for d in range(HD):
-        dst.ptr[unsafe_offset = qb + d] = rebind[Scalar[DT]](
-            dst.ptr[unsafe_offset = qb + d]
+        denom += exp(rebind[Scalar[DT]](scores.ptr[unsafe_offset = base + j]) - mx)
+    var inv = Scalar[DT](0)
+    if mx > BA_MASK_NEG * Scalar[DT](0.5) and denom > BA_DENOM_FLOOR:
+        inv = Scalar[DT](1.0) / denom
+    for j in range(KL):
+        scores.ptr[unsafe_offset = base + j] = exp(
+            rebind[Scalar[DT]](scores.ptr[unsafe_offset = base + j]) - mx
         ) * inv
+
+
+def _ba_context_kernel[
+    BATCH: Int, D: Int, NH: Int, Q: Int, KL: Int, H: Int
+](
+    probs: LayoutTensor[DT, Layout.row_major(BATCH * NH * Q * KL), MutAnyOrigin],
+    v: LayoutTensor[DT, Layout.row_major(BATCH, KL * D), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(BATCH, Q * D), MutAnyOrigin],
+):
+    """One thread per (b, h, i, d): the d-th coordinate of one context vector."""
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * NH * Q * H:
+        return
+    var d = idx % H
+    var r = idx // H
+    var i = r % Q
+    var r2 = r // Q
+    var h = r2 % NH
+    var b = r2 // NH
+    var pbase = ((b * NH + h) * Q + i) * KL
+    var acc = Scalar[DT](0)
+    for j in range(KL):
+        acc += rebind[Scalar[DT]](probs.ptr[unsafe_offset = pbase + j]) * rebind[
+            Scalar[DT]
+        ](v.ptr[unsafe_offset = b * (KL * D) + j * D + h * H + d])
+    dst.ptr[unsafe_offset = b * (Q * D) + i * D + h * H + d] = acc
 
 
 # +--------------------------------------------------------------------------+ #
@@ -396,6 +442,11 @@ struct BlockCrossAttention[
     # forward stays allocation-free and one instance stays reusable across the
     # sixteen layers a driver runs through it.
     var probs: Tensor
+    var fwd_scores: Tensor
+    """The GPU forward's materialised scores, then probabilities, in place.
+    Sized on the first call and reused: `ensure_gpu` allocates only on a GROW,
+    so the forward stays allocation-free across the sixteen layers and ten
+    steps one instance serves. Not shared with `probs`, which `vjp` owns."""
 
     def __init__(out self):
         comptime assert Self.DIM % Self.N_HEADS == 0, (
@@ -404,11 +455,13 @@ struct BlockCrossAttention[
         self.mask = Tensor()
         self.is_gpu = False
         self.probs = Tensor()
+        self.fwd_scores = Tensor()
 
     def __init__(out self, *, deinit move: Self):
         self.mask = move.mask^
         self.is_gpu = move.is_gpu
         self.probs = move.probs^
+        self.fwd_scores = move.fwd_scores^
 
     @staticmethod
     def make[
@@ -478,19 +531,40 @@ struct BlockCrossAttention[
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.QN)
-            comptime rows = B * Self.N_HEADS * Self.Q_LEN
-            comptime n_blocks = (rows + TPB - 1) // TPB
+            self.fwd_scores.ensure_gpu(c, B * Self.PN)
+            comptime n_scores = B * Self.PN
+            comptime n_rows = B * Self.N_HEADS * Self.Q_LEN
+            comptime n_ctx = B * Self.N_HEADS * Self.Q_LEN * Self.HD
+            # Block sizes are the ones measured on the board: TPB for the two
+            # thin element kernels, one warp (32) for the row softmax.
             c.enqueue_function[
-                _ba_kernel[
+                _ba_scores_kernel[
                     B, Self.DIM, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN, Self.HD
                 ]
             ](
                 q.lt["gpu", Layout.row_major(B, Self.QN)](),
                 k.lt["gpu", Layout.row_major(B, Self.KN)](),
-                v.lt["gpu", Layout.row_major(B, Self.KN)](),
                 self.mask.lt["gpu", Layout.row_major(Self.MASK_N)](),
+                self.fwd_scores.lt["gpu", Layout.row_major(B * Self.PN)](),
+                grid_dim=(n_scores + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
+            c.enqueue_function[
+                _ba_softmax_kernel[B, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN]
+            ](
+                self.fwd_scores.lt["gpu", Layout.row_major(B * Self.PN)](),
+                grid_dim=(n_rows + BA_ROW_BLOCK - 1) // BA_ROW_BLOCK,
+                block_dim=BA_ROW_BLOCK,
+            )
+            c.enqueue_function[
+                _ba_context_kernel[
+                    B, Self.DIM, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN, Self.HD
+                ]
+            ](
+                self.fwd_scores.lt["gpu", Layout.row_major(B * Self.PN)](),
+                v.lt["gpu", Layout.row_major(B, Self.KN)](),
                 out.lt["gpu", Layout.row_major(B, Self.QN)](),
-                grid_dim=n_blocks,
+                grid_dim=(n_ctx + TPB - 1) // TPB,
                 block_dim=TPB,
             )
 
