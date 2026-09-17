@@ -618,6 +618,83 @@ def main() raises:
           want_step, "| nq", NQ, "nv", NV, "| max_contacts", MC)
     print("=" * 78)
     var ctx = DeviceContext()
+    comptime if F64_GPU_SWEEP:
+        # ⚠⚠ THE FLOAT32 ARMS ARE NOT BUILT IN THIS CONFIGURATION, and that
+        # is a COMPILE-TIME decision, not tidiness. Each elliptic Newton
+        # instantiation is ~15 minutes on a rented 5090 (see
+        # feedback_a_rented_gpu_box_prices_every_gate_in_compile_minutes).
+        # With both flows live this file asks for FIVE of them — blocked and
+        # per-env at float32, blocked and per-env at float64, and the per-env
+        # CPU float64 reference — which is the 30+ minute build. `comptime if`
+        # elaborates only the branch taken, so the float64 configuration pays
+        # for TWO. The float32 numbers are already recorded in this header and
+        # do not need re-measuring on the box to answer the float64 question.
+        _f64_sweep(ctx, q, v)
+    else:
+        _f32_flow(ctx, q, v)
+
+
+def _f64_sweep(
+    ctx: DeviceContext, q: List[Float64], v: List[Float64]
+) raises:
+    """The CUDA-only float64 leg-vs-leg sweep — see `F64_GPU_SWEEP`."""
+        # ⚠⚠ THE REAL SWEEP: BOTH GPU KERNELS AT FLOAT64, prep on the CPU.
+        # `_solve64_gpu` refuses unless NEWTON_FORCE_PER_ENV is set, so the two
+        # arms here cannot silently be one kernel.
+        print("  --- rounding vs logic: BOTH GPU LEGS AT FLOAT64, capped at k ---")
+        print("   k | per-env64 iters/lsev | blocked64 iters/lsev | worst |qacc| diff")
+        var any_diff64 = False
+        for k in range(1, 11):
+            var p64 = _solve64_gpu(ctx, q, v, False, k)
+            var b64 = _solve64_gpu(ctx, q, v, True, k)
+            var w64 = 0.0
+            for i in range(BATCH * NV):
+                var dv = abs(p64.qacc[i] - b64.qacc[i])
+                if dv > w64:
+                    w64 = dv
+            if w64 != 0.0:
+                any_diff64 = True
+            print("  ", k, "|", p64.per_lane_iters[0], "/",
+                  p64.per_lane_lsev[0], "|", b64.per_lane_iters[0], "/",
+                  b64.per_lane_lsev[0], "|", w64)
+        # ⚠ AND THE SIGNED MEAN AT FLOAT64, uncapped — the same bias statistic
+        # as the float32 block, so the two are read side by side.
+        var pf = _solve64_gpu(ctx, q, v, False)
+        var bf = _solve64_gpu(ctx, q, v, True)
+        var s64 = 0.0
+        var a64 = 0.0
+        var w64f = 0.0
+        for i in range(BATCH * NV):
+            var e64 = bf.qacc[i] - pf.qacc[i]
+            s64 += e64
+            a64 += abs(e64)
+            if abs(e64) > w64f:
+                w64f = abs(e64)
+        var n64 = Float64(BATCH * NV)
+        print("   uncapped: worst |qacc| diff", w64f, " signed mean",
+              s64 / n64, " mean |.|", a64 / n64, " ratio",
+              abs(s64) / a64 if a64 > 0.0 else 0.0)
+        print()
+        if not any_diff64:
+            print("   => VERDICT: the two legs are BIT-IDENTICAL at float64 at")
+            print("      every iteration. The float32 offset is ROUNDING (the")
+            print("      assembly order, or FMA in one leg and not the other),")
+            print("      NOT a logic defect. The blocked kernel is sound and the")
+            print("      1e-3 family-gate bound is what needs revisiting.")
+        else:
+            print("   => VERDICT: the legs DIFFER AT FLOAT64 — the offset")
+            print("      SURVIVES the precision, so it is a LOGIC difference")
+            print("      and one of the two kernels is wrong. Bisect the cone")
+            print("      Hessian assembly next (two-stage `JH` in")
+            print("      `ell_add_contact_hessian` against the per-entry")
+            print("      recompute in `_ell_entry_contact_term`).")
+
+
+def _f32_flow(
+    ctx: DeviceContext, q: List[Float64], v: List[Float64]
+) raises:
+    """The float32 GPU legs, the cap sweep, the CPU float64 reference and the
+    bias test — everything that does NOT need a float64 device kernel."""
     var per_env = _solve(ctx, q, v, False)
     var blocked = _solve(ctx, q, v, True)
 
@@ -705,64 +782,12 @@ def main() raises:
     # `solve_newton_blocked["gpu", DType.float64]` is a real second
     # implementation. Until then the bias below is measured but NOT attributed.
     print()
-    comptime if F64_GPU_SWEEP:
-        # ⚠⚠ THE REAL SWEEP: BOTH GPU KERNELS AT FLOAT64, prep on the CPU.
-        # `_solve64_gpu` refuses unless NEWTON_FORCE_PER_ENV is set, so the two
-        # arms here cannot silently be one kernel.
-        print("  --- rounding vs logic: BOTH GPU LEGS AT FLOAT64, capped at k ---")
-        print("   k | per-env64 iters/lsev | blocked64 iters/lsev | worst |qacc| diff")
-        var any_diff64 = False
-        for k in range(1, 11):
-            var p64 = _solve64_gpu(ctx, q, v, False, k)
-            var b64 = _solve64_gpu(ctx, q, v, True, k)
-            var w64 = 0.0
-            for i in range(BATCH * NV):
-                var dv = abs(p64.qacc[i] - b64.qacc[i])
-                if dv > w64:
-                    w64 = dv
-            if w64 != 0.0:
-                any_diff64 = True
-            print("  ", k, "|", p64.per_lane_iters[0], "/",
-                  p64.per_lane_lsev[0], "|", b64.per_lane_iters[0], "/",
-                  b64.per_lane_lsev[0], "|", w64)
-        # ⚠ AND THE SIGNED MEAN AT FLOAT64, uncapped — the same bias statistic
-        # as the float32 block, so the two are read side by side.
-        var pf = _solve64_gpu(ctx, q, v, False)
-        var bf = _solve64_gpu(ctx, q, v, True)
-        var s64 = 0.0
-        var a64 = 0.0
-        var w64f = 0.0
-        for i in range(BATCH * NV):
-            var e64 = bf.qacc[i] - pf.qacc[i]
-            s64 += e64
-            a64 += abs(e64)
-            if abs(e64) > w64f:
-                w64f = abs(e64)
-        var n64 = Float64(BATCH * NV)
-        print("   uncapped: worst |qacc| diff", w64f, " signed mean",
-              s64 / n64, " mean |.|", a64 / n64, " ratio",
-              abs(s64) / a64 if a64 > 0.0 else 0.0)
-        print()
-        if not any_diff64:
-            print("   => VERDICT: the two legs are BIT-IDENTICAL at float64 at")
-            print("      every iteration. The float32 offset is ROUNDING (the")
-            print("      assembly order, or FMA in one leg and not the other),")
-            print("      NOT a logic defect. The blocked kernel is sound and the")
-            print("      1e-3 family-gate bound is what needs revisiting.")
-        else:
-            print("   => VERDICT: the legs DIFFER AT FLOAT64 — the offset")
-            print("      SURVIVES the precision, so it is a LOGIC difference")
-            print("      and one of the two kernels is wrong. Bisect the cone")
-            print("      Hessian assembly next (two-stage `JH` in")
-            print("      `ell_add_contact_hessian` against the per-entry")
-            print("      recompute in `_ell_entry_contact_term`).")
-    else:
-        print("  --- rounding vs logic: NOT DECIDED ON THIS TARGET ---")
-        print("   the blocked kernel has no CPU implementation (the CPU branch")
-        print("   is the per-env body) and Metal has no float64, so the sweep")
-        print("   that would separate them needs a CUDA box: set")
-        print("   F64_GPU_SWEEP = True here and NEWTON_FORCE_PER_ENV = True in")
-        print("   newton_solve.mojo.")
+    print("  --- rounding vs logic: NOT DECIDED ON THIS TARGET ---")
+    print("   the blocked kernel has no CPU implementation (the CPU branch")
+    print("   is the per-env body) and Metal has no float64, so the sweep")
+    print("   that would separate them needs a CUDA box: set")
+    print("   F64_GPU_SWEEP = True here and NEWTON_FORCE_PER_ENV = True in")
+    print("   newton_solve.mojo.")
     print()
     print()
     print("  --- against the CPU float64 reference ---")
