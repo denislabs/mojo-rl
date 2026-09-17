@@ -51,10 +51,7 @@ from mojo_rl.deep_agents.fb.kernels import gather_rows_kernel
 comptime OBS = 3
 comptime ACT = 2
 comptime D = 4
-comptime LANES = 4
-comptime CAP = 40          # 10 steps per lap: the rollout below wraps twice
 comptime T_EP = 5          # reset every 5 steps, as the G1 driver does at 500
-comptime NSTEPS = 23
 comptime DRAWS = 256
 comptime SEED = UInt64(12345)
 
@@ -63,7 +60,7 @@ def _blk(n: Int) -> Int:
     return (n + TPB - 1) // TPB
 
 
-def _encode(step: Int, lane: Int, k: Int) -> Float64:
+def _encode[LANES: Int](step: Int, lane: Int, k: Int) -> Float64:
     """One float that names the transition it belongs to.
 
     `(step * LANES + lane) * 10 + k` — at most 923 here, exact in float32, and
@@ -83,7 +80,7 @@ struct Drawn(Copyable, Movable):
         self.lane = lane
 
 
-def _decode(v: Float64, k: Int) raises -> Drawn:
+def _decode[LANES: Int](v: Float64, k: Int) raises -> Drawn:
     var id = Int(v + 0.5) // 10
     var got_k = Int(v + 0.5) % 10
     if got_k != k:
@@ -94,11 +91,11 @@ def _decode(v: Float64, k: Int) raises -> Drawn:
     return Drawn(id // LANES, id % LANES)
 
 
-def main() raises:
-    var c = DeviceContext()
-    print("FB replay ring: `s'` derived from `(row + LANES) % CAP`")
-    print("  OBS", OBS, " LANES", LANES, " CAP", CAP, " T_EP", T_EP,
-          " steps", NSTEPS, "(", NSTEPS * LANES, "rows written into", CAP, ")")
+def _case[
+    CAP: Int, LANES: Int, NSTEPS: Int, PRE: Int
+](c: DeviceContext) raises:
+    print("  ── CAP", CAP, " LANES", LANES, " CAP % LANES =", CAP % LANES,
+          " steps", NSTEPS, "(", NSTEPS * LANES, "rows into", CAP, ")")
 
     var r_obs = c.enqueue_create_buffer[DT](CAP * OBS)
     var r_act = c.enqueue_create_buffer[DT](CAP * ACT)
@@ -123,7 +120,7 @@ def main() raises:
     for s in range(NSTEPS):
         for l in range(LANES):
             for k in range(OBS):
-                h_obs[l * OBS + k] = Scalar[DT](_encode(s, l, k))
+                h_obs[l * OBS + k] = Scalar[DT](_encode[LANES](s, l, k))
         c.enqueue_copy(obs_src, h_obs)
         # the driver's rule: the reset runs at the START of a step, so it is
         # step `s` with `(s + 1) % T_EP == 0` whose successor is post-reset
@@ -254,8 +251,8 @@ def main() raises:
             out_of_window += 1
         if Float64(h_bnd[row]) != 0.0:
             drew_bnd += 1
-        var d = _decode(Float64(h_bs[i * OBS]), 0)
-        var dn = _decode(Float64(h_bsn[i * OBS]), 0)
+        var d = _decode[LANES](Float64(h_bs[i * OBS]), 0)
+        var dn = _decode[LANES](Float64(h_bsn[i * OBS]), 0)
         if Float64(h_bs[i * OBS]) < 0.0 or Float64(h_bsn[i * OBS]) < 0.0:
             unwritten += 1
             continue
@@ -308,7 +305,6 @@ def main() raises:
     # `base` is 0 there and `pos == size`, a different branch of the same two
     # lines; the wrapped case above would pass with the pre-wrap arithmetic
     # hard-coded and vice versa.
-    comptime PRE = 7                       # 28 rows of 40: no wrap
     var p2_obs = c.enqueue_create_buffer[DT](CAP * OBS)
     var p2_bnd = c.enqueue_create_buffer[DT](CAP)
     p2_obs.enqueue_fill(Scalar[DT](-1.0))
@@ -318,7 +314,7 @@ def main() raises:
     for s in range(PRE):
         for l in range(LANES):
             for k in range(OBS):
-                h_obs[l * OBS + k] = Scalar[DT](_encode(s, l, k))
+                h_obs[l * OBS + k] = Scalar[DT](_encode[LANES](s, l, k))
         c.enqueue_copy(obs_src, h_obs)
         c.enqueue_function[ring_store_kernel[OBS, ACT, D, CAP, LANES]](
             mptr(obs_src.unsafe_ptr()), mptr(act_src.unsafe_ptr()),
@@ -382,8 +378,8 @@ def main() raises:
         if Float64(h_bs[i * OBS]) < 0.0 or Float64(h_bsn[i * OBS]) < 0.0:
             pre_unwritten += 1
             continue
-        var d = _decode(Float64(h_bs[i * OBS]), 0)
-        var dn = _decode(Float64(h_bsn[i * OBS]), 0)
+        var d = _decode[LANES](Float64(h_bs[i * OBS]), 0)
+        var dn = _decode[LANES](Float64(h_bsn[i * OBS]), 0)
         if dn.lane != d.lane or dn.step != d.step + 1:
             pre_bad += 1
     print("  pre-wrap: size", size2, " pos", pos2, " highest row drawn",
@@ -399,4 +395,20 @@ def main() raises:
     assert_true(pre_bnd == 0, "a pre-wrap draw returned a boundary row")
     assert_true(pre_bad == 0, "a pre-wrap derived s' is not the lane's next step")
 
+    print("    OK")
+
+
+def main() raises:
+    var c = DeviceContext()
+    print("FB replay ring: `s'` derived from `(row + LANES) % CAP`")
+    print("  OBS", OBS, " ACT", ACT, " D", D, " T_EP", T_EP, " draws", DRAWS)
+    # ⚠ CAP % LANES == 0 is the EASY case and it is NOT the production one:
+    # `CAP = 4_000_000` with 1024 lanes leaves 3906.25 blocks, so a write
+    # block STRADDLES the wrap point and the `size` clamp fires PARTIALLY
+    # (size rises by less than LANES on that one step) while `pos` advances by
+    # a full LANES. `base = (pos - size) mod CAP` and the newest-LANES
+    # exclusion both have to survive that. A divisible fixture never asks.
+    _case[40, 4, 23, 7](c)      # divisible: 10 blocks per lap, clean wrap
+    _case[42, 4, 25, 7](c)      # NOT divisible: 10.5 blocks, partial clamp
+    _case[1000, 64, 40, 12](c)  # NOT divisible: 15.625 blocks, wider rows
     print("FB_RING_DERIVED_NEXT OK")
