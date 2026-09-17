@@ -559,6 +559,7 @@ def main() raises:
     var clamped = 0
     var bus_skipped = 0
     var skipped_at_handover = 0
+    var stalled_handovers = 0
     var sum_q = 0.0
     var worst_q = 0.0
     var sum_cam = 0.0
@@ -631,7 +632,23 @@ def main() raises:
                     Float64(perf_counter_ns() - loop_t0) * Float64(SO101_FPS)
                     / 1e9
                 )
-                skipped_at_handover += t_now - t_obs
+                # ⚠⚠ THE SKIP RULE INVERTS WHEN A QUERY OUTLASTS ITS CHUNK,
+                # AND THE ORIN IS THAT CASE: 3.24 s per query is 98 grid steps
+                # against a 50-step chunk, so "skip what went stale" would
+                # discard the WHOLE chunk and command nothing but its clamped
+                # final waypoint — the arm would teleport between end poses and
+                # never execute a trajectory at all.
+                #
+                # When that happens the arm has been STALLED on its last
+                # commanded pose for the whole query, which is the pose the
+                # observation was taken at. The chunk therefore still starts
+                # where the arm is, and executing it from index 0 — late, but
+                # whole — is right. Re-base the grid instead of skipping.
+                if t_now - t_obs >= CHUNK:
+                    stalled_handovers += 1
+                    t_obs = t_now
+                else:
+                    skipped_at_handover += t_now - t_obs
 
             var idx = t_now - t_obs
             if idx < 0:
@@ -732,6 +749,18 @@ def main() raises:
         )
         + " per query (the chunk's first steps, already stale on arrival)"
     )
+    # ⚠ NOT A DIAGNOSTIC — A VERDICT ON THE LOOP SHAPE. A stalled handover is
+    # a query that outlasted the motion it was buying, so the arm held still
+    # waiting for it. Any number here above zero means this machine cannot run
+    # this policy closed-loop at this chunk size, whatever the rest of the
+    # report says.
+    if stalled_handovers > 0:
+        print(
+            "  ⚠⚠ stalled handovers = " + String(stalled_handovers) + " of "
+            + String(queries) + " queries — the arm HELD STILL waiting for the"
+            " next chunk.\n     The query outlasts the motion it buys; the"
+            " forward belongs off the control thread."
+        )
     print("  observation build = "
           + fixed(sum_cam / Float64(queries) if queries > 0 else 0.0, 1)
           + " ms mean (cameras + resize_with_pad + upload)")
