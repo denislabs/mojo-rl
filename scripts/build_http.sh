@@ -46,9 +46,23 @@ echo "  against $PREFIX ($("$PREFIX/bin/curl" --version 2>/dev/null | head -1 ||
 # DROPPED, and a shared object may leave symbols undefined, so the link
 # succeeds with no NEEDED libcurl and dlopen fails at runtime. macOS ld never
 # drops, so the Mac cannot show this. `--no-undefined` makes it a link error.
+# ⚠ -pthread IS REQUIRED, AND WHICH MACHINES NEED IT IS NOT OBVIOUS.
+# `mrl_http.c` guards its `curl_global_init` with `pthread_once`. glibc 2.34
+# MERGED libpthread into libc, so on a modern distro the symbol resolves with
+# no flag at all — Ubuntu 22.04 on the Jetson (glibc 2.35) links this happily,
+# and macOS always has pthread in libSystem. A conda toolchain is the case
+# that breaks: it links through its OWN sysroot, whose glibc predates the
+# merge, so `pthread_once` is still in libpthread.so and must be asked for:
+#
+#   x86_64-conda-linux-gnu-ld: undefined reference to `pthread_once'
+#
+# ⚠ THAT ERROR IS `--no-undefined` DOING ITS JOB, not a regression. Without it
+# a shared object is allowed to leave symbols unresolved, so this would have
+# linked "successfully" and then aborted at the first dlopen on the one box
+# that could not resolve it. Keep both flags.
 NO_UNDEF=""
 [ "$(uname -s)" = Linux ] && NO_UNDEF="-Wl,--no-undefined"
-"$CC" -O2 -fPIC -shared \
+"$CC" -O2 -fPIC -shared -pthread \
     -I "$PREFIX/include" \
     -o "$LIB" "$SRC" \
     -L "$PREFIX/lib" -lcurl -lz -lzstd \
