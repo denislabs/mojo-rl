@@ -1413,6 +1413,27 @@ def main() raises:
                 " claimed rate — the extra frames are decoded and dropped,"
                 " and cost USB bandwidth and CPU for nothing."
             )
+        # ⚠⚠ THE SLOW CAMERA IS THE LOOP'S SPEED LIMIT, and it is invisible
+        # in every other line of this report. A camera below its negotiated
+        # rate PACES the control loop: the loop waits for it, so work taken
+        # off the control thread is absorbed by a longer wait and the query
+        # rate does not move at all. Measured exactly that way on the board —
+        # 5.3 ms saved in preprocess, 5.3 ms added to the camera wait, 20.0 Hz
+        # before and after.
+        #
+        # The usual cause is AUTO-EXPOSURE in a dim scene: a USB camera
+        # lengthens its exposure and silently halves its frame rate. Two
+        # identical cameras disagreeing is the tell — it is the light, not the
+        # hardware.
+        elif claimed > 0.0 and rate < claimed * 0.9:
+            print(
+                "       ⚠⚠ " + fixed(rate, 1) + " fps against " + fixed(claimed, 1)
+                + " negotiated — THIS CAMERA PACES THE LOOP. Work taken off"
+                " the control thread\n          cannot help while it is the"
+                " constraint. Usual cause: auto-exposure in a dim scene."
+                " Check\n          `v4l2-ctl -d <node> --list-formats-ext`"
+                " for the rate it CAN do, and `--all` for exposure_auto."
+            )
     # ⚠ THE OFF-DISTRIBUTION SIGNAL. Every one of these is the policy asking
     # for a pose no demonstration ever reached.
     print(
