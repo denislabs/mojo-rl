@@ -65,9 +65,17 @@ Two readings survive that, and they call for different fixes:
    too blunt to see it, because it reports `worst |.|` and a bias needs a
    SIGNED mean.
 
-Reading 2 is the one this file can test and had not: see the signed-mean
-column in the reference block below. Reading 1 needs the perturbation sweep on
-the rollout.
+The signed-mean column below settles that the difference IS systematic
+(|mean|/mean|.| = 0.975 over 90 dofs, where random rounding sits near 0.1).
+What it does NOT settle is whether that systematic offset is a ROUNDING bias —
+two assembly orders, or FMA contraction applied in one leg and not the other,
+both of which are one-directional — or a genuine logic difference.
+
+⚠⚠ THE TEST FOR THAT IS NOT RUNNABLE ON METAL, AND THE VACUOUS VERSION OF IT
+LOOKS LIKE A PASS. See `_solve64`: `solve_newton_blocked["cpu", ...]` falls
+back to the per-env body, so a CPU float64 leg-vs-leg sweep compares a function
+with itself and prints 0.0 at every iteration. It needs a CUDA box, where
+`solve_newton_blocked["gpu", DType.float64]` is a real second implementation.
 
 ## WHY A STEPPING RUN CANNOT ANSWER THIS EITHER
 
@@ -293,7 +301,8 @@ def _prep64(
 
 
 def _solve64(
-    ctx: DeviceContext, q: List[Float64], v: List[Float64]
+    ctx: DeviceContext, q: List[Float64], v: List[Float64],
+    blocked: Bool = False, niter_cap: Int = -1,
 ) raises -> Solved:
     """The reference: the same state, the same pipeline, at float64 on the CPU.
 
@@ -305,6 +314,10 @@ def _solve64(
     # uploads it whatever the solve's target is. Nothing below reads the
     # device copy.
     M.init_fields[DTYPE64](ctx, mf)
+    if niter_cap > 0:
+        mf.meta.data[MODEL_META_IDX_SOLVER_ITERATIONS] = Scalar[DTYPE64](
+            niter_cap
+        )
     var d = Data[DTYPE64, MDIMS, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
@@ -315,6 +328,25 @@ def _solve64(
     var scratch = DynamicsScratch[DTYPE64, MDIMS, BATCH]()
     var cscratch = ContactScratch[DTYPE64, MDIMS, BATCH, JE_WS64]()
     _prep64(d, mf, scratch)
+    # ⚠⚠ THE SAME TWO LEGS, AT FLOAT64, ON THE CPU. This is what separates
+    # a rounding difference from a logic one: if the two legs' float32 gap is
+    # assembly order (`ell_add_contact_hessian`'s two-stage `JH` against
+    # `_ell_entry_contact_term`'s per-entry recompute, or any other
+    # non-associativity), it collapses to ~1e-16 here. If it SURVIVES at
+    # float64, the two legs are computing different things and the gap is a
+    # defect in one of them.
+    # ⚠⚠ `blocked` IS REFUSED, NOT HONOURED. On CPU `solve_newton_blocked`
+    # dispatches to `_newton_solve_env` — the per-env body — so a "blocked"
+    # float64 arm here is the per-env arm under another name, and comparing
+    # the two printed a perfect 0.0 at every iteration. The parameter is kept
+    # so the refusal is visible to the next caller who reaches for it.
+    if blocked:
+        raise Error(
+            "solve_at_pose: there is no CPU blocked leg — "
+            "`solve_newton_blocked[\"cpu\"]` falls back to the per-env body,"
+            " so a CPU float64 leg-vs-leg comparison is vacuous. Run the"
+            " float64 sweep on CUDA, where the blocked GPU kernel is real."
+        )
     solve_newton[
         "cpu", DTYPE64, CONE_TYPE=ConeType.ELLIPTIC, BATCH=BATCH,
         MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER=0, JE_WS=JE_WS64,
@@ -545,6 +577,33 @@ def main() raises:
               blocked.forces[worst_c * 4 + 3])
     # ── THE REFERENCE ─────────────────────────────────────────────────────
     var ref64 = _solve64(ctx, q, v)
+
+    # ── ⚠⚠ THE FLOAT64 LEG-vs-LEG SWEEP IS NOT AVAILABLE HERE, AND THE
+    # VACUOUS VERSION OF IT IS KEPT AS A WARNING ─────────────────────────
+    # The test that would separate ROUNDING from LOGIC is the same cap sweep
+    # with both legs at float64: a rounding difference shrinks with the
+    # precision, a different computation does not. It cannot be run on this
+    # target.
+    #
+    # `solve_newton_blocked`'s own docstring: "Only the GPU (blocked) launch is
+    # meaningful; the CPU branch falls back to the single-source per-env body
+    # (`_newton_solve_env`)". So `solve_newton_blocked["cpu", ...]` IS
+    # `solve_newton["cpu", ...]`, and a CPU float64 leg-vs-leg sweep compares a
+    # function with ITSELF: it printed 0.0 at every k, which reads exactly like
+    # the answer you want and proves nothing. The tell was in the counts —
+    # 71/71 line-search evaluations where the GPU legs give 147/148; two real
+    # implementations do not match evaluation for evaluation.
+    #
+    # Metal has no float64, so the blocked kernel cannot be run at float64 on
+    # this machine at all. THE SWEEP NEEDS A CUDA BOX, where
+    # `solve_newton_blocked["gpu", DType.float64]` is a real second
+    # implementation. Until then the bias below is measured but NOT attributed.
+    print()
+    print("  --- rounding vs logic: NOT DECIDED ON THIS TARGET ---")
+    print("   the blocked kernel has no CPU implementation (the CPU branch is")
+    print("   the per-env body) and Metal has no float64, so the float64")
+    print("   leg-vs-leg sweep that would separate them needs a CUDA box.")
+    print()
     print()
     print("  --- against the CPU float64 reference ---")
     print("   reference: ncon", ref64.per_lane_ncon[0], "iters",
@@ -593,7 +652,7 @@ def main() raises:
         var ratio = d_bl / d_pe if d_pe > 0.0 else 0.0
         print("   blocked / per-env =", ratio,
               "— near 1 means the two float32 legs are EQUALLY far from the"
-              " truth and their difference is rounding, not a defect")
+              " truth, so neither is the worse ANSWER at this state")
 
     # ── THE BIAS TEST ─────────────────────────────────────────────────────
     # ⚠⚠ `worst |.|` CANNOT SEE A BIAS, and a bias is the only way a 5.7e-06
@@ -635,12 +694,18 @@ def main() raises:
         print("=== the two legs agree BIT FOR BIT on this state ===")
     elif worst_qacc <= d_pe:
         # ⚠⚠ THE VERDICT IS A COMPARISON, NOT A THRESHOLD. The two legs
-        # differing is not news; what decides is whether they differ by LESS
-        # than they each differ from the truth. When they do, no arithmetic
-        # here is wrong and the gap to chase is float32's, shared by both.
-        print("=== the two legs differ by", worst_qacc, "and are BOTH",
-              d_pe, "from the float64 reference — that is rounding between a")
-        print("=== cooperative reduction and a serial loop, not a defect ===")
+        # differing is not news; what matters is whether they differ by LESS
+        # than they each differ from the truth. When they do, neither is the
+        # worse ANSWER here — but that is a statement about this state's
+        # qacc, NOT about the kernel: read the bias ratio above, and note
+        # that whether a systematic offset is rounding or logic is decided by
+        # the float64 sweep this target cannot run.
+        print("=== neither leg is the worse ANSWER at this state: they differ"
+              " by", worst_qacc)
+        print("=== and are both", d_pe, "from the float64 reference. Whether"
+              " the offset between")
+        print("=== them is ROUNDING or LOGIC is UNDECIDED — see the note"
+              " above. ===")
     else:
         print("=== ⚠ ONE LEG IS OUT: the legs differ by", worst_qacc,
               "which EXCEEDS the", d_pe, "gap to the float64 reference ===")
