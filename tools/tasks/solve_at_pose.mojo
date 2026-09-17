@@ -139,8 +139,9 @@ from mojo_rl.physics3d.integrator.euler import (
 )
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
 from mojo_rl.physics3d.solver.newton_solve import (
-    solve_newton_blocked, solve_newton,
+    solve_newton_blocked, solve_newton, NEWTON_FORCE_PER_ENV,
 )
+from std.sys import has_nvidia_gpu_accelerator
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, META_IDX_NEWTON_ITER, META_IDX_LS_EVAL,
     METADATA_SIZE, MODEL_JOINT_SIZE, CONTACT_SIZE, CONTACT_IDX_CONDIM,
@@ -188,6 +189,24 @@ comptime JE_WS64 = je_ws_size[
     DTYPE64, MDIMS.NV, MDIMS.NJOINT, MDIMS.NTENDON, MDIMS.NEQUALITY,
     MDIMS.MAX_CONTACTS, M.MAX_CONDIM, CONE_TYPE=ConeType.ELLIPTIC,
 ]()
+
+comptime F64_GPU_SWEEP: Bool = False
+"""⚠⚠ THE TEST THAT SEPARATES ROUNDING FROM LOGIC. `sed` this to True ON A
+CUDA BOX. Off, the float64 GPU kernels are never instantiated, which is what
+keeps this file building on Metal — Metal has no float64 at all.
+
+⚠ DO NOT FLIP `DTYPE` TO float64 TO GET THIS. That drags the whole GPU prep to
+float64 and does not compile: `cos` has no float64 lowering on NVIDIA, so
+`gpu_axis_angle_to_quat` inside `forward_kinematics` fails with "DType.float64
+is not supported for cos on NVIDIA GPU". The arm below runs the PREP ON THE CPU
+at float64 (`_prep64`) and puts only the two SOLVES on the device, which is the
+only part under test.
+
+⚠⚠ AND IT NEEDS `NEWTON_FORCE_PER_ENV = True` IN `newton_solve.mojo`. On NVIDIA
+`solve_newton` DISPATCHES TO `solve_newton_blocked` (see its routing at
+`newton_solve.mojo:4396`), so without that flag both arms are the blocked
+kernel and the sweep is an identity — the same vacuity that made the CPU
+float64 sweep worthless. `_solve64_gpu` REFUSES to run rather than print it."""
 
 
 struct Solved(Movable):
@@ -351,6 +370,93 @@ def _solve64(
         "cpu", DTYPE64, CONE_TYPE=ConeType.ELLIPTIC, BATCH=BATCH,
         MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER=0, JE_WS=JE_WS64,
     ](d, mf, scratch, cscratch, Optional[DeviceContext](None))
+    var out = Solved()
+    for i in range(BATCH * NV):
+        out.qacc.append(Float64(scratch.qacc_constrained.data[i]))
+    for e in range(BATCH):
+        var ne = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
+        if ne > MC:
+            ne = MC
+        out.per_lane_ncon.append(ne)
+        out.per_lane_iters.append(
+            Int(d.meta.data[e * METADATA_SIZE + META_IDX_NEWTON_ITER])
+        )
+        out.per_lane_lsev.append(
+            Int(d.meta.data[e * METADATA_SIZE + META_IDX_LS_EVAL])
+        )
+        out.ncon += ne
+    out.iters = out.per_lane_iters[0]
+    out.lsev = out.per_lane_lsev[0]
+    return out^
+
+
+def _solve64_gpu(
+    ctx: DeviceContext, q: List[Float64], v: List[Float64], blocked: Bool,
+    niter_cap: Int = -1,
+) raises -> Solved:
+    """The two GPU elliptic kernels at FLOAT64, prep on the CPU. CUDA only.
+
+    A rounding difference between the legs shrinks with the precision; a
+    different computation does not. This is the arm that decides which the
+    0.975-systematic float32 offset is.
+
+    ⚠ TWO WARNINGS ON METAL ARE EXPECTED AND CORRECT, do not "fix" them:
+    `NEWTON_FORCE_PER_ENV` is a comptime False there, so `if not
+    NEWTON_FORCE_PER_ENV` is always True and everything below it is dead —
+    which is the intent. They disappear in the CUDA build that sets the flag."""
+    if not has_nvidia_gpu_accelerator():
+        raise Error(
+            "solve_at_pose: the float64 GPU sweep is CUDA-only — Metal has no"
+            " float64. Leave F64_GPU_SWEEP at False on this machine."
+        )
+    if not NEWTON_FORCE_PER_ENV:
+        # ⚠⚠ THE ANTI-VACUITY GATE. Without the flag `solve_newton` routes to
+        # `solve_newton_blocked` on NVIDIA and both arms are ONE kernel — which
+        # prints a perfect 0.0 at every iteration and means nothing. This is
+        # exactly how the CPU float64 sweep fooled me; it refuses instead.
+        raise Error(
+            "solve_at_pose: NEWTON_FORCE_PER_ENV is False, so on NVIDIA"
+            " `solve_newton` dispatches to the BLOCKED kernel and both arms of"
+            " this sweep would be the same kernel — a vacuous 0.0 at every"
+            " iteration. Set `comptime NEWTON_FORCE_PER_ENV: Bool = True` in"
+            " mojo_rl/physics3d/solver/newton_solve.mojo and rebuild."
+        )
+    var mf = Model[DTYPE64, MDIMS]()
+    M.init_fields[DTYPE64](ctx, mf)
+    if niter_cap > 0:
+        mf.meta.data[MODEL_META_IDX_SOLVER_ITERATIONS] = Scalar[DTYPE64](
+            niter_cap
+        )
+    var d = Data[DTYPE64, MDIMS, BATCH]()
+    for e in range(BATCH):
+        for i in range(NQ):
+            d.qpos.data[e * NQ + i] = Scalar[DTYPE64](q[e * NQ + i])
+        for i in range(NV):
+            d.qvel.data[e * NV + i] = Scalar[DTYPE64](v[e * NV + i])
+            d.qfrc.data[e * NV + i] = 0
+    var scratch = DynamicsScratch[DTYPE64, MDIMS, BATCH]()
+    var cscratch = ContactScratch[DTYPE64, MDIMS, BATCH, JE_WS64]()
+    # ⚠ THE PREP IS THE CPU'S, and that is the point: `forward_kinematics` at
+    # float64 on NVIDIA does not compile (`cos`). Both solves then read the
+    # SAME float64 smooth dynamics and contact set.
+    _prep64(d, mf, scratch)
+    mf.upload_all(ctx)
+    d.upload_all(ctx)
+    scratch.upload_all(ctx)
+    cscratch.upload_all(ctx)
+    if blocked:
+        solve_newton_blocked[
+            "gpu", DTYPE64, CONE_TYPE=ConeType.ELLIPTIC, BATCH=BATCH,
+            MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER=0, JE_WS=JE_WS64,
+        ](d, mf, scratch, cscratch, ctx)
+    else:
+        solve_newton[
+            "gpu", DTYPE64, CONE_TYPE=ConeType.ELLIPTIC, BATCH=BATCH,
+            MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER=0, JE_WS=JE_WS64,
+        ](d, mf, scratch, cscratch, ctx)
+    scratch.qacc_constrained.download(ctx)
+    d.meta.download(ctx)
+    ctx.synchronize()
     var out = Solved()
     for i in range(BATCH * NV):
         out.qacc.append(Float64(scratch.qacc_constrained.data[i]))
@@ -599,10 +705,64 @@ def main() raises:
     # `solve_newton_blocked["gpu", DType.float64]` is a real second
     # implementation. Until then the bias below is measured but NOT attributed.
     print()
-    print("  --- rounding vs logic: NOT DECIDED ON THIS TARGET ---")
-    print("   the blocked kernel has no CPU implementation (the CPU branch is")
-    print("   the per-env body) and Metal has no float64, so the float64")
-    print("   leg-vs-leg sweep that would separate them needs a CUDA box.")
+    comptime if F64_GPU_SWEEP:
+        # ⚠⚠ THE REAL SWEEP: BOTH GPU KERNELS AT FLOAT64, prep on the CPU.
+        # `_solve64_gpu` refuses unless NEWTON_FORCE_PER_ENV is set, so the two
+        # arms here cannot silently be one kernel.
+        print("  --- rounding vs logic: BOTH GPU LEGS AT FLOAT64, capped at k ---")
+        print("   k | per-env64 iters/lsev | blocked64 iters/lsev | worst |qacc| diff")
+        var any_diff64 = False
+        for k in range(1, 11):
+            var p64 = _solve64_gpu(ctx, q, v, False, k)
+            var b64 = _solve64_gpu(ctx, q, v, True, k)
+            var w64 = 0.0
+            for i in range(BATCH * NV):
+                var dv = abs(p64.qacc[i] - b64.qacc[i])
+                if dv > w64:
+                    w64 = dv
+            if w64 != 0.0:
+                any_diff64 = True
+            print("  ", k, "|", p64.per_lane_iters[0], "/",
+                  p64.per_lane_lsev[0], "|", b64.per_lane_iters[0], "/",
+                  b64.per_lane_lsev[0], "|", w64)
+        # ⚠ AND THE SIGNED MEAN AT FLOAT64, uncapped — the same bias statistic
+        # as the float32 block, so the two are read side by side.
+        var pf = _solve64_gpu(ctx, q, v, False)
+        var bf = _solve64_gpu(ctx, q, v, True)
+        var s64 = 0.0
+        var a64 = 0.0
+        var w64f = 0.0
+        for i in range(BATCH * NV):
+            var e64 = bf.qacc[i] - pf.qacc[i]
+            s64 += e64
+            a64 += abs(e64)
+            if abs(e64) > w64f:
+                w64f = abs(e64)
+        var n64 = Float64(BATCH * NV)
+        print("   uncapped: worst |qacc| diff", w64f, " signed mean",
+              s64 / n64, " mean |.|", a64 / n64, " ratio",
+              abs(s64) / a64 if a64 > 0.0 else 0.0)
+        print()
+        if not any_diff64:
+            print("   => VERDICT: the two legs are BIT-IDENTICAL at float64 at")
+            print("      every iteration. The float32 offset is ROUNDING (the")
+            print("      assembly order, or FMA in one leg and not the other),")
+            print("      NOT a logic defect. The blocked kernel is sound and the")
+            print("      1e-3 family-gate bound is what needs revisiting.")
+        else:
+            print("   => VERDICT: the legs DIFFER AT FLOAT64 — the offset")
+            print("      SURVIVES the precision, so it is a LOGIC difference")
+            print("      and one of the two kernels is wrong. Bisect the cone")
+            print("      Hessian assembly next (two-stage `JH` in")
+            print("      `ell_add_contact_hessian` against the per-entry")
+            print("      recompute in `_ell_entry_contact_term`).")
+    else:
+        print("  --- rounding vs logic: NOT DECIDED ON THIS TARGET ---")
+        print("   the blocked kernel has no CPU implementation (the CPU branch")
+        print("   is the per-env body) and Metal has no float64, so the sweep")
+        print("   that would separate them needs a CUDA box: set")
+        print("   F64_GPU_SWEEP = True here and NEWTON_FORCE_PER_ENV = True in")
+        print("   newton_solve.mojo.")
     print()
     print()
     print("  --- against the CPU float64 reference ---")
