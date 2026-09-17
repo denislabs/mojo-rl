@@ -160,5 +160,60 @@ def main() raises:
         " opts out, an index asks for nothing"
     )
 
+    # ── the resize moved onto the camera thread ──────────────────────────
+    #
+    # ⚠ WHAT IS GATED HERE IS THE PLUMBING, NOT THE PIXELS. The resize itself
+    # is `camera_frame_to_chw_rgb`, a pure function already held bit-exact
+    # against PIL by `tests/vision/test_resize_deploy_vs_import.mojo`; running
+    # it on another thread cannot change its output. What CAN go wrong is the
+    # size contract — a ring slot or a caller's buffer sized for the native
+    # frame while the thread delivers a resized one silently truncates or
+    # overruns, and the policy then sees a torn image rather than an error.
+    var native = CameraReader.at_path(String("/dev/nope"), 640, 480, 30.0)
+    if native.frame_bytes() != 640 * 480 * 3:
+        raise Error("without a resize, a frame is the camera's native size")
+    var resized = CameraReader.at_path(
+        String("/dev/nope"), 640, 480, 30.0, out_w=320, out_h=240
+    )
+    if resized.frame_bytes() != 320 * 240 * 3:
+        raise Error(
+            "with a resize, `frame_bytes` must report the DELIVERED size —"
+            " every take() sizes its buffer from it"
+        )
+    # ⚠ THE NATIVE SIZE IS STILL CARRIED, because the worker resizes FROM it
+    # and PIL's filter support depends on the reduction factor: resizing from
+    # the wrong source dimensions produces different pixels, silently.
+    if resized.width != 640 or resized.height != 480:
+        raise Error("the native size must survive alongside the output size")
+    # And it reaches through `from_spec`, which is what every entry point calls.
+    var viaspec = CameraReader.from_spec(
+        String("/dev/nope"), 640, 480, 30.0, out_w=320, out_h=240
+    )
+    if viaspec.frame_bytes() != 320 * 240 * 3:
+        raise Error("from_spec must forward the output size")
+    var idx_resized = CameraReader.from_spec(
+        String("0"), 640, 480, 30.0, out_w=320, out_h=240
+    )
+    if idx_resized.frame_bytes() != 320 * 240 * 3:
+        raise Error("an index-opened camera must resize too")
+    # ⚠⚠ THE INVARIANT THAT ACTUALLY PROTECTS MEMORY: a ring slot holds
+    # exactly what the worker puts in it. Too small and the push is refused as
+    # oversized (the frame vanishes and `refused_too_big` climbs); too large
+    # and every slot wastes the difference — 921 KB against 230 KB per slot,
+    # eight slots, two cameras. Neither is visible from the frames themselves.
+    if native.ring.slot_bytes() != native.frame_bytes():
+        raise Error("native: ring slot must equal the delivered frame size")
+    if resized.ring.slot_bytes() != resized.frame_bytes():
+        raise Error("resized: ring slot must equal the delivered frame size")
+    if viaspec.ring.slot_bytes() != viaspec.frame_bytes():
+        raise Error("from_spec path: ring slot must equal the frame size")
+    if idx_resized.ring.slot_bytes() != idx_resized.frame_bytes():
+        raise Error("from_spec index: ring slot must equal the frame size")
+    n += 9
+    print(
+        "  resize: 640x480 native -> " + String(resized.frame_bytes())
+        + " B delivered (320x240 CHW), native size kept for the filter"
+    )
+
     print("  " + String(n) + " checks, 0 failures")
     print("[PASS] camera-spec")

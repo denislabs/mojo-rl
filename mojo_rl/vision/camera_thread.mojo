@@ -65,6 +65,7 @@ from ..core.concurrent.worker import (
     POLL_DID_WORK, POLL_IDLE, BackgroundThread, BackgroundWorker, WorkerCtl,
 )
 from .opencv import VideoCapture, opencv_shim_available
+from .preprocess import camera_frame_to_chw_rgb
 
 
 @always_inline
@@ -297,6 +298,10 @@ struct _CamWorker(BackgroundWorker):
     var fps: Float64
     var cap: VideoCapture
     var buf: List[UInt8]
+    var out: List[UInt8]
+    """The resized CHW frame, when `out_w > 0`. Owned by this thread."""
+    var out_w: Int
+    var out_h: Int
     var opened: Bool
     var rgb: Bool
 
@@ -311,6 +316,8 @@ struct _CamWorker(BackgroundWorker):
         height: Int,
         fps: Float64,
         rgb: Bool,
+        out_w: Int,
+        out_h: Int,
     ) raises:
         self.ring = ring^
         self.block = block^
@@ -325,6 +332,9 @@ struct _CamWorker(BackgroundWorker):
         # exists for exactly this.
         self.cap = VideoCapture.closed()
         self.buf = List[UInt8]()
+        self.out = List[UInt8]()
+        self.out_w = out_w
+        self.out_h = out_h
         self.opened = False
         self.rgb = rgb
 
@@ -339,6 +349,9 @@ struct _CamWorker(BackgroundWorker):
         self.fps = move.fps
         self.cap = move.cap^
         self.buf = move.buf^
+        self.out = move.out^
+        self.out_w = move.out_w
+        self.out_h = move.out_h
         self.opened = move.opened
         self.rgb = move.rgb
 
@@ -368,6 +381,10 @@ struct _CamWorker(BackgroundWorker):
             self.buf = List[UInt8](
                 unsafe_uninit_length = self.cap.frame_bytes()
             )
+            if self.out_w > 0:
+                self.out = List[UInt8](
+                    unsafe_uninit_length = self.out_w * self.out_h * 3
+                )
             self.opened = True
             self.block.release_store(
                 CELL_GEOMETRY, Int64(self.height * 100000 + self.width)
@@ -413,6 +430,27 @@ struct _CamWorker(BackgroundWorker):
                 var t = self.buf[p]
                 self.buf[p] = self.buf[p + 2]
                 self.buf[p + 2] = t
+        # ⚠⚠ AND SO DOES THE RESIZE, FOR THE SAME REASON ONE LEVEL UP. The ACT
+        # control loop paid a measured 9.0 ms per query turning two 640x480
+        # BGR frames into 320x240 CHW RGB, against a 33.3 ms frame period it
+        # was missing by 1.4 ms — so the whole loop ran at 20 Hz instead of 30.
+        # Here the work is free: this thread is blocked in `read()` for most of
+        # a frame period whatever it does.
+        #
+        # ⚠ THE PIXELS DO NOT CHANGE. Same function, same inputs, a different
+        # thread — `camera_frame_to_chw_rgb` is pure, and the bit-exactness
+        # gate against PIL (`tests/vision/test_resize_deploy_vs_import.mojo`)
+        # covers it wherever it runs.
+        if self.out_w > 0:
+            try:
+                camera_frame_to_chw_rgb(
+                    self.buf, self.width, self.height,
+                    self.out, self.out_w, self.out_h,
+                )
+            except:
+                _ = self.block.fetch_add(CELL_READ_FAIL, Int64(1))
+                return POLL_IDLE
+            n = self.out_w * self.out_h * 3
         # Zero-copy claim, then one memcpy into the slot — the same shape
         # `io/http_sink.mojo:frame_into` uses, and it sidesteps handing a
         # `List`-derived pointer to a `MutUntrackedOrigin` parameter.
@@ -427,7 +465,7 @@ struct _CamWorker(BackgroundWorker):
             return POLL_DID_WORK
         unsafe_memcpy(
             dest=slot.data(),
-            src=_erase(self.buf),
+            src=_erase(self.out) if self.out_w > 0 else _erase(self.buf),
             count=n,
         )
         v.end_push(n)
@@ -452,6 +490,12 @@ struct CameraReader(Movable):
     own default). What was negotiated is `negotiated_fourcc()`, after `start`."""
     var width: Int
     var height: Int
+    """The camera's NATIVE size. ⚠ Not the size of a frame `take` returns when
+    `out_w > 0` — use `frame_bytes()`, which is what the ring actually holds."""
+    var out_w: Int
+    var out_h: Int
+    """Resize done ON THE CAMERA THREAD, 0 for none. When set, frames come back
+    as CHW RGB uint8 at this size instead of native BGR HWC."""
     var fps: Float64
     var _thread: Optional[BackgroundThread[_CamWorker]]
     var _starved: Int
@@ -467,9 +511,12 @@ struct CameraReader(Movable):
         fps: Float64 = 30.0,
         slots: Int = DEFAULT_SLOTS,
         rgb: Bool = False,
+        out_w: Int = 0,
+        out_h: Int = 0,
     ) raises:
         self = Self(
-            String(""), device, width, height, fps, slots, rgb, String("")
+            String(""), device, width, height, fps, slots, rgb, String(""),
+            out_w, out_h,
         )
 
     @staticmethod
@@ -481,6 +528,8 @@ struct CameraReader(Movable):
         slots: Int = DEFAULT_SLOTS,
         rgb: Bool = False,
         fourcc: String = String(""),
+        out_w: Int = 0,
+        out_h: Int = 0,
     ) raises -> Self:
         """A camera named by device path — `/dev/soarm_cam_top`.
 
@@ -490,8 +539,15 @@ struct CameraReader(Movable):
         rules in `docs/JETSON_DEPLOYMENT.md` §3 turn that into a fixed name.
         Opening by index throws the distinction away, and the failure is not a
         crash — it is the policy confidently acting on the wrong camera.
+
+        `out_w`/`out_h` move the ACT preprocess ONTO THE CAMERA THREAD: frames
+        then arrive as CHW RGB uint8 at that size instead of native BGR HWC.
+        ⚠ It is a latency decision, not a convenience — see the note in
+        `_CamWorker.poll`. Leave both 0 for a recorder, which needs the full
+        frame for its encoder.
         """
-        return Self(path, 0, width, height, fps, slots, rgb, fourcc)
+        return Self(path, 0, width, height, fps, slots, rgb, fourcc,
+                    out_w, out_h)
 
     @staticmethod
     def from_spec(
@@ -502,11 +558,15 @@ struct CameraReader(Movable):
         slots: Int = DEFAULT_SLOTS,
         rgb: Bool = False,
         fourcc: String = String(""),
+        out_w: Int = 0,
+        out_h: Int = 0,
     ) raises -> Self:
         """An index or a path, as `--devices` gives it."""
         if camera_spec_is_path(spec):
-            return Self.at_path(spec, width, height, fps, slots, rgb, fourcc)
-        return Self(Int(spec), width, height, fps, slots, rgb)
+            return Self.at_path(
+                spec, width, height, fps, slots, rgb, fourcc, out_w, out_h
+            )
+        return Self(Int(spec), width, height, fps, slots, rgb, out_w, out_h)
 
     def __init__(
         out self,
@@ -518,6 +578,8 @@ struct CameraReader(Movable):
         slots: Int,
         rgb: Bool,
         var fourcc: String,
+        out_w: Int,
+        out_h: Int,
     ) raises:
         if not opencv_shim_available():
             raise Error(
@@ -540,13 +602,21 @@ struct CameraReader(Movable):
                 "camera_thread: a fourcc is four characters, or `none` (got '"
                 + fourcc + "')"
             )
-        self.ring = SharedRing(slots, width * height * 3)
+        # ⚠ THE RING IS SIZED FOR WHAT IT WILL CARRY, which is the RESIZED
+        # frame when the worker resizes. At 320x240 CHW that is 230 KB against
+        # 921 KB native — the eight slots go from 7.4 MB to 1.8 MB per camera.
+        var slot_bytes = (
+            out_w * out_h * 3 if out_w > 0 else width * height * 3
+        )
+        self.ring = SharedRing(slots, slot_bytes)
         self.block = SharedBlock(N_CELLS)
         self.device = device
         self.path = path^
         self.fourcc = fourcc^
         self.width = width
         self.height = height
+        self.out_w = out_w
+        self.out_h = out_h
         self.fps = fps
         self._thread = None
         self._starved = 0
@@ -562,6 +632,8 @@ struct CameraReader(Movable):
         self.width = move.width
         self.height = move.height
         self.fps = move.fps
+        self.out_w = move.out_w
+        self.out_h = move.out_h
         self._thread = move._thread^
         self._starved = move._starved
         self.running = move.running
@@ -601,6 +673,10 @@ struct CameraReader(Movable):
         return _unpack_fourcc(self.block.acquire_load(CELL_FOURCC))
 
     def frame_bytes(self) -> Int:
+        """Bytes one frame occupies AS DELIVERED — resized when the worker
+        resizes, native otherwise. Every `take` sizes its buffer from this."""
+        if self.out_w > 0:
+            return self.out_w * self.out_h * 3
         return self.width * self.height * 3
 
     def start(mut self, wait_ms: Int = 4000) raises:
@@ -618,6 +694,7 @@ struct CameraReader(Movable):
             _CamWorker(
                 self.ring, self.block, self.device, self.path, self.fourcc,
                 self.width, self.height, self.fps, self.rgb,
+                self.out_w, self.out_h,
             )
         )
         self.running = True

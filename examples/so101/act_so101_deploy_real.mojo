@@ -186,7 +186,6 @@ from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
 from mojo_rl.robot.so101.ports import follower_port, port_refusal
 from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
 from mojo_rl.vision.camera_thread import CameraReader, parse_camera_specs
-from mojo_rl.vision.preprocess import camera_frame_to_chw_rgb
 from mojo_rl.core.policy import describe_policy, resolve_policy
 
 
@@ -921,15 +920,19 @@ def main() raises:
             "camera slot " + String(i) + " = " + pad_right(label, 26)
             + " <- " + devices[i]
         )
-        # ⚠ rgb=FALSE, UNLIKE `record.mojo`. `camera_frame_to_chw_rgb` does
-        # the BGR->RGB swap during its HWC->CHW transpose, a pass that already
-        # touches every byte, so asking the camera thread to swap as well
-        # would swap twice and feed the policy inverted colour channels — a
-        # failure that looks like a bad policy, not like a bug. The recorder
-        # wants rgb=True because its consumer is an encoder, not this.
+        # ⚠⚠ rgb=FALSE, AND out=IMG_W x IMG_H. Both matter, for one reason:
+        # the camera thread now runs `camera_frame_to_chw_rgb`, which does the
+        # resize AND the BGR->RGB swap in its transpose pass. Asking the
+        # thread to swap as well (rgb=True, what `record.mojo` wants for its
+        # encoder) would swap TWICE and feed the policy inverted colour
+        # channels — a failure that looks like a bad policy, not like a bug.
+        #
+        # The resize moved here because that thread is blocked in `read()` for
+        # most of a frame period anyway, and the 9.0 ms it took off the
+        # control loop is what stood between 20 Hz and 30.
         var c = CameraReader.from_spec(
             devices[i], cam_w, cam_h, Float64(SO101_FPS), rgb=False,
-            fourcc=cam_fourcc,
+            fourcc=cam_fourcc, out_w=IMG_W, out_h=IMG_H,
         )
         # ⚠ 8 s, NOT THE 4 s DEFAULT. Measured on this rig: a camera that has
         # been idle takes longer than 4 s to report ready on its first open,
@@ -986,9 +989,8 @@ def main() raises:
     # showing right now, at the same size and through the same resize, and let
     # the operator look. It is the only honest test.
     if snap != "":
-        var snap_frames = List[UInt8](
-            unsafe_uninit_length = cam_w * cam_h * 3
-        )
+        # ⚠ ONE BUFFER, NOT TWO. The camera thread now delivers the CHW RGB
+        # tensor itself, so there is no native-size frame to hold on to here.
         var snap_chw = List[UInt8](length=CAM_ELEMS, fill=0)
         var row = List[Scalar[DType.uint8]]()
         if snap_from == "":
@@ -1014,14 +1016,11 @@ def main() raises:
             save_png(p_store, hwc, IMG_W, IMG_H, 3)
 
             # device i, right now, through the SAME resize the policy sees
-            if not cams[i].take_blocking(snap_frames):
+            if not cams[i].take_blocking(snap_chw):
                 raise Error(
                     "act deploy: camera " + devices[i]
                     + " delivered no frame for --snap"
                 )
-            camera_frame_to_chw_rgb(
-                snap_frames, cam_w, cam_h, snap_chw, IMG_W, IMG_H
-            )
             for p in range(IMG_W * IMG_H):
                 hwc[p * 3] = snap_chw[p]
                 hwc[p * 3 + 1] = snap_chw[IMG_W * IMG_H + p]
@@ -1140,13 +1139,13 @@ def main() raises:
     else:
         print("dry run — nothing energised\n")
 
+    # ⚠ `frames[i]` IS the CHW tensor now (the camera thread resized it), so
+    # the separate staging buffer this loop used to transpose into is gone.
     var frames = List[List[UInt8]]()
-    var chw = List[List[UInt8]]()
     for i in range(N_CAM):
         frames.append(
             List[UInt8](unsafe_uninit_length = cams[i].frame_bytes())
         )
-        chw.append(List[UInt8](length=CAM_ELEMS, fill=0))
     var goals = Array[Int32, SO101_N](fill=0)
     var cmd = List[Float64](length=ADIM, fill=0.0)
     for i in range(ADIM):
@@ -1245,14 +1244,13 @@ def main() raises:
                 ) / norm.qpos_std[j]
 
             for i in range(N_CAM):
-                camera_frame_to_chw_rgb(
-                    frames[i], cam_w, cam_h, chw[i], IMG_W, IMG_H
-                )
-                # ⚠ THE SHARED NORMALIZER, the same call `ACTDataset._fill_one`
-                # makes. See its note: this is the one step that must agree
-                # exactly between training and deployment.
+                # ⚠ NO RESIZE HERE ANY MORE — `frames[i]` IS the CHW RGB
+                # tensor, produced on the camera thread. What is left is the
+                # normalizer, which is cheap and must stay: it is the same
+                # call `ACTDataset._fill_one` makes, and the one step that has
+                # to agree exactly between training and deployment.
                 normalize_camera_chw[IMG_H, IMG_W](
-                    chw[i], 0, images_n, i * CAM_ELEMS
+                    frames[i], 0, images_n, i * CAM_ELEMS
                 )
             var t_pre = perf_counter_ns()
 
