@@ -78,6 +78,8 @@ from mojo_rl.physics3d.gpu.constants import (
     META_IDX_GOAL_HELD, META_IDX_NUM_CONTACTS, META_IDX_INIT_REGION_0,
     META_INIT_SLOTS, META_IDX_JINIT_0, META_JINIT_SLOTS, META_JINIT_WORDS,
     META_IDX_SHAPE_W_GOAL, META_IDX_SHAPE_W_REACH, MODEL_CURRICULUM_SIZE,
+    META_IDX_NEWTON_ITER, META_IDX_SOLVER_ACC_ITER, META_IDX_SOLVER_ACC_LSEV,
+    META_IDX_SOLVER_ACC_NCON, META_IDX_SOLVER_ACC_CAPPED,
     CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B, CONTACT_IDX_POS_X,
     CONTACT_IDX_DIST, CONTACT_IDX_NX,
 )
@@ -286,7 +288,8 @@ def _host_reset(
 
 
 def run[T: PlacementTable, M: ModelDefLike](
-    steps: Int, window: Int, cpu_lanes_arg: Int, dump_state: String
+    steps: Int, window: Int, cpu_lanes_arg: Int, dump_state: String,
+    solver_log: String, dump_at_step: Int,
 ) raises:
     comptime E = Phyics3dBatchedEnv[
         M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
@@ -538,6 +541,7 @@ def run[T: PlacementTable, M: ModelDefLike](
             timed_ns += Int(perf_counter_ns() - t0)
             timed_steps += 1
         env.d.qpos.download(ctx)
+        env.d.qvel.download(ctx)   # the dump below needs velocities
         env.d.xpos.download(ctx)
         env.d.xquat.download(ctx)
         env.d.site_xpos.download(ctx)
@@ -546,6 +550,51 @@ def run[T: PlacementTable, M: ModelDefLike](
         ctx.synchronize()
         if env.osc_singular_lanes(ctx) > 0:
             singular_steps += 1
+        # ⚠⚠ THE SOLVER'S OWN TELEMETRY, PER LANE PER STEP. Two solver legs
+        # stepped from the same reset diverge somewhere; comparing their STATE
+        # says only that they did, while the counters say what the solve was
+        # doing when it happened — Newton iterations, line-search evaluations,
+        # rows handed to it, and whether it ran to the iteration cap.
+        # `META_IDX_SOLVER_ACC_*` are running SUMS since allocation, so a
+        # per-step row is their difference.
+        # ⚠ THE STATE AT A CHOSEN STEP, qpos AND qvel — a solve needs both.
+        # `--dump-state` fires at the first contact-count mismatch, which is
+        # not where two SOLVER LEGS start to disagree; this writes the step you
+        # ask for, for every lane, so one solve can be replayed through both.
+        if dump_at_step == step and dump_state != "":
+            var sl = String("")
+            for e in range(LANES):
+                sl += "QPOS lane " + String(e) + " step " + String(step)
+                for k in range(NQ):
+                    sl += " " + String(Float64(env.d.qpos.data[e * NQ + k]))
+                sl += "\nQVEL lane " + String(e) + " step " + String(step)
+                for k in range(NV):
+                    sl += " " + String(Float64(env.d.qvel.data[e * NV + k]))
+                sl += "\n"
+            with open(dump_state, "a") as fh:
+                fh.write(sl)
+        if solver_log != "":
+            var row = String("")
+            for e in range(LANES):
+                var mb = e * METADATA_SIZE
+                var qsum = 0.0
+                for k in range(NQ):
+                    qsum += abs(Float64(env.d.qpos.data[e * NQ + k]))
+                row += String(step) + "," + String(e) + "," + String(qsum)
+                row += "," + String(Float64(
+                    env.d.meta.data[mb + META_IDX_NEWTON_ITER]))
+                row += "," + String(Float64(
+                    env.d.meta.data[mb + META_IDX_SOLVER_ACC_ITER]))
+                row += "," + String(Float64(
+                    env.d.meta.data[mb + META_IDX_SOLVER_ACC_LSEV]))
+                row += "," + String(Float64(
+                    env.d.meta.data[mb + META_IDX_SOLVER_ACC_NCON]))
+                row += "," + String(Float64(
+                    env.d.meta.data[mb + META_IDX_SOLVER_ACC_CAPPED]))
+                row += "," + String(Float64(
+                    env.d.meta.data[mb + META_IDX_NUM_CONTACTS])) + "\n"
+            with open(solver_log, "a") as fh:
+                fh.write(row)
         for e in range(LANES):
             for k in range(NQ):
                 var q = Float64(env.d.qpos.data[e * NQ + k])
@@ -866,6 +915,8 @@ def main() raises:
     var window = 5
     var cpu_lanes = -1
     var dump_state = String("")
+    var solver_log = String("")
+    var dump_at_step = -1
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -881,55 +932,61 @@ def main() raises:
         elif s == "--dump-state" and i + 1 < len(args):
             dump_state = String(args[i + 1])
             i += 1
+        elif s == "--solver-log" and i + 1 < len(args):
+            solver_log = String(args[i + 1])
+            i += 1
+        elif s == "--dump-at-step" and i + 1 < len(args):
+            dump_at_step = Int(String(args[i + 1]))
+            i += 1
         else:
             raise Error("libero family batched: unknown argument '" + s + "'")
         i += 1
 
     comptime if FAMILY == "libero_goal":
-        run[LiberoGoalPlacement, LiberoGoalModel](steps, window, cpu_lanes, dump_state)
+        run[LiberoGoalPlacement, LiberoGoalModel](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_object":
-        run[LiberoObjectPlacement, LiberoObjectModel](steps, window, cpu_lanes, dump_state)
+        run[LiberoObjectPlacement, LiberoObjectModel](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_spatial":
-        run[LiberoSpatialPlacement, LiberoSpatialModel](steps, window, cpu_lanes, dump_state)
+        run[LiberoSpatialPlacement, LiberoSpatialModel](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_kitchen_scene1":
-        run[LiberoKitchenScene1Placement, LiberoKitchenScene1Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoKitchenScene1Placement, LiberoKitchenScene1Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_kitchen_scene2":
-        run[LiberoKitchenScene2Placement, LiberoKitchenScene2Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoKitchenScene2Placement, LiberoKitchenScene2Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_kitchen_scene3":
-        run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_kitchen_scene4":
-        run[LiberoKitchenScene4Placement, LiberoKitchenScene4Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoKitchenScene4Placement, LiberoKitchenScene4Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_kitchen_scene5":
-        run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_kitchen_scene6":
-        run[LiberoKitchenScene6Placement, LiberoKitchenScene6Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoKitchenScene6Placement, LiberoKitchenScene6Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_kitchen_scene7":
-        run[LiberoKitchenScene7Placement, LiberoKitchenScene7Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoKitchenScene7Placement, LiberoKitchenScene7Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_kitchen_scene8":
-        run[LiberoKitchenScene8Placement, LiberoKitchenScene8Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoKitchenScene8Placement, LiberoKitchenScene8Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_kitchen_scene9":
-        run[LiberoKitchenScene9Placement, LiberoKitchenScene9Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoKitchenScene9Placement, LiberoKitchenScene9Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_kitchen_scene10":
-        run[LiberoKitchenScene10Placement, LiberoKitchenScene10Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoKitchenScene10Placement, LiberoKitchenScene10Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_living_room_scene1":
-        run[LiberoLivingRoomScene1Placement, LiberoLivingRoomScene1Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoLivingRoomScene1Placement, LiberoLivingRoomScene1Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_living_room_scene2":
-        run[LiberoLivingRoomScene2Placement, LiberoLivingRoomScene2Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoLivingRoomScene2Placement, LiberoLivingRoomScene2Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_living_room_scene3":
-        run[LiberoLivingRoomScene3Placement, LiberoLivingRoomScene3Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoLivingRoomScene3Placement, LiberoLivingRoomScene3Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_living_room_scene4":
-        run[LiberoLivingRoomScene4Placement, LiberoLivingRoomScene4Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoLivingRoomScene4Placement, LiberoLivingRoomScene4Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_living_room_scene5":
-        run[LiberoLivingRoomScene5Placement, LiberoLivingRoomScene5Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoLivingRoomScene5Placement, LiberoLivingRoomScene5Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_living_room_scene6":
-        run[LiberoLivingRoomScene6Placement, LiberoLivingRoomScene6Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoLivingRoomScene6Placement, LiberoLivingRoomScene6Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_study_scene1":
-        run[LiberoStudyScene1Placement, LiberoStudyScene1Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoStudyScene1Placement, LiberoStudyScene1Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_study_scene2":
-        run[LiberoStudyScene2Placement, LiberoStudyScene2Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoStudyScene2Placement, LiberoStudyScene2Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_study_scene3":
-        run[LiberoStudyScene3Placement, LiberoStudyScene3Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoStudyScene3Placement, LiberoStudyScene3Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     elif FAMILY == "libero_study_scene4":
-        run[LiberoStudyScene4Placement, LiberoStudyScene4Model](steps, window, cpu_lanes, dump_state)
+        run[LiberoStudyScene4Placement, LiberoStudyScene4Model](steps, window, cpu_lanes, dump_state, solver_log, dump_at_step)
     else:
         comptime assert False, "libero_family_batched: FAMILY names no LIBERO family"
