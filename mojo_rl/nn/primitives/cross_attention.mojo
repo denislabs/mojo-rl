@@ -238,6 +238,28 @@ def _xa_softmax_jvp_kernel[
         i += bs
 
 
+def _xa_transpose_k_kernel[BH: Int, KL: Int, HD: Int, PK: Int](
+    out_t: LayoutTensor[DT, Layout.row_major(PK), MutAnyOrigin],
+    k: LayoutTensor[DT, Layout.row_major(PK), MutAnyOrigin],
+):
+    """packed keys `(BH, KL, HD)` -> `(BH, HD, KL)`, contiguous.
+
+    The forward's score matmul reads this instead of `bmm[transpose_b=True]`
+    on the packed keys. Same matmul, same bits (`cross_attention_bench`: 0 of
+    12.6 M cached weights differ at SigLIP's shape), but the transposed call is
+    2.06x slower on the Orin (78.3 -> 38.0 ms per SigLIP layer)."""
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= PK:
+        return
+    var j = idx % KL
+    var rem = idx // KL
+    var d = rem % HD
+    var bh = rem // HD
+    out_t.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](
+        k.ptr[unsafe_offset=bh * KL * HD + j * HD + d]
+    )
+
+
 def _xa_transpose_attn_kernel[
     BATCH: Int, N_HEADS: Int, QL: Int, KL: Int, ATTN_SIZE: Int, SCORES: Int
 ](
@@ -717,9 +739,16 @@ struct CrossAttention[
             grid_dim=kblocks, block_dim=TPB,
         )
 
-        # 2. scores(ss0) = Q @ Kt   (BH, QL, KL).
-        bmm[transpose_b=True, A0=BH, A1=QL, A2=HD, B0=BH, B1=KL, B2=HD, O0=BH, O1=QL, O2=KL](
-            self.ss0.dev.value(), self.sq0.dev.value(), self.sk0.dev.value(), c
+        # 2. Kt(sk2) contiguous, then scores(ss0) = Q @ Kt   (BH, QL, KL).
+        #    sk2 is backward-only scratch, free during the forward. Not
+        #    `bmm[transpose_b=True]`: see `_xa_transpose_k_kernel`.
+        c.enqueue_function[_xa_transpose_k_kernel[BH, KL, HD, PK]](
+            self.sk2.lt["gpu", lay_pk](),
+            self.sk0.lt["gpu", lay_pk](),
+            grid_dim=(PK + TPB - 1) // TPB, block_dim=TPB,
+        )
+        bmm[A0=BH, A1=QL, A2=HD, B0=BH, B1=HD, B2=KL, O0=BH, O1=QL, O2=KL](
+            self.ss0.dev.value(), self.sq0.dev.value(), self.sk2.dev.value(), c
         )
 
         # 3. scale + mask + stable softmax, in place; mirror into the cache.

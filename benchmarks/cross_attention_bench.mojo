@@ -24,8 +24,8 @@ SigLIP's A.V. Replacing a 7.7% stage with a 1.9% one would be a regression that
 a "same method worked last time" argument would ship. Hence C, which keeps the
 matmul for A.V:
 
-    A  the shipped forward: pack, bmm Q.Kt TRANSPOSED, softmax + cache, bmm A.V
-    B  same, but Kt materialised CONTIGUOUS first  (is the transpose the cost?)
+    A  the shipped forward: pack, Kt CONTIGUOUS, bmm Q.Kt, softmax + cache, bmm A.V
+    B  the pre-port forward: same, but bmm Q.Kt TRANSPOSED on the packed keys
     C  element-indexed scores + row softmax INTO THE CACHE, bmm A.V
     D  element-indexed everything, no pack, no unpack
 
@@ -34,6 +34,20 @@ from `self.attn`, laid out [b, h, i, j] — so every variant is checked on its
 cached weights as well as its output, against a FLOAT64 reference, in std
 units. C and D write the scores straight into that layout, so the weights are
 materialised once instead of into a scratch slab and then copied.
+
+⚠⚠ THE VERDICT, 17 Sep, before the port (best ms; A was then the transposed
+path, now B). The Metal ranking did NOT carry to the board:
+
+    shape                       Orin: old    Kt contig.  C       D      | 5090: old  Kt contig.  C       D
+    SigLIP  B1 1024x1024        78.3         38.0        107.7   105.0  | 5.57       4.75        2.67    2.76
+    ACT enc self  B16 162       12.9         7.68        14.7    14.3   | 0.410      0.309       0.393   0.381
+    ACT dec cross B1 60x162     0.335        0.225       0.392   0.376  | 0.085      0.091       0.038   0.030
+    ACT CVAE masked B16 62      1.85         1.09        2.22    2.14   | 0.092      0.079       0.072   0.066
+
+On the Orin the element-indexed variants LOSE at every shape and the whole
+cost was the transposed matmul — so "Kt contiguous" shipped: faster at every
+Orin shape, bit-identical everywhere. On a 5090 C/D are a further ~1.8x at
+SigLIP; that is a separate, per-device decision, not taken here.
 """
 
 from std.math import exp, sqrt
@@ -109,23 +123,6 @@ def _xe_scores_kernel[
         if rebind[Scalar[DT]](mask.ptr[unsafe_offset = b * KL + j]) < Scalar[DT](0.5):
             s = XATTN_MASK_NEG
     attn.ptr[unsafe_offset = idx] = s
-
-
-def _xt_transpose_kernel[BH: Int, KL: Int, H: Int](
-    src: LayoutTensor[DT, Layout.row_major(BH * KL * H), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(BH * H * KL), MutAnyOrigin],
-):
-    """[BH, KL, H] -> [BH, H, KL], contiguous — variant B's only change."""
-    var idx = Int(global_idx.x)
-    if idx >= BH * H * KL:
-        return
-    var j = idx % KL
-    var r = idx // KL
-    var d = r % H
-    var bh = r // H
-    dst.ptr[unsafe_offset = idx] = rebind[Scalar[DT]](
-        src.ptr[unsafe_offset = bh * KL * H + j * H + d]
-    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -258,13 +255,11 @@ def run_shape[
     var sq = Tensor()
     var sk = Tensor()
     var sv = Tensor()
-    var skt = Tensor()
     var ss = Tensor()
     var pout = Tensor()
     sq.ensure_gpu(ctx, PQ)
     sk.ensure_gpu(ctx, PK)
     sv.ensure_gpu(ctx, PK)
-    skt.ensure_gpu(ctx, PK)
     ss.ensure_gpu(ctx, SC)
     pout.ensure_gpu(ctx, PQ)
 
@@ -292,8 +287,8 @@ def run_shape[
     )
 
     var names: List[String] = [
-        String("A  shipped (bmm Q.Kt transposed)"),
-        String("B  Kt contiguous, bmm"),
+        String("A  shipped (Kt contiguous, bmm)"),
+        String("B  pre-port: bmm Q.Kt transposed"),
         String("C  scores+softmax in cache, bmm A.V"),
         String("D  element-indexed, no pack"),
     ]
@@ -355,12 +350,8 @@ def run_shape[
                         _xa_pack_kernel[B, DIM, H, KL, HD, PK]
                     ](sk.lt["gpu", lay_pk](), k.lt["gpu", lay_kv](),
                       grid_dim=kblocks, block_dim=TPB)
-                    ctx.enqueue_function[_xt_transpose_kernel[BH, KL, HD]](
-                        sk.lt["gpu", lay_pk](), skt.lt["gpu", lay_pk](),
-                        grid_dim=(PK + TPB - 1) // TPB, block_dim=TPB,
-                    )
-                    bmm[A0=BH, A1=QL, A2=HD, B0=BH, B1=HD, B2=KL, O0=BH, O1=QL, O2=KL](
-                        ss.dev.value(), sq.dev.value(), skt.dev.value(), ctx
+                    bmm[transpose_b=True, A0=BH, A1=QL, A2=HD, B0=BH, B1=KL, B2=HD, O0=BH, O1=QL, O2=KL](
+                        ss.dev.value(), sq.dev.value(), sk.dev.value(), ctx
                     )
                     ctx.enqueue_function[
                         _xa_softmax_kernel[B, H, QL, KL, HD, MASKED, ATTN_SIZE, SC, BH]
