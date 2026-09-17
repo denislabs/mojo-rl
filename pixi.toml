@@ -120,6 +120,10 @@ smolvla-deploy-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -DSM
 # The expert attention, five variants, one run — see the file's header for how
 # to read it. nsys put `_ba_kernel` at 0.29% of fp32 peak; this says why.
 smolvla-attn-bench-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -o /tmp/attn_bench benchmarks/smolvla_block_attention_bench.mojo && /tmp/attn_bench", description = "SmolVLA expert attention: five kernel variants, timed and gated" }
+# CrossAttention's forward, four variants, at SigLIP's shape AND every ACT shape
+# (deploy batch 1, training batch 16, the masked CVAE). The primitive is shared:
+# a variant ships only if it is faster for SigLIP and no slower for ACT.
+cross-attn-bench-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -o /tmp/xa_bench benchmarks/cross_attention_bench.mojo && /tmp/xa_bench", description = "CrossAttention: four forward variants at SigLIP + ACT shapes, bit-checked" }
 
 [feature.amd]
 
