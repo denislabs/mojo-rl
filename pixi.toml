@@ -106,6 +106,18 @@ build-jetson = { cmd = "mojo build -I . --target-accelerator sm_87", description
 act-deploy-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -DACT_GPU=1 -o /tmp/act_deploy_gpu examples/so101/act_so101_deploy_real.mojo && /tmp/act_deploy_gpu", depends-on = ["build-serial", "build-opencv"], description = "ACT on the Orin's GPU (-- --project P; --arm to move it)" }
 act-deploy-jetson-cpu = { cmd = "mojo build -I . --target-accelerator sm_87 -o /tmp/act_deploy_cpu examples/so101/act_so101_deploy_real.mojo && /tmp/act_deploy_cpu", depends-on = ["build-serial", "build-opencv"], description = "The same policy on the Orin's CPU — the other half of the A/B" }
 
+# ── SmolVLA on the board ───────────────────────────────────────────────────
+# ⚠⚠ MEASURE THE QUERY FIRST. `smolvla-probe-jetson` times one `select_action`;
+# the deployment's whole loop shape rests on comparing that against the 1.667 s
+# of motion one chunk buys. Do not skip it — the ACT deployment's architecture
+# came from exactly this measurement, and guessing it here would be picking a
+# loop by faith.
+#
+# ⚠ 3.2 GB of weights, host AND device. One target per binary is not a
+# preference; building both would be 6.4 GB.
+smolvla-probe-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -o /tmp/svla_probe examples/so101/smolvla_so101_latency_probe.mojo && /tmp/svla_probe", description = "Time ONE SmolVLA query on the Orin — the prerequisite for the deploy" }
+smolvla-deploy-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -DSMOLVLA_GPU=1 -o /tmp/svla_deploy examples/so101/smolvla_so101_deploy_real.mojo && /tmp/svla_deploy", depends-on = ["build-serial", "build-opencv"], description = "Run a fine-tuned SmolVLA on the SO-101 (-- --ckpt C --stats S; --arm to move it)" }
+
 [feature.amd]
 
 [feature.apple]
