@@ -1446,6 +1446,19 @@ def main() raises:
         #
         # ⚠ IN THE `finally`, so an exception mid-run still gets an honest
         # elapsed rather than one that includes the unwind.
+        #
+        # ⚠⚠ MOJO WARNS "assignment to 'loop_ns' was never used" HERE AND ON
+        # ITS DECLARATION. THE WARNING IS WRONG — do not "fix" it by deleting
+        # the assignment or by `_ =`, which would leave `elapsed` reading the
+        # initial 0 and report `inf Hz`. Reduced to eight lines and checked:
+        #
+        #     var v = 0
+        #     try: work()
+        #     finally: v = 42
+        #     print(v)          # prints 42, and warns twice
+        #
+        # The compiler's dataflow does not see a `finally` assignment reaching
+        # the code after the statement; the generated code does.
         loop_ns = perf_counter_ns() - loop_t0
         # ⚠ AND THE FRAME COUNTS WITH IT, at the same instant. The cameras
         # keep running through the ramp and the Enter wait, so a count read
