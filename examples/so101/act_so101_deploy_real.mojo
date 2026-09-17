@@ -55,22 +55,53 @@ the dangerous behaviour was the default and the flag was the safe one. Read
 follower is left holding its pose — the recovery is `pixi run soarm-torque-off`
 and the power switch, not the `finally`.
 
-## ⚠⚠ The measured fact this program is built around: ONE FORWARD IS ~95 ms
+## ⚠⚠ The measured fact this program is built around: THE QUERY RATE
 
-Measured on this M1 Pro, BATCH=1, the checkpoint's own dims, warm:
+BATCH=1, the checkpoint's own dims, warm.
 
-    CPU   (target="cpu")    95 ms   -> ~10.5 queries/s
-    Metal (target="gpu")   155 ms   -> ~6.5  queries/s
+⚠ THE ROWS ARE NOT THE SAME EXPERIMENT, and saying so is the point. Only the
+Orin row is a full 30 s CONTROL LOOP with two cameras and an arm attached; the
+M1 rows are what a build prints during its start-up warm-up, on a machine that
+never ran this loop. Do not subtract across them.
 
-**Metal is SLOWER, and that is why this program is CPU-only.** At BATCH=1 the
-graph is a few hundred tiny kernels and Metal pays a command-buffer retirement
-per launch (~20 us floor, `_the_metal_launch_floor_is_command_buffer_retirement`);
-there is not enough work per kernel to hide it. Do not "fix" this by adding a
-`--gpu` flag without re-measuring — the number above IS the measurement.
+    Orin NX, CUDA  — closed loop, per query, mean:
+        cameras 2.2 + preprocess 3.4 + forward 27.6 = 33.2 ms -> 30.0 Hz
+
+    M1 Pro         — forward only, 5-query warm-up:
+        CPU  55.5 ms        Metal 302.7 ms
+
+    M1 Pro         — as measured when this file was first written, in a loop:
+        CPU  95 ms -> ~10.5 Hz    Metal 155 ms -> ~6.5 Hz
+
+⚠ THE TWO M1 SETS DISAGREE (55.5 vs 95, 302.7 vs 155) and neither is discarded:
+they were taken differently — a warm-up burst right after `load` against a
+sustained control loop — and the second is the one with cameras and an arm
+competing for the machine. A number is only comparable to one taken the same
+way.
+
+**Metal is SLOWER THAN ITS OWN CPU, which is why a Mac build stays CPU-only.**
+At BATCH=1 the graph is a few hundred tiny kernels and Metal pays a
+command-buffer retirement per launch (~20 us floor,
+`_the_metal_launch_floor_is_command_buffer_retirement`); there is not enough
+work per kernel to hide it. ⚠ THAT SAYS NOTHING ABOUT CUDA: the same argument
+ran the other way on the Orin, where the forward is 27.6 ms against the ARM
+CPU's much worse. The device is a build-time choice (`-DACT_GPU=1`,
+`DEPLOY_TARGET`) and each binary prints its own number before anything is
+armed. Measure, do not assume.
+
+⚠⚠ **30.0 Hz ON THE ORIN MEANS THE POLICY IS QUERIED AT THE CADENCE IT WAS
+TRAINED AT — a waypoint every 1.0 demonstrated steps.** Getting there took two
+changes that were each necessary and neither sufficient: the ACT preprocess
+moved onto the camera thread (work per query 36.4 -> 31.0 ms, under the 33.3 ms
+frame period), and `exposure_dynamic_framerate=0` on the overhead camera, which
+was silently delivering 20 fps and PACING THE WHOLE LOOP — the resize saving
+was absorbed to 0.1 ms by a longer camera wait until that was fixed. The
+achieved 33.2 ms against a 33.3 ms period is a SATURATED loop: the camera is
+now the limit, as it should be.
 
 The policy was trained on 30 fps demonstrations, so a chunk's entries are
-1/30 s apart. **At ~10 queries per second we cannot query every step, and this
-program does not pretend to.** Instead:
+1/30 s apart. **On a machine that cannot query every step this program does not
+pretend to** — the numbers above show which machines those are. Instead:
 
   * there is a 30 Hz ACTION GRID, defined by wall clock — `t = round(elapsed *
     30)` — and the chunk index means exactly what it meant in training;
@@ -80,13 +111,15 @@ program does not pretend to.** Instead:
     is COMMANDED is the ensemble's action for `t_cmd` — the grid step it is
     actually now. The inference latency is not hidden, it is INDEXED.
 
-⚠ THE CONSEQUENCE, STATED PLAINLY: the arm receives a waypoint about every
-third demonstrated step, not every step. The trajectory plays at the right
-SPEED (the grid is wall clock, so the policy does not run in slow motion), but
-between waypoints the servo interpolates instead of the policy. Temporal
-ensembling is what makes this tolerable — every commanded action is a weighted
-blend of ~15 overlapping chunks, measured — and the `ensemble` figure in the
-report is how you check it is actually filling up.
+⚠ THE CONSEQUENCE, STATED PLAINLY: on a slow machine the arm receives a
+waypoint every ~3 demonstrated steps, not every step. The trajectory plays at
+the right SPEED (the grid is wall clock, so the policy does not run in slow
+motion), but between waypoints the servo interpolates instead of the policy.
+Temporal ensembling is what makes that tolerable — every commanded action is a
+weighted blend of overlapping chunks — and the `ensemble` figure in the report
+is how you check it is filling up: 38.7 of K=60 at 20 Hz, **58.0 of 60 at 30
+Hz**, where the window is nearly saturated and the blend is at its smoothest.
+At 30 Hz the interpolation gap closes entirely.
 
 ⚠ ONE SEMANTIC CONSEQUENCE OF QUERYING SPARSELY, recorded in
 `TemporalEnsemble.action_at`: the ensemble weight `exp(-m*(i - i_min))` is the
