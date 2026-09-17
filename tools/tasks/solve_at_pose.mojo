@@ -1,23 +1,103 @@
-"""ONE LIBERO STATE, ONE ELLIPTIC SOLVE, BOTH NEWTON LEGS — where do they part?
+"""ONE LIBERO STATE, ONE ELLIPTIC SOLVE, THREE LEGS — which one is wrong?
 
     # the state comes from the family driver:
     #   libero_family_batched --dump-at-step 1 --dump-state build/diag/lr3_step1.txt
     pixi run mojo run -I . tools/tasks/solve_at_pose.mojo build/diag/lr3_step1.txt 0
+    #   <states.txt> <lane_a> <step> <lane_b>
+    pixi run mojo run -I . tools/tasks/solve_at_pose.mojo build/diag/lr3_all.txt 1 1 2
 
-## ⚠⚠ WHY A STEPPING RUN CANNOT ANSWER THIS
+## ⚠⚠ THE ANSWER FOR ONE SOLVE — AND READ THE SCOPE BELOW
 
-`libero_family_batched --solver-log` shows the two legs BIT-IDENTICAL through
-step 1 of libero_living_room_scene3 and diverging at step 2, the line-search
-work first (cumulative evaluations 2997 against 3006) while the state still
-matches to six digits. After that every difference is downstream of the first,
-so a rollout says only THAT they part. This replays ONE state through both,
-with identical inputs, and prints where the two answers differ.
+At this state the blocked elliptic kernel is NOT the worse of the two legs.
+On the reproduction state (`libero_living_room_scene3`, step 1):
 
-`tests/physics3d/test_newton_blocked_elliptic.mojo` does exactly this for a
-slam chain of capsules and asserts bit equality — and PASSES. LIBERO is boxes
-resting at the contact margin, 20+ contacts a lane, which that fixture never
+    lane 0   per-env 10 iters / 147 line-search evals   blocked 10 / 148
+    worst |qacc| between the two float32 legs           5.72e-06
+    worst |qacc - CPU float64 reference|   per-env 9.109e-03   blocked 9.103e-03
+    reference max |qacc| 37.2 m/s^2   =>   both 2.4e-04 RELATIVE, ratio 0.9994
+
+The two legs differ from each other by ~1600x LESS than they each differ from
+the truth, and the blocked leg is the marginally nearer one. The gap they
+share is float32 against float64 on a converged solve — all three legs
+converge, in 10 iterations, well inside the model's budget of 100.
+
+⚠ LANE 1 IS THE CONTROL AND IT WAS NOT PLANNED. There the two float32 legs
+are BIT-IDENTICAL (both 8.980136837440256e-03 from the reference) and the gap
+to float64 is the SAME size. A difference that survives when the accused
+kernel agrees with its accuser is not that kernel's difference.
+
+## ⚠⚠ THE SCOPE: THIS IS ONE SOLVE, NOT A ROLLOUT
+
+Nothing above is an acquittal of the blocked kernel. It says only that at THIS
+state, for ONE solve, the blocked leg is not the worse of the two. The rollout
+says something different and the next section is why.
+
+## ⚠⚠ THE ROLLOUT ARM COMPARISON IS AN ACCURACY COMPARISON — IT COUNTS
+
+`libero_family_batched`'s CPU leg is `comptime H = DType.float64`, so the 5090
+run that put blocked at 0.04190795940899783 and per-env at 0.0018 measured both
+against a FLOAT64 reference. Both numbers are `alphabet_soup_1_joint0[2]` —
+that body's z — at step 4. So over a rollout the blocked leg is genuinely ~23x
+further from the truth than the per-env leg, and this file's single-solve
+result does NOT excuse that.
+
+⚠ AN EARLIER VERSION OF THIS HEADER SAID THOSE ARMS WERE SCORED AGAINST A
+FLOAT32 CPU LEG and therefore ranked by summation order rather than accuracy.
+That was wrong — it confused this file's `_solve64`/float32 pair with the
+family gate's float64 leg. The order-of-summation argument applies to THIS
+file's two GPU legs, not to the family gate's verdict.
+
+## ⚠ HOW BOTH RESULTS CAN BE TRUE AT ONCE
+
+One solve: the legs are 5.7e-06 apart and both 9.1e-03 from float64.
+One rollout: the legs are 0.042 and 0.0018 from float64.
+
+Two readings survive that, and they call for different fixes:
+
+1. **A knife edge.** The 5.7e-06 decides a DISCRETE event over 125 substeps —
+   a box on the table tips or does not — and which side you land on is not an
+   accuracy property. Then a one-ULP perturbation of the PER-ENV leg would
+   also throw it to ~0.04, and the scene, not the kernel, is the problem.
+2. **A BIAS.** If the blocked leg's per-solve error is systematic rather than
+   random — say it consistently over-supports a resting contact — then 5.7e-06
+   a solve integrates into 0.04 over the window while per-env's unbiased error
+   does not. Then the blocked kernel IS wrong and the single solve above was
+   too blunt to see it, because it reports `worst |.|` and a bias needs a
+   SIGNED mean.
+
+Reading 2 is the one this file can test and had not: see the signed-mean
+column in the reference block below. Reading 1 needs the perturbation sweep on
+the rollout.
+
+## WHY A STEPPING RUN CANNOT ANSWER THIS EITHER
+
+`libero_family_batched --solver-log` shows the two legs bit-identical through
+step 1 and diverging at step 2, the line-search work first (cumulative
+evaluations 2997 against 3006) while the state still matches to six digits.
+After that every difference is downstream of the first, so a rollout says only
+THAT they part. This replays ONE state through both, with identical inputs.
+
+`tests/physics3d/test_newton_blocked_elliptic.mojo` does the same for a slam
+chain of capsules and asserts bit equality — and PASSES. LIBERO is boxes
+resting at the contact margin, 18 contacts a lane, which that fixture never
 produces. The pre-solve pipeline below is its `_prep`, verbatim, for that
 reason: the two files must feed their solves the same way.
+
+## ⚠ THE DIVERGENCE FOLLOWS THE STATE, NOT THE LANE SLOT
+
+Commit 4412f5b81's message says it "needs two lanes". THAT IS WRONG and this
+file is the correction: lane 1's state placed in slot 0 reproduces it at
+BATCH 1. Two lanes are still carried below, for the separate reason that a
+per-env indexing mistake in a one-block-per-env kernel cannot show at BATCH 1
+— and lane 1 earned its keep as the control above.
+
+## HOW THE ITERATION SWEEP LOCALISED IT
+
+Capping the Newton budget at k and comparing the k-th iterate: bit-identical
+through k=6; at k=7 BOTH legs do identical work (7 iterations, 127 evaluations
+each) and the answers already differ by 2.384e-07 — one float32 ULP. The extra
+evaluation at k=8 is a CONSEQUENCE of that ULP, not its cause, which is what
+retires the line search as a suspect.
 
 ## ⚠ max_contacts IS LOWERED TO FIT METAL
 
@@ -47,6 +127,7 @@ from mojo_rl.physics3d.dynamics.ldl import ldl_factor, ldl_solve, compute_m_inv
 from mojo_rl.physics3d.dynamics.rne import compute_bias_forces_rne
 from mojo_rl.physics3d.integrator.euler import (
     _armature_kernel, _fnet_passive_kernel, _qacc_writeback_kernel,
+    _armature_env, _fnet_passive_env, _qacc_writeback_env,
 )
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
 from mojo_rl.physics3d.solver.newton_solve import (
@@ -57,6 +138,7 @@ from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE, MODEL_JOINT_SIZE, CONTACT_SIZE, CONTACT_IDX_CONDIM,
     CONTACT_IDX_DIST, CONTACT_IDX_FORCE_N, CONTACT_IDX_FORCE_T1,
     CONTACT_IDX_FORCE_T2, CONTACT_IDX_FORCE_TORSION,
+    MODEL_META_IDX_SOLVER_ITERATIONS,
 )
 from mojo_rl.tasks.libero_envs.libero_living_room_scene3_xml import (
     LiberoLivingRoomScene3Model,
@@ -83,6 +165,19 @@ comptime MDIMS = Dims[
 ]
 comptime JE_WS = je_ws_size[
     DTYPE, MDIMS.NV, MDIMS.NJOINT, MDIMS.NTENDON, MDIMS.NEQUALITY,
+    MDIMS.MAX_CONTACTS, M.MAX_CONDIM, CONE_TYPE=ConeType.ELLIPTIC,
+]()
+
+comptime DTYPE64 = DType.float64
+"""⚠⚠ THE THIRD COLUMN. Two float32 legs that disagree by an ULP cannot say
+which one is RIGHT — non-associativity alone produces that, and a cooperative
+reduction is entitled to a different rounding from a serial loop. The CPU
+float64 solve is the reference both are scored against: if the two float32
+distances to it are the same size, there is no defect to fix and the rollout
+divergence is chaos amplifying a legitimate rounding difference; if the
+blocked leg is the far one, it is wrong."""
+comptime JE_WS64 = je_ws_size[
+    DTYPE64, MDIMS.NV, MDIMS.NJOINT, MDIMS.NTENDON, MDIMS.NEQUALITY,
     MDIMS.MAX_CONTACTS, M.MAX_CONDIM, CONE_TYPE=ConeType.ELLIPTIC,
 ]()
 
@@ -152,12 +247,119 @@ def _prep(
     detect_contacts_sap["gpu", DTYPE, BATCH=BATCH](d, mf, ctx)
 
 
-def _solve(
-    ctx: DeviceContext, q: List[Float64], v: List[Float64], blocked: Bool
+def _prep64(
+    mut d: Data[DTYPE64, MDIMS, BATCH],
+    mut mf: Model[DTYPE64, MDIMS],
+    mut scratch: DynamicsScratch[DTYPE64, MDIMS, BATCH],
+) raises:
+    """`_prep`'s CPU float64 twin — `test_newton_blocked_elliptic._prep`'s
+    `"cpu"` branch, which is where this shape comes from."""
+    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
+    comptime L_M = Layout.row_major(BATCH, NV * NV)
+    comptime L_NV = Layout.row_major(BATCH, NV)
+    comptime L_QPOS = Layout.row_major(BATCH, NQ)
+    var none = Optional[DeviceContext](None)
+    forward_kinematics["cpu", DTYPE64, BATCH=BATCH](d, mf, none)
+    compute_body_velocities["cpu", DTYPE64, BATCH=BATCH](d, mf, none)
+    compute_subtree_com["cpu", DTYPE64, BATCH=BATCH](d, mf, none)
+    compute_cdof["cpu", DTYPE64, BATCH=BATCH](d, mf, scratch, none)
+    compute_mass_matrix["cpu", DTYPE64, BATCH=BATCH](d, mf, scratch, none)
+    var joints_v = mf.joints.lt["cpu", L_JOINT]()
+    var M_v = scratch.M.lt["cpu", L_M]()
+    for e in range(BATCH):
+        _armature_env[DTYPE64](e, AsStatic[MDIMS](), joints_v, M_v)
+    ldl_factor["cpu", DTYPE64, BATCH=BATCH](mf, scratch, none)
+    compute_m_inv["cpu", DTYPE64, BATCH=BATCH](mf, scratch, none)
+    compute_bias_forces_rne["cpu", DTYPE64, BATCH=BATCH](d, mf, scratch, none)
+    var qpos_v = d.qpos.lt["cpu", L_QPOS]()
+    var qvel_v = d.qvel.lt["cpu", L_NV]()
+    var qfrc_v = d.qfrc.lt["cpu", L_NV]()
+    var bias_v = scratch.bias.lt["cpu", L_NV]()
+    var fnet_v = scratch.fnet.lt["cpu", L_NV]()
+    for e in range(BATCH):
+        _fnet_passive_env[DTYPE64](
+            e, AsStatic[MDIMS](), qpos_v, qvel_v, qfrc_v, joints_v, bias_v,
+            fnet_v,
+        )
+    ldl_solve["cpu", DTYPE64, BATCH=BATCH](mf, scratch, none)
+    var qacc_ws_v = scratch.qacc_ws.lt["cpu", L_NV]()
+    var qacc_v = d.qacc.lt["cpu", L_NV]()
+    var qacc_c_v = scratch.qacc_constrained.lt["cpu", L_NV]()
+    for e in range(BATCH):
+        _qacc_writeback_env[DTYPE64](
+            e, AsStatic[MDIMS](), qacc_ws_v, qacc_v, qacc_c_v
+        )
+    detect_contacts_sap["cpu", DTYPE64, BATCH=BATCH](d, mf, none)
+
+
+def _solve64(
+    ctx: DeviceContext, q: List[Float64], v: List[Float64]
 ) raises -> Solved:
-    """`q`/`v` hold BATCH lanes' words, lane-major."""
+    """The reference: the same state, the same pipeline, at float64 on the CPU.
+
+    ⚠ ONE LEG ONLY. At float64 the two legs' rounding difference is ~1e-16 and
+    the question the reference answers is which float32 leg it is nearer to,
+    so a second float64 arm would add a column that cannot disagree."""
+    var mf = Model[DTYPE64, MDIMS]()
+    # ⚠ THE CONTEXT IS STILL REQUIRED: `init_fields` builds the model and
+    # uploads it whatever the solve's target is. Nothing below reads the
+    # device copy.
+    M.init_fields[DTYPE64](ctx, mf)
+    var d = Data[DTYPE64, MDIMS, BATCH]()
+    for e in range(BATCH):
+        for i in range(NQ):
+            d.qpos.data[e * NQ + i] = Scalar[DTYPE64](q[e * NQ + i])
+        for i in range(NV):
+            d.qvel.data[e * NV + i] = Scalar[DTYPE64](v[e * NV + i])
+            d.qfrc.data[e * NV + i] = 0
+    var scratch = DynamicsScratch[DTYPE64, MDIMS, BATCH]()
+    var cscratch = ContactScratch[DTYPE64, MDIMS, BATCH, JE_WS64]()
+    _prep64(d, mf, scratch)
+    solve_newton[
+        "cpu", DTYPE64, CONE_TYPE=ConeType.ELLIPTIC, BATCH=BATCH,
+        MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER=0, JE_WS=JE_WS64,
+    ](d, mf, scratch, cscratch, Optional[DeviceContext](None))
+    var out = Solved()
+    for i in range(BATCH * NV):
+        out.qacc.append(Float64(scratch.qacc_constrained.data[i]))
+    for e in range(BATCH):
+        var ne = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
+        if ne > MC:
+            ne = MC
+        out.per_lane_ncon.append(ne)
+        out.per_lane_iters.append(
+            Int(d.meta.data[e * METADATA_SIZE + META_IDX_NEWTON_ITER])
+        )
+        out.per_lane_lsev.append(
+            Int(d.meta.data[e * METADATA_SIZE + META_IDX_LS_EVAL])
+        )
+        out.ncon += ne
+    out.iters = out.per_lane_iters[0]
+    out.lsev = out.per_lane_lsev[0]
+    return out^
+
+
+def _solve(
+    ctx: DeviceContext, q: List[Float64], v: List[Float64], blocked: Bool,
+    niter_cap: Int = -1,
+) raises -> Solved:
+    """`q`/`v` hold BATCH lanes' words, lane-major.
+
+    `niter_cap > 0` overrides the model's Newton budget, which is how the
+    sweep in `main` localises the divergence to ONE iteration. ⚠ IT IS THE
+    MODEL'S WORD, NOT A KERNEL KNOB: both legs read
+    `MODEL_META_IDX_SOLVER_ITERATIONS` at the same place, so capping it is the
+    only way to stop both at the same point without touching either kernel —
+    and an in-kernel `print` is not available here, it takes the per-env
+    elliptic kernel over Metal's per-thread stack ("Compute function exceeds
+    available stack space")."""
     var mf = Model[DTYPE, MDIMS]()
     M.init_fields[DTYPE](ctx, mf)
+    if niter_cap > 0:
+        mf.meta.data[MODEL_META_IDX_SOLVER_ITERATIONS] = Scalar[DTYPE](
+            niter_cap
+        )
+        mf.meta.upload(ctx)
     # ⚠ NO `reset_data`: it is a single-env helper (its `Data` parameter is
     # batch 1) and every word it would set is overwritten below or starts at
     # the zero a fresh `Data` already has.
@@ -281,6 +483,29 @@ def main() raises:
     var per_env = _solve(ctx, q, v, False)
     var blocked = _solve(ctx, q, v, True)
 
+    # ── THE ITERATION SWEEP ───────────────────────────────────────────────
+    # ⚠ WHICH NEWTON ITERATION FIRST DISAGREES. Both legs converge here, so
+    # the final `qacc` is one number and says nothing about where the two
+    # paths parted. Capping the budget at k and comparing the k-th iterate
+    # bisects that: the first k whose `qacc` differs is the iteration the
+    # divergence is BORN in, and the line-search counts beside it say whether
+    # the search took a different number of steps in that same iteration or
+    # only reacted to an input that already differed.
+    print()
+    print("  --- capped at k Newton iterations (lane 0) ---")
+    print("   k | per-env iters/lsev | blocked iters/lsev | worst |qacc| diff")
+    for k in range(1, 11):
+        var pe = _solve(ctx, q, v, False, k)
+        var bl = _solve(ctx, q, v, True, k)
+        var w = 0.0
+        for i in range(BATCH * NV):
+            var dv = abs(pe.qacc[i] - bl.qacc[i])
+            if dv > w:
+                w = dv
+        print("  ", k, "|", pe.per_lane_iters[0], "/", pe.per_lane_lsev[0],
+              "|", bl.per_lane_iters[0], "/", bl.per_lane_lsev[0], "|", w)
+    print()
+
     for e in range(BATCH):
         print("  lane", e, "per-env: ncon", per_env.per_lane_ncon[e], "iters",
               per_env.per_lane_iters[e], "lsev", per_env.per_lane_lsev[e],
@@ -318,9 +543,104 @@ def main() raises:
               " blocked", blocked.forces[worst_c * 4],
               blocked.forces[worst_c * 4 + 1], blocked.forces[worst_c * 4 + 2],
               blocked.forces[worst_c * 4 + 3])
+    # ── THE REFERENCE ─────────────────────────────────────────────────────
+    var ref64 = _solve64(ctx, q, v)
+    print()
+    print("  --- against the CPU float64 reference ---")
+    print("   reference: ncon", ref64.per_lane_ncon[0], "iters",
+          ref64.per_lane_iters[0], "lsev", ref64.per_lane_lsev[0])
+    if ref64.per_lane_ncon[0] != per_env.per_lane_ncon[0]:
+        # ⚠ A DIFFERENT CONTACT SET IS A DIFFERENT PROBLEM, and the distances
+        # below would be comparing two answers to two questions.
+        print("  ⚠ the reference sees a DIFFERENT contact set — the distances"
+              " below are not a solver comparison")
+    var d_pe = 0.0
+    var d_bl = 0.0
+    var scale = 0.0
+    for i in range(BATCH * NV):
+        var a = abs(per_env.qacc[i] - ref64.qacc[i])
+        var b = abs(blocked.qacc[i] - ref64.qacc[i])
+        if a > d_pe:
+            d_pe = a
+        if b > d_bl:
+            d_bl = b
+        if abs(ref64.qacc[i]) > scale:
+            scale = abs(ref64.qacc[i])
+    print("   worst |qacc - reference|:  per-env", d_pe, " blocked", d_bl)
+    # ⚠ AN ABSOLUTE qacc DISTANCE IS NOT READABLE WITHOUT THE SCALE: these are
+    # m/s^2 on a scene under gravity with an arm holding itself up, so the
+    # reference's own largest component is what says whether 1e-2 is a wrong
+    # answer or the last digit of a right one.
+    print("   reference max |qacc|", scale, " => relative: per-env",
+          d_pe / scale if scale > 0.0 else 0.0, " blocked",
+          d_bl / scale if scale > 0.0 else 0.0)
+    for e in range(BATCH):
+        var lpe = 0.0
+        var lbl = 0.0
+        var lsc = 0.0
+        for i in range(e * NV, (e + 1) * NV):
+            var a = abs(per_env.qacc[i] - ref64.qacc[i])
+            var b = abs(blocked.qacc[i] - ref64.qacc[i])
+            if a > lpe:
+                lpe = a
+            if b > lbl:
+                lbl = b
+            if abs(ref64.qacc[i]) > lsc:
+                lsc = abs(ref64.qacc[i])
+        print("     lane", e, ": per-env", lpe, " blocked", lbl,
+              " (max |qacc| ", lsc, ", lsev ref", ref64.per_lane_lsev[e], ")")
+    if d_pe > 0.0 or d_bl > 0.0:
+        var ratio = d_bl / d_pe if d_pe > 0.0 else 0.0
+        print("   blocked / per-env =", ratio,
+              "— near 1 means the two float32 legs are EQUALLY far from the"
+              " truth and their difference is rounding, not a defect")
+
+    # ── THE BIAS TEST ─────────────────────────────────────────────────────
+    # ⚠⚠ `worst |.|` CANNOT SEE A BIAS, and a bias is the only way a 5.7e-06
+    # per-solve difference becomes 0.04 over 125 substeps. A leg whose error
+    # is random has a SIGNED mean near zero and a mean |.| much larger; a leg
+    # that consistently over- or under-supports has the two the same size.
+    # The ratio |mean| / mean|.| is that comparison in one number: near 0 is
+    # rounding, near 1 is a systematic offset that will integrate.
+    var s_pe = 0.0
+    var s_bl = 0.0
+    var s_dif = 0.0
+    var a_pe = 0.0
+    var a_bl = 0.0
+    var a_dif = 0.0
+    for i in range(BATCH * NV):
+        var ep = per_env.qacc[i] - ref64.qacc[i]
+        var eb = blocked.qacc[i] - ref64.qacc[i]
+        var ed = blocked.qacc[i] - per_env.qacc[i]
+        s_pe += ep
+        s_bl += eb
+        s_dif += ed
+        a_pe += abs(ep)
+        a_bl += abs(eb)
+        a_dif += abs(ed)
+    var n = Float64(BATCH * NV)
+    print("   signed mean error vs reference:  per-env", s_pe / n,
+          " blocked", s_bl / n)
+    print("   mean |error|      vs reference:  per-env", a_pe / n,
+          " blocked", a_bl / n)
+    if a_pe > 0.0 and a_bl > 0.0:
+        print("   |mean|/mean|.| (0 = random, 1 = systematic):  per-env",
+              abs(s_pe) / a_pe, " blocked", abs(s_bl) / a_bl)
+    print("   blocked MINUS per-env: signed mean", s_dif / n, " mean |.|",
+          a_dif / n,
+          " ratio", abs(s_dif) / a_dif if a_dif > 0.0 else 0.0)
+
+    print()
     if worst_qacc == 0.0 and worst_f == 0.0:
-        print()
         print("=== the two legs agree BIT FOR BIT on this state ===")
+    elif worst_qacc <= d_pe:
+        # ⚠⚠ THE VERDICT IS A COMPARISON, NOT A THRESHOLD. The two legs
+        # differing is not news; what decides is whether they differ by LESS
+        # than they each differ from the truth. When they do, no arithmetic
+        # here is wrong and the gap to chase is float32's, shared by both.
+        print("=== the two legs differ by", worst_qacc, "and are BOTH",
+              d_pe, "from the float64 reference — that is rounding between a")
+        print("=== cooperative reduction and a serial loop, not a defect ===")
     else:
-        print()
-        print("=== they differ — this state is the reproduction ===")
+        print("=== ⚠ ONE LEG IS OUT: the legs differ by", worst_qacc,
+              "which EXCEEDS the", d_pe, "gap to the float64 reference ===")

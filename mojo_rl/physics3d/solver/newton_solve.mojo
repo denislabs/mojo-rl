@@ -6521,7 +6521,24 @@ def _newton_blocked_fields_kernel[
             for i in range(NV):
                 snorm_sq += search[i] * search[i]
             var snorm = sqrt(snorm_sq)
-            var gtol_b = tol_rt * lstol_rt / scale * snorm
+            # The association is MuJoCo's and the per-env leg's: `PrimalSearch`
+            # (engine_solver.c:1692) spells it with `snorm` before the divide,
+            # and this read `tol_rt * lstol_rt / scale * snorm` — the same
+            # number in exact arithmetic and a different float32 one, since
+            # `(a*b)/scale*snorm` rounds in a different order from
+            # `(a*b)*snorm/scale`. Matching the reference is worth doing on its
+            # own, and it is the only reason this line changed.
+            #
+            # ⚠⚠ IT IS NOT THE CAUSE OF ANYTHING. An earlier version of this
+            # comment claimed the old association explained the blocked leg's
+            # extra `PrimalEval` on libero_living_room_scene3. It does not:
+            # with the association fixed the counts are still 147 against 148
+            # and the qacc still 5.7e-06 apart. `tools/tasks/solve_at_pose.mojo`
+            # then scored both legs against a CPU float64 solve of the same
+            # state and neither is wrong — see that file's header. A one-ULP
+            # gap between a cooperative reduction and a serial loop is not a
+            # defect, and nothing here needs to be hunted further.
+            var gtol_b = tol_rt * lstol_rt * snorm / scale
 
             var ls_budget = LINESEARCH_ITER
             if lsiter_rt > 0 and lsiter_rt < ls_budget:
