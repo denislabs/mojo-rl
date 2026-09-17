@@ -36,6 +36,7 @@ deciding WHAT to optimise, not for adding up.
 402,737,376 params x 4 bytes x 2 (host AND device) = **3.2 GB**. One policy.
 """
 
+from std.ffi import OwnedDLHandle, c_int
 from std.math import sqrt
 from std.time import perf_counter_ns
 from std.testing import assert_true
@@ -75,6 +76,29 @@ comptime CAM_H = 480
 comptime RDIM = 6
 comptime REPS = 5
 comptime WARMUP = 2
+
+
+
+def _launch_count() -> Int:
+    """Kernels launched so far, from the LD_PRELOAD interceptor, or -1.
+
+    ⚠⚠ THE NUMBER THAT SEPARATES "SLOW KERNELS" FROM "TOO MANY KERNELS", and
+    they need opposite fixes. The prefix runs at ~9% of this board's fp32 peak
+    (425 GFLOP in 2.0 s against a 2.4 TFLOPS machine), so it is NOT
+    compute-bound — either the kernels are inefficient or there are thousands
+    of tiny ones each paying launch overhead. Dividing the query's kernel
+    count by its duration says which, before anyone reaches for fp16 or a
+    profiler.
+
+    ⚠ NOT AN ERROR WHEN ABSENT. The interceptor is a property of the PROCESS
+    (LD_PRELOAD), not of this binary, so a run without it is normal and simply
+    has no count to report.
+    """
+    try:
+        var lib = OwnedDLHandle("./mojo_rl/cuda/libcuda_intercept.so")
+        return Int(lib.get_function[c_int]("intercept_get_launch_count")())
+    except:
+        return -1
 
 
 def ms(ns: Int) -> Float64:
@@ -152,6 +176,7 @@ def main() raises:
         d.synchronize()
 
     # ── end to end, the honest total ─────────────────────────────────────
+    var launches_before = _launch_count()
     var best = 0
     var total = 0
     for r in range(REPS):
@@ -170,6 +195,18 @@ def main() raises:
             best = dt
         print("      rep", r, ":", ms(dt), "ms")
 
+    var launches_after = _launch_count()
+    print()
+    if launches_before >= 0 and launches_after > launches_before:
+        var per_query = (launches_after - launches_before) // REPS
+        print("  kernel launches per query:", per_query)
+        # ⚠ ~5 us of launch overhead each is the rule of thumb on this class of
+        # part. If that product is a large share of the query, the fix is
+        # FEWER launches (fusion, or the CUDA-graph capture this repo already
+        # has in `mojo_rl/cuda/graph.mojo`) — not lower precision.
+        var overhead_ms = Float64(per_query) * 0.005
+        print("     at ~5 us each that is", overhead_ms, "ms =",
+              100.0 * overhead_ms / ms(best), "% of the query")
     print()
     print("  camera preprocessing (CPU, 2 frames):", ms(preproc_ns), "ms")
     print("  query, min of", REPS, ":", ms(best), "ms")
