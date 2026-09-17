@@ -117,6 +117,9 @@ act-deploy-jetson-cpu = { cmd = "mojo build -I . --target-accelerator sm_87 -o /
 # preference; building both would be 6.4 GB.
 smolvla-probe-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -o /tmp/svla_probe examples/so101/smolvla_so101_latency_probe.mojo && /tmp/svla_probe", description = "Time ONE SmolVLA query on the Orin — the prerequisite for the deploy" }
 smolvla-deploy-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -DSMOLVLA_GPU=1 -o /tmp/svla_deploy examples/so101/smolvla_so101_deploy_real.mojo && /tmp/svla_deploy", depends-on = ["build-serial", "build-opencv"], description = "Run a fine-tuned SmolVLA on the SO-101 (-- --ckpt C --stats S; --arm to move it)" }
+# The expert attention, five variants, one run — see the file's header for how
+# to read it. nsys put `_ba_kernel` at 0.29% of fp32 peak; this says why.
+smolvla-attn-bench-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -o /tmp/attn_bench benchmarks/smolvla_block_attention_bench.mojo && /tmp/attn_bench", description = "SmolVLA expert attention: five kernel variants, timed and gated" }
 
 [feature.amd]
 
