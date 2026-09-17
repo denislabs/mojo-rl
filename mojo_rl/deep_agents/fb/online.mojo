@@ -17,8 +17,11 @@ the `OffPolicyAgentGpu` surface that `run_offpolicy_train_batched` drives.
 Nothing in the FB step is re-implemented here; what is new is what an online
 loop needs around it:
 
-  * a DEVICE replay ring `[CAP] x (obs | act | next_obs | z | terminated)`,
-    written by `record_batch_gpu` and gathered by the kernels FB already has;
+  * a DEVICE replay ring `[CAP] x (obs | act | z | terminated | boundary)`,
+    written by `record_batch_gpu` and gathered by the kernels FB already has.
+    `next_obs` is NOT a column: the write order makes it `r_obs` one env step
+    later, and `boundary` marks the 0.2 % of rows where that derivation does
+    not hold (docs §12.23). That is 3256 B per transition instead of 5360;
   * a per-lane `z` held for `z_hold` env steps then resampled from a mixture
     of the sphere and a FIFO `ZBuffer` of recently trained `z` — BFM-Zero's
     rollout rule (`use_mix_rollout`, buffer of 10 k, hold 150);
@@ -60,7 +63,10 @@ the device-graph backend rather than recording a partial step.
   * The discriminator / `Q_D` (A4). By design — see the top of this file.
   * Termination masking in the measure target. `FBTrainer` has none, because
     dm_control tasks never terminate; `terminated` is stored in the ring so a
-    terminating env (the task family) can add it without a ring change.
+    terminating env (the task family) can add it without a ring change. A
+    terminated row is also flagged as a sampling boundary, so a terminating
+    env never trains on a pair that crosses the termination even before the
+    mask exists.
 """
 
 from std.gpu import global_idx, thread_idx
@@ -121,23 +127,39 @@ def ring_store_kernel[
 ](
     obs_src: Pointer[Scalar[DT], MutAnyOrigin],
     act_src: Pointer[Scalar[DT], MutAnyOrigin],
-    nxt_src: Pointer[Scalar[DT], MutAnyOrigin],
     term_src: Pointer[Scalar[DT], MutAnyOrigin],
     z_src: Pointer[Scalar[DT], MutAnyOrigin],
     r_obs: Pointer[Scalar[DT], MutAnyOrigin],
     r_act: Pointer[Scalar[DT], MutAnyOrigin],
-    r_nxt: Pointer[Scalar[DT], MutAnyOrigin],
     r_term: Pointer[Scalar[DT], MutAnyOrigin],
+    r_bnd: Pointer[Scalar[DT], MutAnyOrigin],
     r_z: Pointer[Scalar[DT], MutAnyOrigin],
     pos: Int32,
+    bnd: Int32,
 ):
     """Append `LANES` transitions at rows `(pos + lane) % CAP`, one launch.
+
+    ⚠ `next_obs` is NOT stored (docs §12.23). The write order is the whole
+    reason it need not be: lane `l` of step `s` lands at `(pos + l) % CAP`
+    and `pos` advances by exactly `LANES` per step, so
+
+        next_obs(row) == r_obs[(row + LANES) % CAP]
+
+    for every row whose successor is the same lane's next step. That is every
+    row except the last one before an episode boundary, which is what `r_bnd`
+    marks — one float per row instead of a second `OBS`-wide copy of every
+    observation (5360 B -> 3256 B per transition, the largest single item in
+    the run's memory budget).
+
+    `bnd` is a SCALAR because every lane resets on the same step (the
+    driver's scheduled `_rsi_reset`); a per-lane termination is OR-ed in from
+    `term_src` so a terminating env needs no further change here.
 
     Element-parallel over the concatenated row width so a wide `z` (128) does
     not serialise inside a per-lane thread. `pos` is a host scalar because
     `record_batch_gpu` is eager — the driver never captures it.
     """
-    comptime W = OBS + ACT + OBS + D + 1
+    comptime W = OBS + ACT + D + 2
     var t = Int(global_idx.x)
     if t >= LANES * W:
         return
@@ -149,14 +171,114 @@ def ring_store_kernel[
     elif k < OBS + ACT:
         var j = k - OBS
         r_act[unsafe_offset=row * ACT + j] = act_src[unsafe_offset=lane * ACT + j]
-    elif k < OBS + ACT + OBS:
+    elif k < OBS + ACT + D:
         var j = k - OBS - ACT
-        r_nxt[unsafe_offset=row * OBS + j] = nxt_src[unsafe_offset=lane * OBS + j]
-    elif k < OBS + ACT + OBS + D:
-        var j = k - OBS - ACT - OBS
         r_z[unsafe_offset=row * D + j] = z_src[unsafe_offset=lane * D + j]
-    else:
+    elif k == OBS + ACT + D:
         r_term[unsafe_offset=row] = term_src[unsafe_offset=lane]
+    else:
+        var terminated = term_src[unsafe_offset=lane] != Scalar[DT](0.0)
+        var b = (Int(bnd) != 0) or terminated
+        r_bnd[unsafe_offset=row] = Scalar[DT](1.0) if b else Scalar[DT](0.0)
+
+
+def ring_indices_kernel[
+    BATCH: Int, CAP: Int, LANES: Int
+](
+    indices: LayoutTensor[IDX_DT, Layout.row_major(BATCH), MutAnyOrigin],
+    size_buf: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    pos_buf: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    r_bnd: Pointer[Scalar[DT], MutAnyOrigin],
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """The `s` draw, once `s'` is derived rather than stored (§12.23).
+
+    `_uniform_indices_dev_kernel` cannot be used for this draw any more,
+    because two rows of the ring are no longer interchangeable:
+
+      * the newest `LANES` rows have NO successor yet — `(row + LANES) % CAP`
+        is either unwritten (before the first wrap) or a row from `CAP` steps
+        ago (after it). They are excluded from the draw;
+      * a row flagged in `r_bnd` has a successor that is a POST-RESET
+        observation, not its own next state. It is remapped to the same
+        lane's previous step, which is 500 steps from the nearest boundary
+        and therefore always safe.
+
+    The exclusion is a WINDOW, not a prefix, so the draw is over `j` in
+    `[0, size - LANES)` and the row is `(base + j) % CAP` with
+    `base = (pos - size) mod CAP` the oldest stored row — 0 before the ring
+    wraps, `pos` after it.
+
+    ⚠ `CAP` need NOT be a multiple of `LANES`. Each step writes the block
+    `[pos, pos + LANES)` mod `CAP` and `pos` advances by exactly `LANES`, so
+    the blocks tile the circle contiguously whatever the remainder: every row
+    is rewritten exactly once per `CAP` rows written, `(row + LANES) % CAP`
+    is always the same lane's next step, and `base` is always the oldest row.
+    (`CAP = 2_000_000` with 1024 lanes is not a multiple, and is correct.)
+
+    The remap costs ~0.2 % of draws a duplicated predecessor (one boundary
+    per lane per `T_EPISODE` = 500 steps). That is a sampling bias, not a
+    corrupted pair, and it is the price of the whole change.
+
+    Both `size` and `pos` are read from DEVICE buffers: this draw runs inside
+    the captured training step, and a host scalar here is the
+    "catastrophic-divergence bug" `replay_gpu.mojo` names — sampling frozen
+    to the capture-time fill for the rest of the run.
+    """
+    var i = Int(global_idx.x)
+    if i >= BATCH:
+        return
+    var size = Int(size_buf[0])
+    var n = size - LANES
+    if n < 1:
+        n = 1
+    var base = Int(pos_buf[0]) - size
+    if base < 0:
+        base += CAP
+    var offset_base = rebind[UInt64](offset_buf[0])
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])
+    var j = Int(u * Float32(n))
+    if j >= n:
+        j = n - 1
+    if j < 0:
+        j = 0
+    var row = base + j
+    if row >= CAP:
+        row -= CAP
+    if r_bnd[unsafe_offset=row] != Scalar[DT](0.0):
+        # step back one env step within the same lane; forward if the window
+        # has no room behind (only reachable during warmup, when n < 2*LANES)
+        var j2 = j - LANES
+        if j2 < 0:
+            j2 = j + LANES
+            if j2 >= n:
+                j2 = j
+        j = j2
+        row = base + j
+        if row >= CAP:
+            row -= CAP
+    indices[i] = Scalar[IDX_DT](row)
+
+
+def ring_next_idx_kernel[BATCH: Int, CAP: Int, LANES: Int](
+    idx: Pointer[Scalar[IDX_DT], MutAnyOrigin],
+    dst: Pointer[Scalar[IDX_DT], MutAnyOrigin],
+):
+    """`dst[i] = (idx[i] + LANES) % CAP` — the successor row of a sampled row.
+
+    Separate from the draw so the SAME index array feeds both the `s` gather
+    and the `s'` gather: `s` and `s'` must come from one index, or they are
+    two unrelated transitions that happen to be one step apart.
+    """
+    var i = Int(global_idx.x)
+    if i >= BATCH:
+        return
+    var r = Int(idx[unsafe_offset=i]) + LANES
+    if r >= CAP:
+        r -= CAP
+    dst[unsafe_offset=i] = Scalar[IDX_DT](r)
 
 
 def z_lane_resample_kernel[D: Int, LANES: Int, ZBUF: Int](
@@ -361,14 +483,17 @@ struct FBOnlineAgent[
     # ── replay ring (device only — no host mirror of CAP x D floats) ────
     var r_obs: Tensor
     var r_act: Tensor
-    var r_nxt: Tensor
     var r_z: Tensor
     var r_term: Tensor
+    var r_bnd: Tensor          # CAP, 1 = this row's successor is post-reset
     var size: Int
     var pos: Int
+    var bnd_next: Bool         # set by `set_boundary`, consumed by the next record
     var size_dev: Optional[DeviceBuffer[DType.int32]]
+    var pos_dev: Optional[DeviceBuffer[DType.int32]]
     var samp_off: Optional[DeviceBuffer[DType.uint64]]
     var idx_s: Optional[DeviceBuffer[IDX_DT]]
+    var idx_sn: Optional[DeviceBuffer[IDX_DT]]
     var idx_sp: Optional[DeviceBuffer[IDX_DT]]
 
     # ── expert store (A3.5), device-resident; attached after `make` ───────
@@ -444,14 +569,17 @@ struct FBOnlineAgent[
         )
         self.r_obs = Tensor()
         self.r_act = Tensor()
-        self.r_nxt = Tensor()
         self.r_z = Tensor()
         self.r_term = Tensor()
+        self.r_bnd = Tensor()
         self.size = 0
         self.pos = 0
+        self.bnd_next = False
         self.size_dev = None
+        self.pos_dev = None
         self.samp_off = None
         self.idx_s = None
+        self.idx_sn = None
         self.idx_sp = None
         self.exp_obs = Tensor()
         self.exp_act = Tensor()
@@ -586,20 +714,30 @@ struct FBOnlineAgent[
         a._roll_seed = seed + 101
         a._warmup_seed = seed + 202
 
-        # Ring: device only. A host mirror of CAP x (2·OBS + ACT + D + 1)
-        # floats at CAP = 1 M would be ~700 MB of host RAM nothing reads.
+        # Ring: device only. A host mirror of CAP x (OBS + ACT + D + 2)
+        # floats at CAP = 1 M would be ~350 MB of host RAM nothing reads.
+        # `next_obs` is derived, not stored — see `ring_store_kernel`.
         a.r_obs.ensure_gpu(ctx, Self.CAP * Self.OBS)
         a.r_act.ensure_gpu(ctx, Self.CAP * Self.ACT)
-        a.r_nxt.ensure_gpu(ctx, Self.CAP * Self.OBS)
         a.r_z.ensure_gpu(ctx, Self.CAP * Self.D)
         a.r_term.ensure_gpu(ctx, Self.CAP)
+        a.r_bnd.ensure_gpu(ctx, Self.CAP)
+        # Every row starts flagged. This is NOT what keeps the warmup safe —
+        # `learning_starts` and the draw's window bound are — but it means a
+        # ring inspected before it has been written reads as "no valid
+        # successor" rather than as a transition into uninitialised memory.
+        a.r_bnd.dev.value().enqueue_fill(Scalar[DT](1.0))
         var sz = ctx.enqueue_create_buffer[DType.int32](1)
         sz.enqueue_fill(Int32(0))
         a.size_dev = sz^
+        var pz = ctx.enqueue_create_buffer[DType.int32](1)
+        pz.enqueue_fill(Int32(0))
+        a.pos_dev = pz^
         var so = ctx.enqueue_create_buffer[DType.uint64](1)
         so.enqueue_fill(UInt64(0))
         a.samp_off = so^
         a.idx_s = ctx.enqueue_create_buffer[IDX_DT](Self.BATCH)
+        a.idx_sn = ctx.enqueue_create_buffer[IDX_DT](Self.BATCH)
         a.idx_sp = ctx.enqueue_create_buffer[IDX_DT](Self.BATCH)
 
         var ro = ctx.enqueue_create_buffer[DType.uint64](1)
@@ -676,10 +814,19 @@ struct FBOnlineAgent[
 
     def _gather_ring[ROWS: Int](mut self, row0: Int) raises:
         """Two independent uniform draws over the ring's fill, gathered into
-        batch rows `[row0, row0 + ROWS)` of `s`, `a`, `s'`, `z` and `s+`."""
+        batch rows `[row0, row0 + ROWS)` of `s`, `a`, `s'`, `z` and `s+`.
+
+        The `s` draw goes through `ring_indices_kernel` (windowed + boundary
+        remapped) because `s'` is DERIVED from the same index; the `s+` draw
+        stays a plain uniform over the fill, because a goal state needs no
+        successor and every stored row is a legitimate goal.
+        """
         var c = self.ctx.value()
         var size_lt = LayoutTensor[DType.int32, Layout.row_major(1)](
             self.size_dev.value()
+        )
+        var pos_lt = LayoutTensor[DType.int32, Layout.row_major(1)](
+            self.pos_dev.value()
         )
         var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
             self.samp_off.value()
@@ -691,8 +838,10 @@ struct FBOnlineAgent[
             self.idx_sp.value()
         )
         comptime nb = _blocks(ROWS)
-        c.enqueue_function[_uniform_indices_dev_kernel[ROWS]](
-            is_lt, size_lt, self._train_seed, off_lt,
+        c.enqueue_function[ring_indices_kernel[ROWS, Self.CAP, Self.LANES]](
+            is_lt, size_lt, pos_lt,
+            mptr(self.r_bnd.dev.value().unsafe_ptr()),
+            self._train_seed, off_lt,
             grid_dim=nb, block_dim=TPB,
         )
         c.enqueue_function[_incr_offset_kernel[ROWS]](
@@ -706,7 +855,11 @@ struct FBOnlineAgent[
             off_lt, grid_dim=1, block_dim=1,
         )
         var ip_s = mptr(self.idx_s.value().unsafe_ptr())
+        var ip_sn = mptr(self.idx_sn.value().unsafe_ptr())
         var ip_sp = mptr(self.idx_sp.value().unsafe_ptr())
+        c.enqueue_function[ring_next_idx_kernel[ROWS, Self.CAP, Self.LANES]](
+            ip_s, ip_sn, grid_dim=nb, block_dim=TPB,
+        )
         c.enqueue_function[gather_rows_kernel[Self.OBS, ROWS]](
             mptr(self.r_obs.dev.value().unsafe_ptr()), ip_s,
             mptr(self.t.bs.dev.value().unsafe_ptr()).unsafe_offset(row0 * Self.OBS),
@@ -718,7 +871,7 @@ struct FBOnlineAgent[
             grid_dim=_blocks(ROWS * Self.ACT), block_dim=TPB,
         )
         c.enqueue_function[gather_rows_kernel[Self.OBS, ROWS]](
-            mptr(self.r_nxt.dev.value().unsafe_ptr()), ip_s,
+            mptr(self.r_obs.dev.value().unsafe_ptr()), ip_sn,
             mptr(self.t.bsn.dev.value().unsafe_ptr()).unsafe_offset(row0 * Self.OBS),
             grid_dim=_blocks(ROWS * Self.OBS), block_dim=TPB,
         )
@@ -1021,33 +1174,43 @@ struct FBOnlineAgent[
         done_dev: DeviceBuffer[DT],
     ) raises:
         """Append the lanes' transitions, each with the `z` its action was
-        taken under. `reward` is NOT stored: FB never reads it."""
+        taken under. `reward` is NOT stored: FB never reads it.
+
+        ⚠ `obs_dev` (the successor) is not stored either — it is recovered
+        from the NEXT step's `prev_obs`, which is the same array. What is
+        stored in its place is one boundary flag per row; see
+        `ring_store_kernel` and `set_boundary`.
+        """
         comptime assert N_ENVS == Self.LANES, (
             "FBOnlineAgent: the driver's N_ENVS must equal the agent's LANES"
         )
         _ = reward_dev
-        comptime W = Self.OBS + Self.ACT + Self.OBS + Self.D + 1
+        _ = obs_dev
+        comptime W = Self.OBS + Self.ACT + Self.D + 2
         ctx.enqueue_function[
             ring_store_kernel[Self.OBS, Self.ACT, Self.D, Self.CAP, Self.LANES]
         ](
             mptr(prev_obs_dev.unsafe_ptr()),
             mptr(action_dev.unsafe_ptr()),
-            mptr(obs_dev.unsafe_ptr()),
             mptr(done_dev.unsafe_ptr()),
             mptr(self.z_lane.dev.value().unsafe_ptr()),
             mptr(self.r_obs.dev.value().unsafe_ptr()),
             mptr(self.r_act.dev.value().unsafe_ptr()),
-            mptr(self.r_nxt.dev.value().unsafe_ptr()),
             mptr(self.r_term.dev.value().unsafe_ptr()),
+            mptr(self.r_bnd.dev.value().unsafe_ptr()),
             mptr(self.r_z.dev.value().unsafe_ptr()),
             Int32(self.pos),
+            Int32(1) if self.bnd_next else Int32(0),
             grid_dim=_blocks(Self.LANES * W), block_dim=TPB,
         )
+        self.bnd_next = False
         self.pos = (self.pos + Self.LANES) % Self.CAP
         self.size = self.size + Self.LANES
         if self.size > Self.CAP:
             self.size = Self.CAP
-        # Device mirror of the fill — what the captured index draw reads.
+        # Device mirrors of the fill and the write head — what the captured
+        # index draw reads. A host scalar baked into the graph would pin
+        # sampling to the capture-time ring for the rest of the run.
         ctx.enqueue_function[_set_size_kernel](
             LayoutTensor[DType.int32, Layout.row_major(1)](
                 self.size_dev.value()
@@ -1055,6 +1218,29 @@ struct FBOnlineAgent[
             Int32(self.size),
             grid_dim=1, block_dim=1,
         )
+        ctx.enqueue_function[_set_size_kernel](
+            LayoutTensor[DType.int32, Layout.row_major(1)](
+                self.pos_dev.value()
+            ),
+            Int32(self.pos),
+            grid_dim=1, block_dim=1,
+        )
+
+    def set_boundary(mut self, b: Bool):
+        """Tell the NEXT `record_batch_gpu` that the transition it records is
+        the last one before the env is reset, so its successor row holds a
+        post-reset observation rather than its own next state.
+
+        Called by the driver immediately before `record_batch_gpu`, with
+        `(s + 1) % T_EPISODE == 0` — the reset runs at the START of a step,
+        so it is step `s` whose successor is broken, not step `s + 1`.
+
+        A driver that never calls this records no boundaries at all, which is
+        correct for an env that only terminates (the per-lane `done` flag is
+        OR-ed in by the store kernel) and WRONG for one that resets on a
+        schedule. Both G1 drivers call it.
+        """
+        self.bnd_next = b
 
     def record_batch_gpu_nstep[
         N_ENVS: Int, NS: Int

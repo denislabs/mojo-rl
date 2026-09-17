@@ -134,6 +134,11 @@ def main() raises:
     seed(SEED)
     var a = _make(ctx)
     var env = EnvT(ctx)
+    # The G1 driver resets on a schedule and marks the transition before each
+    # reset (§12.23); this driver resets on `done`, which the store kernel
+    # ORs in by itself. Called once so the forwarder is instantiated HERE and
+    # not first on the box, where a compile error costs 30 minutes.
+    a.set_boundary(False)
     comptime TOTAL = 2 * CAP
     _ = run_offpolicy_train_batched[
         Agent, EnvT, N_ENVS=LANES,

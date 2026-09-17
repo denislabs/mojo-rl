@@ -376,9 +376,53 @@ def test_expert_slice(ctx: DeviceContext) raises:
     rw.enqueue_fill(Scalar[DT](0.0))
     var dn = ctx.enqueue_create_buffer[DT](LANES)
     dn.enqueue_fill(Scalar[DT](0.0))
+    # THREE records, the first flagged as an episode boundary. The ring
+    # derives `s'` from the row one env step later (§12.23), so:
+    #   * the newest LANES rows have no successor yet and are excluded from
+    #     the draw — one record would leave the window empty and fall into
+    #     the sampler's degenerate clamp, a path the run never takes;
+    #   * the flagged rows 0..LANES-1 must be remapped away, which with this
+    #     fill means EVERY ring draw has to land at or above LANES.
+    # This is also the only place `set_boundary` is instantiated before the
+    # G1 driver's 30-minute build on the box.
+    a.set_boundary(True)
+    a.record_batch_gpu[LANES](ctx, ob, ac, rw, ob, dn)
+    a.record_batch_gpu[LANES](ctx, ob, ac, rw, ob, dn)
     a.record_batch_gpu[LANES](ctx, ob, ac, rw, ob, dn)
     a._sample_batch()
     ctx.synchronize()
+    var h_bnd = ctx.enqueue_create_host_buffer[DT](CAP)
+    ctx.enqueue_copy(h_bnd, a.r_bnd.dev.value())
+    var h_is = ctx.enqueue_create_host_buffer[IDX_DT](BATCH)
+    ctx.enqueue_copy(h_is, a.idx_s.value())
+    ctx.synchronize()
+    # Only the 3 * LANES rows this section wrote: the rest of the ring is
+    # still at its init fill of 1.0, which is deliberate (an unwritten row
+    # must not read as a transition) and would swamp the count.
+    var n_flag = 0
+    var flag_outside = 0
+    for r in range(3 * LANES):
+        if Float64(h_bnd[r]) != 0.0:
+            n_flag += 1
+            if r >= LANES:
+                flag_outside += 1
+    var below = 0
+    for i in range(BATCH - EXPERT):
+        if Int(h_is[i]) < LANES:
+            below += 1
+    print("      [8] boundary rows flagged:", n_flag, "of the", 3 * LANES,
+          "written (want", LANES, ", outside the first batch", flag_outside,
+          ")  ring draws still on one:", below)
+    assert_true(
+        n_flag == LANES and flag_outside == 0,
+        "`set_boundary` did not reach the ring, or reached the wrong rows:"
+        " exactly the first record's LANES rows should be flagged",
+    )
+    assert_true(
+        below == 0,
+        "a ring draw returned a flagged row: its successor is the next"
+        " episode's first observation, not its own next state",
+    )
     var ba = _download_rows(ctx, a.t.ba, BATCH * ACT)
     var ok_e = 0
     var ok_r = 0

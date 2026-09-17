@@ -153,23 +153,30 @@ comptime HB: Int = G1_HB
 comptime HD: Int = G1_HD
 comptime BATCH: Int = 1024
 # ⚠ THE RING IS THE LARGEST THING ON THE CARD, not the model. Measured from
-# `MOJO_RL_ALLOC_TRACE=1` at H=2048/L=6 (docs §12.22): `r_obs` and `r_nxt` are
+# `MOJO_RL_ALLOC_TRACE=1` at H=2048/L=6 (docs §12.22): `r_obs` and `r_nxt` were
 # 4020.7 MB EACH (CAP x 527 x 4) and `r_z` another 1953 MB — 9.76 GiB of a
 # 25.9 GiB Tensor peak, against a 28.5 GiB pool that still OOM'd, so there is
 # >= 2.6 GiB of non-Tensor overhead (MAX workspaces, the graph, cuBLAS) on top.
 #
-# CAP went 2.0 -> 1.5 M to make room for a 2048/6 tower and is BACK AT 2.0 M:
-# that tower needs >30 GiB and does not fit at any CAP, so the buffer was never
-# the thing to cut. At 1536/4 the budget is 23.6 GiB with 7.4 GiB spare, and
-# keeping CAP at the value runs 1-6 used means the tower experiment is not
-# confounded by a smaller ring.
+# `r_nxt` IS NOW GONE (docs §12.23): it was `r_obs` shifted by one step within
+# a lane, so it is derived instead of stored and the ring costs 3256 B per
+# transition rather than 5360. At CAP 2 M that frees 3.92 GiB, which is what
+# pays for the CAP raise below.
 #
-# The reference's own buffer is 5_120_000 and does not fit beside this tower on
-# 32 GB; this is 3.4x below it. ⚠ The RIGHT fix is not a smaller CAP: `r_nxt`
-# is `r_obs` shifted by one within a lane, so dropping it frees 4.02 GiB with
-# NO loss of diversity and would let CAP go UP. It is a real change to the ring
-# (episode boundaries, the 1024-lane interleave), so it is not done here.
-comptime CAP: Int = 2_000_000
+# CAP went 2.0 -> 1.5 M to make room for a 2048/6 tower, back to 2.0 M when
+# that tower turned out not to fit at ANY CAP, and is now 4.0 M on the freed
+# space. Budget at 1536/4: ring 12.15 GiB + the rest ~13.2 GiB = 25.3 GiB,
+# ~27 GB as the vast dashboard reports it, against 31.8 GB.
+#
+# ⚠ THAT ESTIMATE IS THE FOURTH ONE IN THIS TRACK AND THE FIRST THREE WERE
+# WRONG (18.3, 23.3, 26 GiB against a 25.9 GiB measurement). Read the
+# dashboard at step 0 before trusting the run; if it OOMs, CAP is one constant.
+#
+# The reference's own buffer is 5_120_000. That needs ~28.7 GiB here, above
+# where this card has already OOM'd once — it is reachable only paired with
+# the 1024/3 tower (§12.21 says 40 M params tracked BETTER than 111 M), which
+# is a separate experiment and is NOT bundled into this change.
+comptime CAP: Int = 4_000_000
 comptime SEQ: Int = 8
 comptime ZBUF: Int = 8192
 comptime T_EPISODE: Int = 500
@@ -915,6 +922,10 @@ def main() raises:
             env_steps,
         )
         env.step_batch[N_ENVS](Optional(ctx), UInt64(seed_v) + UInt64(s))
+        # The reset runs at the START of a step, so it is THIS transition
+        # whose successor row will hold a post-reset observation — the ring
+        # derives `s'` from the next row and must be told to skip this one.
+        agent.set_boundary((s + 1) % T_EPISODE == 0)
         agent.record_batch_gpu[N_ENVS](ctx, prev_obs, env._action, reward0, env._obs, done0)
 
         if env_steps >= SEED_STEPS:

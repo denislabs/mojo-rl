@@ -457,6 +457,11 @@ struct FBCPROnlineAgent[
             ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev
         )
 
+    def set_boundary(mut self, b: Bool):
+        """Forwarded to the ring — see `FBOnlineAgent.set_boundary`. The
+        driver calls this on the agent it holds, which is this one."""
+        self.base.set_boundary(b)
+
     def record_batch_gpu_nstep[
         N_ENVS: Int, NS: Int
     ](

@@ -29,6 +29,13 @@ tests/deep_agents/test_fb_cpr_online_smoke.mojo
 # capture blocker, and the capture abort names only the FIRST one.
 tests/deep_agents/test_fb_cuda_graph_safety.mojo
 
+# The replay ring derives `s'` instead of storing it (§12.23): the successor
+# is `r_obs[(row + LANES) % CAP]`. Decodes every gathered row back to the
+# (step, lane) that wrote it, so a wrong lane or a wrong step is visible; the
+# "no pair straddles a reset" leg carries an all-zero-`r_bnd` POSITIVE CONTROL,
+# because without one it would pass on a kernel that has no remap at all.
+tests/deep_agents/test_fb_ring_derived_next.mojo
+
 # The ONLINE agent (§18.3 A3) on a batched GPU Pendulum: lane z on the sphere
 # and resampled, replay ring wraps, relabel_ratio keeps what it says, the
 # driver runs end to end, two device steps advance the counters, and the
