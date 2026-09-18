@@ -115,8 +115,14 @@ def _baselines(
     """(L1 of the zero action, L1 of the training-mean action, rows) over every
     held-out row, in the trainer's normalised units — `|(a - mean)/std|`
     averaged over the action's words. The training mean normalises to exactly
-    0, so its L1 is the mean |z| of the held-out rows; the zero action's is the
-    mean |(0 - mean)/std|."""
+    0, so its L1 is the mean |z| of the held-out rows; the zero action
+    normalises to `z0 = (0 - mean)/std`, so its L1 is the mean |z - z0| =
+    |a|/std.
+
+    ⚠ IT WAS `|z0|` — the distance from the zero action to the MEAN action,
+    0.20 on libero_goal — and the first box run printed a 0.42 fit as losing
+    to it. The error of a constant prediction is measured against the
+    targets, not against another constant."""
     var l1_zero = 0.0
     var l1_mean = 0.0
     var rows = 0
@@ -130,7 +136,7 @@ def _baselines(
                          - Float64(ds.action_mean[k])) / Float64(ds.action_std[k])
                 var z0 = (0.0 - Float64(ds.action_mean[k])) / Float64(ds.action_std[k])
                 l1_mean += abs(z)
-                l1_zero += abs(z0)
+                l1_zero += abs(z - z0)
             rows += 1
     var n = Float64(rows * ADIM) if rows > 0 else 1.0
     return (l1_zero / n, l1_mean / n, rows)
