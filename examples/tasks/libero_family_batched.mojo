@@ -275,6 +275,28 @@ constant, but run this on a box with memory and close it out: the laptop it was
 written on has ~156 MB free and two control builds were killed for low
 memory."""
 
+comptime IMPL_MATERIAL_ABS: Float64 = 1.0e-4
+"""⚠⚠ THE RATIO ALONE IS NOT A GATE, AND THIS IS THE OTHER HALF.
+
+A ratio fires wherever a lane's float32 floor happens to be small, whatever the
+absolute size of the disagreement. Measured on the 5090 sweep:
+
+    libero_kitchen_scene2   ratio 10.5   implementation axis 2.6e-06
+    libero_kitchen_scene6   ratio 10.8   implementation axis 2.3e-06
+
+Ten times a MICROMETRE is still a micrometre. Failing on those repeats the 1e-3
+constant's mistake with the sign reversed: the constant ignored the floor, the
+bare ratio ignores the magnitude. A device is worth investigating only when it is
+BOTH materially wrong and far above what float32 costs.
+
+1e-4 is chosen on PHYSICAL grounds, not fitted: qpos here is metres and unit
+quaternion components, LIBERO manipulation cares about roughly a millimetre
+(grasp tolerance), and this sits an order of magnitude below that. A disagreement
+under 0.1 mm in one control step is not a defect in anybody's engine.
+
+⚠ THE UNFILTERED RATIO IS STILL REPORTED, so a lane that is climbing toward
+materiality is visible before it trips the gate."""
+
 comptime PREC_FLOOR_MIN: Float64 = 1.0e-9
 """Below this the precision axis is itself rounding and cannot calibrate a
 ratio; the absolute smoke bound takes over."""
@@ -834,7 +856,14 @@ def run[T: PlacementTable, M: ModelDefLike](
     var prec_worst = 0.0
     var ratio_worst = 0.0
     var ratio_worst_lane = -1
+    var ratio_worst_impl = 0.0
+    var ratio_worst_prec = 0.0
     var ratio_lanes = 0
+    var ratio_mat = 0.0
+    var ratio_mat_lane = -1
+    var ratio_mat_impl = 0.0
+    var ratio_mat_prec = 0.0
+    var ratio_mat_lanes = 0
     var resync_worst = 0.0
     var window_worst = 0.0
     var end_worst = 0.0
@@ -1222,7 +1251,29 @@ def run[T: PlacementTable, M: ModelDefLike](
             if lr > ratio_worst:
                 ratio_worst = lr
                 ratio_worst_lane = e
+                # ⚠⚠ THE WORST LANE'S OWN NUMBERS, WITHOUT WHICH THE RATIO IS
+                # UNREADABLE. The global `impl_worst`/`prec_worst` are maxima
+                # over DIFFERENT lanes, so their quotient is not this lane's:
+                # measured on libero_kitchen_scene5, global 2.95 against a
+                # worst-lane 2658 — a 900x disagreement. A ratio without its
+                # own numerator and denominator cannot distinguish a real
+                # defect from a lane whose float32 floor happens to be tiny.
+                ratio_worst_impl = lane_impl
+                ratio_worst_prec = lane_prec
             ratio_lanes += 1
+            # ⚠⚠ AND THE GATE ONLY LOOKS AT LANES THAT MATTER PHYSICALLY. A
+            # ratio alone fires on numerically irrelevant lanes: measured
+            # libero_kitchen_scene2 at 10.5x and scene6 at 10.8x — on
+            # implementation errors of 2.6 MICROMETRES. Ten times a
+            # micrometre is still a micrometre. Gating the ratio alone repeats
+            # the 1e-3 constant's mistake with the opposite sign.
+            if lane_impl > IMPL_MATERIAL_ABS and lr > ratio_mat:
+                ratio_mat = lr
+                ratio_mat_lane = e
+                ratio_mat_impl = lane_impl
+                ratio_mat_prec = lane_prec
+            if lane_impl > IMPL_MATERIAL_ABS:
+                ratio_mat_lanes += 1
         if lane_resync > resync_worst:
             resync_worst = lane_resync
         if lane_window_k >= 0:
@@ -1241,9 +1292,30 @@ def run[T: PlacementTable, M: ModelDefLike](
           RESYNC_TOL)
     print("     AXES: implementation (gpu-f32 vs cpu-f32)", impl_worst,
           "| precision (cpu-f32 vs cpu-f64)", prec_worst)
-    print("        worst PER-LANE implementation/precision ratio", ratio_worst,
-          "on lane", ratio_worst_lane, "over", ratio_lanes,
-          "calibratable lanes | bound", IMPL_OVER_PREC_MAX)
+    print("        worst PER-LANE ratio", ratio_worst, "on lane",
+          ratio_worst_lane, "(impl", ratio_worst_impl, "prec",
+          ratio_worst_prec, ") over", ratio_lanes, "calibratable lanes")
+    print("        worst MATERIAL ratio (impl >", IMPL_MATERIAL_ABS, ")",
+          ratio_mat, "on lane", ratio_mat_lane, "(impl", ratio_mat_impl,
+          "prec", ratio_mat_prec, ") over", ratio_mat_lanes,
+          "material lanes | GATED at", IMPL_OVER_PREC_MAX, "x")
+    # ⚠⚠ A MACHINE-READABLE ROW, SEPARATE FROM THE PROSE ABOVE. Sweeps parse
+    # THIS; the human lines are then free to be reworded. Renaming a report line
+    # already broke `scripts/libero_axis_sweep_cuda.sh`'s extraction once, and
+    # the failure mode is silent — every family records "-" and the sweep looks
+    # like it found nothing. `key=value`, one line, order-independent.
+    var axisrow = String("AXISROW family=") + FAMILY
+    axisrow += " mat_ratio=" + String(ratio_mat)
+    axisrow += " mat_impl=" + String(ratio_mat_impl)
+    axisrow += " mat_prec=" + String(ratio_mat_prec)
+    axisrow += " mat_lane=" + String(ratio_mat_lane)
+    axisrow += " mat_lanes=" + String(ratio_mat_lanes)
+    axisrow += " all_ratio=" + String(ratio_worst)
+    axisrow += " all_lane=" + String(ratio_worst_lane)
+    axisrow += " resync=" + String(resync_worst)
+    axisrow += " impl_max=" + String(impl_worst)
+    axisrow += " prec_max=" + String(prec_worst)
+    print(axisrow)
     print("        (a ratio at or below ~1 means the device is at the float32"
           " FLOOR; the gate is this ratio, NOT an absolute bound)")
 
@@ -1275,15 +1347,18 @@ def run[T: PlacementTable, M: ModelDefLike](
     # re-synced number is one step's worth, every step, and IS boundable.
     if cpu_lanes > 0:
         if ratio_lanes > 0:
-            # ⚠ THE DEVICE AGAINST FLOAT32 ITSELF, PER LANE — see
-            # IMPL_OVER_PREC_MAX.
-            if ratio_worst > IMPL_OVER_PREC_MAX:
+            # ⚠ BOTH CONDITIONS, ON THE SAME LANE: materially wrong AND far
+            # above that lane's own float32 floor. See IMPL_MATERIAL_ABS for
+            # why either alone is a false-alarm generator.
+            if ratio_mat_lanes > 0 and ratio_mat > IMPL_OVER_PREC_MAX:
                 fails.append(
                     "the device is worse than float32 itself on lane "
-                    + String(ratio_worst_lane) + ": implementation axis"
-                    " (gpu-f32 vs cpu-f32) is " + String(ratio_worst)
-                    + "x that lane's precision floor (cpu-f32 vs cpu-f64),"
-                    " bound " + String(IMPL_OVER_PREC_MAX) + "x"
+                    + String(ratio_mat_lane) + ": implementation axis"
+                    " (gpu-f32 vs cpu-f32) " + String(ratio_mat_impl)
+                    + " is " + String(ratio_mat) + "x that lane's precision"
+                    " floor (cpu-f32 vs cpu-f64) " + String(ratio_mat_prec)
+                    + ", bound " + String(IMPL_OVER_PREC_MAX) + "x on a"
+                    " disagreement above " + String(IMPL_MATERIAL_ABS)
                 )
         elif resync_worst > RESYNC_TOL:
             fails.append(

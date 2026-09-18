@@ -74,11 +74,19 @@ run_family() {
         --steps "$STEPS" --cpu-lanes "$CPU_LANES" > "$log" 2>&1
     RUN_LOG=$(cat "$log")
     # the numbers, straight out of the gate's own report
-    RATIO=$(sed -n 's/.*worst PER-LANE implementation\/precision ratio \([^ ]*\) on lane \([^ ]*\) over \([^ ]*\) .*/\1/p' "$log" | tail -1)
-    RLANE=$(sed -n 's/.*worst PER-LANE implementation\/precision ratio \([^ ]*\) on lane \([^ ]*\) over \([^ ]*\) .*/\2/p' "$log" | tail -1)
-    RLANES=$(sed -n 's/.*worst PER-LANE implementation\/precision ratio \([^ ]*\) on lane \([^ ]*\) over \([^ ]*\) .*/\3/p' "$log" | tail -1)
-    IMPL=$(sed -n 's/.*AXES: implementation (gpu-f32 vs cpu-f32) \([^ ]*\) | precision (cpu-f32 vs cpu-f64) \([^ ]*\).*/\1/p' "$log" | tail -1)
-    PREC=$(sed -n 's/.*AXES: implementation (gpu-f32 vs cpu-f32) \([^ ]*\) | precision (cpu-f32 vs cpu-f64) \([^ ]*\).*/\2/p' "$log" | tail -1)
+    # ⚠ THE GATED QUANTITY IS THE **MATERIAL** RATIO — impl above
+    # IMPL_MATERIAL_ABS on the SAME lane — so that is what this table sorts on.
+    # The unfiltered per-lane ratio is carried beside it, because a lane
+    # climbing toward materiality is worth seeing before it trips the gate.
+    # ⚠ `awk`, not `sed`: the report line carries parentheses and a `|`, and
+    # escaping those through sed twice is how the previous version of these
+    # regexes silently produced "-" for every family after a rename.
+    # the gate prints one `AXISROW key=value ...` line for exactly this — see
+    # its comment in the gate. Position-independent, so rewording the human
+    # report cannot silently empty this table again.
+    kv() { sed -n "s/.*AXISROW .*[ ]$1=\\([^ ]*\\).*/\\1/p" "$log" | tail -1; }
+    MAT=$(kv mat_ratio); MIMPL=$(kv mat_impl); MPREC=$(kv mat_prec)
+    MLANE=$(kv mat_lane); MLANES=$(kv mat_lanes); RATIO=$(kv all_ratio)
     if grep -q "=== PASS —" "$log"; then
         VERDICT=PASS
     elif grep -q "^  FAIL:" "$log"; then
@@ -87,8 +95,8 @@ run_family() {
         VERDICT="NO-VERDICT(build or launch failed)"
     fi
     rm -rf "$tmpd"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${RATIO:--}" "${IMPL:--}" "${PREC:--}" \
-        "${RLANE:--}" "${RLANES:--}" "$VERDICT"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${MAT:--}" "${MIMPL:--}" \
+        "${MPREC:--}" "${MLANE:--}" "${MLANES:--}" "${RATIO:--}" "$VERDICT"
 }
 
 # ── 1. THE ANTI-VACUITY CONTROL ───────────────────────────────────────────
@@ -116,7 +124,7 @@ fi
 
 # ── 2. THE SWEEP ──────────────────────────────────────────────────────────
 mkdir -p "$(dirname "$OUT")"
-[ -s "$OUT" ] || printf 'family\tratio\timpl\tprec\tlane\tlanes\tverdict\n' > "$OUT"
+[ -s "$OUT" ] || printf 'family\tmat_ratio\tmat_impl\tmat_prec\tlane\tmat_lanes\tall_ratio\tverdict\n' > "$OUT"
 
 if [ -n "${FAMILIES:-}" ]; then
     # shellcheck disable=SC2206
@@ -147,12 +155,12 @@ done
 # ── 3. THE DISTRIBUTION, which is the point ───────────────────────────────
 say "3. per-lane implementation/precision ratio, worst first"
 awk -F'\t' 'NR>1' "$OUT" | sort -t"$(printf '\t')" -k2 -gr \
-  | awk -F'\t' '{printf "%-34s ratio %-22s impl %-14s prec %-14s lane %-3s %s\n", $1,$2,$3,$4,$5,$7}'
+  | awk -F'\t' '{printf "%-30s mat_ratio %-12s impl %-13s prec %-13s lane %-3s all %-12s %s\n", $1,$2,$3,$4,$5,$7,$8}'
 say "summary"
 awk -F'\t' 'NR==1{next} $2!="-"{n++; s+=$2; if($2>mx){mx=$2; mf=$1}}
      END{ if(n) printf "  %d families with a calibratable ratio | mean %.3f | WORST %.3f (%s)\n", n, s/n, mx, mf;
           else print "  no calibratable ratios — check the log" }' "$OUT"
-awk -F'\t' 'NR==1{next} /FAIL/{print "  FAIL " $1 " -> " $7}' "$OUT"
+awk -F'\t' 'NR==1{next} /FAIL/{print "  FAIL " $1 " -> " $8}' "$OUT"
 echo
 echo "⚠ SET THE BOUND FROM THIS DISTRIBUTION, not from one family, and never to"
 echo "  make a run green. A genuine device defect sits ORDERS above the float32"
