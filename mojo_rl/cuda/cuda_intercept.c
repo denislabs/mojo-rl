@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Opaque CUDA types */
 typedef void* CUfunction;
@@ -272,6 +273,88 @@ static CUresult wrapped_cuStreamDestroy(void *a) {
     return real_cuStreamDestroy(a);
 }
 
+/* ---- Tegra: make NVML agree with CUDA about the GPU's PCI location ------
+ *
+ * ⚠ MAX 26.6 (e2e2e30d5, "[driver] Fix GPU discovery in MIG containers")
+ * STOPPED TAKING NVML DEVICE N FOR CUDA DEVICE N. It now walks the NVML
+ * devices, reads each one's PCI location with `nvmlDeviceGetPciInfo_v3`, and
+ * keeps the one at the location CUDA reports for the device. On a Jetson the
+ * GPU is an integrated part: Tegra's NVML and the CUDA driver do not agree on
+ * a PCI location for it, so nothing matches and every `DeviceContext()` dies
+ * with "NVML: no device at the PCI location CUDA reports for device 0". 26.5
+ * never asked the question, which is why the board worked until the bump.
+ * The runtime has no switch for this (its whole MODULAR_* set was grepped).
+ *
+ * The shim answers NVML's PCI query with CUDA's OWN location for device 0, so
+ * the comparison holds whichever field the runtime compares: the numeric
+ * domain/bus/device triple and both bus-id strings are rewritten from the one
+ * source. A Jetson has exactly one GPU, so "device 0" is not an approximation.
+ * It arms only when /etc/nv_tegra_release exists or MOJO_RL_NVML_PCI_FROM_CUDA=1
+ * (=0 disables it on a Tegra); everywhere else the symbol is not even wrapped.
+ * The first call logs BOTH answers, so a run that still fails says why.
+ */
+typedef int   nvmlReturn_t;
+typedef void *nvmlDevice_t;
+typedef struct {
+    char busIdLegacy[16];
+    unsigned int domain, bus, device, pciDeviceId, pciSubSystemId;
+    char busId[32];
+} nvmlPciInfo_t;   /* nvml.h's v3 layout (busIdLegacy first, busId last) */
+
+typedef nvmlReturn_t (*nvmlDeviceGetPciInfo_v3_t)(nvmlDevice_t, nvmlPciInfo_t*);
+static nvmlDeviceGetPciInfo_v3_t real_nvmlDeviceGetPciInfo_v3 = NULL;
+static int g_nvml_pci_logged = 0;
+static void* cuda_fn(const char *name);   /* defined with the graph API below */
+
+static int tegra_nvml_pci_shim(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("MOJO_RL_NVML_PCI_FROM_CUDA");
+        if (e && *e) on = (e[0] != '0');
+        else         on = (access("/etc/nv_tegra_release", F_OK) == 0);
+    }
+    return on;
+}
+
+/* CUDA's PCI location for `ordinal`, as the driver prints it ("dddd:bb:dd.f").
+   libcuda is already loaded and initialised by the time the runtime asks NVML
+   for a CUDA device's twin — it needed CUDA's location to compare against. */
+static int cuda_pci_bus_id(int ordinal, char *out, int len) {
+    typedef CUresult (*get_t)(char*, int, int);
+    get_t get = (get_t)cuda_fn("cuDeviceGetPCIBusId");
+    if (!get) return -1;
+    return (int)get(out, len, ordinal);
+}
+
+static nvmlReturn_t wrapped_nvmlDeviceGetPciInfo_v3(nvmlDevice_t dev,
+                                                    nvmlPciInfo_t *pci)
+{
+    nvmlReturn_t r = real_nvmlDeviceGetPciInfo_v3(dev, pci);
+    if (!pci || !tegra_nvml_pci_shim()) return r;
+
+    char cuda_id[32] = {0};
+    unsigned int dom = 0, bus = 0, devn = 0, fn = 0;
+    int rc = cuda_pci_bus_id(0, cuda_id, (int)sizeof cuda_id);
+    if (rc != 0 || sscanf(cuda_id, "%x:%x:%x.%x", &dom, &bus, &devn, &fn) < 3) {
+        if (!g_nvml_pci_logged++)
+            fprintf(stderr, "[intercept] Tegra NVML/PCI shim: cuDeviceGetPCIBusId "
+                    "rc=%d id='%s' — leaving NVML's answer (rc=%d)\n",
+                    rc, cuda_id, r);
+        return r;
+    }
+    if (!g_nvml_pci_logged++)
+        fprintf(stderr, "[intercept] Tegra NVML/PCI shim: NVML answered rc=%d "
+                "busId='%s' (%04x:%02x:%02x); answering CUDA device 0's '%s'\n",
+                r, r == 0 ? pci->busId : "?", pci->domain, pci->bus, pci->device,
+                cuda_id);
+    if (r != 0) memset(pci, 0, sizeof *pci);   /* the struct is garbage on error */
+    pci->domain = dom; pci->bus = bus; pci->device = devn;
+    snprintf(pci->busId, sizeof pci->busId, "%08X:%02X:%02X.%X", dom, bus, devn, fn);
+    snprintf(pci->busIdLegacy, sizeof pci->busIdLegacy, "%04X:%02X:%02X.%X",
+             dom, bus, devn, fn);
+    return 0;   /* NVML_SUCCESS */
+}
+
 static void *maybe_wrap(const char *symbol, void *real_fn) {
     if (!symbol || !real_fn) return real_fn;
 
@@ -300,6 +383,13 @@ static void *maybe_wrap(const char *symbol, void *real_fn) {
         || strcmp(symbol, "cuMemAlloc_v2") == 0) {
         if (!real_cuMemAlloc) real_cuMemAlloc = (fn_alloc_t)real_fn;
         return (void*)wrapped_cuMemAlloc;
+    }
+    /* NVML is dlopen'd by the runtime and resolved through dlsym, so it lands
+       here too. Wrapped ONLY on a Tegra — see the shim above. */
+    if (strcmp(symbol, "nvmlDeviceGetPciInfo_v3") == 0 && tegra_nvml_pci_shim()) {
+        if (!real_nvmlDeviceGetPciInfo_v3)
+            real_nvmlDeviceGetPciInfo_v3 = (nvmlDeviceGetPciInfo_v3_t)real_fn;
+        return (void*)wrapped_nvmlDeviceGetPciInfo_v3;
     }
     return real_fn;
 }
@@ -718,4 +808,7 @@ static void on_load(void) {
     if (e && e[0] != '0') g_logging = 1;
     fprintf(stderr, "[intercept] CUDA interceptor loaded (dlsym hooking mode)%s\n",
             g_logging ? " [launch logging ON]" : "");
+    if (tegra_nvml_pci_shim())
+        fprintf(stderr, "[intercept] Tegra: NVML PCI info will mirror CUDA device 0"
+                " (MAX 26.6 discovery matches NVML to CUDA by PCI location)\n");
 }
