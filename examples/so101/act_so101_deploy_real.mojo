@@ -1423,9 +1423,16 @@ def main() raises:
                 "       ⚠⚠ " + fixed(rate, 1) + " fps against " + fixed(claimed, 1)
                 + " negotiated — THIS CAMERA PACES THE LOOP. Work taken off"
                 " the control thread\n          cannot help while it is the"
-                " constraint. Usual cause: auto-exposure in a dim scene."
-                " Check\n          `v4l2-ctl -d <node> --list-formats-ext`"
-                " for the rate it CAN do, and `--all` for exposure_auto."
+                " constraint. Usual cause: auto-exposure in a dim scene, which"
+                "\n          this control turns off — and it does NOT survive"
+                " a replug or a reboot:\n"
+                "            v4l2-ctl -d " + cams[i].resolved_node()
+                + " --set-ctrl=exposure_dynamic_framerate=0\n"
+                "          ⚠ It also SHORTENS the exposure, so the pixels get"
+                " darker. If the demonstrations\n          were recorded"
+                " without it, that is a train/deploy shift — check the frames,"
+                " or\n          light the scene instead. `v4l2-ctl -d "
+                + cams[i].resolved_node() + " --all` shows the current value."
             )
     # ⚠ THE OFF-DISTRIBUTION SIGNAL. Every one of these is the policy asking
     # for a pose no demonstration ever reached.
