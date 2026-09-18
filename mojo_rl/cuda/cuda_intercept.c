@@ -355,6 +355,51 @@ static nvmlReturn_t wrapped_nvmlDeviceGetPciInfo_v3(nvmlDevice_t dev,
     return 0;   /* NVML_SUCCESS */
 }
 
+
+/* ⚠ THE SAME DISAGREEMENT, ONE QUERY LATER. Once the NVML twin is found, the
+ * runtime asks it `nvmlDeviceGetCudaComputeCapability` and that answer is
+ * what the run-time kernel build targets: the PTX MAX embeds for
+ * `--target-accelerator sm_87` is `.target sm_80` (generic within the major),
+ * and the real arch is chosen when the runtime hands it to ptxas. Tegra's NVML
+ * does not answer this query correctly (docs/JETSON_DEPLOYMENT.md §2.2 — it
+ * is why the flag was ever needed), and a wrong arch surfaces one step later
+ * as CUDA_ERROR_INVALID_SOURCE ("device kernel image is invalid") at
+ * loadFunction. Answer with CUDA's own CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY
+ * (attributes 75 and 76) for device 0, logging what NVML said. */
+typedef nvmlReturn_t (*nvmlDeviceGetCudaComputeCapability_t)(nvmlDevice_t, int*, int*);
+static nvmlDeviceGetCudaComputeCapability_t real_nvmlDeviceGetCudaComputeCapability = NULL;
+static int g_nvml_cc_logged = 0;
+
+static int cuda_device_attribute(int attr, int ordinal, int *out) {
+    typedef CUresult (*get_t)(int*, int, int);
+    get_t get = (get_t)cuda_fn("cuDeviceGetAttribute");
+    if (!get) return -1;
+    return (int)get(out, attr, ordinal);
+}
+
+static nvmlReturn_t wrapped_nvmlDeviceGetCudaComputeCapability(
+    nvmlDevice_t dev, int *major, int *minor)
+{
+    nvmlReturn_t r = real_nvmlDeviceGetCudaComputeCapability(dev, major, minor);
+    if (!major || !minor || !tegra_nvml_pci_shim()) return r;
+    int cmaj = 0, cmin = 0;
+    int rc = cuda_device_attribute(75 /* CC_MAJOR */, 0, &cmaj);
+    if (rc == 0) rc = cuda_device_attribute(76 /* CC_MINOR */, 0, &cmin);
+    if (rc != 0 || cmaj <= 0) {
+        if (!g_nvml_cc_logged++)
+            fprintf(stderr, "[intercept] Tegra NVML/CC shim: cuDeviceGetAttribute "
+                    "rc=%d — leaving NVML's answer (rc=%d, %d.%d)\n",
+                    rc, r, r == 0 ? *major : -1, r == 0 ? *minor : -1);
+        return r;
+    }
+    if (!g_nvml_cc_logged++)
+        fprintf(stderr, "[intercept] Tegra NVML/CC shim: NVML answered rc=%d "
+                "%d.%d; answering CUDA device 0's %d.%d\n",
+                r, r == 0 ? *major : -1, r == 0 ? *minor : -1, cmaj, cmin);
+    *major = cmaj; *minor = cmin;
+    return 0;
+}
+
 static void *maybe_wrap(const char *symbol, void *real_fn) {
     if (!symbol || !real_fn) return real_fn;
 
@@ -390,6 +435,11 @@ static void *maybe_wrap(const char *symbol, void *real_fn) {
         if (!real_nvmlDeviceGetPciInfo_v3)
             real_nvmlDeviceGetPciInfo_v3 = (nvmlDeviceGetPciInfo_v3_t)real_fn;
         return (void*)wrapped_nvmlDeviceGetPciInfo_v3;
+    }
+    if (strcmp(symbol, "nvmlDeviceGetCudaComputeCapability") == 0 && tegra_nvml_pci_shim()) {
+        if (!real_nvmlDeviceGetCudaComputeCapability)
+            real_nvmlDeviceGetCudaComputeCapability = (nvmlDeviceGetCudaComputeCapability_t)real_fn;
+        return (void*)wrapped_nvmlDeviceGetCudaComputeCapability;
     }
     return real_fn;
 }
@@ -809,6 +859,6 @@ static void on_load(void) {
     fprintf(stderr, "[intercept] CUDA interceptor loaded (dlsym hooking mode)%s\n",
             g_logging ? " [launch logging ON]" : "");
     if (tegra_nvml_pci_shim())
-        fprintf(stderr, "[intercept] Tegra: NVML PCI info will mirror CUDA device 0"
+        fprintf(stderr, "[intercept] Tegra: NVML PCI info and compute capability will mirror CUDA device 0"
                 " (MAX 26.6 discovery matches NVML to CUDA by PCI location)\n");
 }
