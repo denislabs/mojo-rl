@@ -65,7 +65,11 @@ from mojo_rl.physics3d.parser.runtime_load import (
 )
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
-from mojo_rl.physics3d.studio.stepping import StudioIntegEll
+from mojo_rl.physics3d.studio.stepping import (
+    StudioIntegEll, STUDIO_MAX_CONDIM, STUDIO_NOSLIP,
+)
+from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
 from mojo_rl.physics3d.dynamics.osc_pose import (
     OscPose, OscPoseConfig, ARM_DOF,
@@ -159,6 +163,35 @@ from mojo_rl.tasks.libero_envs.libero_study_scene4_xml import LiberoStudyScene4M
 
 
 comptime H = DType.float64
+
+comptime F32 = DType.float32
+"""⚠⚠ THE FIXED-AXIS LEG. `H` against the device varies PRECISION and
+IMPLEMENTATION at once, and its name only says one — so a divergence cannot be
+attributed. A CPU leg at float32, re-synced identically, splits them:
+
+    GPU-f32  vs  CPU-f32   the IMPLEMENTATION axis (precision held fixed)
+    CPU-f32  vs  CPU-f64   the PRECISION axis (implementation held fixed)
+
+The second is the FLOOR no implementation can beat, and therefore the only
+honest source for `RESYNC_TOL`. The first should be tiny; if it is not, the
+device has a real defect and this is what localises it.
+
+⚠ ITS CONTROLLER IS THE FLOAT64 ONE, DELIBERATELY. `OscPose` pins itself to
+float64 (`osc_pose.mojo:84` defines a LOCAL `comptime DT = DType.float64` that
+shadows nn's float32 one), so it cannot be instantiated at float32 without
+making a shared controller generic. It also should not be: the bound is about
+the DYNAMICS and the SOLVER, so holding the controller identical across the two
+legs is the isolation we want, not a compromise. The leg mirrors its own float32
+state into a float64 `Data` each substep, runs the controller there, and applies
+the resulting `ctrl` at float32."""
+
+comptime StudioIntegEll32 = EulerIntegrator[
+    F32, DynDims, ConeType.ELLIPTIC, 1, "newton",
+    MAX_CONDIM=STUDIO_MAX_CONDIM, NOSLIP_ITER=STUDIO_NOSLIP,
+    CRBA_TREEWALK=True,
+]
+"""`StudioIntegEll` at float32 — same cone, same solver, same condim, same
+noslip count, so ONLY the dtype differs."""
 comptime FAMILY = "libero_kitchen_scene3"
 """The family this build runs. ⚠ `sed` it — see the header."""
 comptime LANES = 16
@@ -180,6 +213,71 @@ margin the second term dominates by orders of magnitude. Five families missed
 to ~1 ULP at both float32 and float64 (`tools/tasks/solve_at_pose.mojo`). Use
 `RESYNC_TOL` to gate. (It was shared with `libero_demo_batched`'s bound, which
 is loose for the same reason: float32 against float64 through contact.)"""
+
+comptime IMPL_OVER_PREC_MAX: Float64 = 10.0
+"""⚠⚠ THE GATE IS A RATIO, NOT A CONSTANT, AND THAT IS THE WHOLE POINT.
+
+An absolute bound on "batch vs CPU" cannot be justified: the number it bounds is
+float32's own error on a settling contact scene, which depends on the scene's
+conditioning and not on whether our code is right. Every constant anyone picks is
+either fitted to today's behaviour or cries wolf. Measured on
+libero_living_room_scene3, one re-synced control step, worst over 5 lanes:
+
+    IMPLEMENTATION  gpu-f32 vs cpu-f32   1.17e-3
+    PRECISION       cpu-f32 vs cpu-f64   1.44e-3
+    ratio 0.81
+
+Two DIFFERENT float32 implementations of the same step differ LESS than ONE
+implementation differs between float32 and float64. So the device is at the
+float32 floor and there is nothing in it to fix — and the floor is measured IN
+THE SAME RUN, on the same scene, at the same step.
+
+Gating `implementation <= N x precision` is therefore scene-independent and
+self-calibrating: it asks "is the device worse than float32 itself?", which is
+the only question a CPU-vs-GPU physics gate can honestly answer.
+
+⚠ THE RATIO IS TAKEN PER LANE, not from the global maxima. `impl_worst` and
+`prec_worst` are maxima taken INDEPENDENTLY and can land on different lanes at
+different steps, so their quotient compares two unrelated samples. Here the
+global quotient is 0.81 and the worst PER-LANE ratio is 3.24 — a 4x difference
+in how strict the gate is, which is exactly the "global max hides the small"
+trap.
+
+⚠ AND N = 10, NOT 4, ON PURPOSE. The per-lane scatter over these five lanes is
+0.15 to 3.24: both axes are the same phenomenon (float32 rounding amplified
+inside the step) sampled differently, so which is larger on a given lane is
+noise. A bound of 4 leaves 23% headroom on ONE family's evidence and would cry
+wolf on the next scene — the same mistake as the 1e-3 constant, one level up. A
+genuine implementation defect (a wrong Jacobian, a missing term, a contact the
+device does not see) puts the implementation axis ORDERS of magnitude above the
+float32 floor, not 3-10x, so 10 still catches what this gate exists to catch.
+
+⚠ PROVISIONAL UNTIL ALL 23 FAMILIES ARE MEASURED. Tighten it from the observed
+distribution of per-lane ratios, never to make one run green.
+
+⚠ IT NEEDS THE FLOOR TO BE NON-TRIVIAL. When float32 and float64 agree to
+nothing (`prec_worst` at rounding), the ratio is meaningless and the absolute
+`RESYNC_TOL` smoke bound is used instead.
+
+⚠⚠ THE ANTI-VACUITY CONTROL, because a gate nobody has seen FAIL is a
+decoration. Tighten the bound below the observed ratio and confirm it fails:
+
+    sed 's/^comptime IMPL_OVER_PREC_MAX: Float64 = 10.0$/comptime IMPL_OVER_PREC_MAX: Float64 = 1.0/' \\
+        examples/tasks/libero_family_batched.mojo > /tmp/fam_ctrl.mojo
+    # then sed FAMILY as usual and run /tmp/fam_ctrl.mojo
+
+It must print "the device is worse than float32 itself on lane N". That control
+WAS observed failing correctly for the earlier global-quotient form of this gate
+(bound 0.5, message and numbers right). The PER-LANE branch has NOT been
+observed firing — only its quantity verified (ratio 3.2432, 5 calibratable
+lanes, printed on a passing run). It is one comparison against a comptime
+constant, but run this on a box with memory and close it out: the laptop it was
+written on has ~156 MB free and two control builds were killed for low
+memory."""
+
+comptime PREC_FLOOR_MIN: Float64 = 1.0e-9
+"""Below this the precision axis is itself rounding and cannot calibrate a
+ratio; the absolute smoke bound takes over."""
 
 comptime RESYNC_TOL: Float64 = 1.0e-2
 """⚠⚠ A SMOKE BOUND, DELIBERATELY LOOSE, AND HERE IS WHY IT IS NOT TIGHT YET.
@@ -486,6 +584,10 @@ def run[T: PlacementTable, M: ModelDefLike](
             verts *= 2
             dims = dims_from_flat(fmd, max_contacts=MC, nmesh_verts=verts)
             m = Model[H, DynDims](dims)
+    # ⚠ THE SAME `dims` AS `m`, so the two models differ ONLY in dtype — the
+    # mesh-capacity retry above already settled the capacity.
+    var m32 = Model[F32, DynDims](dims)
+    build_model_runtime[F32](fmd, dims, m32)
     var reset_words = 0
     var reset_worst = 0.0
     var reset_bad = 0
@@ -725,8 +827,14 @@ def run[T: PlacementTable, M: ModelDefLike](
     if cpu_lanes > LANES:
         cpu_lanes = LANES
     var sf = spec_fields_runtime[H](fmd, dims, m)
+    var sf32 = spec_fields_runtime[F32](fmd, dims, m32)
     var nact = dims.get_nact()
     var null_action = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
+    var impl_worst = 0.0
+    var prec_worst = 0.0
+    var ratio_worst = 0.0
+    var ratio_worst_lane = -1
+    var ratio_lanes = 0
     var resync_worst = 0.0
     var window_worst = 0.0
     var end_worst = 0.0
@@ -758,6 +866,13 @@ def run[T: PlacementTable, M: ModelDefLike](
         var d3 = Data[H, DynDims, 1](dims)
         var scratch3 = DynamicsScratch[H, DynDims, 1](dims)
         var integ3 = StudioIntegEll(dims)
+        # the float32 leg, re-synced the same way, plus its float64 controller
+        # mirror (`dm`) — see `F32`.
+        var d32 = Data[F32, DynDims, 1](dims)
+        var scratch32 = DynamicsScratch[F32, DynDims, 1](dims)
+        var integ32 = StudioIntegEll32(dims)
+        var dm = Data[H, DynDims, 1](dims)
+        var scratchm = DynamicsScratch[H, DynDims, 1](dims)
         _host_reset(d, m, tasks[ti], f, rsites, addrs, jq, jd, NQ, NV, e)
         var osc = OscPose(
             dof.copy(), qadr.copy(), jidx.copy(), tmin.copy(), tmax.copy(),
@@ -779,6 +894,18 @@ def run[T: PlacementTable, M: ModelDefLike](
         osc3.update(d3, m, scratch3)
         osc3.reset(d3, m)
         var act3 = List[Scalar[H]](length=nact if nact > 0 else 1, fill=Scalar[H](0))
+        var act32 = List[Scalar[F32]](
+            length=nact if nact > 0 else 1, fill=Scalar[F32](0)
+        )
+        var oscm = OscPose(
+            dof.copy(), qadr.copy(), jidx.copy(), tmin.copy(), tmax.copy(),
+            act_idx.copy(), site, site_body, ga1, ga2,
+            ctrl_min[ga1], ctrl_max[ga1], ctrl_min[ga2], ctrl_max[ga2],
+            OscPoseConfig(), nact, NQ, NV,
+        )
+        _host_reset(dm, m, tasks[ti], f, rsites, addrs, jq, jd, NQ, NV, e)
+        oscm.update(dm, m, scratchm)
+        oscm.reset(dm, m)
         var act = List[Scalar[H]](length=nact if nact > 0 else 1, fill=Scalar[H](0))
         # the compared words: everything but an INACTIVE prop's pose
         var cmp = List[Bool](length=NQ, fill=True)
@@ -818,6 +945,10 @@ def run[T: PlacementTable, M: ModelDefLike](
         var lane_resync = 0.0
         var lane_resync_k = -1
         var lane_resync_step = -1
+        var lane_impl = 0.0
+        var lane_impl_k = -1
+        var lane_prec = 0.0
+        var lane_prec_k = -1
         for step in range(steps):
             for s in range(SUBSTEPS):
                 osc.update(d, m, scratch)
@@ -862,6 +993,52 @@ def run[T: PlacementTable, M: ModelDefLike](
                         lane_resync = dv3
                         lane_resync_k = k
                         lane_resync_step = step
+
+                # ── THE SAME STEP AT FLOAT32 ─────────────────────────────
+                # Identical seeding, identical controller (mirrored into `dm`
+                # at float64 every substep — see `F32`), identical cone and
+                # solver. ONLY the dynamics dtype differs, which is what makes
+                # the two comparisons below a clean axis split.
+                for k in range(NQ):
+                    d32.qpos.data[k] = Scalar[F32](
+                        dev_traj[e][(step - 1) * NQ + k]
+                    )
+                for k in range(NV):
+                    d32.qvel.data[k] = Scalar[F32](
+                        dev_qvel[e][(step - 1) * NV + k]
+                    )
+                for s32 in range(SUBSTEPS):
+                    for k in range(NQ):
+                        dm.qpos.data[k] = Scalar[H](Float64(d32.qpos.data[k]))
+                    for k in range(NV):
+                        dm.qvel.data[k] = Scalar[H](Float64(d32.qvel.data[k]))
+                    oscm.update(dm, m, scratchm)
+                    if s32 == 0:
+                        oscm.set_goal(null_action, dm, m)
+                    var ctrl32 = oscm.run(null_action, dm, m, scratchm)
+                    for k in range(NV):
+                        d32.qfrc.data[k] = Scalar[F32](0)
+                    apply_actions_fields[F32](
+                        sf32, d32, ctrl32, act32, fmd.timestep
+                    )
+                    integ32.step["cpu"](d32, m32)
+                for k in range(NQ):
+                    if not cmp[k]:
+                        continue
+                    # IMPLEMENTATION axis: two float32 solves of the same step.
+                    var di = abs(
+                        Float64(d32.qpos.data[k]) - dev_traj[e][step * NQ + k]
+                    )
+                    if di > lane_impl:
+                        lane_impl = di
+                        lane_impl_k = k
+                    # PRECISION axis: the same CPU implementation, two dtypes.
+                    var dp = abs(
+                        Float64(d32.qpos.data[k]) - Float64(d3.qpos.data[k])
+                    )
+                    if dp > lane_prec:
+                        lane_prec = dp
+                        lane_prec_k = k
             # ⚠⚠ TWO COMPARISONS, AND ONLY THE SECOND IS ABOUT THE COLLIDER.
             #
             # `ncc` is this CPU lane's own count at its own state, against the
@@ -986,8 +1163,22 @@ def run[T: PlacementTable, M: ModelDefLike](
             + String(ncon_cpu) + ")"
         )
         nct += (
-            " | ncon(at the device's pose) same" if ncon_pose_diff == 0
-            else " | ncon(at the device's pose) differs on "
+            # ⚠⚠ "LAGGED", NOT "at the device's pose", AND THE NAME MATTERS.
+            # This compares the DEVICE's reported count against our CPU
+            # detector run at `dev_traj[step]` — but the device's contact list
+            # describes the pose ONE SUBSTEP EARLIER (`SYNC_FK_AFTER_STEP`
+            # re-runs FK and velocities after a step, NOT the collision). So a
+            # difference here cannot be attributed to the narrow phase, and
+            # reading it as one is what produced a withdrawn "GPU box/box
+            # defect" claim. The confound-free comparison — both colliders at
+            # the SAME pose, no stepping — is
+            # `tools/tasks/collision_at_pose.mojo`; at equal poses the GPU
+            # agrees with our CPU and with MuJoCo. Kept because a LARGE or
+            # growing lag is still a smell worth seeing; named so nobody
+            # attributes it.
+            " | ncon(lagged dev vs cpu@pose, NOT attributable) same"
+            if ncon_pose_diff == 0
+            else " | ncon(lagged dev vs cpu@pose, NOT attributable) differs on "
             + String(ncon_pose_diff) + " steps, first at "
             + String(ncon_pose_first) + " (dev " + String(ncon_pose_dev)
             + " cpu " + String(ncon_pose_cpu) + ")"
@@ -1001,6 +1192,37 @@ def run[T: PlacementTable, M: ModelDefLike](
         )
         print("        RE-SYNCED one step from the device's own state: worst",
               lane_resync, "(", rname, "at step", lane_resync_step, ")")
+        var iname = (
+            word_name[lane_impl_k] if lane_impl_k >= 0
+            and lane_impl_k < len(word_name) else String("-")
+        )
+        var pname = (
+            word_name[lane_prec_k] if lane_prec_k >= 0
+            and lane_prec_k < len(word_name) else String("-")
+        )
+        # ⚠ THE AXIS SPLIT. `impl` holds the precision fixed at float32 and
+        # varies only the implementation; `prec` holds the implementation fixed
+        # on the CPU and varies only the dtype. `prec` is the FLOOR.
+        print("        axes: IMPLEMENTATION (gpu-f32 vs cpu-f32)", lane_impl,
+              "(", iname, ") | PRECISION (cpu-f32 vs cpu-f64)", lane_prec,
+              "(", pname, ") | ratio",
+              lane_impl / lane_prec if lane_prec > PREC_FLOOR_MIN else 0.0)
+        if lane_impl > impl_worst:
+            impl_worst = lane_impl
+        if lane_prec > prec_worst:
+            prec_worst = lane_prec
+        # ⚠⚠ THE RATIO IS PER LANE, AND THE GLOBAL MAXIMA ARE NOT ENOUGH.
+        # `impl_worst` and `prec_worst` are maxima taken INDEPENDENTLY, so they
+        # can come from different lanes at different steps — dividing them
+        # compares two unrelated samples and can hide a lane where the
+        # implementation axis dominates its OWN floor. On this family the global
+        # ratio is 0.81 while the worst PER-LANE ratio is 3.24. Gate the latter.
+        if lane_prec > PREC_FLOOR_MIN:
+            var lr = lane_impl / lane_prec
+            if lr > ratio_worst:
+                ratio_worst = lr
+                ratio_worst_lane = e
+            ratio_lanes += 1
         if lane_resync > resync_worst:
             resync_worst = lane_resync
         if lane_window_k >= 0:
@@ -1017,6 +1239,13 @@ def run[T: PlacementTable, M: ModelDefLike](
           "steps", window_worst, "| worst at the end", end_worst)
     print("     RE-SYNCED (gated): worst one-step", resync_worst, "| bound",
           RESYNC_TOL)
+    print("     AXES: implementation (gpu-f32 vs cpu-f32)", impl_worst,
+          "| precision (cpu-f32 vs cpu-f64)", prec_worst)
+    print("        worst PER-LANE implementation/precision ratio", ratio_worst,
+          "on lane", ratio_worst_lane, "over", ratio_lanes,
+          "calibratable lanes | bound", IMPL_OVER_PREC_MAX)
+    print("        (a ratio at or below ~1 means the device is at the float32"
+          " FLOOR; the gate is this ratio, NOT an absolute bound)")
 
     # ── verdict ───────────────────────────────────────────────────────────
     var fails = List[String]()
@@ -1044,12 +1273,25 @@ def run[T: PlacementTable, M: ModelDefLike](
     # by a settling contact scene, so no bound on it can be justified — that is
     # what made five families "fail" with nothing wrong in any kernel. The
     # re-synced number is one step's worth, every step, and IS boundable.
-    if cpu_lanes > 0 and resync_worst > RESYNC_TOL:
-        fails.append(
-            "batch vs CPU, RE-SYNCED one step from the device's state, "
-            + String(resync_worst) + " over the first " + String(window)
-            + " steps, bound " + String(RESYNC_TOL)
-        )
+    if cpu_lanes > 0:
+        if ratio_lanes > 0:
+            # ⚠ THE DEVICE AGAINST FLOAT32 ITSELF, PER LANE — see
+            # IMPL_OVER_PREC_MAX.
+            if ratio_worst > IMPL_OVER_PREC_MAX:
+                fails.append(
+                    "the device is worse than float32 itself on lane "
+                    + String(ratio_worst_lane) + ": implementation axis"
+                    " (gpu-f32 vs cpu-f32) is " + String(ratio_worst)
+                    + "x that lane's precision floor (cpu-f32 vs cpu-f64),"
+                    " bound " + String(IMPL_OVER_PREC_MAX) + "x"
+                )
+        elif resync_worst > RESYNC_TOL:
+            fails.append(
+                "the precision floor is degenerate (" + String(prec_worst)
+                + ") so the ratio cannot calibrate; re-synced one-step "
+                + String(resync_worst) + " over the first " + String(window)
+                + " steps, smoke bound " + String(RESYNC_TOL)
+            )
     print()
     if len(fails) > 0:
         for i in range(len(fails)):
