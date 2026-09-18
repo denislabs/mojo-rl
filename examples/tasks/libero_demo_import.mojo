@@ -66,6 +66,7 @@ from std.memory.alloc import unsafe_alloc
 from mojo_rl.io.hdf5.reader import H5File
 from mojo_rl.data.libero_demos import (
     import_libero_demos, CAM_H, CAM_W, N_CAMS, CAM_ELEMS, COL_STATE, COL_IMAGES,
+    COL_QPOS, COL_JOINTS, COL_GRIPPER, QPOS_DIM, JOINT_DIM, GRIPPER_DIM,
 )
 from mojo_rl.data.store import TrajectoryStore
 from mojo_rl.tasks.spec import load_task
@@ -249,6 +250,39 @@ def main() raises:
             + String(state_dim)
         )
 
+    # ── `qpos` is `joint_states` ++ `gripper_states`, row for row ─────────
+    # Three columns read back and compared: the concatenation is trivial, the
+    # thing that can go wrong is a ROW misalignment between the appends, and
+    # that is what an exact per-row comparison over the whole store catches.
+    var q_all = st.load_column[DType.float32](String(COL_QPOS))
+    var j_all = st.load_column[DType.float32](String(COL_JOINTS))
+    var g_all = st.load_column[DType.float32](String(COL_GRIPPER))
+    if len(q_all) != rep.n_rows * QPOS_DIM:
+        raise Error(
+            "the `qpos` column is " + String(len(q_all)) + " words for "
+            + String(rep.n_rows) + " rows, not " + String(QPOS_DIM) + " per row"
+        )
+    var q_bad = 0
+    var q_moving = 0
+    for r in range(rep.n_rows):
+        for k in range(JOINT_DIM):
+            if q_all[r * QPOS_DIM + k] != j_all[r * JOINT_DIM + k]:
+                q_bad += 1
+        for k in range(GRIPPER_DIM):
+            if q_all[r * QPOS_DIM + JOINT_DIM + k] != g_all[r * GRIPPER_DIM + k]:
+                q_bad += 1
+        if r > 0 and q_all[r * QPOS_DIM] != q_all[(r - 1) * QPOS_DIM]:
+            q_moving += 1
+    print("  qpos  :", rep.n_rows, "rows == joint_states ++ gripper_states;",
+          q_bad, "words differ;", q_moving, "rows where joint 1 moved")
+    if q_bad > 0:
+        raise Error(
+            "the `qpos` column is not joint_states ++ gripper_states: "
+            + String(q_bad) + " words differ"
+        )
+    if q_moving == 0:
+        raise Error("qpos never moves — a constant column checked nothing")
+
     # ── the images: are the three planes the three CHANNELS? ──────────────
     #
     # ⚠⚠ 98 304 OF EACH ROW'S 98 616 BYTES ARE PIXELS, AND A TRANSPOSE THAT IS
@@ -275,6 +309,8 @@ def main() raises:
             )
         var worst_mean = 0.0
         var checked = 0
+        var flip_bad = 0
+        var flip_distinct = 0
         var ep_at = 0
         for ti in range(len(full_names)):
             var src = H5File(String(full_files[ti]))
@@ -307,6 +343,21 @@ def main() raises:
                 if e > worst_mean:
                     worst_mean = e
                 checked += 1
+            # ⚠⚠ THE ORIENTATION, THROUGH A DIFFERENT INDEX PATH. A plane mean
+            # is the same whichever way up the rows are, so it cannot see the
+            # flip the importer applies (row 0 of the STORE is the top of the
+            # picture, row 0 of the RECORDING is the bottom). The store's first
+            # row of plane 0 must be the source's LAST row, channel 0 — and
+            # the source's first and last rows must DIFFER, or the comparison
+            # would pass on an importer that stopped flipping.
+            for x in range(CAM_W):
+                var src_last = Int(raw[unsafe_offset = ((CAM_H - 1) * CAM_W + x) * 3])
+                var src_first = Int(raw[unsafe_offset = x * 3])
+                var sto_first = Int(stored[unsafe_offset = x])
+                if src_last != sto_first:
+                    flip_bad += 1
+                if src_last != src_first:
+                    flip_distinct += 1
             raw.unsafe_free()
             stored.unsafe_free()
             ep_at += rep.eps_per_task[ti]
@@ -314,12 +365,26 @@ def main() raises:
             raise Error("no image plane was checked")
         print("  images:", checked, "channel planes checked against their HWC"
               " source; worst mean difference", worst_mean)
+        print("  rows  : store row 0 vs source row " + String(CAM_H - 1) + ":",
+              flip_bad, "pixels differ;", flip_distinct,
+              "pixels where the source's top and bottom rows differ")
         if worst_mean != 0.0:
             raise Error(
                 "a stored plane's mean differs from its source CHANNEL's by "
                 + String(worst_mean) + ". The HWC -> CHW transpose in"
                 " mojo_rl/data/libero_demos.mojo is wrong; the planes are not"
                 " the channels."
+            )
+        if flip_bad > 0:
+            raise Error(
+                "the store's first image row is not the recording's last: "
+                + String(flip_bad) + " pixels differ. The importer must write"
+                " the picture top row first (see libero_demos.mojo's header)."
+            )
+        if flip_distinct == 0:
+            raise Error(
+                "the source's top and bottom rows are identical on every task"
+                " checked — the orientation check is vacuous"
             )
 
     var index_path = String(DEMO_DIR) + "_dumps/" + suite + "/index.txt"

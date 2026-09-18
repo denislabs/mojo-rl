@@ -103,6 +103,53 @@ def _pos(n: Int) -> Int:
     return n if n > 0 else 1
 
 
+def check_camera[DTYPE: DType, D: DimsLike](
+    m: Model[DTYPE, D], cam: Int
+) raises:
+    """REFUSE a camera index that would render a wrong picture, not an error.
+
+    An inactive row has `fovy = 0` (a degenerate frustum, one point), a
+    tracking camera with no reference sits at its body's origin looking along
+    world -Z, and an out-of-range index reads whatever is in the next row. A
+    kernel cannot raise, so this host check is the only place any of them can
+    be named. Run by the constructor on its camera and by `render` on any
+    other camera it is asked for.
+    """
+    if cam < 0 or cam >= MAX_GPU_CAMERAS:
+        raise Error(
+            String("BatchedCameraRenderer: camera index ") + String(cam)
+            + " is outside [0, " + String(MAX_GPU_CAMERAS) + ")."
+        )
+    var cb = cam * MODEL_CAM_SIZE
+    if m.cameras.data[cb + CAM_IDX_ACTIVE] == 0:
+        raise Error(
+            String("BatchedCameraRenderer: camera ") + String(cam)
+            + " is not a camera this model declares — the row is padding."
+            " Its `fovy` is 0, which renders a single point rather than"
+            " failing. Does the MJCF have a <camera> at this index?"
+        )
+    var fovy = m.cameras.data[cb + CAM_IDX_FOVY]
+    if not (fovy > 0):
+        raise Error(
+            String("BatchedCameraRenderer: camera ") + String(cam)
+            + " has fovy = " + String(Float64(fovy))
+            + ", a degenerate frustum."
+        )
+    var mode = Int(m.cameras.data[cb + CAM_IDX_MODE])
+    if mode == RT_CAM_MODE_TRACK or mode == RT_CAM_MODE_TRACKCOM:
+        if m.cameras.data[cb + CAM_IDX_REF_SET] == 0:
+            raise Error(
+                String("BatchedCameraRenderer: camera ") + String(cam)
+                + ' is mode="track"/"trackcom", which reads the reference'
+                " pose MuJoCo's compiler bakes at qpos0, and that pose has"
+                " not been taken. Call"
+                " `raytrace.init_camera_reference(d, m)` after a reset's"
+                " forward kinematics and subtree pass. Without it the"
+                " camera renders from the body origin along world -Z,"
+                " which is a picture and not an error."
+            )
+
+
 struct BatchedCameraRenderer[
     DTYPE: DType,
     D: DimsLike,
@@ -219,39 +266,7 @@ struct BatchedCameraRenderer[
         comptime assert Self.WIDTH > 0 and Self.HEIGHT > 0, (
             "BatchedCameraRenderer: WIDTH and HEIGHT must be positive."
         )
-        if cam < 0 or cam >= MAX_GPU_CAMERAS:
-            raise Error(
-                String("BatchedCameraRenderer: camera index ") + String(cam)
-                + " is outside [0, " + String(MAX_GPU_CAMERAS) + ")."
-            )
-        var cb = cam * MODEL_CAM_SIZE
-        if m.cameras.data[cb + CAM_IDX_ACTIVE] == 0:
-            raise Error(
-                String("BatchedCameraRenderer: camera ") + String(cam)
-                + " is not a camera this model declares — the row is padding."
-                " Its `fovy` is 0, which renders a single point rather than"
-                " failing. Does the MJCF have a <camera> at this index?"
-            )
-        var fovy = m.cameras.data[cb + CAM_IDX_FOVY]
-        if not (fovy > 0):
-            raise Error(
-                String("BatchedCameraRenderer: camera ") + String(cam)
-                + " has fovy = " + String(Float64(fovy))
-                + ", a degenerate frustum."
-            )
-        var mode = Int(m.cameras.data[cb + CAM_IDX_MODE])
-        if mode == RT_CAM_MODE_TRACK or mode == RT_CAM_MODE_TRACKCOM:
-            if m.cameras.data[cb + CAM_IDX_REF_SET] == 0:
-                raise Error(
-                    String("BatchedCameraRenderer: camera ") + String(cam)
-                    + ' is mode="track"/"trackcom", which reads the reference'
-                    " pose MuJoCo's compiler bakes at qpos0, and that pose has"
-                    " not been taken. Call"
-                    " `raytrace.init_camera_reference(d, m)` after a reset's"
-                    " forward kinematics and subtree pass. Without it the"
-                    " camera renders from the body origin along world -Z,"
-                    " which is a picture and not an error."
-                )
+        check_camera(m, cam)
 
         self.cam = cam
         self.rgb = ctx.enqueue_create_buffer[Self.DTYPE](
@@ -302,8 +317,18 @@ struct BatchedCameraRenderer[
         ctx: DeviceContext,
         mut d: Data[Self.DTYPE, Self.D, Self.BATCH],
         mut m: Model[Self.DTYPE, Self.D],
+        cam: Int = -1,
     ) raises:
         """One launch: every lane, every pixel.
+
+        `cam` names the camera for THIS launch; `-1` (the default) is the
+        constructor's. ⚠ ONE RENDERER, SEVERAL CAMERAS OF ONE RESOLUTION — the
+        camera index is already a scalar operand of the kernel, so switching
+        it per launch costs nothing and shares the visual upload (the LIBERO
+        soup, atlas and BVH are tens of MB) between `agentview` and
+        `eye_in_hand`. Two renderers were two copies of all of it. The lanes'
+        pictures of the previous camera are OVERWRITTEN: copy `rgb` out
+        between the launches.
 
         ⚠ THE CALLER OWNS FRESHNESS. This reads `xpos`/`xquat`/`subtree_com`
         as the device holds them; it does not run forward kinematics. Render
@@ -320,6 +345,9 @@ struct BatchedCameraRenderer[
         rides in `ng`'s high bits rather than taking a scalar of its own.
         Adding an operand to this kernel is a decision, not a detail.
         """
+        var cam_used = self.cam if cam < 0 else cam
+        if cam_used != self.cam:
+            check_camera(m, cam_used)
         var nvg = self.vis.ngeom
         var nlight = self.vis.nlight
         var ncond = self.vis.ncond
@@ -461,7 +489,7 @@ struct BatchedCameraRenderer[
             LayoutTensor[Self.DTYPE, Self.L_RGB](self.rgb),
             LayoutTensor[Self.DTYPE, Self.L_SCALARPIX](self.depth),
             LayoutTensor[Self.DTYPE, Self.L_SCALARPIX](self.seg),
-            Int32(self.cam),
+            Int32(cam_used),
             Int32(nvg + (ncond << 16)),
             Int32(nlight),
             self.background.x,

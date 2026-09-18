@@ -22,6 +22,30 @@ is the supported path.
 and the two `_rgb` keys exactly `.rgb`, so the store carries the policy's whole
 observation and nothing else from the recording.
 
+## `qpos` IS THE TWO LOW-DIM COLUMNS AS ONE, BECAUSE THAT IS THE NAME THE POLICIES READ
+
+`ACTDataset` and `SmolVLABatchSampler` read the proprioceptive vector from a
+column called `qpos` — the LeRobot importer's `observation.state` — and refuse
+a store without one. LIBERO's is `joint_states` (7) ++ `gripper_states` (2), so
+the store carries it a second time under that name, nine float32 per row, and
+the image policies train on this store without a per-dataset column map. The
+two source columns stay as recorded: `libero_demo_import.mojo`'s gate reads all
+three back and refuses a `qpos` that is not their concatenation, row for row.
+
+## ⚠⚠ THE STORE'S ROW 0 IS THE TOP OF THE PICTURE — THE RECORDING'S IS THE BOTTOM
+
+LIBERO's `*_rgb` datasets are in OpenGL's row order (robosuite hands
+`mjr_readPixels`' buffer through unchanged; `tools/tasks/libero_camera_gate.py`
+measured it at 26 dB). Their policies train on the picture upside down and
+never notice, because a network has no "up". OURS DO: the same policy is
+evaluated on frames the batched tracer renders (`raytrace/batch.mojo`, row 0
+the top), so a store in the recording's order would train on one orientation
+and deploy on the other. The flip is applied HERE, once, at import — every
+image in a `TrajectoryStore` of this tree is top row first, whichever camera
+or recorder produced it. The gate compares the store's FIRST image row against
+the source's LAST, through a different index path, so an importer that stops
+flipping fails it.
+
 ## ⚠⚠ `states` IS REWRITTEN INTO OUR JOINT ORDER, AND THAT IS THE POINT
 
 An `actions`-and-images store is a dataset any BC codebase could build. The
@@ -76,11 +100,15 @@ comptime CAM_ELEMS: Int = 3 * CAM_H * CAM_W
 comptime ACTION_DIM: Int = 7
 comptime JOINT_DIM: Int = 7
 comptime GRIPPER_DIM: Int = 2
+comptime QPOS_DIM: Int = JOINT_DIM + GRIPPER_DIM
+"""`joint_states` ++ `gripper_states`: the `qpos` column, robosuite's
+`low_dim` modality in one vector."""
 
 comptime COL_ACTION: StaticString = "action"
 comptime COL_STATE: StaticString = "state"
 comptime COL_JOINTS: StaticString = "joint_states"
 comptime COL_GRIPPER: StaticString = "gripper_states"
+comptime COL_QPOS: StaticString = "qpos"
 comptime COL_IMAGES: StaticString = "images"
 comptime COL_TASK: StaticString = "task_index"
 
@@ -172,6 +200,7 @@ def import_libero_demos(
     cols.append(ColumnSpec(String(COL_STATE), DType.float64, state_dim))
     cols.append(ColumnSpec(String(COL_JOINTS), DType.float32, JOINT_DIM))
     cols.append(ColumnSpec(String(COL_GRIPPER), DType.float32, GRIPPER_DIM))
+    cols.append(ColumnSpec(String(COL_QPOS), DType.float32, QPOS_DIM))
     cols.append(ColumnSpec(String(COL_TASK), DType.int32, 1))
     if images:
         cols.append(ColumnSpec(String(COL_IMAGES), DType.uint8, N_CAMS * CAM_ELEMS))
@@ -263,6 +292,9 @@ def import_libero_demos(
             var gb = unsafe_alloc[Scalar[DType.float32]](
                 T * GRIPPER_DIM
             ).as_unsafe_any_origin()
+            var qb = unsafe_alloc[Scalar[DType.float32]](
+                T * QPOS_DIM
+            ).as_unsafe_any_origin()
             var sb = unsafe_alloc[Scalar[DType.float64]](
                 T * state_dim
             ).as_unsafe_any_origin()
@@ -286,6 +318,14 @@ def import_libero_demos(
                     gb[unsafe_offset = r * GRIPPER_DIM + k] = Scalar[
                         DType.float32
                     ](raw_g[unsafe_offset = r * GRIPPER_DIM + k])
+                for k in range(JOINT_DIM):
+                    qb[unsafe_offset = r * QPOS_DIM + k] = Scalar[
+                        DType.float32
+                    ](raw_j[unsafe_offset = r * JOINT_DIM + k])
+                for k in range(GRIPPER_DIM):
+                    qb[unsafe_offset = r * QPOS_DIM + JOINT_DIM + k] = Scalar[
+                        DType.float32
+                    ](raw_g[unsafe_offset = r * GRIPPER_DIM + k])
                 for k in range(row_words):
                     row[k] = Float64(raw_s[unsafe_offset = r * row_words + k])
                 remap.convert_into(row, qo, vo)
@@ -303,6 +343,7 @@ def import_libero_demos(
             w.append[DType.float64](String(COL_STATE), sb, T)
             w.append[DType.float32](String(COL_JOINTS), jb, T)
             w.append[DType.float32](String(COL_GRIPPER), gb, T)
+            w.append[DType.float32](String(COL_QPOS), qb, T)
             w.append[DType.int32](String(COL_TASK), tb, T)
 
             # ── the images ─────────────────────────────────────────────────
@@ -345,6 +386,8 @@ def import_libero_demos(
                 # every consumer in this tree expects it; a store that carried
                 # HWC would train a net whose first conv sees three rows of one
                 # image row instead of three planes.
+                # ⚠⚠ AND BOTTOM ROW FIRST ON DISK, TOP ROW FIRST IN THE STORE
+                # — see the header. `sy` is the source row for store row `y`.
                 for cam in range(N_CAMS):
                     if cam == 0:
                         d_av.read_all[DType.uint8](one)
@@ -354,8 +397,9 @@ def import_libero_demos(
                         var src = r * CAM_ELEMS
                         var dst = r * N_CAMS * CAM_ELEMS + cam * CAM_ELEMS
                         for y in range(CAM_H):
+                            var sy = CAM_H - 1 - y
                             for x in range(CAM_W):
-                                var s = src + (y * CAM_W + x) * 3
+                                var s = src + (sy * CAM_W + x) * 3
                                 for c in range(3):
                                     im[
                                         unsafe_offset = dst

@@ -50,6 +50,29 @@ by the null action is a goal defect, not a policy result. `_policy_action` is
 the one place a policy plugs in; it reads the env's observation rows, which
 `task_hooks.write_task_obs` has already written for every lane.
 
+## `--act DIR` — THE IMAGE POLICY, WITH THE CAMERAS IN THE LOOP (L7c)
+
+`DIR` is a `libero-act-train` checkpoint directory (`best.ckpt` + `norm.json`).
+Every policy step then renders BOTH of LIBERO's cameras for every lane with the
+batched tracer — `raytrace/batch.mojo` over `env.d`, 128x128, 4x MSAA, the
+visual group, after the step's FK sync — packs the pixels the way the store
+holds them (uint8 CHW, top row first) and normalises them with the SAME
+`normalize_camera_chw` the trainer's sampler used, reads the nine proprio words
+from `qpos` and standardises them with the checkpoint's own `norm.json`, runs
+one forward at batch `LANES`, pushes each lane's chunk into its own
+`TemporalEnsemble`, and writes the ensembled, denormalised, clamped action.
+
+⚠ THE OBSERVATION IS THE STATE THE LANE IS IN. `SYNC_FK_AFTER_STEP` is on for
+the LIBERO config, so `xpos`/`xquat` on the device describe the integrated
+`qpos` when the camera reads them; a stale FK here would be a one-step lag no
+picture would show. The rendered store pairs frame `r` with `action[r]` for the
+same reason (`libero_demo_rerender.mojo`'s header).
+
+⚠ `norm.json` NAMES THE STORE THE CHECKPOINT WAS FITTED ON, and this driver
+prints it: a checkpoint from the RECORDED store crosses the pixel-domain gap
+here (robosuite's OpenGL -> our tracer), one from the RENDERED store does not,
+and the two rates are only comparable when the table says which is which.
+
 ## ⚠ THE SUCCESS WORD IS THE DEVICE'S, CHECKED AGAINST THE HOST ON A SAMPLE
 
 `META_IDX_GOAL_HELD` per lane per step (the config's reward hook wrote it from
@@ -110,6 +133,18 @@ from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
 from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
 from mojo_rl.tasks.active import active_mask, init_region_words
 from mojo_rl.tasks.bc_policy import BcNet, BcNorm, load_bc_norm
+from mojo_rl.physics3d.raytrace import BatchedCameraRenderer, RGB_CHANNELS
+from mojo_rl.physics3d.raytrace.visual import build_visual_model
+from mojo_rl.tasks.libero_visual import libero_site_conditions
+from mojo_rl.tasks.libero_act import (
+    LiberoActTrainer, LIBERO_ACT_QPOS, LIBERO_ACT_ADIM, LIBERO_ACT_K,
+    LIBERO_ACT_IMG_H, LIBERO_ACT_IMG_W, LIBERO_ACT_IMG_ELEMS, LIBERO_ACT_N_CAM,
+)
+from mojo_rl.deep_agents.act.norm_file import ACTNorm
+from mojo_rl.deep_agents.act.inference import (
+    TemporalEnsemble, normalize_camera_chw, denormalize,
+)
+from mojo_rl.deep_agents.act.config import ACT_TEMPORAL_ENSEMBLE_M
 from mojo_rl.tasks.placement.table import PlacementTable
 from mojo_rl.tasks.placement.check import (
     joint_init_words, require_device_placement,
@@ -188,9 +223,20 @@ def _clamp(x: Float64) -> Float64:
     return x
 
 
+def _byte(x: Float64) -> Scalar[DType.uint8]:
+    """A tracer float in [0, 1] to the byte the store holds — the same
+    rounding `libero_demo_rerender.mojo` wrote the training frames with."""
+    var v = Int(x * 255.0 + 0.5)
+    if v < 0:
+        v = 0
+    if v > 255:
+        v = 255
+    return Scalar[DType.uint8](v)
+
+
 def run[T: PlacementTable, M: ModelDefLike](
     n_inits: Int, max_steps: Int, check_lanes: Int, sampled: Bool,
-    policy_path: String,
+    policy_path: String, act_dir: String,
 ) raises:
     comptime E = Phyics3dBatchedEnv[
         M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
@@ -201,6 +247,19 @@ def run[T: PlacementTable, M: ModelDefLike](
     comptime NS = M.NSITE
     comptime MC = M.MAX_CONTACTS
     comptime OD = M.OBS_DIM
+    # ── the image policy's types: the tracer over THIS env's Data, ACT at
+    # a batch of LANES. Both are compiled whether or not `--act` is given;
+    # neither is constructed unless it is.
+    comptime Renderer = BatchedCameraRenderer[
+        DT, E.MD, LANES, LIBERO_ACT_IMG_W, LIBERO_ACT_IMG_H, False, True, 4
+    ]
+    comptime ACT_T = LiberoActTrainer[LANES, "gpu"]
+    comptime AQ = LIBERO_ACT_QPOS
+    comptime AA = LIBERO_ACT_ADIM
+    comptime AK = LIBERO_ACT_K
+    comptime AIMG = LIBERO_ACT_IMG_ELEMS
+    comptime ANPIX = LIBERO_ACT_IMG_H * LIBERO_ACT_IMG_W
+    comptime ACAM = 3 * ANPIX
     var family = String(FAMILY)
 
     print("=" * 78)
@@ -320,13 +379,30 @@ def run[T: PlacementTable, M: ModelDefLike](
     # layer's name and size — a checkpoint of a different shape raises here
     # rather than loading the layers that happen to match.
     comptime POLICY = BcNet[OD, OSC_ACTION_DIM]
-    var have_policy = policy_path != ""
+    var have_bc = policy_path != ""
+    var have_act = act_dir != ""
+    if have_bc and have_act:
+        raise Error("libero eval batched: --policy and --act are two policies;"
+                    " give one")
+    var have_policy = have_bc or have_act
     var net = POLICY.make["cpu", Kaiming](None)
     var norm = BcNorm()
-    if have_policy:
+    var act_norm = ACTNorm()
+    if have_bc:
         load_params["cpu"](net, policy_path, None)
         norm = load_bc_norm(policy_path + ".norm", OD, OSC_ACTION_DIM)
         print("  policy:", policy_path, "| obs", OD, "-> 7, clamped to [-1, 1]")
+    elif have_act:
+        if not exists(act_dir + "/best.ckpt") or not exists(act_dir + "/norm.json"):
+            raise Error("libero eval batched: --act " + act_dir + " has no"
+                        " best.ckpt + norm.json (a libero-act-train checkpoint"
+                        " directory)")
+        act_norm = ACTNorm.load(act_dir + "/norm.json", AQ, AA)
+        print("  policy: ACT", act_dir + "/best.ckpt", "| qpos", AQ, "+",
+              LIBERO_ACT_N_CAM, "cameras", LIBERO_ACT_IMG_W, "x",
+              LIBERO_ACT_IMG_H, "-> chunk", AK, "x", AA,
+              ", temporal ensemble m =", ACT_TEMPORAL_ENSEMBLE_M)
+        print("          fitted on", act_norm.store)
     else:
         print("  policy: ZERO ACTION —", "the L6 gate is that the rate is 0")
     if not have_table:
@@ -386,6 +462,53 @@ def run[T: PlacementTable, M: ModelDefLike](
     for k in range(MODEL_CURRICULUM_SIZE):
         env.mf.curriculum.data[k] = Scalar[DT](cw[k])
     env.mf.curriculum.upload(ctx)
+    # ── the image policy, constructed only for --act ─────────────────────
+    var ren_opt = List[Renderer]()
+    var act_opt = List[ACT_T]()
+    var cam_idx = List[Int]()
+    var qadr9 = List[Int]()
+    var ens = List[TemporalEnsemble[AA, AK]]()
+    var h_rgb = ctx.enqueue_create_host_buffer[DT](1)
+    var act_u8 = List[Scalar[DType.uint8]]()
+    var act_images = List[Scalar[DT]]()
+    var act_qpos = List[Scalar[DT]]()
+    var act_dummy = List[Scalar[DT]]()
+    var act_valid = List[Scalar[DT]]()
+    var act_chunk = List[Scalar[DT]]()
+    var act_pred = List[Scalar[DT]](length=AA, fill=Scalar[DT](0))
+    var act_out = List[Scalar[DT]](length=AA, fill=Scalar[DT](0))
+    var render_ns = 0
+    var forward_ns = 0
+    if have_act:
+        cam_idx.append(_index(fmd.camera_names, String("arena_agentview")))
+        cam_idx.append(_index(fmd.camera_names, String("robot_eye_in_hand")))
+        for j in range(ARM_DOF):
+            qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_joint") + String(j + 1))])
+        qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_finger_joint1"))])
+        qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_finger_joint2"))])
+        # ⚠ THE SAME VISUAL MODEL THE RENDERED STORE WAS DRAWN WITH: group 1,
+        # the stove burner rule, LIBERO's lights and textures.
+        ren_opt.append(Renderer(ctx, env.mf, cam_idx[0]))
+        ren_opt[0].set_visual(
+            ctx,
+            build_visual_model[DT, E.MD](
+                fmd, env.mf, group_mask=1 << 1,
+                conditions=libero_site_conditions(f),
+            ),
+        )
+        print("  camera:", ren_opt[0].vis.describe())
+        h_rgb = ctx.enqueue_create_host_buffer[DT](LANES * ANPIX * RGB_CHANNELS)
+        act_opt.append(ACT_T.make(ctx=ctx))
+        act_opt[0].load(act_dir + "/best.ckpt")
+        for _ in range(LANES):
+            ens.append(TemporalEnsemble[AA, AK](m=ACT_TEMPORAL_ENSEMBLE_M))
+        act_u8 = List[Scalar[DType.uint8]](length=LANES * AIMG, fill=0)
+        act_images = List[Scalar[DT]](length=LANES * AIMG, fill=Scalar[DT](0))
+        act_qpos = List[Scalar[DT]](length=LANES * AQ, fill=Scalar[DT](0))
+        act_dummy = List[Scalar[DT]](length=LANES * AK * AA, fill=Scalar[DT](0))
+        act_valid = List[Scalar[DT]](length=LANES * AK, fill=Scalar[DT](1))
+        act_chunk = List[Scalar[DT]](length=LANES * AK * AA, fill=Scalar[DT](0))
+
     var act_h = ctx.enqueue_create_host_buffer[DT](LANES * OSC_ACTION_DIM)
     # ⚠ `env._obs` IS A DEVICE BUFFER, copied into a host one — the same
     # `enqueue_copy` `libero_osc_batched` does, at `M.OBS_DIM` per lane.
@@ -473,6 +596,8 @@ def run[T: PlacementTable, M: ModelDefLike](
 
         var obs_row = List[Float64]()
         var action = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
+        for e in range(len(ens)):
+            ens[e].reset()
         for step in range(SETTLE_STEPS + max_steps):
             var ap = act_h.unsafe_ptr()
             # ⚠ THE SETTLE STEPS ARE ZEROS EVEN WITH A POLICY — `metric.py`
@@ -480,6 +605,50 @@ def run[T: PlacementTable, M: ModelDefLike](
             if step < SETTLE_STEPS or not have_policy:
                 for k in range(LANES * OSC_ACTION_DIM):
                     ap[unsafe_offset=k] = Scalar[DT](0)
+            elif have_act:
+                # 1. both cameras, every lane, from the state the lanes are in
+                var tr0 = perf_counter_ns()
+                ref r = ren_opt[0]
+                for cam in range(LIBERO_ACT_N_CAM):
+                    r.render(ctx, env.d, env.mf, cam_idx[cam])
+                    ctx.enqueue_copy(h_rgb, r.rgb)
+                    ctx.synchronize()
+                    var p = h_rgb.unsafe_ptr()
+                    for e in range(LANES):
+                        var src = e * ANPIX * RGB_CHANNELS
+                        var dst = e * AIMG + cam * ACAM
+                        for q in range(ANPIX):
+                            for c in range(3):
+                                act_u8[dst + c * ANPIX + q] = _byte(
+                                    Float64(p[unsafe_offset = src + q * 3 + c])
+                                )
+                        normalize_camera_chw[LIBERO_ACT_IMG_H, LIBERO_ACT_IMG_W](
+                            act_u8, dst, act_images, dst
+                        )
+                # 2. the nine proprio words, standardised as the fit was
+                #    (`env.d.qpos` was downloaded after the previous step)
+                for e in range(LANES):
+                    for k in range(AQ):
+                        act_qpos[e * AQ + k] = (
+                            Scalar[DT](env.d.qpos.data[e * NQ + qadr9[k]])
+                            - act_norm.qpos_mean[k]
+                        ) / act_norm.qpos_std[k]
+                render_ns += perf_counter_ns() - tr0
+                # 3. one forward at LANES, then each lane's ensemble
+                var tf0 = perf_counter_ns()
+                act_opt[0].predict(act_qpos, act_images, act_dummy, act_valid, act_chunk)
+                forward_ns += perf_counter_ns() - tf0
+                var t_pol = step - SETTLE_STEPS
+                for e in range(LANES):
+                    ens[e].push(t_pol, act_chunk, e * AK * AA)
+                    ens[e].action_at(t_pol, act_pred, 0)
+                    denormalize(act_pred, 0, act_norm.action_mean,
+                                act_norm.action_std, act_out, 0, AA)
+                    for k in range(OSC_ACTION_DIM):
+                        var a = _clamp(Float64(act_out[k]))
+                        ap[unsafe_offset = e * OSC_ACTION_DIM + k] = Scalar[DT](a)
+                        act_abs += abs(a)
+                        act_words += 1
             else:
                 # the policy, lane by lane, on the env's own observation rows
                 ctx.enqueue_copy(obs_h, env._obs)
@@ -596,7 +765,8 @@ def run[T: PlacementTable, M: ModelDefLike](
             report.record(r, solved[r])
         report.show(
             String("LIBERO success — ") + family
-            + (", policy " + policy_path if have_policy else ", null policy")
+            + (", ACT " + act_dir if have_act else
+               (", policy " + policy_path if have_bc else ", null policy"))
         )
     else:
         var per_task = List[Int](length=n_tasks, fill=0)
@@ -622,6 +792,10 @@ def run[T: PlacementTable, M: ModelDefLike](
         print("  policy: mean |action|",
               act_abs / Float64(act_words) if act_words > 0 else 0.0, "over",
               act_words, "words")
+    if have_act:
+        print("  act   : fitted on", act_norm.store, "| cameras + qpos",
+              Float64(render_ns) / 1e9, "s | forward", Float64(forward_ns) / 1e9,
+              "s over the run")
     print("  contacts saturated lane-steps", saturated, "| non-finite", nonfinite,
           "| singular steps", singular_steps)
     print("  wall", elapsed, "s for", n_rows, "episodes of", SETTLE_STEPS
@@ -675,6 +849,7 @@ def main() raises:
     var check_lanes = 2
     var sampled = False
     var policy_path = String("")
+    var act_dir = String("")
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -690,34 +865,38 @@ def main() raises:
         elif s == "--policy" and i + 1 < len(args):
             policy_path = String(args[i + 1])
             i += 1
+        elif s == "--act" and i + 1 < len(args):
+            act_dir = String(args[i + 1])
+            i += 1
         elif s == "--sampled":
             sampled = True
         else:
             raise Error(
                 "libero eval batched: unknown argument '" + s + "' (--inits N,"
-                " --steps N, --check-lanes K, --sampled, --policy PATH)"
+                " --steps N, --check-lanes K, --sampled, --policy PATH,"
+                " --act DIR)"
             )
         i += 1
 
     comptime if FAMILY == "libero_goal":
         run[LiberoGoalPlacement, LiberoGoalModel](
-            n_inits, max_steps, check_lanes, sampled, policy_path
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir
         )
     elif FAMILY == "libero_object":
         run[LiberoObjectPlacement, LiberoObjectModel](
-            n_inits, max_steps, check_lanes, sampled, policy_path
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir
         )
     elif FAMILY == "libero_spatial":
         run[LiberoSpatialPlacement, LiberoSpatialModel](
-            n_inits, max_steps, check_lanes, sampled, policy_path
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir
         )
     elif FAMILY == "libero_kitchen_scene3":
         run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](
-            n_inits, max_steps, check_lanes, sampled, policy_path
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir
         )
     elif FAMILY == "libero_kitchen_scene5":
         run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](
-            n_inits, max_steps, check_lanes, sampled, policy_path
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir
         )
     else:
         comptime assert False, (

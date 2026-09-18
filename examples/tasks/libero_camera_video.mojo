@@ -67,9 +67,6 @@ from mojo_rl.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.gpu.constants import (
-    MODEL_BODY_SIZE, BODY_IDX_POS_X, BODY_IDX_QUAT_X, BODY_IDX_QUAT_W,
-)
 from mojo_rl.physics3d.raytrace.visual import build_visual_model
 from mojo_rl.physics3d.raytrace.host_render import render_lane_cpu
 from mojo_rl.render.video_recorder import VideoRecorder
@@ -77,6 +74,7 @@ from mojo_rl.tasks.spec import load_family
 from mojo_rl.tasks.family import scene_path
 from mojo_rl.tasks.libero_state_remap import load_state_remap
 from mojo_rl.tasks.libero_visual import libero_site_conditions
+from mojo_rl.tasks.libero_fixtures import patch_fixtures, fixtures_dump_path
 from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
@@ -92,52 +90,6 @@ def _to_byte(x: Float64) -> UInt8:
     if v > 255:
         v = 255
     return UInt8(v)
-
-
-def _patch_fixtures(
-    dump_path: String, demo: Int, body_names: List[String],
-    mut m: Model[DT, DynDims],
-) raises -> Int:
-    """Write demo `demo`'s `FIX` poses from a demo-success dump into the
-    model's body records; returns how many fixtures were placed.
-
-    A `FIX body px py pz qw qx qy qz` line belongs to the `DEMO demo_<k>` block
-    above it. `bodies[b, BODY_IDX_POS_*]` is what forward kinematics reads, so
-    this is the whole patch — the same seven columns the camera gate and
-    `libero_demo_success.mojo` write."""
-    var text: String
-    with open(dump_path, "r") as fh:
-        text = fh.read()
-    var want = String("demo_") + String(demo)
-    var cur = String("")
-    var placed = 0
-    var lines = text.split("\n")
-    for li in range(len(lines)):
-        var l = String(String(lines[li]).strip())
-        if l.startswith("DEMO "):
-            var toks = l.split(" ")
-            cur = String(toks[1])
-        elif l.startswith("FIX ") and cur == want:
-            var toks = l.split(" ")
-            if len(toks) < 9:
-                raise Error(dump_path + ": malformed FIX line: " + l)
-            var name = String(toks[1])
-            var bi = -1
-            for b in range(len(body_names)):
-                if String(body_names[b]) == name:
-                    bi = b
-            if bi <= 0:
-                raise Error(dump_path + ": no body '" + name + "' in the scene")
-            var o = bi * MODEL_BODY_SIZE
-            m.bodies.data[o + BODY_IDX_POS_X + 0] = Scalar[DT](Float64(String(toks[2])))
-            m.bodies.data[o + BODY_IDX_POS_X + 1] = Scalar[DT](Float64(String(toks[3])))
-            m.bodies.data[o + BODY_IDX_POS_X + 2] = Scalar[DT](Float64(String(toks[4])))
-            m.bodies.data[o + BODY_IDX_QUAT_W] = Scalar[DT](Float64(String(toks[5])))
-            m.bodies.data[o + BODY_IDX_QUAT_X + 0] = Scalar[DT](Float64(String(toks[6])))
-            m.bodies.data[o + BODY_IDX_QUAT_X + 1] = Scalar[DT](Float64(String(toks[7])))
-            m.bodies.data[o + BODY_IDX_QUAT_X + 2] = Scalar[DT](Float64(String(toks[8])))
-            placed += 1
-    return placed
 
 
 def _usage() -> String:
@@ -309,10 +261,12 @@ def main() raises:
         conditions=libero_site_conditions(fam),
     )
     if fixtures_dump.byte_length() == 0:
-        fixtures_dump = demos_dir + "/_dumps/" + suite + "/" + task + ".dump"
+        fixtures_dump = fixtures_dump_path(demos_dir, suite, task)
     var fix_note = String("")
     if exists(fixtures_dump):
-        var placed = _patch_fixtures(fixtures_dump, demo, fmd.body_names, m)
+        var placed = patch_fixtures[DT, DynDims](
+            fixtures_dump, demo, fmd.body_names, m
+        )
         if placed == 0:
             fix_note = String("  ⚠ ") + fixtures_dump + " has no FIX lines for demo_" + String(demo) + " — fixtures at the scene's poses (~1 cm off, ~7 dB)"
         else:
