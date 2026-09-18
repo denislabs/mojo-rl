@@ -112,8 +112,53 @@ grep -q '^comptime NEWTON_FORCE_PER_ENV: Bool = True$' "$NS" \
               "BLOCKED kernel and the sweep would be vacuous" >&2; exit 1; }
 echo "both flags set"
 
-say "5. the sweep (expect a long compile: two elliptic Newton instantiations)"
-echo "to undo the two flags afterwards:"
+say "5. shrink the per-env kernel's PER-THREAD FRAME (or it OOMs at launch)"
+# ⚠⚠ THIS IS NOT AN OPTIMISATION, IT IS WHAT MAKES THE FLOAT64 RUN LAUNCH AT
+# ALL. `CUDA_ERROR_OUT_OF_MEMORY` *at kernel launch* is the local-memory
+# RESERVATION, not a buffer allocation — the per-env leg (the one
+# NEWTON_FORCE_PER_ENV turns on) keeps its big matrices in a per-thread frame,
+# and every float in it doubles at float64.
+#
+#   `JT_PC` is the lever that exists for exactly this, added when the same frame
+#   blew Metal's per-thread stack. False = one all-contact tangent cache of
+#   MC*NT*NV; True = a per-contact buffer of NT*nv, refilled per contact.
+#   Measured for this model (MC 56, NT 2, NV 45) at float64:
+#         JT_PC=False  39.4 KB per thread
+#         JT_PC=True    0.7 KB per thread
+#   The default is `not has_nvidia_gpu_accelerator()` (newton_solve.mojo:4239),
+#   so CUDA gets False and Metal gets True — which also means the Metal figures
+#   this sweep is compared against were produced WITH JT_PC=True. Forcing it
+#   here makes the two platforms agree rather than diverge.
+#
+#   `MC` cuts the same array linearly (56 -> 24 is 39.4 -> 16.9 KB) and the
+#   device workspace with it. VERIFIED LOSSLESS on Metal at MC=24: identical
+#   147/148 line-search evaluations and the same 5.7220458984375e-06.
+#   ⚠ THE FLOOR IS THE CONTACT COUNT: this state has ncon 18, and an MC below
+#   it TRUNCATES SILENTLY, so do not go under 20.
+#   ⚠ MC is NOT a compile-time lever (54.80 s at 24 against 55.18 s at 48) —
+#   change it for memory, never for build speed.
+#
+# The three NV*NV matrices (47.5 KB per thread at float64) are inherent to the
+# per-env leg and no flag removes them. If it still OOMs after both edits, drop
+# to one lane: `sed 's/^comptime BATCH = 2$/comptime BATCH = 1/'` on $SAP — the
+# divergence follows the STATE and reproduces at BATCH 1 (see $SAP's header),
+# so a single lane is still a valid comparison, just without lane 1 as control.
+MC=${MC:-24}
+[ "$MC" -ge 20 ] || { echo "MC=$MC is below the ncon 18 of this state and" \
+                           "would truncate contacts silently" >&2; exit 1; }
+require_line "$NS" '^        JT_PC = not has_nvidia_gpu_accelerator(),$'
+require_line "$SAP" '^comptime MC = '
+sedi 's/^        JT_PC = not has_nvidia_gpu_accelerator(),$/        JT_PC = True,  # forced: float64 per-thread frame (see libero_f64_sweep_cuda.sh)/' "$NS"
+sedi "s/^comptime MC = .*/comptime MC = $MC/" "$SAP"
+grep -q '^        JT_PC = True,' "$NS" \
+    || { echo "JT_PC was not forced — the per-env float64 kernel will OOM at" \
+              "launch" >&2; exit 1; }
+grep -q "^comptime MC = $MC\$" "$SAP" \
+    || { echo "MC was not set to $MC" >&2; exit 1; }
+echo "JT_PC forced True, MC=$MC"
+
+say "6. the sweep (expect a long compile: two elliptic Newton instantiations)"
+echo "to undo EVERY edit this script made:"
 echo "  git checkout -- $SAP $NS"
 pixi run -e nvidia mojo run -I . "$SAP" "$DUMP" 1 1 2
 
@@ -122,10 +167,9 @@ pixi run -e nvidia mojo run -I . "$SAP" "$DUMP" 1 1 2
 #   gap like the `cos` one that made flipping the global DTYPE impossible. The
 #   named function is in the SOLVER's call graph; `pow` in the joint-limit
 #   impedance path is the known candidate. Report the symbol.
-# * shared memory / "exceeds" at launch — the blocked kernel roughly doubles
-#   its threadgroup footprint at float64 (MC 56 needed 32,852 B at float32)
-#   against CUDA's 48 KB static limit. Lower the cap; this state has ncon 18,
-#   so 24 truncates nothing:
-#       sed -i 's/^comptime MC = 56$/comptime MC = 24/' tools/tasks/solve_at_pose.mojo
-#   (MC is NOT a compile-time lever — measured 54.80 s at 24 against 55.18 s at
-#   48 — so change it only for the memory limit.)
+# * CUDA_ERROR_OUT_OF_MEMORY *at launch* — step 5 exists for this; if it still
+#   happens after JT_PC and MC, try `MC=20` and then BATCH=1 as step 5 says.
+# * shared memory / "exceeds" from the BLOCKED kernel — that one keeps its
+#   matrices in THREADGROUP memory instead (which is why it is the OOM-safe leg
+#   at scale), roughly doubling from 32,852 B at float32 against CUDA's 48 KB
+#   static limit. Lowering MC is the same fix.
