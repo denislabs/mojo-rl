@@ -565,6 +565,17 @@ def main() raises:
     var worst_q = 0.0
     var sum_cam = 0.0
     var t_obs = -10_000
+    var t_obs_pending = 0
+    var pending = False
+    var q_t0 = 0
+    # Grid steps of warning the query needs: the observation build plus the
+    # query itself, measured from the last one. Seeded at half a chunk so the
+    # FIRST query — which has no measurement and runs against a cold cache —
+    # is started early rather than late.
+    var lead = CHUNK // 2
+    var sum_wait = 0.0
+    var worst_wait = 0.0
+    var sum_obs_gap = 0
     var loop_ns = 0
     var cmd = List[Float64](length=RDIM, fill=0.0)
     var prev_cmd = List[Float64](length=RDIM, fill=0.0)
@@ -585,8 +596,56 @@ def main() raises:
                 Float64(now_ns - loop_t0) * Float64(SO101_FPS) / 1e9
             )
 
-            # ── a new chunk, when the current one is used up ─────────────
-            if t_obs < 0 or t_now - t_obs >= exec_steps:
+            # ── COLLECT a query that was started earlier ─────────────
+            # Only when the current chunk is used up: until then the arm has
+            # real waypoints to execute and there is nothing to wait for.
+            if pending and (t_obs < 0 or t_now - t_obs >= exec_steps):
+                var t_w = perf_counter_ns()
+                comptime if TARGET != "cpu":
+                    dev_ctx.value().synchronize()
+                var wait_ms = Float64(perf_counter_ns() - t_w) / 1e6
+                sum_wait += wait_ms
+                if wait_ms > worst_wait:
+                    worst_wait = wait_ms
+                pol.finish_action[TARGET](act)
+                pending = False
+                var q_ms = Float64(perf_counter_ns() - q_t0) / 1e6
+                sum_q += q_ms
+                if q_ms > worst_q:
+                    worst_q = q_ms
+                queries += 1
+                t_obs = t_obs_pending
+                t_now = Int(
+                    Float64(perf_counter_ns() - loop_t0) * Float64(SO101_FPS)
+                    / 1e9
+                )
+                # ⚠⚠ THE SKIP RULE INVERTS WHEN A QUERY OUTLASTS ITS CHUNK:
+                # "skip what went stale" would discard the WHOLE chunk and
+                # command nothing but its clamped final waypoint — the arm
+                # would teleport between end poses and never execute a
+                # trajectory. When that happens the arm has been stalled on the
+                # pose the observation was taken at, so the chunk still starts
+                # where the arm is: re-base the grid instead of skipping.
+                if t_now - t_obs >= CHUNK:
+                    stalled_handovers += 1
+                    t_obs = t_now
+                else:
+                    skipped_at_handover += t_now - t_obs
+
+            # ── START the next query while this chunk still has steps ────
+            # ⚠⚠ THIS IS THE WHOLE POINT OF THE SPLIT. The query is ~660 ms on
+            # an Orin and the chunk is 1.67 s of motion; issued `lead` steps
+            # before the chunk runs out, it completes just as the arm needs the
+            # next one, and the control loop never stops commanding. Issued at
+            # the handover instead — the obvious shape — the arm freezes for
+            # two thirds of a second per chunk and then sprints through the
+            # catch-up, which is what the first armed run did.
+            #
+            # ⚠ `images` and `noise` ARE THE GPU'S INPUTS until the collect
+            # above, so they are only rebuilt here, with nothing in flight.
+            if not pending and (
+                t_obs < 0 or exec_steps - (t_now - t_obs) <= lead
+            ):
                 var t_c0 = perf_counter_ns()
                 for i in range(N_CAM):
                     if cams[i].take_latest(frames[i]) == 0:
@@ -603,7 +662,8 @@ def main() raises:
                 fill_camera_images[TARGET, N_CAM, SIGLIP_INPUT](
                     frames, widths, heights, True, images, scratch, dev_ctx
                 )
-                sum_cam += Float64(perf_counter_ns() - t_c0) / 1e6
+                var obs_ms = Float64(perf_counter_ns() - t_c0) / 1e6
+                sum_cam += obs_ms
 
                 # ⚠ FRESH NOISE EVERY QUERY. Flow matching integrates FROM a
                 # sample of x_1; reusing one sample would make every chunk a
@@ -615,41 +675,36 @@ def main() raises:
                 # not after. The chunk describes the world as it was when the
                 # cameras were read, and indexing it from `t_obs` is what makes
                 # the inference latency a SKIP rather than a lag.
-                var t_q = perf_counter_ns()
-                t_obs = Int(
-                    Float64(t_q - loop_t0) * Float64(SO101_FPS) / 1e9
+                q_t0 = perf_counter_ns()
+                t_obs_pending = Int(
+                    Float64(q_t0 - loop_t0) * Float64(SO101_FPS) / 1e9
                 )
-                pol.select_action[TARGET](
-                    images, ids, pose, noise, act, dev_ctx
-                )
-                comptime if TARGET != "cpu":
-                    dev_ctx.value().synchronize()
-                var q_ms = Float64(perf_counter_ns() - t_q) / 1e6
-                sum_q += q_ms
-                if q_ms > worst_q:
-                    worst_q = q_ms
-                queries += 1
-                t_now = Int(
-                    Float64(perf_counter_ns() - loop_t0) * Float64(SO101_FPS)
-                    / 1e9
-                )
-                # ⚠⚠ THE SKIP RULE INVERTS WHEN A QUERY OUTLASTS ITS CHUNK,
-                # AND THE ORIN IS THAT CASE: 3.24 s per query is 98 grid steps
-                # against a 50-step chunk, so "skip what went stale" would
-                # discard the WHOLE chunk and command nothing but its clamped
-                # final waypoint — the arm would teleport between end poses and
-                # never execute a trajectory at all.
-                #
-                # When that happens the arm has been STALLED on its last
-                # commanded pose for the whole query, which is the pose the
-                # observation was taken at. The chunk therefore still starts
-                # where the arm is, and executing it from index 0 — late, but
-                # whole — is right. Re-base the grid instead of skipping.
-                if t_now - t_obs >= CHUNK:
-                    stalled_handovers += 1
-                    t_obs = t_now
-                else:
-                    skipped_at_handover += t_now - t_obs
+                pol.start_action[TARGET](images, ids, pose, noise, dev_ctx)
+                pending = True
+
+                # The observation build itself commands nothing — two grid
+                # steps of it, against nineteen for a blocking query.
+                sum_obs_gap += Int(obs_ms * Float64(SO101_FPS) / 1000.0)
+
+                # Next time, start this much earlier. Measured, not assumed:
+                # the first query runs against a cold cache and is not the
+                # steady-state cost. `+2` covers the grid quantisation at both
+                # ends, and the cap keeps a pathological query from starting
+                # the next one before the current chunk has any steps at all.
+                if queries > 0:
+                    var want = Int(
+                        (sum_q / Float64(queries) + obs_ms)
+                        * Float64(SO101_FPS) / 1000.0
+                    ) + 2
+                    if want < 2:
+                        want = 2
+                    if want > exec_steps - 1:
+                        want = exec_steps - 1
+                    lead = want
+
+            # Nothing to command until the first chunk lands.
+            if t_obs < 0:
+                continue
 
             var idx = t_now - t_obs
             if idx < 0:
@@ -737,10 +792,12 @@ def main() raises:
         + fixed(sum_q / Float64(queries) if queries > 0 else 0.0, 1)
         + " ms mean, " + fixed(worst_q, 1) + " ms worst"
     )
-    # ⚠ THE COST OF NOT HIDING THE LATENCY. Every chunk's first
-    # `skipped` steps are thrown away because the world moved on while the
-    # policy was thinking. A large number here is the argument for putting the
-    # forward on its own thread.
+    # ⚠ THE LATENCY IS HIDDEN, NOT REMOVED. The query runs while the previous
+    # chunk is still executing, so the loop never stops commanding — but a
+    # chunk predicted from an observation at time t cannot be executed before
+    # t + query, so its first steps are already in the past when it lands, and
+    # those are skipped. That floor is the QUERY COST; what the pipeline
+    # removed is the freeze that used to sit on top of it.
     print(
         "  skipped at handover = " + String(skipped_at_handover)
         + " grid steps total, "
@@ -762,6 +819,27 @@ def main() raises:
             " next chunk.\n     The query outlasts the motion it buys; the"
             " forward belongs off the control thread."
         )
+    # ⚠ HOW LATE THE PIPELINE WAS. Zero means every chunk was ready before the
+    # arm needed it, which is the whole claim: the query cost is then invisible
+    # to the control loop. A large number means `lead` is too small — the query
+    # is being started too close to the handover.
+    print(
+        "  handover wait     = "
+        + fixed(sum_wait / Float64(queries) if queries > 0 else 0.0, 1)
+        + " ms mean, " + fixed(worst_wait, 1) + " ms worst"
+    )
+    print(
+        "  query lead        = " + String(lead)
+        + " grid steps of warning (measured from the last query)"
+    )
+    # ⚠ THE ONLY GAP LEFT. The observation build runs on the control thread
+    # with nothing in flight — it IS the query's input — so the arm holds for
+    # its duration: ~2 grid steps against the ~19 a blocking query cost.
+    # Moving the resize onto the camera thread, as the ACT loop does, closes it.
+    print(
+        "  observation gap   = " + String(sum_obs_gap)
+        + " grid steps total (the build commands nothing)"
+    )
     print("  observation build = "
           + fixed(sum_cam / Float64(queries) if queries > 0 else 0.0, 1)
           + " ms mean (cameras + resize_with_pad + upload)")

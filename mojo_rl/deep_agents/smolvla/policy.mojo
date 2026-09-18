@@ -950,16 +950,57 @@ struct SmolVLAPolicy[
         values; `noise` is x_1, `[B, CHUNK*ADIM]`, supplied by the caller so the
         RNG stays outside and a gate can pin it.
         """
-        self.build_prefix[target](images, lang_ids, raw_state, ctx)
+        self.start_action[target](images, lang_ids, raw_state, noise, ctx)
+        comptime if target != "cpu":
+            ctx.value().synchronize()
+        self.finish_action[target](actions)
 
-        # ── ten Euler steps ──────────────────────────────────────────────
+    def start_action[
+        target: StaticString
+    ](
+        mut self,
+        mut images: Tensor,
+        ref lang_ids: List[Int],
+        ref raw_state: List[Float32],
+        mut noise: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """ENQUEUE one observation's query and return without waiting for it.
+
+        ⚠ THE POINT IS THE CALLER'S OTHER WORK. On an Orin the query is ~660 ms
+        of GPU time behind ~35 ms of launches, and a robot loop that blocks on
+        it commands nothing for two thirds of a second — the arm freezes, then
+        sprints to catch up when the chunk lands. Split, the control loop keeps
+        commanding the CURRENT chunk while the next one is computed.
+
+        Nothing between here and `finish_action` synchronises: the prefix, the
+        prefill and the ten Euler steps are all enqueues, and the only D2H copy
+        is staged (`download_enqueue`), not waited on.
+
+        ⚠ `images`, `noise` and the policy's buffers ARE THE QUEUE'S INPUTS
+        until the work completes. Overwriting them before `finish_action` — the
+        next observation into the same `images` tensor, say — races the GPU.
+        """
+        self.build_prefix[target](images, lang_ids, raw_state, ctx)
         self.sampler.sample[target, Self.P](
             self.expert, self.cache, self.denoiser, self.action_in,
             self.time_mlp_in, self.time_mlp_out, self.action_out,
             noise, self.chunk_buf, ctx,
         )
         comptime if target != "cpu":
-            self.chunk_buf.download(ctx.value())
+            self.chunk_buf.download_enqueue(ctx.value())
+
+    def finish_action[
+        target: StaticString
+    ](mut self, mut actions: List[Float32]) raises:
+        """Collect the chunk `start_action` enqueued, in robot units.
+
+        ⚠ THE CALLER MUST HAVE SYNCHRONISED the context first. This reads the
+        staged host buffer; without the sync it reads whatever was there, which
+        on a second query is the PREVIOUS chunk — plausible actions, silently
+        one observation stale."""
+        comptime if target != "cpu":
+            self.chunk_buf.download_finalize()
 
         # ── back to robot units, padded dims dropped ─────────────────────
         var flat = List[Float32]()

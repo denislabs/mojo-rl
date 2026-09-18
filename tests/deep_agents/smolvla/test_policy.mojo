@@ -259,6 +259,37 @@ def main() raises:
         " between calls",
     )
 
+    # [4b] the SPLIT query is the same query. `start_action` enqueues and
+    # returns; `finish_action` reads the staged copy after the caller's sync.
+    # The robot loop uses the split so it can keep commanding the current chunk
+    # while the next one runs on the GPU — 664 ms on an Orin, during which the
+    # blocking form commands nothing at all.
+    #
+    # ⚠ THE FAILURE THIS CATCHES IS A STALE CHUNK, not a crash: reading the
+    # staging buffer without the sync, or finishing a query that was never
+    # started, returns the PREVIOUS chunk — plausible motion, one observation
+    # behind. Bit equality against the blocking form is the only check that
+    # sees it.
+    var noise_split = Tensor.alloc(XN)
+    for i in range(XN):
+        noise_split.data[i] = Scalar[DT](((i * 37) % 19) - 9) * 0.1
+    noise_split.upload(d)
+    var act_split = List[Float32]()
+    pol.start_action["gpu"](images, ids, pose, noise_split, Optional(d))
+    d.synchronize()
+    pol.finish_action["gpu"](act_split)
+    var split_diff = 0
+    for i in range(len(act)):
+        if act[i] != act_split[i]:
+            split_diff += 1
+    print("  [4b] split vs blocking query: differing", split_diff, "/",
+          len(act))
+    assert_equal(
+        split_diff, 0,
+        "start_action + finish_action disagreed with select_action — the"
+        " robot loop's chunk is not the chunk the gates measure",
+    )
+
     # [5] no stats must raise — again by emptying THIS policy's stats, not by
     # building another one.
     # Emptying `state_mean` is what `select_action`'s guard reads
