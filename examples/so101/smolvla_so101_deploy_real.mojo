@@ -96,6 +96,20 @@ from mojo_rl.deep_agents.smolvla.text import (
 )
 from mojo_rl.deep_agents.smolvla.observation import fill_camera_images
 from mojo_rl.deep_agents.smolvla.policy import SmolVLAPolicy
+from mojo_rl.deep_agents.smolvla.query_worker import (
+    QW_DROPPED,
+    QW_FAILED,
+    QW_N_CELLS,
+    QW_QUERY_US,
+    QW_READY,
+    QW_SERVED,
+    QW_STATE,
+    QW_SUBMIT_US,
+    SmolVLAQueryWorker,
+)
+from mojo_rl.core.concurrent.block import SharedBlock
+from mojo_rl.core.concurrent.ring import SharedRing
+from mojo_rl.core.concurrent.worker import BackgroundThread
 from mojo_rl.deep_agents.smolvla.recording import SO101_N_LANG, SO101_TASKS
 from mojo_rl.deep_agents.smolvla.tasks import TaskTokens
 from mojo_rl.io.fileio import StdinReader, stdin_is_tty
@@ -133,6 +147,10 @@ padding the checkpoint was trained with — `select_action` drops the padding an
 returns `CHUNK x stats.action_dim()`."""
 
 comptime Pol = SmolVLAPolicy[N_CAM, N_LANG, CHUNK, STEPS, 1]
+comptime QWorker = SmolVLAQueryWorker[
+    N_CAM, N_LANG, CHUNK, STEPS, RDIM, TARGET
+]
+"""The same policy, built and queried on its own thread under `--threaded`."""
 
 comptime CAM_W = 640
 comptime CAM_H = 480
@@ -198,6 +216,9 @@ def main() raises:
     var cam_fourcc = String("")
     var port_arg = String("")
     var do_return = True
+    # ⚠ OPT-IN WHILE IT IS NEW. Without it this program keeps the shape that
+    # has been on the arm all week: the query on the control thread.
+    var threaded = False
 
     var args = argv()
     for i in range(len(args)):
@@ -206,6 +227,8 @@ def main() raises:
             arm_it = True
         elif a == "--force":
             force = True
+        elif a == "--threaded":
+            threaded = True
         elif a == "--project" and i + 1 < len(args):
             project = String(args[i + 1])
         elif a == "--ckpt" and i + 1 < len(args):
@@ -299,47 +322,83 @@ def main() raises:
           + String(Pol.P))
 
     # ── the policy ────────────────────────────────────────────────────────
+    # ⚠⚠ ONE OF TWO SHAPES, AND THEY DO NOT OVERLAP. `--threaded` builds the
+    # policy on the QUERY THREAD and this thread never touches the GPU at all
+    # (no context, no 3.2 GB of layers here); otherwise the policy is built
+    # here and queried inline, which is what the arm has run all week.
     var dev_ctx = Optional[DeviceContext](None)
-    comptime if TARGET != "cpu":
-        dev_ctx = DeviceContext()
-        print("device       " + String(dev_ctx.value().name())
-              + "  (-DSMOLVLA_GPU=1)")
-    else:
-        print("device       CPU")
+    var pol_opt = Optional[Pol](None)
+    var req_ring = SharedRing(capacity=2, slot_bytes=QWorker.REQ_BYTES)
+    var rsp_ring = SharedRing(capacity=2, slot_bytes=QWorker.RSP_BYTES)
+    var qcells = SharedBlock(QW_N_CELLS)
+    var worker = Optional[BackgroundThread[QWorker]](None)
 
-    print("base         " + String(BASE_REPO) + "  (~907 MB, cached)")
-    var base = hf_download_file(
-        String(BASE_REPO), String("model.safetensors"), HF_MODEL
-    )
-    print("             building every layer (3.2 GB host+device) ...")
-    var pol = Pol.make[TARGET, Deterministic](dev_ctx)
-    pol.load[TARGET](base, dev_ctx)
-
-    # ⚠⚠ THE FINE-TUNE IS NOT SELF-CONTAINED. It holds the trainable set only
-    # — the expert and the four action projections — so the base must be
-    # loaded FIRST and this applied over it. Loading only this would leave the
-    # vision tower and the language model at their initialisation.
-    print("fine-tuned   " + ckpt)
-    var sp_frozen = Linear[SMOLVLA_STATE_DIM, SMOLLM_DIM].make[
-        TARGET, Deterministic
-    ](dev_ctx)
-    load_trainables[
-        TARGET, SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
-        SMOLLM_KV_W, SMOLVLA_ACTION_DIM,
-    ](
-        ckpt, pol.expert, pol.action_in, pol.time_mlp_in, pol.time_mlp_out,
-        pol.action_out, sp_frozen, dev_ctx,
-    )
-
-    pol.load_stats(stats_path)
-    if pol.stats.action_dim() != RDIM or pol.stats.state_dim() != RDIM:
-        raise Error(
-            "smolvla deploy: " + stats_path + " describes a "
-            + String(pol.stats.state_dim()) + "-state / "
-            + String(pol.stats.action_dim()) + "-action robot, this build is "
-            + String(RDIM) + "/" + String(RDIM)
+    if threaded:
+        print("device       the query runs on its own thread (--threaded)")
+        worker = BackgroundThread(
+            QWorker(
+                req_ring, rsp_ring, qcells, String(BASE_REPO), ckpt,
+                stats_path, tasks_path, task_index, WARMUP_QUERIES,
+            )
         )
+        # ⚠ WAIT FOR IT, AND FOR ITS WARM-UP. The worker downloads, builds
+        # 3.2 GB of layers and runs the kernel-compiling first query before it
+        # publishes READY. Arming while it is still starting would command the
+        # arm from an empty chunk.
+        while qcells.acquire_load(QW_STATE) == 0:
+            pass
+        if qcells.acquire_load(QW_STATE) == QW_FAILED:
+            raise Error(
+                "smolvla deploy: the query thread failed to start — its own"
+                " message is above this line"
+            )
+
+    comptime if TARGET != "cpu":
+        if not threaded:
+            dev_ctx = DeviceContext()
+            print("device       " + String(dev_ctx.value().name())
+                  + "  (-DSMOLVLA_GPU=1)")
+    else:
+        if not threaded:
+            print("device       CPU")
+
+    print("fine-tuned   " + ckpt)
     print("statistics   " + stats_path)
+    if not threaded:
+        print("base         " + String(BASE_REPO) + "  (~907 MB, cached)")
+        var base = hf_download_file(
+            String(BASE_REPO), String("model.safetensors"), HF_MODEL
+        )
+        print("             building every layer (3.2 GB host+device) ...")
+        var pol = Pol.make[TARGET, Deterministic](dev_ctx)
+        pol.load[TARGET](base, dev_ctx)
+
+        # ⚠⚠ THE FINE-TUNE IS NOT SELF-CONTAINED. It holds the trainable set
+        # only — the expert and the four action projections — so the base must
+        # be loaded FIRST and this applied over it. Loading only this would
+        # leave the vision tower and the language model at their
+        # initialisation.
+        var sp_frozen = Linear[SMOLVLA_STATE_DIM, SMOLLM_DIM].make[
+            TARGET, Deterministic
+        ](dev_ctx)
+        load_trainables[
+            TARGET, SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
+            SMOLLM_KV_W, SMOLVLA_ACTION_DIM,
+        ](
+            ckpt, pol.expert, pol.action_in, pol.time_mlp_in,
+            pol.time_mlp_out, pol.action_out, sp_frozen, dev_ctx,
+        )
+
+        pol.load_stats(stats_path)
+        if pol.stats.action_dim() != RDIM or pol.stats.state_dim() != RDIM:
+            raise Error(
+                "smolvla deploy: " + stats_path + " describes a "
+                + String(pol.stats.state_dim()) + "-state / "
+                + String(pol.stats.action_dim())
+                + "-action robot, this build is "
+                + String(RDIM) + "/" + String(RDIM)
+            )
+        pol_opt = pol^
 
     # ── the safety boxes, from the SAME stats file ────────────────────────
     var doc = load_json(stats_path)
@@ -380,31 +439,44 @@ def main() raises:
         )
     var widths = List[Int](length=N_CAM, fill=CAM_W)
     var heights = List[Int](length=N_CAM, fill=CAM_H)
-    for j in range(RDIM):
-        pose[j] = Float32(pol.stats.state_mean[j])
-    fill_camera_images[TARGET, N_CAM, SIGLIP_INPUT](
-        warm_frames, widths, heights, True, images, scratch, dev_ctx
-    )
-    _fill_noise(noise, XN, 12345, dev_ctx)
-
     var first_ms = 0.0
     var warm_ms = 0.0
-    for w in range(WARMUP_QUERIES + 1):
-        var t0 = perf_counter_ns()
-        pol.select_action[TARGET](images, ids, pose, noise, act, dev_ctx)
-        comptime if TARGET != "cpu":
-            dev_ctx.value().synchronize()
-        var dt = Float64(perf_counter_ns() - t0) / 1e6
-        if w == 0:
-            first_ms = dt
-        else:
-            warm_ms += dt
-    warm_ms /= Float64(WARMUP_QUERIES)
+    if threaded:
+        # The worker warmed up on its own thread before publishing READY, and
+        # printed its own timings; this is the number it measured.
+        warm_ms = Float64(qcells.acquire_load(QW_QUERY_US)) / 1000.0
+        # Its `images` buffer is the worker's; this one is only ever a staging
+        # area for the request ring, so it is sized on the host alone.
+        images.ensure(N_CAM * 3 * SIGLIP_INPUT * SIGLIP_INPUT)
+        for j in range(RDIM):
+            pose[j] = Float32(0.0)
+    else:
+        for j in range(RDIM):
+            pose[j] = Float32(pol_opt.value().stats.state_mean[j])
+        fill_camera_images[TARGET, N_CAM, SIGLIP_INPUT](
+            warm_frames, widths, heights, True, images, scratch, dev_ctx
+        )
+        _fill_noise(noise, XN, 12345, dev_ctx)
+
+        for w in range(WARMUP_QUERIES + 1):
+            var t0 = perf_counter_ns()
+            pol_opt.value().select_action[TARGET](
+                images, ids, pose, noise, act, dev_ctx
+            )
+            comptime if TARGET != "cpu":
+                dev_ctx.value().synchronize()
+            var dt = Float64(perf_counter_ns() - t0) / 1e6
+            if w == 0:
+                first_ms = dt
+            else:
+                warm_ms += dt
+        warm_ms /= Float64(WARMUP_QUERIES)
     var chunk_s = Float64(exec_steps) / Float64(SO101_FPS)
-    print(
-        "query        " + fixed(warm_ms, 1) + " ms warm (first "
-        + fixed(first_ms, 1) + " ms, " + String(TARGET) + ")"
-    )
+    if not threaded:
+        print(
+            "query        " + fixed(warm_ms, 1) + " ms warm (first "
+            + fixed(first_ms, 1) + " ms, " + String(TARGET) + ")"
+        )
     print(
         "             chunk " + String(CHUNK) + " steps, executing "
         + String(exec_steps) + " = " + fixed(chunk_s, 2) + " s of motion"
@@ -419,8 +491,8 @@ def main() raises:
             "   ⚠⚠ ONE QUERY (" + fixed(warm_ms / 1000.0, 2) + " s) COSTS MORE"
             " THAN THE " + fixed(chunk_s, 2) + " s IT BUYS. The arm will stall"
             " between chunks.\n      Raise --exec-steps (up to "
-            + String(CHUNK) + "), or run the forward off the control thread —"
-            " which this program does not do."
+            + String(CHUNK) + "), or pass --threaded, which runs the query off"
+            " this thread."
         )
     elif warm_ms / 1000.0 > chunk_s * 0.5:
         print(
@@ -614,13 +686,37 @@ def main() raises:
             # real waypoints to execute and there is nothing to wait for.
             if pending and (t_obs < 0 or t_now - t_obs >= exec_steps):
                 var t_w = perf_counter_ns()
-                comptime if TARGET != "cpu":
-                    dev_ctx.value().synchronize()
+                if threaded:
+                    # ⚠ THE ONLY PLACE THIS THREAD WAITS FOR THE GPU, and it
+                    # waits on a RING rather than on the device: the worker
+                    # publishes the chunk when it has it. A long wait here is
+                    # the query genuinely outlasting the chunk, not submission
+                    # overhead.
+                    var got = rsp_ring.begin_pop()
+                    while not got.ok():
+                        if qcells.acquire_load(QW_STATE) == QW_FAILED:
+                            raise Error(
+                                "smolvla deploy: the query thread died — its"
+                                " own message is above this line"
+                            )
+                        got = rsp_ring.begin_pop()
+                    var gp = got.data().unsafe_bitcast[Float32]()
+                    if len(act) < CHUNK * RDIM:
+                        act = List[Float32](
+                            length=CHUNK * RDIM, fill=Float32(0)
+                        )
+                    for i in range(CHUNK * RDIM):
+                        act[i] = gp[unsafe_offset=i]
+                    rsp_ring.end_pop()
+                else:
+                    comptime if TARGET != "cpu":
+                        dev_ctx.value().synchronize()
                 var wait_ms = Float64(perf_counter_ns() - t_w) / 1e6
                 sum_wait += wait_ms
                 if wait_ms > worst_wait:
                     worst_wait = wait_ms
-                pol.finish_action[TARGET](act)
+                if not threaded:
+                    pol_opt.value().finish_action[TARGET](act)
                 pending = False
                 var q_ms = Float64(perf_counter_ns() - q_t0) / 1e6
                 sum_q += q_ms
@@ -672,17 +768,23 @@ def main() raises:
                     continue
                 for j in range(RDIM):
                     pose[j] = Float32(follower.cal.degrees(j, raw[j]))
-                fill_camera_images[TARGET, N_CAM, SIGLIP_INPUT](
-                    frames, widths, heights, True, images, scratch, dev_ctx
-                )
+                if threaded:
+                    # HOST ONLY: the bytes go to the worker, which uploads
+                    # them with its own context. This thread has no context.
+                    fill_camera_images["cpu", N_CAM, SIGLIP_INPUT](
+                        frames, widths, heights, True, images, scratch, None
+                    )
+                else:
+                    fill_camera_images[TARGET, N_CAM, SIGLIP_INPUT](
+                        frames, widths, heights, True, images, scratch, dev_ctx
+                    )
                 var obs_ms = Float64(perf_counter_ns() - t_c0) / 1e6
                 sum_cam += obs_ms
 
-                # ⚠ FRESH NOISE EVERY QUERY. Flow matching integrates FROM a
-                # sample of x_1; reusing one sample would make every chunk a
-                # deterministic function of the observation and quietly throw
-                # away the policy's action distribution.
-                _fill_noise(noise, XN, queries * 7919 + 13, dev_ctx)
+                # ⚠ FRESH NOISE EVERY QUERY (flow matching integrates FROM a
+                # sample of x_1; one reused sample makes every chunk a
+                # deterministic function of the observation). Drawn where the
+                # query runs: inline below, or on the worker thread.
 
                 # ⚠ THE OBSERVATION'S GRID STEP IS STAMPED BEFORE THE QUERY,
                 # not after. The chunk describes the world as it was when the
@@ -697,7 +799,27 @@ def main() raises:
                 # launch queue fills, `cuLaunchKernel` STOPS being asynchronous
                 # and blocks until slots free — so the submission can cost most
                 # of the GPU time and the control loop gets nothing back.
-                pol.start_action[TARGET](images, ids, pose, noise, dev_ctx)
+                if threaded:
+                    # ⚠ THE WHOLE REQUEST IN ONE SLOT, pose first. Pushing
+                    # costs a 6.3 MB copy (~0.3 ms) and returns: the driver's
+                    # launch queue is the worker's problem now.
+                    var claim = req_ring.begin_push()
+                    if not claim.ok():
+                        raise Error(
+                            "smolvla deploy: the request ring is full, which"
+                            " cannot happen with one query in flight"
+                        )
+                    var cp = claim.data().unsafe_bitcast[Float32]()
+                    for j in range(RDIM):
+                        cp[unsafe_offset=j] = pose[j]
+                    for i in range(N_CAM * 3 * SIGLIP_INPUT * SIGLIP_INPUT):
+                        cp[unsafe_offset = RDIM + i] = Float32(images.data[i])
+                    req_ring.end_push(QWorker.REQ_BYTES)
+                else:
+                    _fill_noise(noise, XN, queries * 7919 + 13, dev_ctx)
+                    pol_opt.value().start_action[TARGET](
+                        images, ids, pose, noise, dev_ctx
+                    )
                 var enq_ms = Float64(perf_counter_ns() - q_t0) / 1e6
                 sum_enqueue += enq_ms
                 submissions += 1
@@ -889,6 +1011,23 @@ def main() raises:
         + "   (of a " + fixed(sum_q / Float64(queries) if queries > 0 else 0.0, 1)
         + " ms query)"
     )
+    if threaded:
+        # ⚠ THE SUBMISSION IS STILL ~620 ms — it just is not paid HERE any
+        # more. This row is the worker's own measurement, so the two together
+        # say where the cost went rather than that it vanished.
+        print(
+            "  worker query      = "
+            + fixed(Float64(qcells.acquire_load(QW_QUERY_US)) / 1000.0, 1)
+            + " ms, of which submit "
+            + fixed(Float64(qcells.acquire_load(QW_SUBMIT_US)) / 1000.0, 1)
+            + " ms   (on the query thread)"
+        )
+        print(
+            "  worker served     = "
+            + String(Int(qcells.acquire_load(QW_SERVED))) + " chunks, "
+            + String(Int(qcells.acquire_load(QW_DROPPED)))
+            + " dropped (nowhere to put them — the loop over-requested)"
+        )
     print(
         "  query lead        = " + String(lead)
         + " grid steps of warning (measured from the last query)"
