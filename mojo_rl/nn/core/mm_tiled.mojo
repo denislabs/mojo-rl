@@ -17,16 +17,16 @@ Two kernels, because the shapes that need this are not one family:
     SigLIP's shape, but 0.75-0.85x on ACT's DEPLOY shapes (M=60, N=32), where
     a 64x64 tile is mostly out-of-bounds threads.
   * `_bmm_tile1_kernel` — 16x16, one output per thread. 2.1x on an M1 at those
-    small shapes, and never slower than `bmm` on a 5090.
+    small shapes, and never slower than `bmm` on a 5090. It covers the shapes
+    the big tile cannot fill.
 
 `bmm_tiled_is_worth_it` picks between them (and defers to `bmm` when neither
 fits), at compile time, from the extents alone.
 
-⚠ THE THRESHOLDS ARE SET FROM AN M1 AND A 5090 AND NOTHING ELSE YET. The
-board that actually deploys this — the Orin — has not run
-`attn-matmul-bench-jetson`; nothing calls `bmm_tiled` until it has. Both
-constants below are one number each, so a board run moves them without
-touching a kernel.
+Measured with `benchmarks/attention_matmul_bench.mojo` on all three devices.
+Orin, against `bmm`: SigLIP 3.92x and 4.68x, ACT's training shapes 2.63x and
+1.96x, ACT's deploy shapes 1.84x and 1.48x — the big tile everywhere. A 5090
+agrees except at the two deploy shapes; see `MMT_MIN_WORK`.
 
 ⚠ NOT A DROP-IN FOR `bmm` EVERYWHERE. These kernels accumulate `k` in
 increasing order with no split-K and no tensor cores, which is why they come
@@ -53,27 +53,34 @@ comptime MMT_RM: Int = 4
 comptime MMT_RN: Int = 4
 """The 64x64 tile: 16x16 threads, 4x4 outputs each, staged 16 deep in k."""
 
-comptime MMT_MIN_TILE4: Int = 64
-"""Below this in M or N, the 64x64 tile spends most of its threads out of
-bounds and loses to the 16x16 one — measured on a 5090 at ACT's deploy shapes
-(0.85x and 0.75x against `bmm`, where 16x16 held 1.0-1.05x)."""
+comptime MMT_MIN_EDGE: Int = 32
+"""The big tile needs SOME output in both directions. This rejects a shape
+that is all batch and no matrix (`BH` huge, `M`, `N` tiny), where a 64x64 tile
+would be almost entirely out-of-bounds threads, without rejecting ACT's
+N = HEAD_DIM = 32 context product."""
 
 comptime MMT_MIN_WORK: Int = 1 << 20
-"""Total MACs (BH*M*N*K) below which neither tiled kernel is worth choosing
-over `bmm`: at ACT's decoder shapes the whole product is ~2.5 M MACs and every
-variant lands within launch overhead of the others."""
+"""Total MACs (BH*M*N*K) below which the 16x16 tile is used instead.
+
+⚠ THE BOARD AND THE 5090 DISAGREE HERE, and the board wins. At ACT's two
+DEPLOY shapes (2.5 M MACs each) the big tile is 1.84x and 1.48x on the Orin
+but 0.85x and 0.75x on a 5090 — where the 16x16 tile is 1.0-1.05x. Those
+shapes are ACT's B=1 decoder, which runs on the ORIN at 30 Hz and on a 5090
+only in a benchmark; the 5090 loss is 1-3 us of a 7-9 us product, against
+20 us gained on the board. So the threshold sits below them."""
 
 
 @always_inline
-def bmm_tiled_is_worth_it[BH: Int, M: Int, N: Int, K: Int]() -> Bool:
-    """Whether `bmm_tiled` should be used instead of `bmm` at this shape."""
-    return BH * M * N * K >= MMT_MIN_WORK
+def bmm_tiled_uses_big_tile[BH: Int, M: Int, N: Int, K: Int]() -> Bool:
+    """Which of the two kernels `bmm_tiled` dispatches to.
 
-
-@always_inline
-def bmm_tiled_uses_big_tile[M: Int, N: Int]() -> Bool:
-    """Which of the two kernels `bmm_tiled` dispatches to."""
-    return M >= MMT_MIN_TILE4 and N >= MMT_MIN_TILE4
+    Both were at least as fast as `bmm` at every shape measured on the Orin,
+    so there is no third branch back to `bmm`."""
+    return (
+        M >= MMT_MIN_EDGE
+        and N >= MMT_MIN_EDGE
+        and BH * M * N * K >= MMT_MIN_WORK
+    )
 
 
 def _bmm_tile1_kernel[BH: Int, M: Int, N: Int, K: Int](
@@ -218,7 +225,7 @@ def bmm_tiled[
     var av = LayoutTensor[DT, lay_a, MutAnyOrigin](ab)
     var bv = LayoutTensor[DT, lay_b, MutAnyOrigin](bb)
     var ov = LayoutTensor[DT, lay_o, MutAnyOrigin](ob)
-    comptime if bmm_tiled_uses_big_tile[M, N]():
+    comptime if bmm_tiled_uses_big_tile[BH, M, N, K]():
         c.enqueue_function[_bmm_tile4_kernel[BH, M, N, K]](
             av, bv, ov,
             grid_dim=(

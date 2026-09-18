@@ -51,6 +51,7 @@ and key/value streams, and per-sample masking folded into the softmax kernel.
 """
 
 from mojo_rl.nn.core.mm import mm, bmm
+from mojo_rl.nn.core.mm_tiled import bmm_tiled
 from std.math import exp, sqrt
 from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext
@@ -858,8 +859,10 @@ struct CrossAttention[
 
         # 2. scores(ss0) = Q @ Kt   (BH, QL, KL). Kt is already contiguous, so
         #    NOT `bmm[transpose_b=True]`: that call is 2.06x slower on the Orin
-        #    for the same bits (`cross_attention_bench.mojo`).
-        bmm[A0=BH, A1=QL, A2=HD, B0=BH, B1=HD, B2=KL, O0=BH, O1=QL, O2=KL](
+        #    for the same bits (`cross_attention_bench.mojo`). And not `bmm`
+        #    at all: both attention products miss MAX's multistage GEMM and
+        #    take its vendor path — `bmm_tiled` is 3.92x here on the board.
+        bmm_tiled[BH=BH, M=QL, N=KL, K=HD](
             self.ss0.dev.value(), self.sq0.dev.value(), self.sk0.dev.value(), c
         )
 
@@ -915,7 +918,7 @@ struct CrossAttention[
 
         # 4. pout(sq1) = attn @ V(sk1). The weights only exist in the cache
         #    now — ss0 still holds the raw, unscaled scores.
-        bmm[A0=BH, A1=QL, A2=KL, B0=BH, B1=KL, B2=HD, O0=BH, O1=QL, O2=HD](
+        bmm_tiled[BH=BH, M=QL, N=HD, K=KL](
             self.sq1.dev.value(), self.attn.dev.value(), self.sk1.dev.value(), c
         )
 
