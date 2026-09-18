@@ -102,7 +102,7 @@ build-jetson = { cmd = "mojo build -I . --target-accelerator sm_87", description
 # ⚠ NO `-ld_classic` HERE, unlike the macOS task: that is an ld64 flag and the
 # board links with lld.
 #   pixi run -e jetson act-deploy-jetson -- --project so101-tower \
-#       --devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist
+#       --devices /dev/soarm_cam_top,/dev/soarm_cam_wrist
 act-deploy-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -DACT_GPU=1 -o /tmp/act_deploy_gpu examples/so101/act_so101_deploy_real.mojo && /tmp/act_deploy_gpu", depends-on = ["build-serial", "build-opencv"], description = "ACT on the Orin's GPU (-- --project P; --arm to move it)" }
 act-deploy-jetson-cpu = { cmd = "mojo build -I . --target-accelerator sm_87 -o /tmp/act_deploy_cpu examples/so101/act_so101_deploy_real.mojo && /tmp/act_deploy_cpu", depends-on = ["build-serial", "build-opencv"], description = "The same policy on the Orin's CPU — the other half of the A/B" }
 
