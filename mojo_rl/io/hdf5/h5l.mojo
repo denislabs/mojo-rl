@@ -72,7 +72,7 @@ def h5l_get_name_by_idx(
         ) thin -> Int64,
     ]()(
         loc_id,
-        group_name.as_c_string_slice().unsafe_ptr(),
+        group_name.as_c_string_span().ptr(),
         idx_type,
         order,
         n,

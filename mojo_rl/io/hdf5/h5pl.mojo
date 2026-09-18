@@ -25,4 +25,4 @@ def h5pl_prepend(var path: String) raises -> herr_t:
         lib,
         "H5PLprepend",
         def(Ptr[c_char, ImmOrigin(origin_of(path))]) thin -> herr_t,
-    ]()(path.as_c_string_slice().unsafe_ptr())
+    ]()(path.as_c_string_span().ptr())

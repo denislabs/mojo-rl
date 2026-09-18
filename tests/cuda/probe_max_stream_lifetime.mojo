@@ -54,7 +54,6 @@ def main() raises:
         print("non-NVIDIA: no interceptor, nothing to observe. Skipped.")
         return
 
-    @parameter
     @always_inline
     def _bump(buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin]):
         if Int(thread_idx.x) != 0:

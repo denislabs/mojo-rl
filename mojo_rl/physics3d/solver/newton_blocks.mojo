@@ -132,9 +132,8 @@ def build_dof_segments_p[
     already makes, for the same reason: a rule written twice drifts.
     """
 
-    @parameter
     @always_inline
-    def one_segment() -> Int:
+    def one_segment() {imm} -> Int:
         for i in range(nv):
             seg_start[unsafe_offset=i] = Scalar[DTYPE](0)
             seg_end[unsafe_offset=i] = Scalar[DTYPE](nv)

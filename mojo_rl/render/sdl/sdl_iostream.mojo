@@ -300,8 +300,8 @@ def io_from_file(
             Ptr[c_char, ImmOrigin(origin_of(mode))],
         ) thin -> Ptr[IOStream, MutAnyOrigin],
     ]()(
-        file.as_c_string_slice().unsafe_ptr(),
-        mode.as_c_string_slice().unsafe_ptr(),
+        file.as_c_string_span().ptr(),
+        mode.as_c_string_span().ptr(),
     )
 
 
@@ -861,7 +861,7 @@ def load_file(
             Ptr[c_char, ImmOrigin(origin_of(file))],
             Ptr[c_size_t, MutAnyOrigin],
         ) thin -> Ptr[NoneType, MutAnyOrigin],
-    ]()(file.as_c_string_slice().unsafe_ptr(), datasize)
+    ]()(file.as_c_string_span().ptr(), datasize)
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -935,7 +935,7 @@ def save_file(
             Ptr[NoneType, ImmutAnyOrigin],
             c_size_t,
         ) thin -> Bool,
-    ]()(file.as_c_string_slice().unsafe_ptr(), data, datasize)
+    ]()(file.as_c_string_span().ptr(), data, datasize)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 

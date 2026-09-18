@@ -327,8 +327,7 @@ def ln_par(
     dim: Int,
     eps: Scalar[dtype],
 ):
-    @parameter
-    def row(b: Int):
+    def row(b: Int) {imm}:
         try:
             ln_simd_row(inp, res, gamma, bta, b * dim, dim, eps)
         except e:

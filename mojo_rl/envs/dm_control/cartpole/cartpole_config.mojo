@@ -544,9 +544,8 @@ struct DMCartpoleConfig[
 
         # Local wrapper: `standard_normal` takes the two uniforms rather than
         # the generator (no PhiloxRandom in its signature — see gpu_reset).
-        @parameter
         @always_inline
-        def _normal[D: DType](mut g: type_of(rng)) -> Scalar[D]:
+        def _normal[D: DType](mut g: PhiloxRandom) {imm} -> Scalar[D]:
             var p = g.step_uniform()
             return standard_normal[D](Scalar[D](p[0]), Scalar[D](p[1]))
 

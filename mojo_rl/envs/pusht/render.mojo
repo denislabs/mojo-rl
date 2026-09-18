@@ -292,7 +292,6 @@ def render_pixel_obs_kernel_gpu[
     # Grid: (BATCH, H), block: (W,). Each thread handles one pixel.
     comptime BLOCKS_X = (IMG_W + TPB - 1) // TPB
 
-    @parameter
     @always_inline
     def render_wrapper(
         st: LayoutTensor[

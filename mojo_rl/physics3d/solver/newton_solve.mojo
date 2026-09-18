@@ -3235,9 +3235,8 @@ def _newton_solve_env[
     # the same way (`scalar_row_cost`) and this path already had every term
     # of it in the warm-start comparison above — written ONCE here so the
     # two readers cannot drift.
-    @parameter
     @always_inline
-    def _total_cost() -> Scalar[DTYPE]:
+    def _total_cost() {imm} -> Scalar[DTYPE]:
         var cst = Scalar[DTYPE](0)
         for i in range(nv):
             cst += (
@@ -3512,7 +3511,6 @@ def _newton_solve_env[
         # equality rows. `it` is `ctx->LSiter` and counts EVERY evaluation,
         # including the two before the one-sided search — `ls_iterations` is
         # a budget of `PrimalEval` calls, not of bracket steps.
-        @parameter
         @always_inline
         def peval(
             a: Scalar[DTYPE],
@@ -3520,7 +3518,7 @@ def _newton_solve_env[
             mut d0: Scalar[DTYPE],
             mut d1: Scalar[DTYPE],
             mut it: Int,
-        ):
+        ) {imm}:
             c_out = Scalar[DTYPE](0.5) * ga * a * a + gb * a
             d0 = ga * a + gb
             d1 = ga
@@ -5849,9 +5847,8 @@ def _newton_blocked_fields_kernel[
         # (`_ell_cost_at_jar`), then the dense rows re-classified — no
         # stored state is read. `warm` picks `search_sh` (the warm start,
         # published below) or `qacc` (= `qacc_smooth` here).
-        @parameter
         @always_inline
-        def _ell_trial_cost(warm: Bool) -> Scalar[DTYPE]:
+        def _ell_trial_cost(warm: Bool) {imm} -> Scalar[DTYPE]:
             var acc = Scalar[DTYPE](0)
             comptime if IS_ELL:
                 var jar_t = Scratch[Scalar[DTYPE], NT](NT, fill=Scalar[DTYPE](0))
@@ -6068,9 +6065,8 @@ def _newton_blocked_fields_kernel[
     # rows. ONE spelling for the improvement test's two evaluations; on the
     # pyramidal leg `dense0 == 0` and this is the two loops it replaced,
     # in their order.
-    @parameter
     @always_inline
-    def _bl_cost() -> Scalar[DTYPE]:
+    def _bl_cost() {imm} -> Scalar[DTYPE]:
         var cst: Scalar[DTYPE] = 0
         for i in range(NV):
             cst += (
@@ -6549,7 +6545,6 @@ def _newton_blocked_fields_kernel[
             # RE-CLASSIFIED at the trial point. Mirrors `peval` in
             # `primal.mojo` — see that docstring for why the cost has to be
             # carried at every point rather than computed in the fallback.
-            @parameter
             @always_inline
             def _bl_peval(
                 a: Scalar[DTYPE],
@@ -6557,7 +6552,7 @@ def _newton_blocked_fields_kernel[
                 mut d0: Scalar[DTYPE],
                 mut d1: Scalar[DTYPE],
                 mut it: Int,
-            ):
+            ) {imm}:
                 c = Scalar[DTYPE](0.5) * gauss_a * a * a + gauss_b * a
                 d0 = gauss_a * a + gauss_b
                 d1 = gauss_a

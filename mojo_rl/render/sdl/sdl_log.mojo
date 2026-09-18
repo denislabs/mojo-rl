@@ -269,7 +269,7 @@ def set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
             LogPriority,
             Ptr[c_char, ImmOrigin(origin_of(prefix))],
         ) thin -> Bool,
-    ]()(priority, prefix.as_c_string_slice().unsafe_ptr())
+    ]()(priority, prefix.as_c_string_span().ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 

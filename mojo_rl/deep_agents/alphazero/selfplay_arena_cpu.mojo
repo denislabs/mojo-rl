@@ -212,8 +212,7 @@ def run_alphazero_selfplay_arena_cpu[
         var temp_moves = TEMP_MOVES
         var chosen = -1
 
-        @parameter
-        def _is_legal(a: Int) -> Bool:
+        def _is_legal(a: Int) {imm} -> Bool:
             return a < len(legal) and Bool(legal[a])
 
         if traj_len - 1 < temp_moves:

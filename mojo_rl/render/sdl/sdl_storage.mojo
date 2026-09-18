@@ -371,7 +371,7 @@ def open_title_storage(
         def(
             Ptr[c_char, ImmOrigin(origin_of(override))], PropertiesID
         ) thin -> Ptr[Storage, MutAnyOrigin],
-    ]()(override.as_c_string_slice().unsafe_ptr(), props)
+    ]()(override.as_c_string_span().ptr(), props)
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -410,8 +410,8 @@ def open_user_storage(
             PropertiesID,
         ) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(
-        org.as_c_string_slice().unsafe_ptr(),
-        app.as_c_string_slice().unsafe_ptr(),
+        org.as_c_string_span().ptr(),
+        app.as_c_string_span().ptr(),
         props,
     )
     if Int(ret) == 0:
@@ -442,7 +442,7 @@ def open_file_storage(
         lib,
         "SDL_OpenFileStorage",
         def(Ptr[c_char, ImmOrigin(origin_of(path))]) thin -> Ptr[Storage, MutAnyOrigin],
-    ]()(path.as_c_string_slice().unsafe_ptr())
+    ]()(path.as_c_string_span().ptr())
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -559,7 +559,7 @@ def get_storage_file_size(
             Ptr[c_char, ImmOrigin(origin_of(path))],
             Ptr[UInt64, MutAnyOrigin],
         ) thin -> Bool,
-    ]()(storage, path.as_c_string_slice().unsafe_ptr(), length)
+    ]()(storage, path.as_c_string_span().ptr(), length)
 
 
 def read_storage_file(
@@ -597,7 +597,7 @@ def read_storage_file(
             Ptr[NoneType, MutAnyOrigin],
             UInt64,
         ) thin -> Bool,
-    ]()(storage, path.as_c_string_slice().unsafe_ptr(), destination, length)
+    ]()(storage, path.as_c_string_span().ptr(), destination, length)
 
 
 def write_storage_file(
@@ -630,7 +630,7 @@ def write_storage_file(
             Ptr[NoneType, ImmutAnyOrigin],
             UInt64,
         ) thin -> Bool,
-    ]()(storage, path.as_c_string_slice().unsafe_ptr(), source, length)
+    ]()(storage, path.as_c_string_span().ptr(), source, length)
 
 
 def create_storage_directory(
@@ -656,7 +656,7 @@ def create_storage_directory(
             Ptr[Storage, MutAnyOrigin],
             Ptr[c_char, ImmOrigin(origin_of(path))],
         ) thin -> Bool,
-    ]()(storage, path.as_c_string_slice().unsafe_ptr())
+    ]()(storage, path.as_c_string_span().ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -704,7 +704,7 @@ def enumerate_storage_directory(
             EnumerateDirectoryCallback,
             Ptr[NoneType, MutAnyOrigin],
         ) thin -> Bool,
-    ]()(storage, path.as_c_string_slice().unsafe_ptr(), callback, userdata)
+    ]()(storage, path.as_c_string_span().ptr(), callback, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -732,7 +732,7 @@ def remove_storage_path(
             Ptr[Storage, MutAnyOrigin],
             Ptr[c_char, ImmOrigin(origin_of(path))],
         ) thin -> Bool,
-    ]()(storage, path.as_c_string_slice().unsafe_ptr())
+    ]()(storage, path.as_c_string_span().ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -766,8 +766,8 @@ def rename_storage_path(
         ) thin -> Bool,
     ]()(
         storage,
-        oldpath.as_c_string_slice().unsafe_ptr(),
-        newpath.as_c_string_slice().unsafe_ptr(),
+        oldpath.as_c_string_span().ptr(),
+        newpath.as_c_string_span().ptr(),
     )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -802,8 +802,8 @@ def copy_storage_file(
         ) thin -> Bool,
     ]()(
         storage,
-        oldpath.as_c_string_slice().unsafe_ptr(),
-        newpath.as_c_string_slice().unsafe_ptr(),
+        oldpath.as_c_string_span().ptr(),
+        newpath.as_c_string_span().ptr(),
     )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -837,7 +837,7 @@ def get_storage_path_info(
             Ptr[c_char, ImmOrigin(origin_of(path))],
             Ptr[PathInfo, MutAnyOrigin],
         ) thin -> Bool,
-    ]()(storage, path.as_c_string_slice().unsafe_ptr(), info)
+    ]()(storage, path.as_c_string_span().ptr(), info)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -925,8 +925,8 @@ def glob_storage_directory(
         ) thin -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],
     ]()(
         storage,
-        path.as_c_string_slice().unsafe_ptr(),
-        pattern.as_c_string_slice().unsafe_ptr(),
+        path.as_c_string_span().ptr(),
+        pattern.as_c_string_span().ptr(),
         flags,
         count,
     )

@@ -107,7 +107,6 @@ def test_capture_records_nodes() raises:
     # and a GPU kernel fails there with "target does not support operation:
     # _get_intrinsic_name". Nesting keeps it out of discovery — the same shape
     # `Phyics3dBatchedEnv` uses for its kernels.
-    @parameter
     @always_inline
     def _bump_kernel(
         buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
@@ -178,7 +177,6 @@ def test_replay_executes_the_captured_work() raises:
     # and a GPU kernel fails there with "target does not support operation:
     # _get_intrinsic_name". Nesting keeps it out of discovery — the same shape
     # `Phyics3dBatchedEnv` uses for its kernels.
-    @parameter
     @always_inline
     def _bump_kernel(
         buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
@@ -275,7 +273,6 @@ def test_maybe_capture_replay_lifecycle() raises:
     # and a GPU kernel fails there with "target does not support operation:
     # _get_intrinsic_name". Nesting keeps it out of discovery — the same shape
     # `Phyics3dBatchedEnv` uses for its kernels.
-    @parameter
     @always_inline
     def _bump_kernel(
         buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],

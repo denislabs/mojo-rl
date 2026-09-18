@@ -511,8 +511,8 @@ def hull_cache_store(cache_path: String, p: HullPayload):
                 f.write_bytes(Span(bytes)[off : off + take])
                 off += take
         var rc = external_call["rename", Int32](
-            tmp.as_c_string_slice().unsafe_ptr(),
-            dst.as_c_string_slice().unsafe_ptr(),
+            tmp.as_c_string_span().ptr(),
+            dst.as_c_string_span().ptr(),
         )
         _ = rc
     except:

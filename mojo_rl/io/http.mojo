@@ -250,7 +250,7 @@ struct HttpClient(Movable & Deinitable):
                     lib,
                     "mrl_http_set_cainfo",
                     def (Int, Ptr[c_char, MutUntrackedOrigin]) thin -> Int32,
-                ]()(self._h, untracked(ca.as_c_string_slice().unsafe_ptr()))
+                ]()(self._h, untracked(ca.as_c_string_span().ptr()))
 
     def __init__(out self, *, deinit move: Self):
         self._h = move._h
@@ -338,7 +338,7 @@ struct HttpClient(Movable & Deinitable):
             lib,
             "mrl_http_add_header",
             def (Int, Ptr[c_char, MutUntrackedOrigin]) thin -> Int32,
-        ]()(self._h, untracked(line.as_c_string_slice().unsafe_ptr()))
+        ]()(self._h, untracked(line.as_c_string_span().ptr()))
         if st != 0:
             raise Error("http: cannot add header: " + line)
         return st
@@ -365,8 +365,8 @@ struct HttpClient(Movable & Deinitable):
             ) thin -> Int32,
         ]()(
             self._h,
-            untracked(method.as_c_string_slice().unsafe_ptr()),
-            untracked(url.as_c_string_slice().unsafe_ptr()),
+            untracked(method.as_c_string_span().ptr()),
+            untracked(url.as_c_string_span().ptr()),
         )
         if rc != 0:
             raise Error(
@@ -474,7 +474,7 @@ struct HttpClient(Movable & Deinitable):
             lib,
             "mrl_http_set_out_file",
             def (Int, Ptr[c_char, MutUntrackedOrigin]) thin -> Int32,
-        ]()(self._h, untracked(dest.as_c_string_slice().unsafe_ptr()))
+        ]()(self._h, untracked(dest.as_c_string_span().ptr()))
         if st != 0:
             raise Error("http: cannot set the output file " + dest)
         if resume_from > 0:
@@ -489,7 +489,7 @@ struct HttpClient(Movable & Deinitable):
             ]()(
                 self._h,
                 Int32(1),
-                untracked(label.as_c_string_slice().unsafe_ptr()),
+                untracked(label.as_c_string_span().ptr()),
             )
         var status = self._perform(String("GET"), url)
         return HttpResponse(status, self._take_body())
@@ -507,7 +507,7 @@ struct HttpClient(Movable & Deinitable):
             lib,
             "mrl_http_set_upload_file",
             def (Int, Ptr[c_char, MutUntrackedOrigin]) thin -> Int32,
-        ]()(self._h, untracked(path.as_c_string_slice().unsafe_ptr()))
+        ]()(self._h, untracked(path.as_c_string_span().ptr()))
         if st != 0:
             raise Error("http: cannot open " + path + " for upload")
         if label.byte_length() > 0:
@@ -518,7 +518,7 @@ struct HttpClient(Movable & Deinitable):
             ]()(
                 self._h,
                 Int32(1),
-                untracked(label.as_c_string_slice().unsafe_ptr()),
+                untracked(label.as_c_string_span().ptr()),
             )
         var status = self._perform(method, url)
         return HttpResponse(status, self._take_body())
@@ -712,8 +712,8 @@ def gunzip_file(var src: String, var dst: String) raises -> Int:
             Ptr[c_char, MutUntrackedOrigin], Ptr[c_char, MutUntrackedOrigin]
         ) thin -> Int64,
     ]()(
-        untracked(src.as_c_string_slice().unsafe_ptr()),
-        untracked(dst.as_c_string_slice().unsafe_ptr()),
+        untracked(src.as_c_string_span().ptr()),
+        untracked(dst.as_c_string_span().ptr()),
     )
     if n < 0:
         var why = String("unknown")

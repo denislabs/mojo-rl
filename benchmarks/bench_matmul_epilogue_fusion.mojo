@@ -71,7 +71,7 @@ def residency_repro(ctx: DeviceContext) raises:
     var cv = TileTensor(cb, row_major[64, 64]())
     var biasv = TileTensor(bias, row_major[64]())
 
-    @parameter
+    @__parameter
     @always_inline
     @__copy_capture(cv, biasv)
     def bias_relu[
@@ -124,7 +124,7 @@ def main() raises:
         var cv = TileTensor(cb, row_major[M, N]())
         var biasv = TileTensor(bias, row_major[N]())
 
-        @parameter
+        @__parameter
         @always_inline
         @__copy_capture(cv, biasv)
         def bias_add[

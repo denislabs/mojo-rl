@@ -2509,7 +2509,7 @@ def load_wav(
             Ptr[Ptr[UInt8, MutAnyOrigin], MutAnyOrigin],
             Ptr[UInt32, MutAnyOrigin],
         ) thin -> Bool,
-    ]()(path.as_c_string_slice().unsafe_ptr(), spec, audio_buf, audio_len)
+    ]()(path.as_c_string_span().ptr(), spec, audio_buf, audio_len)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 

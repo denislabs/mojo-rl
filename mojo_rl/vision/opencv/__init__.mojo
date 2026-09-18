@@ -324,7 +324,7 @@ struct VideoCapture(Movable):
             lib,
             "mrl_cv_cap_open_file",
             def(Ptr[c_char, MutUntrackedOrigin]) thin -> Int,
-        ]()(untracked(p.as_c_string_slice().unsafe_ptr()))
+        ]()(untracked(p.as_c_string_span().ptr()))
         if h == 0:
             raise String("opencv: cannot open ") + path + ": " + cv_last_error()
         return Self(h)
@@ -410,11 +410,11 @@ struct VideoCapture(Movable):
         # checks the length, so "" leaves the device's format alone exactly as
         # NULL would, and nothing here has to build a null pointer.
         var handle = h(
-            untracked(p.as_c_string_slice().unsafe_ptr()),
+            untracked(p.as_c_string_span().ptr()),
             Int32(width),
             Int32(height),
             fps,
-            untracked(f.as_c_string_slice().unsafe_ptr()),
+            untracked(f.as_c_string_span().ptr()),
             untracked(Ptr(to=node[0])),
             Int32(256),
         )
@@ -617,7 +617,7 @@ def imread(path: String, mut out: List[UInt8]) raises -> Tuple[Int, Int, Int]:
             Ptr[Int32, MutUntrackedOrigin],
         ) thin -> Int32,
     ]()(
-        untracked(p.as_c_string_slice().unsafe_ptr()),
+        untracked(p.as_c_string_span().ptr()),
         untracked(Ptr(to=out[0])),
         Int32(len(out)),
         untracked(Ptr(to=w)),

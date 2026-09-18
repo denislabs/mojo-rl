@@ -290,7 +290,6 @@ struct PCAdam[
             dtype, Layout.row_major(1), MutAnyOrigin
         ](opt_global_state.ptr.unsafe_offset(1))
 
-        @parameter
         @always_inline
         def bump_kernel(
             c: LayoutTensor[
@@ -306,7 +305,6 @@ struct PCAdam[
             block_dim=(1,),
         )
 
-        @parameter
         @always_inline
         def kernel_wrapper(
             params: LayoutTensor[
@@ -584,7 +582,6 @@ struct PCAdamW[
             dtype, Layout.row_major(1), MutAnyOrigin
         ](opt_global_state.ptr.unsafe_offset(1))
 
-        @parameter
         @always_inline
         def bump_kernel(
             c: LayoutTensor[
@@ -600,7 +597,6 @@ struct PCAdamW[
             block_dim=(1,),
         )
 
-        @parameter
         @always_inline
         def kernel_wrapper(
             params: LayoutTensor[

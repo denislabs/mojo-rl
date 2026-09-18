@@ -595,7 +595,6 @@ struct Phyics3dBatchedEnv[
 
         var done = c.enqueue_create_buffer[DT](Self.N_ENVS)
 
-        @parameter
         @always_inline
         def seed_kernel(
             mask: LayoutTensor[
@@ -614,7 +613,6 @@ struct Phyics3dBatchedEnv[
                 0
             ) if mask[env] != Scalar[DT](0) else Scalar[DT](1)
 
-        @parameter
         @always_inline
         def raise_kernel(
             qpos: LayoutTensor[
@@ -641,7 +639,6 @@ struct Phyics3dBatchedEnv[
                 return
             qpos[env, z_adr] = z_val
 
-        @parameter
         @always_inline
         def settle_kernel(
             meta: LayoutTensor[
@@ -849,7 +846,6 @@ struct Phyics3dBatchedEnv[
         not be.
         """
 
-        @parameter
         @always_inline
         def act_kernel(
             qfrc: LayoutTensor[
@@ -955,7 +951,6 @@ struct Phyics3dBatchedEnv[
         launch; `__init__` raises if a model contradicts that flag.
         """
 
-        @parameter
         @always_inline
         def mocap_kernel(
             bodies: LayoutTensor[
@@ -1024,7 +1019,6 @@ struct Phyics3dBatchedEnv[
         """Obs from the field tensors: CONFIG custom extraction else
         MODEL_DEF default qpos[skip:]+qvel."""
 
-        @parameter
         @always_inline
         def obs_kernel(
             qpos: LayoutTensor[
@@ -1057,7 +1051,7 @@ struct Phyics3dBatchedEnv[
                 DT, Self.L_SITE_HOOK, MutAnyOrigin
             ],
             contacts: LayoutTensor[
-                DT, type_of(self.d).L_CONTACTS, MutAnyOrigin
+                DT, Data[DT, Self.MD, Self.N_ENVS].L_CONTACTS, MutAnyOrigin
             ],
             sites: LayoutTensor[DT, Self.L_SITES_HOOK, MutAnyOrigin],
             geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
@@ -1180,7 +1174,6 @@ struct Phyics3dBatchedEnv[
         """Step-count bump + obs + CONFIG reward/termination from the field
         tensors (hook arithmetic unchanged from the slab era)."""
 
-        @parameter
         @always_inline
         def extract_kernel(
             qpos: LayoutTensor[
@@ -1218,7 +1211,7 @@ struct Phyics3dBatchedEnv[
                 DT, Self.L_SITE_HOOK, MutAnyOrigin
             ],
             contacts: LayoutTensor[
-                DT, type_of(self.d).L_CONTACTS, MutAnyOrigin
+                DT, Data[DT, Self.MD, Self.N_ENVS].L_CONTACTS, MutAnyOrigin
             ],
             sites: LayoutTensor[DT, Self.L_SITES_HOOK, MutAnyOrigin],
             geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
@@ -1451,7 +1444,6 @@ struct Phyics3dBatchedEnv[
 
         # Reset every lane on the field tensors (joint noise + CONFIG qpos +
         # hook metadata), then FK for the reset observation.
-        @parameter
         @always_inline
         def reset_kernel(
             qpos: LayoutTensor[
@@ -1586,7 +1578,6 @@ struct Phyics3dBatchedEnv[
         var c = require_ctx["Phyics3dBatchedEnv.step_batch"](ctx)
 
         # 1) CONFIG pre-step hook (save prev_x etc. into d.meta).
-        @parameter
         @always_inline
         def pre_step_kernel(
             qpos: LayoutTensor[
@@ -1635,7 +1626,6 @@ struct Phyics3dBatchedEnv[
         # See `Phyics3dEnvConfig.RECORD_PREV_ACTION`.
         comptime if Self.CONFIG.RECORD_PREV_ACTION:
 
-            @parameter
             @always_inline
             def record_action_kernel(
                 actions: LayoutTensor[
@@ -1899,7 +1889,6 @@ struct Phyics3dBatchedEnv[
             cnt_t, grid_dim=(1,), block_dim=(1,)
         )
 
-        @parameter
         @always_inline
         def selective_reset_kernel(
             qpos: LayoutTensor[

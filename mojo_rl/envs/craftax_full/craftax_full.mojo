@@ -441,7 +441,6 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed_scalar = Scalar[DType.uint64](rng_seed)
 
-        @parameter
         @always_inline
         def reset_wrapper(
             states: LayoutTensor[
@@ -549,7 +548,6 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed_scalar = Scalar[DType.uint64](rng_seed)
 
-        @parameter
         @always_inline
         def selective_wrapper(
             states: LayoutTensor[
@@ -666,7 +664,6 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         ](actions_buf)
         var seed_scalar = Scalar[DType.uint64](rng_seed)
 
-        @parameter
         @always_inline
         def step_wrapper(
             states: LayoutTensor[
@@ -752,7 +749,6 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
-        @parameter
         @always_inline
         def extract_wrapper(
             states: LayoutTensor[
@@ -981,8 +977,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
             except:
                 pass
 
-        @parameter
-        def _blit(idx: Int, dst_x: Int, dst_y: Int, dst_size: Int):
+        def _blit(idx: Int, dst_x: Int, dst_y: Int, dst_size: Int) {imm}:
             if not has_texture:
                 return
             var src_alloc = alloc[FRect]({count = 1})
@@ -1061,8 +1056,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
                     )
 
         # --- Mobs (per-floor, per-class). Each mob slot: mask=1 → render. ---
-        @parameter
-        def _blit_mob_at(my: Int, mx: Int, sprite: Int):
+        def _blit_mob_at(my: Int, mx: Int, sprite: Int) {imm}:
             var vy = my - oy
             var vx = mx - ox
             if vy < 0 or vy >= VIEW_H or vx < 0 or vx >= VIEW_W:

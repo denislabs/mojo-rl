@@ -418,7 +418,6 @@ struct CarRacingDiscrete[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
         var st = LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)](states)
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        @parameter
         @always_inline
         def reset_wrap(
             st: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
@@ -449,7 +448,6 @@ struct CarRacingDiscrete[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
         var dn = LayoutTensor[dtype, Layout.row_major(BATCH_SIZE)](dones)
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        @parameter
         @always_inline
         def sel_wrap(
             st: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
@@ -491,7 +489,6 @@ struct CarRacingDiscrete[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
         var ob = LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)](obs)
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        @parameter
         @always_inline
         def step_wrap(
             st: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
@@ -536,7 +533,6 @@ struct CarRacingDiscrete[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
         var ob = LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)](obs)
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        @parameter
         @always_inline
         def extract_wrap(
             st: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin],

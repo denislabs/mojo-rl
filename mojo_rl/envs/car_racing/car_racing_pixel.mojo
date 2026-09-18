@@ -189,7 +189,6 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var ws = workspace_ptr.value()
 
-        @parameter
         @always_inline
         def sel_wrap(
             st: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
@@ -240,7 +239,6 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         # ── Kernel A: physics + reward + termination (1 thread / env) ──
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
-        @parameter
         @always_inline
         def phys_wrap(
             st: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
@@ -268,7 +266,6 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         # Build a per-env list of tile indices whose centers fall inside the
         # camera view, so the per-pixel rasterizer tests ~VIS_MAX tiles instead
         # of all ~300 (≈10x fewer point-in-quad tests).
-        @parameter
         @always_inline
         def cull_wrap(
             st: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
@@ -317,7 +314,6 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         comptime RTPB = 256
         comptime RBLOCKS = (RT + RTPB - 1) // RTPB
 
-        @parameter
         @always_inline
         def render_wrap(
             st: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
@@ -352,7 +348,6 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         )
 
         # ── Kernel C: advance ring index (1 thread / env) ──
-        @parameter
         @always_inline
         def adv_wrap(ws_ptr: Pointer[Scalar[dtype], MutAnyOrigin]):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -374,7 +369,6 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         comptime BLK = (WS_TOTAL + 256 - 1) // 256
         var ws = workspace_buf.unsafe_ptr()
 
-        @parameter
         @always_inline
         def zero_wrap(ws_ptr: Pointer[Scalar[dtype], MutAnyOrigin]):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -407,7 +401,6 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         comptime TOT = BATCH_SIZE * OBS_DIM
         comptime BLK = (TOT + 256 - 1) // 256
 
-        @parameter
         @always_inline
         def zero_obs(o: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin]):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)

@@ -117,9 +117,8 @@ def sort_contacts_mujoco_order[
         return
 
     # The sort key of one contact: the body pair as `add_pair` forms it.
-    @parameter
     @always_inline
-    def _key(c: Int, mut lo: Int, mut hi: Int):
+    def _key(c: Int, mut lo: Int, mut hi: Int) {imm}:
         var a = Int(rebind[Scalar[DTYPE]](contacts[env, c * CONTACT_SIZE + CONTACT_IDX_BODY_A]))
         var b = Int(rebind[Scalar[DTYPE]](contacts[env, c * CONTACT_SIZE + CONTACT_IDX_BODY_B]))
         # `-1` is the SAP path's spelling of the world body; `0` is

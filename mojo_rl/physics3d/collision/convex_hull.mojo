@@ -580,8 +580,7 @@ def _reduce_one_group(
             b2 -= 1
         ord[b2 + 1] = cur
 
-    @parameter
-    def _cross(o: Int, a3: Int, b3: Int) -> Float64:
+    def _cross(o: Int, a3: Int, b3: Int) {imm} -> Float64:
         return (px[a3] - px[o]) * (py[b3] - py[o]) - (py[a3] - py[o]) * (
             px[b3] - px[o]
         )
@@ -823,8 +822,7 @@ def _convex_hull_f64(
     # says the float64 sign cannot be trusted.
     var fcache = List[Float64]()
 
-    @parameter
-    def _rebuild_faces():
+    def _rebuild_faces() {mut fcache, imm}:
         """(nx, ny, nz, ax, ay, az, cf) per face, wound outward by construction.
 
         `cf` is the per-face half of the error bound on `det = n . (p - a)`

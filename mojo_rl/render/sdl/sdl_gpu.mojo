@@ -2663,7 +2663,7 @@ def gpu_supports_shader_formats(
         def(
             GPUShaderFormat, Ptr[c_char, ImmOrigin(origin_of(name))]
         ) thin -> Bool,
-    ]()(format_flags, name.as_c_string_slice().unsafe_ptr())
+    ]()(format_flags, name.as_c_string_span().ptr())
 
 
 def gpu_supports_properties(props: PropertiesID) raises -> Bool:
@@ -2713,7 +2713,7 @@ def create_gpu_device(
             Bool,
             Ptr[c_char, ImmOrigin(origin_of(name))],
         ) thin -> Ptr[GPUDevice, MutAnyOrigin],
-    ]()(format_flags, debug_mode, name.as_c_string_slice().unsafe_ptr())
+    ]()(format_flags, debug_mode, name.as_c_string_span().ptr())
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3318,7 +3318,7 @@ def set_gpu_buffer_name[_po0: MutOrigin, _po1: MutOrigin, //](
             Ptr[GPUBuffer, MutAnyOrigin],
             Ptr[c_char, ImmOrigin(origin_of(text))],
         ) thin -> None,
-    ]()(device.as_unsafe_any_origin(), buffer.as_unsafe_any_origin(), text.as_c_string_slice().unsafe_ptr())
+    ]()(device.as_unsafe_any_origin(), buffer.as_unsafe_any_origin(), text.as_c_string_span().ptr())
 
 
 def set_gpu_texture_name[_po0: MutOrigin, _po1: MutOrigin, //](
@@ -3352,7 +3352,7 @@ def set_gpu_texture_name[_po0: MutOrigin, _po1: MutOrigin, //](
             Ptr[GPUTexture, MutAnyOrigin],
             Ptr[c_char, ImmOrigin(origin_of(text))],
         ) thin -> None,
-    ]()(device.as_unsafe_any_origin(), texture.as_unsafe_any_origin(), text.as_c_string_slice().unsafe_ptr())
+    ]()(device.as_unsafe_any_origin(), texture.as_unsafe_any_origin(), text.as_c_string_span().ptr())
 
 
 def insert_gpu_debug_label[_po0: MutOrigin, //](
@@ -3376,7 +3376,7 @@ def insert_gpu_debug_label[_po0: MutOrigin, //](
             Ptr[GPUCommandBuffer, MutAnyOrigin],
             Ptr[c_char, ImmOrigin(origin_of(text))],
         ) thin -> None,
-    ]()(command_buffer.as_unsafe_any_origin(), text.as_c_string_slice().unsafe_ptr())
+    ]()(command_buffer.as_unsafe_any_origin(), text.as_c_string_span().ptr())
 
 
 def push_gpu_debug_group[_po0: MutOrigin, //](
@@ -3409,7 +3409,7 @@ def push_gpu_debug_group[_po0: MutOrigin, //](
             Ptr[GPUCommandBuffer, MutAnyOrigin],
             Ptr[c_char, ImmOrigin(origin_of(name))],
         ) thin -> None,
-    ]()(command_buffer.as_unsafe_any_origin(), name.as_c_string_slice().unsafe_ptr())
+    ]()(command_buffer.as_unsafe_any_origin(), name.as_c_string_span().ptr())
 
 
 def pop_gpu_debug_group[_po0: MutOrigin, //](

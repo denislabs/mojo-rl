@@ -345,7 +345,7 @@ def set_scancode_name(scancode: Scancode, var name: String) raises:
         lib,
         "SDL_SetScancodeName",
         def(Scancode, Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Bool,
-    ]()(scancode, name.as_c_string_slice().unsafe_ptr())
+    ]()(scancode, name.as_c_string_span().ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -404,7 +404,7 @@ def get_scancode_from_name(var name: String) raises -> Scancode:
         lib,
         "SDL_GetScancodeFromName",
         def(Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Scancode,
-    ]()(name.as_c_string_slice().unsafe_ptr())
+    ]()(name.as_c_string_span().ptr())
 
 
 def get_key_name(key: Keycode) raises -> Ptr[c_char, ImmutAnyOrigin]:
@@ -451,7 +451,7 @@ def get_key_from_name(var name: String) raises -> Keycode:
         lib,
         "SDL_GetKeyFromName",
         def(Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Keycode,
-    ]()(name.as_c_string_slice().unsafe_ptr())
+    ]()(name.as_c_string_span().ptr())
 
 
 def start_text_input(window: Ptr[Window, MutAnyOrigin]) raises:

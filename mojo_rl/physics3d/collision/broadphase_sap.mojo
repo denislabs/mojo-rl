@@ -3391,9 +3391,8 @@ def _detect_contacts_sap_block_kernel[
     var rep_survive = 0
     var rep_planes = 0
 
-    @parameter
     @always_inline
-    def _push(a: Int, b: Int, t: Int, key: Int):
+    def _push(a: Int, b: Int, t: Int, key: Int) {mut ncand, mut off, mut overflow, imm}:
         if ncand >= NC:
             overflow = 1
             return

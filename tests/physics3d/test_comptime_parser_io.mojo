@@ -64,7 +64,7 @@ def _read_fixture(path: String) raises -> String:
 
 
 def _unlink(mut path: String):
-    _ = external_call["unlink", Int32](path.as_c_string_slice().unsafe_ptr())
+    _ = external_call["unlink", Int32](path.as_c_string_span().ptr())
 
 
 def test_parser_file_io_roundtrip() raises:

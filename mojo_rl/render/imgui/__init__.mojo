@@ -152,7 +152,7 @@ def _c(mut s: String) -> Ptr[c_char, MutUntrackedOrigin]:
     straight into a call that copies or consumes it before returning, which is
     why this can hand back an untracked origin at all. Do not stash it.
     """
-    return untracked(s.as_c_string_slice().unsafe_ptr())
+    return untracked(s.as_c_string_span().ptr())
 
 
 # ═══════════════════════════════════════════════════════════════════════════

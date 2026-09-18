@@ -1001,7 +1001,6 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed = Scalar[DType.uint64](rng_seed)
 
-        @parameter
         @always_inline
         def step_wrapper(
             states: LayoutTensor[
@@ -1101,7 +1100,6 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
-        @parameter
         @always_inline
         def extract_wrapper(
             states: LayoutTensor[
@@ -1153,7 +1151,6 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
-        @parameter
         @always_inline
         def reset_wrapper(
             states: LayoutTensor[
@@ -1200,7 +1197,6 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
             ](rng_counter_ptr.value())
 
-            @parameter
             @always_inline
             def selective_reset_counter_wrapper(
                 states: LayoutTensor[
@@ -1233,7 +1229,6 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
         else:
             var seed = Scalar[DType.uint64](rng_seed)
 
-            @parameter
             @always_inline
             def selective_reset_wrapper(
                 states: LayoutTensor[

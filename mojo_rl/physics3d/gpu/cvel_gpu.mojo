@@ -55,7 +55,6 @@ def compute_cvel[
     var nbody = dims.get_nbody()
     comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-    @parameter
     @always_inline
     # ⚠⚠ COMPTIME INSIDE THE KERNEL. `dims` is a host value and
     # `Dims` is not `DevicePassable` — reading it here yields 0,

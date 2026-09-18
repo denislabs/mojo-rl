@@ -101,8 +101,8 @@ def set_hint_with_priority(
             HintPriority,
         ) thin -> Bool,
     ]()(
-        name.as_c_string_slice().unsafe_ptr(),
-        value.as_c_string_slice().unsafe_ptr(),
+        name.as_c_string_span().ptr(),
+        value.as_c_string_span().ptr(),
         priority,
     )
     if not ret:
@@ -138,8 +138,8 @@ def set_hint(var name: String, var value: String) raises:
             Ptr[c_char, ImmOrigin(origin_of(value))],
         ) thin -> Bool,
     ]()(
-        name.as_c_string_slice().unsafe_ptr(),
-        value.as_c_string_slice().unsafe_ptr(),
+        name.as_c_string_span().ptr(),
+        value.as_c_string_span().ptr(),
     )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -167,7 +167,7 @@ def reset_hint(var name: String) raises:
 
     var ret = _get_dylib_function[
         lib, "SDL_ResetHint", def(Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Bool
-    ]()(name.as_c_string_slice().unsafe_ptr())
+    ]()(name.as_c_string_span().ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -212,7 +212,7 @@ def get_hint(var name: String) raises -> Ptr[c_char, ImmutAnyOrigin]:
         lib,
         "SDL_GetHint",
         def(Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Ptr[c_char, ImmutAnyOrigin],
-    ]()(name.as_c_string_slice().unsafe_ptr())
+    ]()(name.as_c_string_span().ptr())
 
 
 def get_hint_boolean(var name: String, default_value: Bool) raises -> Bool:
@@ -236,7 +236,7 @@ def get_hint_boolean(var name: String, default_value: Bool) raises -> Bool:
         lib,
         "SDL_GetHintBoolean",
         def(Ptr[c_char, ImmOrigin(origin_of(name))], Bool) thin -> Bool,
-    ]()(name.as_c_string_slice().unsafe_ptr(), default_value)
+    ]()(name.as_c_string_span().ptr(), default_value)
 
 
 comptime HintCallback = def(
@@ -299,7 +299,7 @@ def add_hint_callback(
             HintCallback,
             Ptr[NoneType, MutAnyOrigin],
         ) thin -> Bool,
-    ]()(name.as_c_string_slice().unsafe_ptr(), callback, userdata)
+    ]()(name.as_c_string_span().ptr(), callback, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -331,4 +331,4 @@ def remove_hint_callback(
             HintCallback,
             Ptr[NoneType, MutAnyOrigin],
         ) thin -> None,
-    ]()(name.as_c_string_slice().unsafe_ptr(), callback, userdata)
+    ]()(name.as_c_string_span().ptr(), callback, userdata)

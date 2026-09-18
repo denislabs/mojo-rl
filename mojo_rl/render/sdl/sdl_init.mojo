@@ -481,9 +481,9 @@ def set_app_metadata(
             Ptr[c_char, ImmOrigin(origin_of(appidentifier))],
         ) thin -> Bool,
     ]()(
-        appname.as_c_string_slice().unsafe_ptr(),
-        appversion.as_c_string_slice().unsafe_ptr(),
-        appidentifier.as_c_string_slice().unsafe_ptr(),
+        appname.as_c_string_span().ptr(),
+        appversion.as_c_string_span().ptr(),
+        appidentifier.as_c_string_span().ptr(),
     )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -560,8 +560,8 @@ def set_app_metadata_property(var name: String, var value: String) raises:
             Ptr[c_char, ImmOrigin(origin_of(value))],
         ) thin -> Bool,
     ]()(
-        name.as_c_string_slice().unsafe_ptr(),
-        value.as_c_string_slice().unsafe_ptr(),
+        name.as_c_string_span().ptr(),
+        value.as_c_string_span().ptr(),
     )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -596,4 +596,4 @@ def get_app_metadata_property(
         lib,
         "SDL_GetAppMetadataProperty",
         def(Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Ptr[c_char, ImmutAnyOrigin],
-    ]()(name.as_c_string_slice().unsafe_ptr())
+    ]()(name.as_c_string_span().ptr())

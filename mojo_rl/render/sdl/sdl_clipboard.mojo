@@ -98,7 +98,7 @@ def set_clipboard_text(var text: String) raises:
         lib,
         "SDL_SetClipboardText",
         def(Ptr[c_char, ImmOrigin(origin_of(text))]) thin -> Bool,
-    ]()(text.as_c_string_slice().unsafe_ptr())
+    ]()(text.as_c_string_span().ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -162,7 +162,7 @@ def set_primary_selection_text(var text: String) raises:
         lib,
         "SDL_SetPrimarySelectionText",
         def(Ptr[c_char, ImmOrigin(origin_of(text))]) thin -> Bool,
-    ]()(text.as_c_string_slice().unsafe_ptr())
+    ]()(text.as_c_string_span().ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -352,7 +352,7 @@ def get_clipboard_data(
             Ptr[c_char, ImmOrigin(origin_of(mime_type))],
             Ptr[c_size_t, MutAnyOrigin],
         ) thin -> Ptr[NoneType, MutAnyOrigin],
-    ]()(mime_type.as_c_string_slice().unsafe_ptr(), size)
+    ]()(mime_type.as_c_string_span().ptr(), size)
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -377,7 +377,7 @@ def has_clipboard_data(var mime_type: String) raises -> Bool:
         lib,
         "SDL_HasClipboardData",
         def(Ptr[c_char, ImmOrigin(origin_of(mime_type))]) thin -> Bool,
-    ]()(mime_type.as_c_string_slice().unsafe_ptr())
+    ]()(mime_type.as_c_string_span().ptr())
 
 
 def get_clipboard_mime_types(

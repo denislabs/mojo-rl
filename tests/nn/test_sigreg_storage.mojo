@@ -70,8 +70,7 @@ def test_sigreg_storage_cpu_gradcheck() raises:
 
     var m = SIGReg[DIM, SEQ, PROJ, KN].make[target="cpu", INIT=Kaiming]()
 
-    @parameter
-    def fwd() raises:
+    def fwd() raises {mut m, mut x, mut y, imm}:
         m.forward["cpu", BATCH](TensorRefs[1](x), out=y)
 
     fwd()
@@ -128,8 +127,7 @@ def test_sigreg_storage_gpu_gradcheck() raises:
 
     var m = SIGReg[DIM, SEQ, PROJ, KN].make[target="gpu", INIT=Kaiming](ctx)
 
-    @parameter
-    def fwd_stat() raises -> Scalar[DT]:
+    def fwd_stat() raises {mut m, mut x, mut y, imm} -> Scalar[DT]:
         # push xh → x.dev, run forward, read back y[0].
         x.data = xh.copy()
         x.n = N

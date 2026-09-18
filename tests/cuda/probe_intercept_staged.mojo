@@ -68,7 +68,6 @@ def main() raises:
 
     var ctx = DeviceContext()
 
-    @parameter
     @always_inline
     def _bump(buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin]):
         if Int(thread_idx.x) != 0:

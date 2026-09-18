@@ -705,7 +705,6 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
         )
         var obs_ptr = obs_buf.unsafe_ptr()
 
-        @parameter
         @always_inline
         def render_wrapper(
             states_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
@@ -775,7 +774,6 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
         comptime PHYS_BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed_s = Scalar[DType.uint64](rng_seed)
 
-        @parameter
         @always_inline
         def physics_wrapper(
             states_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],

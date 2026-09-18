@@ -207,8 +207,7 @@ def _diff[
         var wants = List[Float64]()
         var names = List[String]()
 
-        @parameter
-        def col(s: Int, w: Float64, n: String):
+        def col(s: Int, w: Float64, n: String) {mut slots, mut wants, mut names, imm}:
             slots.append(s)
             wants.append(w)
             names.append(n)

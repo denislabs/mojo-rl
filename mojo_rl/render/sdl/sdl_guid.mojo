@@ -102,4 +102,4 @@ def string_to_guid(var pch_guid: String) raises -> GUID:
         lib,
         "SDL_StringToGUID",
         def(Ptr[c_char, ImmOrigin(origin_of(pch_guid))]) thin -> GUID,
-    ]()(pch_guid.as_c_string_slice().unsafe_ptr())
+    ]()(pch_guid.as_c_string_span().ptr())

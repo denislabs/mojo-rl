@@ -514,7 +514,6 @@ struct PongPixelEnv[
         # accumulate. Rendering is split into the clear (1b) + draw (1c)
         # kernels below so the dominant framebuffer clear runs element-parallel
         # instead of serially inside one thread per env.
-        @parameter
         @always_inline
         def physics_wrapper(
             states: LayoutTensor[
@@ -583,7 +582,6 @@ struct PongPixelEnv[
         comptime CLEAR_TPB = 256
         comptime CLEAR_BLOCKS = (CLEAR_TOTAL + CLEAR_TPB - 1) // CLEAR_TPB
 
-        @parameter
         @always_inline
         def clear_wrapper(
             ws_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
@@ -607,7 +605,6 @@ struct PongPixelEnv[
         # Paddles + ball + dashed line + scores onto the just-cleared buffer.
         # Tiny vs the clear (a few hundred pixels), so per-env is fine. Must
         # follow both physics (reads new positions) and clear (writes buffer).
-        @parameter
         @always_inline
         def draw_wrapper(
             states: LayoutTensor[
@@ -648,7 +645,6 @@ struct PongPixelEnv[
         comptime RESIZE_BLOCKS = (RESIZE_TOTAL + RESIZE_TPB - 1) // RESIZE_TPB
         var obs_ptr = obs_buf.unsafe_ptr()
 
-        @parameter
         @always_inline
         def resize_stack_wrapper(
             ws_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
@@ -718,7 +714,6 @@ struct PongPixelEnv[
         # ── Kernel 3: Advance frame index (1 thread per env) ──
         comptime WS_FRAME_IDX_OFF = FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE
 
-        @parameter
         @always_inline
         def advance_frame_idx_wrapper(
             ws_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
@@ -755,7 +750,6 @@ struct PongPixelEnv[
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
-        @parameter
         @always_inline
         def reset_wrapper(
             states: LayoutTensor[
@@ -803,7 +797,6 @@ struct PongPixelEnv[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
             ](rng_counter_ptr.value())
 
-            @parameter
             @always_inline
             def selective_reset_counter_wrapper(
                 states: LayoutTensor[
@@ -855,7 +848,6 @@ struct PongPixelEnv[
         else:
             var seed = Scalar[DType.uint64](rng_seed)
 
-            @parameter
             @always_inline
             def selective_reset_wrapper(
                 states: LayoutTensor[
@@ -907,7 +899,6 @@ struct PongPixelEnv[
 
         var ws_ptr = workspace_buf.unsafe_ptr()
 
-        @parameter
         @always_inline
         def init_ws_wrapper(
             ws: Pointer[Scalar[gpu_dtype], MutAnyOrigin],

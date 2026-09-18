@@ -1484,7 +1484,6 @@ struct ModelDefFromXML[
         # calls this at the top of every substep, so the asserts are gone.
         # If this ever moves back outside the frame-skip loop, restore them.
 
-        @parameter
         @always_inline
         def apply_kernel(
             qfrc: LayoutTensor[

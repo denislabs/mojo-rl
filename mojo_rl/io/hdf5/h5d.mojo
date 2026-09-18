@@ -24,7 +24,7 @@ def h5d_open2(
         lib,
         "H5Dopen2",
         def(hid_t, Ptr[c_char, ImmOrigin(origin_of(name))], hid_t) thin -> hid_t,
-    ]()(loc_id, name.as_c_string_slice().unsafe_ptr(), dapl_id)
+    ]()(loc_id, name.as_c_string_span().ptr(), dapl_id)
 
 
 def h5d_close(dset_id: hid_t) raises -> herr_t:
@@ -93,7 +93,7 @@ def h5d_create2(
         ) thin -> hid_t,
     ]()(
         loc_id,
-        name.as_c_string_slice().unsafe_ptr(),
+        name.as_c_string_span().ptr(),
         type_id,
         space_id,
         lcpl_id,

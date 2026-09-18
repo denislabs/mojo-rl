@@ -266,7 +266,7 @@ def create_window_and_renderer(
             Ptr[Ptr[Renderer, MutAnyOrigin], MutAnyOrigin],
         ) thin -> Bool,
     ]()(
-        title.as_c_string_slice().unsafe_ptr(),
+        title.as_c_string_span().ptr(),
         width,
         height,
         window_flags,
@@ -317,7 +317,7 @@ def create_renderer[win_o: MutOrigin, //](
             Ptr[Window, MutAnyOrigin],
             Ptr[c_char, ImmOrigin(origin_of(name))],
         ) thin -> Ptr[Renderer, MutAnyOrigin],
-    ]()(window.as_unsafe_any_origin(), name.as_c_string_slice().unsafe_ptr())
+    ]()(window.as_unsafe_any_origin(), name.as_c_string_span().ptr())
 
 
 def create_renderer_with_properties(
@@ -3908,6 +3908,6 @@ def render_debug_text[o: MutOrigin, //](
             c_float,
             Ptr[c_char, ImmOrigin(origin_of(str))],
         ) thin -> Bool,
-    ]()(renderer.as_unsafe_any_origin(), x, y, str.as_c_string_slice().unsafe_ptr())
+    ]()(renderer.as_unsafe_any_origin(), x, y, str.as_c_string_span().ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

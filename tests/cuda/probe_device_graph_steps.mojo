@@ -61,7 +61,6 @@ def main() raises:
     ctx.synchronize()
     print("[probe] [2] ok", flush=True)
 
-    @parameter
     @always_inline
     def _bump(b: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin]):
         if Int(thread_idx.x) != 0:

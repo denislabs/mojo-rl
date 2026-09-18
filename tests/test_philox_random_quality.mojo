@@ -565,7 +565,6 @@ def test_gpu_kernel() raises:
 
     comptime BLOCKS = (GPU_BATCH + TPB - 1) // TPB
 
-    @parameter
     @always_inline
     def gen_kernel(
         dst: LayoutTensor[dtype, Layout.row_major(GPU_BATCH, 4), MutAnyOrigin],

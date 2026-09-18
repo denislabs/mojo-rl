@@ -358,7 +358,6 @@ struct BatchedCameraRenderer[
                 " 16/15-bit packing"
             )
 
-        @parameter
         @always_inline
         def cam_kernel(
             geoms: LayoutTensor[Self.DTYPE, DYN2, MutAnyOrigin],

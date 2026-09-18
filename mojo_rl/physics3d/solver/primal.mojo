@@ -265,7 +265,6 @@ def pyramidal_linesearch[
     # `it` is `ctx->LSiter`, and it counts EVERY evaluation including the two
     # before the one-sided search — the budget `ls_iterations` is a count of
     # `PrimalEval` calls, not of bracket steps.
-    @parameter
     @always_inline
     def peval(
         a: Scalar[DTYPE],
@@ -273,7 +272,7 @@ def pyramidal_linesearch[
         mut d0: Scalar[DTYPE],
         mut d1: Scalar[DTYPE],
         mut it: Int,
-    ):
+    ) {imm}:
         c = Scalar[DTYPE](0.5) * gauss_a * a * a + gauss_b * a
         d0 = gauss_a * a + gauss_b
         d1 = gauss_a

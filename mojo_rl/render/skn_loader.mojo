@@ -153,14 +153,12 @@ def load_skn(path: String) raises -> SkinData:
 
     var base = content.unsafe_ptr()
 
-    @parameter
-    def i32_at(byte_off: Int) -> Int:
+    def i32_at(byte_off: Int) {imm} -> Int:
         return Int(
             (base.unsafe_offset(byte_off)).unsafe_bitcast[Int32]()[]
         )
 
-    @parameter
-    def f32_at(byte_off: Int) -> Float32:
+    def f32_at(byte_off: Int) {imm} -> Float32:
         return (base.unsafe_offset(byte_off)).unsafe_bitcast[Float32]()[]
 
     var nvert = i32_at(0)

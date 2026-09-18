@@ -234,7 +234,7 @@ def _time_baseline[
     comptime nb_col = (BS * COL + TPB - 1) // TPB
     comptime nb_bias = (BS * OC + TPB - 1) // TPB
 
-    @parameter
+    @__parameter
     def one() raises:
         ctx.enqueue_function[
             _im2col_kernel[
@@ -277,7 +277,7 @@ def _time_o5[
     comptime gx = (OC + TILE - 1) // TILE
     comptime gy = (BS + TILE - 1) // TILE
 
-    @parameter
+    @__parameter
     def one() raises:
         ctx.enqueue_function[
             _implicit_gemm_fwd[
@@ -395,7 +395,7 @@ def _time_mec[
     comptime nb_l = (LN + TPB - 1) // TPB
     comptime nb_sc = (BS * OC + TPB - 1) // TPB
 
-    @parameter
+    @__parameter
     def one() raises:
         ctx.enqueue_function[
             _mec_lower_kernel[BATCH, IC, K, S, P, H, W, OW, IN_FLAT, HP]

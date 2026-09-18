@@ -260,7 +260,7 @@ struct SerialPort(Movable):
         # which is never set here.
         self.fd = external_call["openat", Int32](
             Int32(AT_FDCWD),
-            self._path.as_c_string_slice().unsafe_ptr(),
+            self._path.as_c_string_span().ptr(),
             Int32(O_RDWR | O_NOCTTY | O_NONBLOCK),
             Int32(0),
         )

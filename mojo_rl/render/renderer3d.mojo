@@ -1327,7 +1327,7 @@ struct Renderer3D(Movable):
         var info = GPUShaderCreateInfo(
             code_size=UInt(len(code_bytes)),
             code=code_bytes.unsafe_ptr(),
-            entrypoint=ep.as_c_string_slice().unsafe_ptr(),
+            entrypoint=ep.as_c_string_span().ptr(),
             format=GPUShaderFormat.GPU_SHADERFORMAT_MSL,
             stage=stage,
             num_samplers=num_samplers,
@@ -1352,7 +1352,7 @@ struct Renderer3D(Movable):
         var info = GPUShaderCreateInfo(
             code_size=UInt(len(spirv_data)),
             code=spirv_data.unsafe_ptr(),
-            entrypoint=ep.as_c_string_slice().unsafe_ptr(),
+            entrypoint=ep.as_c_string_span().ptr(),
             format=GPUShaderFormat.GPU_SHADERFORMAT_SPIRV,
             stage=stage,
             num_samplers=num_samplers,

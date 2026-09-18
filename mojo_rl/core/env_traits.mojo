@@ -583,7 +583,6 @@ trait GPUDiscreteEnv:
         comptime TPB = 256
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        @parameter
         @always_inline
         def extract_wrapper(
             s: LayoutTensor[

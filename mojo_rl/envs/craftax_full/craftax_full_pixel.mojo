@@ -923,7 +923,6 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
         var states_ptr = states_buf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]()
         var obs_ptr = obs_buf.unsafe_ptr()
 
-        @parameter
         @always_inline
         def render_wrapper(
             states_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
@@ -1010,7 +1009,6 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
         ) // CraftaxFullEnv[Self.DTYPE].TPB
         var seed_s = Scalar[DType.uint64](rng_seed)
 
-        @parameter
         @always_inline
         def physics_wrapper(
             states_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],

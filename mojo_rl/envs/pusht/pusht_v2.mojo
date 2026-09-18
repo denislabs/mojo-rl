@@ -556,7 +556,6 @@ struct PushTV2[DTYPE: DType](
         ](states)
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        @parameter
         @always_inline
         def reset_wrapper(
             st: LayoutTensor[
@@ -601,7 +600,6 @@ struct PushTV2[DTYPE: DType](
         ](dones)
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        @parameter
         @always_inline
         def selreset_wrapper(
             st: LayoutTensor[
@@ -645,7 +643,6 @@ struct PushTV2[DTYPE: DType](
         ](obs)
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        @parameter
         @always_inline
         def extract(
             st: LayoutTensor[
@@ -751,7 +748,6 @@ struct PushTV2[DTYPE: DType](
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        @parameter
         @always_inline
         def step_wrapper(
             st: LayoutTensor[

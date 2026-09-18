@@ -29,7 +29,7 @@ def h5f_open(
         lib,
         "H5Fopen",
         def(Ptr[c_char, ImmOrigin(origin_of(path))], c_uint, hid_t) thin -> hid_t,
-    ]()(path.as_c_string_slice().unsafe_ptr(), flags, fapl_id)
+    ]()(path.as_c_string_span().ptr(), flags, fapl_id)
 
 
 def h5f_create(
@@ -54,7 +54,7 @@ def h5f_create(
         def(
             Ptr[c_char, ImmOrigin(origin_of(path))], c_uint, hid_t, hid_t
         ) thin -> hid_t,
-    ]()(path.as_c_string_slice().unsafe_ptr(), flags, fcpl_id, fapl_id)
+    ]()(path.as_c_string_span().ptr(), flags, fcpl_id, fapl_id)
 
 
 def h5f_flush(object_id: hid_t, scope: c_int) raises -> herr_t:

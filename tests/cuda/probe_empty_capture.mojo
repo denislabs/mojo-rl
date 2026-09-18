@@ -59,7 +59,6 @@ def main() raises:
         print("non-NVIDIA: capture is a comptime no-op here. Skipped.")
         return
 
-    @parameter
     @always_inline
     def _bump(buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin]):
         if Int(thread_idx.x) != 0:

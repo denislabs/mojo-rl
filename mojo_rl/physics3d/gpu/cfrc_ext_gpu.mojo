@@ -91,7 +91,6 @@ def compute_cfrc_ext[
 
     comptime EPS = Scalar[DTYPE](1e-10)
 
-    @parameter
     @always_inline
     # ⚠⚠ COMPTIME INSIDE THE KERNEL. `dims` is a host value and
     # `Dims` is not `DevicePassable` — reading it here yields 0,

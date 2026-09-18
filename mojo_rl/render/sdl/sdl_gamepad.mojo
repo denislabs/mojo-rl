@@ -470,7 +470,7 @@ def add_gamepad_mapping(var mapping: String) raises -> c_int:
         lib,
         "SDL_AddGamepadMapping",
         def(Ptr[c_char, ImmOrigin(origin_of(mapping))]) thin -> c_int,
-    ]()(mapping.as_c_string_slice().unsafe_ptr())
+    ]()(mapping.as_c_string_span().ptr())
 
 
 def add_gamepad_mappings_from_io(
@@ -550,7 +550,7 @@ def add_gamepad_mappings_from_file(var file: String) raises -> c_int:
         lib,
         "SDL_AddGamepadMappingsFromFile",
         def(Ptr[c_char, ImmOrigin(origin_of(file))]) thin -> c_int,
-    ]()(file.as_c_string_slice().unsafe_ptr())
+    ]()(file.as_c_string_span().ptr())
 
 
 def reload_gamepad_mappings() raises:
@@ -672,7 +672,7 @@ def set_gamepad_mapping(instance_id: JoystickID, var mapping: String) raises:
         def(
             JoystickID, Ptr[c_char, ImmOrigin(origin_of(mapping))]
         ) thin -> Bool,
-    ]()(instance_id, mapping.as_c_string_slice().unsafe_ptr())
+    ]()(instance_id, mapping.as_c_string_span().ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1564,7 +1564,7 @@ def get_gamepad_type_from_string(var str: String) raises -> GamepadType:
         lib,
         "SDL_GetGamepadTypeFromString",
         def(Ptr[c_char, ImmOrigin(origin_of(str))]) thin -> GamepadType,
-    ]()(str.as_c_string_slice().unsafe_ptr())
+    ]()(str.as_c_string_span().ptr())
 
 
 def get_gamepad_string_for_type(
@@ -1616,7 +1616,7 @@ def get_gamepad_axis_from_string(var str: String) raises -> GamepadAxis:
         lib,
         "SDL_GetGamepadAxisFromString",
         def(Ptr[c_char, ImmOrigin(origin_of(str))]) thin -> GamepadAxis,
-    ]()(str.as_c_string_slice().unsafe_ptr())
+    ]()(str.as_c_string_span().ptr())
 
 
 def get_gamepad_string_for_axis(
@@ -1721,7 +1721,7 @@ def get_gamepad_button_from_string(var str: String) raises -> GamepadButton:
         lib,
         "SDL_GetGamepadButtonFromString",
         def(Ptr[c_char, ImmOrigin(origin_of(str))]) thin -> GamepadButton,
-    ]()(str.as_c_string_slice().unsafe_ptr())
+    ]()(str.as_c_string_span().ptr())
 
 
 def get_gamepad_string_for_button(

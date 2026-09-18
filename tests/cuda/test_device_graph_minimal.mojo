@@ -89,7 +89,6 @@ def test_record_replay_contract() raises:
     # ⚠ NESTED, not module-level. `TestSuite.discover_tests` instantiates every
     # top-level def for the HOST, and a GPU kernel fails there with "target
     # does not support operation: _get_intrinsic_name".
-    @parameter
     @always_inline
     def _bump(buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin]):
         if Int(thread_idx.x) != 0:

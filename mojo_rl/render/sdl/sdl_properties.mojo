@@ -291,7 +291,7 @@ def set_pointer_property_with_cleanup(
             CleanupPropertyCallback,
             Ptr[NoneType, MutAnyOrigin],
         ) thin -> Bool,
-    ]()(props, name.as_c_string_slice().unsafe_ptr(), value, cleanup, userdata)
+    ]()(props, name.as_c_string_span().ptr(), value, cleanup, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -324,7 +324,7 @@ def set_pointer_property(
             Ptr[c_char, ImmOrigin(origin_of(name))],
             Ptr[NoneType, MutAnyOrigin],
         ) thin -> Bool,
-    ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
+    ]()(props, name.as_c_string_span().ptr(), value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -362,8 +362,8 @@ def set_string_property(
         ) thin -> Bool,
     ]()(
         props,
-        name.as_c_string_slice().unsafe_ptr(),
-        value.as_c_string_slice().unsafe_ptr(),
+        name.as_c_string_span().ptr(),
+        value.as_c_string_span().ptr(),
     )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -397,7 +397,7 @@ def set_number_property(
             Ptr[c_char, ImmOrigin(origin_of(name))],
             Int64,
         ) thin -> Bool,
-    ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
+    ]()(props, name.as_c_string_span().ptr(), value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -430,7 +430,7 @@ def set_float_property(
             Ptr[c_char, ImmOrigin(origin_of(name))],
             c_float,
         ) thin -> Bool,
-    ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
+    ]()(props, name.as_c_string_span().ptr(), value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -463,7 +463,7 @@ def set_boolean_property(
             Ptr[c_char, ImmOrigin(origin_of(name))],
             Bool,
         ) thin -> Bool,
-    ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
+    ]()(props, name.as_c_string_span().ptr(), value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -490,7 +490,7 @@ def has_property(props: PropertiesID, var name: String) raises -> Bool:
         def(
             PropertiesID, Ptr[c_char, ImmOrigin(origin_of(name))]
         ) thin -> Bool,
-    ]()(props, name.as_c_string_slice().unsafe_ptr())
+    ]()(props, name.as_c_string_span().ptr())
 
 
 def get_property_type(
@@ -518,7 +518,7 @@ def get_property_type(
         def(
             PropertiesID, Ptr[c_char, ImmOrigin(origin_of(name))]
         ) thin -> PropertyType,
-    ]()(props, name.as_c_string_slice().unsafe_ptr())
+    ]()(props, name.as_c_string_span().ptr())
 
 
 def get_pointer_property(
@@ -561,7 +561,7 @@ def get_pointer_property(
             Ptr[c_char, ImmOrigin(origin_of(name))],
             Ptr[NoneType, MutAnyOrigin],
         ) thin -> Ptr[NoneType, MutAnyOrigin],
-    ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
+    ]()(props, name.as_c_string_span().ptr(), default_value)
 
 
 def get_string_property(
@@ -599,8 +599,8 @@ def get_string_property(
         ) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(
         props,
-        name.as_c_string_slice().unsafe_ptr(),
-        default_value.as_c_string_slice().unsafe_ptr(),
+        name.as_c_string_span().ptr(),
+        default_value.as_c_string_span().ptr(),
     )
 
 
@@ -635,7 +635,7 @@ def get_number_property(
             Ptr[c_char, ImmOrigin(origin_of(name))],
             Int64,
         ) thin -> Int64,
-    ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
+    ]()(props, name.as_c_string_span().ptr(), default_value)
 
 
 def get_float_property(
@@ -669,7 +669,7 @@ def get_float_property(
             Ptr[c_char, ImmOrigin(origin_of(name))],
             c_float,
         ) thin -> c_float,
-    ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
+    ]()(props, name.as_c_string_span().ptr(), default_value)
 
 
 def get_boolean_property(
@@ -703,7 +703,7 @@ def get_boolean_property(
             Ptr[c_char, ImmOrigin(origin_of(name))],
             Bool,
         ) thin -> Bool,
-    ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
+    ]()(props, name.as_c_string_span().ptr(), default_value)
 
 
 def clear_property(props: PropertiesID, var name: String) raises:
@@ -729,7 +729,7 @@ def clear_property(props: PropertiesID, var name: String) raises:
         def(
             PropertiesID, Ptr[c_char, ImmOrigin(origin_of(name))]
         ) thin -> Bool,
-    ]()(props, name.as_c_string_slice().unsafe_ptr())
+    ]()(props, name.as_c_string_span().ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 

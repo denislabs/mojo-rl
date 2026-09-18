@@ -155,8 +155,8 @@ def get_pref_path(
             Ptr[c_char, ImmOrigin(origin_of(app))],
         ) thin -> Ptr[c_char, MutAnyOrigin],
     ]()(
-        org.as_c_string_slice().unsafe_ptr(),
-        app.as_c_string_slice().unsafe_ptr(),
+        org.as_c_string_span().ptr(),
+        app.as_c_string_span().ptr(),
     )
 
 
@@ -368,7 +368,7 @@ def create_directory(var path: String) raises:
         lib,
         "SDL_CreateDirectory",
         def(Ptr[c_char, ImmOrigin(origin_of(path))]) thin -> Bool,
-    ]()(path.as_c_string_slice().unsafe_ptr())
+    ]()(path.as_c_string_span().ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -473,7 +473,7 @@ def enumerate_directory(
             EnumerateDirectoryCallback,
             Ptr[NoneType, MutAnyOrigin],
         ) thin -> Bool,
-    ]()(path.as_c_string_slice().unsafe_ptr(), callback, userdata)
+    ]()(path.as_c_string_span().ptr(), callback, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -498,7 +498,7 @@ def remove_path(var path: String) raises:
         lib,
         "SDL_RemovePath",
         def(Ptr[c_char, ImmOrigin(origin_of(path))]) thin -> Bool,
-    ]()(path.as_c_string_slice().unsafe_ptr())
+    ]()(path.as_c_string_span().ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -536,8 +536,8 @@ def rename_path(var oldpath: String, var newpath: String) raises:
             Ptr[c_char, ImmOrigin(origin_of(newpath))],
         ) thin -> Bool,
     ]()(
-        oldpath.as_c_string_slice().unsafe_ptr(),
-        newpath.as_c_string_slice().unsafe_ptr(),
+        oldpath.as_c_string_span().ptr(),
+        newpath.as_c_string_span().ptr(),
     )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -593,8 +593,8 @@ def copy_file(var oldpath: String, var newpath: String) raises:
             Ptr[c_char, ImmOrigin(origin_of(newpath))],
         ) thin -> Bool,
     ]()(
-        oldpath.as_c_string_slice().unsafe_ptr(),
-        newpath.as_c_string_slice().unsafe_ptr(),
+        oldpath.as_c_string_span().ptr(),
+        newpath.as_c_string_span().ptr(),
     )
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -622,7 +622,7 @@ def get_path_info(var path: String, info: Ptr[PathInfo, MutAnyOrigin]) raises:
             Ptr[c_char, ImmOrigin(origin_of(path))],
             Ptr[PathInfo, MutAnyOrigin],
         ) thin -> Bool,
-    ]()(path.as_c_string_slice().unsafe_ptr(), info)
+    ]()(path.as_c_string_span().ptr(), info)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -679,8 +679,8 @@ def glob_directory(
             Ptr[c_int, MutAnyOrigin],
         ) thin -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],
     ]()(
-        path.as_c_string_slice().unsafe_ptr(),
-        pattern.as_c_string_slice().unsafe_ptr(),
+        path.as_c_string_span().ptr(),
+        pattern.as_c_string_span().ptr(),
         flags,
         count,
     )

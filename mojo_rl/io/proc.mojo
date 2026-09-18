@@ -95,8 +95,8 @@ struct Pipe(Movable):
     def __init__(out self, var command: String) raises:
         var mode = String("r")
         var fp = external_call["popen", Int](
-            command.as_c_string_slice().unsafe_ptr(),
-            mode.as_c_string_slice().unsafe_ptr(),
+            command.as_c_string_span().ptr(),
+            mode.as_c_string_span().ptr(),
         )
         if fp == 0:
             raise Error("proc: popen failed for: " + command)
@@ -247,8 +247,8 @@ struct WritePipe(Movable):
         _ignore_sigpipe()
         var mode = String("w")
         var fp = external_call["popen", Int](
-            command.as_c_string_slice().unsafe_ptr(),
-            mode.as_c_string_slice().unsafe_ptr(),
+            command.as_c_string_span().ptr(),
+            mode.as_c_string_span().ptr(),
         )
         if fp == 0:
             raise Error("proc: popen(w) failed for: " + command)

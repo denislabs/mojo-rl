@@ -398,7 +398,6 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed_scalar = Scalar[DType.uint64](rng_seed)
 
-        @parameter
         @always_inline
         def reset_wrapper(
             states: LayoutTensor[
@@ -497,7 +496,6 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed_scalar = Scalar[DType.uint64](rng_seed)
 
-        @parameter
         @always_inline
         def selective_reset_wrapper(
             states: LayoutTensor[
@@ -606,7 +604,6 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         ](actions_buf)
         var seed_scalar = Scalar[DType.uint64](rng_seed)
 
-        @parameter
         @always_inline
         def step_wrapper(
             states: LayoutTensor[
@@ -689,7 +686,6 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
-        @parameter
         @always_inline
         def extract_wrapper(
             states: LayoutTensor[
@@ -981,8 +977,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
                 pass
 
         # Helper: blit sprite `idx` at (dst_x, dst_y) with size `dst_size`.
-        @parameter
-        def _blit(idx: Int, dst_x: Int, dst_y: Int, dst_size: Int):
+        def _blit(idx: Int, dst_x: Int, dst_y: Int, dst_size: Int) {imm}:
             if not has_texture:
                 return
             var src_alloc = alloc[FRect]({count = 1})
@@ -1054,8 +1049,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
                 _blit(sprite, vx * TS, vy * TS, TS)
 
         # --- Mobs (each: skip if dead or outside view) ---
-        @parameter
-        def _blit_mob(my: Int, mx: Int, sprite: Int):
+        def _blit_mob(my: Int, mx: Int, sprite: Int) {imm}:
             var vy = my - oy
             var vx = mx - ox
             if vy < 0 or vy >= VIEW_H or vx < 0 or vx >= VIEW_W:
@@ -1122,7 +1116,10 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         var bar_bg = SDL_Color(30, 30, 40, 255)
         var bar_frame = SDL_Color(80, 80, 100, 255)
 
-        @parameter
+        # ⚠ LEGACY CLOSURE ON PURPOSE. A unified closure would need `mut renderer`
+        # while also capturing `_blit`, which holds `renderer` immutably — the
+        # compiler rejects that aliasing at the closure's creation.
+        @__parameter
         def _draw_intrinsic(k: Int, sprite: Int, color: SDL_Color):
             var val = Int(self.state[S_INTRINSICS_BASE + k])
             var x0 = k * slot_pitch + 6

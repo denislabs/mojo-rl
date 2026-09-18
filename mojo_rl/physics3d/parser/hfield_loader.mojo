@@ -91,8 +91,7 @@ def _load_custom_hfield(path: String) raises -> Tuple[Int, Int, List[Float64]]:
             "physics3d: <hfield file='" + path + "'> is missing its header"
         )
 
-    @parameter
-    def _u32(o: Int) -> Int:
+    def _u32(o: Int) {imm} -> Int:
         return (
             Int(raw[o + 0])
             | (Int(raw[o + 1]) << 8)

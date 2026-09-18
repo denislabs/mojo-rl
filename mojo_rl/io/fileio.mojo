@@ -39,8 +39,8 @@ def rename_over(var src: String, var dst: String) raises:
     """`rename(2)`: atomic within a filesystem, which is the whole reason the
     download and the checkpoint both write `<dst>.part`/`<dst>.tmp` first."""
     var rc = external_call["rename", Int32](
-        src.as_c_string_slice().unsafe_ptr(),
-        dst.as_c_string_slice().unsafe_ptr(),
+        src.as_c_string_span().ptr(),
+        dst.as_c_string_span().ptr(),
     )
     if rc != 0:
         raise Error("rename failed: " + src + " -> " + dst)
@@ -50,7 +50,7 @@ def remove_file(var path: String) raises:
     """`unlink(2)`. A file that was already gone is NOT an error — every
     caller here means "make sure it is not there", not "delete this"."""
     var rc = external_call["unlink", Int32](
-        path.as_c_string_slice().unsafe_ptr()
+        path.as_c_string_span().ptr()
     )
     if rc != 0 and exists(path):
         raise Error("cannot remove " + path)
@@ -223,7 +223,7 @@ struct StdinReader(Movable):
     def __init__(out self) raises:
         var mode = String("r")
         var fp = external_call["fdopen", Int](
-            Int32(0), mode.as_c_string_slice().unsafe_ptr()
+            Int32(0), mode.as_c_string_span().ptr()
         )
         if fp == 0:
             raise Error("fileio: cannot open stdin")

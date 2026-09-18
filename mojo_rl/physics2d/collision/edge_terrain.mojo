@@ -1162,7 +1162,6 @@ struct EdgeTerrainCollision(CollisionSystem):
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
-        @parameter
         @always_inline
         def kernel_wrapper(
             state: LayoutTensor[

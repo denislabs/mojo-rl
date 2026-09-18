@@ -444,9 +444,8 @@ struct SpaceInvadersEnv[DTYPE: DType](
         var play_h = info_y - play_top
 
         # Helper to map game Y to screen Y
-        @parameter
         @always_inline
-        def gy(game_y: Float64) -> Int:
+        def gy(game_y: Float64) {imm} -> Int:
             return play_top + Int(game_y / Float64(SCREEN_H) * Float64(play_h))
 
         # -- Draw aliens --
@@ -908,7 +907,6 @@ struct SpaceInvadersEnv[DTYPE: DType](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed = Scalar[DType.uint64](rng_seed)
 
-        @parameter
         @always_inline
         def step_wrapper(
             states: LayoutTensor[
@@ -996,7 +994,6 @@ struct SpaceInvadersEnv[DTYPE: DType](
         ](obs_buf)
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
-        @parameter
         @always_inline
         def extract_wrapper(
             states: LayoutTensor[
@@ -1049,7 +1046,6 @@ struct SpaceInvadersEnv[DTYPE: DType](
         ](states_buf)
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
-        @parameter
         @always_inline
         def reset_wrapper(
             states: LayoutTensor[
@@ -1095,7 +1091,6 @@ struct SpaceInvadersEnv[DTYPE: DType](
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
             ](rng_counter_ptr.value())
 
-            @parameter
             @always_inline
             def sel_reset_counter_wrapper(
                 states: LayoutTensor[
@@ -1128,7 +1123,6 @@ struct SpaceInvadersEnv[DTYPE: DType](
         else:
             var seed = Scalar[DType.uint64](rng_seed)
 
-            @parameter
             @always_inline
             def sel_reset_wrapper(
                 states: LayoutTensor[
