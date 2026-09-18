@@ -734,6 +734,23 @@ def run[T: PlacementTable, M: ModelDefLike](
         var lane_window_k = -1
         var lane_window_step = -1
         var lane_end = 0.0
+        # ⚠⚠ `|dq|` CANNOT SAY WHICH LEG MOVED, AND THAT IS THE QUESTION.
+        # 0.0355 on a prop's z is the same number whether the DEVICE dropped the
+        # box or the CPU did, and the two mean opposite things: one is a float32
+        # contact defect, the other is the CPU reference being wrong. `d.qpos`
+        # still holds the RESET pose here (`osc.reset` above, before the step
+        # loop), so snapshot it and report all three — "dev 0.40 cpu 0.43 reset
+        # 0.43" names the mover where a difference never can.
+        #
+        # ⚠ AND IT SEPARATES A MOVE FROM A DISAGREEMENT. Under the NULL action a
+        # resting prop should not move in EITHER leg; a large `|dq|` with both
+        # legs far from reset is chaos, while a large `|dq|` with ONE leg still
+        # at reset is that leg's bug.
+        var q_reset = List[Float64](length=NQ, fill=0.0)
+        for k in range(NQ):
+            q_reset[k] = Float64(d.qpos.data[k])
+        var lane_window_cpu = 0.0
+        var lane_window_dev = 0.0
         for step in range(steps):
             for s in range(SUBSTEPS):
                 osc.update(d, m, scratch)
@@ -853,6 +870,9 @@ def run[T: PlacementTable, M: ModelDefLike](
                 lane_window = worst
                 lane_window_k = worst_k
                 lane_window_step = step
+                if worst_k >= 0:
+                    lane_window_cpu = Float64(d.qpos.data[worst_k])
+                    lane_window_dev = dev_traj[e][step * NQ + worst_k]
             lane_end = worst
         var wname = (
             word_name[lane_window_k] if lane_window_k >= 0
@@ -874,6 +894,12 @@ def run[T: PlacementTable, M: ModelDefLike](
         print("     cpu lane", e, names[ti], ": |dq| first", window, "steps",
               lane_window, "(", wname, "at step", lane_window_step, ") | at step",
               steps, lane_end, "|", nct)
+        if lane_window_k >= 0:
+            var wref = q_reset[lane_window_k]
+            print("        that word: dev", lane_window_dev, " cpu",
+                  lane_window_cpu, " reset", wref, " => moved from reset: dev",
+                  abs(lane_window_dev - wref), " cpu",
+                  abs(lane_window_cpu - wref))
         if lane_window > window_worst:
             window_worst = lane_window
         if lane_end > end_worst:
