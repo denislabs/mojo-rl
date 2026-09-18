@@ -26,11 +26,11 @@ are BIT-IDENTICAL (both 8.980136837440256e-03 from the reference) and the gap
 to float64 is the SAME size. A difference that survives when the accused
 kernel agrees with its accuser is not that kernel's difference.
 
-## ⚠⚠ THE SCOPE: THIS IS ONE SOLVE, NOT A ROLLOUT
+## ⚠ THE SCOPE OF THE BLOCK ABOVE: ONE SOLVE, NOT A ROLLOUT
 
-Nothing above is an acquittal of the blocked kernel. It says only that at THIS
-state, for ONE solve, the blocked leg is not the worse of the two. The rollout
-says something different and the next section is why.
+On its own the block above says only that at THIS state, for ONE solve, the
+blocked leg is not the worse of the two. The acquittal comes from the float64
+sweep in the next section, not from here.
 
 ## ⚠⚠ THE ROLLOUT ARM COMPARISON IS AN ACCURACY COMPARISON — IT COUNTS
 
@@ -46,6 +46,44 @@ FLOAT32 CPU LEG and therefore ranked by summation order rather than accuracy.
 That was wrong — it confused this file's `_solve64`/float32 pair with the
 family gate's float64 leg. The order-of-summation argument applies to THIS
 file's two GPU legs, not to the family gate's verdict.
+
+## ⚠⚠ ANSWERED ON CUDA 2026-09-18: IT IS ROUNDING. THE BLOCKED KERNEL IS SOUND.
+
+The float64 sweep ran on a 5090 (`scripts/libero_f64_sweep_cuda.sh`) and the
+offset TRACKS MACHINE EPSILON:
+
+    float32   worst |qacc| diff 5.722046e-06  / scale 37.22 = 1.29 ULP
+    float64   worst |qacc| diff 7.105427e-15  / scale 37.22 = 0.86 ULP
+    the diffs fell 8.05e8 while eps fell 5.37e8 — the same order
+    bias |mean|/mean|.|   float32 0.975   ->   float64 0.330
+
+About one ULP of the answer's own magnitude in BOTH precisions. A logic
+difference keeps its RELATIVE size when the precision rises; this did not. So
+the difference is non-associativity — the two-stage `JH` in
+`ell_add_contact_hessian` against the per-entry recompute in
+`_ell_entry_contact_term`, and/or FMA contraction applied in one leg and not the
+other — and `solve_newton_blocked`'s elliptic leg is NOT defective.
+
+⚠ THE 0.975 BIAS RATIO WAS REAL BUT IT WAS NOT EVIDENCE OF A DEFECT. A rounding
+difference CAN be almost perfectly one-sided: at float32 a single systematic
+rounding decision dominates all 90 dofs, and at float64 the same mechanism is
+5e8 times smaller so ordinary rounding takes over and the ratio falls to 0.330.
+"Systematic" narrows the mechanism; it does not by itself convict a kernel.
+
+⚠ AND BIT-IDENTITY AT FLOAT64 WAS THE WRONG CRITERION. The first version of
+this file's verdict demanded `worst == 0.0` at float64 and would have called
+this run a LOGIC difference — it printed exactly that before being corrected.
+Rounding does not go to zero with more precision, it goes to ~1 ULP. Compare
+ULPs ACROSS precisions, never against zero.
+
+## WHAT THIS MEANS FOR THE LIBERO PORT
+
+`libero_family_batched`'s 1e-3 window bound compares a GPU float32 rollout
+against a CPU FLOAT64 one, so it varies precision AND implementation at once and
+is dominated by float32 discretisation amplified through contact chaos. No
+kernel fix can meet it. Either add the fixed-axis leg (CPU float32, which
+isolates the implementation) or justify the bound against what float32 can
+actually deliver on a scene of boxes resting at the contact margin.
 
 ## ⚠ HOW BOTH RESULTS CAN BE TRUE AT ONCE
 
@@ -674,20 +712,58 @@ def _f64_sweep(
         print("   uncapped: worst |qacc| diff", w64f, " signed mean",
               s64 / n64, " mean |.|", a64 / n64, " ratio",
               abs(s64) / a64 if a64 > 0.0 else 0.0)
+
+        # ⚠⚠ BIT-IDENTITY IS THE WRONG CRITERION AND THIS IS THE CORRECTION.
+        # An earlier version of this verdict demanded `worst == 0.0` at float64
+        # and called anything else a logic difference. That is wrong:
+        # non-associativity does NOT vanish when the precision rises, it shrinks
+        # WITH the precision — to about one ULP of the answer's own magnitude,
+        # which at float64 on a 37 m/s^2 qacc is ~8e-15, not 0. Demanding zero
+        # converts every rounding difference into a false "logic" verdict.
+        #
+        # The decisive quantity is the difference measured in ULPs of the
+        # answer's scale, compared ACROSS the two precisions. Measured here:
+        #     float32  5.722046e-06 / 37.22 = 1.29 ULP
+        #     float64  7.105427e-15 / 37.22 = 0.86 ULP
+        #     the diffs fell 8.05e8 while eps fell 5.37e8 — the same order.
+        # A LOGIC difference keeps its RELATIVE size when eps shrinks; a
+        # rounding one tracks eps. This tracks eps.
+        var scale64 = 0.0
+        for i in range(BATCH * NV):
+            if abs(pf.qacc[i]) > scale64:
+                scale64 = abs(pf.qacc[i])
+        comptime EPS64 = 2.220446049250313e-16
+        var ulps = (w64f / scale64 / EPS64) if scale64 > 0.0 else 0.0
+        print("   scale (max |qacc|)", scale64, " => worst diff is", ulps,
+              "ULP of float64")
         print()
-        if not any_diff64:
-            print("   => VERDICT: the two legs are BIT-IDENTICAL at float64 at")
-            print("      every iteration. The float32 offset is ROUNDING (the")
-            print("      assembly order, or FMA in one leg and not the other),")
-            print("      NOT a logic defect. The blocked kernel is sound and the")
-            print("      1e-3 family-gate bound is what needs revisiting.")
+        # A handful of ULPs is what a different summation order costs; a logic
+        # difference would sit orders above it, at the float32 RELATIVE size
+        # (1.5e-07 of scale, i.e. ~7e8 ULP of float64).
+        if ulps <= 64.0:
+            print("   => VERDICT: ROUNDING, not logic. The float64 gap is",
+                  ulps, "ULP of the answer's own")
+            print("      scale — the difference tracked machine epsilon down")
+            print("      instead of holding its relative size, which is what a")
+            print("      real logic difference would have done. The blocked")
+            print("      kernel is SOUND: the float32 offset is assembly order")
+            print("      or FMA contraction in one leg and not the other.")
+            print("      What needs revisiting is the 1e-3 family-gate bound,")
+            print("      which compares GPU float32 against CPU float64 and so")
+            print("      measures float32 discretisation plus contact chaos —")
+            print("      no kernel fix can meet it.")
         else:
-            print("   => VERDICT: the legs DIFFER AT FLOAT64 — the offset")
-            print("      SURVIVES the precision, so it is a LOGIC difference")
-            print("      and one of the two kernels is wrong. Bisect the cone")
-            print("      Hessian assembly next (two-stage `JH` in")
+            print("   => VERDICT: LOGIC, not rounding. The gap is", ulps,
+                  "ULP of scale at float64, far")
+            print("      above the couple of ULPs a summation order costs, so")
+            print("      it held its relative size as eps shrank. One of the")
+            print("      two kernels is wrong. Bisect the cone Hessian")
+            print("      assembly next (two-stage `JH` in")
             print("      `ell_add_contact_hessian` against the per-entry")
             print("      recompute in `_ell_entry_contact_term`).")
+        if any_diff64:
+            print("   (the legs are not bit-identical at float64, which is")
+            print("    EXPECTED and not evidence of anything on its own)")
 
 
 def _f32_flow(
@@ -887,10 +963,13 @@ def _f32_flow(
         # the float64 sweep this target cannot run.
         print("=== neither leg is the worse ANSWER at this state: they differ"
               " by", worst_qacc)
-        print("=== and are both", d_pe, "from the float64 reference. Whether"
-              " the offset between")
-        print("=== them is ROUNDING or LOGIC is UNDECIDED — see the note"
-              " above. ===")
+        print("=== and are both", d_pe, "from the float64 reference.")
+        print("=== The offset between them is ROUNDING, settled on CUDA"
+              " 2026-09-18: at float64")
+        print("=== it falls to 0.86 ULP of scale from 1.29 ULP at float32,"
+              " tracking machine")
+        print("=== epsilon instead of holding its relative size. See this"
+              " file's header. ===")
     else:
         print("=== ⚠ ONE LEG IS OUT: the legs differ by", worst_qacc,
               "which EXCEEDS the", d_pe, "gap to the float64 reference ===")
