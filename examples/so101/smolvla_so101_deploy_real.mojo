@@ -885,13 +885,35 @@ def main() raises:
                 # — this number grows by itself and the loop pipelines without
                 # another edit.
                 if queries > 0:
-                    var overlap_ms = (
-                        sum_q / Float64(queries)
-                        - sum_enqueue / Float64(submissions)
-                    )
-                    if overlap_ms < 0.0:
-                        overlap_ms = 0.0
-                    var want = Int(overlap_ms * Float64(SO101_FPS) / 1000.0)
+                    # ⚠ THE TWO SHAPES NEED DIFFERENT LEADS, and giving the
+                    # threaded one the inline formula cost 4.5 Hz.
+                    #
+                    # INLINE: submission blocks this thread, so only the
+                    # remainder can overlap the arm's motion. Leading by more
+                    # does not hide the cost, it pays it more often (measured:
+                    # 8.0 Hz against 17.9).
+                    #
+                    # THREADED: nothing here blocks, so the lead is the WHOLE
+                    # round trip — the observation build plus the worker's
+                    # query — because that is how long the chunk takes to come
+                    # back. Leading by the overlap alone asked 2.5 steps too
+                    # late and the loop waited 124 ms per handover.
+                    var want = 0
+                    if threaded:
+                        want = Int(
+                            (sum_q / Float64(queries) + obs_ms)
+                            * Float64(SO101_FPS) / 1000.0
+                        ) + 1
+                    else:
+                        var overlap_ms = (
+                            sum_q / Float64(queries)
+                            - sum_enqueue / Float64(submissions)
+                        )
+                        if overlap_ms < 0.0:
+                            overlap_ms = 0.0
+                        want = Int(
+                            overlap_ms * Float64(SO101_FPS) / 1000.0
+                        )
                     if want > exec_steps - 1:
                         want = exec_steps - 1
                     lead = want
