@@ -7,6 +7,12 @@ replaces the biggest stage.
     pixi run -e jetson cross-attn-stages-bench-jetson
     pixi run -e apple mojo run -I . benchmarks/cross_attention_stages_bench.mojo
 
+⚠ K1 AND S3 SHIPPED (`cross_attention.mojo`, 18 Sep) after this benchmark
+measured them on the Orin. The eight stages below are still the PRE-PORT
+pipeline — `_xa_softmax_kernel` and pack-then-transpose are kept in the tree as
+the reference these two are timed and bit-compared against — so the stage sum
+is now LARGER than the whole shipped forward, by exactly what they bought.
+
 ⚠⚠ WHY STAGES, NOT WHOLE VARIANTS. `cross_attention_bench.mojo` ranked four
 whole forwards, and the Metal ranking inverted on the board: the element-
 indexed forward that won on the M1 lost 2.8x on the Orin. A whole-forward A/B
@@ -344,17 +350,17 @@ def run_shape[
     comptime N_STAGES = 12
     var names: List[String] = [
         String("pack Q"),
-        String("pack K"),
-        String("transpose K -> Kt"),
+        String("pack K (pre-port)"),
+        String("transpose K -> Kt (pre-port)"),
         String("pack V"),
         String("bmm Q.Kt"),
-        String("softmax (shipped: block per (b,h))"),
+        String("softmax, pre-port (block per (b,h))"),
         String("bmm A.V"),
         String("unpack"),
-        String("K1  pack K into Kt (vs pack+transpose)"),
+        String("K1  pack K into Kt  [SHIPPED]"),
         String("S1  row thread, block 32"),
         String("S2  row thread, block 128"),
-        String("S3  row stats + element thread"),
+        String("S3  row stats + element thread  [SHIPPED]"),
     ]
     var best = List[Float64](length=N_STAGES, fill=1.0e30)
     var mod = XA.make["gpu", Deterministic](Optional(ctx))
@@ -497,8 +503,9 @@ def run_shape[
             vs = "  (" + _fmt(best[5] / best[s], 2) + "x)"
         print("   " + _pad(names[s], 42) + _pad(_fmt(best[s], 3) + vs, 22)
               + _pad(share, 8) + verdict[s])
-    print("   sum of shipped stages " + _fmt(shipped_sum, 3)
-          + " ms  vs whole shipped forward " + _fmt(fwd_best, 3) + " ms")
+    print("   sum of the eight stages " + _fmt(shipped_sum, 3)
+          + " ms  vs whole shipped forward " + _fmt(fwd_best, 3)
+          + " ms  (the forward now runs K1 + S3, so it is FASTER than the sum)")
     return ok
 
 

@@ -52,7 +52,7 @@ and key/value streams, and per-sample masking folded into the softmax kernel.
 
 from mojo_rl.nn.core.mm import mm, bmm
 from std.math import exp, sqrt
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.bmm import batched_matmul
@@ -129,6 +129,112 @@ def _xa_unpack_kernel[
     ](packed.ptr[unsafe_offset=bh * LEN * HEAD_DIM + t * HEAD_DIM + d])
 
 
+def _xa_pack_kt_kernel[
+    BATCH: Int, DIM: Int, NH: Int, KL: Int, HD: Int, PK: Int
+](
+    dst: LayoutTensor[DT, Layout.row_major(PK), MutAnyOrigin],
+    src: LayoutTensor[DT, Layout.row_major(BATCH, KL * DIM), MutAnyOrigin],
+):
+    """token-major `(BATCH, KL, DIM)` -> `(BH, HD, KL)`, the score matmul's B.
+
+    Packing and transposing in ONE pass. `_xa_pack_kernel` + a transpose reads
+    and writes the slab twice for the same result (bit-identical: both are
+    copies); on the Orin that is 0.234 ms against 0.150 at SigLIP's shape, and
+    1.8x at ACT's encoder shape."""
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= PK:
+        return
+    var j = idx % KL
+    var r = idx // KL
+    var d = r % HD
+    var bh = r // HD
+    var b = bh // NH
+    var h = bh % NH
+    dst.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](
+        src.ptr[unsafe_offset=b * KL * DIM + j * DIM + h * HD + d]
+    )
+
+
+def _xa_row_stats_kernel[
+    BATCH: Int, N_HEADS: Int, QL: Int, KL: Int, HEAD_DIM: Int,
+    MASKED: Bool, SCORES: Int, ROWS: Int,
+](
+    scores: LayoutTensor[DT, Layout.row_major(SCORES), MutAnyOrigin],
+    stats: LayoutTensor[DT, Layout.row_major(ROWS * 2), MutAnyOrigin],
+    mask: LayoutTensor[DT, Layout.row_major(BATCH, KL), MutAnyOrigin],
+):
+    """Softmax pass 1: one thread per (b, h, i) — the row max and 1/denominator.
+
+    Reads only; `scores` keeps the raw Q.Kt product, which pass 2 re-reads."""
+    var r = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if r >= ROWS:
+        return
+    var b = r // (N_HEADS * QL)
+    var base = r * KL
+    var scale = Scalar[DT](1.0) / sqrt(Scalar[DT](HEAD_DIM))
+    var mx = XATTN_MASK_NEG
+    for j in range(KL):
+        var sv = rebind[Scalar[DT]](scores.ptr[unsafe_offset=base + j]) * scale
+        comptime if MASKED:
+            if rebind[Scalar[DT]](
+                mask.ptr[unsafe_offset=b * KL + j]
+            ) < Scalar[DT](0.5):
+                sv = XATTN_MASK_NEG
+        if sv > mx:
+            mx = sv
+    var se = Scalar[DT](0)
+    for j in range(KL):
+        var sv = rebind[Scalar[DT]](scores.ptr[unsafe_offset=base + j]) * scale
+        comptime if MASKED:
+            if rebind[Scalar[DT]](
+                mask.ptr[unsafe_offset=b * KL + j]
+            ) < Scalar[DT](0.5):
+                sv = XATTN_MASK_NEG
+        se += exp(sv - mx)
+    var denom = se if se > XATTN_DENOM_FLOOR else XATTN_DENOM_FLOOR
+    stats.ptr[unsafe_offset=2 * r] = mx
+    stats.ptr[unsafe_offset=2 * r + 1] = Scalar[DT](1) / denom
+
+
+def _xa_element_softmax_kernel[
+    BATCH: Int, N_HEADS: Int, QL: Int, KL: Int, HEAD_DIM: Int,
+    MASKED: Bool, SCORES: Int, ROWS: Int,
+](
+    scores: LayoutTensor[DT, Layout.row_major(SCORES), MutAnyOrigin],
+    stats: LayoutTensor[DT, Layout.row_major(ROWS * 2), MutAnyOrigin],
+    mask: LayoutTensor[DT, Layout.row_major(BATCH, KL), MutAnyOrigin],
+    attn: LayoutTensor[DT, Layout.row_major(SCORES), MutAnyOrigin],
+):
+    """Softmax pass 2: one thread per (b, h, i, j), straight into the cache.
+
+    `_xa_softmax_kernel` did the whole softmax with one block per (b, h) and
+    its threads striding query rows — 53% of a SigLIP layer on the Orin, its
+    only parallelism 12 blocks of 128 threads for 12.6 M weights. Two passes
+    over the scores cost one extra read and buy a thread per weight: 20.2 ms
+    -> 4.1 ms at SigLIP, and 4.8 -> 0.55 at ACT's encoder shape.
+
+    The weights go to the cache ONLY; the scores slab keeps the raw product,
+    which nothing downstream reads (`self.attn` is the backward's input)."""
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= SCORES:
+        return
+    var j = idx % KL
+    var r = idx // KL
+    comptime if MASKED:
+        var b = r // (N_HEADS * QL)
+        if rebind[Scalar[DT]](
+            mask.ptr[unsafe_offset=b * KL + j]
+        ) < Scalar[DT](0.5):
+            attn.ptr[unsafe_offset=idx] = Scalar[DT](0)
+            return
+    var scale = Scalar[DT](1.0) / sqrt(Scalar[DT](HEAD_DIM))
+    var sv = rebind[Scalar[DT]](scores.ptr[unsafe_offset=idx]) * scale
+    var e = exp(sv - rebind[Scalar[DT]](stats.ptr[unsafe_offset=2 * r]))
+    attn.ptr[unsafe_offset=idx] = e * rebind[Scalar[DT]](
+        stats.ptr[unsafe_offset=2 * r + 1]
+    )
+
+
 def _xa_softmax_kernel[
     BATCH: Int, N_HEADS: Int, QL: Int, KL: Int, HEAD_DIM: Int,
     MASKED: Bool, ATTN_SIZE: Int, SCORES: Int, BH: Int,
@@ -142,6 +248,11 @@ def _xa_softmax_kernel[
     Scale, apply the per-sample key mask, stable softmax in place, and mirror
     the weights into the cache. Identical arithmetic to the CPU path, including
     the floored denominator for a fully-masked row.
+
+    ⚠ NO LONGER THE FORWARD'S SOFTMAX — replaced by `_xa_row_stats_kernel` +
+    `_xa_element_softmax_kernel`, which are 4.95x faster at SigLIP's shape on
+    the Orin. Kept as the reference `cross_attention_stages_bench.mojo` times
+    and bit-compares the shipped pair against.
     """
     var blk = Int(block_idx.x)
     if blk >= BH:
@@ -340,6 +451,8 @@ struct CrossAttention[
     var sk2: Tensor
     var ss0: Tensor
     var ss1: Tensor
+    var sst: Tensor
+    """(max, 1/denominator) per softmax row — the forward's two-pass softmax."""
 
     def __init__(out self):
         comptime assert Self.DIM % Self.N_HEADS == 0, (
@@ -357,6 +470,7 @@ struct CrossAttention[
         self.sk2 = Tensor()
         self.ss0 = Tensor()
         self.ss1 = Tensor()
+        self.sst = Tensor()
 
     def __init__(out self, *, deinit move: Self):
         self.attn = move.attn^
@@ -368,6 +482,7 @@ struct CrossAttention[
         self.sk2 = move.sk2^
         self.ss0 = move.ss0^
         self.ss1 = move.ss1^
+        self.sst = move.sst^
 
     @staticmethod
     def make[
@@ -393,6 +508,7 @@ struct CrossAttention[
         self.sk2.ensure_gpu(c, PK)
         self.ss0.ensure_gpu(c, SC)
         self.ss1.ensure_gpu(c, SC)
+        self.sst.ensure_gpu(c, B * Self.N_HEADS * Self.Q_LEN * 2)
 
     # ── Forward ──────────────────────────────────────────────────────────
 
@@ -724,12 +840,13 @@ struct CrossAttention[
             q.lt["gpu", lay_q](),
             grid_dim=qblocks, block_dim=TPB,
         )
+        # k packs STRAIGHT INTO Kt (BH, HD, KL) — one pass, not pack + transpose.
         c.enqueue_function[
-            _xa_pack_kernel[B, Self.DIM, Self.N_HEADS, KL, HD, PK]
+            _xa_pack_kt_kernel[B, Self.DIM, Self.N_HEADS, KL, HD, PK]
         ](
             self.sk0.lt["gpu", lay_pk](),
             k.lt["gpu", lay_kv](),
-            grid_dim=kblocks, block_dim=TPB,
+            grid_dim=(PK + TPB - 1) // TPB, block_dim=TPB,
         )
         c.enqueue_function[
             _xa_pack_kernel[B, Self.DIM, Self.N_HEADS, KL, HD, PK]
@@ -739,46 +856,67 @@ struct CrossAttention[
             grid_dim=kblocks, block_dim=TPB,
         )
 
-        # 2. Kt(sk2) contiguous, then scores(ss0) = Q @ Kt   (BH, QL, KL).
-        #    sk2 is backward-only scratch, free during the forward. Not
-        #    `bmm[transpose_b=True]`: see `_xa_transpose_k_kernel`.
-        c.enqueue_function[_xa_transpose_k_kernel[BH, KL, HD, PK]](
-            self.sk2.lt["gpu", lay_pk](),
-            self.sk0.lt["gpu", lay_pk](),
-            grid_dim=(PK + TPB - 1) // TPB, block_dim=TPB,
-        )
+        # 2. scores(ss0) = Q @ Kt   (BH, QL, KL). Kt is already contiguous, so
+        #    NOT `bmm[transpose_b=True]`: that call is 2.06x slower on the Orin
+        #    for the same bits (`cross_attention_bench.mojo`).
         bmm[A0=BH, A1=QL, A2=HD, B0=BH, B1=HD, B2=KL, O0=BH, O1=QL, O2=KL](
-            self.ss0.dev.value(), self.sq0.dev.value(), self.sk2.dev.value(), c
+            self.ss0.dev.value(), self.sq0.dev.value(), self.sk0.dev.value(), c
         )
 
-        # 3. scale + mask + stable softmax, in place; mirror into the cache.
-        #    The mask slot is only read when MASKED; the unmasked instantiation
-        #    still needs SOME tensor for the parameter, so the query stream is
-        #    passed as an inert stand-in rather than allocating a dummy.
-        comptime sm = _xa_softmax_kernel[
-            B, Self.N_HEADS, QL, KL, HD, Self.MASKED, Self.ATTN_SIZE, SC, BH
+        # 3. scale + mask + stable softmax -> the cache, in two passes: row
+        #    stats, then one thread per weight. `_xa_element_softmax_kernel`
+        #    says why the one-block-per-(b,h) kernel was worth replacing. The
+        #    mask slot is only read when MASKED; the unmasked instantiation
+        #    still needs SOME tensor for the parameter, so the cache is passed
+        #    as an inert stand-in rather than allocating a dummy.
+        comptime ROWS = BH * QL
+        comptime lay_st = Layout.row_major(ROWS * 2)
+        comptime st = _xa_row_stats_kernel[
+            B, Self.N_HEADS, QL, KL, HD, Self.MASKED, SC, ROWS
         ]
+        comptime el = _xa_element_softmax_kernel[
+            B, Self.N_HEADS, QL, KL, HD, Self.MASKED, SC, ROWS
+        ]
+        comptime rowblocks = (ROWS + TPB - 1) // TPB
+        comptime elblocks = (SC + TPB - 1) // TPB
         comptime if Self.MASKED:
             ref m = inputs[3]
-            c.enqueue_function[sm](
+            c.enqueue_function[st](
                 self.ss0.lt["gpu", lay_s](),
-                self.attn.lt["gpu", lay_a](),
+                self.sst.lt["gpu", lay_st](),
                 m.lt["gpu", lay_m](),
-                grid_dim=BH, block_dim=TPB,
+                grid_dim=rowblocks, block_dim=TPB,
+            )
+            c.enqueue_function[el](
+                self.ss0.lt["gpu", lay_s](),
+                self.sst.lt["gpu", lay_st](),
+                m.lt["gpu", lay_m](),
+                self.attn.lt["gpu", lay_s](),
+                grid_dim=elblocks, block_dim=TPB,
             )
         else:
-            c.enqueue_function[sm](
+            c.enqueue_function[st](
                 self.ss0.lt["gpu", lay_s](),
-                self.attn.lt["gpu", lay_a](),
+                self.sst.lt["gpu", lay_st](),
                 rebind[LayoutTensor[DT, lay_m, MutAnyOrigin]](
                     self.attn.lt["gpu", lay_m]()
                 ),
-                grid_dim=BH, block_dim=TPB,
+                grid_dim=rowblocks, block_dim=TPB,
+            )
+            c.enqueue_function[el](
+                self.ss0.lt["gpu", lay_s](),
+                self.sst.lt["gpu", lay_st](),
+                rebind[LayoutTensor[DT, lay_m, MutAnyOrigin]](
+                    self.attn.lt["gpu", lay_m]()
+                ),
+                self.attn.lt["gpu", lay_s](),
+                grid_dim=elblocks, block_dim=TPB,
             )
 
-        # 4. pout(sq1) = attn(ss0) @ V(sk1).
+        # 4. pout(sq1) = attn @ V(sk1). The weights only exist in the cache
+        #    now — ss0 still holds the raw, unscaled scores.
         bmm[A0=BH, A1=QL, A2=KL, B0=BH, B1=KL, B2=HD, O0=BH, O1=QL, O2=HD](
-            self.sq1.dev.value(), self.ss0.dev.value(), self.sk1.dev.value(), c
+            self.sq1.dev.value(), self.attn.dev.value(), self.sk1.dev.value(), c
         )
 
         # 5. unpack -> token-major output.
