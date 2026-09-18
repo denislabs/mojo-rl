@@ -58,6 +58,7 @@ from mojo_rl.tasks.reset import free_slot_addresses
 from mojo_rl.tasks.init_table import (
     write_init_table, load_init_table, family_key, INIT_TIME_WORDS,
 )
+from mojo_rl.tasks.libero_fixtures import dump_path_from_index
 
 
 comptime TASK_DIR = "mojo_rl/tasks/tasks/"
@@ -115,7 +116,7 @@ def main() raises:
         if len(parts) < 3:
             raise Error("malformed index line: " + l)
         task_names.append(String(parts[0]))
-        dump_paths.append(String(parts[2]))
+        dump_paths.append(dump_path_from_index(index_path, String(parts[2])))
     if len(task_names) == 0:
         raise Error("empty index: " + index_path)
 

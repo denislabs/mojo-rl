@@ -71,6 +71,7 @@ from mojo_rl.data.libero_demos import (
 from mojo_rl.data.store import TrajectoryStore
 from mojo_rl.tasks.spec import load_task
 from mojo_rl.tasks.libero_state_remap import load_state_remap
+from mojo_rl.tasks.libero_fixtures import dump_path_from_index
 
 
 comptime TASK_DIR = "mojo_rl/tasks/tasks/"
@@ -415,7 +416,7 @@ def main() raises:
             continue
         var parts = l.split(" ")
         dump_task.append(String(parts[0]))
-        dump_of.append(String(parts[1]))
+        dump_of.append(dump_path_from_index(index_path, String(parts[1])))
 
     print()
     print("  task                                                demos  values"

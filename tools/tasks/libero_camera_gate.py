@@ -283,7 +283,7 @@ def main():
     index = os.path.join(out_dir, "index.txt")
     with open(index, "w") as fh:
         for stem, dump in written:
-            fh.write(f"{a.suite}__{stem} {dump}\n")
+            fh.write(f"{a.suite}__{stem} {os.path.basename(dump)}\n")
     print()
     print(f"wrote {index}")
     print("now:  pixi run mojo run -I . examples/tasks/libero_camera_gate.mojo "

@@ -24,6 +24,8 @@ centre warns and goes on, one that cannot raises. This file only refuses a
 dump that names a body the scene does not have, or a malformed line.
 """
 
+from std.os.path import exists, dirname, basename
+
 from mojo_rl.physics3d.fields import Model
 from mojo_rl.physics3d.fields.dims import DimsLike
 from mojo_rl.physics3d.gpu.constants import (
@@ -81,3 +83,27 @@ def patch_fixtures[DTYPE: DType, D: DimsLike](
             m.bodies.data[o + BODY_IDX_QUAT_X + 2] = Scalar[DTYPE](Float64(String(toks[8])))
             placed += 1
     return placed
+
+
+def dump_path_from_index(index_path: String, entry: String) raises -> String:
+    """The dump a line of an `index.txt` names, resolved NEXT TO THE INDEX.
+
+    ⚠⚠ THE INDEXES USED TO CARRY ABSOLUTE PATHS, AND THE FIRST BOX RUN DIED ON
+    THE MAC'S HOME DIRECTORY. `libero_demo_success.py`, `libero_init_table.py`
+    and `libero_camera_gate.py` wrote `os.path.join(out_dir, ...)` from wherever
+    they ran, so an index copied to another machine pointed back at the
+    machine it was written on. The writers now emit basenames; this reads
+    both: an entry that exists is taken as given, anything else is looked
+    for beside the index — which is where every writer puts its dumps — and a
+    dump missing from BOTH places is named with both paths tried.
+    """
+    if exists(entry):
+        return entry
+    var beside = dirname(index_path) + "/" + basename(entry)
+    if exists(beside):
+        return beside
+    raise Error(
+        "no dump at '" + entry + "' nor beside its index at '" + beside
+        + "' — the index names a file this machine does not have; re-run"
+        " the dump tool here, or copy the whole _dumps/<suite> directory"
+    )

@@ -65,6 +65,7 @@ from mojo_rl.tasks.eval import (
     eval_goal, HostState, region_sites, region_contact_bodies,
 )
 from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from mojo_rl.tasks.libero_fixtures import dump_path_from_index
 
 
 comptime DT = DType.float64
@@ -112,7 +113,7 @@ def main() raises:
             continue
         var parts = l.split(" ")
         task_names.append(String(parts[0]))
-        dump_paths.append(String(parts[1]))
+        dump_paths.append(dump_path_from_index(index_path, String(parts[1])))
     if len(task_names) == 0:
         raise Error("empty index: " + index_path)
 

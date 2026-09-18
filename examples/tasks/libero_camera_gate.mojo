@@ -49,6 +49,7 @@ from mojo_rl.tasks.spec import load_family
 from mojo_rl.tasks.family import scene_path
 from mojo_rl.tasks.libero_visual import libero_site_conditions
 from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from mojo_rl.tasks.libero_fixtures import dump_path_from_index
 
 
 comptime DT = DType.float64
@@ -164,7 +165,7 @@ def main() raises:
             continue
         var parts = l.split(" ")
         names.append(String(parts[0]))
-        dumps.append(String(parts[1]))
+        dumps.append(dump_path_from_index(index_path, String(parts[1])))
     if len(names) == 0:
         raise Error("empty index: " + index_path)
 

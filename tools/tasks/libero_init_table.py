@@ -562,7 +562,7 @@ def main():
     index = os.path.join(out_dir, "index.txt")
     with open(index, "w") as fh:
         for stem, n, dump in written:
-            fh.write(f"{a.suite}__{stem} {n} {dump}\n")
+            fh.write(f"{a.suite}__{stem} {n} {os.path.basename(dump)}\n")
     print()
     print(f"  {total_rows} rows over {len(written)} tasks, worst residual"
           f" {worst_all:.2e} m at {worst_where!r} ({worst_task})")
