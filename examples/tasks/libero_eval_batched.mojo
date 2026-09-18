@@ -68,6 +68,18 @@ the LIBERO config, so `xpos`/`xquat` on the device describe the integrated
 picture would show. The rendered store pairs frame `r` with `action[r]` for the
 same reason (`libero_demo_rerender.mojo`'s header).
 
+⚠⚠ `--act-exec N` — HOW MUCH OF EACH CHUNK IS EXECUTED, AND WHY IT IS A FLAG.
+`0` (the default) is the paper's temporal ensemble: query every step, execute
+the weighted mean of every chunk that covers it. `N >= 1` is LeRobot's
+`n_action_steps`: query, execute the chunk's first N actions open-loop, query
+again. The first 5090 run (2026-09-18, ensemble) scored 0/200 with a mean
+|action| of 0.107 against the demonstrations' 0.294 — at `m = 0.01` the 40
+overlapping predictions are weighted almost uniformly and their mean shrinks
+towards the dataset's; `--act-exec 1` isolates that (query every step, take
+the newest chunk's first action) and `--act-exec 10` is the half-second
+open-loop setting LeRobot's LIBERO configs run. The per-word |action| table
+at the end is printed beside the store's own mean and spread for this reason.
+
 ⚠ `norm.json` NAMES THE STORE THE CHECKPOINT WAS FITTED ON, and this driver
 prints it: a checkpoint from the RECORDED store crosses the pixel-domain gap
 here (robosuite's OpenGL -> our tracer), one from the RENDERED store does not,
@@ -236,7 +248,7 @@ def _byte(x: Float64) -> Scalar[DType.uint8]:
 
 def run[T: PlacementTable, M: ModelDefLike](
     n_inits: Int, max_steps: Int, check_lanes: Int, sampled: Bool,
-    policy_path: String, act_dir: String,
+    policy_path: String, act_dir: String, act_exec: Int,
 ) raises:
     comptime E = Phyics3dBatchedEnv[
         M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
@@ -403,6 +415,11 @@ def run[T: PlacementTable, M: ModelDefLike](
               LIBERO_ACT_IMG_H, "-> chunk", AK, "x", AA,
               ", temporal ensemble m =", ACT_TEMPORAL_ENSEMBLE_M)
         print("          fitted on", act_norm.store)
+        if act_exec == 0:
+            print("          chunk use: TEMPORAL ENSEMBLE (query every step)")
+        else:
+            print("          chunk use: execute", act_exec, "of", AK,
+                  "open-loop, then re-query (--act-exec)")
     else:
         print("  policy: ZERO ACTION —", "the L6 gate is that the rate is 0")
     if not have_table:
@@ -479,6 +496,9 @@ def run[T: PlacementTable, M: ModelDefLike](
     var act_out = List[Scalar[DT]](length=AA, fill=Scalar[DT](0))
     var render_ns = 0
     var forward_ns = 0
+    var physics_ns = 0
+    var word_abs = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
+    var word_n = 0
     if have_act:
         cam_idx.append(_index(fmd.camera_names, String("arena_agentview")))
         cam_idx.append(_index(fmd.camera_names, String("robot_eye_in_hand")))
@@ -606,10 +626,12 @@ def run[T: PlacementTable, M: ModelDefLike](
                 for k in range(LANES * OSC_ACTION_DIM):
                     ap[unsafe_offset=k] = Scalar[DT](0)
             elif have_act:
+                var t_pol = step - SETTLE_STEPS
+                var query = act_exec == 0 or t_pol % act_exec == 0
                 # 1. both cameras, every lane, from the state the lanes are in
                 var tr0 = perf_counter_ns()
                 ref r = ren_opt[0]
-                for cam in range(LIBERO_ACT_N_CAM):
+                for cam in range(LIBERO_ACT_N_CAM if query else 0):
                     r.render(ctx, env.d, env.mf, cam_idx[cam])
                     ctx.enqueue_copy(h_rgb, r.rgb)
                     ctx.synchronize()
@@ -634,14 +656,20 @@ def run[T: PlacementTable, M: ModelDefLike](
                             - act_norm.qpos_mean[k]
                         ) / act_norm.qpos_std[k]
                 render_ns += perf_counter_ns() - tr0
-                # 3. one forward at LANES, then each lane's ensemble
-                var tf0 = perf_counter_ns()
-                act_opt[0].predict(act_qpos, act_images, act_dummy, act_valid, act_chunk)
-                forward_ns += perf_counter_ns() - tf0
-                var t_pol = step - SETTLE_STEPS
+                # 3. one forward at LANES when a query is due, then either
+                #    each lane's ensemble or the chunk's next action
+                if query:
+                    var tf0 = perf_counter_ns()
+                    act_opt[0].predict(act_qpos, act_images, act_dummy, act_valid, act_chunk)
+                    forward_ns += perf_counter_ns() - tf0
                 for e in range(LANES):
-                    ens[e].push(t_pol, act_chunk, e * AK * AA)
-                    ens[e].action_at(t_pol, act_pred, 0)
+                    if act_exec == 0:
+                        ens[e].push(t_pol, act_chunk, e * AK * AA)
+                        ens[e].action_at(t_pol, act_pred, 0)
+                    else:
+                        var pos = t_pol % act_exec
+                        for k in range(AA):
+                            act_pred[k] = act_chunk[e * AK * AA + pos * AA + k]
                     denormalize(act_pred, 0, act_norm.action_mean,
                                 act_norm.action_std, act_out, 0, AA)
                     for k in range(OSC_ACTION_DIM):
@@ -649,6 +677,8 @@ def run[T: PlacementTable, M: ModelDefLike](
                         ap[unsafe_offset = e * OSC_ACTION_DIM + k] = Scalar[DT](a)
                         act_abs += abs(a)
                         act_words += 1
+                        word_abs[k] += abs(a)
+                    word_n += 1
             else:
                 # the policy, lane by lane, on the env's own observation rows
                 ctx.enqueue_copy(obs_h, env._obs)
@@ -675,8 +705,10 @@ def run[T: PlacementTable, M: ModelDefLike](
                         act_abs += abs(a)
                         act_words += 1
             ctx.enqueue_copy(env._action, act_h)
+            var tp0 = perf_counter_ns()
             env.step_batch[LANES](ctx, UInt64(step + 1))
             ctx.synchronize()
+            physics_ns += perf_counter_ns() - tp0
             env.d.meta.download(ctx)
             env.d.qpos.download(ctx)
             ctx.synchronize()
@@ -795,7 +827,14 @@ def run[T: PlacementTable, M: ModelDefLike](
     if have_act:
         print("  act   : fitted on", act_norm.store, "| cameras + qpos",
               Float64(render_ns) / 1e9, "s | forward", Float64(forward_ns) / 1e9,
+              "s | physics (step_batch)", Float64(physics_ns) / 1e9,
               "s over the run")
+        if word_n > 0:
+            print("  per word            policy mean|a|   store mean     store std")
+            for k in range(OSC_ACTION_DIM):
+                print("    " + _pad(String(k), 8) + " " + _pad(String(word_abs[k] / Float64(word_n)), 16)
+                      + " " + _pad(String(Float64(act_norm.action_mean[k])), 14)
+                      + " " + String(Float64(act_norm.action_std[k])))
     print("  contacts saturated lane-steps", saturated, "| non-finite", nonfinite,
           "| singular steps", singular_steps)
     print("  wall", elapsed, "s for", n_rows, "episodes of", SETTLE_STEPS
@@ -850,6 +889,7 @@ def main() raises:
     var sampled = False
     var policy_path = String("")
     var act_dir = String("")
+    var act_exec = 0
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -868,35 +908,41 @@ def main() raises:
         elif s == "--act" and i + 1 < len(args):
             act_dir = String(args[i + 1])
             i += 1
+        elif s == "--act-exec" and i + 1 < len(args):
+            act_exec = Int(String(args[i + 1]))
+            i += 1
         elif s == "--sampled":
             sampled = True
         else:
             raise Error(
                 "libero eval batched: unknown argument '" + s + "' (--inits N,"
                 " --steps N, --check-lanes K, --sampled, --policy PATH,"
-                " --act DIR)"
+                " --act DIR, --act-exec N)"
             )
         i += 1
 
+    if act_exec < 0 or act_exec > LIBERO_ACT_K:
+        raise Error("--act-exec must be in [0, " + String(LIBERO_ACT_K)
+                    + "] (0 = the temporal ensemble)")
     comptime if FAMILY == "libero_goal":
         run[LiberoGoalPlacement, LiberoGoalModel](
-            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec
         )
     elif FAMILY == "libero_object":
         run[LiberoObjectPlacement, LiberoObjectModel](
-            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec
         )
     elif FAMILY == "libero_spatial":
         run[LiberoSpatialPlacement, LiberoSpatialModel](
-            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec
         )
     elif FAMILY == "libero_kitchen_scene3":
         run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](
-            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec
         )
     elif FAMILY == "libero_kitchen_scene5":
         run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](
-            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec
         )
     else:
         comptime assert False, (
