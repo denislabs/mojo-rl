@@ -103,7 +103,15 @@ comptime QW_DROPPED: Int = 32
 """Chunks computed and thrown away because the control thread had not taken
 the previous one. Non-zero means the loop is asking for chunks faster than it
 consumes them, which is a `lead` that is too large — not a GPU problem."""
-comptime QW_N_CELLS: Int = 40
+comptime QW_POLLS: Int = 40
+"""The worker's OWN poll counter, published from inside `poll`.
+
+⚠ NOT REDUNDANT with `BackgroundThread.polls()`. That counter is written by
+the drive loop; this one is written by the worker body. If the drive loop's
+count climbs while this one does not, the worker is wedged before its first
+statement; if both climb while no chunk appears, the two threads are holding
+DIFFERENT rings."""
+comptime QW_N_CELLS: Int = 48
 
 comptime QW_STARTING: Int64 = 0
 comptime QW_READY: Int64 = 1
@@ -291,6 +299,9 @@ struct SmolVLAQueryWorker[
             self.cells.release_store(QW_STATE, QW_FAILED)
 
     def poll(mut self, ctl: WorkerCtl) -> Int:
+        self.cells.relaxed_store(
+            QW_POLLS, self.cells.relaxed_load(QW_POLLS) + 1
+        )
         if self.cells.relaxed_load(QW_STATE) != QW_READY:
             return POLL_IDLE
         var claim = self.req.begin_pop()

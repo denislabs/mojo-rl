@@ -100,6 +100,7 @@ from mojo_rl.deep_agents.smolvla.query_worker import (
     QW_DROPPED,
     QW_FAILED,
     QW_N_CELLS,
+    QW_POLLS,
     QW_QUERY_US,
     QW_READY,
     QW_SERVED,
@@ -695,11 +696,34 @@ def main() raises:
                     # the query genuinely outlasting the chunk, not submission
                     # overhead.
                     var got = rsp_ring.begin_pop()
+                    var said = False
                     while not got.ok():
                         if qcells.acquire_load(QW_STATE) == QW_FAILED:
                             raise Error(
                                 "smolvla deploy: the query thread died — its"
                                 " own message is above this line"
+                            )
+                        # ⚠ A WAIT THAT NEVER ENDS MUST SAY WHY. The worker's
+                        # own counters distinguish the three ways this hangs:
+                        # a thread that exited, a thread that never polls, and
+                        # a thread polling happily while its ring stays empty
+                        # (which would mean the two sides hold DIFFERENT rings).
+                        if (
+                            not said
+                            and perf_counter_ns() - t_w > 3_000_000_000
+                        ):
+                            said = True
+                            print(
+                                "  ⚠ 3 s with no chunk. query thread: started="
+                                + String(worker.value().started())
+                                + " exited=" + String(worker.value().exited())
+                                + " drive_polls="
+                                + String(worker.value().polls())
+                                + " body_polls="
+                                + String(Int(qcells.acquire_load(QW_POLLS)))
+                                + " work=" + String(worker.value().work_polls())
+                                + " served="
+                                + String(Int(qcells.acquire_load(QW_SERVED)))
                             )
                         got = rsp_ring.begin_pop()
                     var gp = got.data().unsafe_bitcast[Float32]()
