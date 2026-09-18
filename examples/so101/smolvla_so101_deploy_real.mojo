@@ -576,6 +576,8 @@ def main() raises:
     var sum_wait = 0.0
     var worst_wait = 0.0
     var iterations = 0
+    var sum_enqueue = 0.0
+    var worst_enqueue = 0.0
     var sum_write = 0.0
     var worst_write = 0.0
     var sum_body = 0.0
@@ -685,7 +687,16 @@ def main() raises:
                 t_obs_pending = Int(
                     Float64(q_t0 - loop_t0) * Float64(SO101_FPS) / 1e9
                 )
+                # ⚠⚠ TIMED BECAUSE "ENQUEUE AND RETURN" IS AN ASSUMPTION. A
+                # query is ~6970 kernel launches; once the driver's pending-
+                # launch queue fills, `cuLaunchKernel` STOPS being asynchronous
+                # and blocks until slots free — so the submission can cost most
+                # of the GPU time and the control loop gets nothing back.
                 pol.start_action[TARGET](images, ids, pose, noise, dev_ctx)
+                var enq_ms = Float64(perf_counter_ns() - q_t0) / 1e6
+                sum_enqueue += enq_ms
+                if enq_ms > worst_enqueue:
+                    worst_enqueue = enq_ms
                 pending = True
 
                 # The observation build itself commands nothing — two grid
@@ -847,6 +858,17 @@ def main() raises:
         "  handover wait     = "
         + fixed(sum_wait / Float64(queries) if queries > 0 else 0.0, 1)
         + " ms mean, " + fixed(worst_wait, 1) + " ms worst"
+    )
+    # ⚠ THE CLAIM THE WHOLE PIPELINE RESTS ON. If submitting the query costs
+    # a large fraction of the query itself, the control loop is blocked inside
+    # `start_action` and "the query runs while the arm executes" is false —
+    # whatever `handover wait` says.
+    print(
+        "  query submit      = "
+        + fixed(sum_enqueue / Float64(queries) if queries > 0 else 0.0, 1)
+        + " ms mean, " + fixed(worst_enqueue, 1) + " ms worst"
+        + "   (of a " + fixed(sum_q / Float64(queries) if queries > 0 else 0.0, 1)
+        + " ms query)"
     )
     print(
         "  query lead        = " + String(lead)
