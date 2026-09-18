@@ -21,7 +21,7 @@ reused from `wm_step.mojo` (the graph output layout `8 + LATENT` is unchanged).
 See `wm_step.mojo` for the forward/reverse scan documentation.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

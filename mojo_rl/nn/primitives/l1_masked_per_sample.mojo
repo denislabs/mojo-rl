@@ -32,7 +32,7 @@ take the subgradient 0 there. It matters only for an exact tie, but a gate that
 compares gradients against autograd on synthetic data can hit one.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

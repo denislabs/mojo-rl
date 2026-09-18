@@ -18,7 +18,7 @@ ParamArena IS the placement `ParamVisitor` (its `visit` reads its own `val`/`grd
 the device ops never compile into the CPU path.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT, TPB

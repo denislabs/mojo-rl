@@ -19,7 +19,7 @@ Run (NVIDIA): pixi run -e nvidia mojo run -I . benchmarks/bench_storage_dueling_
 Run (Apple):  pixi run -e apple  mojo run -I . benchmarks/bench_storage_dueling_c51_gpu.mojo
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor

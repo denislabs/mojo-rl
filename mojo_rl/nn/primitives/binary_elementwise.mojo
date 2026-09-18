@@ -11,7 +11,7 @@ storage `vjp` gets BOTH inputs as `forward_input`, so the per-element carry
 Backward: c = OP.cache(x,y) ; gi0 = OP.backward_x(c, go) ; gi1 = OP.backward_y(c, go).
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

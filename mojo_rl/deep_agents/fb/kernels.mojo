@@ -27,7 +27,7 @@ conditional RMW stores in reduction kernels.
 
 from std.math import sqrt, abs
 from std.random import random_float64
-from std.gpu import block_dim, block_idx, thread_idx, global_idx
+from max.gpu import block_dim, block_idx, thread_idx, global_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor

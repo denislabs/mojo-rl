@@ -8,7 +8,7 @@ than in any agent's loss module. Both CPU + GPU.
   polyak:   dst = tau·src + (1-tau)·dst
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

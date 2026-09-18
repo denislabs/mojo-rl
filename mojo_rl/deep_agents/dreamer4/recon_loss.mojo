@@ -14,7 +14,7 @@ arithmetic; returns the scalar loss and fills `grad_pred`.
 """
 
 from std.math import max, log10
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor

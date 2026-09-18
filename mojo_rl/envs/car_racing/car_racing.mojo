@@ -27,7 +27,7 @@ Reference: gymnasium/envs/box2d/car_racing.py
 
 from std.math import sqrt, cos, sin, pi
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 

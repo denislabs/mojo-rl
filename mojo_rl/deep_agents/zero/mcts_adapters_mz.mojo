@@ -21,7 +21,7 @@ is copied back to the planner's buffer — pointer-free (no Pointer/rebind).
 The scratch Tensors are reused across calls (lazily grown).
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

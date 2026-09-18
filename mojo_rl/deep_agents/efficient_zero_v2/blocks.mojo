@@ -37,7 +37,7 @@ from std.memory import alloc
 from std.math import exp, log
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor, TileTensor, row_major
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT, TPB

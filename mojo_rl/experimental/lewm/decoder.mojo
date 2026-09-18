@@ -26,7 +26,7 @@ inside a patch is channel-major `[c, i, j]`. `PATCH_D` (decoder patch size,
 paper=16) is independent of the encoder's patch size.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor

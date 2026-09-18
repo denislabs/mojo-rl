@@ -31,7 +31,7 @@ Cache (per timestep, BATCH-major): [i | f | g | o | tanh(c_t)], 5·H wide.
 """
 
 from std.math import exp, tanh
-from std.gpu import thread_idx, block_idx, global_idx
+from max.gpu import thread_idx, block_idx, global_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major

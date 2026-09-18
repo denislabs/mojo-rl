@@ -16,7 +16,7 @@ held in an owned `Tensor` (CPU data + device dev). Param-free; identity vjp
 (the bias is constant). Conforms to `Module`.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

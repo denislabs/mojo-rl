@@ -36,7 +36,7 @@ a numpy oracle on store rows, and the table's rows against the store.
 """
 
 from std.math import sqrt
-from std.gpu import global_idx
+from max.gpu import global_idx
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor

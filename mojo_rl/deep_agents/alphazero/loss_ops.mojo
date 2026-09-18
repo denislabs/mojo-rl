@@ -26,7 +26,7 @@ receives `forward_input` (no cached input pointers), `ctx` is a method arg (no
 
 from std.math import exp, log, tanh
 from max.gpu.host import DeviceContext
-from std.gpu import global_idx
+from max.gpu import global_idx
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB

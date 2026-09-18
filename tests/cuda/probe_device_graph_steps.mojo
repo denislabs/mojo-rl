@@ -39,7 +39,7 @@ stops there the problem was never in `device_graph.mojo` and every conclusion
 drawn from "the graph test hangs" is about the machine instead.
 """
 
-from std.gpu import thread_idx
+from max.gpu import thread_idx
 from std.os import getenv
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext, DeviceBuffer

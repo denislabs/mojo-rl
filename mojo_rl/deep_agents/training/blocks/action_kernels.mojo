@@ -13,7 +13,7 @@ carried as byte-identical private duplicates (docstring-only diffs — audited
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu import global_idx
+from max.gpu import global_idx
 from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.nn.constants import DT

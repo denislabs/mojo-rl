@@ -38,7 +38,7 @@ function returns a `Vec3` either way.
 """
 
 from std.math import ceildiv
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 

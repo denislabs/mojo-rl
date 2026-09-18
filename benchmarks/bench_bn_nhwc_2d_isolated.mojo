@@ -12,7 +12,7 @@ Run (NVIDIA): pixi run -e nvidia mojo run -I . benchmarks/bench_bn_nhwc_2d_isola
 """
 
 from std.math import sqrt
-from std.gpu import global_idx, thread_idx, block_idx
+from max.gpu import global_idx, thread_idx, block_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from std.time import perf_counter_ns

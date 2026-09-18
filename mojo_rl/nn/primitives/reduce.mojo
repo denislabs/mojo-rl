@@ -12,7 +12,7 @@ Forward:  `out[b, 0] = OP.scale_factor[DIM]() · Σ_d input[b, d]`
 Backward: `grad_in[b, d] = OP.scale_factor[DIM]() · grad_out[b, 0]`
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

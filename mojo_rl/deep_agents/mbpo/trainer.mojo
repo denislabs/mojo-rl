@@ -24,7 +24,7 @@ from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
 from std.math import exp as fexp, sqrt as fsqrt, log as flog, tanh as ftanh
 from std.random import random_float64, randn_float64
 from std.time import perf_counter_ns
-from std.gpu import block_dim, block_idx, thread_idx, global_idx
+from max.gpu import block_dim, block_idx, thread_idx, global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor

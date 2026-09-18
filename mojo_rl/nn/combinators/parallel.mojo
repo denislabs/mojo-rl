@@ -20,7 +20,7 @@ changes OUT_DIM (Σ branch dims) but NOT the dtype, so every activation buffer
 kernels are parametrized by `ADT` (defaulting to DT → NoAMP unchanged).
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

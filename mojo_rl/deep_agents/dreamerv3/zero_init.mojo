@@ -28,7 +28,7 @@ Only the OUTPUT layer is scaled — scaling the whole head toward 0 would also
 shrink the downstream weight and choke the hidden layers' gradient.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

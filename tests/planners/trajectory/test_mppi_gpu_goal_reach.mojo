@@ -26,7 +26,7 @@ Usage:
 """
 
 from std.math import abs as math_abs
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random import seed as _set_seed
 from std.testing import assert_true

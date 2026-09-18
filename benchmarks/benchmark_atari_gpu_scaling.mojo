@@ -30,7 +30,7 @@ Requires roms/pong.bin.
 from std.sys import has_accelerator
 from std.sys.info import size_of
 from std.time import perf_counter_ns
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom

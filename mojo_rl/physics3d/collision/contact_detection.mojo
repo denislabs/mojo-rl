@@ -12,7 +12,7 @@ collision (plane-mesh vertex scans + GJK/EPA fallback via gjk) is
 compiled in only when NMESH_VERTS > 0; zero-mesh models keep today's
 branch structure (mesh branches degrade to `continue`)."""
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

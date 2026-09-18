@@ -32,7 +32,7 @@ output-count param (storage infers OUT_DIM from the last node) and the
 (unlike the BN-free Connect-Four spatial nets) — BN train/eval must propagate.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

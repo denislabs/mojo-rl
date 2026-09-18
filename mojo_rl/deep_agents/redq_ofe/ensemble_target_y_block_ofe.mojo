@@ -24,7 +24,7 @@ reuses REDQ's `_redq_concat_sa_extract_lp_kernel` on GPU (its "OBS" param is
 just the first-input width — passing PHI_S_DIM there is correct).
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from std.random import random_float64

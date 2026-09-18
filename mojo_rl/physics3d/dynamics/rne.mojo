@@ -10,7 +10,7 @@ rne_cfrc, bias (scratch). As in the legacy code, the `crb` scratch tensor
 doubles as per-body cvel storage during RNE (b*6 indexing within the
 NBODY*10 tensor); `cinert` stays a per-thread Array."""
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
 from max.gpu.host import DeviceContext

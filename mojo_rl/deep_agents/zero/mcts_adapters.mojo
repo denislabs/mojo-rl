@@ -21,7 +21,7 @@ The ``EnvStepGPU`` board adapter is env-agnostic and reused from the legacy
 module; MuZero's representation/dynamics adapters land in Phase B.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 

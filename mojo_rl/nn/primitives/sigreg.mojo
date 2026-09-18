@@ -37,7 +37,7 @@ change is partials/stat/g raw pointers → 1-D LayoutTensor views (storage surfa
 never passes raw device pointers to kernels). The kernel BODY math is identical.
 """
 
-from std.gpu import thread_idx, block_idx, block_dim, global_idx
+from max.gpu import thread_idx, block_idx, block_dim, global_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from std.math import sin, cos, sqrt, log, exp, pi

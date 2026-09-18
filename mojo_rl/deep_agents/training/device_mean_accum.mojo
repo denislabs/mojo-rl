@@ -21,7 +21,7 @@ used uniformly, but the existing trainers keep their own CPU diag path and use
 this only on GPU.
 """
 
-from std.gpu import thread_idx
+from max.gpu import thread_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor

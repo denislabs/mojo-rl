@@ -24,7 +24,7 @@ Run (NVIDIA): pixi run -e nvidia mojo run -I . benchmarks/bench_storage_sigreg_g
 Run (Apple):  pixi run -e apple  mojo run -I . benchmarks/bench_storage_sigreg_gemm_gpu.mojo
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor, TileTensor, row_major

@@ -40,7 +40,7 @@ visit-weighted soft pick using the same Philox stream). Also written to
 diagnostics: `root_visits[N_ENVS, K_ROOT]`.
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from std.math import sqrt, log, exp, tanh, cos, pi

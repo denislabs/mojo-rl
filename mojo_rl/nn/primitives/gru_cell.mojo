@@ -39,7 +39,7 @@ writes (defensive, though the packs no longer alias).
 from mojo_rl.nn.core.mm import mm, bmm
 from std.math import exp, tanh
 from linalg.matmul import matmul as max_matmul
-from std.gpu import thread_idx, block_idx, global_idx
+from max.gpu import thread_idx, block_idx, global_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from max.gpu.memory import AddressSpace

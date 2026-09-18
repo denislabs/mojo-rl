@@ -22,7 +22,7 @@ The fwd/bwd permute kernels are dtype-parametric (`ADT`). The fp32 (ACT_DT == DT
 path is byte-for-byte the legacy NoAMP path; the bf16 path is GPU-only.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

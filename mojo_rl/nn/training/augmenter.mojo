@@ -13,7 +13,7 @@ augmentation is requested. Ported verbatim from the legacy
 `LayoutTensor` device views, the storage `Trainer` passes `tensor.lt[...]`).
 """
 
-from std.gpu import thread_idx, block_idx
+from max.gpu import thread_idx, block_idx
 from max.gpu.host import DeviceContext
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor

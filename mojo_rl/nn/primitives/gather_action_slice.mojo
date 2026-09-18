@@ -14,7 +14,7 @@ surrounding block owns the scatter that rebuilds grad_values from the gathered
 grad_slice + the original action indices. ARITY 2, no params, no cache.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

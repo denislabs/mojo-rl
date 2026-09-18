@@ -29,7 +29,7 @@ The −sign on weight_grad is baked in (as in PCBlock) so callers can do
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from std.sys import CompilationTarget
 

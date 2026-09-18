@@ -42,7 +42,7 @@ from mojo_rl.render import (
     white,
 )
 from layout import LayoutTensor, Layout
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 

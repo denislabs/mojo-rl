@@ -17,7 +17,7 @@ Run:
     pixi run -e nvidia mojo run -I . tests/pcn/test_world_model_dynamics_gpu.mojo
 """
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from std.math import sqrt, log, cos, pi
 from std.random.philox import Random as PhiloxRandom

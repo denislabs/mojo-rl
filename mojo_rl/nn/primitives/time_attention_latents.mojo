@@ -28,7 +28,7 @@ Unlike legacy, the gather/scatter scratch is SEPARATE owned `Tensor` fields
 device `Cache` — no `mptr`, no `Cache`.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

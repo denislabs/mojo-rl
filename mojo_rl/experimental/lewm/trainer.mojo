@@ -27,7 +27,7 @@ via `read_loss_accum` / `reset_loss_accum`.
 """
 
 from std.collections import Dict
-from std.gpu import thread_idx, global_idx
+from max.gpu import thread_idx, global_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from max.gpu.memory import AddressSpace

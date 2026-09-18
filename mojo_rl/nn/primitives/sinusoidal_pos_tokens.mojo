@@ -45,7 +45,7 @@ transpose node on the position path.
 """
 
 from std.math import cos, exp, log, pi, sin
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

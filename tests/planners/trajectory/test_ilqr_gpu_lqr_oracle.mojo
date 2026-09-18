@@ -18,7 +18,7 @@ CPU-only machines).
 """
 
 from std.sys import has_accelerator
-from std.gpu import block_idx, thread_idx
+from max.gpu import block_idx, thread_idx
 from max.gpu.host import DeviceContext
 from std.math import abs as math_abs
 from std.testing import assert_true

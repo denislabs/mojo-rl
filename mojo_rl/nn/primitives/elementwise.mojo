@@ -30,7 +30,7 @@ fine across that round-trip (mirrors `LinearAct`). bf16-flow is GPU-only. The
 default `ADT = DT` reproduces the legacy fp32 kernels byte-for-byte.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

@@ -6,7 +6,7 @@ kernel (args `MutAnyOrigin` — the ABI boundary). `mse_forward` is CPU-only (a
 scalar monitor; the GPU driver downloads `pred` first).
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

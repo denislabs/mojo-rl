@@ -45,7 +45,7 @@ which is precisely why the interceptor prints the begin/end rc values.
     pixi run -e nvidia mojo run -I . tests/cuda/probe_empty_capture.mojo
 """
 
-from std.gpu import thread_idx
+from max.gpu import thread_idx
 from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor

@@ -22,7 +22,7 @@ Surface:
 
 from max.gpu.host import DeviceContext
 from mojo_rl.nn.core.ptr import untracked
-from std.gpu import global_idx
+from max.gpu import global_idx
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP

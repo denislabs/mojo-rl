@@ -25,7 +25,7 @@ is MPC-off (`select_action`).
 
 from std.math import tanh
 from std.random.philox import Random as PhiloxRandom
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

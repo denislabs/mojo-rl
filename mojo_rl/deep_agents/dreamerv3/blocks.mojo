@@ -39,7 +39,7 @@ from std.math import tanh, exp, sqrt, log, cos
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor, TileTensor, row_major
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 

@@ -50,7 +50,7 @@ Run with:
         tests/cuda/test_device_graph_minimal.mojo
 """
 
-from std.gpu import thread_idx
+from max.gpu import thread_idx
 from std.sys import has_nvidia_gpu_accelerator
 from std.testing import assert_true, TestSuite
 from layout import Layout, LayoutTensor

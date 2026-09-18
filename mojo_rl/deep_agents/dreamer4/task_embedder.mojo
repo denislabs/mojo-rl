@@ -26,7 +26,7 @@ per (task_row, channel) looping the batch, so no atomics even when sequences
 share a task id; same trick as the dynamics signal/step tables).
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major

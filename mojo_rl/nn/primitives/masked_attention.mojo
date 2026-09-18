@@ -25,7 +25,7 @@ pack/unpack/transpose/jvp kernels verbatim; only the softmax adds the mask.
 
 from mojo_rl.nn.core.mm import mm, bmm
 from std.math import exp, sqrt
-from std.gpu import thread_idx, block_idx, block_dim, global_idx
+from max.gpu import thread_idx, block_idx, block_dim, global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, row_major
 

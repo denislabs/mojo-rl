@@ -25,7 +25,7 @@ Flow per self-play step:
      ComputeGraph's storage Tensors.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 

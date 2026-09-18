@@ -16,7 +16,7 @@ argmax for each covering window) — pure single-writer per output cell, no race
 even with overlapping pools.
 """
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
@@ -204,8 +204,7 @@ struct MaxPool2D[
             var _ip = in0.data.unsafe_ptr()
             var _op = out.data.unsafe_ptr()
 
-            @parameter
-            def _plane(t: Int):
+            def _plane(t: Int) {imm}:
                 var b = t // Self.C
                 var c = t % Self.C
                 var in_base = b * Self.IN_FLAT
@@ -246,7 +245,7 @@ struct MaxPool2D[
             comptime MP_PAR_MIN_TASKS = 16
             comptime MP_PAR_MIN_TAPS = 200_000
             comptime if TASKS >= MP_PAR_MIN_TASKS and TAPS >= MP_PAR_MIN_TAPS:
-                parallelize[_plane](TASKS)
+                parallelize(_plane, TASKS)
             else:
                 for t in range(TASKS):
                     _plane(t)

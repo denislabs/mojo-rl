@@ -29,7 +29,7 @@ Same signature family as `solve_contacts` so callers can swap solvers.
 """
 
 from std.math import sqrt, pow, abs
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

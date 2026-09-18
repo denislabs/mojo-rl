@@ -40,7 +40,7 @@ which are asserted.
 
 from std.os.path import exists
 from std.sys import has_accelerator
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext
 

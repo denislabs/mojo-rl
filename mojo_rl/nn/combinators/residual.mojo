@@ -9,7 +9,7 @@ vjp runs `inner.vjp → mid` (mid = grad wrt inner's input) then
 surface (`ref`/`mut Tensor`, `TensorRefs`) handles both targets uniformly.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

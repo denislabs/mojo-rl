@@ -27,7 +27,7 @@ Surface:
              -> Scalar[DT]
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

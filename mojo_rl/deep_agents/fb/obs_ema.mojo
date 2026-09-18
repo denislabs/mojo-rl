@@ -32,7 +32,7 @@ the `.norm` sidecar (`ObsNorm`'s format: `N` then `mu sd` per line, `sd =
 sqrt(var + eps)`), which the evals load with `ObsNorm.try_load` unchanged.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from std.math import sqrt
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext

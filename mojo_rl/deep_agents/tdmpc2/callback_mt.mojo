@@ -31,7 +31,7 @@ the tempting shortcut — reusing the single-task callback with
 `set_task_embedding`.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext

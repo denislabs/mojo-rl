@@ -13,7 +13,7 @@ first binds the element to a named `ref` (`ref in0 = inputs[0]`) that lives for
 the whole function, then builds views from that.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul

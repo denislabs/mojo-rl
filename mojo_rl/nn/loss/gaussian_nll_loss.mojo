@@ -24,7 +24,7 @@ Math (per-row, summed over DIM, averaged over BATCH):
 """
 
 from std.math import exp
-from std.gpu import global_idx, thread_idx
+from max.gpu import global_idx, thread_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor

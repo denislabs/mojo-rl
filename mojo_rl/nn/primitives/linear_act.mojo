@@ -37,7 +37,7 @@ Use via one-line aliases (see linear_tanh.mojo / linear_mish.mojo / …):
 """
 
 from std.sys import CompilationTarget
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul

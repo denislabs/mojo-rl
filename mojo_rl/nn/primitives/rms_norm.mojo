@@ -9,7 +9,7 @@ Backward (cache):  R = Σ_d go·γ·n ; dx = inv_rms·(go·γ - n·R/DIM) ; dγ 
 """
 
 from std.math import sqrt
-from std.gpu import thread_idx, block_idx
+from max.gpu import thread_idx, block_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from std.utils.numerics import get_accum_type

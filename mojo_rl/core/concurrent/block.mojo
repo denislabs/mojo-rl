@@ -84,14 +84,14 @@ struct ControlBlockView(ImplicitlyCopyable, Movable):
     def acquire_load(self, index: Int) -> Int64:
         """Read cell `index`, and see everything the writer did before its
         matching `release_store`."""
-        return Atomic[DType.int64].load[ordering = Ordering.ACQUIRE](
+        return Atomic[Int64].load[ordering = Ordering.ACQUIRE](
             _cell(self.addr, index)
         )
 
     @always_inline
     def release_store(self, index: Int, value: Int64):
         """Write cell `index`, publishing every write made before it."""
-        Atomic[DType.int64].store[ordering = Ordering.RELEASE](
+        Atomic[Int64].store[ordering = Ordering.RELEASE](
             _cell(self.addr, index), value
         )
 
@@ -99,14 +99,14 @@ struct ControlBlockView(ImplicitlyCopyable, Movable):
     def relaxed_load(self, index: Int) -> Int64:
         """Read with no ordering. Correct ONLY for a cell this thread is the
         sole writer of, or a statistic nobody synchronises on."""
-        return Atomic[DType.int64].load[ordering = Ordering.RELAXED](
+        return Atomic[Int64].load[ordering = Ordering.RELAXED](
             _cell(self.addr, index)
         )
 
     @always_inline
     def relaxed_store(self, index: Int, value: Int64):
         """Write with no ordering. Same restriction as `relaxed_load`."""
-        Atomic[DType.int64].store[ordering = Ordering.RELAXED](
+        Atomic[Int64].store[ordering = Ordering.RELAXED](
             _cell(self.addr, index), value
         )
 
@@ -114,7 +114,7 @@ struct ControlBlockView(ImplicitlyCopyable, Movable):
     def fetch_add(self, index: Int, delta: Int64) -> Int64:
         """Atomically add, returning the PREVIOUS value. The only operation
         here that is safe with more than one writer."""
-        return Atomic[DType.int64].fetch_add(_cell(self.addr, index), delta)
+        return Atomic[Int64].fetch_add(_cell(self.addr, index), delta)
 
 
 @always_inline

@@ -25,7 +25,7 @@ legacy package (which gets deleted at the end of the migration).
 
 from mojo_rl.nn.core.mm import mm, bmm
 from std.sys import CompilationTarget
-from std.gpu import thread_idx, block_idx, block_dim, global_idx
+from max.gpu import thread_idx, block_idx, block_dim, global_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -304,8 +304,7 @@ def _im2col_cpu[
     var _xp = in_list.unsafe_ptr()
     var _cp = col_list.unsafe_ptr()
 
-    @parameter
-    def _row(oh: Int):
+    def _row(oh: Int) {imm}:
         var row0 = oh * OW * CK
         for ow in range(OW):
             var row_off = row0 + ow * CK
@@ -339,7 +338,7 @@ def _im2col_cpu[
                         _cp[unsafe_offset=c_base + kw] = Scalar[DT](0)
 
     comptime if im2col_uses_threads[OH, OH * OW * CK]():
-        parallelize[_row](OH)
+        parallelize(_row, OH)
         return
 
     for oh in range(OH):

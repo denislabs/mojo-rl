@@ -33,7 +33,7 @@ from mojo_rl.core import (
 )
 from mojo_rl.render import Renderer2D, SDL_Color
 from layout import LayoutTensor, Layout
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 
 from ..core.gpu_env import ArcadeGameState, ArcadeGameAction, gpu_dtype

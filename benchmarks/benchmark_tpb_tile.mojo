@@ -12,7 +12,7 @@ from std.math import sin, sqrt
 from std.memory import Pointer
 
 from max.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor

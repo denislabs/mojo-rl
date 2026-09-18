@@ -17,7 +17,7 @@ from mojo_rl.nn.constants import DT as dtype
 from .pc_constants import TPB
 from layout import LayoutTensor, Layout
 from std.math import sqrt, exp, log
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.sys import simd_width_of
 

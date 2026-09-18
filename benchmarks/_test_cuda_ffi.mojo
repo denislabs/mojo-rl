@@ -13,7 +13,7 @@ Run with:
 """
 
 from max.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from std.ffi import OwnedDLHandle, c_int
 from std.memory import alloc
 from std.time import perf_counter_ns

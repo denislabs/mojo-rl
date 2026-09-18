@@ -20,7 +20,7 @@ is GPU-only. The reductions stay in LN_ACC (fp32) so accuracy is unchanged.
 """
 
 from std.math import sqrt
-from std.gpu import thread_idx, block_idx
+from max.gpu import thread_idx, block_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from std.utils.numerics import get_accum_type

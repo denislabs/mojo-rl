@@ -9,7 +9,7 @@ shuffle scratch (no legacy import).
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from std.random.philox import Random as PhiloxRandom
 
 

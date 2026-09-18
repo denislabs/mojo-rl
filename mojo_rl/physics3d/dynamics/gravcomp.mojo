@@ -76,7 +76,7 @@ Operands (8): xipos, subtree_com (data) + bodies, joints, meta (model)
 + cdof, fnet (scratch).
 """
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

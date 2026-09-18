@@ -22,7 +22,7 @@ write the whole action slab.
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext
 from std.math import tanh
-from std.gpu import global_idx
+from max.gpu import global_idx
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module

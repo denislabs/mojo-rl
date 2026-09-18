@@ -71,7 +71,7 @@ Shapes (IN = EMBED, OUT = VOCAB; source weight is `[OUT, IN]`):
 
 from std.sys import CompilationTarget
 from std.memory import Pointer
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul

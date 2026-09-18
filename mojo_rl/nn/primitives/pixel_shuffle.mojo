@@ -29,7 +29,7 @@ Backward is the inverse permutation. A permutation is orthogonal, so the adjoint
 identity `<f(x), y> == <x, vjp(y)>` holds exactly and is the gate.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

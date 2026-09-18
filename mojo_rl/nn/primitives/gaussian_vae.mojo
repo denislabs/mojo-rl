@@ -43,7 +43,7 @@ would collapse slowly enough to look like ordinary underfitting.
 """
 
 from std.math import exp
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

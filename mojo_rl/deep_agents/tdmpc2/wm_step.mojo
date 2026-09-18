@@ -26,7 +26,7 @@ Inputs (t-major, contiguous per step):
   obs [(H+1),B,OBS], act [H,B,ACT], r [H,B], td [H,B] (stop-grad targets).
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

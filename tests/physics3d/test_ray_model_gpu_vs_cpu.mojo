@@ -34,7 +34,7 @@ the same shape: it returns a plausible number for the wrong surface.
 
 from std.math import abs, sqrt
 from std.sys import has_accelerator
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext
 from std.testing import assert_true, TestSuite
 from layout import Layout, LayoutTensor

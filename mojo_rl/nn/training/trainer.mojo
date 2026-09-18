@@ -19,7 +19,7 @@ images, `train_y` = [N·NC] one-hot labels; `test_x` = [N·IN], `test_labels` =
 """
 
 from max.gpu.host import DeviceContext
-from std.gpu import global_idx
+from max.gpu import global_idx
 from std.memory import unsafe_memcpy
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor

@@ -33,7 +33,7 @@ fluid-force models (Swimmer) run via the integrators' passive seam
 
 """
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 

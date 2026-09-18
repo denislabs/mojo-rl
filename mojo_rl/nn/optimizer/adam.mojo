@@ -20,7 +20,7 @@ reference them (DeviceBuffer is refcounted → destruction order is safe).
 
 from std.sys import simd_width_of
 from std.math import sqrt
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 

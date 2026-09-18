@@ -39,7 +39,7 @@ the call as needed. A `use_n_step: Bool` Saveable config flag in
 `SACConfig` is a future C.2b chunk.
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 

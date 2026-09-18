@@ -10,7 +10,7 @@ covers both CPU (reference / offline ingest) and GPU (the batched path).
   chw[(c·H + h)·W + w] = hwc[(h·W + w)·C + c] / 255.0           per sample
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

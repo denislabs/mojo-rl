@@ -39,7 +39,7 @@ the identical total width and interleaves nothing correctly. The token-major
 layout is why this needs its own helper.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

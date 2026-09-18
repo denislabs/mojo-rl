@@ -59,7 +59,7 @@ lane as one to reset — `OscPose.run` raises because one lane is the whole run.
 
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 
 from mojo_rl.nn.core.tensor import TensorImpl
 

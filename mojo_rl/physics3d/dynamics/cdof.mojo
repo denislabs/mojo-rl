@@ -9,7 +9,7 @@ Operands: qpos, xpos, xquat, subtree_com + body/joint records -> cdof
 (7 operands). One formula body for both targets. As with FK, `num_joints`
 is the comptime NJOINT (no metadata read)."""
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor

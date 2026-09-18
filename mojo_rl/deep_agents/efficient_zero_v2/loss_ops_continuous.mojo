@@ -32,7 +32,7 @@ Gradchecked vs finite differences in
 """
 
 from std.math import log, exp, tanh, sqrt
-from std.gpu import global_idx
+from max.gpu import global_idx
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT

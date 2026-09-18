@@ -41,7 +41,7 @@ replay — only the *which-window* draw and the IS weights differ.
 """
 
 from std.memory import alloc
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 

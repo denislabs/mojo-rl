@@ -21,7 +21,7 @@ termination) and KEPT on `term=0` (time-limit truncation). For truncation-only
 envs (`term ≡ 0`) the mask reduces to `r + γ·(combined − α·lp)`.
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

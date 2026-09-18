@@ -24,7 +24,7 @@ RNG, which would shift the rollout stream — irrelevant to the single-task agen
 
 from std.math import sqrt
 from std.random import random_float64
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

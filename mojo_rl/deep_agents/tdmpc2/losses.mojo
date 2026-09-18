@@ -29,7 +29,7 @@ here. No trainable params → inherit the no-op `for_each_param`/`zero_grad`.
 """
 
 from std.math import exp, log
-from std.gpu import global_idx
+from max.gpu import global_idx
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB

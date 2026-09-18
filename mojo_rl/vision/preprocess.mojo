@@ -180,8 +180,7 @@ def pil_bilinear_u8(
     var vks = vc.ksize
 
     # horizontal: (src_h, src_w) -> (src_h, dst_w)
-    @parameter
-    def _hrow(yy: Int):
+    def _hrow(yy: Int) {imm}:
         var srow = yy * src_w * channels
         var trow = yy * dst_w * channels
         for xx in range(dst_w):
@@ -198,8 +197,7 @@ def pil_bilinear_u8(
                 tp[unsafe_offset = trow + xx * channels + c] = _clip8(acc)
 
     # vertical: (src_h, dst_w) -> (dst_h, dst_w)
-    @parameter
-    def _vrow(yy: Int):
+    def _vrow(yy: Int) {imm}:
         var ymin = vb[unsafe_offset = yy * 2]
         var ymax = vb[unsafe_offset = yy * 2 + 1]
         var kbase = yy * vks
@@ -228,8 +226,8 @@ def pil_bilinear_u8(
     # taps, clearing this by 10x; a 64x64 icon is 50k and stays serial.
     var taps = src_h * dst_w * channels * hks + dst_h * dst_w * channels * vks
     if taps >= _RESIZE_PAR_MIN_TAPS:
-        parallelize[_hrow](src_h)
-        parallelize[_vrow](dst_h)
+        parallelize(_hrow, src_h)
+        parallelize(_vrow, dst_h)
     else:
         for yy in range(src_h):
             _hrow(yy)

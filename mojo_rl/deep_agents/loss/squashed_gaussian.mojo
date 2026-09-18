@@ -39,7 +39,7 @@ grad is zeroed.
 """
 
 from std.math import exp, log, tanh as ftanh
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor

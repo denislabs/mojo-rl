@@ -55,7 +55,7 @@ those rows' `efc_force` is not retained past the solve.
 `xfrc_applied` is likewise absent: we have no such field.
 """
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

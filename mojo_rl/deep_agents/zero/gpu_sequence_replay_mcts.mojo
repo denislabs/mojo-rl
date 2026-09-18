@@ -34,7 +34,7 @@ Reanalyze hooks (`sample_position` / `read_obs` / `update_targets`) mirror the
 host buffer; `read_obs` gathers a single obs row device→host.
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import alloc, dealloc
 from layout import Layout, LayoutTensor

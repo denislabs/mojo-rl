@@ -14,7 +14,7 @@ The math + the five GPU kernels are unchanged from the legacy leaf; only the
 storage scaffolding (views, Param access, no cached pointer) differs.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

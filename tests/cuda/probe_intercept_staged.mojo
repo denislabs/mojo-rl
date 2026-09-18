@@ -50,7 +50,7 @@ READ THE OUTPUT LIKE THIS:
 """
 
 from std.ffi import OwnedDLHandle, c_int
-from std.gpu import thread_idx
+from max.gpu import thread_idx
 from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 from std.memory import alloc

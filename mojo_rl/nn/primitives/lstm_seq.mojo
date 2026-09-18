@@ -31,7 +31,7 @@ CPU + GPU. The GPU path is an *unfused* RNN — SEQ sequential per-step kernel
 launches — so it's correct but slow for long SEQ; keep SEQ modest.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

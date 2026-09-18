@@ -44,7 +44,7 @@ GPTDropTied child tree (for the surgery walks):
 
 from std.math import sqrt
 from std.memory import Pointer
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT, TPB

@@ -22,7 +22,7 @@ inside the struct body. All dimension parameters follow this convention.
 from std.collections import Array
 
 from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 from std.random.philox import Random as PhiloxRandom
 from mojo_rl.render import Color, Renderer3D, Light, LightMode, Camera3D

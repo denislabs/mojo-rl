@@ -15,7 +15,7 @@ Run with:
 from std.time import perf_counter_ns
 from std.random import seed, random_float64
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import LayoutTensor, Layout

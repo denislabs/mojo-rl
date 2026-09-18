@@ -95,7 +95,7 @@ from std.math import sqrt
 from std.random import seed, random_float64
 from std.sys import argv
 from std.time import perf_counter_ns
-from std.gpu import global_idx
+from max.gpu import global_idx
 
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext, DeviceBuffer

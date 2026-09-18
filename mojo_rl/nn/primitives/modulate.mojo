@@ -18,7 +18,7 @@ inside LeWM's ConditionalTransformerBlock. The CPU loop + the two GPU kernels
 are carried over verbatim.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

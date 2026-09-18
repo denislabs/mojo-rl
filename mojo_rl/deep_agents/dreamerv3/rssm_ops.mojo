@@ -20,7 +20,7 @@ inherits the no-op `for_each_param`/`zero_grad`.
 """
 
 from std.math import tanh, exp
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor

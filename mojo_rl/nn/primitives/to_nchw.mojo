@@ -16,7 +16,7 @@ the tower it unlocks. Appended to `Rep` via a comptime `LAYOUT` so NCHW configs
 get a pure identity copy.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

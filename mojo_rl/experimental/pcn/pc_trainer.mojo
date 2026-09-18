@@ -24,7 +24,7 @@ recovered inside.
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from std.math import sqrt, log, cos, sin, tanh, pi
 from std.random.philox import Random as PhiloxRandom

@@ -24,7 +24,7 @@ block 0's grad_x is copied out to grad_inputs[0]. Mirrors `Repeat`'s mid-slab
 reuse + `ComputeGraph`'s fan-out accumulation kernel.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

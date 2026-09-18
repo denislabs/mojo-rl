@@ -26,7 +26,7 @@ References:
   Wang, Sun, Li et al. — *EfficientZero V2*, ICML 2024.
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from std.math import sqrt, log, exp

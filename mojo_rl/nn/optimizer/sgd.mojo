@@ -9,7 +9,7 @@ A stateless `ParamVisitor` (no moments). Two GPU modes, ONE class, identical mat
 Update: `if decay: g += wd·p ; p -= lr·g`.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

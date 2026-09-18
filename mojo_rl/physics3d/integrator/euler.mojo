@@ -20,7 +20,7 @@ fluid forces (density/viscosity > 0), contacts, limits, constraint solving
 vs legacy: 9 small per-stage kernel launches instead of 2 fused monoliths —
 each stage is independently gated; fusion is a later NVIDIA perf lever."""
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from max.gpu.sync import barrier
 from layout import Layout, LayoutTensor

@@ -33,7 +33,7 @@ views (no raw pointers). The EV kernel is reused from `ppo.trainer`.
 """
 
 from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from std.math import exp as fexp, log as flog
 from std.memory import alloc

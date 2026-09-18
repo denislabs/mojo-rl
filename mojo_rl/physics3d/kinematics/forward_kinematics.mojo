@@ -18,7 +18,7 @@ Differences vs the slab version (deliberate):
   by tests/physics3d/test_fk_fields.mojo).
 """
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor

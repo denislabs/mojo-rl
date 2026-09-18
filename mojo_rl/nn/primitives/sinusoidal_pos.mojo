@@ -22,7 +22,7 @@ No params. Conforms to `Module`.
 """
 
 from std.math import exp, sin, cos, sqrt, log
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

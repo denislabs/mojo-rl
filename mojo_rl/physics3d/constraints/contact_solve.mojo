@@ -43,7 +43,7 @@ misread reproduction (see equality_tendon.mojo).
 """
 
 from std.math import sqrt, pow, abs
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

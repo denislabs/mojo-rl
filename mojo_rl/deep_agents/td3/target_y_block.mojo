@@ -42,7 +42,7 @@ Surface:
         step[target, POLICY](mut state, mut actor_t, mut critic1_t, mut critic2_t)
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

@@ -17,7 +17,7 @@ The policy + Q heads + pi optimizer are passed by ref (trainer-owned); the
 agent's comptime dispatch supplies the random Q pair as DISTINCT fields.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

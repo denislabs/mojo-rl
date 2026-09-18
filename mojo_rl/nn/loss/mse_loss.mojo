@@ -16,7 +16,7 @@ critic output around), so there is NO `cache_logits` field — unlike legacy,
 whose trait `backward(targets, grad)` forced caching the logits on forward.
 """
 
-from std.gpu import global_idx, thread_idx
+from max.gpu import global_idx, thread_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor

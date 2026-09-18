@@ -30,7 +30,7 @@ it would carry the WRONG vector — one produced by a different linear system
 than the one the next warm start prices against.
 """
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

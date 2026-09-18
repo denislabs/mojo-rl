@@ -5,7 +5,7 @@ Operands: xipos + body records -> subtree_com (3 operands). One formula body
 for both targets; per-body mass accumulator stays a per-thread Array
 (local scratch, not a field)."""
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

@@ -24,7 +24,7 @@ env. Operands (10): xvel, xangvel, xquat, xipos, subtree_com (data) + bodies,
 joints, meta (model) + cdof, fnet (scratch)."""
 
 from std.math import sqrt, abs
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

@@ -37,7 +37,7 @@ Output buffers exposed:
     before ``search_gpu`` when calling with ``apply_legal=True``.
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 

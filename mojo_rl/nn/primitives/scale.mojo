@@ -17,7 +17,7 @@ let its on-device α (a sub-buffer view of the ScalarAdam state) update each ste
 without breaking CUDA-graph capture. CPU always uses the host `multiplier`.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

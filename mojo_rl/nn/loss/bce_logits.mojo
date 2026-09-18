@@ -30,7 +30,7 @@ points agreeing on a constant label.
 """
 
 from std.math import exp, log
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT, TPB

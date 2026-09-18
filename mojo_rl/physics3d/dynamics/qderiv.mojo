@@ -18,7 +18,7 @@ The result is SUBTRACTED into `iscratch.qderiv` (caller pre-loads the passive
 damping diagonal, exactly like the legacy integrator).
 """
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

@@ -16,7 +16,7 @@ In-graph masking of the actor-loss sampled action is deferred-experimental (a
 no-op at MAX_ACT=1) — same spirit as the QP-dropout caveats.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

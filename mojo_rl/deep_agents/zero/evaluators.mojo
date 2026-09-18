@@ -21,7 +21,7 @@ bottom), matching `tic_tac_toe.mojo` / `connect_four.mojo`.
 Ported from `deep_agents/muzero/evaluators.mojo` onto `nn` (`DT`).
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 

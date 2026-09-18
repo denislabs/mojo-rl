@@ -26,7 +26,7 @@ kernels here. No trainable params → inherit the no-op `for_each_param`/
 """
 
 from std.math import exp, log, log1p
-from std.gpu import global_idx, block_idx, thread_idx
+from max.gpu import global_idx, block_idx, thread_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor

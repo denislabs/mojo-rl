@@ -32,7 +32,7 @@ Run (Apple = parity only):
     pixi run -e apple  mojo run -I . benchmarks/bench_conv2d_im2col_col2im_gpu.mojo
 """
 
-from std.gpu import global_idx, thread_idx, block_idx, block_dim
+from max.gpu import global_idx, thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor

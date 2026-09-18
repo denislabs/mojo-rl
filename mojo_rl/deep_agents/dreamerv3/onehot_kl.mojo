@@ -32,7 +32,7 @@ test (`test_dreamer_pr2.mojo`).
 """
 
 from std.math import exp, log
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

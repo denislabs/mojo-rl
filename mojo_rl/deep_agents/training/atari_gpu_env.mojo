@@ -21,7 +21,7 @@ Design:
 """
 
 from std.sys.info import size_of
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT

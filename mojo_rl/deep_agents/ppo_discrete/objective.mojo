@@ -53,7 +53,7 @@ legacy leaf; only the storage surface (`TensorRefs[4, o]` + owned `Tensor` out +
 """
 
 from std.math import exp, log as flog
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

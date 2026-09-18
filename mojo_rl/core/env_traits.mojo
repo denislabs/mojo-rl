@@ -40,7 +40,7 @@ Algorithms specify requirements:
 from .env import Env
 from layout import LayoutTensor, Layout
 from mojo_rl.nn.constants import DT as dtype
-from std.gpu import (
+from max.gpu import (
     block_dim,
     block_idx,
     thread_idx,

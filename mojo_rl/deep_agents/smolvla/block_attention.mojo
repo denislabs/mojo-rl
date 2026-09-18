@@ -69,7 +69,7 @@ guard, and the same constant, as `cross_attention.mojo`.
 """
 
 from std.math import exp, sqrt
-from std.gpu import global_idx, thread_idx, block_idx, block_dim
+from max.gpu import global_idx, thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

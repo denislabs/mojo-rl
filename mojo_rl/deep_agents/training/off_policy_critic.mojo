@@ -18,7 +18,7 @@ each `mut` arg distinctly. See memory:
 `feedback_mojo_tile_tensor_generic_origin`.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

@@ -263,7 +263,7 @@ comptime TIMED_ITERS = 200
 # only MAX's.
 # ─────────────────────────────────────────────────────────────────────────────
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 
 
 def _fill_ptr(

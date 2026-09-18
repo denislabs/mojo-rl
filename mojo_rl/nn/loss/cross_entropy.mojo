@@ -10,7 +10,7 @@ RECOMPUTES the softmax from `logits` (passed explicitly) — no softmax cache.
 """
 
 from std.math import exp, log
-from std.gpu import global_idx, thread_idx
+from max.gpu import global_idx, thread_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor

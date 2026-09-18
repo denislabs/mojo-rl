@@ -17,7 +17,7 @@ prefix of the same length whose block structure no longer matches the mask.
 
 from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
 from std.math import sqrt
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

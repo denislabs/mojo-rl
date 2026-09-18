@@ -31,7 +31,7 @@ gradients by 1/REP and shows up only as slow training.
 Param-free, cache-free. CPU + GPU.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

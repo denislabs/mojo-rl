@@ -21,7 +21,7 @@ Example usage:
 """
 
 from layout import LayoutTensor, Layout
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 
 from .constants import (

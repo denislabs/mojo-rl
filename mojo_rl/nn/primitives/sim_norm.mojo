@@ -15,7 +15,7 @@ Backward (per group, standard softmax Jacobian):
 """
 
 from std.math import exp
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

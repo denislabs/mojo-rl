@@ -69,7 +69,7 @@ the device-graph backend rather than recording a partial step.
     mask exists.
 """
 
-from std.gpu import global_idx, thread_idx
+from max.gpu import global_idx, thread_idx
 from std.math import sqrt, abs
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor

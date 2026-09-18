@@ -16,7 +16,7 @@ died with the fields sunset). Arithmetic verbatim from the slab kernel.
 """
 
 from max.gpu.host import DeviceContext
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 
 from .constants import TPB

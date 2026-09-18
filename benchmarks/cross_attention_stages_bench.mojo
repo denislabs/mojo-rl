@@ -33,7 +33,7 @@ at 1024x1024 and loses at 62x62 x 16 is not shippable as-is.
 """
 
 from std.math import exp, sqrt
-from std.gpu import global_idx
+from max.gpu import global_idx
 from std.sys import has_accelerator
 from std.time import perf_counter_ns
 

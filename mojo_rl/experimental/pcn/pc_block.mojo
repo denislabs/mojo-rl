@@ -19,7 +19,7 @@ For the readout, ε_L = target − output (target plays the role of x_above).
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
 from max.gpu.memory import AddressSpace

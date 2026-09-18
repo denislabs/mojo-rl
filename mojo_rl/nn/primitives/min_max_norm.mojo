@@ -19,7 +19,7 @@ Backward (given grad_y, compute grad_x):
     grad_x = 0 in the degenerate (M - m < ε) case.
 """
 
-from std.gpu import thread_idx, block_idx
+from max.gpu import thread_idx, block_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major

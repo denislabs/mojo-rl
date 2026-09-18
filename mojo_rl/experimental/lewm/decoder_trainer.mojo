@@ -11,7 +11,7 @@ Storage surface: same shape as `LeWMTrainer` (owned `Tensor` scratch, stored
 facade keeps raw `TileTensor`/host-pointer args, bridged into the graph.
 """
 
-from std.gpu import thread_idx
+from max.gpu import thread_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from max.gpu.memory import AddressSpace

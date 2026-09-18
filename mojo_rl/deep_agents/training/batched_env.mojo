@@ -44,7 +44,7 @@ reconstructs non-owning views via
 # keeps `vectorize` but no longer carries any parallel primitive. The async
 # runtime it is built on is still `std.runtime.asyncrt`.
 from max.algorithm import parallelize
-from std.gpu import thread_idx
+from max.gpu import thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
@@ -411,8 +411,7 @@ struct BatchedCpuDiscreteEnv[
         var noop_max = self.noop_max
         var noop_action = self.noop_action
 
-        @parameter
-        def reset_one(env_idx: Int):
+        def reset_one(env_idx: Int) {imm}:
             if only_done and done_ptr[unsafe_offset=env_idx] <= Scalar[DT](0.5):
                 return
             var obs_list = envs_ptr[unsafe_offset=env_idx].reset_obs_list()
@@ -437,7 +436,7 @@ struct BatchedCpuDiscreteEnv[
             for d in range(Self.OBS_DIM):
                 obs_ptr[unsafe_offset=env_idx * Self.OBS_DIM + d] = Scalar[DT](obs_list[d])
 
-        parallelize[reset_one](Self.N_ENVS)
+        parallelize(reset_one, Self.N_ENVS)
 
     def reset_batch[
         BATCH: Int
@@ -463,8 +462,7 @@ struct BatchedCpuDiscreteEnv[
         var done_ptr = self._done.unsafe_ptr()
         var term_ptr = self._terminated.unsafe_ptr()
 
-        @parameter
-        def step_one(env_idx: Int):
+        def step_one(env_idx: Int) {imm}:
             comptime if Self.E.dtype == DT:
                 # Allocation-free path: the env writes its obs lane in
                 # place (AtariEnv overrides `step_obs_into` to skip the
@@ -492,7 +490,7 @@ struct BatchedCpuDiscreteEnv[
                 unsafe_offset=env_idx
             ].was_terminated() else Scalar[DT](0.0)
 
-        parallelize[step_one](Self.N_ENVS)
+        parallelize(step_one, Self.N_ENVS)
 
     def selective_reset_batch[
         BATCH: Int

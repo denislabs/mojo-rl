@@ -23,7 +23,7 @@ Actions: 0..N²-1 = intersection index, N² = pass.
 from std.random import random_float64
 from std.memory import dealloc, alloc
 from layout import LayoutTensor, Layout
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.core import (
     State,

@@ -18,7 +18,7 @@ Backward: grad_µ_b = Σ_b go ; grad_σ_b = grad_µ_b · ε_out ; dW = xᵀ @ go
 from mojo_rl.nn.core.mm import mm, bmm
 from std.math import sqrt as fsqrt, log as flog, cos as fcos, pi
 from std.random import random_float64
-from std.gpu import global_idx, thread_idx, block_idx
+from max.gpu import global_idx, thread_idx, block_idx
 from max.gpu.host import DeviceContext
 from max.gpu.primitives import block
 from layout import Layout, LayoutTensor, TileTensor, row_major

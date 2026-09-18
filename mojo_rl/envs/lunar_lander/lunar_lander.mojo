@@ -10,7 +10,7 @@ All physics data is packed per-environment for efficient GPU access.
 
 from std.math import sqrt, cos, sin, pi, tanh
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import alloc
 from std.random.philox import Random as PhiloxRandom

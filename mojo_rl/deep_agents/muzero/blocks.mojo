@@ -32,7 +32,7 @@ follows. The min-max latent scaling lives inside the nets (`MZRepNet`/`MZDynNet`
 from mojo_rl.nn.core.param import walk_params
 from std.math import exp, log, sqrt
 from layout import Layout, LayoutTensor
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT, TPB

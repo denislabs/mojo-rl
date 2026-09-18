@@ -30,7 +30,7 @@ The fp32 (ACT_DT == DT) path is byte-for-byte the legacy NoAMP path; the bf16 pa
 is GPU-only.
 """
 
-from std.gpu import global_idx, thread_idx, block_idx
+from max.gpu import global_idx, thread_idx, block_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major

@@ -29,7 +29,7 @@ Returns `EnsembleActorLossResult { loss, log_prob_mean }`. The trainer reads
 `log_prob_mean` for `AlphaUpdateStep`.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from mojo_rl.nn.core.ptr import untracked
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor

@@ -28,7 +28,7 @@ buffer per slab) instead of a single pointer-sliced scratch — no `mptr`.
 
 from mojo_rl.nn.core.mm import mm, bmm
 from std.math import exp, sqrt
-from std.gpu import thread_idx, block_idx, block_dim, global_idx
+from max.gpu import thread_idx, block_idx, block_dim, global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.bmm import batched_matmul

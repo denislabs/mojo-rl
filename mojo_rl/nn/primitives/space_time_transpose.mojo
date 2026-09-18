@@ -15,7 +15,7 @@ IN_DIM == OUT_DIM == T*S*D; param-free, cache-free. Backward is the inverse
 permutation (the same map with T↔S swapped). Conforms to `Module`.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

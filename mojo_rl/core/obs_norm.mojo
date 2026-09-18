@@ -20,7 +20,7 @@ running stats by orders of magnitude.
 
 from std.collections import Array
 from std.math import sqrt
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 

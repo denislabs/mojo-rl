@@ -16,7 +16,7 @@ to keep API identical between v1 and nn callers.
 """
 
 from std.math import cos as fcos, log as flog, sin as fsin, sqrt as fsqrt, pi
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom

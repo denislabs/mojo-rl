@@ -16,7 +16,7 @@ carries the moving α (host scalar). Mean loss + mean log_prob are host reductio
          q1, q2 → min_q ;  α·logp = Scale(logp) ;  loss = α·logp − min_q (output)
 """
 
-from std.gpu import thread_idx
+from max.gpu import thread_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor

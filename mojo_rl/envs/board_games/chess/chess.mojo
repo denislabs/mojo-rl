@@ -34,7 +34,7 @@ Actions: AlphaZero encoding = 4672 (64 squares × 73 move types).
 from std.random import random_float64
 from mojo_rl.nn.core.ptr import untracked
 from layout import LayoutTensor, Layout
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import dealloc, unsafe_memset, alloc
 from std.ffi import c_int, c_float

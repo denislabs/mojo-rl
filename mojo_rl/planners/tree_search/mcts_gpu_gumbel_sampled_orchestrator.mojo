@@ -40,7 +40,7 @@ Output buffers exposed:
     ``gs_init_root_kernel`` at root expansion time.
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 

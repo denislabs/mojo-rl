@@ -15,7 +15,7 @@ the live α at log cadence.
 """
 
 from std.math import sqrt as fsqrt, exp as fexp
-from std.gpu import thread_idx
+from max.gpu import thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import LayoutTensor, Layout
 

@@ -59,7 +59,7 @@ in training mode, where the probe would return a batch-coupled gradient.
 Do not put a BatchNorm in a discriminator regularised this way.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from std.math import sqrt
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext

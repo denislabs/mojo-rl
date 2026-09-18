@@ -43,7 +43,7 @@ produce the same tensors as `ACTDataset.fill_at`. That is why `gather_at`
 exists as a public entry point separate from `sample`.
 """
 
-from std.gpu import global_idx, thread_idx
+from max.gpu import global_idx, thread_idx
 from std.memory import Pointer
 from std.random.philox import Random as PhiloxRandom
 from max.gpu.host import DeviceContext

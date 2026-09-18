@@ -21,7 +21,7 @@ Actions: 0-6 = column index. Full column = illegal (-1.0 reward).
 from std.random import random_float64
 from std.memory import alloc
 from layout import LayoutTensor, Layout
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.core import (
     State,

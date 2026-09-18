@@ -21,7 +21,7 @@ accumulator drained at flush (no per-step D2H — capture-friendly). Shared by T
 (it uses critic1 only; identical math).
 """
 
-from std.gpu import thread_idx
+from max.gpu import thread_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor

@@ -44,7 +44,7 @@ Obs storage dtype (`OBS_STORE_DT_`, default `DT` — bit-identical): set
 see `mojo_rl/data/quantize.mojo`).
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor

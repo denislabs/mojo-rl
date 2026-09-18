@@ -16,7 +16,7 @@ input-indexed (1 thread per input cell, looping over overlapping output windows)
 — no atomics even for overlapping pool configurations.
 """
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

@@ -23,7 +23,7 @@ zero — zero queries would make every patch identical and unrecoverable by
 symmetry). CPU + GPU.
 """
 
-from std.gpu import global_idx, thread_idx, block_idx
+from max.gpu import global_idx, thread_idx, block_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major

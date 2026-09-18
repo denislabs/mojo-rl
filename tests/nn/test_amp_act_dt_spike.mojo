@@ -18,7 +18,7 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_amp_act_dt_spike.mojo
 """
 
 from std.memory import Pointer
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul

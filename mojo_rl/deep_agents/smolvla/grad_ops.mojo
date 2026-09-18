@@ -29,7 +29,7 @@ prefix followed by batch b's own suffix. If one of the two ever changes the
 other must, and at B == 1 neither would notice.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

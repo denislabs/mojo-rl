@@ -21,7 +21,7 @@ leaves the whole table zeroed — reads as NO BLOCKS. That case must fall back
 to a single whole-`nv` block, not to zero work."""
 
 from std.sys import simd_width_of
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from std.collections import Array
 from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext

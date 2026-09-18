@@ -24,7 +24,7 @@ state-prefix obs extraction when OBS_DIM > STATE_SIZE and renders on first step)
 
 from std.math import sin, cos
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core import GPUDiscreteEnv

@@ -32,7 +32,7 @@ with).
 """
 
 from std.math import sqrt
-from std.gpu import global_idx
+from max.gpu import global_idx
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT

@@ -70,7 +70,7 @@ The legacy `ws_fnet_offset` comptime was declared but never read — dropped.
 from std.math import sqrt, pow, abs
 from std.sys import simd_width_of
 from std.time import perf_counter_ns
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
 from .je_budget import je_spills, je_ws_size, newton_block_threads

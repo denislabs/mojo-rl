@@ -30,7 +30,7 @@ writeback); the M_hat-forming, damping-diagonal, and implicit-finalize
 kernels are new here. Deliberately NOT ported yet (raise on use): fluid
 forces (density/viscosity > 0)."""
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

@@ -24,7 +24,7 @@ from CarDynamicsMB. See project_car_racing_audit memory.
 
 from std.math import sqrt, sin, cos, pi
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 

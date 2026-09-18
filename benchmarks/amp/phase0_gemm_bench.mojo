@@ -16,7 +16,7 @@ not the end-to-end win (that verdict is NVIDIA-only).
 """
 
 from std.time import perf_counter_ns
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul

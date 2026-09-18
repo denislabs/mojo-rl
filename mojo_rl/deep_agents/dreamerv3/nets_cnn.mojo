@@ -35,7 +35,7 @@ passes `SwishOp` (SiLU). The final encoder Linear and final decoder deconv are
 LINEAR (no activation) — raw tokens / raw pixel logits.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

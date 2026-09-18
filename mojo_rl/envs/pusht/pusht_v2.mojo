@@ -21,7 +21,7 @@ to populate it from CPU shape definitions.
 
 from std.math import cos, sin, sqrt, pi
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from std.memory import Pointer

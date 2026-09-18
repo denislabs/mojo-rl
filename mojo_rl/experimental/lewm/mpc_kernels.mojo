@@ -13,7 +13,7 @@ so the GPU kernels are flat 1-D grids.
   actions_buf: (B, T·EMB-actions) (B, T·ACT) — ActionEmbedder is Tokenwise[T]
 """
 
-from std.gpu import global_idx, thread_idx
+from max.gpu import global_idx, thread_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, row_major

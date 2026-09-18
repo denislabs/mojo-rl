@@ -18,7 +18,7 @@ Used by ViT `PatchEmbed` to turn Conv2D's channel-major patch layout
 `(n_patches, embed_dim)`.
 """
 
-from std.gpu import global_idx, thread_idx, block_idx
+from max.gpu import global_idx, thread_idx, block_idx
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
 from max.gpu.host import DeviceContext

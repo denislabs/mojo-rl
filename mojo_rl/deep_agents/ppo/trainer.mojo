@@ -31,7 +31,7 @@ views (no raw pointers).
 """
 
 from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
-from std.gpu import global_idx, thread_idx
+from max.gpu import global_idx, thread_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import exp as fexp

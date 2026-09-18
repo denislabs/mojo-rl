@@ -25,7 +25,7 @@ kernels (argmax / projection, no atomics) are unchanged; views are built via
 """
 
 from std.math import exp as fexp, log as flog
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

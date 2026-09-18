@@ -15,7 +15,7 @@ Forward:  `out[b, 0] = max_a input[b, a]`
 Backward: `grad_input[b, a] = 0` for all (b, a)
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

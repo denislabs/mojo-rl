@@ -22,7 +22,7 @@ Storage-surface port of the legacy nn helpers
 
 from std.math import exp, log
 from std.math import abs as math_abs
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

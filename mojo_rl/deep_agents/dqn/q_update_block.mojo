@@ -31,7 +31,7 @@ null = uniform replay, bit-identical to pre-PER). Mirrors the storage
 `CriticUpdateBlock` PER surface exactly.
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

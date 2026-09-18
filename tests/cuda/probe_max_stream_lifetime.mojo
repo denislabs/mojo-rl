@@ -41,7 +41,7 @@ arc look like they died earlier than they did.
         tests/cuda/probe_max_stream_lifetime.mojo
 """
 
-from std.gpu import thread_idx
+from max.gpu import thread_idx
 from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor

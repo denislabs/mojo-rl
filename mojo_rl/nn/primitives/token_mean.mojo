@@ -18,7 +18,7 @@ Used by ViT to collapse patch tokens to a single class vector before the
 classification head.
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

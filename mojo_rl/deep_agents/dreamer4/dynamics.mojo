@@ -51,7 +51,7 @@ reductions (one thread per (vocab_row, channel), looping the small batch) so
 no atomics are needed — the signal/step vocabs are tiny (KMAX+1, log2 KMAX+1).
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major

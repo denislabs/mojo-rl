@@ -16,7 +16,7 @@ launches N small slab-copy kernels (one per input); backward symmetric.
 Backward: grad_in_i[b, :] = grad_output[b, off_i : off_i+DIMS[i]].
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

@@ -76,7 +76,7 @@ Run with:
         tests/cuda/test_cuda_graph_minimal.mojo
 """
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.sys import has_nvidia_gpu_accelerator
 from std.testing import assert_true, TestSuite

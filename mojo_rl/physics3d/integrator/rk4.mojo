@@ -43,7 +43,7 @@ Deliberately NOT yet ported (raise / absent by design):
   (solver seam per stage) is a later slice.
 """
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

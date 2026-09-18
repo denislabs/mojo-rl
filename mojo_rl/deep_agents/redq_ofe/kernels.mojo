@@ -15,7 +15,7 @@ Math:
     d loss / d pred[b,d] = 2 * (pred[b,d] - target[b,d]) / (BATCH * OBS)
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

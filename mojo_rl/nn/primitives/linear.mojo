@@ -24,7 +24,7 @@ the whole function, then builds views from that.
 
 from mojo_rl.nn.core.mm import mm, bmm
 from std.sys import CompilationTarget
-from std.gpu import global_idx, thread_idx, block_idx
+from max.gpu import global_idx, thread_idx, block_idx
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
 from max.gpu.host import DeviceContext, DeviceBuffer

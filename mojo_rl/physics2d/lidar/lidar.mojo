@@ -6,7 +6,7 @@ Casts rays from the hull and detects terrain intersections.
 
 from std.math import sqrt, sin, cos, pi
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import dtype, TPB, erase_origin

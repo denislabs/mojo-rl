@@ -31,7 +31,7 @@ RECOMPUTES the keep decision (no need to read the stored mask).
 CPU + GPU.
 """
 
-from std.gpu import global_idx, thread_idx, block_idx
+from max.gpu import global_idx, thread_idx, block_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from std.random.philox import Random as PhiloxRandom

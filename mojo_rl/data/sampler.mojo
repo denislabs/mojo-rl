@@ -37,7 +37,7 @@ alongside uniform/PER/sequence; that was wrong. n-step belongs at write time
 it.
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import pow as fpow
 from std.random import random_float64

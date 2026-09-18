@@ -16,7 +16,7 @@ Forward-only (target, never differentiated). Capture-safe (elementwise,
 fixed buffers, no host work on the GPU path).
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 

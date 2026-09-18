@@ -23,7 +23,7 @@ Conforms to `OffPolicyDiscreteAgentGpu`.
 from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
 from std.math import exp as fexp, log as flog
 from std.random import random_float64
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 

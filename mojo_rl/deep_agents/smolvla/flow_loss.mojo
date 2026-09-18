@@ -74,7 +74,7 @@ draw fails it.
 """
 
 from std.math import exp, log, sqrt
-from std.gpu import global_idx
+from max.gpu import global_idx
 from std.random import random_float64
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor

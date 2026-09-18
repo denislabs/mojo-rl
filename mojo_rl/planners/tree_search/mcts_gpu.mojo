@@ -40,7 +40,7 @@ References:
   - MuZero: Schrittwieser et al., 2020 (Nature)
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from std.random.philox import Random as PhiloxRandom
 from std.math import sqrt, log, exp
 from max.gpu.host import DeviceContext, DeviceBuffer

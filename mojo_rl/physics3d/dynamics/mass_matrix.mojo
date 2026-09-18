@@ -8,7 +8,7 @@ world-frame inertia, subtree mask) stays in `Scratch` (2b.2).
 Operands: xquat, xipos, subtree_com + body/joint records + cdof -> M
 (7 operands). `num_joints` is the comptime NJOINT (no metadata read)."""
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
 from max.gpu.host import DeviceContext

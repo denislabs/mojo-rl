@@ -19,7 +19,7 @@ INIT_STD: when > 0 the tokens are N(0, INIT_STD) (the ViT CLS/query convention,
 std≈0.02, independent of fan-in); otherwise the leaf-supplied `INIT` fills them.
 """
 
-from std.gpu import global_idx, thread_idx, block_idx
+from max.gpu import global_idx, thread_idx, block_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from std.math import sqrt as fsqrt, log, cos, sin

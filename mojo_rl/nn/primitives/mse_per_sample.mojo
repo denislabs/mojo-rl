@@ -13,7 +13,7 @@ Backward (c = grad_out·2/DIM):
     grad_a[b,i] =  c · (a-b);   grad_b[b,i] = -c · (a-b)
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 

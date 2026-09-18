@@ -35,7 +35,7 @@ and will fail to compile/launch on Apple GPU — the same wall documented in
 columns as `float32`.
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import alloc
 from std.utils import IndexList
