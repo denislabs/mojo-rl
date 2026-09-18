@@ -686,6 +686,8 @@ def main() raises:
             # real waypoints to execute and there is nothing to wait for.
             if pending and (t_obs < 0 or t_now - t_obs >= exec_steps):
                 var t_w = perf_counter_ns()
+                if threaded and queries == 0:
+                    print("  [first query] waiting for the first chunk ...")
                 if threaded:
                     # ⚠ THE ONLY PLACE THIS THREAD WAITS FOR THE GPU, and it
                     # waits on a RING rather than on the device: the worker
@@ -756,6 +758,12 @@ def main() raises:
                 t_obs < 0 or exec_steps - (t_now - t_obs) <= lead
             ):
                 var t_c0 = perf_counter_ns()
+                # ⚠ FIRST REQUEST ONLY. The loop is silent by design, but the
+                # first pass through it is the one that hangs when a new shape
+                # is wrong, and "nothing after the banner" names no line.
+                var trace = submissions == 0
+                if trace:
+                    print("  [first query] taking a frame from each camera ...")
                 for i in range(N_CAM):
                     if cams[i].take_latest(frames[i]) == 0:
                         if not cams[i].take_blocking(frames[i]):
@@ -763,11 +771,15 @@ def main() raises:
                                 "smolvla deploy: camera " + devices[i]
                                 + " stopped delivering frames"
                             )
+                if trace:
+                    print("  [first query] reading the follower's pose ...")
                 if follower.read_positions(Span(raw)) != SO101_N:
                     bus_skipped += 1
                     continue
                 for j in range(RDIM):
                     pose[j] = Float32(follower.cal.degrees(j, raw[j]))
+                if trace:
+                    print("  [first query] resize_with_pad to 512x512 ...")
                 if threaded:
                     # HOST ONLY: the bytes go to the worker, which uploads
                     # them with its own context. This thread has no context.
@@ -799,6 +811,8 @@ def main() raises:
                 # launch queue fills, `cuLaunchKernel` STOPS being asynchronous
                 # and blocks until slots free — so the submission can cost most
                 # of the GPU time and the control loop gets nothing back.
+                if trace:
+                    print("  [first query] handing it to the query thread ...")
                 if threaded:
                     # ⚠ THE WHOLE REQUEST IN ONE SLOT, pose first. Pushing
                     # costs a 6.3 MB copy (~0.3 ms) and returns: the driver's
