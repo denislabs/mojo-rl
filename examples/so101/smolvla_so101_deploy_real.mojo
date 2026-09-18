@@ -575,6 +575,11 @@ def main() raises:
     var lead = CHUNK // 2
     var sum_wait = 0.0
     var worst_wait = 0.0
+    var iterations = 0
+    var sum_write = 0.0
+    var worst_write = 0.0
+    var sum_body = 0.0
+    var worst_body = 0.0
     var sum_obs_gap = 0
     var loop_ns = 0
     var cmd = List[Float64](length=RDIM, fill=0.0)
@@ -592,6 +597,7 @@ def main() raises:
                 break
 
             var now_ns = perf_counter_ns()
+            iterations += 1
             var t_now = Int(
                 Float64(now_ns - loop_t0) * Float64(SO101_FPS) / 1e9
             )
@@ -738,8 +744,22 @@ def main() raises:
             if arm_it:
                 for j in range(RDIM):
                     goals[j] = follower.cal.raw_from_degrees(j, cmd[j])
+                # ⚠ TIMED, BECAUSE THE BUS IS SHARED WITH THE CAMERAS. Both
+                # MJPG streams and the arm's serial adapter sit on one USB 2.0
+                # hub on this rig. A blocking query left the bus idle while it
+                # ran; commanding through it every grid step does not, and a
+                # write that is suddenly slow would show up only here.
+                var t_wr = perf_counter_ns()
                 follower.write_goals(Span(goals))
+                var wr_ms = Float64(perf_counter_ns() - t_wr) / 1e6
+                sum_write += wr_ms
+                if wr_ms > worst_write:
+                    worst_write = wr_ms
             commands += 1
+            var body_ms = Float64(perf_counter_ns() - now_ns) / 1e6
+            sum_body += body_ms
+            if body_ms > worst_body:
+                worst_body = body_ms
 
             if commands % 10 == 0:
                 var line = String("  t=") + pad_left(
@@ -843,6 +863,27 @@ def main() raises:
     print("  observation build = "
           + fixed(sum_cam / Float64(queries) if queries > 0 else 0.0, 1)
           + " ms mean (cameras + resize_with_pad + upload)")
+    # ⚠ THE LOOP'S OWN RATE, not the policy's. `iterations` counts every pass
+    # of the control loop; if it is far below the elapsed grid steps then the
+    # loop body — not the query — is what fails to keep 30 Hz, and `body` and
+    # `bus write` say which part.
+    print(
+        "  loop iterations   = " + String(iterations) + " in "
+        + fixed(elapsed, 1) + " s = "
+        + fixed(Float64(iterations) / elapsed if elapsed > 0.0 else 0.0, 1)
+        + " Hz  (the grid would be " + String(SO101_FPS) + ")"
+    )
+    print(
+        "  loop body         = "
+        + fixed(sum_body / Float64(commands) if commands > 0 else 0.0, 2)
+        + " ms mean, " + fixed(worst_body, 1) + " ms worst"
+    )
+    print(
+        "  bus write         = "
+        + fixed(sum_write / Float64(commands) if commands > 0 else 0.0, 2)
+        + " ms mean, " + fixed(worst_write, 1) + " ms worst"
+        + ("" if arm_it else "   (dry run — nothing written)")
+    )
     print("  bus-skipped ticks = " + String(bus_skipped))
     print(
         "  action clamped    = " + String(clamped) + " of "
