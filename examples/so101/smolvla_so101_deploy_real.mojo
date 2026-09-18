@@ -568,16 +568,21 @@ def main() raises:
     var t_obs_pending = 0
     var pending = False
     var q_t0 = 0
-    # Grid steps of warning the query needs: the observation build plus the
-    # query itself, measured from the last one. Seeded at half a chunk so the
-    # FIRST query — which has no measurement and runs against a cold cache —
-    # is started early rather than late.
-    var lead = CHUNK // 2
+    # Grid steps of warning to give the next query: only the part of it that
+    # runs AFTER submission returns can overlap the arm's motion, so this is
+    # the measured overlap and nothing more (see where it is updated). Seeded
+    # at 0 — the first query has no measurement, and a lead that is too small
+    # costs one handover while a lead that is too large costs every one.
+    var lead = 0
     var sum_wait = 0.0
     var worst_wait = 0.0
     var iterations = 0
     var sum_enqueue = 0.0
     var worst_enqueue = 0.0
+    # ⚠ NOT `queries`. The last query submitted is still in flight when the
+    # run ends, so it is in `sum_enqueue` and not in `queries` — dividing by
+    # the wrong one reported a mean ABOVE the worst.
+    var submissions = 0
     var sum_write = 0.0
     var worst_write = 0.0
     var sum_body = 0.0
@@ -695,6 +700,7 @@ def main() raises:
                 pol.start_action[TARGET](images, ids, pose, noise, dev_ctx)
                 var enq_ms = Float64(perf_counter_ns() - q_t0) / 1e6
                 sum_enqueue += enq_ms
+                submissions += 1
                 if enq_ms > worst_enqueue:
                     worst_enqueue = enq_ms
                 pending = True
@@ -703,18 +709,29 @@ def main() raises:
                 # steps of it, against nineteen for a blocking query.
                 sum_obs_gap += Int(obs_ms * Float64(SO101_FPS) / 1000.0)
 
-                # Next time, start this much earlier. Measured, not assumed:
-                # the first query runs against a cold cache and is not the
-                # steady-state cost. `+2` covers the grid quantisation at both
-                # ends, and the cap keeps a pathological query from starting
-                # the next one before the current chunk has any steps at all.
+                # ⚠⚠ THE LEAD IS THE OVERLAP, NOT THE QUERY. Submitting a
+                # query is ~6970 launches and the driver stops accepting them
+                # once its queue is full, so `start_action` BLOCKS for most of
+                # the query (measured: 638 ms of 787 on an Orin). Only the
+                # remainder — the part that runs after submission returns —
+                # can overlap the arm's motion, and that is all the warning
+                # worth taking.
+                #
+                # Starting earlier than the overlap does not hide the cost, it
+                # PAYS IT MORE OFTEN: leading by the whole query length made
+                # the loop query every 0.81 s instead of every 1.67 s, and the
+                # command rate fell from 17.4 Hz to 8.0. When submission
+                # becomes cheap — a CUDA graph, or the query on its own thread
+                # — this number grows by itself and the loop pipelines without
+                # another edit.
                 if queries > 0:
-                    var want = Int(
-                        (sum_q / Float64(queries) + obs_ms)
-                        * Float64(SO101_FPS) / 1000.0
-                    ) + 2
-                    if want < 2:
-                        want = 2
+                    var overlap_ms = (
+                        sum_q / Float64(queries)
+                        - sum_enqueue / Float64(submissions)
+                    )
+                    if overlap_ms < 0.0:
+                        overlap_ms = 0.0
+                    var want = Int(overlap_ms * Float64(SO101_FPS) / 1000.0)
                     if want > exec_steps - 1:
                         want = exec_steps - 1
                     lead = want
@@ -865,7 +882,9 @@ def main() raises:
     # whatever `handover wait` says.
     print(
         "  query submit      = "
-        + fixed(sum_enqueue / Float64(queries) if queries > 0 else 0.0, 1)
+        + fixed(
+            sum_enqueue / Float64(submissions) if submissions > 0 else 0.0, 1
+        )
         + " ms mean, " + fixed(worst_enqueue, 1) + " ms worst"
         + "   (of a " + fixed(sum_q / Float64(queries) if queries > 0 else 0.0, 1)
         + " ms query)"
