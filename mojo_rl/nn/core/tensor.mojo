@@ -349,7 +349,17 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
                 # Metal. Fall back to the device drain from here on.
                 self._no_events = True
         if self._h2d_done:
-            ctx.stream().record_event(self._h2d_done.value())
+            try:
+                ctx.stream().record_event(self._h2d_done.value())
+            except:
+                # ⚠ THE FALLBACK CANNOT BE KEYED ON `create_event` ALONE. MAX
+                # 26.6 on Metal HANDS OUT an event and then refuses the stream
+                # ("Metal stream not implemented"), so the earlier `except`
+                # never fires and this one does. The event is dropped rather
+                # than kept: an event that was never recorded would be waited
+                # on at the top of the next call.
+                self._h2d_done = None
+                self._no_events = True
 
     def download_enqueue(mut self, ctx: DeviceContext) raises:
         """Enqueue the D2H copy into the persistent host buffer WITHOUT
