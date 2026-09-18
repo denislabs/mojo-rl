@@ -125,6 +125,7 @@ smolvla-attn-bench-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 
 # a variant ships only if it is faster for SigLIP and no slower for ACT.
 cross-attn-bench-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -o /tmp/xa_bench benchmarks/cross_attention_bench.mojo && /tmp/xa_bench", description = "CrossAttention: four forward variants at SigLIP + ACT shapes, bit-checked" }
 cross-attn-stages-bench-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -o /tmp/xa_stages_bench benchmarks/cross_attention_stages_bench.mojo && /tmp/xa_stages_bench", description = "CrossAttention forward timed stage by stage, with per-stage candidates, bit-checked" }
+attn-matmul-bench-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -o /tmp/attn_mm_bench benchmarks/attention_matmul_bench.mojo && /tmp/attn_mm_bench", description = "The two attention matmuls: MAX batched_matmul vs tiled kernels, at SigLIP + ACT shapes" }
 
 [feature.amd]
 
