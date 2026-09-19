@@ -97,7 +97,7 @@ from mojo_rl.tasks.spec import (
     FamilySpec, TaskSpec,
 )
 from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import So101TabletopConfig
+from mojo_rl.tasks.family_config import So101TabletopConfig, So101TabletopPlacement
 from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
 from mojo_rl.tasks.predicates import (
     parse_goal, bind_goal, require_tier_a, BoundGoal,
@@ -347,7 +347,7 @@ def measure(
     )
     var ids = goal_frame_ids(
         g.terms[0].op, g.terms[0].a, g.terms[0].b,
-        So101TabletopConfig.REGION_SITE_ID,
+        So101TabletopPlacement.REGION_SITE_ID,
     )
     comptime GS = So101TabletopConfig.GRIPPER_SITE
     var sx: Float64

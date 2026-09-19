@@ -152,8 +152,27 @@ def main() -> int:
         bodies = {i for i in range(m.nbody)
                   if (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, i) or "")
                   .startswith(name + "_")}
-        zs = [d.geom_xpos[gi][2] - m.geom_size[gi][2]
-              for gi in range(m.ngeom) if m.geom_bodyid[gi] in bodies]
+        # ⚠ THE LOWEST CORNER OF EACH GEOM'S BOX, NOT `xpos.z - size.z`. For a
+        # mesh geom `geom_size` is the mesh's AABB half-size in the MESH frame
+        # and `geom_xpos` its frame origin, so a rotated mesh (the tower
+        # stand's y-up STLs, quat +90° about x) read as floating 8 cm below the
+        # desk. `geom_aabb` is the local box (centre + half-size); its eight
+        # corners through `geom_xmat` give the world-z minimum for every type.
+        zs = []
+        for gi in range(m.ngeom):
+            if m.geom_bodyid[gi] not in bodies:
+                continue
+            c = m.geom_aabb[gi][:3]
+            h = m.geom_aabb[gi][3:]
+            R = d.geom_xmat[gi].reshape(3, 3)
+            lo = None
+            for sx in (-1, 1):
+                for sy in (-1, 1):
+                    for sz in (-1, 1):
+                        p = c + h * [sx, sy, sz]
+                        z = d.geom_xpos[gi][2] + (R @ p)[2]
+                        lo = z if lo is None or z < lo else lo
+            zs.append(lo)
         bottom = min(zs) if zs else None
         if not fam_d["floor"]:
             if bottom is None:

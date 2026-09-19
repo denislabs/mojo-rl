@@ -73,7 +73,7 @@ from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
 
 from mojo_rl.tasks.spec import load_family, load_task, validate_task_against_family
 from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import So101TabletopConfig
+from mojo_rl.tasks.family_config import So101TabletopConfig, So101TabletopPlacement
 from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
 from mojo_rl.tasks.predicates import parse_goal, bind_goal, require_tier_a
 from mojo_rl.tasks.eval import (
@@ -117,7 +117,7 @@ def parked_drift(
     var mv = 0.0
     for e in range(N_ENVS):
         var dz = Float64(
-            env.d.qpos.data[e * NQ + So101TabletopConfig.FREE_QADR_2 + 2]
+            env.d.qpos.data[e * NQ + So101TabletopPlacement.FREE_QADR_2 + 2]
         ) - pk_z
         if dz < 0.0:
             dz = -dz
@@ -126,7 +126,7 @@ def parked_drift(
         for k in range(6):
             var v = Float64(
                 env.d.qvel.data[
-                    e * NV + So101TabletopConfig.FREE_DADR_2 + k
+                    e * NV + So101TabletopPlacement.FREE_DADR_2 + k
                 ]
             )
             if v < 0.0:
@@ -483,9 +483,9 @@ def main() raises:
             var want = mka if (e % 2) == 0 else mkb
             for j in range(NF):
                 var si = (
-                    So101TabletopConfig.FREE_SLOT_IDX_0 if j == 0
-                    else (So101TabletopConfig.FREE_SLOT_IDX_1 if j == 1
-                          else So101TabletopConfig.FREE_SLOT_IDX_2)
+                    So101TabletopPlacement.FREE_SLOT_IDX_0 if j == 0
+                    else (So101TabletopPlacement.FREE_SLOT_IDX_1 if j == 1
+                          else So101TabletopPlacement.FREE_SLOT_IDX_2)
                 )
                 var on = ((Int(want) >> si) & 1) == 1
                 var got = Float64(ob[e * EnvT.OBS_DIM + MB + j])
@@ -607,8 +607,8 @@ def main() raises:
         # stepped, of a scene with no gravity, and of a repark that pinned
         # EVERY slot — all three make BOTH measurements equal and pass. An
         # ACTIVE prop must be somewhere else entirely.
-        comptime BR_QADR = So101TabletopConfig.FREE_QADR_0
-        comptime CB_QADR = So101TabletopConfig.FREE_QADR_2
+        comptime BR_QADR = So101TabletopPlacement.FREE_QADR_0
+        comptime CB_QADR = So101TabletopPlacement.FREE_QADR_2
         var active_moved = 0
         for e in range(N_ENVS):
             if Float64(env.d.qpos.data[e * NQ + BR_QADR + 2]) != Float64(

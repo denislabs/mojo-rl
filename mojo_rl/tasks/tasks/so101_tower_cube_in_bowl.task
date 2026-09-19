@@ -1,0 +1,35 @@
+# CUBE IN BOWL — the recorded task, in sim.
+#
+# `language=` IS THE DATASET'S OWN STRING, byte for byte
+# (`projects/so101-tower/datasets/cube-in-bowl/meta/tasks.parquet`,
+# `tools/vla/smolvla_tasks_so101-tower_cube-in-bowl.tsv` token ids). A VLA
+# conditioned on it in sim must see the same tokens it will see on the arm.
+schema_version=1
+task=so101_tower_cube_in_bowl
+family=so101_tower
+language=Grab the cube and put it in the bowl
+
+# ⚠⚠ `Near`, NOT `In`. `In(brick, <region>)` would want a region attached to
+# the BOWL's site, and the device region table bakes every site's world pose
+# at the rest configuration (`gen_placement_tables.mojo` reads it off FK
+# once; `region_move_joint` follows one SLIDE, not a free body). A region on
+# a free bowl would be evaluated where the bowl PARKS. `Near` is body-to-body
+# geometry and is exact on both paths.
+#
+# 0.045 IS THE GEOMETRY: a brick resting at the bowl's centre has its origin
+# 0.018 above the bowl's (base 0.008 + half-height 0.0096) and up to ~0.03
+# to the side inside a 0.052 inner radius — under 0.045. A brick standing
+# AGAINST the bowl's outside is at least 0.062 + 0.016 = 0.078 away; one
+# balanced on the rim at least 0.052. So the threshold separates "in" from
+# every "beside" or "on top".
+goal=Near(brick, bowl, 0.045)
+
+active=tower
+active=desk
+active=bowl
+active=brick
+
+# The recorded layout: bowl on the arm's left, brick on its right — see the
+# family for the strips and the guaranteed separation.
+init=bowl@desk_left
+init=brick@desk_right

@@ -1,0 +1,52 @@
+<mujoco model="bowl">
+  <!-- THE BOWL OF "grab the cube and put it in the bowl" — a FREE slot.
+
+       A small plastic bowl, ~12 cm across and 5 cm tall (read off the
+       recorded frames beside the 3.2 cm brick; ⚠ NOT MEASURED — replace the
+       three numbers below with calipers on the real one). Built from
+       PRIMITIVES rather than a mesh: the collision path hulls every mesh
+       (`collision/hull_cache.mojo`), and a convex hull of a bowl is a
+       solid puck nothing can be put INTO. Eight wall boxes on an octagon
+       plus a base box keep the cavity.
+
+       ⚠ THE BASE IS ONE BOX, 4.6 cm HALF-WIDTH, INSIDE A 5.2 cm INNER
+       RADIUS. Its corners reach 6.5 cm (3 mm past the outer wall) and its
+       edges leave a 6 mm slit under the four axis-aligned walls — cosmetic
+       both ways, and a 3.2 cm brick cannot fall through 6 mm. A base
+       tiled from several boxes would close the slits and cost up to 8
+       contacts PER BOX under a resting brick, which is the family's whole
+       contact budget. Contacts over looks.
+
+       ⚠ `slot_geom=` IN THE FAMILY MUST MATCH: bottom_z 0 (the origin is at
+       the base's underside), top_z 0.052, h_radius 0.062 (outer wall).
+
+       ⚠ NO `<inertial>` — derived from the geoms, see cube.xml. density 400
+       puts it near 90 g, a light plastic bowl: it slides when pushed by the
+       gripper, as the real one does. -->
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="bowl">
+      <freejoint name="free"/>
+      <geom name="base" type="box" pos="0 0 0.004" size="0.046 0.046 0.004"
+            density="400" rgba="0.15 0.62 0.62 1"/>
+      <!-- eight walls, centre radius 0.057, inner face 0.052, outer 0.062,
+           height 0.008..0.052 -->
+      <geom name="wall0" type="box" pos="0.057 0 0.030" euler="0 0 0"
+            size="0.005 0.024 0.022" density="400" rgba="0.15 0.62 0.62 1"/>
+      <geom name="wall1" type="box" pos="0.0403051 0.0403051 0.030" euler="0 0 0.7853982"
+            size="0.005 0.024 0.022" density="400" rgba="0.15 0.62 0.62 1"/>
+      <geom name="wall2" type="box" pos="0 0.057 0.030" euler="0 0 1.5707963"
+            size="0.005 0.024 0.022" density="400" rgba="0.15 0.62 0.62 1"/>
+      <geom name="wall3" type="box" pos="-0.0403051 0.0403051 0.030" euler="0 0 2.3561945"
+            size="0.005 0.024 0.022" density="400" rgba="0.15 0.62 0.62 1"/>
+      <geom name="wall4" type="box" pos="-0.057 0 0.030" euler="0 0 3.1415927"
+            size="0.005 0.024 0.022" density="400" rgba="0.15 0.62 0.62 1"/>
+      <geom name="wall5" type="box" pos="-0.0403051 -0.0403051 0.030" euler="0 0 3.9269908"
+            size="0.005 0.024 0.022" density="400" rgba="0.15 0.62 0.62 1"/>
+      <geom name="wall6" type="box" pos="0 -0.057 0.030" euler="0 0 4.7123890"
+            size="0.005 0.024 0.022" density="400" rgba="0.15 0.62 0.62 1"/>
+      <geom name="wall7" type="box" pos="0.0403051 -0.0403051 0.030" euler="0 0 5.4977871"
+            size="0.005 0.024 0.022" density="400" rgba="0.15 0.62 0.62 1"/>
+    </body>
+  </worldbody>
+</mujoco>

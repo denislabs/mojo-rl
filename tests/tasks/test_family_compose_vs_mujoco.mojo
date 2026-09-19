@@ -35,16 +35,37 @@ from mojo_rl.tasks.spec import load_family, SLOT_FREE
 from mojo_rl.tasks.family import (
     compose_family, park_pos, scene_path, SCENE_DIR, BASE_PREFIX,
 )
+from std.sys import argv
 from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
 from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
+from mojo_rl.tasks.so101_tower_xml import So101TowerModel
 
 
 comptime FAMILY = String("mojo_rl/tasks/families/so101_tabletop.family")
 
 
+def _family_path() -> String:
+    """`so101_tabletop` unless a `.family` path is given on the command line.
+
+    Every branch below — the budget arithmetic, the joint and ctrl ranges, the
+    compile unit — applies to any family with the SO-101 as its base, and
+    there are two now: `so101_tower.family` is the rig with the cameras.
+    Run the gate once per family:
+
+        pixi run mojo run -I . tests/tasks/test_family_compose_vs_mujoco.mojo \\
+            mojo_rl/tasks/families/so101_tower.family
+    """
+    var args = argv()
+    for i in range(1, len(args)):
+        var a = String(args[i])
+        if a.endswith(".family"):
+            return a
+    return FAMILY
+
+
 def main() raises:
     print("=== .family -> composed scene, vs MuJoCo — P1c ===")
-    var f = load_family(FAMILY)
+    var f = load_family(_family_path())
     print("  family:", f.name, "| slots:", len(f.slots),
           "| free:", f.n_free_slots())
 
@@ -265,26 +286,45 @@ def main() raises:
     # `gen-family-scenes` or `gen-dims`, the comptime dimensions freeze at the
     # old scene and `init_fields` would raise at env construction — far from
     # the edit that caused it. Here it is one line from the cause.
-    print("  model def: nq", So101TabletopModel.NQ,
-          " nv", So101TabletopModel.NV,
-          " nbody", So101TabletopModel.NBODY)
-    if So101TabletopModel.NBODY != len(fmd.bodies) + 1:
+    # ⚠ THE COMPILE UNIT IS A COMPTIME TYPE, so it is picked by the family's
+    # NAME here; an unknown family is a refusal, not a skipped check.
+    var md_nq = 0
+    var md_nv = 0
+    var md_nbody = 0
+    var md_njoint = 0
+    if f.name == "so101_tabletop":
+        md_nq = So101TabletopModel.NQ
+        md_nv = So101TabletopModel.NV
+        md_nbody = So101TabletopModel.NBODY
+        md_njoint = So101TabletopModel.NJOINT
+    elif f.name == "so101_tower":
+        md_nq = So101TowerModel.NQ
+        md_nv = So101TowerModel.NV
+        md_nbody = So101TowerModel.NBODY
+        md_njoint = So101TowerModel.NJOINT
+    else:
         raise Error(
-            "family compose: So101TabletopModel.NBODY is "
-            + String(So101TabletopModel.NBODY) + " but the composed scene has "
-            + String(len(fmd.bodies)) + " bodies + world. Run"
+            "family compose: no compile unit is known for family '" + f.name
+            + "' — add its `<family>_xml.mojo` model def to this gate."
+        )
+    print("  model def: nq", md_nq, " nv", md_nv, " nbody", md_nbody)
+    if md_nbody != len(fmd.bodies) + 1:
+        raise Error(
+            "family compose: the model def's NBODY is " + String(md_nbody)
+            + " but the composed scene has " + String(len(fmd.bodies))
+            + " bodies + world. Run"
             " `pixi run gen-family-scenes && pixi run gen-dims`."
         )
-    if So101TabletopModel.NJOINT != len(fmd.joints):
+    if md_njoint != len(fmd.joints):
         raise Error(
-            "family compose: So101TabletopModel.NJOINT is stale — run"
+            "family compose: the model def's NJOINT is stale — run"
             " `pixi run gen-family-scenes && pixi run gen-dims`."
         )
     # ⚠ nv IS THE BUDGET. Six per free slot, none per fixture.
     var expect_nv = 6 + f.n_free_slots() * 6
-    if So101TabletopModel.NV != expect_nv:
+    if md_nv != expect_nv:
         raise Error(
-            "family compose: nv is " + String(So101TabletopModel.NV)
+            "family compose: nv is " + String(md_nv)
             + ", expected " + String(expect_nv) + " (6 for the arm + 6 per"
             " FREE slot; a static fixture adds none). Either the slot table"
             " changed without regenerating, or a slot's asset is not what its"

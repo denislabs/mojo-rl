@@ -1,6 +1,10 @@
 """The family's `Phyics3dEnvConfig` — the reward IS the goal. P3c.
 
     Phyics3dBatchedEnv[So101TabletopModel, So101TabletopConfig, N_ENVS]
+    Phyics3dBatchedEnv[So101TowerModel, So101TowerConfig, N_ENVS]
+
+`So101FamilyConfig[P, ...]` is the one type; the two names above are it at
+the tabletop's hand-written table and the tower's GENERATED one.
 
 One config per FAMILY, not per task. That is the fixed scene budget cashing in:
 every task in the family shares this type, this model and this monomorphisation,
@@ -105,6 +109,8 @@ from .so101_tabletop_xml import (
     So101TabletopModel, SO101_TABLETOP_N_FREE_SLOTS,
 )
 from mojo_rl.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
+from .so101_tower_xml import SO101_TOWER_NMESH_VERTS
+from .placement.so101_tower import So101TowerPlacement
 from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
 
 
@@ -120,16 +126,165 @@ struct So101TabletopPlacement(PlacementTable):
     """
 
     comptime N_SLOTS: Int = 4
-    comptime N_FREE: Int = So101TabletopConfig.N_FREE_SLOTS
-    comptime N_REGIONS: Int = So101TabletopConfig.N_REGIONS
+    comptime N_FREE: Int = SO101_TABLETOP_N_FREE_SLOTS
+    comptime N_REGIONS: Int = 3
     comptime NQ: Int = 27
     comptime NV: Int = 24
     comptime N_JOINTS: Int = 0
     comptime NBODY: Int = So101TabletopModel.NBODY
     comptime NSITE: Int = So101TabletopModel.NSITE
-    comptime GRIPPER_SITE: Int = So101TabletopConfig.GRIPPER_SITE
     # `so101_tabletop.family` declares no `base_qpos=`: its rest is `qpos0`.
     comptime N_BASE_QPOS: Int = 0
+
+    # ── THE FAMILY CONSTANTS — restated here, ON THE TABLE, not on the config.
+    #
+    # ⚠ THEY USED TO LIVE ON `So101TabletopConfig`. The config is now
+    # `So101FamilyConfig[P]`, ONE type over every SO-101 family, and reads
+    # everything family-specific through its `PlacementTable` — so the
+    # numbers a family restates belong to its table, where the generated
+    # tables (`placement/so101_tower.mojo`) already keep them.
+    # ── THE FREE-SLOT TABLE — the one thing this type restates ────────────
+    #
+    # A config is a comptime TYPE and the `.family` is a runtime file, so this
+    # cannot read it — the same constraint `MAX_STEPS` above lives under. The
+    # difference is that this restatement is CHECKED: `tests/tasks/
+    # test_active_mask.mojo` loads the family, runs `free_slot_addresses`
+    # against the composed scene, and asserts every number below. A drift is a
+    # failing gate, not a silently permuted observation.
+    #
+    # Measured on `scenes/so101_tabletop.xml` through MuJoCo 3.10.0:
+    #
+    #   family slot   joint          qposadr   dofadr
+    #   1  brick      brick_free       6         6
+    #   2  cube_a     cube_a_free     13        12
+    #   3  cube_b     cube_b_free     20        18
+    #
+    # Slot 0 is `table`, a STATIC fixture: no joint, no state, and therefore
+    # nothing in the observation varies with it. It still owns bit 0 of the
+    # mask — the mask is indexed by FAMILY slot, so there is no second
+    # numbering to keep in step (`tasks/active.mojo`).
+    #
+    # ⚠ `qposadr` AND `dofadr` DIVERGE AFTER THE FIRST FREE JOINT, because a
+    # free joint is 7 `qpos` against 6 `qvel`. Reusing one for the other is
+    # right for slot 0 of the three and wrong for the rest — which is exactly
+    # the shape that reads as "the last prop's velocity is somebody else's".
+    comptime FREE_SLOT_IDX_0: Int = 1
+    comptime FREE_SLOT_IDX_1: Int = 2
+    comptime FREE_SLOT_IDX_2: Int = 3
+    comptime FREE_QADR_0: Int = 6
+    comptime FREE_QADR_1: Int = 13
+    comptime FREE_QADR_2: Int = 20
+    comptime FREE_DADR_0: Int = 6
+    comptime FREE_DADR_1: Int = 12
+    comptime FREE_DADR_2: Int = 18
+
+    # ── THE PARK POSE, the second thing this type restates ────────────────
+    #
+    # `tasks/family.park_pos` is `(park_x + slot*PARK_SPACING, park_y,
+    # park_z)`, read from the `.family`'s `park=` line. All family constants,
+    # so a comptime type can hold them — and `test_active_mask` asserts each
+    # against `park_pos(f, si)` on the loaded family, the same way it asserts
+    # the address table.
+    #
+    # ⚠⚠ I SAID THIS NEEDED A NEW OPERAND AND IT DID NOT. The P3d note claimed
+    # the repark was blocked because `pre_step_gpu` "has no way to learn WHERE
+    # a slot parks" and that reaching it meant putting the pose in
+    # `curriculum` and widening a signature across fourteen configs. The pose
+    # is a FAMILY CONSTANT, exactly like `FREE_QADR_*` above, and restating it
+    # here costs one gate assertion. Only `qvel` actually needed a wider hook.
+    comptime PARK_X: Float64 = 10.0
+    comptime PARK_Y: Float64 = 0.0
+    comptime PARK_Z: Float64 = 50.0
+    comptime PARK_SPACING: Float64 = 0.5
+
+    # ── THE REGION TABLE, the third thing this type restates ──────────────
+    #
+    # ⚠⚠ RESTATED BECAUSE `init_qpos_gpu` IS NOT HANDED `curriculum` OR
+    # `site_xpos`. It gets `qpos`, `qvel`, the MODEL records and `meta`, and
+    # it runs BEFORE forward kinematics — so the site a region hangs off has
+    # no world position it could read. Every region in this family hangs off
+    # `table_surface`, which belongs to a STATIC fixture: its world pose is a
+    # family constant, and a constant is what a comptime type can hold.
+    #
+    # ⚠ THE SAME STATUS AS `FREE_QADR_*` AND `PARK_*` ABOVE — restated, and
+    # CHECKED. `tests/tasks/test_device_placement.mojo` loads the `.family`,
+    # runs FK on the composed scene, and asserts every number below against
+    # `region_sites` + `region_rects`. A drift is a failing gate.
+    #
+    # ⚠ ONE SITE FOR ALL THREE REGIONS, which is true of this family and not
+    # of families in general — a family whose regions sit on different
+    # fixtures needs one triple each.
+    #
+    # Region order is FAMILY ORDER, which is what `META_IDX_INIT_REGION_*`
+    # holds and what `region_rects` returns:
+    #
+    #   0  table_top     -0.10,-0.10, 0.10, 0.10
+    #   1  table_left    -0.10, 0.04, 0.10, 0.12
+    #   2  table_right   -0.10,-0.12, 0.10,-0.04
+    comptime REGION_SITE_X: Float64 = 0.25
+    comptime REGION_SITE_Y: Float64 = 0.0
+    comptime REGION_SITE_Z: Float64 = 0.02
+    comptime REGION_X0_0: Float64 = -0.10
+    comptime REGION_Y0_0: Float64 = -0.10
+    comptime REGION_X1_0: Float64 = 0.10
+    comptime REGION_Y1_0: Float64 = 0.10
+    comptime REGION_X0_1: Float64 = -0.10
+    comptime REGION_Y0_1: Float64 = 0.04
+    comptime REGION_X1_1: Float64 = 0.10
+    comptime REGION_Y1_1: Float64 = 0.12
+    comptime REGION_X0_2: Float64 = -0.10
+    comptime REGION_Y0_2: Float64 = -0.12
+    comptime REGION_X1_2: Float64 = 0.10
+    comptime REGION_Y1_2: Float64 = -0.04
+
+    # ⚠ THE SLOT RADIUS THE SAMPLER REJECTS ON, and the height it rests at.
+    # Every free slot in this family is `assets/props/cube.xml`, a 1.2 cm
+    # half-size box, so one constant serves all three. `sampler.
+    # sample_placements` takes it as `radii[si]` and uses it for BOTH the
+    # pairwise clash test and the resting height, so a per-asset table would
+    # have to feed both.
+    #
+    # ⚠⚠ AND A FAMILY WHOSE SLOTS CARRY `slot_geom=` DOES NOT COME THROUGH HERE
+    # AT ALL. `SlotSpec.has_geom` — set by `resolve_family` from the asset's own
+    # robosuite `bottom_site` / `top_site` / `horizontal_radius_site` — makes
+    # the HOST sampler ignore `radii[si]` and use those two separate numbers
+    # instead. Every LIBERO family has them (93 assets, 10 distinct triples,
+    # radius spanning 0.005 to 0.3).
+    #
+    # ⚠ AND THE DEVICE RESET NOW READS THEM TOO. This note used to list what a
+    # LIBERO twin owed — read `slot_geom=`, walk `spec.order_inits`, add
+    # `TABLE_Z_OFFSET` on a region naming no contact slot — and the host had
+    # since grown a FOURTH (the fixture's `top_site` for `On`). All four live in
+    # `placement/table.place_free_slots`, which this family reaches through
+    # `So101TabletopPlacement` with `has_geom` false, so this constant is its
+    # fallback radius exactly as it is the host's `radii[si]`.
+    #
+    # ⚠⚠ IT TRACKS `cube.xml`'s `size` AND THERE IS NOTHING TO ENFORCE THAT.
+    # A radius larger than the prop spawns it FLOATING — it drops at reset,
+    # and every reset distance the shaping was calibrated against moves. The
+    # prop shrank from 0.02 to 0.012 because the SO-101 jaw cannot close on a
+    # 4 cm cube (see the header of `cube.xml`); this moved with it.
+    comptime SLOT_RADIUS: Float64 = 0.012
+
+    comptime REGION_SITE_ID: Int = 2
+    """`table_surface`'s site id — the site EVERY region in this family hangs
+    off.
+
+    ⚠⚠ USED BY BOTH OBSERVATION HOOKS AND BY NEITHER EVALUATOR. The device
+    evaluator reads the same id out of `curriculum[0, CUR_IDX_REGION_SITE]`,
+    but `custom_extract_obs_cpu` is handed no `curriculum` — so having the GPU
+    hook read the table and the CPU hook read a constant would put a
+    divergence between the two vectors a checkpoint is shaped by.
+    `tests/tasks/test_device_placement.mojo` asserts it equals
+    `region_sites(f, fmd.site_names)[0]`."""
+
+    comptime GRIPPER_SITE: Int = 1
+    """`robot_gripperframe`'s site id in the composed scene.
+
+    ⚠ RESTATED LIKE THE REGION TABLE, and checked the same way — the reward
+    hook gets `site_xpos` but no name table. Measured through MuJoCo 3.10.0 on
+    `scenes/so101_tabletop.xml`: 0 `robot_baseframe`, 1 `robot_gripperframe`,
+    2 `table_surface`."""
 
     @staticmethod
     def base_qpos[DTYPE: DType](i: Int) -> Scalar[DTYPE]:
@@ -138,26 +293,26 @@ struct So101TabletopPlacement(PlacementTable):
     @staticmethod
     def free_slot(j: Int) -> Int:
         if j == 0:
-            return So101TabletopConfig.FREE_SLOT_IDX_0
+            return Self.FREE_SLOT_IDX_0
         if j == 1:
-            return So101TabletopConfig.FREE_SLOT_IDX_1
-        return So101TabletopConfig.FREE_SLOT_IDX_2
+            return Self.FREE_SLOT_IDX_1
+        return Self.FREE_SLOT_IDX_2
 
     @staticmethod
     def free_qadr(j: Int) -> Int:
         if j == 0:
-            return So101TabletopConfig.FREE_QADR_0
+            return Self.FREE_QADR_0
         if j == 1:
-            return So101TabletopConfig.FREE_QADR_1
-        return So101TabletopConfig.FREE_QADR_2
+            return Self.FREE_QADR_1
+        return Self.FREE_QADR_2
 
     @staticmethod
     def free_dadr(j: Int) -> Int:
         if j == 0:
-            return So101TabletopConfig.FREE_DADR_0
+            return Self.FREE_DADR_0
         if j == 1:
-            return So101TabletopConfig.FREE_DADR_1
-        return So101TabletopConfig.FREE_DADR_2
+            return Self.FREE_DADR_1
+        return Self.FREE_DADR_2
 
     @staticmethod
     def free_has_geom(j: Int) -> Bool:
@@ -165,28 +320,28 @@ struct So101TabletopPlacement(PlacementTable):
 
     @staticmethod
     def free_rest[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
-        return Scalar[DTYPE](So101TabletopConfig.SLOT_RADIUS)
+        return Scalar[DTYPE](Self.SLOT_RADIUS)
 
     @staticmethod
     def free_radius[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
-        return Scalar[DTYPE](So101TabletopConfig.SLOT_RADIUS)
+        return Scalar[DTYPE](Self.SLOT_RADIUS)
 
     @staticmethod
     def free_park_x[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
         # ⚠ IN `DTYPE`, NOT `Float64`: `j` is a runtime index, so a `Float64`
         # product here would be a `double` in a Metal kernel. Same op order
         # as `family.park_pos`, so the float64 value is identical.
-        return Scalar[DTYPE](So101TabletopConfig.PARK_X) + Scalar[DTYPE](
+        return Scalar[DTYPE](Self.PARK_X) + Scalar[DTYPE](
             Self.free_slot(j)
-        ) * Scalar[DTYPE](So101TabletopConfig.PARK_SPACING)
+        ) * Scalar[DTYPE](Self.PARK_SPACING)
 
     @staticmethod
     def free_park_y[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
-        return Scalar[DTYPE](So101TabletopConfig.PARK_Y)
+        return Scalar[DTYPE](Self.PARK_Y)
 
     @staticmethod
     def free_park_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
-        return Scalar[DTYPE](So101TabletopConfig.PARK_Z)
+        return Scalar[DTYPE](Self.PARK_Z)
 
     @staticmethod
     def free_bottom_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
@@ -200,19 +355,19 @@ struct So101TabletopPlacement(PlacementTable):
     # config restates a single triple.
     @staticmethod
     def region_site(r: Int) -> Int:
-        return So101TabletopConfig.REGION_SITE_ID
+        return Self.REGION_SITE_ID
 
     @staticmethod
     def region_site_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
-        return Scalar[DTYPE](So101TabletopConfig.REGION_SITE_X)
+        return Scalar[DTYPE](Self.REGION_SITE_X)
 
     @staticmethod
     def region_site_y[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
-        return Scalar[DTYPE](So101TabletopConfig.REGION_SITE_Y)
+        return Scalar[DTYPE](Self.REGION_SITE_Y)
 
     @staticmethod
     def region_site_z[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
-        return Scalar[DTYPE](So101TabletopConfig.REGION_SITE_Z)
+        return Scalar[DTYPE](Self.REGION_SITE_Z)
 
     @staticmethod
     def region_has_rect(r: Int) -> Bool:
@@ -221,34 +376,34 @@ struct So101TabletopPlacement(PlacementTable):
     @staticmethod
     def region_x0[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
         if r == 1:
-            return Scalar[DTYPE](So101TabletopConfig.REGION_X0_1)
+            return Scalar[DTYPE](Self.REGION_X0_1)
         if r == 2:
-            return Scalar[DTYPE](So101TabletopConfig.REGION_X0_2)
-        return Scalar[DTYPE](So101TabletopConfig.REGION_X0_0)
+            return Scalar[DTYPE](Self.REGION_X0_2)
+        return Scalar[DTYPE](Self.REGION_X0_0)
 
     @staticmethod
     def region_y0[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
         if r == 1:
-            return Scalar[DTYPE](So101TabletopConfig.REGION_Y0_1)
+            return Scalar[DTYPE](Self.REGION_Y0_1)
         if r == 2:
-            return Scalar[DTYPE](So101TabletopConfig.REGION_Y0_2)
-        return Scalar[DTYPE](So101TabletopConfig.REGION_Y0_0)
+            return Scalar[DTYPE](Self.REGION_Y0_2)
+        return Scalar[DTYPE](Self.REGION_Y0_0)
 
     @staticmethod
     def region_x1[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
         if r == 1:
-            return Scalar[DTYPE](So101TabletopConfig.REGION_X1_1)
+            return Scalar[DTYPE](Self.REGION_X1_1)
         if r == 2:
-            return Scalar[DTYPE](So101TabletopConfig.REGION_X1_2)
-        return Scalar[DTYPE](So101TabletopConfig.REGION_X1_0)
+            return Scalar[DTYPE](Self.REGION_X1_2)
+        return Scalar[DTYPE](Self.REGION_X1_0)
 
     @staticmethod
     def region_y1[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
         if r == 1:
-            return Scalar[DTYPE](So101TabletopConfig.REGION_Y1_1)
+            return Scalar[DTYPE](Self.REGION_Y1_1)
         if r == 2:
-            return Scalar[DTYPE](So101TabletopConfig.REGION_Y1_2)
-        return Scalar[DTYPE](So101TabletopConfig.REGION_Y1_0)
+            return Scalar[DTYPE](Self.REGION_Y1_2)
+        return Scalar[DTYPE](Self.REGION_Y1_0)
 
     @staticmethod
     def region_anchored(r: Int) -> Bool:
@@ -291,8 +446,20 @@ struct So101TabletopPlacement(PlacementTable):
         return 0
 
 
-struct So101TabletopConfig(Phyics3dEnvConfig):
-    comptime FRAME_SKIP: Int = 2
+struct So101FamilyConfig[
+    P: PlacementTable, HORIZON: Int, SKIP: Int, NMESH: Int,
+    FALLBACK_RADIUS: Float64,
+](Phyics3dEnvConfig):
+    """ONE config for every SO-101 task family, over its placement table `P`.
+
+    `So101TabletopConfig` and `So101TowerConfig` below are this type at two
+    tables. Everything family-specific — slot addresses, park pose, regions,
+    the gripper site, nq/nv — is read from `P`; what the parameters carry is
+    what no table holds: the horizon, the substep count, the hull-vertex
+    budget and the host sampler's fallback radius. Every hook body is the
+    one implementation the tabletop family trained with, unchanged.
+    """
+    comptime FRAME_SKIP: Int = Self.SKIP
     comptime HAS_GPU_HOOKS: Bool = True
     # ⚠ EULER, AS MuJoCo RUNS THIS MODEL. Neither the Menagerie SO-101 nor the
     # generated scenes set `<option integrator>`, so MuJoCo steps them under
@@ -304,7 +471,7 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     # k=0 and k=13 park scenes (2026-09-07). Position actuators at dt=0.002
     # are what MuJoCo's own default runs them with.
     comptime INTEGRATOR: StaticString = "euler"
-    comptime MAX_STEPS: Int = 300
+    comptime MAX_STEPS: Int = Self.HORIZON
     """The family's `horizon=`. ⚠ RESTATED, NOT READ — a config is a comptime
     TYPE and the `.family` is a runtime file, so this cannot import it. Keep
     them in step by hand; a mismatch changes episode length, not correctness."""
@@ -363,134 +530,22 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     # primitive, not a mesh — so they add no hull vertices at all.
     #
     # ⚠ A drift here is LOUD: `fields_build` raises rather than truncating.
-    comptime NMESH_VERTS: Int = SO_ARM101_NMESH_VERTS
+    comptime NMESH_VERTS: Int = Self.NMESH
 
     comptime INTEGRATOR_WS_EXTRA: Int = 0  # Euler needs no extra workspace
 
-    # ── THE FREE-SLOT TABLE — the one thing this type restates ────────────
-    #
-    # A config is a comptime TYPE and the `.family` is a runtime file, so this
-    # cannot read it — the same constraint `MAX_STEPS` above lives under. The
-    # difference is that this restatement is CHECKED: `tests/tasks/
-    # test_active_mask.mojo` loads the family, runs `free_slot_addresses`
-    # against the composed scene, and asserts every number below. A drift is a
-    # failing gate, not a silently permuted observation.
-    #
-    # Measured on `scenes/so101_tabletop.xml` through MuJoCo 3.10.0:
-    #
-    #   family slot   joint          qposadr   dofadr
-    #   1  brick      brick_free       6         6
-    #   2  cube_a     cube_a_free     13        12
-    #   3  cube_b     cube_b_free     20        18
-    #
-    # Slot 0 is `table`, a STATIC fixture: no joint, no state, and therefore
-    # nothing in the observation varies with it. It still owns bit 0 of the
-    # mask — the mask is indexed by FAMILY slot, so there is no second
-    # numbering to keep in step (`tasks/active.mojo`).
-    #
-    # ⚠ `qposadr` AND `dofadr` DIVERGE AFTER THE FIRST FREE JOINT, because a
-    # free joint is 7 `qpos` against 6 `qvel`. Reusing one for the other is
-    # right for slot 0 of the three and wrong for the rest — which is exactly
-    # the shape that reads as "the last prop's velocity is somebody else's".
-    comptime N_FREE_SLOTS: Int = SO101_TABLETOP_N_FREE_SLOTS
-    comptime FREE_SLOT_IDX_0: Int = 1
-    comptime FREE_SLOT_IDX_1: Int = 2
-    comptime FREE_SLOT_IDX_2: Int = 3
-    comptime FREE_QADR_0: Int = 6
-    comptime FREE_QADR_1: Int = 13
-    comptime FREE_QADR_2: Int = 20
-    comptime FREE_DADR_0: Int = 6
-    comptime FREE_DADR_1: Int = 12
-    comptime FREE_DADR_2: Int = 18
+    # ── READ FROM THE TABLE — see `So101TabletopPlacement` for the numbers ──
+    comptime N_FREE_SLOTS: Int = Self.P.N_FREE
+    comptime N_REGIONS: Int = Self.P.N_REGIONS
+    comptime GRIPPER_SITE: Int = Self.P.GRIPPER_SITE
+    """The end-effector site id the reward measures reach from — `P` carries
+    it because the reward hook gets `site_xpos` but no name table."""
+    comptime SLOT_RADIUS: Float64 = Self.FALLBACK_RADIUS
+    """The host sampler's fallback radius for a free slot WITHOUT
+    `slot_geom=` — every tabletop slot; no tower slot. Passed as a parameter
+    because the trait has no word for it: `P.free_radius(j)` is per slot and
+    already resolved."""
 
-    # ── THE PARK POSE, the second thing this type restates ────────────────
-    #
-    # `tasks/family.park_pos` is `(park_x + slot*PARK_SPACING, park_y,
-    # park_z)`, read from the `.family`'s `park=` line. All family constants,
-    # so a comptime type can hold them — and `test_active_mask` asserts each
-    # against `park_pos(f, si)` on the loaded family, the same way it asserts
-    # the address table.
-    #
-    # ⚠⚠ I SAID THIS NEEDED A NEW OPERAND AND IT DID NOT. The P3d note claimed
-    # the repark was blocked because `pre_step_gpu` "has no way to learn WHERE
-    # a slot parks" and that reaching it meant putting the pose in
-    # `curriculum` and widening a signature across fourteen configs. The pose
-    # is a FAMILY CONSTANT, exactly like `FREE_QADR_*` above, and restating it
-    # here costs one gate assertion. Only `qvel` actually needed a wider hook.
-    comptime PARK_X: Float64 = 10.0
-    comptime PARK_Y: Float64 = 0.0
-    comptime PARK_Z: Float64 = 50.0
-    comptime PARK_SPACING: Float64 = 0.5
-
-    # ── THE REGION TABLE, the third thing this type restates ──────────────
-    #
-    # ⚠⚠ RESTATED BECAUSE `init_qpos_gpu` IS NOT HANDED `curriculum` OR
-    # `site_xpos`. It gets `qpos`, `qvel`, the MODEL records and `meta`, and
-    # it runs BEFORE forward kinematics — so the site a region hangs off has
-    # no world position it could read. Every region in this family hangs off
-    # `table_surface`, which belongs to a STATIC fixture: its world pose is a
-    # family constant, and a constant is what a comptime type can hold.
-    #
-    # ⚠ THE SAME STATUS AS `FREE_QADR_*` AND `PARK_*` ABOVE — restated, and
-    # CHECKED. `tests/tasks/test_device_placement.mojo` loads the `.family`,
-    # runs FK on the composed scene, and asserts every number below against
-    # `region_sites` + `region_rects`. A drift is a failing gate.
-    #
-    # ⚠ ONE SITE FOR ALL THREE REGIONS, which is true of this family and not
-    # of families in general — a family whose regions sit on different
-    # fixtures needs one triple each.
-    #
-    # Region order is FAMILY ORDER, which is what `META_IDX_INIT_REGION_*`
-    # holds and what `region_rects` returns:
-    #
-    #   0  table_top     -0.10,-0.10, 0.10, 0.10
-    #   1  table_left    -0.10, 0.04, 0.10, 0.12
-    #   2  table_right   -0.10,-0.12, 0.10,-0.04
-    comptime N_REGIONS: Int = 3
-    comptime REGION_SITE_X: Float64 = 0.25
-    comptime REGION_SITE_Y: Float64 = 0.0
-    comptime REGION_SITE_Z: Float64 = 0.02
-    comptime REGION_X0_0: Float64 = -0.10
-    comptime REGION_Y0_0: Float64 = -0.10
-    comptime REGION_X1_0: Float64 = 0.10
-    comptime REGION_Y1_0: Float64 = 0.10
-    comptime REGION_X0_1: Float64 = -0.10
-    comptime REGION_Y0_1: Float64 = 0.04
-    comptime REGION_X1_1: Float64 = 0.10
-    comptime REGION_Y1_1: Float64 = 0.12
-    comptime REGION_X0_2: Float64 = -0.10
-    comptime REGION_Y0_2: Float64 = -0.12
-    comptime REGION_X1_2: Float64 = 0.10
-    comptime REGION_Y1_2: Float64 = -0.04
-
-    # ⚠ THE SLOT RADIUS THE SAMPLER REJECTS ON, and the height it rests at.
-    # Every free slot in this family is `assets/props/cube.xml`, a 1.2 cm
-    # half-size box, so one constant serves all three. `sampler.
-    # sample_placements` takes it as `radii[si]` and uses it for BOTH the
-    # pairwise clash test and the resting height, so a per-asset table would
-    # have to feed both.
-    #
-    # ⚠⚠ AND A FAMILY WHOSE SLOTS CARRY `slot_geom=` DOES NOT COME THROUGH HERE
-    # AT ALL. `SlotSpec.has_geom` — set by `resolve_family` from the asset's own
-    # robosuite `bottom_site` / `top_site` / `horizontal_radius_site` — makes
-    # the HOST sampler ignore `radii[si]` and use those two separate numbers
-    # instead. Every LIBERO family has them (93 assets, 10 distinct triples,
-    # radius spanning 0.005 to 0.3).
-    #
-    # ⚠ AND THE DEVICE RESET NOW READS THEM TOO. This note used to list what a
-    # LIBERO twin owed — read `slot_geom=`, walk `spec.order_inits`, add
-    # `TABLE_Z_OFFSET` on a region naming no contact slot — and the host had
-    # since grown a FOURTH (the fixture's `top_site` for `On`). All four live in
-    # `placement/table.place_free_slots`, which this family reaches through
-    # `So101TabletopPlacement` with `has_geom` false, so this constant is its
-    # fallback radius exactly as it is the host's `radii[si]`.
-    #
-    # ⚠⚠ IT TRACKS `cube.xml`'s `size` AND THERE IS NOTHING TO ENFORCE THAT.
-    # A radius larger than the prop spawns it FLOATING — it drops at reset,
-    # and every reset distance the shaping was calibrated against moves. The
-    # prop shrank from 0.02 to 0.012 because the SO-101 jaw cannot close on a
-    # 4 cm cube (see the header of `cube.xml`); this moved with it.
-    comptime SLOT_RADIUS: Float64 = 0.012
 
 
     # ── REWARD SHAPING — see `custom_reward_gpu` for the whole argument ────
@@ -554,32 +609,11 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
     """Measured reach distance is 0.120-0.191 m under a random policy, so 0.20
     keeps the whole random distribution on the sigmoid's slope."""
 
-    comptime REGION_SITE_ID: Int = 2
-    """`table_surface`'s site id — the site EVERY region in this family hangs
-    off.
 
-    ⚠⚠ USED BY BOTH OBSERVATION HOOKS AND BY NEITHER EVALUATOR. The device
-    evaluator reads the same id out of `curriculum[0, CUR_IDX_REGION_SITE]`,
-    but `custom_extract_obs_cpu` is handed no `curriculum` — so having the GPU
-    hook read the table and the CPU hook read a constant would put a
-    divergence between the two vectors a checkpoint is shaped by.
-    `tests/tasks/test_device_placement.mojo` asserts it equals
-    `region_sites(f, fmd.site_names)[0]`."""
-
-    comptime GRIPPER_SITE: Int = 1
-    """`robot_gripperframe`'s site id in the composed scene.
-
-    ⚠ RESTATED LIKE THE REGION TABLE, and checked the same way — the reward
-    hook gets `site_xpos` but no name table. Measured through MuJoCo 3.10.0 on
-    `scenes/so101_tabletop.xml`: 0 `robot_baseframe`, 1 `robot_gripperframe`,
-    2 `table_surface`."""
-
-    comptime OBS_MASK_BASE: Int = (
-        So101TabletopModel.NQ + So101TabletopModel.NV
-    )
+    comptime OBS_MASK_BASE: Int = Self.P.NQ + Self.P.NV
     """Where the `N_FREE_SLOTS` active words start in `obs`.
 
-    ⚠ READ FROM THE MODEL DEF, NOT RESTATED. `So101TabletopModel.OBS_DIM` is
+    ⚠ READ FROM THE TABLE, NOT RESTATED. The model def's `OBS_DIM` is
     `SO101_TABLETOP_OBS_DIM`, defined beside the model def as
     `NQ + NV + N_FREE_SLOTS` — so the number the ENV allocates and the number
     this hook lays out are the same expression, not two copies of a total that
@@ -653,7 +687,7 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         # returns a three-word observation with no error until something
         # indexes past it. The runtime accessors are correct on BOTH
         # providers, which is why `fields/dims.mojo` has all three families.
-        write_task_obs_host[So101TabletopPlacement, DTYPE, D](d, obs)
+        write_task_obs_host[Self.P, DTYPE, D](d, obs)
         _ = m_bodies
         _ = m_joints
         _ = m_geoms
@@ -758,7 +792,7 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         # ⚠ THE RULE IS `task_hooks.repark_inactive_slots`, shared with every
         # LIBERO config; this family's park poses reach it through
         # `So101TabletopPlacement`, drift-checked against `family.park_pos`.
-        repark_inactive_slots[So101TabletopPlacement, DTYPE, BATCH_SIZE, NQ, NV](
+        repark_inactive_slots[Self.P, DTYPE, BATCH_SIZE, NQ, NV](
             qpos, qvel, meta, env
         )
 
@@ -869,7 +903,7 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         # forward kinematics over six joint angles): measured over 190k steps
         # on `gather`, a converged critic and a return that never moved.
         write_task_obs[
-            So101TabletopPlacement, DTYPE, BATCH_SIZE, NQ_F, NV_F, NBODY_F,
+            Self.P, DTYPE, BATCH_SIZE, NQ_F, NV_F, NBODY_F,
             SITE_DIM, OBS_DIM,
         ](qpos, qvel, xpos, site_xpos, meta, obs, env)
         _ = xquat
@@ -1187,7 +1221,7 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         # this hook writes only `qpos`/`qvel` — never `meta`. A hook that
         # zeroed `meta` here would blank every lane's goal at the first reset
         # and every reward would read 0: a flat curve, not a crash.
-        reset_task_slots[So101TabletopPlacement, DTYPE, BATCH_SIZE, NQ_F, NV_F](
+        reset_task_slots[Self.P, DTYPE, BATCH_SIZE, NQ_F, NV_F](
             qpos, qvel, meta, env, seed
         )
         _ = joints
@@ -1195,3 +1229,31 @@ struct So101TabletopConfig(Phyics3dEnvConfig):
         _ = mocap_quat
         _ = bodies
         _ = geoms
+
+
+# ── THE TWO SO-101 FAMILIES, as this one config at their tables ──────────
+#
+# ⚠ THE PARAMETERS ARE RESTATED FROM THE `.family` (`horizon=`, `control_freq=`)
+# and from the scene's hull count; a config is a comptime type and cannot
+# read either. `tests/tasks/test_active_mask.mojo` and
+# `tests/tasks/test_so101_tower_config.mojo` assert them.
+
+comptime So101TabletopConfig = So101FamilyConfig[
+    So101TabletopPlacement, 300, 2, SO_ARM101_NMESH_VERTS, 0.012
+]
+"""`so101_tabletop`: horizon 300, frame skip 2 (a 250 Hz policy on a 2 ms
+timestep — what every run on this family has used), the bare arm's hull
+budget (the props are boxes), and `cube.xml`'s half-size as the sampler's
+radius — see `So101TabletopPlacement.SLOT_RADIUS`."""
+
+comptime So101TowerConfig = So101FamilyConfig[
+    So101TowerPlacement, 300, 16, SO101_TOWER_NMESH_VERTS, 0.0226
+]
+"""`so101_tower`: horizon 300, frame skip 16 — `control_freq=30` in the
+family, 1/30 s / 2 ms = 16.7 substeps, rounded to the integer below (31.25
+Hz): the rig records and deploys at 30 fps and a policy stepped here keeps
+that cadence. The hull budget is measured on the composed scene
+(`tools/tasks/mesh_vertex_budget.mojo` — the wrist camera mount replaces a
+stock part and the stand adds four meshes, visual only). The fallback
+radius is never consulted: both free slots carry `slot_geom=`; the brick's
+half-diagonal is written so a wrong path would still place something sane."""

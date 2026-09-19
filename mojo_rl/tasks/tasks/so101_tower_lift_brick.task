@@ -1,0 +1,25 @@
+# LIFT — the brick off the desk. The grasp half of cube-in-bowl on its own.
+#
+# ⚠ THIS IS THE TASK `task_grasp_feasibility.mojo` SHOULD BE RUN ON FIRST:
+# `props/duplo_brick.xml` is 3.2 cm, above what the stock sim jaw was
+# measured to hold. A flat curve here is the object, not the reward.
+schema_version=1
+task=so101_tower_lift_brick
+family=so101_tower
+language=Pick up the cube
+
+# `Above(brick, desk, m)`: the mat body's origin is at z 0.001 and a resting
+# brick's at 0.0116, so 0.05 asks for ~4 cm of lift — clear of the mat and
+# unambiguous, as `so101_lift_brick` argues for its 0.06.
+goal=Above(brick, desk, 0.05)
+
+active=tower
+active=desk
+active=brick
+active=bowl
+
+# ⚠ FAMILY SLOT ORDER: bowl (slot 2) before brick (slot 3). The host walks
+# this list and the device re-derives it from the slot table; a different
+# order is two different scenes from one (seed, lane).
+init=bowl@desk_left
+init=brick@desk_right

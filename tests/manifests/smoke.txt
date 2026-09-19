@@ -57,6 +57,15 @@ tests/physics3d/test_expand_identity.mojo
 # path alone would pass while accepting all of them.
 tests/tasks/test_spec_roundtrip.mojo
 
+# ── mojo_rl/tasks: the so101-tower rig as a family (sim-to-real track) ──
+# CPU, MuJoCo-free: the config's restated numbers vs the .family and the
+# generated table, every tower task binds and is device-placeable; and our
+# composed camera poses vs the oracle numbers `tools/tasks/check_tower_cameras.py`
+# printed (MuJoCo), at two arm poses so the wrist camera's parent-body
+# composition cannot pass vacuously.
+tests/tasks/test_so101_tower_config.mojo
+tests/tasks/test_so101_tower_cameras.mojo
+
 # ── mojo_rl/tasks: LIBERO's registry as data + the resolved import (L1) ──
 # The category table (38 corpus categories, 5 problem classes, the four
 # articulation directions QUOTED from LIBERO's Python), the `slot=` yaw

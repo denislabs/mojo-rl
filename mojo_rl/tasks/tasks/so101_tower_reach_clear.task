@@ -1,0 +1,16 @@
+# REACH, CLEAR DESK — the smoke task of this family (the tabletop family's
+# `so101_reach_clear`, on the tower rig).
+#
+# No free slot active: the bowl and brick stay parked. It validates the
+# stack on this scene — the tower's post in the arm's swing, the 5 mm base
+# offset, the mat's region — before any placement is involved. NOT a
+# benchmark; see `so101_reach_clear.task` for what a rate here means.
+schema_version=1
+task=so101_tower_reach_clear
+family=so101_tower
+language=Move the gripper over the desk
+
+goal=AtRegion(robot_gripperframe, desk_top)
+
+active=tower
+active=desk

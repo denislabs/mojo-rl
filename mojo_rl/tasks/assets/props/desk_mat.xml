@@ -1,0 +1,34 @@
+<mujoco model="desk_mat">
+  <!-- THE WORK SURFACE OF THE `so101-tower` RIG — a STATIC slot, 2 mm thick.
+
+       On the rig the arm, the tower and the props all stand on ONE white
+       desk. In the family that desk is the composed scene's floor plane
+       (z = 0): the tower's foot and the base plate rest on it and the robot
+       sits 5 mm up, on the plate. This mat is the part of the desk the
+       props are placed on — a 48 x 50 cm white slab whose TOP face is at
+       z = 0.002, carrying the site every region hangs off.
+
+       ⚠ WHY A MAT AND NOT `fixture.xml`. Two reasons the tabletop family's
+       2 cm slab does not serve here: (1) the props must rest at the SAME
+       height as the arm's base, because that is the geometry the real
+       recordings have — a 2 cm platform would move every grasp height;
+       (2) the tracer draws it, and the recorded frames show a white desk,
+       not a brown slab. `rgba` is the desk's colour for that reason.
+
+       ⚠ 1 mm HALF-THICKNESS, NOT 0. A slab coplanar with the floor plane
+       would put every resting prop in contact with BOTH, doubling the
+       contacts the budget pays for; 2 mm keeps the props on the mat alone
+       and is below anything the cameras resolve at this range.
+
+       ⚠ NO `<inertial>` — static, and the builder derives it anyway. -->
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="mat">
+      <geom name="geom" type="box" size="0.24 0.25 0.001" density="800"
+            rgba="0.93 0.93 0.91 1"/>
+      <!-- THE SITE THE REGIONS ATTACH TO, on the top face — see
+           `fixture.xml` for why it is site-relative and `group="3"`. -->
+      <site name="surface" pos="0 0 0.001" size="0.005" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>

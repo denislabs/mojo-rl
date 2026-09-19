@@ -102,6 +102,10 @@ MODELS = [
     # (`pixi run gen-family-scenes`) — this reads the composed .xml, not the
     # .family, so a stale scene would freeze stale dimensions.
     ("mojo_rl/tasks/so101_tabletop_xml.mojo", ["SO101_TABLETOP_XML"]),
+    # The so101-tower rig (`families/so101_tower.family`): the follower with
+    # its wrist camera on the printed mount, the overhead camera stand, a bowl
+    # and a brick — `docs/camera-rig.md`.
+    ("mojo_rl/tasks/so101_tower_xml.mojo", ["SO101_TOWER_XML"]),
     ("mojo_rl/tasks/libero_goal_xml.mojo", ["LIBERO_GOAL_XML"]),
     ("mojo_rl/tasks/libero_spatial_xml.mojo", ["LIBERO_SPATIAL_XML"]),
     ("mojo_rl/tasks/libero_object_xml.mojo", ["LIBERO_OBJECT_XML"]),

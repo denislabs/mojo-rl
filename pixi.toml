@@ -102,7 +102,7 @@ build-jetson = { cmd = "mojo build -I . --target-accelerator sm_87", description
 # ⚠ NO `-ld_classic` HERE, unlike the macOS task: that is an ld64 flag and the
 # board links with lld.
 #   pixi run -e jetson act-deploy-jetson -- --project so101-tower \
-#       --devices /dev/soarm_cam_top,/dev/soarm_cam_wrist
+#       --devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist
 act-deploy-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -DACT_GPU=1 -o /tmp/act_deploy_gpu examples/so101/act_so101_deploy_real.mojo && /tmp/act_deploy_gpu", depends-on = ["build-serial", "build-opencv"], description = "ACT on the Orin's GPU (-- --project P; --arm to move it)" }
 act-deploy-jetson-cpu = { cmd = "mojo build -I . --target-accelerator sm_87 -o /tmp/act_deploy_cpu examples/so101/act_so101_deploy_real.mojo && /tmp/act_deploy_cpu", depends-on = ["build-serial", "build-opencv"], description = "The same policy on the Orin's CPU — the other half of the A/B" }
 
@@ -458,6 +458,7 @@ soarm-record-ui = { cmd = "mojo run -I . examples/so101/record_ui.mojo", depends
 # the only practical way to reach the workspace corners. Needs an INTRINSICS
 # calibration first (`pixi run camera-studio`). Pass
 # `-- --camera front --marker-mm 30 --offset X Y Z`.
+soarm-tower-preview = { cmd = "mojo run -I . examples/so101/tower_camera_preview.mojo", description = "Render the so101_tower family's wrist and overhead cameras at a recorded state (-- --state deg,.. --out-dir DIR)" }
 soarm-calibrate-extrinsics = { cmd = "mojo run -I . examples/so101/calibrate_camera_extrinsics.mojo", depends-on = ["build-serial", "build-opencv", "build-imgui"], description = "Fit the camera -> robot-base transform (never energises the arm)" }
 # Run a trained ACT policy on the follower, from the two live cameras.
 # ⚠ SAFE BY DEFAULT: without `--arm` nothing is energised. `--store` is

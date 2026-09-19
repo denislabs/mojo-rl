@@ -77,7 +77,7 @@ from mojo_rl.tasks.active import active_mask, mask_slots, MASK_SLOT_LIMIT
 from mojo_rl.tasks.obs import slot_active, FREE_JOINT_NQ, FREE_JOINT_NV
 from mojo_rl.physics3d.fields import Data, DynDims
 from mojo_rl.tasks.reset import free_slot_addresses
-from mojo_rl.tasks.family_config import So101TabletopConfig
+from mojo_rl.tasks.family_config import So101TabletopConfig, So101TabletopPlacement
 from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X, META_IDX_TASK_PARAM_0,
@@ -128,26 +128,26 @@ struct Tally(Copyable, ImplicitlyCopyable, Movable):
 def _cfg_slot_idx(j: Int) -> Int:
     """The config's restated family slot index for free slot `j`."""
     if j == 0:
-        return CFG.FREE_SLOT_IDX_0
+        return So101TabletopPlacement.FREE_SLOT_IDX_0
     if j == 1:
-        return CFG.FREE_SLOT_IDX_1
-    return CFG.FREE_SLOT_IDX_2
+        return So101TabletopPlacement.FREE_SLOT_IDX_1
+    return So101TabletopPlacement.FREE_SLOT_IDX_2
 
 
 def _cfg_qadr(j: Int) -> Int:
     if j == 0:
-        return CFG.FREE_QADR_0
+        return So101TabletopPlacement.FREE_QADR_0
     if j == 1:
-        return CFG.FREE_QADR_1
-    return CFG.FREE_QADR_2
+        return So101TabletopPlacement.FREE_QADR_1
+    return So101TabletopPlacement.FREE_QADR_2
 
 
 def _cfg_dadr(j: Int) -> Int:
     if j == 0:
-        return CFG.FREE_DADR_0
+        return So101TabletopPlacement.FREE_DADR_0
     if j == 1:
-        return CFG.FREE_DADR_1
-    return CFG.FREE_DADR_2
+        return So101TabletopPlacement.FREE_DADR_1
+    return So101TabletopPlacement.FREE_DADR_2
 
 
 def main() raises:
@@ -545,12 +545,12 @@ def main() raises:
     for j in range(NFREE):
         var si = free_idx[j]
         var want = park_pos(f, si)
-        var gx = CFG.PARK_X + Float64(si) * CFG.PARK_SPACING
-        if gx != want[0] or CFG.PARK_Y != want[1] or CFG.PARK_Z != want[2]:
+        var gx = So101TabletopPlacement.PARK_X + Float64(si) * So101TabletopPlacement.PARK_SPACING
+        if gx != want[0] or So101TabletopPlacement.PARK_Y != want[1] or So101TabletopPlacement.PARK_Z != want[2]:
             park_ok = False
         print("    slot", si, f.slots[si].name, "parks at (", want[0], ",",
-              want[1], ",", want[2], ") | config (", gx, ",", CFG.PARK_Y,
-              ",", CFG.PARK_Z, ")")
+              want[1], ",", want[2], ") | config (", gx, ",", So101TabletopPlacement.PARK_Y,
+              ",", So101TabletopPlacement.PARK_Z, ")")
     ta.check(park_ok, "the restated park pose matches `park_pos` on the family")
 
     # Lane 0 = gather (cube_b inactive), lane 1 = reach (cube_a and cube_b

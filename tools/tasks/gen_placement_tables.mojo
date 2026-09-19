@@ -1,4 +1,4 @@
-"""Every LIBERO family's device placement table — GENERATED artifacts.
+"""Every generatable family's device placement table — GENERATED artifacts.
 
     pixi run gen-placement-tables           # write mojo_rl/tasks/placement/*.mojo
     pixi run gen-placement-tables --check   # CI: fail if one is stale
@@ -6,7 +6,8 @@
 `placement/table.place_free_slots` is the device twin of
 `sampler.sample_placements`, and it reads a family's geometry through a
 comptime `PlacementTable` because a kernel cannot read a `.family`. This writes
-one per `libero*.family`, from the SAME inputs the host sampler uses: the loaded
+one per `.family` whose free slots ALL carry `slot_geom=` (the 23 LIBERO
+families and `so101_tower`), from the SAME inputs the host sampler uses: the loaded
 spec, `reset.free_slot_addresses`, and the region sites' world frames from
 forward kinematics on the composed scene.
 
@@ -15,9 +16,16 @@ to round-trip to the same bits (see `_f`), so the table matches the frames it
 was generated from exactly and `check.placement_table_drift` can demand it; and
 it is a `DTYPE` constant in the kernel, because Metal has no `double`.
 
-⚠ A FREE SLOT WITHOUT `slot_geom=` IS REFUSED. The host would use the caller's
-radius for it, which is not in the `.family`, so there is nothing to generate
-from — `so101_tabletop`, the one family like that, has a hand-written table.
+⚠ A FREE SLOT WITHOUT `slot_geom=` CANNOT BE GENERATED. The host would use the
+caller's radius for it, which is not in the `.family`, so there is nothing to
+generate from — `so101_tabletop`, the one family like that, has a hand-written
+table (`family_config.So101TabletopPlacement`) and is SKIPPED here by that
+rule, not by name. A family that gains `slot_geom=` on every free slot joins
+this generator on the next run, and its hand-written table becomes dead code.
+
+⚠ THE GRIPPER SITE IS PER BASE ROBOT: `robot_grip_site` on the vendored Panda,
+`robot_gripperframe` on the SO-101. The first one the composed scene has wins;
+a scene with neither is refused, because the goal words need an origin.
 
 ⚠ `region_move_joint` IS THE SITE'S BODY CHAIN, not a list. No joint above the
 site: -1. Exactly one joint and it is a drawable SLIDE: that joint, with the world
@@ -42,17 +50,38 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 comptime DT = DType.float64
 comptime FAMILY_DIR = "mojo_rl/tasks/families"
 comptime OUT_DIR = "mojo_rl/tasks/placement"
-comptime GRIPPER_SITE_NAME = "robot_grip_site"
-"""The vendored Panda's end-effector site — the one OSC_POSE drives
-(`examples/tasks/libero_eval.mojo`), and the goal words' origin."""
+comptime GRIPPER_SITE_NAMES = "robot_grip_site,robot_gripperframe"
+"""The end-effector site, per base robot, first match wins: the vendored
+Panda's (the one OSC_POSE drives, `examples/tasks/libero_eval.mojo`) and the
+SO-101's (`so_arm101.xml`'s `gripperframe`). The goal words' origin."""
+
+
+def _generatable(f: FamilySpec) -> Bool:
+    """Every FREE slot carries `slot_geom=` — the one thing the table needs
+    that the host sampler otherwise takes from its caller."""
+    var any_free = False
+    for si in range(len(f.slots)):
+        if f.slots[si].kind != SLOT_FREE:
+            continue
+        any_free = True
+        if not f.slots[si].has_geom:
+            return False
+    return any_free
 
 
 def _families() raises -> List[String]:
-    """Every `libero*.family`, sorted — enumerated like `gen_family_scene`."""
+    """Every generatable `.family`, sorted — enumerated like `gen_family_scene`.
+
+    ⚠ BY RULE, NOT BY PREFIX. It was `libero*`; `so101_tower` is the first
+    non-LIBERO family with a full `slot_geom=` table, and a prefix list would
+    have left it hand-written."""
     var out = List[String]()
     for e in listdir(FAMILY_DIR):
         var n = String(e)
-        if n.startswith("libero") and n.endswith(".family"):
+        if not n.endswith(".family"):
+            continue
+        var f = load_family(String(FAMILY_DIR) + "/" + n)
+        if _generatable(f):
             out.append(String(n[byte = 0 : n.byte_length() - 7]))
     for i in range(len(out)):
         for j in range(i + 1, len(out)):
@@ -237,14 +266,19 @@ def generate(family: String) raises -> String:
         fpz.append(_f(pp[2]))
 
     var grip = -1
-    for i in range(len(fmd.site_names)):
-        if fmd.site_names[i] == GRIPPER_SITE_NAME:
-            grip = i
+    var grip_name = String("")
+    for cand in String(GRIPPER_SITE_NAMES).split(","):
+        if grip >= 0:
+            break
+        for i in range(len(fmd.site_names)):
+            if fmd.site_names[i] == String(cand):
+                grip = i
+                grip_name = String(cand)
     if grip < 0:
         raise Error(
-            family + ": the composed scene has no site '" + GRIPPER_SITE_NAME
-            + "' — the goal words' origin. Is the base robot still the"
-            " vendored Panda?"
+            family + ": the composed scene has none of the sites '"
+            + String(GRIPPER_SITE_NAMES) + "' — the goal words' origin. Is"
+            " the base robot one this generator knows?"
         )
     var rsid = List[String]()
     for r in range(len(f.regions)):
@@ -356,7 +390,7 @@ def generate(family: String) raises -> String:
     o += "    comptime NBODY: Int = " + String(dims.get_nbody()) + "\n"
     o += "    comptime NSITE: Int = " + String(dims.get_nsite()) + "\n"
     o += "    comptime GRIPPER_SITE: Int = " + String(grip) + "  # "
-    o += String(GRIPPER_SITE_NAME) + "\n"
+    o += grip_name + "\n"
     o += "    comptime N_BASE_QPOS: Int = " + String(len(f.base_qpos)) + "\n\n"
     var bq = List[String]()
     for i in range(len(f.base_qpos)):
@@ -411,7 +445,7 @@ def main() raises:
             check = True
     var fams = _families()
     if len(fams) == 0:
-        raise Error("no libero*.family under " + FAMILY_DIR)
+        raise Error("no generatable .family under " + FAMILY_DIR)
     var stale = 0
     for i in range(len(fams)):
         var text = generate(fams[i])
