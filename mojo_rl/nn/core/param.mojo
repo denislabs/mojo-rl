@@ -19,6 +19,7 @@ from max.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from std.memory import UnsafePointer
 from .tensor import Tensor
+from .fill import fill_dev
 
 
 trait ParamVisitor(Deinitable):
@@ -280,7 +281,8 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam):
             for k in range(Self.SIZE):
                 self.grd.data[k] = Scalar[DT](0)
         else:
-            self.grd.dev.value().enqueue_fill(Scalar[DT](0))
+            # ⚠ NOT `enqueue_fill`: on Metal that is a synchronize (`nn/core/fill.mojo`).
+            fill_dev(self.grd.dev.value(), Self.SIZE, Scalar[DT](0), ctx.value())
 
 
 # ──────────────────────────────────────────────────────────────────────

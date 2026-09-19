@@ -27,6 +27,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
 from ..core.initializer import Initializer
 from ..core.tensor import Tensor, TensorImpl
+from ..core.fill import fill_dev
 from ..core.tensor_refs import TensorRefs, child_refs
 from ..core.tensor_pack import TensorPack
 from ..core.module import Module
@@ -267,7 +268,8 @@ struct Parallel[*BRANCHES: Module](Module):
         else:
             var c0 = ctx.value()
             gin.ensure_gpu(c0, NIN)
-            gin.dev.value().enqueue_fill(Scalar[Self.ACT_DT](0))
+            # ⚠ NOT `enqueue_fill`: on Metal that is a synchronize (`nn/core/fill.mojo`).
+            fill_dev(gin.dev.value(), NIN, Scalar[Self.ACT_DT](0), c0)
 
         comptime for i in range(Self.N):
             comptime off = _cumulative_offset[i, *Self.BRANCHES]()

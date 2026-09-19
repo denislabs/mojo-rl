@@ -186,7 +186,7 @@ def zero_trainable_grads[
     # paths were interchangeable when only one of them can be clipped.
     comptime if target == "gpu":
         if opt.arena.adopted:
-            opt.arena.zero_grad()
+            opt.arena.zero_grad(ctx.value())
             return
     expert.zero_grad[target](ctx)
     action_in.zero_grad[target](ctx)

@@ -20,6 +20,7 @@ from max.gpu.host import (
 from layout import Layout, LayoutTensor, RuntimeLayout
 
 from mojo_rl.nn.constants import DT
+from .fill import fill_dev
 
 
 def _alloc_trace[dt: DType](site: StaticString, n: Int, id: Int):
@@ -150,7 +151,8 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
         var t = Self()
         _alloc_trace[Self.dt]("alloc_gpu", n, 0)  # no cell yet: fresh by definition
         t.dev = ctx.enqueue_create_buffer[Self.dt](n)
-        t.dev.value().enqueue_fill(Scalar[Self.dt](0))
+        # ⚠ NOT `enqueue_fill`: on Metal that is a synchronize (`nn/core/fill.mojo`).
+        fill_dev(t.dev.value(), n, Scalar[Self.dt](0), ctx)
         t.n = n
         return t^
 

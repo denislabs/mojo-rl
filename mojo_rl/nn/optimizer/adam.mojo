@@ -565,7 +565,7 @@ struct Adam(Movable, ParamVisitor, ParamVisitorRT, Optimizer):
         model."""
         comptime if target == "gpu":
             if self.arena.adopted:
-                self.arena.zero_grad()
+                self.arena.zero_grad(ctx.value())
                 return
         model.zero_grad[target](ctx)
 

@@ -23,6 +23,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
+from ..core.fill import fill_dev
 from ..core.param import ParamVisitor, ParamVisitorRT, walk_params
 from ..core.param import ParamWalkable
 from ..core.named_params import named_params
@@ -196,10 +197,13 @@ struct ParamArena(Movable & ParamVisitor & ParamVisitorRT):
                 walk_params["gpu"](models[i], self, Optional(c))
             self.adopted = True
 
-    def zero_grad(mut self) raises:
-        """Zero the whole grad arena in ONE fill (vs N per-param fills)."""
+    def zero_grad(mut self, c: DeviceContext) raises:
+        """Zero the whole grad arena in ONE launch (vs N per-param fills).
+
+        ⚠ NOT `enqueue_fill`: on Metal that is a synchronize per call
+        (`nn/core/fill.mojo`), and this runs once per optimizer step."""
         if self.adopted and self.total > 0:
-            self.grd.dev.value().enqueue_fill(Scalar[DT](0))
+            fill_dev(self.grd.dev.value(), self.total, Scalar[DT](0), c)
 
 
 def _polyak_kernel(

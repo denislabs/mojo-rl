@@ -46,6 +46,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT, TPB
 from ..core.initializer import Initializer
 from ..core.tensor import Tensor, TensorImpl
+from ..core.fill import fill_dev
 from ..core.tensor_refs import TensorRefs
 from ..core.tensor_pack import TensorPack
 from ..core.module import Module
@@ -443,7 +444,9 @@ struct ComputeGraph[*DECLS: GraphDecl](TwoInputGraph & ParamWalkable):
                     self.gpool[k].data[q] = 0
             else:
                 self.gpool[k].ensure_gpu(ctx.value(), dk)
-                self.gpool[k].dev.value().enqueue_fill(Scalar[Self.ACT_DT](0))
+                # ⚠ NOT `enqueue_fill`: on Metal that is a synchronize per slot,
+                # N of them per backward (`nn/core/fill.mojo`).
+                fill_dev(self.gpool[k].dev.value(), dk, Scalar[Self.ACT_DT](0), ctx.value())
         var dN = B * Self.OUT_DIM
         comptime if target == "cpu":
             for q in range(dN):

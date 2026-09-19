@@ -31,6 +31,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT, TPB
 from ..core.initializer import Initializer
 from ..core.tensor import Tensor, TensorImpl
+from ..core.fill import fill_dev
 from ..core.tensor_refs import TensorRefs
 from ..core.tensor_pack import TensorPack
 from ..core.module import Module
@@ -153,7 +154,8 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
                 dst.data[q] = Scalar[Self.ACT_DT](0)
         else:
             dst.ensure_gpu(ctx.value(), n)
-            dst.dev.value().enqueue_fill(Scalar[Self.ACT_DT](0))
+            # ⚠ NOT `enqueue_fill`: on Metal that is a synchronize (`nn/core/fill.mojo`).
+            fill_dev(dst.dev.value(), n, Scalar[Self.ACT_DT](0), ctx.value())
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
