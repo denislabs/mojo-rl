@@ -30,6 +30,7 @@ the table, the budget and the tasks, and those are what this checks.
 """
 
 from std.os import listdir
+from std.math import abs
 from std.testing import assert_true, assert_equal
 
 from mojo_rl.physics3d.fields import Model, DynDims
@@ -132,6 +133,19 @@ def main() raises:
     )
     print("  grasp term: weight", CFG.SHAPE_W_GRASP, "on bodies",
           CFG.GRIPPER_BODY, "+", CFG.JAW_BODY)
+    # the closing bonus's joint, by name and by range
+    assert_equal(
+        String(fmd.joint_names[CFG.GRIPPER_QADR]), String("robot_gripper"),
+        "GRIPPER_QADR is the gripper hinge (the first six joints are 1-dof)",
+    )
+    var gj = fmd.joints[CFG.GRIPPER_QADR]
+    assert_true(
+        abs(gj.range_min - CFG.GRIPPER_CLOSED) < 1e-9
+        and abs(gj.range_max - CFG.GRIPPER_OPEN) < 1e-9,
+        "GRIPPER_CLOSED/OPEN are the scene's gripper range",
+    )
+    print("  closing bonus: weight", CFG.SHAPE_W_CLOSE, "within",
+          CFG.CLOSE_RADIUS, "m; gripper qpos", CFG.GRIPPER_QADR)
 
     # ── 3. the observation width ──────────────────────────────────────────
     assert_equal(

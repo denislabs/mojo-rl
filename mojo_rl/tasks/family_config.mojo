@@ -451,7 +451,7 @@ struct So101TabletopPlacement(PlacementTable):
 
 struct So101FamilyConfig[
     P: PlacementTable, HORIZON: Int, SKIP: Int, NMESH: Int,
-    FALLBACK_RADIUS: Float64, GRASP_W: Float64,
+    FALLBACK_RADIUS: Float64, GRASP_W: Float64, CLOSE_W: Float64,
 ](Phyics3dEnvConfig):
     """ONE config for every SO-101 task family, over its placement table `P`.
 
@@ -575,11 +575,36 @@ struct So101FamilyConfig[
     0.5 on the tower — the reach term's weight, a rung between reach (0.5) and
     the goal (1.0)."""
 
+    comptime SHAPE_W_CLOSE: Float64 = Self.CLOSE_W
+    """Paid for a CLOSED jaw while the pinch centre is within `CLOSE_RADIUS`
+    of the goal's subject: `CLOSE_W * (open - q) / (open - closed)`, in [0, 1].
+
+    ⚠⚠ WHY IT EXISTS. Watched in the policy viewer, 2026-09-19: the arm at the
+    brick, the moving jaw swung FULLY OPEN the whole time, the wrist nudging
+    the cube around like a ball. Nothing paid for closing until a pinch had
+    already happened (the grasp rung), and a pinch needs the jaw to close
+    first — a one-dimensional decision the policy never took because its
+    reward was flat across it. This term makes "close when you are there"
+    dense; the rung then pays the pinch, the goal term the lift.
+
+    ⚠ GATED ON DISTANCE, or the policy would drive around with the jaw shut
+    and never get the brick between the fingers. 3 cm is the pinch centre's
+    reach radius plus a brick half-width. 0.25 on the tower — half the rung,
+    a nudge and not the objective; 0.0 on the tabletop."""
+    comptime CLOSE_RADIUS: Float64 = 0.03
+
     comptime GRIPPER_BODY: Int = 6
     comptime JAW_BODY: Int = 7
     """`robot_gripper` and `robot_moving_jaw_so101_v1` in the composed scene:
     the SO-101 is the first attached model in every family, so its bodies come
     first. `tests/tasks/test_so101_tower_config.mojo` pins both by name."""
+
+    comptime GRIPPER_QADR: Int = 5
+    comptime GRIPPER_OPEN: Float64 = 1.7453291995659765
+    comptime GRIPPER_CLOSED: Float64 = -0.17453297762778586
+    """The `robot_gripper` hinge: `qpos[5]` (the sixth arm joint), and its
+    range from `so_arm101.xml` — open at the upper limit, closed at the lower.
+    The tower gate pins the joint by name and the range against the scene."""
 
 
 
@@ -1194,6 +1219,18 @@ struct So101FamilyConfig[
                             on_jaw = True
                 if on_grip and on_jaw:
                     r = r + Scalar[DTYPE](Self.GRASP_W)
+            # ── the closing bonus — see `SHAPE_W_CLOSE` ──────────────────
+            comptime if Self.CLOSE_W > 0.0:
+                if reach < Scalar[DTYPE](Self.CLOSE_RADIUS):
+                    var q = rebind[Scalar[DTYPE]](qpos[env, Self.GRIPPER_QADR])
+                    var closed = (Scalar[DTYPE](Self.GRIPPER_OPEN) - q) / Scalar[
+                        DTYPE
+                    ](Self.GRIPPER_OPEN - Self.GRIPPER_CLOSED)
+                    if closed < Scalar[DTYPE](0):
+                        closed = Scalar[DTYPE](0)
+                    if closed > Scalar[DTYPE](1):
+                        closed = Scalar[DTYPE](1)
+                    r = r + Scalar[DTYPE](Self.CLOSE_W) * closed
         _ = qpos
         _ = qvel
         _ = xipos
@@ -1297,7 +1334,7 @@ struct So101FamilyConfig[
 # `tests/tasks/test_so101_tower_config.mojo` assert them.
 
 comptime So101TabletopConfig = So101FamilyConfig[
-    So101TabletopPlacement, 300, 2, SO_ARM101_NMESH_VERTS, 0.012, 0.0
+    So101TabletopPlacement, 300, 2, SO_ARM101_NMESH_VERTS, 0.012, 0.0, 0.0
 ]
 """`so101_tabletop`: horizon 300, frame skip 2 (a 250 Hz policy on a 2 ms
 timestep — what every run on this family has used), the bare arm's hull
@@ -1305,7 +1342,7 @@ budget (the props are boxes), and `cube.xml`'s half-size as the sampler's
 radius — see `So101TabletopPlacement.SLOT_RADIUS`; NO grasp term (0.0)."""
 
 comptime So101TowerConfig = So101FamilyConfig[
-    So101TowerPlacement, 300, 16, SO101_TOWER_NMESH_VERTS, 0.0226, 0.5
+    So101TowerPlacement, 300, 16, SO101_TOWER_NMESH_VERTS, 0.0226, 0.5, 0.25
 ]
 """`so101_tower`: horizon 300, frame skip 16 — `control_freq=30` in the
 family, 1/30 s / 2 ms = 16.7 substeps, rounded to the integer below (31.25
