@@ -218,6 +218,7 @@ from mojo_rl.core.run import RunContext, register_run
 from mojo_rl.io.artifact_sink import close_sink, sink_for_run
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
+from mojo_rl.deep_agents.data.demo_file import read_demo_file
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.physics3d.gpu.constants import (
@@ -739,6 +740,23 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
     # is right, `mean_q` should fall roughly in proportion.
     var target_entropy = -Scalar[DT](ACT_DIM)
     var init_alpha = Scalar[DT](0.2)
+    # ⚠ `--demos a.demo[,b.demo]`: HIL-SERL / RLPD. The files' transitions
+    # are loaded into the replay BEFORE the loop and pinned as a prefix
+    # (`pin_demo_prefix`), and half of every minibatch is drawn from them for
+    # the whole run — the 50/50 demo/online sampling of `train_rlpd.py`. A
+    # file comes from `examples/so101/tower_teleop_record.mojo` (a human on
+    # the leader arm in the sim, or a human correcting a checkpoint — the
+    # intervention half of HIL-SERL). `--demo-filter` picks which rows:
+    # `all` (default), `success` (rows of successful episodes only) or
+    # `intervened` (only the steps a human overrode a policy on).
+    #
+    # ⚠ THE WARMUP STILL APPLIES. `--warmup` gates both the uniform-random
+    # actions and the first gradient step; HIL-SERL runs `random_steps=0,
+    # training_starts=100` because the demos already cover the space. Pass
+    # `--warmup 1000` or so with demos — the default 10k random steps are
+    # for a run that has nothing else to learn from.
+    var demos_arg = String("")
+    var demo_filter = String("all")
     # ⚠⚠ 0.50/0.25 IS THE ONLY PAIR THE CRITIC HAS SURVIVED. Measured, all at
     # 32 envs / 32 updates / tau 0.0025 — the SAME 7.7% tracking rate:
     #
@@ -890,6 +908,18 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
             tau = Scalar[DT](Float64(String(args[i + 1])))
         elif a == "--seed" and i + 1 < len(args):
             seed = Int(String(args[i + 1]))
+        elif a == "--demos" and i + 1 < len(args):
+            demos_arg = String(args[i + 1])
+        elif a == "--demo-filter" and i + 1 < len(args):
+            demo_filter = String(args[i + 1])
+            if (
+                demo_filter != "all" and demo_filter != "success"
+                and demo_filter != "intervened"
+            ):
+                raise Error(
+                    "sac task: --demo-filter must be all, success or"
+                    " intervened (got '" + demo_filter + "')"
+                )
         else:
             # ⚠ INCLUDES A KNOWN FLAG WITH NO VALUE, which falls through the
             # `i + 1 < len(args)` guards above and would otherwise be dropped
@@ -991,6 +1021,12 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
           "(baseline run)" if warmup >= num_steps else "")
     print("  action_scale:", ACTION_SCALE, "(NORMALIZED_ACTIONS is True)")
     print("  target_entropy:", target_entropy, " init_alpha:", init_alpha)
+    if demos_arg.byte_length() > 0:
+        print("  demos    :", demos_arg, " filter:", demo_filter,
+              " -> half of every minibatch (RLPD)")
+        if warmup >= WARMUP_STEPS:
+            print("  ⚠ --warmup is", warmup, "with demos loaded; HIL-SERL"
+                  " starts learning after ~100 steps. Consider --warmup 1000.")
     print("  shape weights: goal", shape_goal, " reach", shape_reach,
           " (tolerance margins", goal_margin, "/", reach_margin, "m)")
     # ⚠ THE NUMBER THAT ACTUALLY GOVERNS CRITIC STABILITY, printed because it
@@ -1102,6 +1138,8 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
         remote.set_config("shape_w_reach", String(shape_reach))
         remote.set_config("updates_per_step", String(updates_per_step))
         remote.set_config("tau", String(tau))
+        remote.set_config("demos", demos_arg)
+        remote.set_config("demo_filter", demo_filter)
         remote.set_config("target_track_per_iter", String(track))
         # ⚠ THE MEASURED FLOOR TRAVELS WITH THE RUN. A rate on a dashboard is
         # unreadable without it — 0.05 is nothing on `reach` and would be real
@@ -1200,6 +1238,62 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
             initial_episode_fill=0.0,
         )
         var env = EnvL(ctx)
+
+        # ── the demonstrations, into the replay's pinned prefix ───────────
+        #
+        # ⚠ THROUGH THE SAMPLE BLOCK, NOT `trainer.record`: `record` also
+        # feeds the episode tracker, and a demo is not an episode this run
+        # played. `pin_demo_prefix` then makes these rows the demo half of
+        # every batch and keeps the online ring off them.
+        var n_demo_rows = 0
+        if demos_arg.byte_length() > 0:
+            var paths = split_csv(demos_arg)
+            var d_obs = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+            var d_nxt = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+            var d_act = List[Scalar[DT]](length=ACT_DIM, fill=Scalar[DT](0))
+            var n_files_rows = 0
+            var sum_r = 0.0
+            for pi in range(len(paths)):
+                var ds = read_demo_file(paths[pi])
+                print("  demo file:", paths[pi], "—", ds.summary())
+                if ds.obs_dim != OBS or ds.act_dim != ACT_DIM:
+                    raise Error(
+                        "sac task: " + paths[pi] + " is obs "
+                        + String(ds.obs_dim) + " / act " + String(ds.act_dim)
+                        + " but this env is " + String(OBS) + " / "
+                        + String(ACT_DIM) + " — recorded on another family?"
+                    )
+                n_files_rows += ds.count()
+                for r in range(ds.count()):
+                    if demo_filter == "success" and not ds.row_success(r):
+                        continue
+                    if demo_filter == "intervened" and not ds.row_intervened(r):
+                        continue
+                    ds.row_obs[DT](r, d_obs)
+                    ds.row_act[DT](r, d_act)
+                    ds.row_next_obs[DT](r, d_nxt)
+                    agent.trainer.sample_blk.add(
+                        d_obs, d_act, Scalar[DT](ds.rew[r]), d_nxt,
+                        Scalar[DT](ds.done[r]), ctx=agent.trainer.ctx,
+                    )
+                    sum_r += Float64(ds.rew[r])
+                    n_demo_rows += 1
+            if n_demo_rows == 0:
+                raise Error(
+                    "sac task: --demos loaded " + String(n_files_rows)
+                    + " rows and the filter '" + demo_filter + "' kept none"
+                )
+            agent.trainer.sample_blk.pin_demo_prefix(
+                n_demo_rows, ctx=agent.trainer.ctx
+            )
+            ctx.synchronize()
+            print("  demos    :", n_demo_rows, "rows pinned as the replay"
+                  " prefix (of", n_files_rows, "in the files); mean reward",
+                  sum_r / Float64(n_demo_rows))
+            logger.log_scalar(String("cfg/demo_rows"), Float64(n_demo_rows), 0)
+            logger.log_scalar(
+                String("cfg/demo_mean_reward"), sum_r / Float64(n_demo_rows), 0
+            )
 
         # ── the region table, once; the tape and mask, once per lane ──────
         #

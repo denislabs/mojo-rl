@@ -21,6 +21,16 @@ carries the fixed jaw here) and nothing has measured it on THIS scene.
 ⚠ `so101_tower_reach_clear` is the smoke task: no free slot active, the arm's
 reset noise as the whole start distribution. Its rate says the stack runs,
 not that anything is solved — its tabletop twin's header says why.
+
+WITH DEMONSTRATIONS (HIL-SERL / RLPD, `docs/HIL_SERL_PORT.md`):
+
+    pixi run -e apple mojo run -I . examples/tasks/sac_tower_gpu.mojo so101_tower_lift_brick \\
+        --steps 200000 --warmup 1000 --target-entropy -3 \\
+        --demos projects/so101-tower/demos/<file>.demo [--demo-filter all|success|intervened]
+
+The `.demo` comes from `examples/so101/tower_teleop_record.mojo` (`pixi run
+soarm-tower-record`); its rows are pinned as the replay's prefix and half of
+every minibatch is drawn from them for the whole run.
 """
 
 from std.sys import argv

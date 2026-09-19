@@ -144,3 +144,21 @@ trait ReplayBuffer(Movable, Deinitable):
         for backends without an ERE path (CPU, GPU PER); GPUReplay
         overrides to flip its ERE state. Call after `make`."""
         pass
+
+    # ─── Demonstrations (default raise; the store backends override) ────
+    #
+    # RLPD / HIL-SERL sample half of every batch from a demo buffer. Here
+    # the demos are a PINNED PREFIX of the one storage: rows added before
+    # `pin_demo_prefix(n)` are never overwritten, and `sample_into` draws
+    # `BATCH/2` from them and `BATCH/2` from the online rows after them.
+
+    def pin_demo_prefix(
+        mut self, n: Int, ctx: Optional[DeviceContext] = None
+    ) raises:
+        """Declare the first `n` rows (== everything added so far) the
+        demonstration half. Raise on a backend without the capability."""
+        raise Error("pin_demo_prefix not supported by this ReplayBuffer")
+
+    def demo_count(self) -> Int:
+        """Rows in the pinned demo prefix (0 = none)."""
+        return 0

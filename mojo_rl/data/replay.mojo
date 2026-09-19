@@ -60,6 +60,8 @@ struct StoreReplay[
     var dne: List[Scalar[DT]]
     var size: Int
     var pos: Int
+    var demo_n: Int
+    """The pinned demo prefix — `pin_demo_prefix`; the GPU twin documents it."""
 
     var per: Optional[PrioritizedSampler]
     """Present only when `PRIORITIZED`. The sum-tree is a SAMPLER, not a
@@ -77,6 +79,7 @@ struct StoreReplay[
         self.dne = List[Scalar[DT]]()
         self.size = 0
         self.pos = 0
+        self.demo_n = 0
         self.per = None
         self._pending_alpha = Scalar[DT](0.6)
         self._pending_beta = Scalar[DT](0.4)
@@ -90,6 +93,7 @@ struct StoreReplay[
         self.dne = move.dne^
         self.size = move.size
         self.pos = move.pos
+        self.demo_n = move.demo_n
         self.per = move.per^
         self._pending_alpha = move._pending_alpha
         self._pending_beta = move._pending_beta
@@ -166,13 +170,37 @@ struct StoreReplay[
             self.act[p * Self.ACT + j] = a[j]
         self.rew[p] = r
         self.dne[p] = d
-        self.pos = (self.pos + 1) % Self.CAP
+        var b = self.demo_n
+        self.pos = b + ((self.pos - b) + 1) % (Self.CAP - b)
         if self.size < Self.CAP:
             self.size += 1
         comptime if Self.PRIORITIZED:
             # New rows enter at `max_priority^alpha`, matching the legacy
             # insert. The sampler owns that rule; storage just reports the row.
             self.per.value().note_added(p)
+
+    def pin_demo_prefix(
+        mut self, n: Int, ctx: Optional[DeviceContext] = None
+    ) raises:
+        """Rows `[0, n)` are demonstrations: never overwritten, and half of
+        every `sample_into` batch. The GPU twin (`StoreReplayGpu`) documents
+        the contract; this is the host mirror so a CPU trainer samples the
+        same way."""
+        comptime if Self.PRIORITIZED:
+            raise Error("pin_demo_prefix: not available on a prioritized replay")
+        if n < 0 or n != self.size:
+            raise Error(
+                "pin_demo_prefix: n=" + String(n) + " but the buffer holds "
+                + String(self.size) + " rows — pin exactly what was added"
+            )
+        if n >= Self.CAP:
+            raise Error("pin_demo_prefix: the prefix fills the whole buffer")
+        self.demo_n = n
+        self.pos = n
+        _ = ctx
+
+    def demo_count(self) -> Int:
+        return self.demo_n
 
     # ── sample ────────────────────────────────────────────────────────
 
@@ -241,9 +269,26 @@ struct StoreReplay[
                 state.mb_w.data[i] = self.per.value().last_weights[i]
             state.has_per = True
         else:
-            var sampler = UniformSampler(self.size)
-            var batch = sampler.draw(BATCH)
-            self._gather_into[BATCH](batch.host, state)
+            if self.demo_n > 0 and self.size > self.demo_n:
+                # RLPD's symmetric sampling: half from the prefix, half from
+                # the online rows after it.
+                var half = BATCH // 2
+                var demo_b = UniformSampler(self.demo_n).draw(half)
+                var on_b = UniformSampler(self.size - self.demo_n).draw(
+                    BATCH - half
+                )
+                var idx = List[Scalar[DType.int32]](length=BATCH, fill=0)
+                for k in range(half):
+                    idx[k] = demo_b.host[k]
+                for k in range(BATCH - half):
+                    idx[half + k] = Scalar[DType.int32](
+                        self.demo_n + Int(on_b.host[k])
+                    )
+                self._gather_into[BATCH](idx, state)
+            else:
+                var sampler = UniformSampler(self.size)
+                var batch = sampler.draw(BATCH)
+                self._gather_into[BATCH](batch.host, state)
 
     def update_priorities[
         BATCH: Int

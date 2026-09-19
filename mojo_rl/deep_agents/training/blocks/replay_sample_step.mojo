@@ -133,6 +133,21 @@ struct ReplaySampleStep[R: ReplayBuffer, BATCH_: Int](
             enable=enable, eta=eta, c_min=c_min, k_max=k_max
         )
 
+    def pin_demo_prefix(
+        mut self, n: Int, ctx: Optional[DeviceContext] = None
+    ) raises:
+        """Everything `add`ed so far becomes the demo half of every batch —
+        `ReplayBuffer.pin_demo_prefix`. Call after `setup` and the demo
+        `add`s, before the first online transition."""
+        if not self.buf:
+            raise Error("ReplaySampleStep.pin_demo_prefix: call setup() first")
+        self.buf.value().pin_demo_prefix(n, ctx=ctx)
+
+    def demo_count(self) -> Int:
+        if not self.buf:
+            return 0
+        return self.buf.value().demo_count()
+
     def add_batch_gpu[N_ENVS: Int](
         mut self,
         ctx: DeviceContext,

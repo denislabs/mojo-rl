@@ -275,6 +275,11 @@ tests/tasks/test_device_placement.mojo
 # that passes (2) and (3) perfectly — makes 108 of 432 states report distance
 # 0 while the goal is FALSE.
 tests/tasks/test_goal_distance.mojo
+# HIL-SERL: the pinned demo prefix (CPU leg here; `-e apple` adds the GPU leg),
+# the .demo file round trip, and the recorder's host reward against the goal words.
+tests/data/test_replay_demo_prefix.mojo
+tests/deep_agents/test_demo_file.mojo
+tests/tasks/test_tower_host_reward.mojo
 
 # ── mojo_rl/tasks: PER-LANE shaping, in `meta` and not `curriculum` ─────
 # ⚠⚠ THE WEIGHTS AND MARGINS ARE PER TASK, NOT PER RUN. They lived in

@@ -93,16 +93,22 @@ def _store_batch_kernel[
     buf_sp: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
     start_pos: Int32,
+    base: Int32,
 ):
     """`N_ENVS` transitions written to consecutive ring slots from
-    `start_pos`, wrapping. Element-parallel over (env, obs element)."""
+    `start_pos`, wrapping. Element-parallel over (env, obs element).
+
+    `base` is the pinned DEMO prefix (`pin_demo_prefix`): rows `[0, base)`
+    are never written and the ring wraps inside `[base, CAP)`. 0 when no
+    prefix is pinned, which is the old modulo exactly."""
     comptime assert OBS >= ACT, "_store_batch_kernel assumes OBS >= ACT"
     var t = Int(block_dim.x * block_idx.x + thread_idx.x)
     if t >= N_ENVS * OBS:
         return
     var e = t // OBS
     var d = t % OBS
-    var slot = (Int(start_pos) + e) % CAP
+    var b = Int(base)
+    var slot = b + ((Int(start_pos) - b) + e) % (CAP - b)
     buf_s[slot, d] = _obs_quant[SDT](rebind[Scalar[DT]](src_s[e, d]))
     buf_sp[slot, d] = _obs_quant[SDT](rebind[Scalar[DT]](src_sp[e, d]))
     if d < ACT:
@@ -177,6 +183,40 @@ def _uniform_indices_dev_kernel[
         idx = size - 1
     if idx < 0:
         idx = 0
+    indices[i] = Scalar[IDX_DT](idx)
+
+
+def _mixed_indices_dev_kernel[
+    BATCH: Int
+](
+    indices: LayoutTensor[IDX_DT, Layout.row_major(BATCH), MutAnyOrigin],
+    size_buf: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    demo_buf: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """RLPD's symmetric sampling over ONE storage: lanes `[0, BATCH/2)` draw
+    uniformly from the pinned demo prefix `[0, demo_n)`, the rest from the
+    online ring `[demo_n, size)`. With no online rows yet every lane draws
+    from the prefix. Capture-safe: `size` and `demo_n` are device words."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    var size = Int(size_buf[0])
+    var demo_n = Int(demo_buf[0])
+    var offset_base = rebind[UInt64](offset_buf[0])
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])
+    var lo = 0
+    var n = demo_n
+    if i >= BATCH // 2 and size > demo_n:
+        lo = demo_n
+        n = size - demo_n
+    var idx = lo + Int(u * Float32(n))
+    if idx >= lo + n:
+        idx = lo + n - 1
+    if idx < lo:
+        idx = lo
     indices[i] = Scalar[IDX_DT](idx)
 
 
@@ -498,6 +538,12 @@ struct StoreReplayGpu[
     var size_dev: DeviceBuffer[DType.int32]
     var offset_dev: DeviceBuffer[DType.uint64]
 
+    # The pinned DEMO prefix — see `pin_demo_prefix`. `demo_n` rows at the
+    # front are never overwritten and half of every minibatch is drawn from
+    # them (`_mixed_indices_dev_kernel`). 0 = no prefix, the plain ring.
+    var demo_n: Int
+    var demo_dev: DeviceBuffer[DType.int32]
+
     # PER state — present only when PRIORITIZED.
     var tree: Optional[DeviceBuffer[DT]]
     var max_p: Optional[DeviceBuffer[DT]]
@@ -535,6 +581,7 @@ struct StoreReplayGpu[
         batch_capacity: Int,
         var size_dev: DeviceBuffer[DType.int32],
         var offset_dev: DeviceBuffer[DType.uint64],
+        var demo_dev: DeviceBuffer[DType.int32],
         var tree: Optional[DeviceBuffer[DT]],
         var max_p: Optional[DeviceBuffer[DT]],
         var w_buf: Optional[DeviceBuffer[DT]],
@@ -567,6 +614,8 @@ struct StoreReplayGpu[
         self.batch_capacity = batch_capacity
         self.size_dev = size_dev^
         self.offset_dev = offset_dev^
+        self.demo_n = 0
+        self.demo_dev = demo_dev^
         self.tree = tree^
         self.max_p = max_p^
         self.w_buf = w_buf^
@@ -594,6 +643,8 @@ struct StoreReplayGpu[
         self.batch_capacity = move.batch_capacity
         self.size_dev = move.size_dev^
         self.offset_dev = move.offset_dev^
+        self.demo_n = move.demo_n
+        self.demo_dev = move.demo_dev^
         self.tree = move.tree^
         self.max_p = move.max_p^
         self.w_buf = move.w_buf^
@@ -630,6 +681,8 @@ struct StoreReplayGpu[
         sz_dev.enqueue_fill(Int32(0))
         var off_dev = c.enqueue_create_buffer[DType.uint64](1)
         off_dev.enqueue_fill(UInt64(0))
+        var demo_dev = c.enqueue_create_buffer[DType.int32](1)
+        demo_dev.enqueue_fill(Int32(0))
 
         var tree_opt = Optional[DeviceBuffer[DT]](None)
         var maxp_opt = Optional[DeviceBuffer[DT]](None)
@@ -665,6 +718,7 @@ struct StoreReplayGpu[
             batch_capacity=batch_capacity,
             size_dev=sz_dev^,
             offset_dev=off_dev^,
+            demo_dev=demo_dev^,
             tree=tree_opt^,
             max_p=maxp_opt^,
             w_buf=w_opt^,
@@ -731,10 +785,63 @@ struct StoreReplayGpu[
                 grid_dim=1,
                 block_dim=TPB,
             )
-        self.pos = (self.pos + 1) % Self.CAP
+        self.pos = self._next_pos(1)
         if self.size < Self.CAP:
             self.size += 1
         self._sync_size(c)
+
+    def _next_pos(self, k: Int) -> Int:
+        """The write pointer after `k` rows, wrapping INSIDE the online
+        region `[demo_n, CAP)` so a pinned prefix is never overwritten."""
+        var b = self.demo_n
+        return b + ((self.pos - b) + k) % (Self.CAP - b)
+
+    def pin_demo_prefix(
+        mut self, n: Int, ctx: Optional[DeviceContext] = None
+    ) raises:
+        """Declare rows `[0, n)` — everything added so far — as DEMONSTRATIONS.
+
+        RLPD / HIL-SERL keep the demos in a second buffer and sample half of
+        every batch from it; here the two buffers are ONE storage and the
+        prefix is the demo half. After this call the ring's writes wrap inside
+        `[n, CAP)` and `sample_into` draws `BATCH/2` rows from `[0, n)` and
+        `BATCH/2` from `[n, size)` (all from the prefix until an online row
+        exists). `n == 0` is the plain ring.
+
+        ⚠ CALL ONCE, RIGHT AFTER THE DEMOS ARE ADDED, BEFORE ANY ONLINE ROW:
+        `size` must equal `n` (the prefix is what has been added, nothing
+        else), and the prefix must leave room for a minibatch of online rows.
+        Not combinable with PER or ERE, whose index kernels know one region.
+        """
+        comptime if Self.PRIORITIZED:
+            raise Error("pin_demo_prefix: not available on a prioritized replay")
+        if self.ere_enabled:
+            raise Error("pin_demo_prefix: not available with ERE enabled")
+        if n < 0 or n != self.size:
+            raise Error(
+                "pin_demo_prefix: n=" + String(n) + " but the buffer holds "
+                + String(self.size) + " rows — pin exactly what was added"
+            )
+        if n >= Self.CAP - self.batch_capacity:
+            raise Error(
+                "pin_demo_prefix: " + String(n) + " demo rows leave fewer than"
+                " batch_capacity=" + String(self.batch_capacity)
+                + " online rows in CAP=" + String(Self.CAP)
+            )
+        if not ctx:
+            raise Error("pin_demo_prefix: ctx required (GPU backend)")
+        self.demo_n = n
+        self.pos = n
+        # The device word the sample kernel reads — one launch, no wait.
+        ctx.value().enqueue_function[_set_size_kernel](
+            LayoutTensor[DType.int32, Layout.row_major(1)](self.demo_dev),
+            Int32(n),
+            grid_dim=1,
+            block_dim=1,
+        )
+
+    def demo_count(self) -> Int:
+        return self.demo_n
 
     def _sync_size(mut self, ctx: DeviceContext) raises:
         """Mirror the host `size` into the device buffer the sample kernels
@@ -796,6 +903,7 @@ struct StoreReplayGpu[
             LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.nxt),
             LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne),
             Int32(self.pos),
+            Int32(self.demo_n),
             grid_dim=n_blocks,
             block_dim=TPB,
         )
@@ -820,7 +928,7 @@ struct StoreReplayGpu[
                 grid_dim=1,
                 block_dim=TPB,
             )
-        self.pos = (self.pos + N_ENVS) % Self.CAP
+        self.pos = self._next_pos(N_ENVS)
         self.size = self.size + N_ENVS
         if self.size > Self.CAP:
             self.size = Self.CAP
@@ -873,7 +981,16 @@ struct StoreReplayGpu[
             )
             state.has_per = True
         else:
-            if self.ere_enabled:
+            if self.demo_n > 0:
+                ctx.enqueue_function[_mixed_indices_dev_kernel[BATCH]](
+                    idx_lt, size_lt,
+                    LayoutTensor[DType.int32, Layout.row_major(1)](
+                        self.demo_dev
+                    ),
+                    UInt64(0xC0FFEE_DECADE_0042), off_lt,
+                    grid_dim=n_idx_blocks, block_dim=TPB,
+                )
+            elif self.ere_enabled:
                 # c_k = clamp(floor(size * eta^k), c_min, size), host-side —
                 # matching the legacy, which is deliberately not capturable.
                 var c = Int(Scalar[DT](self.size) * self._ere_eta_pow_k)

@@ -130,3 +130,17 @@ struct AnyReplay[
             self.gpu.value().configure_ere(
                 enable=enable, eta=eta, c_min=c_min, k_max=k_max
             )
+
+    def pin_demo_prefix(
+        mut self, n: Int, ctx: Optional[DeviceContext] = None
+    ) raises:
+        comptime if Self.target == "cpu":
+            self.cpu.value().pin_demo_prefix(n, ctx=ctx)
+        else:
+            self.gpu.value().pin_demo_prefix(n, ctx=ctx)
+
+    def demo_count(self) -> Int:
+        comptime if Self.target == "cpu":
+            return self.cpu.value().demo_count()
+        else:
+            return self.gpu.value().demo_count()

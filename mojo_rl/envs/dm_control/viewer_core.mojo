@@ -32,6 +32,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv, Phyics3dEnvConfig
+from mojo_rl.physics3d.fields import Data, Model, DimsLike
 from mojo_rl.physics3d.model import ModelDefLike
 from mojo_rl.render.renderer3d import Renderer3D, RendererHandoff
 from mojo_rl.render.imgui import (
@@ -224,6 +225,73 @@ struct NoPolicy(ActionSource, Copyable, Movable):
         pass
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# step observer — what a RECORDER hangs off the loop
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+trait StepObserver:
+    """Sees every env step the viewer takes, with the PHYSICS STATE behind it.
+
+    `ActionSource` is the viewer's input; this is its output. A recorder
+    (`examples/so101/tower_teleop_record.mojo`) needs three things the
+    action hook cannot give it: the observation BEFORE the step beside the
+    one after, the env's `Data` (contacts, site poses — what a family reward
+    is computed from; the CPU family config pays no reward of its own), and
+    the episode boundaries. This trait carries exactly those.
+
+    ⚠ GENERIC OVER THE DIMS PROVIDER, like every config hook, so this module
+    still names no concrete model. `d` is `Phyics3dEnv.d` (BATCH 1) and `mf`
+    its `Model` — the region table (`curriculum`), the site and body tables.
+
+    `on_step` RETURNS whether the episode should END NOW (True = the loop
+    resets as if `n` were pressed): a recorder that terminates on success
+    asks for it here rather than reaching into the env. `key` is the keycode
+    the renderer handed the application this frame (0 = none), AFTER the
+    loop read it for its own `n`.
+    """
+
+    def on_step[DTYPE: DType, D: DimsLike](
+        mut self,
+        mut d: Data[DTYPE, D, 1],
+        mut mf: Model[DTYPE, D],
+        ref prev_obs: List[Scalar[DT]],
+        ref action: List[Float64],
+        ref obs: List[Scalar[DT]],
+        done: Bool,
+        step_i: Int,
+        key: Int,
+    ) raises -> Bool:
+        ...
+
+    def on_episode_end(mut self, step_i: Int, manual: Bool) raises:
+        """The episode just ended (task `done`, the viewer's timeout, `n`,
+        the sidebar button, or `on_step` asking): `step_i` steps were taken.
+        Called BEFORE the reset, so the state is still the final one."""
+        ...
+
+
+@fieldwise_init
+struct NoObserver(StepObserver, Copyable, Movable):
+    """The default `StepObserver`: nobody is watching."""
+
+    def on_step[DTYPE: DType, D: DimsLike](
+        mut self,
+        mut d: Data[DTYPE, D, 1],
+        mut mf: Model[DTYPE, D],
+        ref prev_obs: List[Scalar[DT]],
+        ref action: List[Float64],
+        ref obs: List[Scalar[DT]],
+        done: Bool,
+        step_i: Int,
+        key: Int,
+    ) raises -> Bool:
+        return False
+
+    def on_episode_end(mut self, step_i: Int, manual: Bool) raises:
+        pass
+
+
 def _fmt2(v: Float64) -> String:
     """Two decimals without a formatting library."""
     var scaled = Int(v * 100.0 + (0.5 if v >= 0 else -0.5))
@@ -351,6 +419,19 @@ struct ViewerState(Copyable, Movable):
     reads the posed state too) at the initial reset, the button, and every
     episode end. Its length must be the model's `nq`, or it is ignored with
     a printed line rather than a silently truncated state."""
+    var frame_ms: Int
+    """The frame period the loop paces to, ms. Defaults to `FRAME_TARGET_MS`
+    (~60 fps). A teleoperation front end sets it to the env's CONTROL period
+    so the sim runs at real time under the human — at 60 fps a 32 ms control
+    step runs the world twice as fast as the hand driving it."""
+    var reset_curriculum: List[Float64]
+    """`Model.curriculum` words written ONCE, after the env is built — empty
+    for none. A task family's region table lives there
+    (`gpu_eval.region_table_words`), and the SAC driver uploads it beside the
+    per-lane `meta`; a `StepObserver` that evaluates the family's reward on
+    the host reads it from `mf`, so a front end that records must fill it.
+    Its length must be `MODEL_CURRICULUM_SIZE` or it is ignored with a printed
+    line."""
 
     def __init__(
         out self,
@@ -378,6 +459,8 @@ struct ViewerState(Copyable, Movable):
         self.reset_meta_idx = List[Int]()
         self.reset_meta_val = List[Float64]()
         self.reset_qpos = List[Float64]()
+        self.frame_ms = FRAME_TARGET_MS
+        self.reset_curriculum = List[Float64]()
 
 
 @fieldwise_init
@@ -707,10 +790,12 @@ def run_view[
     MODEL: ModelDefLike,
     CONFIG: Phyics3dEnvConfig,
     POLICY: ActionSource = NoPolicy,
+    OBSERVER: StepObserver = NoObserver,
 ](
     name: String,
     mut st: ViewerState,
     policy: Optional[Pointer[POLICY, MutAnyOrigin]] = None,
+    observer: Optional[Pointer[OBSERVER, MutAnyOrigin]] = None,
 ) raises:
     """The viewer loop for one task, running until it quits or switches.
 
@@ -742,6 +827,10 @@ def run_view[
     ⚠ ADOPTING TAKES OWNERSHIP. `st.handoff` is cleared the moment the env has
     it, and re-filled only by `detach_renderer` on the way out — so exactly one
     party can free the window at any time.
+
+    `observer` (a `StepObserver`, default none) sees every step with the env's
+    `Data` and every episode end — the recorder's seam. Like `policy` it is
+    owned by the front end and only lent here.
     """
     comptime E = Phyics3dEnv[MODEL, CONFIG, DT, False]
     comptime ACT_DIM = E.ACTION_DIM
@@ -755,11 +844,23 @@ def run_view[
 
     var ctx = DeviceContext()
     var env = E(ctx)
+    if len(st.reset_curriculum) > 0:
+        # `ViewerState.reset_curriculum`: the family's region table, once.
+        if len(st.reset_curriculum) != len(env.mf.curriculum.data):
+            print("  reset_curriculum has", len(st.reset_curriculum),
+                  "words but the model's curriculum has",
+                  len(env.mf.curriculum.data), "— ignored")
+        else:
+            for i in range(len(st.reset_curriculum)):
+                env.mf.curriculum.data[i] = Scalar[DT](st.reset_curriculum[i])
 
     # The live observation, kept in step with the env so the policy always reads
     # the state it is about to act on.
     var obs_l = List[Scalar[DT]](length=E.OBS_DIM, fill=Scalar[DT](0))
     var act_l = List[Scalar[DT]](length=ACT_DIM, fill=Scalar[DT](0))
+    var prev_obs_l = List[Scalar[DT]](length=E.OBS_DIM, fill=Scalar[DT](0))
+    var act_f = List[Float64](length=ACT_DIM, fill=0.0)
+    var have_obs = Bool(observer)
     var s0 = env.reset()
     for i in range(E.OBS_DIM):
         obs_l[i] = Scalar[DT](s0.data[i])
@@ -906,6 +1007,8 @@ def run_view[
             except e:
                 print("  policy variant failed to load:", e)
         if ui.reset_episode:
+            if have_obs:
+                observer.value()[].on_episode_end(step_i, True)
             var sr = env.reset()
             for i in range(E.OBS_DIM):
                 obs_l[i] = Scalar[DT](sr.data[i])
@@ -1000,6 +1103,11 @@ def run_view[
                 for a in range(ACT_DIM):
                     action.data[a] = Float64(act_l[a])
 
+            if have_obs:
+                for i in range(E.OBS_DIM):
+                    prev_obs_l[i] = obs_l[i]
+                for a in range(ACT_DIM):
+                    act_f[a] = action.data[a]
             var out = env.step(action)
             for i in range(E.OBS_DIM):
                 obs_l[i] = Scalar[DT](out[0].data[i])
@@ -1012,7 +1120,16 @@ def run_view[
             # for its own bindings and forwards the rest, so this is a free
             # key — and a manual reset is the only kind that makes sense when
             # a human, not a policy, is driving.
-            var manual_reset = env.renderer_take_key() == KEY_N
+            var key = env.renderer_take_key()
+            var manual_reset = key == KEY_N
+            # The observer sees the step with the env's state still the
+            # post-step one, and may ask for the episode to end here.
+            if have_obs:
+                if observer.value()[].on_step(
+                    env.d, env.mf, prev_obs_l, act_f, obs_l, out[2],
+                    step_i, key,
+                ):
+                    manual_reset = True
 
             var timed_out = st.episode_steps > 0 and step_i >= st.episode_steps
             if out[2] or timed_out or manual_reset:
@@ -1020,6 +1137,8 @@ def run_view[
                 print("  episode", episode, "ended after", step_i,
                       "steps, return =", ep_return,
                       "(manual)" if manual_reset else "")
+                if have_obs:
+                    observer.value()[].on_episode_end(step_i, manual_reset)
                 var sr = env.reset()
                 for i in range(E.OBS_DIM):
                     obs_l[i] = Scalar[DT](sr.data[i])
@@ -1047,8 +1166,8 @@ def run_view[
         # work does — measuring from before the sleep would charge each frame
         # for the previous frame's idle.
         var spent_ms = Int((perf_counter_ns() - frame_t0) // 1_000_000)
-        if spent_ms < FRAME_TARGET_MS:
-            env.renderer_delay(FRAME_TARGET_MS - spent_ms)
+        if spent_ms < st.frame_ms:
+            env.renderer_delay(st.frame_ms - spent_ms)
         frame_t0 = perf_counter_ns()
 
     st.quit = not switching
