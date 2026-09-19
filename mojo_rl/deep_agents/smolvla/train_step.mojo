@@ -37,6 +37,7 @@ forward used, because the tape it walks is that instance's. `backward` asserts
 the first; nothing can assert the second.
 """
 
+from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
@@ -112,6 +113,15 @@ struct SmolVLATrainStep[
 
     var act: Self.Act
     var pool: TensorPack[Self.N_SLOTS]
+    var profile: Bool
+    """⚠ OFF by default. On, `run` SYNCHRONISES twice — after the forward and
+    after the backward — so `ns_fwd` / `ns_bwd` are wall times of those phases
+    rather than of their enqueues (`_a_per_call_sweep_is_an_upper_bound_on_a_
+    step`: host timers across a run of pure enqueues measure the enqueues).
+    The two drains cost a few hundred microseconds a step, which is why this is
+    a flag and not the default."""
+    var ns_fwd: Int
+    var ns_bwd: Int
 
     def __init__(out self):
         comptime assert Self.ADIM_REAL <= Self.ADIM, (
@@ -119,10 +129,16 @@ struct SmolVLATrainStep[
         )
         self.act = Self.Act()
         self.pool = TensorPack[Self.N_SLOTS]()
+        self.profile = False
+        self.ns_fwd = 0
+        self.ns_bwd = 0
 
     def __init__(out self, *, deinit move: Self):
         self.act = move.act^
         self.pool = move.pool^
+        self.profile = move.profile
+        self.ns_fwd = move.ns_fwd
+        self.ns_bwd = move.ns_bwd
 
     @staticmethod
     def make[
@@ -201,6 +217,13 @@ struct SmolVLATrainStep[
         what you already pay to log a loss.
         """
         comptime TOK = Self.B * Self.CHUNK
+        var t_fwd = 0
+        if self.profile:
+            # ⚠ Drain first, so the forward's clock does not start while the
+            # caller's prefix is still executing.
+            comptime if target != "cpu":
+                ctx.value().synchronize()
+            t_fwd = Int(perf_counter_ns())
 
         # ── forward: embed_suffix ────────────────────────────────────────
         action_in.forward[target, TOK](
@@ -237,6 +260,12 @@ struct SmolVLATrainStep[
             self.pool[Self.V], u_t, valid, self.pool[Self.GV],
             self.pool[Self.ERR], n_terms, ctx,
         )
+        var t_bwd = 0
+        if self.profile:
+            comptime if target != "cpu":
+                ctx.value().synchronize()
+            t_bwd = Int(perf_counter_ns())
+            self.ns_fwd += t_bwd - t_fwd
 
         # ── backward ─────────────────────────────────────────────────────
         action_out.vjp[target, TOK](
@@ -277,6 +306,10 @@ struct SmolVLATrainStep[
             TensorRefs[1](x_t), self.pool[Self.GAEMB],
             TensorRefs[1](self.pool[Self.GXT]), ctx,
         )
+        if self.profile:
+            comptime if target != "cpu":
+                ctx.value().synchronize()
+            self.ns_bwd += Int(perf_counter_ns()) - t_bwd
 
         return mean_err[
             target, Self.B, Self.CHUNK, Self.ADIM, Self.ADIM_REAL

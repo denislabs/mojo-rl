@@ -79,7 +79,21 @@ is read from `tools/vla/`.
 | `SMOLVLA_LR` | default 1e-4 |
 | `SMOLVLA_CKPT` | checkpoint path prefix; default `/tmp/smolvla_so101` |
 | `SMOLVLA_INIT` | a `*_best.ckpt` to start from, applied ON TOP of the base checkpoint |
+| `SMOLVLA_VAL_EPISODES` | episodes held out at the END of the recording; default one fifth. **`0` trains on every episode** — see below |
+| `SMOLVLA_PROFILE` | set to anything: per-phase wall times (host images / prefix / suffix forward / backward) in the log line, at the cost of three extra drains per observation |
 | `SMOLVLA_NO_MONITOR` | force the metrics logger inert |
+
+⚠ **The held-out fifth is never trained on, and the deployed checkpoint is the
+model that never saw it.** The reference recipe trains on all 50 episodes. If
+a recording was made position by position — the published SO-101 dataset is
+5 cube positions x 10 episodes, in order — the last fifth is one whole cube
+position, and a policy fine-tuned here reaches next to it and misses. So the
+procedure is two runs: one with the default split, to choose the step count
+from a curve that is actually held out; then `SMOLVLA_VAL_EPISODES=0` at that
+step count, for the checkpoint that goes on the arm. With `0` the "held-out"
+groups are drawn from the TRAINING rows and the line says so — that curve is
+a sanity number (finite, falling), not a generalisation measure, and `best`
+selected by it is not a held-out best. Deploy `_last.ckpt` from that run.
 
 ## What this run is, and what it is not
 
@@ -303,6 +317,58 @@ def _need(name: String) raises -> String:
     return v^
 
 
+struct Phases(Movable):
+    """Where an observation's wall time goes, summed over `n` observations.
+
+    `img` is host work (decode + resize + upload, ends synchronised); `step`
+    is everything after it, prefix through loss. `prefix` is only filled
+    under `SMOLVLA_PROFILE`, when `run_one` drains after `build_prefix`; the
+    suffix forward and backward come from `SmolVLATrainStep.ns_fwd/ns_bwd`,
+    filled under the same flag.
+    """
+
+    var img: Int
+    var step: Int
+    var prefix: Int
+    var n: Int
+
+    def __init__(out self):
+        self.img = 0
+        self.step = 0
+        self.prefix = 0
+        self.n = 0
+
+    def __init__(out self, *, deinit move: Self):
+        self.img = move.img
+        self.step = move.step
+        self.prefix = move.prefix
+        self.n = move.n
+
+    def report(self, profile: Bool, ref st: Step) -> String:
+        var tot = Float64(self.img + self.step)
+        if tot <= 0.0 or self.n == 0:
+            return String("")
+        if not profile:
+            return (
+                "host-images " + String(100.0 * Float64(self.img) / tot)
+                + "%  gpu-step " + String(100.0 * Float64(self.step) / tot)
+                + "%"
+            )
+        # Per observation, in ms. `other` is the step's remainder: the
+        # action/noise/time uploads, `build_xt_ut`, `set_times`, and the
+        # loss download — small, and named so a surprise there is visible.
+        var k = 1.0e-6 / Float64(self.n)
+        var other = self.step - self.prefix - st.ns_fwd - st.ns_bwd
+        return (
+            "per obs: images " + String(Float64(self.img) * k)
+            + " ms, prefix " + String(Float64(self.prefix) * k)
+            + " ms, suffix fwd " + String(Float64(st.ns_fwd) * k)
+            + " ms, backward " + String(Float64(st.ns_bwd) * k)
+            + " ms, other " + String(Float64(other) * k)
+            + " ms  (total " + String(tot * k) + " ms)"
+        )
+
+
 struct Group(Movable):
     """One accumulation group, drawn BEFORE any forward runs.
 
@@ -436,6 +502,8 @@ def main() raises:
     var e_accum = getenv("SMOLVLA_ACCUM")
     if e_accum.byte_length() > 0:
         accum = Int(e_accum)
+    var e_val = getenv("SMOLVLA_VAL_EPISODES")
+    var profile = getenv("SMOLVLA_PROFILE").byte_length() > 0
 
     var ctx = DeviceContext()
     print("  device  " + String(ctx.name()))
@@ -469,20 +537,47 @@ def main() raises:
 
     var sam = Sampler(store_path, SmolVLAStats.from_stats_json(stats_path))
     var n_ep = sam.store.n_episodes()
+    var n_rows = sam.n_rows()
     var n_val_ep = n_ep // 5
     if n_val_ep < 1:
         n_val_ep = 1
-    var split = sam.store.episodes.start_of(n_ep - n_val_ep)
-    var n_rows = sam.n_rows()
-    print(
-        "  data    " + String(n_rows) + " rows, " + String(n_ep)
-        + " episodes — train [0, " + String(split) + "), held out ["
-        + String(split) + ", " + String(n_rows) + ")"
-    )
+    if e_val.byte_length() > 0:
+        n_val_ep = Int(e_val)
+    if n_val_ep < 0 or n_val_ep >= n_ep:
+        raise Error(
+            "SMOLVLA_VAL_EPISODES=" + String(n_val_ep) + " but the store has "
+            + String(n_ep) + " episodes — 0 trains on all of them, and at"
+            " least one must remain to train on"
+        )
     # ⚠ A CONTIGUOUS tail, not every fifth episode. Frames inside one episode
     # are near-duplicates of their neighbours, so an interleaved split puts a
     # training frame 33 ms from each held-out one and the held-out loss
     # measures memorisation instead of generalisation.
+    var held_out = n_val_ep > 0
+    var split = (
+        sam.store.episodes.start_of(n_ep - n_val_ep) if held_out else n_rows
+    )
+    # ⚠ With nothing held out the curve is scored on TRAINING rows. It still
+    # has to be finite and to fall — that much is a check on the plumbing —
+    # but it says nothing about generalisation, and every print of it below
+    # is labelled so it cannot be read as the other kind of number.
+    var val_lo = split if held_out else 0
+    var val_label = String("HELD-OUT") if held_out else String(
+        "TRAIN-SUBSET (nothing held out)"
+    )
+    if held_out:
+        print(
+            "  data    " + String(n_rows) + " rows, " + String(n_ep)
+            + " episodes — train [0, " + String(split) + "), held out ["
+            + String(split) + ", " + String(n_rows) + ")  ("
+            + String(n_val_ep) + " episodes)"
+        )
+    else:
+        print(
+            "  data    " + String(n_rows) + " rows, " + String(n_ep)
+            + " episodes — ALL trained on; the curve below is a training"
+            " subset, NOT held out (SMOLVLA_VAL_EPISODES=0)"
+        )
 
     var env_vars = load_dotenv()
     var no_mon = getenv("SMOLVLA_NO_MONITOR")
@@ -508,6 +603,7 @@ def main() raises:
     logger.set_config("warmup", String(WARMUP_STEPS))
 
     var st = Step.make["gpu"](Optional(ctx))
+    st.profile = profile
     var opt = Adam(
         lr=Scalar[DT](lr_at(0, steps)), beta1=BETA1, beta2=BETA2, eps=EPS,
         wd=WD,
@@ -572,30 +668,30 @@ def main() raises:
     var vgroups = List[Group]()
     for _ in range(VAL_GROUPS):
         vgroups.append(
-            draw_group(sam, accum, split, n_rows, state_t, acts_t, valid_t)
+            draw_group(sam, accum, val_lo, n_rows, state_t, acts_t, valid_t)
         )
     sam.rng = keep_rng
     print("  val     " + String(VAL_GROUPS) + " fixed groups x "
-          + String(accum) + " observations, drawn once")
+          + String(accum) + " observations, drawn once from rows ["
+          + String(val_lo) + ", " + String(n_rows) + ")  " + val_label)
 
     # ── the BASELINE, before a single update ─────────────────────────────
     # ⚠ Without this every held-out number is post-update and "the loss fell"
     # has nothing to fall FROM. It is also the only number that says anything
     # about the published checkpoint on this recording, which is the thing a
     # fine-tune has to beat.
-    var ns_img = 0
-    var ns_step = 0
+    var ph = Phases()
     var base_sum = 0.0
     for vi in range(VAL_GROUPS):
         for m in range(accum):
             base_sum += run_one(
                 m, vgroups[vi], sam, tasks, pol, st, img_col, row, images,
                 scratch, acts_t, valid_t, noise_t, times_t, x_t, u_t, ctx,
-                ns_img, ns_step,
+                ph,
             )
     var base_val = base_sum / Float64(VAL_GROUPS)
     var best_val = base_val
-    print("  BASELINE held-out (lerobot/smolvla_base, 0 updates): "
+    print("  BASELINE " + val_label + " (lerobot/smolvla_base, 0 updates): "
           + String(base_val))
     var bn = List[String]()
     var bv = List[Float64]()
@@ -628,8 +724,7 @@ def main() raises:
         for m in range(accum):
             loss += run_one(
                 m, gr, sam, tasks, pol, st, img_col, row, images, scratch,
-                acts_t, valid_t, noise_t, times_t, x_t, u_t, ctx,
-                ns_img, ns_step,
+                acts_t, valid_t, noise_t, times_t, x_t, u_t, ctx, ph,
             )
         # ⚠ Clip BEFORE the step, over the JOINT norm of the whole trainable
         # set — `optimizer_grad_clip_norm = 10` in the reference. Clipping the
@@ -646,17 +741,12 @@ def main() raises:
 
         if s % LOG_EVERY == 0:
             var el = Float64(perf_counter_ns() - t0) / 1.0e9
-            var tot = Float64(ns_img + ns_step)
             print(
                 "  step " + String(s) + "   train " + String(loss)
                 + "   " + String(el / Float64(s + 1)) + " s/step"
                 + "   lr " + String(opt.get_lr())
                 + "   |g| " + String(gnorm)
-                + "   host-images " + String(
-                    100.0 * Float64(ns_img) / tot
-                ) + "%  gpu-step " + String(
-                    100.0 * Float64(ns_step) / tot
-                ) + "%"
+                + "   " + ph.report(profile, st)
             )
             var names = List[String]()
             var vals = List[Float64]()
@@ -674,11 +764,11 @@ def main() raises:
                     vsum += run_one(
                         m, vgroups[vi], sam, tasks, pol, st, img_col, row,
                         images, scratch, acts_t, valid_t, noise_t, times_t,
-                        x_t, u_t, ctx, ns_img, ns_step,
+                        x_t, u_t, ctx, ph,
                     )
             var vloss = vsum / Float64(VAL_GROUPS)
             print(
-                "  step " + String(s) + "   HELD-OUT " + String(vloss)
+                "  step " + String(s) + "   " + val_label + " " + String(vloss)
                 + "   vs baseline " + String(base_val) + "  ("
                 + String(100.0 * (vloss - base_val) / base_val) + "%)"
             )
@@ -718,10 +808,14 @@ def main() raises:
 
     logger.flush()
     print("")
-    print("  best held-out " + String(best_val) + "  vs baseline "
+    print("  best " + val_label + " " + String(best_val) + "  vs baseline "
           + String(base_val) + "  ("
           + String(100.0 * (best_val - base_val) / base_val) + "%)")
     print("  weights: " + ckpt + "_best.ckpt  /  " + ckpt + "_last.ckpt")
+    if not held_out:
+        print("  ⚠ nothing was held out: `best` was picked by a TRAINING"
+              " subset. Deploy _last.ckpt, at the step count the held-out"
+              " run chose.")
     print("done")
 
 
@@ -743,16 +837,17 @@ def run_one(
     mut x_t: Tensor,
     mut u_t: Tensor,
     ctx: DeviceContext,
-    mut ns_img: Int,
-    mut ns_step: Int,
+    mut ph: Phases,
 ) raises -> Float64:
     """One observation: its prefix, its interpolant, one denoising step.
 
-    ⚠ The two timers split HOST from DEVICE, and they can only be read that
-    way because each phase ENDS in a synchronisation: `fill_store_images`
+    ⚠ The timers split HOST from DEVICE, and they can only be read that way
+    because each phase ENDS in a synchronisation: `fill_store_images`
     finishes with `upload_resident`, and `run` finishes with `mean_err`, which
     downloads. Subtracting host timers across a run of pure enqueues would
     measure the enqueues (`_a_per_call_sweep_is_an_upper_bound_on_a_step`).
+    Under `SMOLVLA_PROFILE` the prefix gets its own drain, and `run` two more,
+    so the GPU time splits into prefix / suffix forward / backward.
     """
     var t_img = perf_counter_ns()
     var g = gr.rows[m * B]
@@ -760,13 +855,19 @@ def run_one(
     fill_store_images["gpu", N_CAM](
         row, SRC_W, SRC_H, images, scratch, Optional(ctx)
     )
-    ns_img += perf_counter_ns() - t_img
+    ph.img += Int(perf_counter_ns() - t_img)
     var t_step = perf_counter_ns()
     var lang = tasks.for_index(gr.tasks[m * B])
     var rs = List[Float32]()
     for j in range(SDIM):
         rs.append(gr.raw_state[m * B * SDIM + j])
     pol.build_prefix["gpu"](images, lang, rs, Optional(ctx))
+    if st.profile:
+        # ⚠ The drain that makes `prefix` a wall time. Without it this timer
+        # would end at the last enqueue, and `run`'s first drain would be
+        # charged with the whole SigLIP tower and sixteen VLM layers.
+        ctx.synchronize()
+        ph.prefix += Int(perf_counter_ns() - t_step)
 
     for i in range(AN):
         acts_t.data[i] = gr.actions[m * AN + i]
@@ -794,5 +895,6 @@ def run_one(
         pol.time_mlp_out, pol.action_out, x_t, u_t, valid_t, gr.total_valid,
         Optional(ctx),
     )
-    ns_step += perf_counter_ns() - t_step
+    ph.step += Int(perf_counter_ns() - t_step)
+    ph.n += 1
     return l
