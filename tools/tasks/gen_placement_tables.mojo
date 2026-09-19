@@ -50,10 +50,13 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 comptime DT = DType.float64
 comptime FAMILY_DIR = "mojo_rl/tasks/families"
 comptime OUT_DIR = "mojo_rl/tasks/placement"
-comptime GRIPPER_SITE_NAMES = "robot_grip_site,robot_gripperframe"
+comptime GRIPPER_SITE_NAMES = "robot_grip_site,robot_grasp_center,robot_gripperframe"
 """The end-effector site, per base robot, first match wins: the vendored
-Panda's (the one OSC_POSE drives, `examples/tasks/libero_eval.mojo`) and the
-SO-101's (`so_arm101.xml`'s `gripperframe`). The goal words' origin."""
+Panda's (the one OSC_POSE drives, `examples/tasks/libero_eval.mojo`), the
+tower follower's PINCH CENTRE (`grasp_center`, the bake's step 4c — where a
+held brick sits, 3 cm above the tip) and the stock SO-101's `gripperframe`
+(the jaw TIP, the tabletop family). The goal words' origin, and the reach
+term's."""
 
 
 def _generatable(f: FamilySpec) -> Bool:

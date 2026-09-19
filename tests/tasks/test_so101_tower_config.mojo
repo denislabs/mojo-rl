@@ -13,7 +13,8 @@ for the 23 LIBERO families and `test_active_mask.mojo` for the tabletop:
    substep (16 x 2 ms against 1/30 s);
 2. the table's nq/nv/nbody/nsite are the model def's, its free-slot
    addresses are `reset.free_slot_addresses` on the parsed scene (an
-   INDEPENDENT derivation), and its gripper site is `robot_gripperframe`;
+   INDEPENDENT derivation), and its gripper site is `robot_grasp_center` —
+   the PINCH CENTRE, not the jaw tip (the bake's step 4c);
 3. the model def's `OBS_DIM` is `NQ + NV + N_FREE + TASK_GOAL_WORDS` — the
    width `task_hooks.write_task_obs` writes;
 4. the runtime model BUILDS under the config's hull budget
@@ -112,10 +113,10 @@ def main() raises:
         j += 1
     var grip = -1
     for i in range(len(fmd.site_names)):
-        if String(fmd.site_names[i]) == "robot_gripperframe":
+        if String(fmd.site_names[i]) == "robot_grasp_center":
             grip = i
-    assert_true(grip >= 0, "the scene has robot_gripperframe")
-    assert_equal(P.GRIPPER_SITE, grip, "GRIPPER_SITE is robot_gripperframe")
+    assert_true(grip >= 0, "the scene has robot_grasp_center")
+    assert_equal(P.GRIPPER_SITE, grip, "GRIPPER_SITE is the pinch centre")
     assert_equal(CFG.GRIPPER_SITE, grip, "the config reads it from the table")
     print("  table: nq", P.NQ, "nv", P.NV, "nbody", P.NBODY, "nsite",
           P.NSITE, "gripper site", P.GRIPPER_SITE)

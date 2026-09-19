@@ -286,6 +286,23 @@ def bake():
         ' fovy="%.4f"/>' % (_fmt(pos), _fmt(xy), FOVY_DEG)
     )
     src = sub(STOCK_CAM, cam, "stock wrist camera")
+    # 4c. THE PINCH CENTRE, as a site. `gripperframe` is the fixed jaw's TIP;
+    #    a brick held by this jaw sits 3 cm above it and 2 cm towards the
+    #    fixed jaw — (0.0221, 0.0012, -0.0681) in the gripper body, measured
+    #    by `task_grasp_feasibility.mojo` (the held offset at rest, mapped
+    #    through `xmat`). The family's placement table names THIS site as the
+    #    gripper site, so the reach term and the goal words pull the object
+    #    INTO the jaws; measured from the tip, 100k steps of SAC parked the
+    #    jaw on the brick and never once had it between the fingers.
+    src = sub(
+        cam,
+        cam + "\n"
+        "                <!-- RIG ADDITION: the pinch centre — see"
+        " bake_so_arm101_tower.py step 4c -->\n"
+        '                <site group="3" name="grasp_center"'
+        ' pos="0.0221 0.0012 -0.0681" size="0.004"/>',
+        "wrist camera (site anchor)",
+    )
     # 5. NO FLOOR, NO LIGHT, NO GROUNDPLANE. The stock model inlines
     #    `SO101/scene.xml`'s floor plane for the reach env. In a FAMILY the
     #    composer writes the floor and the light, and this base is attached
@@ -329,6 +346,8 @@ def check(text):
 
     m = mujoco.MjModel.from_xml_path(os.path.join(ROOT, OUT))
     ref = mujoco.MjModel.from_xml_path(os.path.join(ROOT, STOCK))
+    assert m.nsite == ref.nsite + 1, (m.nsite, ref.nsite)
+    assert mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, "grasp_center") >= 0
     assert m.ncam == 1 and m.nbody == ref.nbody and m.nq == ref.nq, (
         "tower model counts drifted from stock: ncam %d nbody %d nq %d"
         % (m.ncam, m.nbody, m.nq)

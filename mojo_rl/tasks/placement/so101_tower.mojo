@@ -20,8 +20,8 @@ struct So101TowerPlacement(PlacementTable):
     comptime NV: Int = 18
     comptime N_JOINTS: Int = 0
     comptime NBODY: Int = 13
-    comptime NSITE: Int = 3
-    comptime GRIPPER_SITE: Int = 1  # robot_gripperframe
+    comptime NSITE: Int = 4
+    comptime GRIPPER_SITE: Int = 2  # robot_grasp_center
     comptime N_BASE_QPOS: Int = 0
 
     @staticmethod
@@ -90,7 +90,7 @@ struct So101TowerPlacement(PlacementTable):
 
     @staticmethod
     def region_site(r: Int) -> Int:
-        return 2
+        return 3
 
     @staticmethod
     def region_site_x[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
