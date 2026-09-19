@@ -29,10 +29,9 @@ poses, slot addresses — and the viewer writes that `qpos` through `obs_at`
 after every reset. The same layout every episode, on purpose: a viewer is for
 looking at one scene.
 
-⚠ THE ACTIVE MASK IS NOT SET. `write_task_obs_host` zeroes an inactive slot's
-words in the observation plot; with `meta` untouched every slot reads as
-inactive there. The physics and the picture are right; only the plotted
-observation's slot words are zero. Nothing here trains.
+The task's tape, mask, init and shaping words go into `meta` after every
+reset too (`ViewerState.reset_meta_*`, from `tasks/posed_reset`), so the
+observation plot shows what a policy would see. Nothing here trains.
 
 ⚠⚠ THE DRIVE MODES COMMAND [-1, 1] PER JOINT, mapped onto each actuator's own
 `ctrlrange` (`NORMALIZED_ACTIONS` is True on these configs, unlike the bare
@@ -54,12 +53,7 @@ from mojo_rl.envs.dm_control.viewer_core import (
 from mojo_rl.render.imgui import imgui_shim_available
 from mojo_rl.render.renderer3d import Renderer3D
 
-from mojo_rl.tasks.spec import (
-    load_family, load_task, validate_task_against_family, SLOT_FREE,
-)
-from mojo_rl.tasks.sampler import sample_placements, RegionFrame, SampleReport
-from mojo_rl.tasks.reset import reset_slots, SlotAddress
-from mojo_rl.tasks.placement.table import PlacementTable
+from mojo_rl.tasks.posed_reset import posed_qpos, task_meta_words
 from mojo_rl.tasks.placement.so101_tower import So101TowerPlacement
 from mojo_rl.tasks.family_config import (
     So101TabletopConfig, So101TabletopPlacement, So101TowerConfig,
@@ -68,9 +62,6 @@ from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
 from mojo_rl.tasks.so101_tower_xml import So101TowerModel
 
 comptime SEED: Int = 0
-comptime DT = DType.float64
-comptime FAMILY_DIR = "mojo_rl/tasks/families/"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
 comptime N_TOWER_TASKS = 3
 
 
@@ -100,54 +91,6 @@ def task_domain() -> List[Int]:
     return t^
 
 
-def posed_qpos[P: PlacementTable](
-    task: String, family: String, fallback_radius: Float64
-) raises -> List[Float64]:
-    """The composed scene's `qpos0` with the task's `init=` placements drawn.
-
-    Everything comes from the placement table `P` — the park poses, the
-    region sites' world frames (FK at rest, baked by the generator), the
-    slot addresses — so no second model is built and no FK is run here. The
-    host sampler is the one the eval uses (`sampler.sample_placements`), at
-    seed 0, lane 0. `fallback_radius` is what it uses for a free slot WITHOUT
-    `slot_geom=` (every tabletop slot; no tower slot).
-    """
-    var f = load_family(String(FAMILY_DIR) + family + ".family")
-    var t = load_task(String(TASK_DIR) + task + ".task")
-    validate_task_against_family(t, f)
-    var q0 = List[Float64](length=P.NQ, fill=0.0)
-    for j in range(P.N_FREE):
-        var adr = P.free_qadr(j)
-        q0[adr] = Float64(P.free_park_x[DT](j))
-        q0[adr + 1] = Float64(P.free_park_y[DT](j))
-        q0[adr + 2] = Float64(P.free_park_z[DT](j))
-        q0[adr + 3] = 1.0
-    var frames = List[RegionFrame]()
-    for r in range(P.N_REGIONS):
-        frames.append(
-            RegionFrame(
-                Float64(P.region_site_x[DT](r)),
-                Float64(P.region_site_y[DT](r)),
-                Float64(P.region_site_z[DT](r)),
-            )
-        )
-    var radii = List[Float64](length=len(f.slots), fill=fallback_radius)
-    var addrs = List[SlotAddress]()
-    var j = 0
-    for si in range(len(f.slots)):
-        if f.slots[si].kind == SLOT_FREE:
-            addrs.append(SlotAddress(P.free_qadr(j), P.free_dadr(j)))
-            j += 1
-        else:
-            addrs.append(SlotAddress(-1, -1))
-    var rep = SampleReport()
-    var placed = sample_placements(t, f, frames, radii, UInt64(SEED), 0, rep)
-    var v0 = List[Float64](length=P.NV, fill=0.0)
-    reset_slots(t, f, placed, addrs, q0, v0)
-    print("  placed", len(placed), "slot(s) for", t.name, "| goal:", t.goal)
-    return q0^
-
-
 def dispatch(mut st: ViewerState) raises:
     """Run whichever task `st.task` names, and return when it wants another.
 
@@ -159,11 +102,25 @@ def dispatch(mut st: ViewerState) raises:
         st.reset_qpos = posed_qpos[So101TowerPlacement](
             name, String("so101_tower"), So101TowerConfig.SLOT_RADIUS
         )
+        var mw = task_meta_words(
+            name, String("so101_tower"), So101TowerConfig.SHAPE_W_GOAL,
+            So101TowerConfig.SHAPE_W_REACH, So101TowerConfig.GOAL_MARGIN,
+            So101TowerConfig.REACH_MARGIN,
+        )
+        st.reset_meta_idx = mw[0].copy()
+        st.reset_meta_val = mw[1].copy()
         run_view[So101TowerModel, So101TowerConfig](name, st)
     elif st.task < len(task_names()):
         st.reset_qpos = posed_qpos[So101TabletopPlacement](
             name, String("so101_tabletop"), So101TabletopConfig.SLOT_RADIUS
         )
+        var mw = task_meta_words(
+            name, String("so101_tabletop"), So101TabletopConfig.SHAPE_W_GOAL,
+            So101TabletopConfig.SHAPE_W_REACH, So101TabletopConfig.GOAL_MARGIN,
+            So101TabletopConfig.REACH_MARGIN,
+        )
+        st.reset_meta_idx = mw[0].copy()
+        st.reset_meta_val = mw[1].copy()
         run_view[So101TabletopModel, So101TabletopConfig](name, st)
     else:
         print("unknown task index:", st.task)

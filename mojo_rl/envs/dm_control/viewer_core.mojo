@@ -328,6 +328,16 @@ struct ViewerState(Copyable, Movable):
     hand it to the next `init_renderer` or end it with
     `Renderer3D.close_handoff`; `run_viewer` is the one place that guarantees
     both."""
+    var reset_meta_idx: List[Int]
+    var reset_meta_val: List[Float64]
+    """`meta` words written after EVERY reset, before `reset_qpos` is applied
+    — empty for none. A task family's observation hook reads the task's TAPE
+    (`META_IDX_TASK_PARAM_*`), its active MASK (`META_IDX_TASK_ACTIVE`) and
+    its init words out of `d.meta`, and `Phyics3dEnv.reset` writes none of
+    them: a family policy viewed through `run_view` alone gets goal words
+    computed from an empty tape and slot words zeroed by a zero mask — an
+    observation it never trained on, so it looks broken while the checkpoint
+    is fine. `tasks/posed_reset.task_meta_words` fills these for a task."""
     var reset_qpos: List[Float64]
     """A full `qpos` the env is put into after EVERY reset — empty for none.
 
@@ -365,6 +375,8 @@ struct ViewerState(Copyable, Movable):
         self.domains = domains^
         self.domain_of = domain_of^
         self.handoff = None
+        self.reset_meta_idx = List[Int]()
+        self.reset_meta_val = List[Float64]()
         self.reset_qpos = List[Float64]()
 
 
@@ -751,6 +763,8 @@ def run_view[
     var s0 = env.reset()
     for i in range(E.OBS_DIM):
         obs_l[i] = Scalar[DT](s0.data[i])
+    for mk in range(len(st.reset_meta_idx)):
+        env.d.meta.data[st.reset_meta_idx[mk]] = Scalar[DT](st.reset_meta_val[mk])
     if len(st.reset_qpos) > 0:
         # `ViewerState.reset_qpos`: the posed state AND its observation.
         if len(st.reset_qpos) != MODEL.NQ:
@@ -895,6 +909,8 @@ def run_view[
             var sr = env.reset()
             for i in range(E.OBS_DIM):
                 obs_l[i] = Scalar[DT](sr.data[i])
+            for mk in range(len(st.reset_meta_idx)):
+                env.d.meta.data[st.reset_meta_idx[mk]] = Scalar[DT](st.reset_meta_val[mk])
             if len(st.reset_qpos) > 0:
                 # `ViewerState.reset_qpos`: the posed state AND its observation.
                 if len(st.reset_qpos) != MODEL.NQ:
@@ -1007,6 +1023,8 @@ def run_view[
                 var sr = env.reset()
                 for i in range(E.OBS_DIM):
                     obs_l[i] = Scalar[DT](sr.data[i])
+                for mk in range(len(st.reset_meta_idx)):
+                    env.d.meta.data[st.reset_meta_idx[mk]] = Scalar[DT](st.reset_meta_val[mk])
                 if len(st.reset_qpos) > 0:
                     # `ViewerState.reset_qpos`: the posed state AND its observation.
                     if len(st.reset_qpos) != MODEL.NQ:

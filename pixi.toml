@@ -459,6 +459,7 @@ soarm-record-ui = { cmd = "mojo run -I . examples/so101/record_ui.mojo", depends
 # calibration first (`pixi run camera-studio`). Pass
 # `-- --camera front --marker-mm 30 --offset X Y Z`.
 soarm-tower-viewer = { cmd = "mojo run -I . examples/so101/tower_viewer_imgui.mojo", depends-on = ["build-imgui"], description = "Interactive viewer of the SO-101 task families (so101_tower with both cameras, so101_tabletop), props placed" }
+soarm-tower-policy-viewer = { cmd = "mojo run -I . examples/so101/tower_policy_viewer.mojo", depends-on = ["build-imgui"], description = "Watch a trained so101_tower SAC checkpoint in the viewer (-- <task> [ckpt]); status line = reach / goal distances in mm" }
 soarm-tower-preview = { cmd = "mojo run -I . examples/so101/tower_camera_preview.mojo", description = "Render the so101_tower family's wrist and overhead cameras at a recorded state (-- --state deg,.. --out-dir DIR)" }
 soarm-calibrate-extrinsics = { cmd = "mojo run -I . examples/so101/calibrate_camera_extrinsics.mojo", depends-on = ["build-serial", "build-opencv", "build-imgui"], description = "Fit the camera -> robot-base transform (never energises the arm)" }
 # Run a trained ACT policy on the follower, from the two live cameras.
