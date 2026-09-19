@@ -373,7 +373,7 @@ struct VideoCapture(Movable):
 
         ⚠⚠ ON LINUX THE PATH IS RESOLVED TO AN INDEX FIRST, and that is not a
         shortcut — OpenCV's V4L2 backend CANNOT capture by name. Measured on
-        the Orin (OpenCV 5.0, JetPack 6.2): opening `/dev/soarm_cam_top` by
+        the Orin (OpenCV 5.0, JetPack 6.2): opening `/dev/soarm_cam_overhead` by
         name prints "backend is generally available but can't be used to
         capture by name" and fails. The udev symlink is still what makes the
         name stable; it is dereferenced here to whatever `videoN` it points at

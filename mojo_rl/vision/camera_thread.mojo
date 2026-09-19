@@ -531,7 +531,7 @@ struct CameraReader(Movable):
         out_w: Int = 0,
         out_h: Int = 0,
     ) raises -> Self:
-        """A camera named by device path — `/dev/soarm_cam_top`.
+        """A camera named by device path — `/dev/soarm_cam_overhead`.
 
         ⚠ A PATH IS THE ONLY STABLE NAME ON THE BOARD. Both SO-101 cameras
         report the same burned-in serial, so only the USB topology separates
