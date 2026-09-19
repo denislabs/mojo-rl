@@ -230,6 +230,21 @@ def main() raises:
     # ⚠ THIS CHANGES WHAT THE POLICY COMMANDS, so it stays opt-in and the
     # report prints the path and net BEFORE and AFTER: a filter that also
     # shortens the net displacement is eating the motion, not the tremor.
+    #
+    # MEASURED ON THE BOARD, 19 Sep, against the demonstrations' own figures
+    # (`tools/so101/demo_step_stats.mojo`: step 1.59 deg, wiggle 1.37x):
+    #
+    #   --smooth    step within chunk   wiggle   net    handover jump
+    #   (off)       6.92 deg            4.77x    68.1   57.9 deg
+    #   5           3.27                1.66x    82.5   31.5
+    #   9           1.65                1.43x    52.6   22.7
+    #
+    # Nine reproduces the demonstrated motion statistics almost exactly and
+    # costs 5% of the net displacement. It did not make the grasp succeed,
+    # which is the useful part of the result: the arm now moves like the
+    # demonstrations and still misses, so what remains is WHERE the policy
+    # aims — a fine-tune that was still improving at 2000 steps, and 50
+    # episodes — not how it moves.
     var smooth_n = 1
 
     var args = argv()
