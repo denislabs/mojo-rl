@@ -76,6 +76,7 @@ from mojo_rl.tasks.libero_act import (
     LIBERO_ACT_IMG_W, LIBERO_ACT_IMG_ELEMS, LIBERO_ACT_K, LIBERO_ACT_DIM,
     LIBERO_ACT_HEADS, LIBERO_ACT_FF, LIBERO_ACT_LATENT, LIBERO_ACT_N_ENC,
     LIBERO_ACT_N_DEC, LIBERO_ACT_LR, LIBERO_ACT_KL, LIBERO_ACT_STORE_RENDERED,
+    LIBERO_ACT_OH, LIBERO_ACT_OW, LIBERO_ACT_FEAT_CH,
 )
 
 
@@ -178,6 +179,9 @@ def main() raises:
           + " dec=" + String(LIBERO_ACT_N_DEC))
     print("  kl      " + String(kl_weight) + ("" if env_kl.byte_length() == 0
           else " (ACT_KL; the declaration's is " + String(LIBERO_ACT_KL) + ")"))
+    print("  vision  ResNet18 cut after layer3: " + String(LIBERO_ACT_OH) + "x"
+          + String(LIBERO_ACT_OW) + " tokens x " + String(LIBERO_ACT_FEAT_CH)
+          + " ch per camera")
     print("  data    " + String(LIBERO_ACT_N_CAM) + " cameras at "
           + String(LIBERO_ACT_IMG_H) + "x" + String(LIBERO_ACT_IMG_W)
           + ", qpos " + String(QPOS) + ", action " + String(ADIM)

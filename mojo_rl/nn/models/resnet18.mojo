@@ -226,3 +226,137 @@ struct ResNet18Backbone[
     ](mut self, mut src: Self, tau: Scalar[DT],
       ctx: Optional[DeviceContext]) raises:
         self.net.polyak_from[target](src.net, tau, ctx)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ResNet18Layer3 — the same trunk cut after layer3: stride 16, 256 channels
+# ══════════════════════════════════════════════════════════════════════════
+# ⚠ THE CUT EXISTS BECAUSE 128x128 THROUGH THE FULL TRUNK IS A 4x4 MAP.
+#
+# ACT's backbone is torchvision's `IntermediateLayerGetter(..., {"layer4":
+# "0"})`: stride 32, so ALOHA's 480x640 gives the transformer 15x20 = 300
+# tokens per camera. LIBERO records at 128x128, and the same trunk hands it
+# 4x4 = 16 tokens per camera, each a 32-pixel cell — and the first two LIBERO
+# fits (2026-09-19) solved only the one task whose target never moves (the
+# stove button, 5/20) and none of the nine whose object is drawn per episode.
+# Cutting after layer3 keeps the stride-16 map: 8x8 = 64 tokens per camera at
+# 256 channels, the ImageNet weights of layers 1-3 intact (the loaders walk
+# the graph's parameters and these are the same Sequential children 0..6
+# under the same names; layer4's tensors are simply never asked for).
+#
+# `RESNET18_L3_OUT_CH`, `ResNet18L3OutH/W` are the trainer's `FEAT_CH`, `OH`,
+# `OW` for this backbone.
+
+comptime ResNet18Layer3Seq[
+    IN_CH: Int, H: Int, W: Int, LAYOUT: Int = LAYOUT_NCHW
+] = Sequential[
+    ResNet18Stem[IN_CH, H, W, LAYOUT],
+    ResBlockConv2DBN[64, 3, 1, _MP[_S2[H]], _MP[_S2[W]], LAYOUT=LAYOUT],
+    ResBlockConv2DBN[64, 3, 1, _MP[_S2[H]], _MP[_S2[W]], LAYOUT=LAYOUT],
+    ResBlockDownsampleBN[
+        64, 128, 3, 1, _MP[_S2[H]], _MP[_S2[W]], LAYOUT=LAYOUT
+    ],
+    ResBlockConv2DBN[
+        128, 3, 1, _D[_MP[_S2[H]]], _D[_MP[_S2[W]]], LAYOUT=LAYOUT
+    ],
+    ResBlockDownsampleBN[
+        128, 256, 3, 1, _D[_MP[_S2[H]]], _D[_MP[_S2[W]]], LAYOUT=LAYOUT
+    ],
+    ResBlockConv2DBN[
+        256, 3, 1, _D[_D[_MP[_S2[H]]]], _D[_D[_MP[_S2[W]]]], LAYOUT=LAYOUT
+    ],
+]
+comptime ResNet18L3OutH[H: Int] = _D[_D[_MP[_S2[H]]]]
+comptime ResNet18L3OutW[W: Int] = _D[_D[_MP[_S2[W]]]]
+comptime RESNET18_L3_OUT_CH: Int = 256
+
+
+struct ResNet18Layer3Backbone[
+    IN_CH: Int, H: Int, W: Int, LAYOUT: Int = LAYOUT_NCHW
+](Module):
+    """`ResNet18Backbone` cut after layer3 — see the note above. A named
+    struct for the same reason that one is: the expansion stays inside."""
+
+    comptime Net = ResNet18Layer3Seq[Self.IN_CH, Self.H, Self.W, Self.LAYOUT]
+    comptime ARITY: Int = 1
+    comptime IN_DIMS = Array[Int, 1](
+        fill=Self.IN_CH * Self.H * Self.W
+    )
+    comptime OUT_DIM: Int = Self.Net.OUT_DIM
+    var net: Self.Net
+
+    def __init__(out self):
+        self.net = Self.Net()
+
+
+    def __init__[
+        target: StaticString, INIT: Initializer
+    ](out self, *, ctx: Optional[DeviceContext]) raises:
+        """Build the children IN PLACE, straight from their `make`.
+
+        Same reason as `Sequential.__init__[target, INIT]`: `make` used to
+        default-construct `Self` (recursively, down to every leaf's empty
+        Params) and then move each made child over its default. Inlined,
+        that construct-then-move chain was the weight of the constructors on
+        the ACT trainer (docs/COMPILE_TIME_PROFILING.md §3.2).
+        """
+        self.net = Self.Net.make[target, INIT](ctx)
+
+    def __init__(out self, *, deinit move: Self):
+        self.net = move.net^
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        return Self.__init__[target, INIT](ctx=ctx)
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
+    ](
+        mut self,
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.net.forward[target, B, POLICY=POLICY](inputs, out, ctx)
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.net.vjp[target, B, POLICY=POLICY](
+            forward_input, grad_output, grad_inputs, ctx
+        )
+
+    def for_each_param[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.net.for_each_param[target](visitor, ctx, prefix)
+
+    def for_each_state[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.net.for_each_state[target](visitor, ctx, prefix)
+
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.net.zero_grad[target](ctx)
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        self.net.set_attr[ATTR](value)
+
+    def polyak_from[
+        target: StaticString
+    ](mut self, mut src: Self, tau: Scalar[DT],
+      ctx: Optional[DeviceContext]) raises:
+        self.net.polyak_from[target](src.net, tau, ctx)

@@ -17,6 +17,7 @@ ACT has thirteen parameters to get wrong where the MLP had one.
 | cameras | 2 x 128x128 — `agentview`, `eye_in_hand`, the recording's own |
 | `K` 40 | **2.0 s at LIBERO's 20 Hz**. The paper chunks 100 steps at 50 Hz; the SO-101 run chunks 60 at 30 fps. The horizon is the quantity carried over, not the count — see `act/config.RUN_K`. |
 | dim / ff / heads / latent / enc / dec | the `RUN_*` block: 256 / 1024 / 8 / 32 / 4 / 1 |
+| backbone | **ResNet18 cut after layer3** (`ResNet18Layer3Backbone`): 8x8 = 64 tokens per camera at 256 channels, ImageNet layers 1-3. The full trunk gives 4x4 at 128x128 and the fits on it solved only the task whose target never moves (5/20 stove, 0/20 the nine others) |
 | lr / kl | 1e-5 / 10, both references' values |
 
 ⚠⚠ THE TASK IS AN INPUT BECAUSE THE PICTURE CANNOT CARRY IT. Every
@@ -54,6 +55,9 @@ from mojo_rl.deep_agents.act.config import (
     RUN_LR, ACT_DROPOUT, ACT_KL_WEIGHT,
 )
 from mojo_rl.deep_agents.act.trainer import ACTTrainer
+from mojo_rl.nn.models.resnet18 import (
+    ResNet18Layer3Backbone, ResNet18L3OutH, ResNet18L3OutW, RESNET18_L3_OUT_CH,
+)
 from mojo_rl.deep_agents.act.data import ACTDataset
 from mojo_rl.deep_agents.act.data_gpu import ACTDeviceDataset
 from mojo_rl.tasks.libero_osc_config import LIBERO_CONTROL_FREQ
@@ -93,11 +97,19 @@ comptime LiberoActDeviceDataset = ACTDeviceDataset[
     LIBERO_ACT_QPOS, LIBERO_ACT_ADIM, LIBERO_ACT_N_CAM,
     LIBERO_ACT_IMG_H, LIBERO_ACT_IMG_W,
 ]
+comptime LIBERO_ACT_FEAT_CH: Int = RESNET18_L3_OUT_CH
+comptime LIBERO_ACT_OH: Int = ResNet18L3OutH[LIBERO_ACT_IMG_H]
+comptime LIBERO_ACT_OW: Int = ResNet18L3OutW[LIBERO_ACT_IMG_W]
+comptime LiberoActBackbone = ResNet18Layer3Backbone[
+    3, LIBERO_ACT_IMG_H, LIBERO_ACT_IMG_W
+]
 comptime LiberoActTrainer[BATCH: Int, target: StaticString] = ACTTrainer[
     LIBERO_ACT_QPOS, LIBERO_ACT_ADIM, LIBERO_ACT_N_CAM,
     LIBERO_ACT_IMG_H, LIBERO_ACT_IMG_W,
     LIBERO_ACT_K, LIBERO_ACT_DIM, LIBERO_ACT_HEADS, LIBERO_ACT_FF,
     LIBERO_ACT_LATENT, LIBERO_ACT_N_ENC, LIBERO_ACT_N_DEC,
     BATCH, ACT_DROPOUT, target,
+    FEAT_CH=LIBERO_ACT_FEAT_CH, OH=LIBERO_ACT_OH, OW=LIBERO_ACT_OW,
+    BACKBONE=LiberoActBackbone,
 ]
 """The trainer fits it at its batch; the eval runs it at `LANES`."""
