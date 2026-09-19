@@ -1256,4 +1256,16 @@ that cadence. The hull budget is measured on the composed scene
 (`tools/tasks/mesh_vertex_budget.mojo` — the wrist camera mount replaces a
 stock part and the stand adds four meshes, visual only). The fallback
 radius is never consulted: both free slots carry `slot_geom=`; the brick's
-half-diagonal is written so a wrong path would still place something sane."""
+half-diagonal is written so a wrong path would still place something sane.
+
+⚠⚠ THE SIM GRASP IS MARGINAL IN TIME, AND THIS CADENCE EXPOSES IT. Measured
+2026-09-19 with `task_grasp_feasibility.mojo so101_tower_lift_brick`: at
+frame skip 2 the printed 25 mm cube is HELD (z 0.27, four gripper contacts,
+still creeping at 0.7 mm/s when the probe stops looking); at frame skip 16
+the SAME grasp, over the probe's now eightfold longer hold (~12 s), ends
+with the brick on the desk and zero contacts. The tabletop's FEASIBLE
+verdict is a ~1.5 s hold of a brick slipping at 1.8 mm/s. A carry to the
+bowl is seconds long, so the grasp has to be made to hold — contact
+parameters (the pyramidal cone at friction 1.0, no torsional term) or a
+jaw-pad geom — BEFORE `so101_tower_lift_brick` or `cube_in_bowl` can train
+here. Lowering the skip would hide it, not fix it."""

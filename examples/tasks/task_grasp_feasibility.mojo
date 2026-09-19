@@ -34,8 +34,11 @@ from mojo_rl.tasks.spec import (
     load_family, load_task, validate_task_against_family
 )
 from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import So101TabletopConfig
+from mojo_rl.tasks.family_config import So101TabletopConfig, So101TowerConfig
 from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
+from mojo_rl.tasks.so101_tower_xml import So101TowerModel
+from mojo_rl.envs.phyics3d_env import Phyics3dEnvConfig
+from mojo_rl.physics3d.model import ModelDefLike
 from mojo_rl.tasks.predicates import parse_goal, bind_goal
 from mojo_rl.tasks.eval import region_sites
 from mojo_rl.tasks.active import active_mask
@@ -52,15 +55,14 @@ from mojo_rl.physics3d.gpu.constants import (
 from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 
-comptime CFG = So101TabletopConfig
 comptime DT = DType.float64
-comptime EnvT = Phyics3dEnv[So101TabletopModel, CFG, DT]
-comptime NQ = So101TabletopModel.NQ
-comptime NV = So101TabletopModel.NV
+# GENERIC OVER THE FAMILY: `run[M, C]` below is dispatched on the task's
+# `family=` line, so one probe serves the tabletop and the tower.
+comptime EnvT[M: ModelDefLike, C: Phyics3dEnvConfig] = Phyics3dEnv[M, C, DT]
 comptime SEED: UInt64 = 12345
 
 
-def brick_contacts(mut env: EnvT, body: Int) -> Tuple[Int, Float64]:
+def brick_contacts[M: ModelDefLike, C: Phyics3dEnvConfig](mut env: EnvT[M, C], body: Int) -> Tuple[Int, Float64]:
     """`(contacts touching `body`, the deepest penetration among them)`.
 
     ⚠ CONTACTS CARRY BODY IDS, NOT GEOM IDS (`CONTACT_IDX_BODY_A/B`), so this
@@ -82,7 +84,7 @@ def brick_contacts(mut env: EnvT, body: Int) -> Tuple[Int, Float64]:
     return (hits, deepest)
 
 
-def place_brick(mut env: EnvT, qadr: Int, dadr: Int,
+def place_brick[M: ModelDefLike, C: Phyics3dEnvConfig](mut env: EnvT[M, C], qadr: Int, dadr: Int,
                 x: Float64, y: Float64, z: Float64):
     """Teleport the brick, upright and at rest."""
     env.d.qpos.data[qadr] = Scalar[DT](x)
@@ -96,8 +98,11 @@ def place_brick(mut env: EnvT, qadr: Int, dadr: Int,
         env.d.qvel.data[dadr + i] = Scalar[DT](0.0)
 
 
-def act(g: Float64, a0: Float64, a1: Float64, a2: Float64,
-        a3: Float64, a4: Float64) raises -> ContAction[6]:
+def act[A: Int](g: Float64, a0: Float64, a1: Float64, a2: Float64,
+        a3: Float64, a4: Float64) raises -> ContAction[A]:
+    """Six joint commands as the model's action — `A` is `M.ACTION_DIM`,
+    which is 6 on every SO-101 family; the parameter is what lets one
+    probe serve them all."""
     var v = List[Float64]()
     v.append(a0)
     v.append(a1)
@@ -105,11 +110,11 @@ def act(g: Float64, a0: Float64, a1: Float64, a2: Float64,
     v.append(a3)
     v.append(a4)
     v.append(g)
-    return ContAction[6].from_list(v)
+    return ContAction[A].from_list(v)
 
 
-def hold_actions(
-    mut e: EnvT, ctrl_min: List[Float64], ctrl_max: List[Float64],
+def hold_actions[M: ModelDefLike, C: Phyics3dEnvConfig](
+    mut e: EnvT[M, C], ctrl_min: List[Float64], ctrl_max: List[Float64],
     qadr_of_act: List[Int],
 ) raises -> List[Float64]:
     """The action that commands each joint to STAY WHERE IT IS.
@@ -137,7 +142,7 @@ def hold_actions(
     return out^
 
 
-def gripper_contacts(mut e: EnvT, brick: Int, g0: Int, g1: Int) -> Int:
+def gripper_contacts[M: ModelDefLike, C: Phyics3dEnvConfig](mut e: EnvT[M, C], brick: Int, g0: Int, g1: Int) -> Int:
     """Contacts between the brick and the GRIPPER bodies specifically.
 
     ⚠⚠ "THE BRICK IS HIGH" IS NOT "THE BRICK IS HELD". A cube the closing jaw
@@ -163,7 +168,7 @@ def gripper_contacts(mut e: EnvT, brick: Int, g0: Int, g1: Int) -> Int:
     return hits
 
 
-def brick_speed(mut e: EnvT, dadr: Int) -> Float64:
+def brick_speed[M: ModelDefLike, C: Phyics3dEnvConfig](mut e: EnvT[M, C], dadr: Int) -> Float64:
     """|linear velocity| of the brick — an airborne cube is not at rest."""
     var vx = Float64(e.d.qvel.data[dadr])
     var vy = Float64(e.d.qvel.data[dadr + 1])
@@ -171,27 +176,32 @@ def brick_speed(mut e: EnvT, dadr: Int) -> Float64:
     return (vx * vx + vy * vy + vz * vz) ** 0.5
 
 
-def step_hold(mut e: EnvT, h: List[Float64], grip: Float64) raises:
+def step_hold[M: ModelDefLike, C: Phyics3dEnvConfig](mut e: EnvT[M, C], h: List[Float64], grip: Float64) raises:
     """One step holding the arm and commanding the gripper."""
     var v = List[Float64]()
     for i in range(5):
         v.append(h[i])
     v.append(grip)
-    _ = e.step(ContAction[6].from_list(v))
+    _ = e.step(ContAction[M.ACTION_DIM].from_list(v))
 
 
-def main() raises:
+def run[M: ModelDefLike, C: Phyics3dEnvConfig](
+    task_name: String, family_path: String, slot_radius: Float64,
+    gripper_site: Int,
+) raises:
+    """`slot_radius` and `gripper_site` are the concrete config's
+    `SLOT_RADIUS` / `GRIPPER_SITE` — SO-101-family members the env-config
+    trait does not carry, handed in by `main` from the type it knows."""
+    comptime EnvL = EnvT[M, C]
+    comptime NQ = M.NQ
+    comptime NV = M.NV
     seed_rng(7)
-    var args = argv()
-    var task_name = String("so101_lift_brick")
-    if len(args) > 1:
-        task_name = String(args[1])
 
     print("=" * 72)
     print("grasp feasibility —", task_name)
     print("=" * 72)
 
-    var f = load_family("mojo_rl/tasks/families/so101_tabletop.family")
+    var f = load_family(family_path)
     var t = load_task("mojo_rl/tasks/tasks/" + task_name + ".task")
     validate_task_against_family(t, f)
     var fmd = parse_model_runtime(scene_path(f))
@@ -218,7 +228,7 @@ def main() raises:
     print("  grip  body", grip_body,
           "=", fmd.body_names[grip_body] if grip_body >= 0 else "NOT FOUND")
 
-    var env = EnvT()
+    var env = EnvL()
     _ = env.reset()
     for w in range(TAPE_WORDS):
         env.d.meta.data[META_IDX_TASK_PARAM_0 + w] = Scalar[DT](tape[w])
@@ -241,7 +251,7 @@ def main() raises:
         frames.append(RegionFrame(sp0[rs * 3], sp0[rs * 3 + 1], sp0[rs * 3 + 2]))
     var radii = List[Float64]()
     for _ in range(len(f.slots)):
-        radii.append(CFG.SLOT_RADIUS)
+        radii.append(slot_radius)
     var rep = SampleReport()
     var placed = sample_placements(t, f, frames, radii, SEED, 0, rep)
     var q0 = List[Float64]()
@@ -274,13 +284,13 @@ def main() raises:
     # contact between the arm and a prop is possible anywhere, and every
     # `lift` run so far measured a brick the arm cannot touch.
     print("LEG 1 — a mesh jaw against a box brick")
-    _ = env.step(act(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    _ = env.step(act[M.ACTION_DIM](0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
     var jx = Float64(env.d.xpos.data[jaw * 3])
     var jy = Float64(env.d.xpos.data[jaw * 3 + 1])
     var jz = Float64(env.d.xpos.data[jaw * 3 + 2])
     print("  jaw at", jx, jy, jz)
     place_brick(env, qadr, dadr, jx, jy, jz)
-    _ = env.step(act(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    _ = env.step(act[M.ACTION_DIM](0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
     var c1 = brick_contacts(env, brick)
     print("  brick placed AT the jaw origin -> contacts", c1[0],
           " deepest penetration", c1[1], "m")
@@ -316,7 +326,7 @@ def main() raises:
     # SIM. Park the brick far from everything and require silence.
     print("LEG 2 — the contact counter can read zero (anti-vacuity)")
     place_brick(env, qadr, dadr, 3.0, 3.0, 3.0)
-    _ = env.step(act(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    _ = env.step(act[M.ACTION_DIM](0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
     var c2 = brick_contacts(env, brick)
     print("  brick 3 m away -> contacts", c2[0])
     if c2[0] != 0:
@@ -339,7 +349,7 @@ def main() raises:
     # The hold action per joint is the one that maps back to the pose the arm
     # is already in: `a = (q - mid) / halfrange`.
     print("LEG 3 — the gripper closed on the brick, against gravity")
-    comptime GS = CFG.GRIPPER_SITE
+    var GS = gripper_site
 
     var jadr = List[Int]()
     var acc = 0
@@ -380,7 +390,7 @@ def main() raises:
                         env.d.qpos.data[i] = Scalar[DT](q0[i])
                     for i in range(NV):
                         env.d.qvel.data[i] = Scalar[DT](v0[i])
-                    _ = env.step(act(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+                    _ = env.step(act[M.ACTION_DIM](0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
                     for i in range(NQ):
                         env.d.qpos.data[i] = Scalar[DT](q0[i])
                     for i in range(NV):
@@ -484,7 +494,7 @@ def main() raises:
             env.d.qpos.data[i] = Scalar[DT](q0[i])
         for i in range(NV):
             env.d.qvel.data[i] = Scalar[DT](v0[i])
-        _ = env.step(act(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        _ = env.step(act[M.ACTION_DIM](0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
         for i in range(NQ):
             env.d.qpos.data[i] = Scalar[DT](q0[i])
         for i in range(NV):
@@ -528,7 +538,7 @@ def main() raises:
     # smaller cube look unliftable for a reason that is not the jaw.
     print("LEG 5 — does a SMALLER prop hold?")
     var bgeom = -1
-    for gi in range(So101TabletopModel.NGEOM):
+    for gi in range(M.NGEOM):
         var o = gi * MODEL_GEOM_SIZE
         if Int(Float64(env.mf.geoms.data[o + GEOM_IDX_BODY])) == brick:
             bgeom = gi
@@ -573,7 +583,7 @@ def main() raises:
                         env.d.qpos.data[i] = Scalar[DT](q0[i])
                     for i in range(NV):
                         env.d.qvel.data[i] = Scalar[DT](v0[i])
-                    _ = env.step(act(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+                    _ = env.step(act[M.ACTION_DIM](0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
                     for i in range(NQ):
                         env.d.qpos.data[i] = Scalar[DT](q0[i])
                     for i in range(NV):
@@ -634,3 +644,29 @@ def main() raises:
         print("=== FEASIBLE ===")
     else:
         print("=== NOT FEASIBLE —", fails, "leg(s) failed ===")
+
+
+def main() raises:
+    var args = argv()
+    var task_name = String("so101_lift_brick")
+    if len(args) > 1:
+        task_name = String(args[1])
+    # ⚠ THE FAMILY COMES FROM THE TASK FILE, not from a flag: a task names its
+    # family, and a probe run on the wrong scene would measure the wrong jaw.
+    var t = load_task("mojo_rl/tasks/tasks/" + task_name + ".task")
+    var fam = "mojo_rl/tasks/families/" + t.family + ".family"
+    if t.family == "so101_tabletop":
+        run[So101TabletopModel, So101TabletopConfig](
+            task_name, fam, So101TabletopConfig.SLOT_RADIUS,
+            So101TabletopConfig.GRIPPER_SITE,
+        )
+    elif t.family == "so101_tower":
+        run[So101TowerModel, So101TowerConfig](
+            task_name, fam, So101TowerConfig.SLOT_RADIUS,
+            So101TowerConfig.GRIPPER_SITE,
+        )
+    else:
+        raise Error(
+            "grasp feasibility: task '" + task_name + "' is on family '"
+            + t.family + "', which this probe has no compile unit for."
+        )

@@ -233,19 +233,39 @@ def bake():
         % (MOUNT_MESH, STOCK_MESH),
         "wrist part comment",
     )
-    for old, what in ((STOCK_VISUAL, "visual wrist geom"), (STOCK_COLLISION, "collision wrist geom")):
-        new = old.replace('mesh="%s"' % STOCK_MESH, 'mesh="%s"' % MOUNT_MESH).replace(
-            'material="%s_material"' % STOCK_MESH, 'material="%s_material"' % MOUNT_MESH
-        )
-        src = sub(old, new, what)
+    # ⚠⚠ THE MOUNT IS THE VISUAL GEOM ONLY; THE COLLISION GEOM STAYS THE STOCK
+    # PART, plus a box for the camera arm. The collision path hulls every mesh
+    # (`collision/hull_cache.mojo`), and the hull of the one-piece mount —
+    # servo pocket, fixed jaw AND a camera arm 89 mm out — is a blob that
+    # fills the pinch: `task_grasp_feasibility.mojo so101_tower_lift_brick`
+    # held NOTHING down to a 12 mm cube with the mount as collision, where the
+    # stock hull holds 24 mm. The stock part is the same servo pocket and jaw
+    # (same mesh frame, measured above), so colliding with it is the rig's
+    # jaw; the arm box is the camera arm's envelope in the body frame
+    # (mesh x -15..20, y 45..89, z -15..5, through `quat="0 1 0 0"`).
+    new_vis = STOCK_VISUAL.replace('mesh="%s"' % STOCK_MESH, 'mesh="%s"' % MOUNT_MESH).replace(
+        'material="%s_material"' % STOCK_MESH, 'material="%s_material"' % MOUNT_MESH
+    )
+    src = sub(STOCK_VISUAL, new_vis, "visual wrist geom")
+    src = sub(
+        STOCK_COLLISION,
+        STOCK_COLLISION + "\n"
+        "                <!-- RIG DEVIATION: the camera arm's envelope, as a box"
+        " (see bake_so_arm101_tower.py) -->\n"
+        '                <geom type="box" class="collision" pos="0.0025 -0.067 0.005"'
+        ' size="0.0175 0.022 0.010" material="%s_material"/>' % MOUNT_MESH,
+        "collision wrist geom",
+    )
     src = sub(
         STOCK_MESH_ASSET,
+        STOCK_MESH_ASSET + "\n"
         '    <mesh name="%s" file="%s.stl" scale="0.001 0.001 0.001"/>'
         % (MOUNT_MESH, MOUNT_MESH),
         "wrist mesh asset",
     )
     src = sub(
         STOCK_MATERIAL,
+        STOCK_MATERIAL + "\n"
         '    <material name="%s_material" rgba="0.92 0.92 0.92 1"/>' % MOUNT_MESH,
         "wrist material",
     )
@@ -288,10 +308,8 @@ def bake():
     #    white (every recorded frame), where the reference model's material
     #    is the SO-ARM100's orange. The tracer renders what the material
     #    says, and a sim-to-real frame should not differ by the arm's colour.
-    #    Ten, not eleven: the wrist roll's material was replaced by the
-    #    mount's in step 4.
     n = src.count('rgba="1 0.82 0.12 1"')
-    assert n == 10, "expected 10 orange materials, found %d" % n
+    assert n == 11, "expected 11 orange materials, found %d" % n
     src = src.replace('rgba="1 0.82 0.12 1"', 'rgba="0.92 0.92 0.90 1"')
     return src
 
@@ -306,10 +324,11 @@ def check(text):
         "tower model counts drifted from stock: ncam %d nbody %d nq %d"
         % (m.ncam, m.nbody, m.nq)
     )
-    # one geom fewer (the floor), one light fewer, no texture, one material
-    # fewer (groundplane); the same meshes (the mount replaces one)
-    assert m.ngeom == ref.ngeom - 1 and m.nmesh == ref.nmesh, (m.ngeom, m.nmesh)
-    assert m.nlight == ref.nlight - 1 and m.ntex == 0 and m.nmat == ref.nmat - 1
+    # the floor gone (-1 geom) and the camera arm box added (+1); one mesh
+    # more (the mount beside the stock part); one light fewer, no texture,
+    # the groundplane material gone and the mount's added
+    assert m.ngeom == ref.ngeom and m.nmesh == ref.nmesh + 1, (m.ngeom, m.nmesh)
+    assert m.nlight == ref.nlight - 1 and m.ntex == 0 and m.nmat == ref.nmat
     d = mujoco.MjData(m)
     mujoco.mj_forward(m, d)
     b = m.cam_bodyid[0]

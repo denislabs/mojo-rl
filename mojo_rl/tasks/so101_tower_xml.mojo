@@ -51,12 +51,12 @@ comptime SO101_TOWER_MAX_CONTACTS: Int = 48
 
 # ⚠ MEASURED ON THE COMPOSED SCENE, NOT COPIED FROM THE ARM.
 # `tools/tasks/mesh_vertex_budget.mojo mojo_rl/tasks/scenes/so101_tower.xml`
-# says the collidable hulls need 23 244 vertices; this is that rounded up to
-# a multiple of 512. Below the tabletop's (26 198): the wrist camera mount's
-# hull is smaller than the stock wrist roll's, and the stand's four meshes
-# are visual only (its collision is boxes). A drift here is LOUD —
+# says what the collidable hulls need; this is that rounded up to a multiple
+# of 512. The wrist camera mount is VISUAL ONLY (its hull filled the pinch —
+# see the bake), so the collidable meshes are the stock arm's, as on the
+# tabletop, plus nothing: the stand's meshes and the bowl's are visual too. A drift here is LOUD —
 # `fields_build` raises rather than truncating a hull.
-comptime SO101_TOWER_NMESH_VERTS: Int = 23552
+comptime SO101_TOWER_NMESH_VERTS: Int = 26624
 
 
 # ── THE OBSERVATION'S WIDTH — the tabletop's layout, with TWO free slots ──
