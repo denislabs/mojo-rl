@@ -149,7 +149,8 @@ from mojo_rl.physics3d.raytrace import BatchedCameraRenderer, RGB_CHANNELS
 from mojo_rl.physics3d.raytrace.visual import build_visual_model
 from mojo_rl.tasks.libero_visual import libero_site_conditions
 from mojo_rl.tasks.libero_act import (
-    LiberoActTrainer, LIBERO_ACT_QPOS, LIBERO_ACT_ADIM, LIBERO_ACT_K,
+    LiberoActTrainer, LIBERO_ACT_QPOS, LIBERO_ACT_PROPRIO, LIBERO_ACT_ADIM,
+    LIBERO_ACT_K,
     LIBERO_ACT_IMG_H, LIBERO_ACT_IMG_W, LIBERO_ACT_IMG_ELEMS, LIBERO_ACT_N_CAM,
 )
 from mojo_rl.deep_agents.act.norm_file import ACTNorm
@@ -267,6 +268,7 @@ def run[T: PlacementTable, M: ModelDefLike](
     ]
     comptime ACT_T = LiberoActTrainer[LANES, "gpu"]
     comptime AQ = LIBERO_ACT_QPOS
+    comptime AQP = LIBERO_ACT_PROPRIO
     comptime AA = LIBERO_ACT_ADIM
     comptime AK = LIBERO_ACT_K
     comptime AIMG = LIBERO_ACT_IMG_ELEMS
@@ -506,6 +508,10 @@ def run[T: PlacementTable, M: ModelDefLike](
             qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_joint") + String(j + 1))])
         qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_finger_joint1"))])
         qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_finger_joint2"))])
+        if AQ != AQP + n_tasks:
+            raise Error("libero eval batched: the ACT declaration carries "
+                        + String(AQ - AQP) + " task words, the family has "
+                        + String(n_tasks) + " tasks")
         # ⚠ THE SAME VISUAL MODEL THE RENDERED STORE WAS DRAWN WITH: group 1,
         # the stove burner rule, LIBERO's lights and textures.
         ren_opt.append(Renderer(ctx, env.mf, cam_idx[0]))
@@ -647,13 +653,19 @@ def run[T: PlacementTable, M: ModelDefLike](
                         normalize_camera_chw[LIBERO_ACT_IMG_H, LIBERO_ACT_IMG_W](
                             act_u8, dst, act_images, dst
                         )
-                # 2. the nine proprio words, standardised as the fit was
-                #    (`env.d.qpos` was downloaded after the previous step)
+                # 2. the nine proprio words and the lane's task one-hot,
+                #    standardised as the fit was (`env.d.qpos` was downloaded
+                #    after the previous step; the task is the row's)
                 for e in range(LANES):
+                    var r_task = row_task[lane_row[e] if lane_row[e] >= 0 else 0]
                     for k in range(AQ):
-                        act_qpos[e * AQ + k] = (
+                        var raw = (
                             Scalar[DT](env.d.qpos.data[e * NQ + qadr9[k]])
-                            - act_norm.qpos_mean[k]
+                            if k < AQP else
+                            Scalar[DT](1.0 if k - AQP == r_task else 0.0)
+                        )
+                        act_qpos[e * AQ + k] = (
+                            raw - act_norm.qpos_mean[k]
                         ) / act_norm.qpos_std[k]
                 render_ns += perf_counter_ns() - tr0
                 # 3. one forward at LANES when a query is due, then either

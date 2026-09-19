@@ -66,7 +66,7 @@ from std.memory.alloc import unsafe_alloc
 from mojo_rl.io.hdf5.reader import H5File
 from mojo_rl.data.libero_demos import (
     import_libero_demos, CAM_H, CAM_W, N_CAMS, CAM_ELEMS, COL_STATE, COL_IMAGES,
-    COL_QPOS, COL_JOINTS, COL_GRIPPER, QPOS_DIM, JOINT_DIM, GRIPPER_DIM,
+    COL_QPOS, COL_JOINTS, COL_GRIPPER, QPOS_PROPRIO, JOINT_DIM, GRIPPER_DIM,
 )
 from mojo_rl.data.store import TrajectoryStore
 from mojo_rl.tasks.spec import load_task
@@ -251,13 +251,17 @@ def main() raises:
             + String(state_dim)
         )
 
-    # ── `qpos` is `joint_states` ++ `gripper_states`, row for row ─────────
-    # Three columns read back and compared: the concatenation is trivial, the
-    # thing that can go wrong is a ROW misalignment between the appends, and
-    # that is what an exact per-row comparison over the whole store catches.
+    # ── `qpos` is `joint_states` ++ `gripper_states` ++ onehot(task), row
+    # for row. Four columns read back and compared: the concatenation is
+    # trivial, the thing that can go wrong is a ROW misalignment between the
+    # appends, and that is what an exact per-row comparison over the whole
+    # store catches. The one-hot is checked against `task_index` and must
+    # light EXACTLY one word.
+    var QPOS_DIM = QPOS_PROPRIO + len(full_names)
     var q_all = st.load_column[DType.float32](String(COL_QPOS))
     var j_all = st.load_column[DType.float32](String(COL_JOINTS))
     var g_all = st.load_column[DType.float32](String(COL_GRIPPER))
+    var t_all = st.load_column[DType.int32](String("task_index"))
     if len(q_all) != rep.n_rows * QPOS_DIM:
         raise Error(
             "the `qpos` column is " + String(len(q_all)) + " words for "
@@ -265,6 +269,7 @@ def main() raises:
         )
     var q_bad = 0
     var q_moving = 0
+    var oh_bad = 0
     for r in range(rep.n_rows):
         for k in range(JOINT_DIM):
             if q_all[r * QPOS_DIM + k] != j_all[r * JOINT_DIM + k]:
@@ -272,10 +277,25 @@ def main() raises:
         for k in range(GRIPPER_DIM):
             if q_all[r * QPOS_DIM + JOINT_DIM + k] != g_all[r * GRIPPER_DIM + k]:
                 q_bad += 1
+        var lit = 0
+        for k in range(len(full_names)):
+            var v = q_all[r * QPOS_DIM + QPOS_PROPRIO + k]
+            if v == 1.0:
+                lit += 1
+                if k != Int(t_all[r]):
+                    oh_bad += 1
+            elif v != 0.0:
+                oh_bad += 1
+        if lit != 1:
+            oh_bad += 1
         if r > 0 and q_all[r * QPOS_DIM] != q_all[(r - 1) * QPOS_DIM]:
             q_moving += 1
-    print("  qpos  :", rep.n_rows, "rows == joint_states ++ gripper_states;",
-          q_bad, "words differ;", q_moving, "rows where joint 1 moved")
+    print("  qpos  :", rep.n_rows, "rows == joint_states ++ gripper_states ++"
+          " onehot(task);", q_bad, "proprio words differ;", oh_bad,
+          "one-hot faults;", q_moving, "rows where joint 1 moved")
+    if oh_bad > 0:
+        raise Error("the task one-hot in `qpos` is wrong on " + String(oh_bad)
+                    + " counts — it must light exactly the row's task_index")
     if q_bad > 0:
         raise Error(
             "the `qpos` column is not joint_states ++ gripper_states: "

@@ -22,15 +22,24 @@ is the supported path.
 and the two `_rgb` keys exactly `.rgb`, so the store carries the policy's whole
 observation and nothing else from the recording.
 
-## `qpos` IS THE TWO LOW-DIM COLUMNS AS ONE, BECAUSE THAT IS THE NAME THE POLICIES READ
+## `qpos` IS THE TWO LOW-DIM COLUMNS AS ONE, PLUS THE TASK — THE NAME THE POLICIES READ
 
 `ACTDataset` and `SmolVLABatchSampler` read the proprioceptive vector from a
 column called `qpos` — the LeRobot importer's `observation.state` — and refuse
-a store without one. LIBERO's is `joint_states` (7) ++ `gripper_states` (2), so
-the store carries it a second time under that name, nine float32 per row, and
-the image policies train on this store without a per-dataset column map. The
-two source columns stay as recorded: `libero_demo_import.mojo`'s gate reads all
-three back and refuses a `qpos` that is not their concatenation, row for row.
+a store without one. LIBERO's is `joint_states` (7) ++ `gripper_states` (2),
+and then **a one-hot of `task_index` over the suite's tasks**, so the store
+carries `9 + n_tasks` float32 per row and the image policies train on it
+without a per-dataset column map.
+
+⚠⚠ THE ONE-HOT IS THERE BECAUSE THE PICTURE DOES NOT CARRY THE TASK. Every
+libero_goal task is the SAME scene at the SAME layout; only the instruction
+differs. The first ACT fit on a nine-word `qpos` (2026-09-18) predicted the
+mean of ten behaviours — position deltas a tenth of the demonstrations', the
+gripper hedged at 0.6 where every demo says ±1 — and scored 0/200 with the
+ensemble on or off. LIBERO's own BC baselines carry a task embedding for this
+reason; a one-hot is that embedding for a fixed set of tasks. The two source
+columns stay as recorded: `libero_demo_import.mojo`'s gate reads them and
+`task_index` back and refuses a `qpos` that is not their concatenation.
 
 ## ⚠⚠ THE STORE'S ROW 0 IS THE TOP OF THE PICTURE — THE RECORDING'S IS THE BOTTOM
 
@@ -100,9 +109,10 @@ comptime CAM_ELEMS: Int = 3 * CAM_H * CAM_W
 comptime ACTION_DIM: Int = 7
 comptime JOINT_DIM: Int = 7
 comptime GRIPPER_DIM: Int = 2
-comptime QPOS_DIM: Int = JOINT_DIM + GRIPPER_DIM
-"""`joint_states` ++ `gripper_states`: the `qpos` column, robosuite's
-`low_dim` modality in one vector."""
+comptime QPOS_PROPRIO: Int = JOINT_DIM + GRIPPER_DIM
+"""`joint_states` ++ `gripper_states`: the first nine words of `qpos`,
+robosuite's `low_dim` modality. The task one-hot follows; the column's width
+is `QPOS_PROPRIO + n_tasks` and is read off the store's manifest."""
 
 comptime COL_ACTION: StaticString = "action"
 comptime COL_STATE: StaticString = "state"
@@ -200,7 +210,8 @@ def import_libero_demos(
     cols.append(ColumnSpec(String(COL_STATE), DType.float64, state_dim))
     cols.append(ColumnSpec(String(COL_JOINTS), DType.float32, JOINT_DIM))
     cols.append(ColumnSpec(String(COL_GRIPPER), DType.float32, GRIPPER_DIM))
-    cols.append(ColumnSpec(String(COL_QPOS), DType.float32, QPOS_DIM))
+    var qpos_dim = QPOS_PROPRIO + len(task_names)
+    cols.append(ColumnSpec(String(COL_QPOS), DType.float32, qpos_dim))
     cols.append(ColumnSpec(String(COL_TASK), DType.int32, 1))
     if images:
         cols.append(ColumnSpec(String(COL_IMAGES), DType.uint8, N_CAMS * CAM_ELEMS))
@@ -293,7 +304,7 @@ def import_libero_demos(
                 T * GRIPPER_DIM
             ).as_unsafe_any_origin()
             var qb = unsafe_alloc[Scalar[DType.float32]](
-                T * QPOS_DIM
+                T * qpos_dim
             ).as_unsafe_any_origin()
             var sb = unsafe_alloc[Scalar[DType.float64]](
                 T * state_dim
@@ -319,13 +330,17 @@ def import_libero_demos(
                         DType.float32
                     ](raw_g[unsafe_offset = r * GRIPPER_DIM + k])
                 for k in range(JOINT_DIM):
-                    qb[unsafe_offset = r * QPOS_DIM + k] = Scalar[
+                    qb[unsafe_offset = r * qpos_dim + k] = Scalar[
                         DType.float32
                     ](raw_j[unsafe_offset = r * JOINT_DIM + k])
                 for k in range(GRIPPER_DIM):
-                    qb[unsafe_offset = r * QPOS_DIM + JOINT_DIM + k] = Scalar[
+                    qb[unsafe_offset = r * qpos_dim + JOINT_DIM + k] = Scalar[
                         DType.float32
                     ](raw_g[unsafe_offset = r * GRIPPER_DIM + k])
+                for k in range(len(task_names)):
+                    qb[unsafe_offset = r * qpos_dim + QPOS_PROPRIO + k] = Scalar[
+                        DType.float32
+                    ](1.0 if k == ti else 0.0)
                 for k in range(row_words):
                     row[k] = Float64(raw_s[unsafe_offset = r * row_words + k])
                 remap.convert_into(row, qo, vo)

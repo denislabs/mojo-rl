@@ -12,12 +12,19 @@ ACT has thirteen parameters to get wrong where the MLP had one.
 
 | | here | why |
 |---|---|---|
-| `QPOS` 9 | the 7 arm joints + 2 finger joints — robosuite's `low_dim` modality, the store's `qpos` column |
+| `QPOS` 19 | the 7 arm joints + 2 finger joints — robosuite's `low_dim` modality — **plus a one-hot of the task over libero_goal's ten**, the store's `qpos` column |
 | `ADIM` 7 | OSC_POSE: six pose deltas + the gripper word |
 | cameras | 2 x 128x128 — `agentview`, `eye_in_hand`, the recording's own |
 | `K` 40 | **2.0 s at LIBERO's 20 Hz**. The paper chunks 100 steps at 50 Hz; the SO-101 run chunks 60 at 30 fps. The horizon is the quantity carried over, not the count — see `act/config.RUN_K`. |
 | dim / ff / heads / latent / enc / dec | the `RUN_*` block: 256 / 1024 / 8 / 32 / 4 / 1 |
 | lr / kl | 1e-5 / 10, both references' values |
+
+⚠⚠ THE TASK IS AN INPUT BECAUSE THE PICTURE CANNOT CARRY IT. Every
+libero_goal task is the same scene at the same layout; the first fit on nine
+proprio words (2026-09-18) learned the mean of ten behaviours — position
+deltas a tenth of the demonstrations', the gripper at 0.6 — and scored 0/200
+with the ensemble on or off. The one-hot is LIBERO's task embedding for a
+fixed set of tasks; the eval builds it from the lane's `row_task`.
 
 ⚠ `K` IS DERIVED FROM THE CONTROL CLOCK, not typed: `2 * LIBERO_CONTROL_FREQ`.
 A family running at another rate would change it here and nowhere else.
@@ -40,7 +47,7 @@ store the norm file names so the two cannot be confused in a table.
 """
 
 from mojo_rl.data.libero_demos import (
-    CAM_H, CAM_W, N_CAMS, ACTION_DIM, QPOS_DIM,
+    CAM_H, CAM_W, N_CAMS, ACTION_DIM, QPOS_PROPRIO,
 )
 from mojo_rl.deep_agents.act.config import (
     RUN_DIM, RUN_HEADS, RUN_FF, RUN_LATENT, RUN_ENC_LAYERS, RUN_DEC_LAYERS,
@@ -52,7 +59,11 @@ from mojo_rl.deep_agents.act.data_gpu import ACTDeviceDataset
 from mojo_rl.tasks.libero_osc_config import LIBERO_CONTROL_FREQ
 
 
-comptime LIBERO_ACT_QPOS: Int = QPOS_DIM
+comptime LIBERO_GOAL_N_TASKS: Int = 10
+comptime LIBERO_ACT_PROPRIO: Int = QPOS_PROPRIO
+comptime LIBERO_ACT_QPOS: Int = QPOS_PROPRIO + LIBERO_GOAL_N_TASKS
+"""9 proprio words + the task one-hot. A store from another suite has another
+width and `ACTDataset` refuses it by name and size."""
 comptime LIBERO_ACT_ADIM: Int = ACTION_DIM
 comptime LIBERO_ACT_N_CAM: Int = N_CAMS
 comptime LIBERO_ACT_IMG_H: Int = CAM_H
