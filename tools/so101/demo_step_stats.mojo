@@ -218,6 +218,31 @@ def main() raises:
         print("     " + pad_left(label, 5) + "  " + pad_left(
             fixed(share, 1), 5
         ) + "%  " + bar)
+    # ⚠ HOW OFTEN A JOINT REVERSES, which separates a high-frequency tremor
+    # from a slow wobble. Demonstrated motion changes direction when the task
+    # does; noise changes direction about half the time, and only the first
+    # kind survives a low-pass filter unharmed.
+    var flips = 0
+    var flip_of = 0
+    for e in range(n_ep):
+        var start = starts[e]
+        var length = lengths[e]
+        for j in range(ADIM):
+            for t in range(1, length - 1):
+                var d0 = Float64(
+                    action_raw[(start + t) * ADIM + j]
+                ) - Float64(action_raw[(start + t - 1) * ADIM + j])
+                var d1 = Float64(
+                    action_raw[(start + t + 1) * ADIM + j]
+                ) - Float64(action_raw[(start + t) * ADIM + j])
+                if d0 * d1 < 0.0:
+                    flips += 1
+                flip_of += 1
+    if flip_of > 0:
+        print("  direction reversals = "
+              + fixed(100.0 * Float64(flips) / Float64(flip_of), 1)
+              + "% of steps   (a tremor is ~50%)")
+
     if windows > 0:
         var mpath = sum_path / Float64(windows)
         var mnet = sum_net / Float64(windows)

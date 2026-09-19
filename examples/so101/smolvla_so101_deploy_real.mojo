@@ -9,7 +9,7 @@
     # SAFE BY DEFAULT: reads the arm and the cameras, runs the policy, prints
     # every command it WOULD have sent, and never energises anything.
     pixi run -e jetson smolvla-deploy-jetson -- --project so101-tower \\
-        --devices /dev/soarm_cam_top,/dev/soarm_cam_wrist
+        --devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist
 
     # --arm is what actually moves the robot. Be at the desk, hand on the power.
     ... --arm --seconds 30
@@ -220,6 +220,17 @@ def main() raises:
     # ⚠ OPT-IN WHILE IT IS NEW. Without it this program keeps the shape that
     # has been on the arm all week: the query on the control thread.
     var threaded = False
+    # ⚠⚠ A LOW-PASS OVER THE CHUNK'S WAYPOINTS, OFF BY DEFAULT. Measured on
+    # the board, the policy's chunk covers 324.9 deg of path to reach a net
+    # displacement of 68.1 — while the demonstrations cover 84.9 to reach
+    # 62.0. It arrives in the RIGHT PLACE (the normalisation is fine) along a
+    # path 3.8x too long, which is a tremor of a few degrees at every
+    # waypoint. A hand shaking +-3 deg as it closes on a cube misses it.
+    #
+    # ⚠ THIS CHANGES WHAT THE POLICY COMMANDS, so it stays opt-in and the
+    # report prints the path and net BEFORE and AFTER: a filter that also
+    # shortens the net displacement is eating the motion, not the tremor.
+    var smooth_n = 1
 
     var args = argv()
     for i in range(len(args)):
@@ -230,6 +241,8 @@ def main() raises:
             force = True
         elif a == "--threaded":
             threaded = True
+        elif a == "--smooth" and i + 1 < len(args):
+            smooth_n = Int(String(args[i + 1]))
         elif a == "--project" and i + 1 < len(args):
             project = String(args[i + 1])
         elif a == "--ckpt" and i + 1 < len(args):
@@ -689,6 +702,10 @@ def main() raises:
     var sum_chunk_path = 0.0
     var sum_chunk_net = 0.0
     var n_chunk = 0
+    var sum_sm_path = 0.0
+    var sum_sm_net = 0.0
+    var sum_rev = 0.0
+    var sum_rev_of = 0.0
 
     var loop_t0 = perf_counter_ns()
     var deadline = loop_t0 + seconds * 1_000_000_000
@@ -771,6 +788,23 @@ def main() raises:
                 if q_ms > worst_q:
                     worst_q = q_ms
                 queries += 1
+                # reversal rate, before any filtering
+                var rev = 0
+                var rev_of = 0
+                for j in range(RDIM):
+                    for t in range(1, CHUNK - 1):
+                        var d0 = Float64(act[t * RDIM + j]) - Float64(
+                            act[(t - 1) * RDIM + j]
+                        )
+                        var d1 = Float64(act[(t + 1) * RDIM + j]) - Float64(
+                            act[t * RDIM + j]
+                        )
+                        if d0 * d1 < 0.0:
+                            rev += 1
+                        rev_of += 1
+                sum_rev += Float64(rev)
+                sum_rev_of += Float64(rev_of)
+
                 var cpath = 0.0
                 for t in range(CHUNK - 1):
                     var acc = 0.0
@@ -789,6 +823,44 @@ def main() raises:
                 sum_chunk_path += cpath
                 sum_chunk_net += sqrt(cnet)
                 n_chunk += 1
+
+                if smooth_n > 1:
+                    # Centred moving average over waypoints, per joint, with
+                    # the window shrinking at both ends so the first and last
+                    # waypoints keep their values — those two are what the
+                    # handover and the chunk's end depend on.
+                    var src = act.copy()
+                    var half = smooth_n // 2
+                    for t in range(CHUNK):
+                        var lo = t - half
+                        var hi = t + half
+                        if lo < 0:
+                            lo = 0
+                        if hi > CHUNK - 1:
+                            hi = CHUNK - 1
+                        var w = Float32(hi - lo + 1)
+                        for j in range(RDIM):
+                            var acc = Float32(0)
+                            for u in range(lo, hi + 1):
+                                acc += src[u * RDIM + j]
+                            act[t * RDIM + j] = acc / w
+                    var spath = 0.0
+                    for t in range(CHUNK - 1):
+                        var acc2 = 0.0
+                        for j in range(RDIM):
+                            var d = Float64(act[(t + 1) * RDIM + j]) - Float64(
+                                act[t * RDIM + j]
+                            )
+                            acc2 += d * d
+                        spath += sqrt(acc2)
+                    var snet = 0.0
+                    for j in range(RDIM):
+                        var d = Float64(act[(CHUNK - 1) * RDIM + j]) - Float64(
+                            act[j]
+                        )
+                        snet += d * d
+                    sum_sm_path += spath
+                    sum_sm_net += sqrt(snet)
 
                 t_obs = t_obs_pending
                 t_now = Int(
@@ -1192,6 +1264,22 @@ def main() raises:
             + fixed(mp / mn if mn > 0.0 else 0.0, 2) + "x over "
             + String(CHUNK) + " waypoints   (" + String(n_chunk) + " chunks)"
         )
+        if sum_rev_of > 0.0:
+            print(
+                "  chunk reversals   = "
+                + fixed(100.0 * sum_rev / sum_rev_of, 1)
+                + "% of waypoints   (a tremor is ~50%; the demonstrations'"
+                " figure comes from tools/so101/demo_step_stats.mojo)"
+            )
+        if smooth_n > 1:
+            var sp = sum_sm_path / Float64(n_chunk)
+            var sn = sum_sm_net / Float64(n_chunk)
+            print(
+                "  after --smooth " + String(smooth_n) + "    = path "
+                + fixed(sp, 1) + " deg, net " + fixed(sn, 1) + " deg, wiggle "
+                + fixed(sp / sn if sn > 0.0 else 0.0, 2) + "x"
+                + "   <- net must SURVIVE; path is what should fall"
+            )
     print(
         "  step at handover  = "
         + fixed(sum_step_ho / Float64(n_step_ho) if n_step_ho > 0 else 0.0, 2)
