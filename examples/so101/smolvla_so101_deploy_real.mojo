@@ -680,6 +680,15 @@ def main() raises:
     var max_step_ho = 0.0
     var n_step_ho = 0
     var swapped = False
+    # ⚠ THE CHUNK'S OWN SHAPE, measured where it arrives rather than where it
+    # is executed. Path length across all CHUNK waypoints against the straight
+    # line between the first and the last: a jittery prediction has a long
+    # path and a short net, a mis-scaled one has both too long. The
+    # demonstrations' figures come from `tools/so101/demo_step_stats.mojo`,
+    # which prints this over 50-step windows of the recording.
+    var sum_chunk_path = 0.0
+    var sum_chunk_net = 0.0
+    var n_chunk = 0
 
     var loop_t0 = perf_counter_ns()
     var deadline = loop_t0 + seconds * 1_000_000_000
@@ -762,6 +771,25 @@ def main() raises:
                 if q_ms > worst_q:
                     worst_q = q_ms
                 queries += 1
+                var cpath = 0.0
+                for t in range(CHUNK - 1):
+                    var acc = 0.0
+                    for j in range(RDIM):
+                        var d = Float64(act[(t + 1) * RDIM + j]) - Float64(
+                            act[t * RDIM + j]
+                        )
+                        acc += d * d
+                    cpath += sqrt(acc)
+                var cnet = 0.0
+                for j in range(RDIM):
+                    var d = Float64(act[(CHUNK - 1) * RDIM + j]) - Float64(
+                        act[j]
+                    )
+                    cnet += d * d
+                sum_chunk_path += cpath
+                sum_chunk_net += sqrt(cnet)
+                n_chunk += 1
+
                 t_obs = t_obs_pending
                 t_now = Int(
                     Float64(perf_counter_ns() - loop_t0) * Float64(SO101_FPS)
@@ -1155,6 +1183,15 @@ def main() raises:
         + " deg mean, " + fixed(max_step_in, 1) + " worst   ("
         + String(n_step_in) + " commands)"
     )
+    if n_chunk > 0:
+        var mp = sum_chunk_path / Float64(n_chunk)
+        var mn = sum_chunk_net / Float64(n_chunk)
+        print(
+            "  chunk shape       = path " + fixed(mp, 1) + " deg, net "
+            + fixed(mn, 1) + " deg, wiggle "
+            + fixed(mp / mn if mn > 0.0 else 0.0, 2) + "x over "
+            + String(CHUNK) + " waypoints   (" + String(n_chunk) + " chunks)"
+        )
     print(
         "  step at handover  = "
         + fixed(sum_step_ho / Float64(n_step_ho) if n_step_ho > 0 else 0.0, 2)

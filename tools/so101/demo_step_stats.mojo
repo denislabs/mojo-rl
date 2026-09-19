@@ -158,6 +158,40 @@ def main() raises:
     if counted == 0:
         raise Error("demo_step_stats: no consecutive pairs — empty store?")
 
+    # ⚠⚠ THE SECOND STATISTIC, AND IT SEPARATES TWO FAILURES THAT LOOK ALIKE.
+    # A trajectory that JITTERS has a large per-step delta and goes nowhere; a
+    # trajectory SCALED UP has a large per-step delta and arrives somewhere
+    # three times too far away. Path length over one chunk's worth of steps,
+    # against the straight line between its ends, tells them apart.
+    comptime WIN = 50
+    var sum_path = 0.0
+    var sum_net = 0.0
+    var windows = 0
+    for e in range(n_ep):
+        var start = starts[e]
+        var length = lengths[e]
+        var w = 0
+        while w + WIN < length:
+            var path = 0.0
+            for t in range(w, w + WIN):
+                var acc = 0.0
+                for j in range(ADIM):
+                    var d = Float64(
+                        action_raw[(start + t + 1) * ADIM + j]
+                    ) - Float64(action_raw[(start + t) * ADIM + j])
+                    acc += d * d
+                path += sqrt(acc)
+            var net = 0.0
+            for j in range(ADIM):
+                var d = Float64(
+                    action_raw[(start + w + WIN) * ADIM + j]
+                ) - Float64(action_raw[(start + w) * ADIM + j])
+                net += d * d
+            sum_path += path
+            sum_net += sqrt(net)
+            windows += 1
+            w += WIN
+
     var mean = sum_step / Float64(counted)
     print("")
     print("  step (all joints, euclidean) = " + fixed(mean, 2)
@@ -184,6 +218,14 @@ def main() raises:
         print("     " + pad_left(label, 5) + "  " + pad_left(
             fixed(share, 1), 5
         ) + "%  " + bar)
+    if windows > 0:
+        var mpath = sum_path / Float64(windows)
+        var mnet = sum_net / Float64(windows)
+        print("")
+        print("  over " + String(WIN) + "-step windows (one chunk): path "
+              + fixed(mpath, 1) + " deg, net " + fixed(mnet, 1)
+              + " deg, wiggle " + fixed(mpath / mnet if mnet > 0.0 else 0.0, 2)
+              + "x   (" + String(windows) + " windows)")
     print("")
     print("  ⚠ compare with the deploy report's `step within chunk`. A policy"
           " that matches this")
