@@ -87,6 +87,9 @@ from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     META_IDX_TASK_ACTIVE,
     META_IDX_GOAL_HELD,
+    META_IDX_NUM_CONTACTS,
+    CONTACT_IDX_BODY_A,
+    CONTACT_IDX_BODY_B,
     META_IDX_SHAPE_W_GOAL,
     META_IDX_SHAPE_W_REACH,
     META_IDX_GOAL_MARGIN,
@@ -448,7 +451,7 @@ struct So101TabletopPlacement(PlacementTable):
 
 struct So101FamilyConfig[
     P: PlacementTable, HORIZON: Int, SKIP: Int, NMESH: Int,
-    FALLBACK_RADIUS: Float64,
+    FALLBACK_RADIUS: Float64, GRASP_W: Float64,
 ](Phyics3dEnvConfig):
     """ONE config for every SO-101 task family, over its placement table `P`.
 
@@ -545,6 +548,38 @@ struct So101FamilyConfig[
     `slot_geom=` — every tabletop slot; no tower slot. Passed as a parameter
     because the trait has no word for it: `P.free_radius(j)` is per slot and
     already resolved."""
+
+    comptime SHAPE_W_GRASP: Float64 = Self.GRASP_W
+    """Paid EVERY STEP the goal's subject body touches BOTH the gripper body
+    and the moving jaw — a contact-defined "grasped", the ManiSkill /
+    so101-nexus recipe, over the lane's contact records the tape evaluator
+    already reads (`gpu_eval`, L3).
+
+    ⚠⚠ WHY IT EXISTS. `so101_tower_lift_brick`, 100k steps, 2026-09-19: the
+    policy reached the brick and PARKED on it — shaped return flat at 363 from
+    50k, greedy eval flat from the first one, entropy coefficient 0.2 -> 0.002
+    by 16k. Reach saturates at 2 cm and `Above`'s tolerance already pays 0.74
+    for a brick RESTING on the desk (3.6 cm shortfall against a 10 cm margin),
+    so closing the jaw earned nothing until a lift happened, and a
+    deterministic policy never tried. This term is the missing rung: it pays
+    for the event that has to precede every lift, one step after it happens.
+
+    ⚠ "BOTH SIDES" IS THE PROXY, not a force test: the fixed jaw is part of the
+    gripper body (the wrist-roll print) and the moving jaw is its own body, so
+    a brick touching both is pinched or straddled. so101-nexus measured the
+    straddle case firing on wide YCB objects and added an opposing-normal test;
+    on a 25 mm cube between a 3 cm opening it does not arise, and the lift term
+    is what pays for a real pinch anyway.
+
+    0.0 ON THE TABLETOP FAMILY (every number it recorded predates this term);
+    0.5 on the tower — the reach term's weight, a rung between reach (0.5) and
+    the goal (1.0)."""
+
+    comptime GRIPPER_BODY: Int = 6
+    comptime JAW_BODY: Int = 7
+    """`robot_gripper` and `robot_moving_jaw_so101_v1` in the composed scene:
+    the SO-101 is the first attached model in every family, so its bodies come
+    first. `tests/tasks/test_so101_tower_config.mojo` pins both by name."""
 
 
 
@@ -1136,6 +1171,29 @@ struct So101FamilyConfig[
                 Scalar[DTYPE](Self.REACH_RADIUS),
                 m_reach,
             )
+            # ── the grasp rung — see `SHAPE_W_GRASP` ─────────────────────
+            comptime if Self.GRASP_W > 0.0:
+                var ncon = Int(
+                    rebind[Scalar[DTYPE]](meta[env, META_IDX_NUM_CONTACTS])
+                )
+                var on_grip = False
+                var on_jaw = False
+                for k in range(ncon):
+                    var base = k * CONTACT_SIZE
+                    var ba = Int(
+                        rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_BODY_A])
+                    )
+                    var bb = Int(
+                        rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_BODY_B])
+                    )
+                    if ba == sb or bb == sb:
+                        var other = bb if ba == sb else ba
+                        if other == Self.GRIPPER_BODY:
+                            on_grip = True
+                        if other == Self.JAW_BODY:
+                            on_jaw = True
+                if on_grip and on_jaw:
+                    r = r + Scalar[DTYPE](Self.GRASP_W)
         _ = qpos
         _ = qvel
         _ = xipos
@@ -1239,15 +1297,15 @@ struct So101FamilyConfig[
 # `tests/tasks/test_so101_tower_config.mojo` assert them.
 
 comptime So101TabletopConfig = So101FamilyConfig[
-    So101TabletopPlacement, 300, 2, SO_ARM101_NMESH_VERTS, 0.012
+    So101TabletopPlacement, 300, 2, SO_ARM101_NMESH_VERTS, 0.012, 0.0
 ]
 """`so101_tabletop`: horizon 300, frame skip 2 (a 250 Hz policy on a 2 ms
 timestep — what every run on this family has used), the bare arm's hull
 budget (the props are boxes), and `cube.xml`'s half-size as the sampler's
-radius — see `So101TabletopPlacement.SLOT_RADIUS`."""
+radius — see `So101TabletopPlacement.SLOT_RADIUS`; NO grasp term (0.0)."""
 
 comptime So101TowerConfig = So101FamilyConfig[
-    So101TowerPlacement, 300, 16, SO101_TOWER_NMESH_VERTS, 0.0226
+    So101TowerPlacement, 300, 16, SO101_TOWER_NMESH_VERTS, 0.0226, 0.5
 ]
 """`so101_tower`: horizon 300, frame skip 16 — `control_freq=30` in the
 family, 1/30 s / 2 ms = 16.7 substeps, rounded to the integer below (31.25

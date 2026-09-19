@@ -119,6 +119,18 @@ def main() raises:
     assert_equal(CFG.GRIPPER_SITE, grip, "the config reads it from the table")
     print("  table: nq", P.NQ, "nv", P.NV, "nbody", P.NBODY, "nsite",
           P.NSITE, "gripper site", P.GRIPPER_SITE)
+    # the grasp term's two bodies, BY NAME — a renumbered scene would pay the
+    # rung for touching the wrong link
+    assert_equal(
+        String(fmd.body_names[CFG.GRIPPER_BODY]), String("robot_gripper"),
+        "GRIPPER_BODY is robot_gripper",
+    )
+    assert_equal(
+        String(fmd.body_names[CFG.JAW_BODY]),
+        String("robot_moving_jaw_so101_v1"), "JAW_BODY is the moving jaw",
+    )
+    print("  grasp term: weight", CFG.SHAPE_W_GRASP, "on bodies",
+          CFG.GRIPPER_BODY, "+", CFG.JAW_BODY)
 
     # ── 3. the observation width ──────────────────────────────────────────
     assert_equal(
