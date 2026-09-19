@@ -667,6 +667,19 @@ def main() raises:
     var have_prev = False
     var sum_step = 0.0
     var max_step = 0.0
+    # ⚠ THE TWO STEPS ARE DIFFERENT ANIMALS AND ONE MEAN HIDES IT. Inside a
+    # chunk, consecutive commands are consecutive waypoints of ONE predicted
+    # trajectory — demonstration speed. At a handover the arm is sent to where
+    # a NEWER trajectory says it should already be, having followed the older
+    # one instead, and that discontinuity is what makes a correctly scaled
+    # policy look like a fast one.
+    var sum_step_in = 0.0
+    var max_step_in = 0.0
+    var n_step_in = 0
+    var sum_step_ho = 0.0
+    var max_step_ho = 0.0
+    var n_step_ho = 0
+    var swapped = False
 
     var loop_t0 = perf_counter_ns()
     var deadline = loop_t0 + seconds * 1_000_000_000
@@ -766,6 +779,7 @@ def main() raises:
                     t_obs = t_now
                 else:
                     skipped_at_handover += t_now - t_obs
+                swapped = True
 
             # ── START the next query while this chunk still has steps ────
             # ⚠⚠ THIS IS THE WHOLE POINT OF THE SPLIT. The query is ~660 ms on
@@ -947,6 +961,17 @@ def main() raises:
                 sum_step += st
                 if st > max_step:
                     max_step = st
+                if swapped:
+                    sum_step_ho += st
+                    n_step_ho += 1
+                    if st > max_step_ho:
+                        max_step_ho = st
+                else:
+                    sum_step_in += st
+                    n_step_in += 1
+                    if st > max_step_in:
+                        max_step_in = st
+            swapped = False
             for j in range(RDIM):
                 prev_cmd[j] = cmd[j]
             have_prev = True
@@ -1123,6 +1148,19 @@ def main() raises:
         + fixed(sum_write / Float64(commands) if commands > 0 else 0.0, 2)
         + " ms mean, " + fixed(worst_write, 1) + " ms worst"
         + ("" if arm_it else "   (dry run — nothing written)")
+    )
+    print(
+        "  step within chunk = "
+        + fixed(sum_step_in / Float64(n_step_in) if n_step_in > 0 else 0.0, 2)
+        + " deg mean, " + fixed(max_step_in, 1) + " worst   ("
+        + String(n_step_in) + " commands)"
+    )
+    print(
+        "  step at handover  = "
+        + fixed(sum_step_ho / Float64(n_step_ho) if n_step_ho > 0 else 0.0, 2)
+        + " deg mean, " + fixed(max_step_ho, 1) + " worst   ("
+        + String(n_step_ho) + " commands)"
+        + "   <- the jump the servo chases at its clamp"
     )
     print("  bus-skipped ticks = " + String(bus_skipped))
     print(
