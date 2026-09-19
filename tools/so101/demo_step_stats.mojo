@@ -4,8 +4,13 @@
 """The per-step action change in a recording, to compare against a running
 policy's `step within chunk`.
 
-    pixi run -e jetson mojo run -I . tools/so101/demo_step_stats.mojo \\
-        --store ~/.cache/mojo_rl/act_so101/so101-tower__cube-in-bowl_240x320.h5
+    # on whichever box has a store of the recording — no import needed
+    mojo run -I . tools/so101/demo_step_stats.mojo \\
+        --store ~/.cache/mojo_rl/act_so101/so101-tower__cube-in-bowl_480x640.h5
+
+    # the ACT-sized store of the SAME recording answers identically
+    mojo run -I . tools/so101/demo_step_stats.mojo --store <...>_240x320.h5 \\
+        --height 240 --width 320
 
 ⚠⚠ WHY THIS EXISTS. The armed SmolVLA run moved "faster than teleop", and the
 deploy report alone cannot say whether that is a mis-scaled policy or a
@@ -41,9 +46,18 @@ from mojo_rl.utils.fmt import fixed, pad_left
 comptime QPOS = 6
 comptime ADIM = 6
 comptime N_CAM = 2
-comptime IMG_H = 240
-comptime IMG_W = 320
 comptime N_BUCKETS = 12
+
+# ⚠ THE IMAGE SIZE IS A COMPTIME PARAMETER OF THE DATASET, and the two stores
+# of one recording differ only in it: 240x320 for ACT, 480x640 for SmolVLA.
+# The action column is identical in both — actions do not depend on how the
+# frames were resized — so this measures the same thing either way and takes
+# whichever store a machine happens to have, rather than asking for a 9 GB
+# import of one it does not.
+comptime ACT_H = 240
+comptime ACT_W = 320
+comptime VLA_H = 480
+comptime VLA_W = 640
 
 
 def _opt(ref args: List[String], flag: String, dflt: String) -> String:
@@ -72,11 +86,42 @@ def main() raises:
     # ⚠ THE IMAGES ARE NOT NEEDED and they are most of the file, so the
     # resident cap is set to zero: the column stays on disk and this runs in
     # seconds on a board with the store on a slow disk.
-    var ds = ACTDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W](path^, 0, 0)
-    var n = ds.n_rows()
-    var n_ep = ds.n_episodes()
+    var height = atol(_opt(args, String("--height"), String("480")))
+    var width = atol(_opt(args, String("--width"), String("640")))
+    if not (
+        (height == ACT_H and width == ACT_W)
+        or (height == VLA_H and width == VLA_W)
+    ):
+        raise Error(
+            "demo_step_stats: --height/--width must be 240x320 or 480x640,"
+            " got " + String(height) + "x" + String(width)
+            + " — those are the two stores an SO-101 recording is imported to"
+        )
+
+    var action_raw = List[Scalar[DT]]()
+    var starts = List[Int]()
+    var lengths = List[Int]()
+    var n = 0
+    var n_ep = 0
+    if height == ACT_H:
+        var ds = ACTDataset[QPOS, ADIM, N_CAM, ACT_H, ACT_W](path^, 0, 0)
+        n = ds.n_rows()
+        n_ep = ds.n_episodes()
+        action_raw = ds.action_raw.copy()
+        for e in range(n_ep):
+            starts.append(ds.store.episodes.start_of(e))
+            lengths.append(ds.store.episodes.length_of(e))
+    else:
+        var ds = ACTDataset[QPOS, ADIM, N_CAM, VLA_H, VLA_W](path^, 0, 0)
+        n = ds.n_rows()
+        n_ep = ds.n_episodes()
+        action_raw = ds.action_raw.copy()
+        for e in range(n_ep):
+            starts.append(ds.store.episodes.start_of(e))
+            lengths.append(ds.store.episodes.length_of(e))
     print("  " + String(n) + " rows, " + String(n_ep) + " episodes, "
-          + String(SO101_FPS) + " Hz")
+          + String(SO101_FPS) + " Hz, images " + String(height) + "x"
+          + String(width) + " (not read)")
 
     var sum_step = 0.0
     var worst = 0.0
@@ -85,8 +130,8 @@ def main() raises:
     var hist = List[Int](length=N_BUCKETS, fill=0)
 
     for e in range(n_ep):
-        var start = ds.store.episodes.start_of(e)
-        var length = ds.store.episodes.length_of(e)
+        var start = starts[e]
+        var length = lengths[e]
         # ⚠ WITHIN an episode only. Across a boundary the difference is the
         # arm being reset between takes, which is not motion the policy is
         # asked to reproduce.
@@ -95,8 +140,8 @@ def main() raises:
             var r1 = (start + t + 1) * ADIM
             var acc = 0.0
             for j in range(ADIM):
-                var d = Float64(ds.action_raw[r1 + j]) - Float64(
-                    ds.action_raw[r0 + j]
+                var d = Float64(action_raw[r1 + j]) - Float64(
+                    action_raw[r0 + j]
                 )
                 acc += d * d
                 per_joint[j] += abs(d)
