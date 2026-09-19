@@ -761,7 +761,23 @@ def main() raises:
             # ── COLLECT a query that was started earlier ─────────────
             # Only when the current chunk is used up: until then the arm has
             # real waypoints to execute and there is nothing to wait for.
-            if pending and (t_obs < 0 or t_now - t_obs >= exec_steps):
+            # ⚠⚠ WHEN TO TAKE THE NEXT CHUNK, AND WHY THE ENSEMBLE NEEDS A
+            # DIFFERENT ANSWER. Waiting for the current chunk to be exhausted
+            # makes the request cadence exactly `exec_steps - skip`, so the
+            # old chunk's coverage ENDS where the new one begins and no
+            # instant is covered twice — measured: `ensemble = 1.00 chunks per
+            # command`, the blend had nothing to blend.
+            #
+            # Overlap needs `cadence + skip <= CHUNK - 1`, and with one query
+            # in flight the cadence cannot fall below the latency itself
+            # (~22 steps here). Keeping a query ALWAYS in flight gives the
+            # smallest cadence available and about 5 steps of overlap — which
+            # is where the handover jump lives.
+            if pending and (
+                t_obs < 0
+                or t_now - t_obs >= exec_steps
+                or (ensemble and rsp_ring.begin_pop().ok())
+            ):
                 var t_w = perf_counter_ns()
                 if threaded and queries == 0:
                     print("  [first query] waiting for the first chunk ...")
@@ -936,7 +952,9 @@ def main() raises:
             # ⚠ `images` and `noise` ARE THE GPU'S INPUTS until the collect
             # above, so they are only rebuilt here, with nothing in flight.
             if not pending and (
-                t_obs < 0 or exec_steps - (t_now - t_obs) <= lead
+                t_obs < 0
+                or ensemble
+                or exec_steps - (t_now - t_obs) <= lead
             ):
                 var t_c0 = perf_counter_ns()
                 # ⚠ FIRST REQUEST ONLY. The loop is silent by design, but the
