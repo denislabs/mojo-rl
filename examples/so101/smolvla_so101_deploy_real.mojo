@@ -82,6 +82,7 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
 from mojo_rl.deep_agents.act.config import SO101_FPS
+from mojo_rl.deep_agents.act.inference import TemporalEnsemble
 from mojo_rl.deep_agents.smolvla.finetune import load_trainables
 from mojo_rl.deep_agents.smolvla.heads import (
     SMOLVLA_ACTION_DIM,
@@ -246,6 +247,21 @@ def main() raises:
     # aims — a fine-tune that was still improving at 2000 steps, and 50
     # episodes — not how it moves.
     var smooth_n = 1
+    # ⚠⚠ ACT'S TEMPORAL ENSEMBLE, ON SMOLVLA'S CHUNKS. Off by default.
+    #
+    # Smoothing fixed the tremor WITHIN a chunk; the handover between chunks
+    # is a separate discontinuity (22.7 deg mean even at --smooth 9), because
+    # two chunks predicted from observations ~0.9 s apart disagree about the
+    # same instant. Averaging them is what the ACT deployment already does on
+    # this rig, and `TemporalEnsemble` is that code — reused rather than
+    # written twice.
+    #
+    # ⚠ THE WINDOW IS SPARSE HERE. ACT queries every ~3 grid steps; this
+    # queries every ~28, so about TWO chunks cover any instant instead of
+    # dozens. The report prints the measured figure — a `chunks per command`
+    # near 1.0 means the ensemble is doing nothing and the handover is
+    # unchanged.
+    var ensemble = False
 
     var args = argv()
     for i in range(len(args)):
@@ -258,6 +274,8 @@ def main() raises:
             threaded = True
         elif a == "--smooth" and i + 1 < len(args):
             smooth_n = Int(String(args[i + 1]))
+        elif a == "--ensemble":
+            ensemble = True
         elif a == "--project" and i + 1 < len(args):
             project = String(args[i + 1])
         elif a == "--ckpt" and i + 1 < len(args):
@@ -721,6 +739,10 @@ def main() raises:
     var sum_sm_net = 0.0
     var sum_rev = 0.0
     var sum_rev_of = 0.0
+    var ens = TemporalEnsemble[RDIM, CHUNK]()
+    var ens_out = List[Scalar[DT]](length=RDIM, fill=Scalar[DT](0))
+    var sum_contrib = 0.0
+    var n_contrib = 0
 
     var loop_t0 = perf_counter_ns()
     var deadline = loop_t0 + seconds * 1_000_000_000
@@ -895,6 +917,12 @@ def main() raises:
                 else:
                     skipped_at_handover += t_now - t_obs
                 swapped = True
+                if ensemble:
+                    # ⚠ PUSHED AT `t_obs`, NOT AT ARRIVAL. The ensemble indexes
+                    # a chunk by the step it was PREDICTED FOR; stamping it at
+                    # arrival would shift every waypoint by the query latency
+                    # and blend poses that describe different instants.
+                    ens.push(t_obs, act)
 
             # ── START the next query while this chunk still has steps ────
             # ⚠⚠ THIS IS THE WHOLE POINT OF THE SPLIT. The query is ~660 ms on
@@ -1056,8 +1084,19 @@ def main() raises:
                 idx = 0
             if idx >= CHUNK:
                 idx = CHUNK - 1
+            var use_ens = False
+            if ensemble:
+                var nc = ens.n_contributors(t_now)
+                if nc > 0:
+                    ens.action_at(t_now, ens_out)
+                    sum_contrib += Float64(nc)
+                    n_contrib += 1
+                    use_ens = True
             for j in range(RDIM):
-                var v = Float64(act[idx * RDIM + j])
+                var v = (
+                    Float64(ens_out[j]) if use_ens
+                    else Float64(act[idx * RDIM + j])
+                )
                 if have_box:
                     if v < a_lo[j]:
                         v = a_lo[j]
@@ -1295,6 +1334,14 @@ def main() raises:
                 + fixed(sp / sn if sn > 0.0 else 0.0, 2) + "x"
                 + "   <- net must SURVIVE; path is what should fall"
             )
+    if ensemble:
+        print(
+            "  ensemble          = "
+            + fixed(
+                sum_contrib / Float64(n_contrib) if n_contrib > 0 else 0.0, 2
+            )
+            + " chunks per command   (1.0 means it changed nothing)"
+        )
     print(
         "  step at handover  = "
         + fixed(sum_step_ho / Float64(n_step_ho) if n_step_ho > 0 else 0.0, 2)
