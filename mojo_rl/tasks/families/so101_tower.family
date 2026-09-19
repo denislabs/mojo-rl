@@ -5,8 +5,10 @@
 # is the one `projects/so101-tower/` records with (`docs/camera-rig.md`,
 # `docs/tutorials/so101_tower.md`): the base asset carries the wrist camera on
 # the printed mount, the `tower` slot carries the overhead camera on its
-# stand, and the props are the recorded task's — a bowl and a Duplo brick on
-# the desk. The two `<camera>`s are what the batched tracer renders for a
+# stand, and the props are the task's PRINTED bowl and brick
+# (`tools/soarm/gen_tower_props.py`: one set of numbers for the print files
+# and the sim assets; the recorded Duplo is `props/duplo_brick.xml`) on the
+# desk. The two `<camera>`s are what the batched tracer renders for a
 # pixel policy; nothing in the tabletop family has one.
 #
 # ⚠ THE SLOT TABLE IS THE BUDGET — see `so101_tabletop.family`. TWO free slots
@@ -39,14 +41,15 @@ slot=tower:static:mojo_rl/tasks/assets/props/so101_tower_stand.xml:-0.019,-0.077
 # The mat: top face at z 0.002, 8..56 cm in front of the arm, +-25 cm.
 slot=desk:static:mojo_rl/tasks/assets/props/desk_mat.xml:0.32,0.0,0.001
 slot=bowl:free:mojo_rl/tasks/assets/props/bowl.xml
-slot=brick:free:mojo_rl/tasks/assets/props/duplo_brick.xml
+slot=brick:free:mojo_rl/tasks/assets/props/brick.xml
 
 # ⚠⚠ `slot_geom=` ON EVERY FREE SLOT, so the device placement table is
 # GENERATED (`pixi run gen-placement-tables`) rather than hand-written — the
 # tabletop family lacks these and restates its radius in `family_config`.
-# bottom_z, top_z, h_radius — from the asset headers, which say the same.
-slot_geom=bowl:0.0,0.052,0.062
-slot_geom=brick:-0.0096,0.0096,0.0226
+# bottom_z, top_z, h_radius — PRINTED by `tools/soarm/gen_tower_props.py`,
+# which also writes both assets and both print files from one set of numbers.
+slot_geom=bowl:0.0,0.045,0.060614
+slot_geom=brick:-0.0125,0.0125,0.0176777
 
 park=10.0,0.0,50.0
 
@@ -61,11 +64,11 @@ park=10.0,0.0,50.0
 region=desk_top:site:desk_surface:-0.14,-0.16,0.06,0.16:0.03
 
 # ⚠⚠ TWO STRIPS FOR `init=`, 12 cm APART — see the tabletop family for why
-# a goal may name only region 0 on the device. The bowl (h_radius 0.062)
+# a goal may name only region 0 on the device. The bowl (h_radius 0.0606)
 # goes on the arm's LEFT and the brick on its RIGHT, as the 50 recorded
 # episodes have them (bowl centre-left, brick right of it, in the overhead
 # frames). A bowl drawn from `desk_left` and a brick from `desk_right` start
-# at LEAST 0.12 - 0.062 - 0.023 = 3.5 cm apart edge to edge, on every draw,
+# at LEAST 0.12 - 0.061 - 0.018 = 4.1 cm apart edge to edge, on every draw,
 # so `Near(brick, bowl, 0.045)` is FALSE at reset for every draw.
 region=desk_left:site:desk_surface:-0.14,0.06,0.06,0.16
 region=desk_right:site:desk_surface:-0.14,-0.16,0.06,-0.06

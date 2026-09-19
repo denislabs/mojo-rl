@@ -54,13 +54,13 @@ struct So101TowerPlacement(PlacementTable):
     def free_rest[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
         if j == 0:
             return Scalar[DTYPE](0.0)
-        return Scalar[DTYPE](0.0096)
+        return Scalar[DTYPE](0.0125)
 
     @staticmethod
     def free_radius[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
         if j == 0:
-            return Scalar[DTYPE](0.062)
-        return Scalar[DTYPE](0.0226)
+            return Scalar[DTYPE](0.060614)
+        return Scalar[DTYPE](0.0176777)
 
     @staticmethod
     def free_park_x[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
@@ -80,13 +80,13 @@ struct So101TowerPlacement(PlacementTable):
     def free_bottom_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
         if j == 0:
             return Scalar[DTYPE](0.0)
-        return Scalar[DTYPE](-0.0096)
+        return Scalar[DTYPE](-0.0125)
 
     @staticmethod
     def free_top_z[DTYPE: DType](j: Int) -> Scalar[DTYPE]:
         if j == 0:
-            return Scalar[DTYPE](0.052)
-        return Scalar[DTYPE](0.0096)
+            return Scalar[DTYPE](0.045)
+        return Scalar[DTYPE](0.0125)
 
     @staticmethod
     def region_site(r: Int) -> Int:

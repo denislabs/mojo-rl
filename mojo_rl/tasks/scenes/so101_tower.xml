@@ -5,7 +5,7 @@
     <model name="so101_tower_stand" file="../assets/props/so101_tower_stand.xml"/>
     <model name="desk_mat" file="../assets/props/desk_mat.xml"/>
     <model name="bowl" file="../assets/props/bowl.xml"/>
-    <model name="duplo_brick" file="../assets/props/duplo_brick.xml"/>
+    <model name="brick" file="../assets/props/brick.xml"/>
   </asset>
   <worldbody>
     <light pos="0 0 3" dir="0 0 -1" directional="true"/>
@@ -23,7 +23,7 @@
       <attach model="bowl" prefix="bowl_"/>
     </frame>
     <frame pos="11.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
-      <attach model="duplo_brick" prefix="brick_"/>
+      <attach model="brick" prefix="brick_"/>
     </frame>
   </worldbody>
 </mujoco>

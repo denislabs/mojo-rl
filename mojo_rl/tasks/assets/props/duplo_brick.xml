@@ -1,6 +1,11 @@
 <mujoco model="duplo_brick">
   <!-- THE "CUBE" OF THE `cube-in-bowl` RECORDINGS — a FREE slot.
 
+       ⚠ NOT WHAT `so101_tower.family` USES ANY MORE: the family carries the
+       PRINTED 25 mm cube (`props/brick.xml`, generated with its print file by
+       `tools/soarm/gen_tower_props.py`). This stays as the recorded object,
+       a one-line swap in the family for a policy meant to run on the Duplo.
+
        The recorded object is a green 2x2 DUPLO-size brick: 31.8 x 31.8 mm,
        19.2 mm tall without the studs (the wrist frames show the four
        studs). Modelled as the plain box; the studs are 4.5 mm knobs the
