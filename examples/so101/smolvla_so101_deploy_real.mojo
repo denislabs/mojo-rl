@@ -142,7 +142,29 @@ comptime N_CAM = 2
 comptime N_LANG = SO101_N_LANG
 comptime CHUNK = 50
 comptime STEPS = 10
-"""Euler denoising steps at INFERENCE. Training denoises once; this does not."""
+"""Euler denoising steps at INFERENCE. Training denoises once; this does not.
+
+⚠ FOUR WAS MEASURED BETTER ON THE ARM and is not the default, because
+"better" here means latency and nothing about success. At 4 the query is
+491 ms against 663, the chunk lands 0.17 s fresher (skip 16.8 grid steps
+against 21.9), and the trajectory kept its shape — net displacement 41 deg,
+within the run-to-run spread of 37-84 at 10 steps. What was NOT measured is
+whether a coarser integration of the same flow costs accuracy where it
+matters, which would take a success rate over many runs to see. Change it
+here and rebuild to test it:
+
+    sed -i 's/^comptime STEPS = 10$/comptime STEPS = 4/' <this file>
+
+⚠⚠ THE BEST CONFIGURATION MEASURED, 19 Sep, all four together:
+
+    --threaded --smooth 9 --ensemble   (with STEPS = 4)
+
+    handover jump   63.6 -> 15.1 deg        ensemble 1.82 chunks/command
+    control rate    17.4 -> 27.2 Hz         query    2329 -> 491 ms
+    motion          matched the demonstrations (step 1.65 vs 1.59 deg)
+
+    It touched the cube repeatedly and did not grasp it. Every control-side
+    hypothesis is now measured and closed; what remains is the policy."""
 comptime RDIM = 6
 """The robot's real joint count. ⚠ NOT `SMOLVLA_ACTION_DIM` (32), which is the
 padding the checkpoint was trained with — `select_action` drops the padding and
