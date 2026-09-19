@@ -105,6 +105,24 @@ demonstrations' action scale and stops within seconds (measured 2026-09-19);
 what the arm does in between is a thing to watch, not to infer. Needs
 `ffmpeg` on PATH.
 
+`--knn [STORE] [--knn-k N]` — THE VISION-FREE CONTROL. No network: at each
+query every lane's nine joint values (standardised by the store's own spread)
+are matched against every row of the SAME task in the low-dim store
+(`build/demos/<family>.lowdim.h5` unless given), and the chunk executed is the
+per-step, per-word MEDIAN of the k nearest rows' next K recorded actions —
+the same conditional-median target the L1 fit converges to, resolved from
+proprioception alone. `--act-exec` applies as for `--act` (0 = the temporal
+ensemble). It exists because the validation L1 cannot separate a policy that
+reads the picture from one that does not: on this store a k=5 median chunk
+from qpos+task scores 0.436, one from the FULL state 0.424, the task+phase
+oracle 0.386, and the fitted ACT 0.405 (2026-09-19). What the closed loop does
+with the proprioception-only median is therefore the number that says whether
+the picture is what is missing. `--knn-vel` adds the nine joints' one-step
+differences to the match (the eval keeps each lane's previous nine values;
+the store's row t uses row t-1 of its episode, zero at t=0): on the held-out
+drawer demos the joint-only neighbours pull sideways at the hook moment in 2
+of 7, the joint+velocity neighbours in 6 of 7 (2026-09-19).
+
 ⚠ `norm.json` NAMES THE STORE THE CHECKPOINT WAS FITTED ON, and this driver
 prints it: a checkpoint from the RECORDED store crosses the pixel-domain gap
 here (robosuite's OpenGL -> our tracer), one from the RENDERED store does not,
@@ -188,7 +206,7 @@ from mojo_rl.deep_agents.act.config import ACT_TEMPORAL_ENSEMBLE_M
 from mojo_rl.data.store import TrajectoryStore
 from mojo_rl.render.video_recorder import VideoRecorder
 from mojo_rl.tasks.libero_act import LIBERO_ACT_STORE_RENDERED
-from std.math import log10
+from std.math import log10, sqrt
 from std.memory.alloc import unsafe_alloc
 from mojo_rl.tasks.placement.table import PlacementTable
 from mojo_rl.tasks.placement.check import (
@@ -472,10 +490,66 @@ def _check_obs[AIMG: Int, ACAM: Int, ANPIX: Int](
     qbuf.unsafe_free()
 
 
+def _knn_chunk[AK: Int, AA: Int](
+    ref q9: List[Float64], KF: Int,
+    ref knn_q: List[Float64], ref knn_std: List[Float64],
+    ref knn_act: List[Float64], ref knn_left: List[Int],
+    ref rows: List[Int], k: Int,
+    mut out: List[Scalar[DT]], obase: Int,
+) raises:
+    """The k nearest rows of `rows` to this lane's nine joints, then the
+    per-step, per-word median of their next AK recorded actions, RAW units.
+    Past a neighbour's episode end its contribution is the zero action."""
+    var q = List[Float64](length=KF, fill=0.0)
+    var best_d = List[Float64](length=k, fill=1.0e300)
+    var best_g = List[Int](length=k, fill=-1)
+    # the lane's joints, standardised the way the store's rows were: the
+    # mean cancels in a difference, only the spread matters
+    for j in range(KF):
+        q[j] = q9[j] / knn_std[j]
+    for i in range(len(rows)):
+        var g = rows[i]
+        var d = 0.0
+        for j in range(KF):
+            var t = q[j] - knn_q[g * KF + j]
+            d += t * t
+        if d < best_d[k - 1]:
+            var p = k - 1
+            while p > 0 and best_d[p - 1] > d:
+                best_d[p] = best_d[p - 1]
+                best_g[p] = best_g[p - 1]
+                p -= 1
+            best_d[p] = d
+            best_g[p] = g
+    var n = 0
+    for i in range(k):
+        if best_g[i] >= 0:
+            n += 1
+    if n == 0:
+        raise Error("--knn: no rows for this lane's task")
+    var vals = List[Float64](length=n, fill=0.0)
+    for t in range(AK):
+        for j in range(AA):
+            for i in range(n):
+                var g = best_g[i]
+                vals[i] = knn_act[(g + t) * AA + j] if t < knn_left[g] else 0.0
+            # insertion sort, n <= 64
+            for a in range(1, n):
+                var v = vals[a]
+                var b = a
+                while b > 0 and vals[b - 1] > v:
+                    vals[b] = vals[b - 1]
+                    b -= 1
+                vals[b] = v
+            var med = vals[n // 2] if n % 2 == 1 else 0.5 * (vals[n // 2 - 1] + vals[n // 2])
+            out[obase + t * AA + j] = Scalar[DT](med)
+
+
 def run[T: PlacementTable, M: ModelDefLike](
     n_inits: Int, max_steps: Int, check_lanes: Int, sampled: Bool,
     policy_path: String, act_dir: String, act_exec: Int, obs_store: String,
     video_path: String, video_lane: Int, trace_lane: Int,
+    knn_store: String, knn_k: Int, knn_vel: Bool,
 ) raises:
     comptime E = Phyics3dBatchedEnv[
         M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
@@ -621,10 +695,11 @@ def run[T: PlacementTable, M: ModelDefLike](
     comptime POLICY = BcNet[OD, OSC_ACTION_DIM]
     var have_bc = policy_path != ""
     var have_act = act_dir != ""
-    if have_bc and have_act:
-        raise Error("libero eval batched: --policy and --act are two policies;"
-                    " give one")
-    var have_policy = have_bc or have_act
+    var have_knn = knn_store != ""
+    if (have_bc and have_act) or (have_bc and have_knn) or (have_act and have_knn):
+        raise Error("libero eval batched: --policy, --act and --knn are three"
+                    " policies; give one")
+    var have_policy = have_bc or have_act or have_knn
     var net = POLICY.make["cpu", Kaiming](None)
     var norm = BcNorm()
     var act_norm = ACTNorm()
@@ -643,6 +718,17 @@ def run[T: PlacementTable, M: ModelDefLike](
               LIBERO_ACT_IMG_H, "-> chunk", AK, "x", AA,
               ", temporal ensemble m =", ACT_TEMPORAL_ENSEMBLE_M)
         print("          fitted on", act_norm.store)
+        if act_exec == 0:
+            print("          chunk use: TEMPORAL ENSEMBLE (query every step)")
+        else:
+            print("          chunk use: execute", act_exec, "of", AK,
+                  "open-loop, then re-query (--act-exec)")
+    elif have_knn:
+        if not exists(knn_store):
+            raise Error("libero eval batched: --knn store not found: " + knn_store)
+        print("  policy: kNN median chunk, k =", knn_k, "from", knn_store,
+              "| qpos", AQP, "+ dq" if knn_vel else "", "(no cameras) -> chunk",
+              AK, "x", AA)
         if act_exec == 0:
             print("          chunk use: TEMPORAL ENSEMBLE (query every step)")
         else:
@@ -727,7 +813,7 @@ def run[T: PlacementTable, M: ModelDefLike](
     var physics_ns = 0
     var obs_checked = False
     var recorder = VideoRecorder()
-    var recording = have_act and video_path.byte_length() > 0
+    var recording = (have_act or have_knn) and video_path.byte_length() > 0
     comptime VSCALE = 3
     comptime VW = LIBERO_ACT_IMG_W * VSCALE * 2
     comptime VH = LIBERO_ACT_IMG_H * VSCALE
@@ -743,17 +829,17 @@ def run[T: PlacementTable, M: ModelDefLike](
     var obs_psnr_pre_ctrl = List[Float64]()
     var word_abs = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
     var word_n = 0
+    var drawer_qadr = -1
+    for j in range(len(fmd.joint_names)):
+        if fmd.joint_names[j] == "wooden_cabinet_1_middle_level":
+            drawer_qadr = qadr_all[j]
     for j in range(ARM_DOF):
         qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_joint") + String(j + 1))])
     qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_finger_joint1"))])
     qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_finger_joint2"))])
-    if have_act:
+    if have_act or recording:
         cam_idx.append(_index(fmd.camera_names, String("arena_agentview")))
         cam_idx.append(_index(fmd.camera_names, String("robot_eye_in_hand")))
-        if AQ != AQP + n_tasks:
-            raise Error("libero eval batched: the ACT declaration carries "
-                        + String(AQ - AQP) + " task words, the family has "
-                        + String(n_tasks) + " tasks")
         # ⚠ THE SAME VISUAL MODEL THE RENDERED STORE WAS DRAWN WITH: group 1,
         # the stove burner rule, LIBERO's lights and textures.
         ren_opt.append(Renderer(ctx, env.mf, cam_idx[0]))
@@ -766,16 +852,88 @@ def run[T: PlacementTable, M: ModelDefLike](
         )
         print("  camera:", ren_opt[0].vis.describe())
         h_rgb = ctx.enqueue_create_host_buffer[DT](LANES * ANPIX * RGB_CHANNELS)
+        act_u8 = List[Scalar[DType.uint8]](length=LANES * AIMG, fill=0)
+    if have_act:
+        if AQ != AQP + n_tasks:
+            raise Error("libero eval batched: the ACT declaration carries "
+                        + String(AQ - AQP) + " task words, the family has "
+                        + String(n_tasks) + " tasks")
         act_opt.append(ACT_T.make(ctx=ctx))
         act_opt[0].load(act_dir + "/best.ckpt")
-        for _ in range(LANES):
-            ens.append(TemporalEnsemble[AA, AK](m=ACT_TEMPORAL_ENSEMBLE_M))
-        act_u8 = List[Scalar[DType.uint8]](length=LANES * AIMG, fill=0)
         act_images = List[Scalar[DT]](length=LANES * AIMG, fill=Scalar[DT](0))
         act_qpos = List[Scalar[DT]](length=LANES * AQ, fill=Scalar[DT](0))
         act_dummy = List[Scalar[DT]](length=LANES * AK * AA, fill=Scalar[DT](0))
         act_valid = List[Scalar[DT]](length=LANES * AK, fill=Scalar[DT](1))
+    if have_act or have_knn:
+        for _ in range(LANES):
+            ens.append(TemporalEnsemble[AA, AK](m=ACT_TEMPORAL_ENSEMBLE_M))
         act_chunk = List[Scalar[DT]](length=LANES * AK * AA, fill=Scalar[DT](0))
+    # ── the vision-free control: the store's rows, standardised ──────────
+    var KF = 2 * AQP if knn_vel else AQP  # match words per row
+    var knn_q = List[Float64]()      # [n_rows_store, KF]
+    var knn_task = List[Int]()       # [n_rows_store]
+    var knn_act = List[Float64]()    # [n_rows_store, AA]
+    var knn_left = List[Int]()       # steps left in the row's episode
+    var knn_std = List[Float64](length=KF, fill=1.0)
+    var knn_prev = List[Float64](length=LANES * AQP, fill=0.0)  # last step's joints
+    var knn_rows_of = List[List[Int]]()  # rows per task, in store order
+    if have_knn:
+        var st = TrajectoryStore(knn_store)
+        var js = st.load_column[DType.float32](String("joint_states"))
+        var gs = st.load_column[DType.float32](String("gripper_states"))
+        var tk = st.load_column[DType.int32](String("task_index"))
+        var ac = st.load_column[DType.float32](String("action"))
+        var n_st = st.n_rows()
+        if len(js) != n_st * ARM_DOF or len(gs) != n_st * 2 or len(ac) != n_st * AA:
+            raise Error("--knn: the store's joint_states/gripper_states/action"
+                        " are not 7/2/" + String(AA) + " wide")
+        knn_left = List[Int](length=n_st, fill=0)
+        for ep in range(st.n_episodes()):
+            var s0 = st.episodes.start_of(ep)
+            var ln = st.episodes.length_of(ep)
+            for t in range(ln):
+                knn_left[s0 + t] = ln - t
+        for _ in range(n_tasks):
+            knn_rows_of.append(List[Int]())
+        var mean = List[Float64](length=KF, fill=0.0)
+        var first = List[Bool](length=n_st, fill=False)
+        for ep in range(st.n_episodes()):
+            first[st.episodes.start_of(ep)] = True
+        for g in range(n_st):
+            for k in range(AQP):
+                var v = Float64(js[g * ARM_DOF + k]) if k < ARM_DOF else Float64(gs[g * 2 + k - ARM_DOF])
+                knn_q.append(v)
+                mean[k] += v
+            if knn_vel:
+                for k in range(AQP):
+                    var v = knn_q[g * KF + k] - (knn_q[(g - 1) * KF + k] if not first[g] else knn_q[g * KF + k])
+                    knn_q.append(v)
+                    mean[AQP + k] += v
+            var ti = Int(tk[g])
+            if ti < 0 or ti >= n_tasks:
+                raise Error("--knn: store task_index " + String(ti) + " outside the family's " + String(n_tasks))
+            knn_task.append(ti)
+            knn_rows_of[ti].append(g)
+            for j in range(AA):
+                knn_act.append(Float64(ac[g * AA + j]))
+        for k in range(KF):
+            mean[k] /= Float64(n_st)
+            var ss = 0.0
+            for g in range(n_st):
+                var d = knn_q[g * KF + k] - mean[k]
+                ss += d * d
+            knn_std[k] = sqrt(ss / Float64(n_st))
+            if knn_std[k] < 1.0e-9:
+                knn_std[k] = 1.0
+        for g in range(n_st):
+            for k in range(KF):
+                knn_q[g * KF + k] = (knn_q[g * KF + k] - mean[k]) / knn_std[k]
+        # the shared denormalise below is the identity for a raw chunk
+        act_norm.action_mean = List[Scalar[DT]](length=AA, fill=Scalar[DT](0))
+        act_norm.action_std = List[Scalar[DT]](length=AA, fill=Scalar[DT](1))
+        print("          store rows", n_st, "| episodes", st.n_episodes(),
+              "| qpos spread", _f(knn_std[0], 3), _f(knn_std[1], 3), "...",
+              _f(knn_std[AQP - 1], 4))
 
     var act_h = ctx.enqueue_create_host_buffer[DT](LANES * OSC_ACTION_DIM)
     # ⚠ `env._obs` IS A DEVICE BUFFER, copied into a host one — the same
@@ -908,7 +1066,7 @@ def run[T: PlacementTable, M: ModelDefLike](
             # order and NOT the replay gate's.
 
         var obs_row = List[Float64]()
-        var action = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
+        var _action = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
         for e in range(len(ens)):
             ens[e].reset()
         for step in range(SETTLE_STEPS + max_steps):
@@ -937,6 +1095,42 @@ def run[T: PlacementTable, M: ModelDefLike](
             if step < SETTLE_STEPS or not have_policy:
                 for k in range(LANES * OSC_ACTION_DIM):
                     ap[unsafe_offset=k] = Scalar[DT](0)
+            elif have_knn:
+                var t_pol = step - SETTLE_STEPS
+                var query = act_exec == 0 or t_pol % act_exec == 0
+                if query:
+                    var tf0 = perf_counter_ns()
+                    for e in range(LANES):
+                        var r_task = row_task[lane_row[e] if lane_row[e] >= 0 else 0]
+                        var q9 = List[Float64](length=KF, fill=0.0)
+                        for k in range(AQP):
+                            q9[k] = Float64(env.d.qpos.data[e * NQ + qadr9[k]])
+                        if knn_vel:
+                            for k in range(AQP):
+                                q9[AQP + k] = q9[k] - (knn_prev[e * AQP + k] if t_pol > 0 else q9[k])
+                        _knn_chunk[AK, AA](
+                            q9, KF, knn_q, knn_std,
+                            knn_act, knn_left, knn_rows_of[r_task], knn_k,
+                            act_chunk, e * AK * AA,
+                        )
+                    forward_ns += perf_counter_ns() - tf0
+                for e in range(LANES):
+                    for k in range(AQP):
+                        knn_prev[e * AQP + k] = Float64(env.d.qpos.data[e * NQ + qadr9[k]])
+                    if act_exec == 0:
+                        ens[e].push(t_pol, act_chunk, e * AK * AA)
+                        ens[e].action_at(t_pol, act_pred, 0)
+                    else:
+                        var pos = t_pol % act_exec
+                        for k in range(AA):
+                            act_pred[k] = act_chunk[e * AK * AA + pos * AA + k]
+                    for k in range(OSC_ACTION_DIM):
+                        var a = _clamp(Float64(act_pred[k]))
+                        ap[unsafe_offset = e * OSC_ACTION_DIM + k] = Scalar[DT](a)
+                        act_abs += abs(a)
+                        act_words += 1
+                        word_abs[k] += abs(a)
+                    word_n += 1
             elif have_act:
                 var t_pol = step - SETTLE_STEPS
                 var query = act_exec == 0 or t_pol % act_exec == 0
@@ -1035,6 +1229,8 @@ def run[T: PlacementTable, M: ModelDefLike](
                     line += _pad(_f(Float64(ap[unsafe_offset = trace_lane * OSC_ACTION_DIM + k]), 6), 7)
                 line += " | fingers " + _f(Float64(env.d.qpos.data[trace_lane * NQ + qadr9[7]]), 6)
                 line += " " + _f(Float64(env.d.qpos.data[trace_lane * NQ + qadr9[8]]), 6)
+                if drawer_qadr >= 0:
+                    line += " | drawer_mid " + _f(Float64(env.d.qpos.data[trace_lane * NQ + drawer_qadr]), 5)
                 print(line)
             ctx.enqueue_copy(env._action, act_h)
             var tp0 = perf_counter_ns()
@@ -1241,6 +1437,9 @@ def main() raises:
     var video_path = String("")
     var video_lane = 0
     var trace_lane = -1
+    var knn_store = String("")
+    var knn_k = 5
+    var knn_vel = False
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -1271,6 +1470,16 @@ def main() raises:
         elif s == "--trace-lane" and i + 1 < len(args):
             trace_lane = Int(String(args[i + 1]))
             i += 1
+        elif s == "--knn":
+            knn_store = String("build/demos/" + FAMILY + ".lowdim.h5")
+            if i + 1 < len(args) and not String(args[i + 1]).startswith("--"):
+                knn_store = String(args[i + 1])
+                i += 1
+        elif s == "--knn-vel":
+            knn_vel = True
+        elif s == "--knn-k" and i + 1 < len(args):
+            knn_k = Int(String(args[i + 1]))
+            i += 1
         elif s == "--check-obs":
             obs_store = String(LIBERO_ACT_STORE_RENDERED)
             if i + 1 < len(args) and not String(args[i + 1]).startswith("--"):
@@ -1283,37 +1492,44 @@ def main() raises:
                 "libero eval batched: unknown argument '" + s + "' (--inits N,"
                 " --steps N, --check-lanes K, --sampled, --policy PATH,"
                 " --act DIR, --act-exec N, --check-obs [STORE], --video F.mp4,"
-                " --video-lane L, --trace-lane L)"
+                " --video-lane L, --trace-lane L, --knn [STORE], --knn-k N, --knn-vel)"
             )
         i += 1
 
+    if knn_k < 1 or knn_k > 64:
+        raise Error("--knn-k must be in [1, 64]")
     if act_exec < 0 or act_exec > LIBERO_ACT_K:
         raise Error("--act-exec must be in [0, " + String(LIBERO_ACT_K)
                     + "] (0 = the temporal ensemble)")
     comptime if FAMILY == "libero_goal":
         run[LiberoGoalPlacement, LiberoGoalModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store, video_path, video_lane, trace_lane,
+            obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
+            knn_vel,
         )
     elif FAMILY == "libero_object":
         run[LiberoObjectPlacement, LiberoObjectModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store, video_path, video_lane, trace_lane,
+            obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
+            knn_vel,
         )
     elif FAMILY == "libero_spatial":
         run[LiberoSpatialPlacement, LiberoSpatialModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store, video_path, video_lane, trace_lane,
+            obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
+            knn_vel,
         )
     elif FAMILY == "libero_kitchen_scene3":
         run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store, video_path, video_lane, trace_lane,
+            obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
+            knn_vel,
         )
     elif FAMILY == "libero_kitchen_scene5":
         run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store, video_path, video_lane, trace_lane,
+            obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
+            knn_vel,
         )
     else:
         comptime assert False, (
