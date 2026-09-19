@@ -92,6 +92,12 @@ control; the five settle steps and the fixture draw (the store carries each
 demo's, the env the band centre) cost a few dB, not twenty. Three image
 policies at 0-5/200 with no such check is how a wrong picture hides.
 
+`--trace-lane L` — every step of the first chunk, lane L's seven action words
+as written to the controller and its finger opening (joint 8), one line per
+step. The video showed the gripper centred on the drawer handle at step ~75
+and descending past it without closing; the trace says what was commanded
+there.
+
 `--video FILE.mp4 [--video-lane L]` — lane L of the FIRST chunk, both cameras
 side by side (agentview | eye_in_hand, x3 nearest-neighbour), every step
 including the settle, at the control rate. The policy starts at the
@@ -271,6 +277,13 @@ def _byte(x: Float64) -> Scalar[DType.uint8]:
     if v > 255:
         v = 255
     return Scalar[DType.uint8](v)
+
+
+def _f(x: Float64, n: Int) -> String:
+    var out = String(x)
+    if out.byte_length() > n:
+        return String(out[byte = 0 : n])
+    return out^
 
 
 def _mean(xs: List[Float64]) -> Float64:
@@ -462,7 +475,7 @@ def _check_obs[AIMG: Int, ACAM: Int, ANPIX: Int](
 def run[T: PlacementTable, M: ModelDefLike](
     n_inits: Int, max_steps: Int, check_lanes: Int, sampled: Bool,
     policy_path: String, act_dir: String, act_exec: Int, obs_store: String,
-    video_path: String, video_lane: Int,
+    video_path: String, video_lane: Int, trace_lane: Int,
 ) raises:
     comptime E = Phyics3dBatchedEnv[
         M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
@@ -730,13 +743,13 @@ def run[T: PlacementTable, M: ModelDefLike](
     var obs_psnr_pre_ctrl = List[Float64]()
     var word_abs = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
     var word_n = 0
+    for j in range(ARM_DOF):
+        qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_joint") + String(j + 1))])
+    qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_finger_joint1"))])
+    qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_finger_joint2"))])
     if have_act:
         cam_idx.append(_index(fmd.camera_names, String("arena_agentview")))
         cam_idx.append(_index(fmd.camera_names, String("robot_eye_in_hand")))
-        for j in range(ARM_DOF):
-            qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_joint") + String(j + 1))])
-        qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_finger_joint1"))])
-        qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_finger_joint2"))])
         if AQ != AQP + n_tasks:
             raise Error("libero eval batched: the ACT declaration carries "
                         + String(AQ - AQP) + " task words, the family has "
@@ -1016,6 +1029,13 @@ def run[T: PlacementTable, M: ModelDefLike](
                         ap[unsafe_offset = e * OSC_ACTION_DIM + k] = Scalar[DT](a)
                         act_abs += abs(a)
                         act_words += 1
+            if trace_lane >= 0 and chunk == 0:
+                var line = String("    t=") + _pad(String(step - SETTLE_STEPS), 4) + " a="
+                for k in range(OSC_ACTION_DIM):
+                    line += _pad(_f(Float64(ap[unsafe_offset = trace_lane * OSC_ACTION_DIM + k]), 6), 7)
+                line += " | fingers " + _f(Float64(env.d.qpos.data[trace_lane * NQ + qadr9[7]]), 6)
+                line += " " + _f(Float64(env.d.qpos.data[trace_lane * NQ + qadr9[8]]), 6)
+                print(line)
             ctx.enqueue_copy(env._action, act_h)
             var tp0 = perf_counter_ns()
             env.step_batch[LANES](ctx, UInt64(step + 1))
@@ -1220,6 +1240,7 @@ def main() raises:
     var obs_store = String("")
     var video_path = String("")
     var video_lane = 0
+    var trace_lane = -1
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -1247,6 +1268,9 @@ def main() raises:
         elif s == "--video-lane" and i + 1 < len(args):
             video_lane = Int(String(args[i + 1]))
             i += 1
+        elif s == "--trace-lane" and i + 1 < len(args):
+            trace_lane = Int(String(args[i + 1]))
+            i += 1
         elif s == "--check-obs":
             obs_store = String(LIBERO_ACT_STORE_RENDERED)
             if i + 1 < len(args) and not String(args[i + 1]).startswith("--"):
@@ -1259,7 +1283,7 @@ def main() raises:
                 "libero eval batched: unknown argument '" + s + "' (--inits N,"
                 " --steps N, --check-lanes K, --sampled, --policy PATH,"
                 " --act DIR, --act-exec N, --check-obs [STORE], --video F.mp4,"
-                " --video-lane L)"
+                " --video-lane L, --trace-lane L)"
             )
         i += 1
 
@@ -1269,27 +1293,27 @@ def main() raises:
     comptime if FAMILY == "libero_goal":
         run[LiberoGoalPlacement, LiberoGoalModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store, video_path, video_lane,
+            obs_store, video_path, video_lane, trace_lane,
         )
     elif FAMILY == "libero_object":
         run[LiberoObjectPlacement, LiberoObjectModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store, video_path, video_lane,
+            obs_store, video_path, video_lane, trace_lane,
         )
     elif FAMILY == "libero_spatial":
         run[LiberoSpatialPlacement, LiberoSpatialModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store, video_path, video_lane,
+            obs_store, video_path, video_lane, trace_lane,
         )
     elif FAMILY == "libero_kitchen_scene3":
         run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store, video_path, video_lane,
+            obs_store, video_path, video_lane, trace_lane,
         )
     elif FAMILY == "libero_kitchen_scene5":
         run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store, video_path, video_lane,
+            obs_store, video_path, video_lane, trace_lane,
         )
     else:
         comptime assert False, (
