@@ -1,5 +1,6 @@
 <mujoco model="so101_tower">
-  <compiler angle="radian"/>
+  <compiler angle="radian" autolimits="true"/>
+  <option cone="elliptic" impratio="10"/>
   <asset>
     <model name="so_arm101_tower" file="../../envs/robots/assets/so_arm101_tower.xml"/>
     <model name="so101_tower_stand" file="../assets/props/so101_tower_stand.xml"/>

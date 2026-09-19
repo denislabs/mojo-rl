@@ -3,6 +3,8 @@
 <!-- Generated using onshape-to-robot -->
 <!-- Onshape https://cad.onshape.com/documents/7715cc284bb430fe6dab4ffd/w/4fd0791b683777b02f8d975a/e/826c553ede3b7592eb9ca800 -->
 <mujoco model="so101_tower_follower">
+  <!-- RIG DEVIATION: elliptic friction cones with impratio 10. The upstream SO-101 ships MuJoCo's defaults (pyramidal, impratio 1), under which a pinched 25 mm cube CREEPS out of the jaw over seconds (task_grasp_feasibility.mojo, 2026-09-19). `impratio` raises the frictional-to-normal constraint impedance and has effect ONLY with elliptic cones (MuJoCo's own gripping advice); Menagerie's SO-100 scene and the Robotiq 2F-85 ship exactly this pair, robosuite 20. The family restates it with inherit_option=1. -->
+  <option cone="elliptic" impratio="10"/>
   <compiler angle="radian" meshdir="so_arm101" autolimits="true"/>
   <default>
     <default class="so101_new_calib">

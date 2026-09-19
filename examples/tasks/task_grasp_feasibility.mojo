@@ -61,6 +61,18 @@ comptime DT = DType.float64
 comptime EnvT[M: ModelDefLike, C: Phyics3dEnvConfig] = Phyics3dEnv[M, C, DT]
 comptime SEED: UInt64 = 12345
 
+# ⚠⚠ THE HOLD IS MEASURED IN SECONDS, NOT STEPS. It was 30 / 120 / 250 policy
+# steps, which on the tabletop's frame skip 2 is 0.12 / 0.48 / 1.0 s and on
+# the tower's 16 is 8x longer — and the verdict FLIPPED between the two on
+# the same jaw and the same cube (2026-09-19): a grasp that creeps at 1.8 mm/s
+# looks held for a second and is on the desk after ten. A carry to the bowl
+# is seconds long, so the probe holds for `HOLD_S` of simulated time whatever
+# the cadence, and a brick that slid more than `SLIP_MAX` over it was not held.
+comptime OPEN_S: Float64 = 1.0
+comptime CLOSE_S: Float64 = 1.5
+comptime HOLD_S: Float64 = 6.0
+comptime SLIP_MAX: Float64 = 0.01
+
 
 def brick_contacts[M: ModelDefLike, C: Phyics3dEnvConfig](mut env: EnvT[M, C], body: Int) -> Tuple[Int, Float64]:
     """`(contacts touching `body`, the deepest penetration among them)`.
@@ -349,6 +361,12 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
     # The hold action per joint is the one that maps back to the pose the arm
     # is already in: `a = (q - mid) / halfrange`.
     print("LEG 3 — the gripper closed on the brick, against gravity")
+    var dt_step = Float64(C.FRAME_SKIP) * C.get_timestep()
+    var n_open = Int(OPEN_S / dt_step + 0.999)
+    var n_close = Int(CLOSE_S / dt_step + 0.999)
+    var n_hold = Int(HOLD_S / dt_step + 0.999)
+    print("  policy step", dt_step, "s ->", n_open, "open /", n_close,
+          "close /", n_hold, "hold steps =", HOLD_S, "s of holding")
     var GS = gripper_site
 
     var jadr = List[Int]()
@@ -380,6 +398,7 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
     var best_any = -1.0
     var best_any_gc = 0
     var best_any_spd = 0.0
+    var best_slip = 0.0
     comptime STEP_M = 0.015          # 1.5 cm — the brick is 4 cm across
     for k in range(2):
         var close = -1.0 if k == 0 else 1.0
@@ -398,7 +417,7 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
                     var hold = hold_actions(env, a_lo, a_hi, a_qa)
 
                     # open the jaw, holding the arm where it is
-                    for _ in range(30):
+                    for _ in range(n_open):
                         step_hold(env, hold, -close)
                     var sx = Float64(env.d.site_xpos.data[GS * 3])
                     var sy = Float64(env.d.site_xpos.data[GS * 3 + 1])
@@ -408,13 +427,13 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
                     var oz = Float64(iz) * STEP_M
                     place_brick(env, qadr, dadr, sx + ox, sy + oy, sz + oz)
                     # close, and keep holding the arm still
-                    for _ in range(120):
+                    for _ in range(n_close):
                         step_hold(env, hold, close)
                     var z_mid = Float64(env.d.qpos.data[qadr + 2])
                     # ⚠ AND THEN KEEP HOLDING. A flicked cube passes through
                     # a good height on its way back down; a held one is still
                     # there 0.5 s later.
-                    for _ in range(250):
+                    for _ in range(n_hold):
                         step_hold(env, hold, close)
                     var z_end = Float64(env.d.qpos.data[qadr + 2])
                     var gc = gripper_contacts(env, brick, grip_body, jaw)
@@ -423,12 +442,14 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
                     # ⚠⚠ ALL FOUR, NOT THE HEIGHT ALONE: above the table, in
                     # contact with the gripper, at rest, and still up at both
                     # samples.
+                    var slip = z_mid - z_end
                     var held = (
                         z_end > 0.06 and z_mid > 0.06 and gc > 0
-                        and spd < 0.05
+                        and spd < 0.05 and slip < SLIP_MAX
                     )
                     if held and z_end > best_hold:
                         best_hold = z_end
+                        best_slip = slip
                         best_dir = close
                         best_contacts = gc
                         best_off[0] = ox
@@ -443,6 +464,8 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
     print("  best HELD brick z", best_hold, "at offset", best_off[0],
           best_off[1], best_off[2], " gripper action", best_dir,
           " gripper contacts", best_contacts)
+    if best_hold > 0.0:
+        print("  slip over the", HOLD_S, "s hold:", best_slip, "m (limit", SLIP_MAX, ")")
     print("  highest brick z of ANY trial", best_any, " gripper contacts",
           best_any_gc, " speed", best_any_spd,
           "  <- height alone, which is NOT a grasp")
@@ -500,7 +523,7 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
         for i in range(NV):
             env.d.qvel.data[i] = Scalar[DT](v0[i])
         var hold = hold_actions(env, a_lo, a_hi, a_qa)
-        for _ in range(120):
+        for _ in range(n_close):
             step_hold(env, hold, e)
         var a = Float64(env.d.qpos.data[jadr[gj]])
         ang.append(a)
@@ -564,7 +587,9 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
     # question is whether THE PROP THE FAMILY SHIPS is holdable; the other
     # rows only say where the boundary is.
     var shipped = Float64(env.mf.geoms.data[o_b + GEOM_IDX_HALF_X])
-    var shipped_held = False
+    # ⚠ LEG 3 ALREADY MEASURED THE SHIPPED SIZE; the rows below are the
+    # boundary. (This was `False` until a size not in `widths` was shipped.)
+    var shipped_held = best_hold > 0.0
     var widths = [0.020, 0.015, 0.012, 0.010]
     var any_held = False
     for wi in range(len(widths)):
@@ -589,7 +614,7 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
                     for i in range(NV):
                         env.d.qvel.data[i] = Scalar[DT](v0[i])
                     var hold = hold_actions(env, a_lo, a_hi, a_qa)
-                    for _ in range(30):
+                    for _ in range(n_open):
                         step_hold(env, hold, -close)
                     var sx = Float64(env.d.site_xpos.data[GS * 3])
                     var sy = Float64(env.d.site_xpos.data[GS * 3 + 1])
@@ -597,15 +622,15 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
                     place_brick(env, qadr, dadr, sx + Float64(ix) * 0.015,
                                 sy + Float64(iy) * 0.015,
                                 sz + Float64(iz) * 0.015)
-                    for _ in range(120):
+                    for _ in range(n_close):
                         step_hold(env, hold, close)
                     var zm = Float64(env.d.qpos.data[qadr + 2])
-                    for _ in range(250):
+                    for _ in range(n_hold):
                         step_hold(env, hold, close)
                     var ze = Float64(env.d.qpos.data[qadr + 2])
                     var gc = gripper_contacts(env, brick, grip_body, jaw)
                     var sp = brick_speed(env, dadr)
-                    if ze > 0.06 and zm > 0.06 and gc > 0 and sp < 0.05:
+                    if ze > 0.06 and zm > 0.06 and gc > 0 and sp < 0.05 and zm - ze < SLIP_MAX:
                         if ze > bh:
                             bh = ze
                             bgc = gc
@@ -620,9 +645,9 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
             if hw == shipped:
                 shipped_held = True
     # restore, so nothing downstream inherits a shrunken prop
-    env.mf.geoms.data[o_b + GEOM_IDX_HALF_X] = Scalar[DT](0.02)
-    env.mf.geoms.data[o_b + GEOM_IDX_HALF_Y] = Scalar[DT](0.02)
-    env.mf.geoms.data[o_b + GEOM_IDX_HALF_Z] = Scalar[DT](0.02)
+    env.mf.geoms.data[o_b + GEOM_IDX_HALF_X] = Scalar[DT](shipped)
+    env.mf.geoms.data[o_b + GEOM_IDX_HALF_Y] = Scalar[DT](shipped)
+    env.mf.geoms.data[o_b + GEOM_IDX_HALF_Z] = Scalar[DT](shipped)
     if shipped_held:
         print("  -> THE SHIPPED PROP (half-extent", shipped, ") IS HELD. The"
               " rows above only locate the boundary; nothing here asks for an"

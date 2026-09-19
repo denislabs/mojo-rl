@@ -23,6 +23,10 @@ horizon=300
 # (31.25 Hz — the nearest integer skip); a policy stepped here has the same
 # cadence its real deployment will.
 control_freq=30
+# ⚠ THE BASE ASSET'S <option> IS RESTATED IN THE COMPOSED SCENE — MuJoCo
+# ignores an attached child's option. `cone="elliptic" impratio="10"`: the
+# sim grasp creeps out of the jaw under the defaults (see the bake).
+inherit_option=1
 
 # ⚠⚠ THE ROBOT SITS ON THE STAND'S BASE PLATE, 5 mm ABOVE THE DESK. The desk
 # is the floor plane; the tower's foot and plate rest on it. See

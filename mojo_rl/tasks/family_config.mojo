@@ -1258,14 +1258,15 @@ stock part and the stand adds four meshes, visual only). The fallback
 radius is never consulted: both free slots carry `slot_geom=`; the brick's
 half-diagonal is written so a wrong path would still place something sane.
 
-⚠⚠ THE SIM GRASP IS MARGINAL IN TIME, AND THIS CADENCE EXPOSES IT. Measured
-2026-09-19 with `task_grasp_feasibility.mojo so101_tower_lift_brick`: at
-frame skip 2 the printed 25 mm cube is HELD (z 0.27, four gripper contacts,
-still creeping at 0.7 mm/s when the probe stops looking); at frame skip 16
-the SAME grasp, over the probe's now eightfold longer hold (~12 s), ends
-with the brick on the desk and zero contacts. The tabletop's FEASIBLE
-verdict is a ~1.5 s hold of a brick slipping at 1.8 mm/s. A carry to the
-bowl is seconds long, so the grasp has to be made to hold — contact
-parameters (the pyramidal cone at friction 1.0, no torsional term) or a
-jaw-pad geom — BEFORE `so101_tower_lift_brick` or `cube_in_bowl` can train
-here. Lowering the skip would hide it, not fix it."""
+⚠⚠ THE GRASP HOLDS BECAUSE OF `impratio="10"` ON THE ELLIPTIC CONE, and it
+did not before. Measured 2026-09-19 with `task_grasp_feasibility.mojo
+so101_tower_lift_brick`, holding for 6 s of simulated time at this cadence:
+under MuJoCo's defaults (pyramidal, impratio 1) the printed 25 mm cube
+crept out of the jaw (held for ~1.5 s at frame skip 2, on the desk after
+the longer hold); with the elliptic cone at impratio 1 (the control) it is
+still dropped; with impratio 10 — the base asset's `<option>`, restated by
+the family's `inherit_option=1` — it is held with 0.5 mm of slip over the
+6 s, and the 20 and 30 mm cubes hold too. `impratio` is inert on the
+pyramidal cone, which is why the two settings travel together (Menagerie's
+SO-100, the Robotiq 2F-85, robosuite). The tabletop family still runs the
+defaults; its FEASIBLE verdict was the 1.5 s one."""

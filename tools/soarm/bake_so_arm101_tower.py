@@ -214,7 +214,16 @@ def bake():
 
     src = sub(
         '<mujoco model="so101_new_calib">',
-        '<mujoco model="so101_tower_follower">',
+        '<mujoco model="so101_tower_follower">\n'
+        "  <!-- RIG DEVIATION: elliptic friction cones with impratio 10. The"
+        " upstream SO-101 ships MuJoCo's defaults (pyramidal, impratio 1),"
+        " under which a pinched 25 mm cube CREEPS out of the jaw over seconds"
+        " (task_grasp_feasibility.mojo, 2026-09-19). `impratio` raises the"
+        " frictional-to-normal constraint impedance and has effect ONLY with"
+        " elliptic cones (MuJoCo's own gripping advice); Menagerie's SO-100"
+        " scene and the Robotiq 2F-85 ship exactly this pair, robosuite 20."
+        " The family restates it with inherit_option=1. -->\n"
+        '  <option cone="elliptic" impratio="10"/>',
         "model tag",
     )
     src = sub(

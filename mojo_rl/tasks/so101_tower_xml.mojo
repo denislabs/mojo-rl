@@ -90,7 +90,9 @@ comptime So101TowerModel = ModelDefFromXML[
     nexclude=_pm.NEXCLUDE,
     npair=_pm.NPAIR,
     timestep=_pm.TIMESTEP,
-    cone_type=ConeType.PYRAMIDAL,
+    # ⚠ ELLIPTIC, with the base asset's `impratio="10"` — see the bake and
+    # the family. `impratio` is inert on the pyramidal cone.
+    cone_type=ConeType.ELLIPTIC,
     max_contacts=SO101_TOWER_MAX_CONTACTS,
     obs_dim_override=SO101_TOWER_OBS_DIM,
     action_dim_override=6,
