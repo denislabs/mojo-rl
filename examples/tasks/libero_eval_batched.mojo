@@ -272,6 +272,18 @@ def _mean(xs: List[Float64]) -> Float64:
     return t / Float64(len(xs)) if len(xs) > 0 else 0.0
 
 
+def _psnr_u8_pp(
+    a: Pointer[Scalar[DType.uint8], MutAnyOrigin], ao: Int,
+    b: Pointer[Scalar[DType.uint8], MutAnyOrigin], bo: Int, n: Int,
+) -> Float64:
+    var se = 0.0
+    for i in range(n):
+        var d = Float64(Int(a[unsafe_offset = ao + i])) - Float64(Int(b[unsafe_offset = bo + i]))
+        se += d * d
+    var mse = se / Float64(n)
+    return 99.0 if mse <= 0.0 else 10.0 * log10(255.0 * 255.0 / mse)
+
+
 def _psnr_u8(
     a: List[Scalar[DType.uint8]], ao: Int,
     b: Pointer[Scalar[DType.uint8], MutAnyOrigin], bo: Int, n: Int,
@@ -314,13 +326,65 @@ def _render_pack[
                     )
 
 
+def _demo_state0(
+    store_path: String, ref lane_row: List[Int], ref row_task: List[Int],
+    n_inits: Int, nq: Int, nv: Int,
+) raises -> List[Float64]:
+    """Each lane's paired demo's frame-0 `state` (qpos ++ qvel, OUR order)
+    from the rendered store — `[LANES, nq + nv]`, zeros for a lane without
+    a demo. The pre-settle leg of `--check-obs` renders THIS, not the init
+    row: the frozen inits are not the demos' first states (measured on the
+    Mac: 0.04-0.11 rad on the arm, the bowl 7 cm higher), so a picture of the
+    init row can never match the store's frame 0 whatever the pipeline
+    does. Same state on both sides leaves only the fixture draw."""
+    var out = List[Float64](length=len(lane_row) * (nq + nv), fill=0.0)
+    if not exists(store_path):
+        return out^
+    var st = TrajectoryStore(store_path)
+    var task_col = st.load_column[DType.int32](String("task_index"))
+    var sspec = st.column(String("state"))
+    if sspec.row_dim() != nq + nv:
+        raise Error("--check-obs: the store's state is " + String(sspec.row_dim())
+                    + " wide, the env's is " + String(nq + nv))
+    var per_task = List[List[Int]]()
+    var n_tasks = 0
+    for e in range(st.n_episodes()):
+        var ti = Int(task_col[st.episodes.start_of(e)])
+        while n_tasks <= ti:
+            per_task.append(List[Int]())
+            n_tasks += 1
+        per_task[ti].append(e)
+    var buf = unsafe_alloc[Scalar[DType.float64]](nq + nv).as_unsafe_any_origin()
+    for l in range(len(lane_row)):
+        var r = lane_row[l]
+        if r < 0:
+            continue
+        var ti = row_task[r]
+        var di = r % n_inits
+        if ti >= n_tasks or di >= len(per_task[ti]):
+            continue
+        var r0 = st.episodes.start_of(per_task[ti][di])
+        st.read_range[DType.float64](String("state"), r0, r0 + 1, buf)
+        for k in range(nq + nv):
+            out[l * (nq + nv) + k] = Float64(buf[unsafe_offset=k])
+    buf.unsafe_free()
+    return out^
+
+
 def _check_obs[AIMG: Int, ACAM: Int, ANPIX: Int](
     store_path: String, ref act_u8: List[Scalar[DType.uint8]],
     ref lane_row: List[Int], ref row_task: List[Int], n_inits: Int,
+    ref lane_qpos9: List[Float64],
     mut out_own: List[Float64], mut out_ctrl: List[Float64],
 ) raises:
     """Each lane's packed observation vs the store's frame 0 of its own demo
-    (init row i of task t == demo i of task t) and of the next demo."""
+    (init row i of task t == demo i of task t) and of the next demo.
+
+    Per printed lane, two more numbers that split "a different picture of the
+    same state" from "a different state": the largest difference between the
+    lane's nine joint values and the store's `qpos[0:9]` at that frame, and
+    the store's OWN frame-0 PSNR between the two demos (what one demo to the
+    next costs with the same pipeline on both sides)."""
     if not exists(store_path):
         print("  ⚠ --check-obs: no store at", store_path, "— not checked")
         return
@@ -340,6 +404,10 @@ def _check_obs[AIMG: Int, ACAM: Int, ANPIX: Int](
             n_tasks += 1
         per_task[ti].append(e)
     var buf = unsafe_alloc[Scalar[DType.uint8]](AIMG).as_unsafe_any_origin()
+    var buf2 = unsafe_alloc[Scalar[DType.uint8]](AIMG).as_unsafe_any_origin()
+    var qspec = st.column(String("qpos"))
+    var qw = qspec.row_dim()
+    var qbuf = unsafe_alloc[Scalar[DType.float32]](qw).as_unsafe_any_origin()
     var lanes = len(lane_row)
     for l in range(lanes):
         var r = lane_row[l]
@@ -349,22 +417,38 @@ def _check_obs[AIMG: Int, ACAM: Int, ANPIX: Int](
         var di = r % n_inits
         if ti >= n_tasks or di + 1 >= len(per_task[ti]):
             continue
+        var dq = 0.0
         for which in range(2):
             var e = per_task[ti][di + which]
             var r0 = st.episodes.start_of(e)
-            st.read_range[DType.uint8](String("images"), r0, r0 + 1, buf)
+            st.read_range[DType.uint8](String("images"), r0, r0 + 1,
+                                       buf if which == 0 else buf2)
             for cam in range(AIMG // ACAM):
-                var p = _psnr_u8(act_u8, l * AIMG + cam * ACAM, buf, cam * ACAM, ACAM)
+                var p = _psnr_u8(act_u8, l * AIMG + cam * ACAM,
+                                 buf if which == 0 else buf2, cam * ACAM, ACAM)
                 if which == 0:
                     out_own.append(p)
                 else:
                     out_ctrl.append(p)
+            if which == 0:
+                st.read_range[DType.float32](String("qpos"), r0, r0 + 1, qbuf)
+                for k in range(9):
+                    var d = abs(lane_qpos9[l * 9 + k] - Float64(qbuf[unsafe_offset=k]))
+                    if d > dq:
+                        dq = d
         if l < 4:
+            # store vs store: demo di's frame 0 against demo di+1's
+            var s_av = _psnr_u8_pp(buf, 0, buf2, 0, ACAM)
+            var s_eih = _psnr_u8_pp(buf, ACAM, buf2, ACAM, ACAM)
             print("    lane", l, "task", ti, "demo", di, ": agentview",
                   out_own[len(out_own) - 2], "/ ctrl", out_ctrl[len(out_ctrl) - 2],
                   "| eye_in_hand", out_own[len(out_own) - 1], "/ ctrl",
-                  out_ctrl[len(out_ctrl) - 1], "dB")
+                  out_ctrl[len(out_ctrl) - 1], "dB | max |dq| arm+fingers vs the"
+                  " store's frame 0:", dq, "rad | store demo vs next demo:",
+                  s_av, "/", s_eih, "dB")
     buf.unsafe_free()
+    buf2.unsafe_free()
+    qbuf.unsafe_free()
 
 
 def run[T: PlacementTable, M: ModelDefLike](
@@ -742,23 +826,50 @@ def run[T: PlacementTable, M: ModelDefLike](
             env.d.qvel.upload(ctx)
             ctx.synchronize()
             if have_act and obs_store.byte_length() > 0 and chunk == 0:
-                # ⚠ THE PRE-SETTLE LEG OF --check-obs: forward kinematics on
-                # the row just written, nothing stepped, so the ONLY thing
-                # that differs from the store's frame 0 of the same demo is
-                # the fixture draw (the store carries each demo's, the env
-                # the band centre). A low number HERE is the pipeline.
+                # ⚠ THE PRE-SETTLE LEG OF --check-obs: the paired demo's OWN
+                # frame-0 state written into the lanes (see `_demo_state0`),
+                # forward kinematics, nothing stepped, so the ONLY thing that
+                # differs from the store's frame 0 is the fixture draw (the
+                # store carries each demo's, the env the band centre). A low
+                # number HERE is the pipeline. The init rows are restored
+                # before the settle steps.
+                var ds0 = _demo_state0(obs_store, lane_row, row_task, n_inits, NQ, NV)
+                for e in range(LANES):
+                    for k in range(NQ):
+                        env.d.qpos.data[e * NQ + k] = Scalar[DT](ds0[e * (NQ + NV) + k])
+                    for k in range(NV):
+                        env.d.qvel.data[e * NV + k] = Scalar[DT](ds0[e * (NQ + NV) + NQ + k])
+                env.d.qpos.upload(ctx)
+                env.d.qvel.upload(ctx)
+                ctx.synchronize()
                 env._run_fields_fk(ctx)
                 ctx.synchronize()
                 _render_pack[E.MD, LANES, LIBERO_ACT_IMG_W, LIBERO_ACT_IMG_H,
                              False, True, 4, AIMG, ACAM, ANPIX](
                     ren_opt[0], ctx, env.d, env.mf, cam_idx, h_rgb, act_u8,
                 )
-                print("  --check-obs, BEFORE the settle steps (FK only on the"
-                      " frozen row; fixtures at the band centre):")
+                var q9 = List[Float64]()
+                for e in range(LANES):
+                    for k in range(AQP):
+                        q9.append(Float64(env.d.qpos.data[e * NQ + qadr9[k]]))
+                print("  --check-obs, the paired demo's frame-0 STATE rendered"
+                      " by this driver (FK only; fixtures at the band centre):")
                 _check_obs[AIMG, ACAM, ANPIX](
-                    obs_store, act_u8, lane_row, row_task, n_inits,
+                    obs_store, act_u8, lane_row, row_task, n_inits, q9,
                     obs_psnr_pre, obs_psnr_pre_ctrl,
                 )
+                # the frozen rows back, for the protocol
+                for e in range(LANES):
+                    var r = lane_row[e] if lane_row[e] >= 0 else 0
+                    for k in range(NQ):
+                        env.d.qpos.data[e * NQ + k] = Scalar[DT](row_qpos[r][k])
+                    for k in range(NV):
+                        env.d.qvel.data[e * NV + k] = Scalar[DT](row_qvel[r][k])
+                env.d.qpos.upload(ctx)
+                env.d.qvel.upload(ctx)
+                ctx.synchronize()
+                env._run_fields_fk(ctx)
+                ctx.synchronize()
             # ⚠ NO `_osc_anchor` HERE. See the header: the controller keeps the
             # rest-pose anchor `reset_batch` gave it, which is robosuite's own
             # order and NOT the replay gate's.
@@ -795,8 +906,12 @@ def run[T: PlacementTable, M: ModelDefLike](
                     obs_checked = True
                     print("  --check-obs, at the FIRST POLICY STEP (after the"
                           " settle steps):")
+                    var q9 = List[Float64]()
+                    for e in range(LANES):
+                        for k in range(AQP):
+                            q9.append(Float64(env.d.qpos.data[e * NQ + qadr9[k]]))
                     _check_obs[AIMG, ACAM, ANPIX](
-                        obs_store, act_u8, lane_row, row_task, n_inits,
+                        obs_store, act_u8, lane_row, row_task, n_inits, q9,
                         obs_psnr, obs_psnr_ctrl,
                     )
                 # 2. the nine proprio words and the lane's task one-hot,
@@ -988,8 +1103,9 @@ def run[T: PlacementTable, M: ModelDefLike](
               "s | physics (step_batch)", Float64(physics_ns) / 1e9,
               "s over the run")
         if len(obs_psnr_pre) > 0:
-            print("  obs   : pre-settle (FK only) vs the store's frame 0 — own"
-                  " demo", _mean(obs_psnr_pre), "dB | next demo (control)",
+            print("  obs   : the demo's OWN frame-0 state, rendered here, vs the"
+                  " store's frame 0 — own demo", _mean(obs_psnr_pre),
+                  "dB | next demo (control)",
                   _mean(obs_psnr_pre_ctrl), "dB over", len(obs_psnr_pre),
                   "lane-cameras")
         if len(obs_psnr) > 0:
