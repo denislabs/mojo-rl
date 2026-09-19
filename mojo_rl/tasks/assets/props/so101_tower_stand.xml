@@ -15,9 +15,15 @@
        overlap by the 8 mm push-fit and share a frame; `cam_mount_bottom`
        (y 0..231) is its own, its top 8 mm (y 223..231) already the middle's
        25.4 x 36.6 section centred at x 18.7, z 36.5. So middle/top sit in
-       the bottom's frame at (+18.7, +188, +36.5) mm. `arm_base`'s tab ends
-       at x = -4.3 against the bottom's x = 0 face: the same frame. Every
-       one of those is a few-mm assumption a push-fit can move, which is why
+       the bottom's frame at (+18.7, +188, +36.5) mm. `arm_base` is authored
+       in ITS OWN frame, plate at x -94..-4 with a 25 mm tab at x -4.3: on the
+       rig it plugs into the foot's LATERAL face (the SO-ARM100 photos: one
+       plate per follower, arms in line with the foot on either side, facing
+       the camera's way), so it is rotated -90° about its y before the y-up
+       -> z-up turn, tab against the foot's z = -10 face, centred on the
+       foot's x. The first version had it behind the tower (the tab on the
+       x = 0 face) — the rig's owner corrected it. Every one of those is a
+       few-mm assumption a push-fit can move, which is why
        `camera-rig.md` §5 says: CALIBRATE (§7), and treat these as the
        starting values. `projects/so101-tower/calibration/` is where the
        calibrated pose goes.
@@ -39,11 +45,14 @@
        part z -> -y) and `scale="0.001 0.001 0.001"`. Body +x is the head's
        bend direction = the arm's forward (+x); body +y is the arm's left.
 
-       THE ARM SITS AT body (-0.075, +0.051, +0.005): the centre of the
-       plate's hole pattern (x -88..-18, z -22..-80 in the part frame), less
-       the 22 mm the SO-101 base body origin sits behind its footprint
-       centre, on top of the 5 mm plate. The family places this slot at the
-       negation of that so the robot stays at the world origin.
+       THE ARM SITS AT body (+0.049, +0.059, +0.005): the plate's hole
+       pattern (x -88..-18, z -22..-80 in the plate's frame) lands at body
+       x 22..80 + 17.5, y 18..88 + 5.7 once the plate is on the lateral face,
+       and the SO-101 base body origin sits 22 mm behind its footprint
+       centre, facing +x; on top of the 5 mm plate. So the arm is 5 cm in
+       front of the foot's centre and 9.5 cm to the tower's left (the arm's
+       +y). The family places this slot at the negation of that so the
+       robot stays at the world origin.
 
        THE OVERHEAD CAMERA: plate face centre (28.94, 361.98, 0) in the top's
        frame, outward normal (0.4243, -0.9055, 0); entrance pupil 15.6 mm
@@ -70,8 +79,10 @@
   <worldbody>
     <body name="stand">
       <!-- visual: the four prints, in the bottom part's frame -->
+      <!-- arm_base: Rx(+90) after Ry(-90) = quat (0.5, 0.5, -0.5, -0.5); its
+           plate spans body x -8..150, y 10..100 -->
       <geom type="mesh" mesh="arm_base" material="stand_pla" contype="0" conaffinity="0" group="2"
-            pos="0 0 0.005" quat="0.7071068 0.7071068 0 0"/>
+            pos="0.0175 0.0057 0.005" quat="0.5 0.5 -0.5 -0.5"/>
       <geom type="mesh" mesh="cam_mount_bottom" material="stand_pla" contype="0" conaffinity="0" group="2"
             pos="0 0 0" quat="0.7071068 0.7071068 0 0"/>
       <geom type="mesh" mesh="cam_mount_middle" material="stand_pla" contype="0" conaffinity="0" group="2"
@@ -85,7 +96,7 @@
             rgba="0.20 0.45 0.85 0.3" group="3"/>
       <geom name="head" type="box" pos="0.0517 -0.0365 0.551" size="0.012 0.0175 0.009"
             rgba="0.20 0.45 0.85 0.3" group="3"/>
-      <geom name="plate" type="box" pos="-0.049 0.0535 0.0025" size="0.045 0.0795 0.0025"
+      <geom name="plate" type="box" pos="0.071 0.0547 0.0025" size="0.0795 0.045 0.0025"
             rgba="0.20 0.45 0.85 0.3" group="3"/>
       <!-- the overhead IMX335, see the header -->
       <camera name="overhead_cam" pos="0.05426 -0.0365 0.53585"

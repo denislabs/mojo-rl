@@ -91,7 +91,7 @@ def _oracle(p: Int, c: Int, k: Int) -> Vec3:
     if c == 1:
         # the overhead camera is on a static body: the same at both poses
         if k == 0:
-            return Vec3(0.129260000, -0.087500000, 0.535850000)
+            return Vec3(0.005260000, -0.095200000, 0.535850000)
         if k == 1:
             return Vec3(0.000000000, -1.000000000, 0.000000000)
         if k == 2:

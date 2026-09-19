@@ -13,7 +13,7 @@
     <frame pos="0.0 0.0 0.005" quat="1.0 0.0 0.0 0.0">
       <attach model="so_arm101_tower" prefix="robot_"/>
     </frame>
-    <frame pos="0.075 -0.051 0.0" quat="1.0 0.0 0.0 0.0">
+    <frame pos="-0.049 -0.0587 0.0" quat="1.0 0.0 0.0 0.0">
       <attach model="so101_tower_stand" prefix="tower_"/>
     </frame>
     <frame pos="0.32 0.0 0.001" quat="1.0 0.0 0.0 0.0">
