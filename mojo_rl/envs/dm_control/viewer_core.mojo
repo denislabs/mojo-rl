@@ -328,6 +328,19 @@ struct ViewerState(Copyable, Movable):
     hand it to the next `init_renderer` or end it with
     `Renderer3D.close_handoff`; `run_viewer` is the one place that guarantees
     both."""
+    var reset_qpos: List[Float64]
+    """A full `qpos` the env is put into after EVERY reset — empty for none.
+
+    ⚠ DEFAULTS TO EMPTY so every existing front end resets exactly as before.
+    A task FAMILY parks its free slots 50 m up in `qpos0` and places them at
+    reset on the HOST (`tasks/sampler` + `tasks/reset.reset_slots`), which
+    `Phyics3dEnv.reset` knows nothing about: a family viewed through
+    `run_view` alone shows props falling from the sky. A front end that
+    knows the family computes the posed `qpos` once and puts it here; the
+    viewer writes it through `obs_at` (state + observation, so a policy
+    reads the posed state too) at the initial reset, the button, and every
+    episode end. Its length must be the model's `nq`, or it is ignored with
+    a printed line rather than a silently truncated state."""
 
     def __init__(
         out self,
@@ -352,6 +365,7 @@ struct ViewerState(Copyable, Movable):
         self.domains = domains^
         self.domain_of = domain_of^
         self.handoff = None
+        self.reset_qpos = List[Float64]()
 
 
 @fieldwise_init
@@ -737,6 +751,16 @@ def run_view[
     var s0 = env.reset()
     for i in range(E.OBS_DIM):
         obs_l[i] = Scalar[DT](s0.data[i])
+    if len(st.reset_qpos) > 0:
+        # `ViewerState.reset_qpos`: the posed state AND its observation.
+        if len(st.reset_qpos) != MODEL.NQ:
+            print("  reset_qpos has", len(st.reset_qpos),
+                  "words but the model's nq is", MODEL.NQ, "— ignored")
+        else:
+            var v0 = List[Float64](length=MODEL.NV, fill=0.0)
+            var sp = env.obs_at(st.reset_qpos, v0)
+            for i in range(E.OBS_DIM):
+                obs_l[i] = Scalar[DT](sp.data[i])
 
     # ── policy plug ──────────────────────────────────────────────────────
     var have_pol = Bool(policy)
@@ -871,6 +895,16 @@ def run_view[
             var sr = env.reset()
             for i in range(E.OBS_DIM):
                 obs_l[i] = Scalar[DT](sr.data[i])
+            if len(st.reset_qpos) > 0:
+                # `ViewerState.reset_qpos`: the posed state AND its observation.
+                if len(st.reset_qpos) != MODEL.NQ:
+                    print("  reset_qpos has", len(st.reset_qpos),
+                          "words but the model's nq is", MODEL.NQ, "— ignored")
+                else:
+                    var v0 = List[Float64](length=MODEL.NV, fill=0.0)
+                    var sp = env.obs_at(st.reset_qpos, v0)
+                    for i in range(E.OBS_DIM):
+                        obs_l[i] = Scalar[DT](sp.data[i])
             step_i = 0
             ep_return = 0.0
         elif ui.zero_now:
@@ -973,6 +1007,16 @@ def run_view[
                 var sr = env.reset()
                 for i in range(E.OBS_DIM):
                     obs_l[i] = Scalar[DT](sr.data[i])
+                if len(st.reset_qpos) > 0:
+                    # `ViewerState.reset_qpos`: the posed state AND its observation.
+                    if len(st.reset_qpos) != MODEL.NQ:
+                        print("  reset_qpos has", len(st.reset_qpos),
+                              "words but the model's nq is", MODEL.NQ, "— ignored")
+                    else:
+                        var v0 = List[Float64](length=MODEL.NV, fill=0.0)
+                        var sp = env.obs_at(st.reset_qpos, v0)
+                        for i in range(E.OBS_DIM):
+                            obs_l[i] = Scalar[DT](sp.data[i])
                 step_i = 0
                 ep_return = 0.0
 
