@@ -80,6 +80,18 @@ the newest chunk's first action) and `--act-exec 10` is the half-second
 open-loop setting LeRobot's LIBERO configs run. The per-word |action| table
 at the end is printed beside the store's own mean and spread for this reason.
 
+⚠⚠ `--check-obs [STORE]` — IS THE OBSERVATION THE ONE THE POLICY TRAINED ON?
+Every gate so far compares physics or the store against the recording; none
+compares the picture THIS driver renders inside the loop against the picture
+the store holds. At the first policy step of the first chunk each lane's two
+rendered frames are scored (PSNR, bytes) against the rendered store's frame 0
+of the demonstration its init row came from — the frozen inits ARE the demos'
+initial states, in order — and against the NEXT demo's frame 0 as a control.
+A consistent pipeline reads 30 dB+ on the demo and clearly less on the
+control; the five settle steps and the fixture draw (the store carries each
+demo's, the env the band centre) cost a few dB, not twenty. Three image
+policies at 0-5/200 with no such check is how a wrong picture hides.
+
 ⚠ `norm.json` NAMES THE STORE THE CHECKPOINT WAS FITTED ON, and this driver
 prints it: a checkpoint from the RECORDED store crosses the pixel-domain gap
 here (robosuite's OpenGL -> our tracer), one from the RENDERED store does not,
@@ -158,6 +170,10 @@ from mojo_rl.deep_agents.act.inference import (
     TemporalEnsemble, normalize_camera_chw, denormalize,
 )
 from mojo_rl.deep_agents.act.config import ACT_TEMPORAL_ENSEMBLE_M
+from mojo_rl.data.store import TrajectoryStore
+from mojo_rl.tasks.libero_act import LIBERO_ACT_STORE_RENDERED
+from std.math import log10
+from std.memory.alloc import unsafe_alloc
 from mojo_rl.tasks.placement.table import PlacementTable
 from mojo_rl.tasks.placement.check import (
     joint_init_words, require_device_placement,
@@ -247,9 +263,74 @@ def _byte(x: Float64) -> Scalar[DType.uint8]:
     return Scalar[DType.uint8](v)
 
 
+def _psnr_u8(
+    a: List[Scalar[DType.uint8]], ao: Int,
+    b: Pointer[Scalar[DType.uint8], MutAnyOrigin], bo: Int, n: Int,
+) -> Float64:
+    var se = 0.0
+    for i in range(n):
+        var d = Float64(Int(a[ao + i])) - Float64(Int(b[unsafe_offset = bo + i]))
+        se += d * d
+    var mse = se / Float64(n)
+    return 99.0 if mse <= 0.0 else 10.0 * log10(255.0 * 255.0 / mse)
+
+
+def _check_obs[AIMG: Int, ACAM: Int, ANPIX: Int](
+    store_path: String, ref act_u8: List[Scalar[DType.uint8]],
+    ref lane_row: List[Int], ref row_task: List[Int], n_inits: Int,
+    mut out_own: List[Float64], mut out_ctrl: List[Float64],
+) raises:
+    """Each lane's packed observation vs the store's frame 0 of its own demo
+    (init row i of task t == demo i of task t) and of the next demo."""
+    if not exists(store_path):
+        print("  ⚠ --check-obs: no store at", store_path, "— not checked")
+        return
+    var st = TrajectoryStore(store_path)
+    var task_col = st.load_column[DType.int32](String("task_index"))
+    var spec = st.column(String("images"))
+    if spec.row_dim() != AIMG:
+        raise Error("--check-obs: the store's images are " + String(spec.row_dim())
+                    + " bytes per row, the policy's are " + String(AIMG))
+    # episodes per task, in store order
+    var per_task = List[List[Int]]()
+    var n_tasks = 0
+    for e in range(st.n_episodes()):
+        var ti = Int(task_col[st.episodes.start_of(e)])
+        while n_tasks <= ti:
+            per_task.append(List[Int]())
+            n_tasks += 1
+        per_task[ti].append(e)
+    var buf = unsafe_alloc[Scalar[DType.uint8]](AIMG).as_unsafe_any_origin()
+    var lanes = len(lane_row)
+    for l in range(lanes):
+        var r = lane_row[l]
+        if r < 0:
+            continue
+        var ti = row_task[r]
+        var di = r % n_inits
+        if ti >= n_tasks or di + 1 >= len(per_task[ti]):
+            continue
+        for which in range(2):
+            var e = per_task[ti][di + which]
+            var r0 = st.episodes.start_of(e)
+            st.read_range[DType.uint8](String("images"), r0, r0 + 1, buf)
+            for cam in range(AIMG // ACAM):
+                var p = _psnr_u8(act_u8, l * AIMG + cam * ACAM, buf, cam * ACAM, ACAM)
+                if which == 0:
+                    out_own.append(p)
+                else:
+                    out_ctrl.append(p)
+        if l < 4:
+            print("    lane", l, "task", ti, "demo", di, ": agentview",
+                  out_own[len(out_own) - 2], "/ ctrl", out_ctrl[len(out_ctrl) - 2],
+                  "| eye_in_hand", out_own[len(out_own) - 1], "/ ctrl",
+                  out_ctrl[len(out_ctrl) - 1], "dB")
+    buf.unsafe_free()
+
+
 def run[T: PlacementTable, M: ModelDefLike](
     n_inits: Int, max_steps: Int, check_lanes: Int, sampled: Bool,
-    policy_path: String, act_dir: String, act_exec: Int,
+    policy_path: String, act_dir: String, act_exec: Int, obs_store: String,
 ) raises:
     comptime E = Phyics3dBatchedEnv[
         M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
@@ -499,6 +580,9 @@ def run[T: PlacementTable, M: ModelDefLike](
     var render_ns = 0
     var forward_ns = 0
     var physics_ns = 0
+    var obs_checked = False
+    var obs_psnr = List[Float64]()
+    var obs_psnr_ctrl = List[Float64]()
     var word_abs = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
     var word_n = 0
     if have_act:
@@ -653,6 +737,13 @@ def run[T: PlacementTable, M: ModelDefLike](
                         normalize_camera_chw[LIBERO_ACT_IMG_H, LIBERO_ACT_IMG_W](
                             act_u8, dst, act_images, dst
                         )
+                if (obs_store.byte_length() > 0 and not obs_checked
+                        and query and chunk == 0):
+                    obs_checked = True
+                    _check_obs[AIMG, ACAM, ANPIX](
+                        obs_store, act_u8, lane_row, row_task, n_inits,
+                        obs_psnr, obs_psnr_ctrl,
+                    )
                 # 2. the nine proprio words and the lane's task one-hot,
                 #    standardised as the fit was (`env.d.qpos` was downloaded
                 #    after the previous step; the task is the row's)
@@ -841,6 +932,16 @@ def run[T: PlacementTable, M: ModelDefLike](
               Float64(render_ns) / 1e9, "s | forward", Float64(forward_ns) / 1e9,
               "s | physics (step_batch)", Float64(physics_ns) / 1e9,
               "s over the run")
+        if len(obs_psnr) > 0:
+            var m1 = 0.0
+            var m2 = 0.0
+            for k in range(len(obs_psnr)):
+                m1 += obs_psnr[k]
+                m2 += obs_psnr_ctrl[k]
+            print("  obs   : first policy step vs the rendered store's frame 0 —"
+                  " own demo", m1 / Float64(len(obs_psnr)), "dB | next demo (control)",
+                  m2 / Float64(len(obs_psnr)), "dB over", len(obs_psnr),
+                  "lane-cameras (" + obs_store + ")")
         if word_n > 0:
             print("  per word            policy mean|a|   store mean     store std")
             for k in range(OSC_ACTION_DIM):
@@ -902,6 +1003,7 @@ def main() raises:
     var policy_path = String("")
     var act_dir = String("")
     var act_exec = 0
+    var obs_store = String("")
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -923,13 +1025,18 @@ def main() raises:
         elif s == "--act-exec" and i + 1 < len(args):
             act_exec = Int(String(args[i + 1]))
             i += 1
+        elif s == "--check-obs":
+            obs_store = String(LIBERO_ACT_STORE_RENDERED)
+            if i + 1 < len(args) and not String(args[i + 1]).startswith("--"):
+                obs_store = String(args[i + 1])
+                i += 1
         elif s == "--sampled":
             sampled = True
         else:
             raise Error(
                 "libero eval batched: unknown argument '" + s + "' (--inits N,"
                 " --steps N, --check-lanes K, --sampled, --policy PATH,"
-                " --act DIR, --act-exec N)"
+                " --act DIR, --act-exec N, --check-obs [STORE])"
             )
         i += 1
 
@@ -938,23 +1045,28 @@ def main() raises:
                     + "] (0 = the temporal ensemble)")
     comptime if FAMILY == "libero_goal":
         run[LiberoGoalPlacement, LiberoGoalModel](
-            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
+            obs_store,
         )
     elif FAMILY == "libero_object":
         run[LiberoObjectPlacement, LiberoObjectModel](
-            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
+            obs_store,
         )
     elif FAMILY == "libero_spatial":
         run[LiberoSpatialPlacement, LiberoSpatialModel](
-            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
+            obs_store,
         )
     elif FAMILY == "libero_kitchen_scene3":
         run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](
-            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
+            obs_store,
         )
     elif FAMILY == "libero_kitchen_scene5":
         run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](
-            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec
+            n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
+            obs_store,
         )
     else:
         comptime assert False, (
