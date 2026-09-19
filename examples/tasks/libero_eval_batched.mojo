@@ -92,6 +92,13 @@ control; the five settle steps and the fixture draw (the store carries each
 demo's, the env the band centre) cost a few dB, not twenty. Three image
 policies at 0-5/200 with no such check is how a wrong picture hides.
 
+`--video FILE.mp4 [--video-lane L]` — lane L of the FIRST chunk, both cameras
+side by side (agentview | eye_in_hand, x3 nearest-neighbour), every step
+including the settle, at the control rate. The policy starts at the
+demonstrations' action scale and stops within seconds (measured 2026-09-19);
+what the arm does in between is a thing to watch, not to infer. Needs
+`ffmpeg` on PATH.
+
 ⚠ `norm.json` NAMES THE STORE THE CHECKPOINT WAS FITTED ON, and this driver
 prints it: a checkpoint from the RECORDED store crosses the pixel-domain gap
 here (robosuite's OpenGL -> our tracer), one from the RENDERED store does not,
@@ -173,6 +180,7 @@ from mojo_rl.deep_agents.act.inference import (
 )
 from mojo_rl.deep_agents.act.config import ACT_TEMPORAL_ENSEMBLE_M
 from mojo_rl.data.store import TrajectoryStore
+from mojo_rl.render.video_recorder import VideoRecorder
 from mojo_rl.tasks.libero_act import LIBERO_ACT_STORE_RENDERED
 from std.math import log10
 from std.memory.alloc import unsafe_alloc
@@ -180,7 +188,7 @@ from mojo_rl.tasks.placement.table import PlacementTable
 from mojo_rl.tasks.placement.check import (
     joint_init_words, require_device_placement,
 )
-from mojo_rl.tasks.libero_osc_config import LiberoOscConfig
+from mojo_rl.tasks.libero_osc_config import LiberoOscConfig, LIBERO_CONTROL_FREQ
 from mojo_rl.tasks.placement.libero_goal import LiberoGoalPlacement
 from mojo_rl.tasks.libero_goal_xml import LiberoGoalModel
 from mojo_rl.tasks.placement.libero_object import LiberoObjectPlacement
@@ -454,6 +462,7 @@ def _check_obs[AIMG: Int, ACAM: Int, ANPIX: Int](
 def run[T: PlacementTable, M: ModelDefLike](
     n_inits: Int, max_steps: Int, check_lanes: Int, sampled: Bool,
     policy_path: String, act_dir: String, act_exec: Int, obs_store: String,
+    video_path: String, video_lane: Int,
 ) raises:
     comptime E = Phyics3dBatchedEnv[
         M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
@@ -704,6 +713,17 @@ def run[T: PlacementTable, M: ModelDefLike](
     var forward_ns = 0
     var physics_ns = 0
     var obs_checked = False
+    var recorder = VideoRecorder()
+    var recording = have_act and video_path.byte_length() > 0
+    comptime VSCALE = 3
+    comptime VW = LIBERO_ACT_IMG_W * VSCALE * 2
+    comptime VH = LIBERO_ACT_IMG_H * VSCALE
+    var vframe = List[UInt8](length=VW * VH * 4, fill=UInt8(255))
+    if recording:
+        if video_lane < 0 or video_lane >= LANES:
+            raise Error("--video-lane must be in [0, " + String(LANES) + ")")
+        recorder.start(video_path, fps=LIBERO_CONTROL_FREQ)
+        print("  video : lane", video_lane, "of chunk 0 ->", video_path)
     var obs_psnr = List[Float64]()
     var obs_psnr_ctrl = List[Float64]()
     var obs_psnr_pre = List[Float64]()
@@ -879,6 +899,25 @@ def run[T: PlacementTable, M: ModelDefLike](
         for e in range(len(ens)):
             ens[e].reset()
         for step in range(SETTLE_STEPS + max_steps):
+            if recording and chunk == 0:
+                # the picture BEFORE this step's action, every step
+                _render_pack[E.MD, LANES, LIBERO_ACT_IMG_W, LIBERO_ACT_IMG_H,
+                             False, True, 4, AIMG, ACAM, ANPIX](
+                    ren_opt[0], ctx, env.d, env.mf, cam_idx, h_rgb, act_u8,
+                )
+                for cam in range(2):
+                    var src = video_lane * AIMG + cam * ACAM
+                    for y in range(VH):
+                        var sy = y // VSCALE
+                        for x in range(LIBERO_ACT_IMG_W * VSCALE):
+                            var sx = x // VSCALE
+                            var q = sy * LIBERO_ACT_IMG_W + sx
+                            var o = (y * VW + cam * LIBERO_ACT_IMG_W * VSCALE + x) * 4
+                            vframe[o] = UInt8(act_u8[src + 2 * ANPIX + q])
+                            vframe[o + 1] = UInt8(act_u8[src + ANPIX + q])
+                            vframe[o + 2] = UInt8(act_u8[src + q])
+                            vframe[o + 3] = UInt8(255)
+                recorder.add_frame_bgra(Int(vframe.unsafe_ptr()), VW, VH)
             var ap = act_h.unsafe_ptr()
             # ⚠ THE SETTLE STEPS ARE ZEROS EVEN WITH A POLICY — `metric.py`
             # steps its `dummy` through them, and the props are still falling.
@@ -1061,6 +1100,10 @@ def run[T: PlacementTable, M: ModelDefLike](
               flush=True)
         chunk += 1
 
+    if recording:
+        recorder.stop()
+        print("  video :", recorder.frames_written(), "frames ->", video_path)
+
     # ── the report ────────────────────────────────────────────────────────
     var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
     print()
@@ -1175,6 +1218,8 @@ def main() raises:
     var act_dir = String("")
     var act_exec = 0
     var obs_store = String("")
+    var video_path = String("")
+    var video_lane = 0
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -1196,6 +1241,12 @@ def main() raises:
         elif s == "--act-exec" and i + 1 < len(args):
             act_exec = Int(String(args[i + 1]))
             i += 1
+        elif s == "--video" and i + 1 < len(args):
+            video_path = String(args[i + 1])
+            i += 1
+        elif s == "--video-lane" and i + 1 < len(args):
+            video_lane = Int(String(args[i + 1]))
+            i += 1
         elif s == "--check-obs":
             obs_store = String(LIBERO_ACT_STORE_RENDERED)
             if i + 1 < len(args) and not String(args[i + 1]).startswith("--"):
@@ -1207,7 +1258,8 @@ def main() raises:
             raise Error(
                 "libero eval batched: unknown argument '" + s + "' (--inits N,"
                 " --steps N, --check-lanes K, --sampled, --policy PATH,"
-                " --act DIR, --act-exec N, --check-obs [STORE])"
+                " --act DIR, --act-exec N, --check-obs [STORE], --video F.mp4,"
+                " --video-lane L)"
             )
         i += 1
 
@@ -1217,27 +1269,27 @@ def main() raises:
     comptime if FAMILY == "libero_goal":
         run[LiberoGoalPlacement, LiberoGoalModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store,
+            obs_store, video_path, video_lane,
         )
     elif FAMILY == "libero_object":
         run[LiberoObjectPlacement, LiberoObjectModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store,
+            obs_store, video_path, video_lane,
         )
     elif FAMILY == "libero_spatial":
         run[LiberoSpatialPlacement, LiberoSpatialModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store,
+            obs_store, video_path, video_lane,
         )
     elif FAMILY == "libero_kitchen_scene3":
         run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store,
+            obs_store, video_path, video_lane,
         )
     elif FAMILY == "libero_kitchen_scene5":
         run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
-            obs_store,
+            obs_store, video_path, video_lane,
         )
     else:
         comptime assert False, (
