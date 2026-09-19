@@ -158,6 +158,8 @@ from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
 from mojo_rl.tasks.active import active_mask, init_region_words
 from mojo_rl.tasks.bc_policy import BcNet, BcNorm, load_bc_norm
 from mojo_rl.physics3d.raytrace import BatchedCameraRenderer, RGB_CHANNELS
+from mojo_rl.physics3d.fields.dims import DimsLike
+from max.gpu.host import HostBuffer
 from mojo_rl.physics3d.raytrace.visual import build_visual_model
 from mojo_rl.tasks.libero_visual import libero_site_conditions
 from mojo_rl.tasks.libero_act import (
@@ -263,6 +265,13 @@ def _byte(x: Float64) -> Scalar[DType.uint8]:
     return Scalar[DType.uint8](v)
 
 
+def _mean(xs: List[Float64]) -> Float64:
+    var t = 0.0
+    for k in range(len(xs)):
+        t += xs[k]
+    return t / Float64(len(xs)) if len(xs) > 0 else 0.0
+
+
 def _psnr_u8(
     a: List[Scalar[DType.uint8]], ao: Int,
     b: Pointer[Scalar[DType.uint8], MutAnyOrigin], bo: Int, n: Int,
@@ -273,6 +282,36 @@ def _psnr_u8(
         se += d * d
     var mse = se / Float64(n)
     return 99.0 if mse <= 0.0 else 10.0 * log10(255.0 * 255.0 / mse)
+
+
+def _render_pack[
+    D: DimsLike, LANES_: Int, W: Int, H: Int, SH: Bool, RF: Bool, SM: Int,
+    AIMG: Int, ACAM: Int, ANPIX: Int,
+](
+    mut r: BatchedCameraRenderer[DT, D, LANES_, W, H, SH, RF, SM],
+    ctx: DeviceContext,
+    mut d: Data[DT, D, LANES_],
+    mut m: Model[DT, D],
+    ref cam_idx: List[Int],
+    h_rgb: HostBuffer[DT],
+    mut act_u8: List[Scalar[DType.uint8]],
+) raises:
+    """Both cameras for every lane, packed as the store holds them — uint8
+    CHW, top row first, camera slots in `cam_idx` order — the ONE spelling
+    the policy step and `--check-obs` share."""
+    for cam in range(len(cam_idx)):
+        r.render(ctx, d, m, cam_idx[cam])
+        ctx.enqueue_copy(h_rgb, r.rgb)
+        ctx.synchronize()
+        var p = h_rgb.unsafe_ptr()
+        for e in range(LANES_):
+            var src = e * ANPIX * RGB_CHANNELS
+            var dst = e * AIMG + cam * ACAM
+            for q in range(ANPIX):
+                for c in range(3):
+                    act_u8[dst + c * ANPIX + q] = _byte(
+                        Float64(p[unsafe_offset = src + q * 3 + c])
+                    )
 
 
 def _check_obs[AIMG: Int, ACAM: Int, ANPIX: Int](
@@ -583,6 +622,8 @@ def run[T: PlacementTable, M: ModelDefLike](
     var obs_checked = False
     var obs_psnr = List[Float64]()
     var obs_psnr_ctrl = List[Float64]()
+    var obs_psnr_pre = List[Float64]()
+    var obs_psnr_pre_ctrl = List[Float64]()
     var word_abs = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
     var word_n = 0
     if have_act:
@@ -700,6 +741,24 @@ def run[T: PlacementTable, M: ModelDefLike](
             env.d.qpos.upload(ctx)
             env.d.qvel.upload(ctx)
             ctx.synchronize()
+            if have_act and obs_store.byte_length() > 0 and chunk == 0:
+                # ⚠ THE PRE-SETTLE LEG OF --check-obs: forward kinematics on
+                # the row just written, nothing stepped, so the ONLY thing
+                # that differs from the store's frame 0 of the same demo is
+                # the fixture draw (the store carries each demo's, the env
+                # the band centre). A low number HERE is the pipeline.
+                env._run_fields_fk(ctx)
+                ctx.synchronize()
+                _render_pack[E.MD, LANES, LIBERO_ACT_IMG_W, LIBERO_ACT_IMG_H,
+                             False, True, 4, AIMG, ACAM, ANPIX](
+                    ren_opt[0], ctx, env.d, env.mf, cam_idx, h_rgb, act_u8,
+                )
+                print("  --check-obs, BEFORE the settle steps (FK only on the"
+                      " frozen row; fixtures at the band centre):")
+                _check_obs[AIMG, ACAM, ANPIX](
+                    obs_store, act_u8, lane_row, row_task, n_inits,
+                    obs_psnr_pre, obs_psnr_pre_ctrl,
+                )
             # ⚠ NO `_osc_anchor` HERE. See the header: the controller keeps the
             # rest-pose anchor `reset_batch` gave it, which is robosuite's own
             # order and NOT the replay gate's.
@@ -720,26 +779,22 @@ def run[T: PlacementTable, M: ModelDefLike](
                 var query = act_exec == 0 or t_pol % act_exec == 0
                 # 1. both cameras, every lane, from the state the lanes are in
                 var tr0 = perf_counter_ns()
-                ref r = ren_opt[0]
-                for cam in range(LIBERO_ACT_N_CAM if query else 0):
-                    r.render(ctx, env.d, env.mf, cam_idx[cam])
-                    ctx.enqueue_copy(h_rgb, r.rgb)
-                    ctx.synchronize()
-                    var p = h_rgb.unsafe_ptr()
+                if query:
+                    _render_pack[E.MD, LANES, LIBERO_ACT_IMG_W, LIBERO_ACT_IMG_H,
+                                 False, True, 4, AIMG, ACAM, ANPIX](
+                        ren_opt[0], ctx, env.d, env.mf, cam_idx, h_rgb, act_u8,
+                    )
                     for e in range(LANES):
-                        var src = e * ANPIX * RGB_CHANNELS
-                        var dst = e * AIMG + cam * ACAM
-                        for q in range(ANPIX):
-                            for c in range(3):
-                                act_u8[dst + c * ANPIX + q] = _byte(
-                                    Float64(p[unsafe_offset = src + q * 3 + c])
-                                )
-                        normalize_camera_chw[LIBERO_ACT_IMG_H, LIBERO_ACT_IMG_W](
-                            act_u8, dst, act_images, dst
-                        )
+                        for cam in range(LIBERO_ACT_N_CAM):
+                            var dst = e * AIMG + cam * ACAM
+                            normalize_camera_chw[LIBERO_ACT_IMG_H, LIBERO_ACT_IMG_W](
+                                act_u8, dst, act_images, dst
+                            )
                 if (obs_store.byte_length() > 0 and not obs_checked
                         and query and chunk == 0):
                     obs_checked = True
+                    print("  --check-obs, at the FIRST POLICY STEP (after the"
+                          " settle steps):")
                     _check_obs[AIMG, ACAM, ANPIX](
                         obs_store, act_u8, lane_row, row_task, n_inits,
                         obs_psnr, obs_psnr_ctrl,
@@ -932,15 +987,15 @@ def run[T: PlacementTable, M: ModelDefLike](
               Float64(render_ns) / 1e9, "s | forward", Float64(forward_ns) / 1e9,
               "s | physics (step_batch)", Float64(physics_ns) / 1e9,
               "s over the run")
+        if len(obs_psnr_pre) > 0:
+            print("  obs   : pre-settle (FK only) vs the store's frame 0 — own"
+                  " demo", _mean(obs_psnr_pre), "dB | next demo (control)",
+                  _mean(obs_psnr_pre_ctrl), "dB over", len(obs_psnr_pre),
+                  "lane-cameras")
         if len(obs_psnr) > 0:
-            var m1 = 0.0
-            var m2 = 0.0
-            for k in range(len(obs_psnr)):
-                m1 += obs_psnr[k]
-                m2 += obs_psnr_ctrl[k]
-            print("  obs   : first policy step vs the rendered store's frame 0 —"
-                  " own demo", m1 / Float64(len(obs_psnr)), "dB | next demo (control)",
-                  m2 / Float64(len(obs_psnr)), "dB over", len(obs_psnr),
+            print("  obs   : first policy step vs the store's frame 0 — own demo",
+                  _mean(obs_psnr), "dB | next demo (control)",
+                  _mean(obs_psnr_ctrl), "dB over", len(obs_psnr),
                   "lane-cameras (" + obs_store + ")")
         if word_n > 0:
             print("  per word            policy mean|a|   store mean     store std")
