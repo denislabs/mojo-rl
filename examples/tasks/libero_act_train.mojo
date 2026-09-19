@@ -46,6 +46,7 @@ LIBERO's frozen inits, which are not demonstrations at all.
 |---|---|
 | `ACT_STORE` | the `.h5` to train on; default `tasks/libero_act.LIBERO_ACT_STORE_RENDERED` |
 | `ACT_STEPS` | optimizer steps without a rebuild (default 50 000) |
+| `ACT_KL` | the KL weight (default `LIBERO_ACT_KL` = 10, the paper's). ⚠ Both 5090 fits collapsed the CVAE at 10 — `train/kl` 59 -> 0.05 — so the latent carried nothing and every chunk was the conditional median: half the demonstrations' action scale, 5/200. The paper's ablation says the CVAE is what absorbs demonstrator variability; a lower weight is the lever, and it is here so a sweep needs no rebuild |
 | `ACT_PRETRAINED` | defaults to `hub` (ImageNet ResNet18, no PyTorch); `random` opts out |
 | `ACT_NO_FREEZE_BN` | leave BatchNorm trainable — the ablation |
 | `ACT_PROJECT` | the project the run is filed under (default `libero`; a missing project directory files it under the flat `runs/` root) |
@@ -155,6 +156,12 @@ def main() raises:
         steps = Int(env_steps)
         if steps < 1:
             raise Error("ACT_STEPS must be >= 1, got " + env_steps)
+    var kl_weight = Float64(LIBERO_ACT_KL)
+    var env_kl = getenv("ACT_KL")
+    if env_kl.byte_length() > 0:
+        kl_weight = Float64(env_kl)
+        if kl_weight < 0.0:
+            raise Error("ACT_KL must be >= 0, got " + env_kl)
     var project = getenv("ACT_PROJECT")
     if project.byte_length() == 0:
         project = String("libero")
@@ -169,6 +176,8 @@ def main() raises:
           + " heads=" + String(LIBERO_ACT_HEADS) + " ff=" + String(LIBERO_ACT_FF)
           + " latent=" + String(LIBERO_ACT_LATENT) + " enc=" + String(LIBERO_ACT_N_ENC)
           + " dec=" + String(LIBERO_ACT_N_DEC))
+    print("  kl      " + String(kl_weight) + ("" if env_kl.byte_length() == 0
+          else " (ACT_KL; the declaration's is " + String(LIBERO_ACT_KL) + ")"))
     print("  data    " + String(LIBERO_ACT_N_CAM) + " cameras at "
           + String(LIBERO_ACT_IMG_H) + "x" + String(LIBERO_ACT_IMG_W)
           + ", qpos " + String(QPOS) + ", action " + String(ADIM)
@@ -216,7 +225,7 @@ def main() raises:
     logger.set_config("dim_feedforward", String(LIBERO_ACT_FF))
     logger.set_config("batch", String(BATCH))
     logger.set_config("lr", String(LIBERO_ACT_LR))
-    logger.set_config("kl_weight", String(LIBERO_ACT_KL))
+    logger.set_config("kl_weight", String(kl_weight))
     logger.set_config("steps", String(steps))
     logger.set_config("train_episodes", String(len(ds.train_eps)))
     logger.set_config("val_episodes", String(len(ds.val_eps)))
@@ -229,7 +238,7 @@ def main() raises:
 
     var tr = T.make(
         lr=Scalar[DT](LIBERO_ACT_LR),
-        kl_weight=Scalar[DT](LIBERO_ACT_KL),
+        kl_weight=Scalar[DT](kl_weight),
         max_grad_norm=Scalar[DT](0.0),
         ctx=ctx,
     )
