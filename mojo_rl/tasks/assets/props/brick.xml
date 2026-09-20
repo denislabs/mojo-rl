@@ -8,11 +8,14 @@
        bottom_z is negative: slot_geom=brick:-0.0125,0.0125,0.0176777
        (h_radius = the half-diagonal). The print's origin is its base. -->
   <compiler angle="radian"/>
+  <asset>
+    <material name="brick_pla" rgba="0.0 0.471 0.749 1" specular="0.1" shininess="0.1"/>
+  </asset>
   <worldbody>
     <body name="brick">
       <freejoint name="free"/>
       <geom name="geom" type="box" size="0.0125 0.0125 0.0125" density="640"
-            rgba="0.0 0.471 0.749 1"/>
+            material="brick_pla"/>
     </body>
   </worldbody>
 </mujoco>

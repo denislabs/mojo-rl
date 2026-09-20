@@ -53,6 +53,19 @@ COLLISION boxes — MuJoCo sums geom masses, and the eight wall boxes overlap
 at the corners — so the density is `mass / (sum of the box volumes)`, computed
 below from the same numbers that size the boxes, and the total body mass
 comes out at the scale's reading. The colours are the filaments' as sRGB.
+
+## THE MATERIAL IS MATTE, AND THAT IS A RENDERING FIX
+
+MuJoCo's default material is `specular="0.5" shininess="0.5"` (exponent 64)
+and the family scene lights the desk from straight above. A horizontal face
+seen from above then reflects the light's AND the headlight's specular into
+the camera over its whole area — the bowl's cavity floor rendered WHITE, and
+turned yellow only where the arm's shadow removed the light's term. That is
+the model's lighting, not the viewer's (MuJoCo draws it the same). PLA is
+matte: `PLA_SPECULAR` / `PLA_SHININESS` go on a `<material>` per prop, which
+both the viewer (`model_def_from_xml` reads `mat_specular`) and the tracer
+(`raytrace/visual` writes `MAT_IDX_SPECULAR`) honour. Geom-level `specular=`
+would NOT be read here (only the material's is).
 """
 import argparse
 import math
@@ -78,6 +91,9 @@ BOWL_RGBA = "0.996 0.776 0.0 1"        # #FEC600
 BRICK_MM = 25.0
 BRICK_MASS_G = 10.0         # weighed, PLA matte
 BRICK_RGBA = "0.0 0.471 0.749 1"       # #0078BF
+
+PLA_SPECULAR = 0.1          # matte print; MuJoCo's default is 0.5
+PLA_SHININESS = 0.1         # exponent 12.8; the default 0.5 is 64
 
 N_SIDES = 8
 HALF_ANGLE = math.pi / N_SIDES          # 22.5°
@@ -196,15 +212,17 @@ def bowl_xml():
         '  <compiler angle="radian" meshdir="%s"/>' % VIS_DIR,
         "  <asset>",
         '    <mesh name="bowl_octagon" file="bowl_octagon.stl" scale="0.001 0.001 0.001"/>',
+        '    <material name="bowl_pla" rgba="%s" specular="%g" shininess="%g"/>'
+        % (BOWL_RGBA, PLA_SPECULAR, PLA_SHININESS),
         "  </asset>",
         "  <worldbody>",
         '    <body name="bowl">',
         '      <freejoint name="free"/>',
         '      <geom name="shell" type="mesh" mesh="bowl_octagon" contype="0" conaffinity="0"',
-        '            density="0" group="0" rgba="%s"/>' % BOWL_RGBA,
+        '            density="0" group="0" material="bowl_pla"/>',
         '      <geom name="floor" type="box" pos="0 0 %s" size="%s %s %s"'
         % (_m(BOWL_FLOOR_MM / 2), _m(a), _m(a), _m(BOWL_FLOOR_MM / 2)),
-        '            density="%g" group="3" rgba="%s"/>' % (BOWL_DENSITY, BOWL_RGBA),
+        '            density="%g" group="3" material="bowl_pla"/>' % BOWL_DENSITY,
     ]
     for k in range(N_SIDES):
         th = 2 * HALF_ANGLE * k
@@ -213,8 +231,8 @@ def bowl_xml():
             % (k, _m(rc * math.cos(th)), _m(rc * math.sin(th)), _m(zc), th)
         )
         lines.append(
-            '            size="%s %s %s" density="%g" group="3" rgba="%s"/>'
-            % (_m(BOWL_WALL_MM / 2), _m(half_len), _m(half_h), BOWL_DENSITY, BOWL_RGBA)
+            '            size="%s %s %s" density="%g" group="3" material="bowl_pla"/>'
+            % (_m(BOWL_WALL_MM / 2), _m(half_len), _m(half_h), BOWL_DENSITY)
         )
     lines += ["    </body>", "  </worldbody>", "</mujoco>", ""]
     return "\n".join(lines), ro
@@ -234,11 +252,15 @@ def brick_xml():
         "       bottom_z is negative: slot_geom=brick:%s,%s,%s" % (_m(-h), _m(h), _m(h * math.sqrt(2))),
         "       (h_radius = the half-diagonal). The print's origin is its base. -->",
         '  <compiler angle="radian"/>',
+        "  <asset>",
+        '    <material name="brick_pla" rgba="%s" specular="%g" shininess="%g"/>'
+        % (BRICK_RGBA, PLA_SPECULAR, PLA_SHININESS),
+        "  </asset>",
         "  <worldbody>",
         '    <body name="brick">',
         '      <freejoint name="free"/>',
         '      <geom name="geom" type="box" size="%s %s %s" density="%g"' % (_m(h), _m(h), _m(h), BRICK_DENSITY),
-        '            rgba="%s"/>' % BRICK_RGBA,
+        '            material="brick_pla"/>',
         "    </body>",
         "  </worldbody>",
         "</mujoco>",
