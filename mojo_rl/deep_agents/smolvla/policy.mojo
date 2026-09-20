@@ -837,6 +837,17 @@ struct SmolVLAPolicy[
         p.prefix = Self.Prefix.make[target](ctx)
         return p^
 
+    def set_fused_vision_attention(mut self, on: Bool):
+        """Route the SigLIP towers' attention through `CrossAttention`'s
+        fused inference kernel (no scores, no cache, no packs): ~130 ms off a
+        query on the Orin. INFERENCE ONLY — a vjp through the tower raises
+        while it is on, and its output differs from the two-pass kernel at
+        the last bit, so the fine-tune (and its vision cache) leaves it off.
+        The deploy turns it on after `load`."""
+        self.vision.set_attr["fused_attention"](
+            Scalar[DT](1.0) if on else Scalar[DT](0.0)
+        )
+
     def load_stats(mut self, stats_json: String) raises:
         """`<dataset>/meta/stats.json` — the fine-tune's own normalisation."""
         self.stats = SmolVLAStats.from_stats_json(stats_json)

@@ -291,6 +291,7 @@ def run_shape[
         String("B  pre-port: bmm Q.Kt transposed"),
         String("C  scores+softmax in cache, bmm A.V"),
         String("D  element-indexed, no pack"),
+        String("F  FUSED online softmax (inference)"),
     ]
     var ok = True
     var best_a = 0.0
@@ -299,8 +300,10 @@ def run_shape[
     # reads of one buffer — opposite conclusions, the same printout.
     var a_out = List[Scalar[DT]]()
     var a_attn = List[Scalar[DT]]()
-    for variant in range(4):
+    for variant in range(5):
         var mod = XA.make["gpu", Deterministic](Optional(ctx))
+        if variant == 4:
+            mod.set_attr["fused_attention"](Scalar[DT](1.0))
         var out = Tensor()
         out.ensure_gpu(ctx, QN)
         var attn = Tensor()
@@ -316,7 +319,7 @@ def run_shape[
         var best = 1.0e30
         for rep in range(WARMUP + REPS):
             var t0 = perf_counter_ns()
-            if variant == 0:
+            if variant == 0 or variant == 4:
                 # ⚠ `rebind` BRIDGES A SYMBOLIC ARITY. `forward` takes
                 # `TensorRefs[4 if MASKED else 3]`, which a literal 4 or 3
                 # does not unify with while MASKED is still a parameter; inside
@@ -396,6 +399,10 @@ def run_shape[
         if variant == 0:
             mod.attn.download(ctx)
             cache_err = _std_units(mod.attn, ref_attn)
+        elif variant == 4:
+            # The fused path writes no cache — by design, not by omission;
+            # `test_cross_attention_gpu_shapes.mojo` checks it stays untouched.
+            cache_err = 0.0
         else:
             attn.download(ctx)
             cache_err = _std_units(attn, ref_attn)
@@ -408,6 +415,11 @@ def run_shape[
                 a_out.append(out.data[n])
             for n in range(SC):
                 a_attn.append(mod.attn.data[n])
+        elif variant == 4:
+            for n in range(QN):
+                if out.data[n] != a_out[n]:
+                    out_bits += 1
+            attn_bits = -1
         else:
             for n in range(QN):
                 if out.data[n] != a_out[n]:
@@ -422,9 +434,11 @@ def run_shape[
         print(
             "   " + _pad(names[variant], 36) + _pad(_fmt(best, 3), 10)
             + _pad(_fmt(best_a / best, 2) + "x", 8)
-            + _pad(String(out_err), 24) + _pad(String(cache_err), 24)
+            + _pad(String(out_err), 24)
+            + _pad(String(cache_err) if variant != 4 else String("n/a (none written)"), 24)
             + _pad(String(out_bits) + "/" + String(QN), 16)
-            + String(attn_bits) + "/" + String(SC) + flag
+            + (String(attn_bits) + "/" + String(SC) if variant != 4 else String("n/a"))
+            + flag
         )
     return ok
 
@@ -433,7 +447,7 @@ def main() raises:
     comptime assert has_accelerator(), "this benchmark times GPU kernels"
     var ctx = DeviceContext()
     print("=" * 100)
-    print("CrossAttention forward — four variants, " + String(ctx.name()))
+    print("CrossAttention forward — five variants, " + String(ctx.name()))
     print("=" * 100)
     var ok = True
     # SigLIP-B/16 @ 512: the target. B=1 — one tower call per camera.

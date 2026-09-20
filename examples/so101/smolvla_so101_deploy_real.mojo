@@ -288,6 +288,12 @@ def main() raises:
     # near 1.0 means the ensemble is doing nothing and the handover is
     # unchanged.
     var ensemble = False
+    var fused_vision = True
+    """The SigLIP towers' attention through `CrossAttention`'s fused
+    inference kernel (no scores, no cache, no packs) — the default since
+    20 Sep. `--no-fused-vision` runs the two-pass path instead, for an A/B
+    on the query cost; the pixels the policy sees differ at the last bit only
+    (`test_cross_attention_gpu_shapes.mojo`, 1e-5 std units at this shape)."""
     var sync = False
     """⚠⚠ `--sync` IS THE REFERENCE'S EVALUATION LOOP, and the measurement
     that asked for it is the two 20 Sep runs with the accum-64 checkpoints.
@@ -332,6 +338,8 @@ def main() raises:
             ensemble = True
         elif a == "--sync":
             sync = True
+        elif a == "--no-fused-vision":
+            fused_vision = False
         elif a == "--project" and i + 1 < len(args):
             project = String(args[i + 1])
         elif a == "--ckpt" and i + 1 < len(args):
@@ -444,12 +452,18 @@ def main() raises:
     if sync:
         print("loop         --sync: hold during the query, execute each chunk"
               " from step 0 (the reference's evaluation loop)")
+    print(
+        "vision       SigLIP attention "
+        + ("FUSED (online softmax, no cache)" if fused_vision
+           else "two-pass (--no-fused-vision)")
+    )
     if threaded:
         print("device       the query runs on its own thread (--threaded)")
         worker = BackgroundThread(
             QWorker(
                 req_ring, rsp_ring, qcells, String(BASE_REPO), ckpt,
                 stats_path, tasks_path, task_index, WARMUP_QUERIES,
+                fused_vision,
             )
         )
         # ⚠ WAIT FOR IT, AND FOR ITS WARM-UP. The worker downloads, builds
@@ -509,6 +523,9 @@ def main() raises:
                 + "-action robot, this build is "
                 + String(RDIM) + "/" + String(RDIM)
             )
+        # Inference only from here: the towers' attention fused (see
+        # `SmolVLAPolicy.set_fused_vision_attention`) unless asked not to.
+        pol.set_fused_vision_attention(fused_vision)
         pol_opt = pol^
 
     # ── the safety boxes, from the SAME stats file ────────────────────────

@@ -152,6 +152,9 @@ struct SmolVLAQueryWorker[
     var tasks_path: String
     var task_index: Int
     var warmups: Int
+    var fused_vision: Bool
+    """Route the SigLIP towers through the fused attention kernel (the
+    deploy's default; `--no-fused-vision` turns it off for an A/B)."""
 
     var pol: Optional[Self.Pol]
     var ctx: Optional[DeviceContext]
@@ -173,6 +176,7 @@ struct SmolVLAQueryWorker[
         tasks_path: String,
         task_index: Int,
         warmups: Int,
+        fused_vision: Bool = True,
     ):
         self.req = req
         self.rsp = rsp
@@ -183,6 +187,7 @@ struct SmolVLAQueryWorker[
         self.tasks_path = tasks_path
         self.task_index = task_index
         self.warmups = warmups
+        self.fused_vision = fused_vision
         self.pol = None
         self.ctx = None
         self.ids = List[Int]()
@@ -202,6 +207,7 @@ struct SmolVLAQueryWorker[
         self.tasks_path = move.tasks_path^
         self.task_index = move.task_index
         self.warmups = move.warmups
+        self.fused_vision = move.fused_vision
         self.pol = move.pol^
         self.ctx = move.ctx^
         self.ids = move.ids^
@@ -247,6 +253,9 @@ struct SmolVLAQueryWorker[
                 + String(p.stats.action_dim()) + "-action robot, this build is "
                 + String(Self.RDIM) + "/" + String(Self.RDIM)
             )
+        # Inference only from here: the towers' attention fused (see
+        # `SmolVLAPolicy.set_fused_vision_attention`) unless asked not to.
+        p.set_fused_vision_attention(self.fused_vision)
         self.pol = p^
 
         var tasks = TaskTokens(self.tasks_path)

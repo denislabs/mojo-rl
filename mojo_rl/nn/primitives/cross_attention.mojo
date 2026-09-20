@@ -53,8 +53,10 @@ and key/value streams, and per-sample masking folded into the softmax kernel.
 from mojo_rl.nn.core.mm import mm, bmm
 from mojo_rl.nn.core.mm_tiled import bmm_tiled
 from std.math import exp, sqrt
-from max.gpu import block_dim, block_idx, thread_idx
+from max.gpu import barrier, block_dim, block_idx, thread_idx
+from max.gpu.primitives import warp
 from max.gpu.host import DeviceContext
+from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.bmm import batched_matmul
 
@@ -418,6 +420,192 @@ def _xa_zero_kernel[N: Int](
         g.ptr[unsafe_offset=i] = Scalar[DT](0.0)
 
 
+# +--------------------------------------------------------------------------+ #
+# | Fused forward (inference only) — no scores, no cache, no packs
+# +--------------------------------------------------------------------------+ #
+#
+# ⚠⚠ WHY A SECOND FORWARD. At SigLIP's shape (12 heads x 1024 x 1024) every
+# layer writes 12.6 M scores (50 MB), reads them for the softmax, writes 12.6 M
+# weights and reads those again for A.V — ~250 MB of LPDDR traffic per layer on
+# a board with ~100 GB/s to spend, on top of three pack/unpack passes. After
+# the two-pass softmax and the tiled matmuls (§2 of the optimisation notes)
+# that path is 8.6 ms per layer, 206 ms of a SmolVLA query, and it is all
+# memory traffic: the arithmetic is 3.2 GFLOP, 1.3 ms at the Orin's fp32 peak.
+#
+# The fused kernel keeps the softmax ONLINE (a running max and sum per query
+# row, rescaled when the max rises) and never materialises a score: one block
+# per (batch, head, 64-query tile), one thread per query row holding its q and
+# its 64-wide context accumulator in registers, K and V streamed through
+# shared memory 32 keys at a time and read as broadcasts. It reads q/k/v in
+# their token-major layout directly and writes the output the same way, so
+# the three pack kernels and the unpack go too.
+#
+# ⚠ IT BREAKS THIS PRIMITIVE'S CONTRACT ON PURPOSE. `self.attn` must hold the
+# softmax weights after a forward because `vjp` reads them; this path writes
+# no weights, so it is OFF by default and `vjp` after a fused forward RAISES.
+# The switch is `set_attr["fused_attention"](1.0)`, reachable through every
+# container (`ComputeGraph`/`Sequential`/`Repeat`/`Residual`/`Tokenwise` all
+# forward `set_attr`), and the SmolVLA deploy turns it on for the frozen
+# vision tower — the fine-tune leaves it off, so its vision cache keeps the
+# two-pass kernel's bits and existing caches stay valid.
+#
+# ⚠ NOT BIT-IDENTICAL to the two-pass path: the denominator accumulates in
+# key order with rescales, the two-pass one sums exp(s - max) once. Both are
+# gated against the CPU leaf in `test_cross_attention_gpu_shapes.mojo` and
+# against float64 in `benchmarks/cross_attention_bench.mojo` (variant F).
+
+comptime XA_FUSED_BQ: Int = 64
+"""Query rows per block of the fused forward, one per thread."""
+comptime XA_FUSED_BK: Int = 32
+"""Keys per shared-memory tile of the fused forward."""
+
+
+def _xa_fused_kernel[
+    B: Int, DIM: Int, NH: Int, QL: Int, KL: Int, HD: Int, MASKED: Bool
+](
+    q: LayoutTensor[DT, Layout.row_major(B, QL * DIM), MutAnyOrigin],
+    k: LayoutTensor[DT, Layout.row_major(B, KL * DIM), MutAnyOrigin],
+    v: LayoutTensor[DT, Layout.row_major(B, KL * DIM), MutAnyOrigin],
+    m: LayoutTensor[DT, Layout.row_major(B, KL), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(B, QL * DIM), MutAnyOrigin],
+):
+    """grid (ceil(QL/BQ), NH, B), block `xa_fused_block[HD]()`. `m` is read
+    only when MASKED (the unmasked instantiation is handed any tensor of
+    that layout).
+
+    ⚠ A query row is SPLIT across `SPLIT` adjacent lanes, each owning HD/SPLIT
+    of the head: one full 64-wide q, context and key/value vector per thread
+    was ~200 registers, which on the M1 Pro made this kernel 3x SLOWER than
+    the two-pass path at SigLIP's shape while 2-4x faster at ACT's (HD 32).
+    The partial dot products meet in one `shuffle_xor`; the softmax state
+    (max, sum, weight) is then computed identically by both partners.
+
+    ⚠ EVERY LANE RUNS THE WHOLE LOOP, dead rows included (their loads are
+    clamped to a real row and only their store is skipped): the shuffle is
+    a warp-synchronous instruction and a partner lane that skipped the loop
+    would leave it undefined.
+    """
+    comptime BQ = XA_FUSED_BQ
+    comptime BK = XA_FUSED_BK
+    comptime SPLIT = _xa_fused_split[HD]()
+    comptime HW = HD // SPLIT
+    comptime NT = BQ * SPLIT
+    comptime assert HD & (HD - 1) == 0, (
+        "_xa_fused_kernel: HEAD_DIM must be a power of two (a SIMD width)"
+    )
+    comptime TILE = BK * HD
+
+    var ks = LayoutTensor[
+        DT, Layout.row_major(TILE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var vs = LayoutTensor[
+        DT, Layout.row_major(TILE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var ms = LayoutTensor[
+        DT, Layout.row_major(BK), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var qt = Int(block_idx.x)
+    var h = Int(block_idx.y)
+    var b = Int(block_idx.z)
+    var tid = Int(thread_idx.x)
+    var part = tid % SPLIT
+    var i = qt * BQ + tid // SPLIT
+    var live = i < QL
+    var i_ld = i if live else QL - 1
+    var scale = Scalar[DT](1.0) / sqrt(Scalar[DT](HD))
+
+    var qr = q.ptr.unsafe_load[width=HW](
+        b * (QL * DIM) + i_ld * DIM + h * HD + part * HW
+    )
+    var o = SIMD[DT, HW](0)
+    var mx = XATTN_MASK_NEG
+    var l = Scalar[DT](0)
+
+    for j0 in range(0, KL, BK):
+        # Tile load: element e strided by the block, so a warp reads 32
+        # consecutive floats of one key row — coalesced — and stores them
+        # to the same offsets in shared memory.
+        var e = tid
+        while e < TILE:
+            var jj = e // HD
+            var d = e % HD
+            var j = j0 + jj
+            if j < KL:
+                var src = b * (KL * DIM) + j * DIM + h * HD + d
+                ks.ptr[unsafe_offset=e] = rebind[Scalar[DT]](
+                    k.ptr[unsafe_offset=src]
+                )
+                vs.ptr[unsafe_offset=e] = rebind[Scalar[DT]](
+                    v.ptr[unsafe_offset=src]
+                )
+            e += NT
+        comptime if MASKED:
+            if tid < BK:
+                var j = j0 + tid
+                ms.ptr[unsafe_offset=tid] = (
+                    rebind[Scalar[DT]](m.ptr[unsafe_offset=b * KL + j])
+                    if j < KL else Scalar[DT](0)
+                )
+        barrier()
+        var nk = KL - j0
+        if nk > BK:
+            nk = BK
+        for jj in range(nk):
+            comptime if MASKED:
+                # A masked key contributes NOTHING — the same as the
+                # two-pass path's explicit zero weight, and what keeps a
+                # fully masked row at l = 0 -> a zero context below.
+                # Uniform across the block, so the shuffle below stays
+                # warp-uniform.
+                if rebind[Scalar[DT]](ms.ptr[unsafe_offset=jj]) < Scalar[
+                    DT
+                ](0.5):
+                    continue
+            var s = (
+                qr * ks.ptr.unsafe_load[width=HW](jj * HD + part * HW)
+            ).reduce_add()
+            comptime if SPLIT == 2:
+                s = s + warp.shuffle_xor(s, UInt32(1))
+            s = s * scale
+            if s > mx:
+                # The max rose: rescale what was accumulated under the old
+                # one. exp(old - new) is 0 on the first key (old is
+                # MASK_NEG), which is the zero start.
+                var corr = exp(mx - s)
+                l = l * corr
+                o = o * corr
+                mx = s
+            var pw = exp(s - mx)
+            l = l + pw
+            o = o + pw * vs.ptr.unsafe_load[width=HW](jj * HD + part * HW)
+        barrier()
+
+    if live:
+        # Floored like the two-pass path: a fully masked row has l = 0 and
+        # yields a zero context, not a NaN.
+        var inv = Scalar[DT](0)
+        if l > XATTN_DENOM_FLOOR:
+            inv = Scalar[DT](1.0) / l
+        dst.ptr.unsafe_store(
+            b * (QL * DIM) + i * DIM + h * HD + part * HW, o * inv
+        )
+
+
+def _xa_fused_split[HD: Int]() -> Int:
+    """Lanes per query row: 2 where the head is wide enough to be worth
+    halving (32+), 1 for the toy heads the gates run."""
+    return 2 if HD >= 32 else 1
+
+
+def xa_fused_block[HD: Int]() -> Int:
+    """Threads per block of `_xa_fused_kernel`: BQ rows x lanes per row."""
+    return XA_FUSED_BQ * _xa_fused_split[HD]()
+
+
 struct CrossAttention[
     DIM: Int,
     N_HEADS: Int,
@@ -454,6 +642,10 @@ struct CrossAttention[
     var ss1: Tensor
     var sst: Tensor
     """(max, 1/denominator) per softmax row — the forward's two-pass softmax."""
+    var fused: Bool
+    """GPU forward through `_xa_fused_kernel`: no scores, no packs and NO
+    `attn` cache — inference only, `vjp` raises. `set_attr["fused_attention"]`.
+    The CPU path ignores it."""
 
     def __init__(out self):
         comptime assert Self.DIM % Self.N_HEADS == 0, (
@@ -472,6 +664,7 @@ struct CrossAttention[
         self.ss0 = Tensor()
         self.ss1 = Tensor()
         self.sst = Tensor()
+        self.fused = False
 
     def __init__(out self, *, deinit move: Self):
         self.attn = move.attn^
@@ -484,6 +677,13 @@ struct CrossAttention[
         self.ss0 = move.ss0^
         self.ss1 = move.ss1^
         self.sst = move.sst^
+        self.fused = move.fused
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """`fused_attention` != 0 selects the fused GPU forward (see the
+        kernel's header for what that gives up). Other attrs are ignored."""
+        comptime if ATTR == "fused_attention":
+            self.fused = value != Scalar[DT](0)
 
     @staticmethod
     def make[
@@ -524,6 +724,10 @@ struct CrossAttention[
         comptime if target != "cpu":
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.OUT_DIM)
+            if self.fused:
+                # No cache: the 50 MB slab at SigLIP's shape is never sized.
+                self._forward_gpu_fused[B](inputs, out, c)
+                return
             self.attn.ensure_gpu(c, B * Self.ATTN_SIZE)
             self._forward_gpu[B](inputs, out, c)
             return
@@ -652,6 +856,13 @@ struct CrossAttention[
         grad_inputs: TensorRefs[Self.ARITY, ogi],
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        if self.fused:
+            raise Error(
+                "CrossAttention.vjp after a FUSED forward: the softmax weights"
+                " were never materialised. `set_attr[\"fused_attention\"](0)`"
+                " before any forward whose gradient you need — the fused path"
+                " is inference-only."
+            )
         comptime if target != "cpu":
             self._vjp_gpu[B](
                 forward_input, grad_output, grad_inputs, ctx.value()
@@ -801,6 +1012,51 @@ struct CrossAttention[
         _ = dscore_T^
 
     # ── GPU bodies ───────────────────────────────────────────────────────
+
+    def _forward_gpu_fused[
+        B: Int, o: MutOrigin
+    ](
+        mut self,
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        c: DeviceContext,
+    ) raises:
+        """One launch, straight from the token-major inputs to the
+        token-major output. Nothing is packed and nothing is cached."""
+        comptime QL = Self.Q_LEN
+        comptime KL = Self.KV_LEN
+        comptime lay_q = Layout.row_major(B, Self.Q_DIM)
+        comptime lay_kv = Layout.row_major(B, Self.KV_DIM)
+        comptime lay_m = Layout.row_major(B, KL)
+        comptime kern = _xa_fused_kernel[
+            B, Self.DIM, Self.N_HEADS, QL, KL, Self.HEAD_DIM, Self.MASKED
+        ]
+        comptime qtiles = (QL + XA_FUSED_BQ - 1) // XA_FUSED_BQ
+        ref q = inputs[0]
+        ref k = inputs[1]
+        ref v = inputs[2]
+        comptime if Self.MASKED:
+            ref m = inputs[3]
+            c.enqueue_function[kern](
+                q.lt["gpu", lay_q](), k.lt["gpu", lay_kv](),
+                v.lt["gpu", lay_kv](), m.lt["gpu", lay_m](),
+                out.lt["gpu", lay_q](),
+                grid_dim=(qtiles, Self.N_HEADS, B),
+                block_dim=xa_fused_block[Self.HEAD_DIM](),
+            )
+        else:
+            # The mask slot is never read; hand it the output as a stand-in
+            # of the right layout, as `_forward_gpu` does with the cache.
+            c.enqueue_function[kern](
+                q.lt["gpu", lay_q](), k.lt["gpu", lay_kv](),
+                v.lt["gpu", lay_kv](),
+                rebind[LayoutTensor[DT, lay_m, MutAnyOrigin]](
+                    out.lt["gpu", lay_m]()
+                ),
+                out.lt["gpu", lay_q](),
+                grid_dim=(qtiles, Self.N_HEADS, B),
+                block_dim=xa_fused_block[Self.HEAD_DIM](),
+            )
 
     def _forward_gpu[
         B: Int, o: MutOrigin

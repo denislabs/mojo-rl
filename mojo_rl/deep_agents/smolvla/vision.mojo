@@ -129,6 +129,15 @@ struct SigLIPAttention[SEQ: Int, DIM: Int, HEADS: Int](Module):
         a.graph = Self.Graph.make[target, INIT](ctx)
         return a^
 
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Forward runtime attrs into the graph — `fused_attention` has to
+        reach the `CrossAttention` leaf at node "a" from the tower's root.
+        ⚠ Without this the `Module` default (`pass`) swallows it here and the
+        deploy's switch silently does nothing, the way Dropout's `training`
+        once did (`_a_trait_default_of_pass_makes_a_missing_override_silent`);
+        `test_vision_fused_toggle.mojo` proves it reaches."""
+        self.graph.set_attr[ATTR](value)
+
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](

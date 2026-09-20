@@ -203,6 +203,73 @@ def run_shape[
         check(fails, "dk", std_err(gc[1], gg[1], KN))
         check(fails, "dv", std_err(gc[2], gg[2], KN))
 
+        # ── the FUSED inference forward, same inputs ─────────────────────
+        # Against the CPU leaf like the rest, plus the two things that would
+        # make the check vacuous: the cache must be UNTOUCHED (the fused
+        # kernel writes none — a run through the two-pass path would rewrite
+        # it) and the vjp must REFUSE (there are no weights to read).
+        var of = Tensor()
+        of.ensure_gpu(ctx, QN)
+        mg.attn.dev.value().enqueue_fill(Scalar[DT](-7.0))
+        mg.set_attr["fused_attention"](Scalar[DT](1.0))
+        comptime if MASKED:
+            mg.forward["gpu", B](
+                rebind[TensorRefs[XA.ARITY, MutAnyOrigin]](
+                    TensorRefs[4, MutAnyOrigin](pg[0], pg[1], pg[2], pg[3])
+                ), of, ctx,
+            )
+        else:
+            mg.forward["gpu", B](
+                rebind[TensorRefs[XA.ARITY, MutAnyOrigin]](
+                    TensorRefs[3, MutAnyOrigin](pg[0], pg[1], pg[2])
+                ), of, ctx,
+            )
+        ctx.synchronize()
+        of.download(ctx)
+        mg.attn.download(ctx)
+        check(fails, "FUSED forward output", std_err(oc, of, QN))
+        var untouched = 0
+        for n in range(AN):
+            if mg.attn.data[n] == Scalar[DT](-7.0):
+                untouched += 1
+        if untouched != AN:
+            fails += 1
+            print(
+                "    FAIL  fused forward wrote the cache ("
+                + String(AN - untouched) + " of " + String(AN)
+                + " changed) — the two-pass path ran, not the fused one"
+            )
+        else:
+            print("    PASS  fused forward left the cache untouched")
+        var refused = False
+        try:
+            comptime if MASKED:
+                mg.vjp["gpu", B](
+                    rebind[TensorRefs[XA.ARITY, MutAnyOrigin]](
+                        TensorRefs[4, MutAnyOrigin](pg[0], pg[1], pg[2], pg[3])
+                    ), dg,
+                    rebind[TensorRefs[XA.ARITY, MutAnyOrigin]](
+                        TensorRefs[4, MutAnyOrigin](gg[0], gg[1], gg[2], gg[3])
+                    ), ctx,
+                )
+            else:
+                mg.vjp["gpu", B](
+                    rebind[TensorRefs[XA.ARITY, MutAnyOrigin]](
+                        TensorRefs[3, MutAnyOrigin](pg[0], pg[1], pg[2])
+                    ), dg,
+                    rebind[TensorRefs[XA.ARITY, MutAnyOrigin]](
+                        TensorRefs[3, MutAnyOrigin](gg[0], gg[1], gg[2])
+                    ), ctx,
+                )
+        except:
+            refused = True
+        if not refused:
+            fails += 1
+            print("    FAIL  vjp after a fused forward did not refuse")
+        else:
+            print("    PASS  vjp after a fused forward refuses")
+        mg.set_attr["fused_attention"](Scalar[DT](0.0))
+
 
 def main() raises:
     var fails = 0
