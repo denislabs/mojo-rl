@@ -69,6 +69,9 @@ from mojo_rl.nn.primitives.cross_attention import (
     _xa_pack_kernel,
     _xa_softmax_kernel,
     _xa_unpack_kernel,
+    _xa_fused_kernel,
+    xa_fused_block,
+    XA_FUSED_BQ,
 )
 from mojo_rl.deep_agents.smolvla.block_attention import (
     _ba_context_kernel,
@@ -173,6 +176,28 @@ def _pad(s: String, w: Int) -> String:
     while out.byte_length() < w:
         out += " "
     return out^
+
+
+def _launch_fused[
+    B: Int, DIM: Int, H: Int, QL: Int, KL: Int, HD: Int, MASKED: Bool,
+    R: Int, S: Int, KU: Int,
+](
+    mut q: Tensor, mut k: Tensor, mut v: Tensor, mut m: Tensor,
+    mut out: Tensor, mut ctx: DeviceContext,
+) raises:
+    """One fused-kernel configuration, exactly as `_forward_gpu_fused`
+    launches the shipped one."""
+    comptime lay_q = Layout.row_major(B, QL * DIM)
+    comptime lay_kv = Layout.row_major(B, KL * DIM)
+    comptime lay_m = Layout.row_major(B, KL)
+    comptime qtiles = (QL + XA_FUSED_BQ - 1) // XA_FUSED_BQ
+    ctx.enqueue_function[
+        _xa_fused_kernel[B, DIM, H, QL, KL, HD, MASKED, R, S, KU]
+    ](
+        q.lt["gpu", lay_q](), k.lt["gpu", lay_kv](), v.lt["gpu", lay_kv](),
+        m.lt["gpu", lay_m](), out.lt["gpu", lay_q](),
+        grid_dim=(qtiles, H, B), block_dim=xa_fused_block[R, S](),
+    )
 
 
 def run_shape[
@@ -292,6 +317,10 @@ def run_shape[
         String("C  scores+softmax in cache, bmm A.V"),
         String("D  element-indexed, no pack"),
         String("F  FUSED online softmax (inference)"),
+        String("G  fused R2 S4 KU1 (occupancy)"),
+        String("H  fused R4 S4 KU4 (ILP across keys)"),
+        String("I  fused R2 S4 KU4 (both)"),
+        String("J  fused R1 S2 KU1 (the first cut)"),
     ]
     var ok = True
     var best_a = 0.0
@@ -300,7 +329,7 @@ def run_shape[
     # reads of one buffer — opposite conclusions, the same printout.
     var a_out = List[Scalar[DT]]()
     var a_attn = List[Scalar[DT]]()
-    for variant in range(5):
+    for variant in range(9):
         var mod = XA.make["gpu", Deterministic](Optional(ctx))
         if variant == 4:
             mod.set_attr["fused_attention"](Scalar[DT](1.0))
@@ -336,6 +365,28 @@ def run_shape[
                         rebind[TensorRefs[XA.ARITY, MutAnyOrigin]](
                             TensorRefs[3, MutAnyOrigin](q, k, v)
                         ), out, ctx,
+                    )
+            elif variant >= 5:
+                # ⚠ THE (R, SPLIT, KU) GRID, launched directly. F is the
+                # shipped default through `forward`; these separate the two
+                # hypotheses for its Orin number (6.9 ms, 1.22x): fewer
+                # registers => more resident warps (R2), or independent
+                # work per step to hide the per-key chain (KU4).
+                if variant == 5:
+                    _launch_fused[B, DIM, H, QL, KL, HD, MASKED, 2, 4, 1](
+                        q, k, v, m, out, ctx
+                    )
+                elif variant == 6:
+                    _launch_fused[B, DIM, H, QL, KL, HD, MASKED, 4, 4, 4](
+                        q, k, v, m, out, ctx
+                    )
+                elif variant == 7:
+                    _launch_fused[B, DIM, H, QL, KL, HD, MASKED, 2, 4, 4](
+                        q, k, v, m, out, ctx
+                    )
+                else:
+                    _launch_fused[B, DIM, H, QL, KL, HD, MASKED, 1, 2, 1](
+                        q, k, v, m, out, ctx
                     )
             else:
                 if variant == 1 or variant == 2:
@@ -399,7 +450,7 @@ def run_shape[
         if variant == 0:
             mod.attn.download(ctx)
             cache_err = _std_units(mod.attn, ref_attn)
-        elif variant == 4:
+        elif variant >= 4:
             # The fused path writes no cache — by design, not by omission;
             # `test_cross_attention_gpu_shapes.mojo` checks it stays untouched.
             cache_err = 0.0
@@ -415,7 +466,7 @@ def run_shape[
                 a_out.append(out.data[n])
             for n in range(SC):
                 a_attn.append(mod.attn.data[n])
-        elif variant == 4:
+        elif variant >= 4:
             for n in range(QN):
                 if out.data[n] != a_out[n]:
                     out_bits += 1
@@ -435,9 +486,9 @@ def run_shape[
             "   " + _pad(names[variant], 36) + _pad(_fmt(best, 3), 10)
             + _pad(_fmt(best_a / best, 2) + "x", 8)
             + _pad(String(out_err), 24)
-            + _pad(String(cache_err) if variant != 4 else String("n/a (none written)"), 24)
+            + _pad(String(cache_err) if variant < 4 else String("n/a (none written)"), 24)
             + _pad(String(out_bits) + "/" + String(QN), 16)
-            + (String(attn_bits) + "/" + String(SC) if variant != 4 else String("n/a"))
+            + (String(attn_bits) + "/" + String(SC) if variant < 4 else String("n/a"))
             + flag
         )
     return ok
@@ -447,7 +498,7 @@ def main() raises:
     comptime assert has_accelerator(), "this benchmark times GPU kernels"
     var ctx = DeviceContext()
     print("=" * 100)
-    print("CrossAttention forward — five variants, " + String(ctx.name()))
+    print("CrossAttention forward — nine variants, " + String(ctx.name()))
     print("=" * 100)
     var ok = True
     # SigLIP-B/16 @ 512: the target. B=1 — one tower call per camera.

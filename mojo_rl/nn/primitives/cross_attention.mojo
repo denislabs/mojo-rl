@@ -52,6 +52,7 @@ and key/value streams, and per-sample masking folded into the softmax kernel.
 
 from mojo_rl.nn.core.mm import mm, bmm
 from mojo_rl.nn.core.mm_tiled import bmm_tiled
+from std.collections import Array
 from std.math import exp, sqrt
 from max.gpu import barrier, block_dim, block_idx, thread_idx
 from max.gpu.primitives import warp
@@ -455,19 +456,36 @@ def _xa_zero_kernel[N: Int](
 # against float64 in `benchmarks/cross_attention_bench.mojo` (variant F).
 
 comptime XA_FUSED_BQ: Int = 128
-"""Query rows per block of the fused forward: `XA_FUSED_R` per thread."""
+"""Query rows per block of the fused forward."""
 comptime XA_FUSED_BK: Int = 32
 """Keys per shared-memory tile of the fused forward."""
 comptime XA_FUSED_R: Int = 4
-"""Query rows per THREAD. The first version held one row per lane and read
-the whole key row from shared memory for it — one FMA per shared load, and
-the LDS pipe (128 B/clk/SM) capped it at 6.6 ms per SigLIP layer on the
-Orin, 1.28x over the two-pass path, not the 4x the traffic argument gave.
-Every K/V fetch now feeds four rows."""
+"""Query rows per THREAD (shipped default). One row per lane and a whole key
+row re-read from shared memory for it was 6.6 ms per SigLIP layer on the
+Orin (1.28x over the two-pass path); four rows per fetch was 6.9 — so the
+shared-memory pipe was NOT the bound. `benchmarks/cross_attention_bench.mojo`
+ranks the (R, SPLIT, KU) grid on the board; these defaults follow it."""
+comptime XA_FUSED_KU: Int = 1
+"""Keys per inner step (shipped default): scores for KU keys are formed and
+shuffled together before one softmax update, which breaks the per-key
+dependency chain (load -> dot -> 2 shuffles -> exp -> accumulate) that a
+few resident warps cannot hide."""
+
+
+def _xa_fused_split[HD: Int]() -> Int:
+    """Lanes per query-row group (shipped default): 4 where the head is
+    wide enough (16+), 1 for the toy heads the gates run."""
+    return 4 if HD >= 16 else 1
+
+
+def xa_fused_block[R: Int, SPLIT: Int]() -> Int:
+    """Threads per block of `_xa_fused_kernel`: BQ/R row groups x lanes."""
+    return (XA_FUSED_BQ // R) * SPLIT
 
 
 def _xa_fused_kernel[
-    B: Int, DIM: Int, NH: Int, QL: Int, KL: Int, HD: Int, MASKED: Bool
+    B: Int, DIM: Int, NH: Int, QL: Int, KL: Int, HD: Int, MASKED: Bool,
+    R: Int, SPLIT: Int, KU: Int,
 ](
     q: LayoutTensor[DT, Layout.row_major(B, QL * DIM), MutAnyOrigin],
     k: LayoutTensor[DT, Layout.row_major(B, KL * DIM), MutAnyOrigin],
@@ -475,16 +493,19 @@ def _xa_fused_kernel[
     m: LayoutTensor[DT, Layout.row_major(B, KL), MutAnyOrigin],
     dst: LayoutTensor[DT, Layout.row_major(B, QL * DIM), MutAnyOrigin],
 ):
-    """grid (ceil(QL/BQ), NH, B), block `xa_fused_block[HD]()`. `m` is read
-    only when MASKED (the unmasked instantiation is handed any tensor of
-    that layout).
+    """grid (ceil(QL/BQ), NH, B), block `xa_fused_block[R, SPLIT]()`. `m` is
+    read only when MASKED (the unmasked instantiation is handed any tensor
+    of that layout).
 
-    Thread layout: `SPLIT` adjacent lanes share R = 4 consecutive query rows,
-    each lane owning HD/SPLIT of the head for all four (q and context in
-    registers). Per key one K and one V fetch of HD/SPLIT floats serve the
-    four rows; the four partial dot products meet their partners in
-    `shuffle_xor` steps; the softmax state (max, sum, weight) is then
-    computed identically by every lane of the group.
+    Thread layout: `SPLIT` adjacent lanes share R consecutive query rows,
+    each lane owning HD/SPLIT of the head for all of them (q and context in
+    registers). Per inner step KU keys' K halves are fetched, the R x KU
+    partial dot products meet their partners in log2(SPLIT) shuffle steps
+    each, then each row does ONE max update over its KU scores and KU
+    weighted V accumulations. A masked key (or a tile-tail slot past KL) is
+    a key with weight ZERO, kept out of the max — the two-pass path's
+    explicit zero weight — so a fully masked row ends at l = 0 and a zero
+    context.
 
     ⚠ EVERY LANE RUNS THE WHOLE LOOP, dead rows included (their loads are
     clamped to a real row and only their store is skipped): the shuffle is
@@ -493,12 +514,16 @@ def _xa_fused_kernel[
     """
     comptime BQ = XA_FUSED_BQ
     comptime BK = XA_FUSED_BK
-    comptime R = XA_FUSED_R
-    comptime SPLIT = _xa_fused_split[HD]()
     comptime HW = HD // SPLIT
     comptime NT = (BQ // R) * SPLIT
     comptime assert HD & (HD - 1) == 0, (
         "_xa_fused_kernel: HEAD_DIM must be a power of two (a SIMD width)"
+    )
+    comptime assert SPLIT == 1 or SPLIT == 2 or SPLIT == 4, (
+        "_xa_fused_kernel: SPLIT is 1, 2 or 4 lanes"
+    )
+    comptime assert BK % KU == 0 and BQ % R == 0, (
+        "_xa_fused_kernel: KU must divide BK and R must divide BQ"
     )
     comptime TILE = BK * HD
 
@@ -524,28 +549,15 @@ def _xa_fused_kernel[
     var scale = Scalar[DT](1.0) / sqrt(Scalar[DT](HD))
     var qbase = b * (QL * DIM) + h * HD + part * HW
 
-    # The four rows' q halves, contexts and softmax state — explicit
-    # variables, so nothing goes through a pointer.
-    var i0 = r0 if r0 < QL else QL - 1
-    var i1 = r0 + 1 if r0 + 1 < QL else QL - 1
-    var i2 = r0 + 2 if r0 + 2 < QL else QL - 1
-    var i3 = r0 + 3 if r0 + 3 < QL else QL - 1
-    var q0 = q.ptr.unsafe_load[width=HW](qbase + i0 * DIM)
-    var q1 = q.ptr.unsafe_load[width=HW](qbase + i1 * DIM)
-    var q2 = q.ptr.unsafe_load[width=HW](qbase + i2 * DIM)
-    var q3 = q.ptr.unsafe_load[width=HW](qbase + i3 * DIM)
-    var o0 = SIMD[DT, HW](0)
-    var o1 = SIMD[DT, HW](0)
-    var o2 = SIMD[DT, HW](0)
-    var o3 = SIMD[DT, HW](0)
-    var m0 = XATTN_MASK_NEG
-    var m1 = XATTN_MASK_NEG
-    var m2 = XATTN_MASK_NEG
-    var m3 = XATTN_MASK_NEG
-    var l0 = Scalar[DT](0)
-    var l1 = Scalar[DT](0)
-    var l2 = Scalar[DT](0)
-    var l3 = Scalar[DT](0)
+    var qr = Array[SIMD[DT, HW], R](fill=SIMD[DT, HW](0))
+    var o = Array[SIMD[DT, HW], R](fill=SIMD[DT, HW](0))
+    var mx = Array[Scalar[DT], R](fill=XATTN_MASK_NEG)
+    var l = Array[Scalar[DT], R](fill=Scalar[DT](0))
+    comptime for r in range(R):
+        var i = r0 + r
+        if i >= QL:
+            i = QL - 1
+        qr[r] = q.ptr.unsafe_load[width=HW](qbase + i * DIM)
 
     for j0 in range(0, KL, BK):
         # Tile load: element e strided by the block, so a warp reads 32
@@ -576,107 +588,65 @@ def _xa_fused_kernel[
         var nk = KL - j0
         if nk > BK:
             nk = BK
-        for jj in range(nk):
-            comptime if MASKED:
-                # A masked key contributes NOTHING — the same as the
-                # two-pass path's explicit zero weight, and what keeps a
-                # fully masked row at l = 0 -> a zero context below.
-                # Uniform across the block, so the shuffles stay
-                # warp-uniform.
-                if rebind[Scalar[DT]](ms.ptr[unsafe_offset=jj]) < Scalar[
-                    DT
-                ](0.5):
-                    continue
-            var kh = ks.ptr.unsafe_load[width=HW](jj * HD + part * HW)
-            var s0 = (q0 * kh).reduce_add()
-            var s1 = (q1 * kh).reduce_add()
-            var s2 = (q2 * kh).reduce_add()
-            var s3 = (q3 * kh).reduce_add()
+        for jb in range(0, nk, KU):
+            # ── scores for KU keys x R rows, then the partner reduction ──
+            var sc = Array[Scalar[DT], R * KU](fill=Scalar[DT](0))
+            var ok = Array[Bool, KU](fill=False)
+            comptime for u in range(KU):
+                var jj = jb + u
+                var okay = jj < nk
+                comptime if MASKED:
+                    if okay and rebind[Scalar[DT]](
+                        ms.ptr[unsafe_offset=jj]
+                    ) < Scalar[DT](0.5):
+                        okay = False
+                ok[u] = okay
+                var jr = jj if jj < BK else BK - 1
+                var kh = ks.ptr.unsafe_load[width=HW](jr * HD + part * HW)
+                comptime for r in range(R):
+                    sc[r * KU + u] = (qr[r] * kh).reduce_add()
             comptime if SPLIT >= 2:
-                s0 = s0 + warp.shuffle_xor(s0, UInt32(1))
-                s1 = s1 + warp.shuffle_xor(s1, UInt32(1))
-                s2 = s2 + warp.shuffle_xor(s2, UInt32(1))
-                s3 = s3 + warp.shuffle_xor(s3, UInt32(1))
+                comptime for n in range(R * KU):
+                    sc[n] = sc[n] + warp.shuffle_xor(sc[n], UInt32(1))
             comptime if SPLIT >= 4:
-                s0 = s0 + warp.shuffle_xor(s0, UInt32(2))
-                s1 = s1 + warp.shuffle_xor(s1, UInt32(2))
-                s2 = s2 + warp.shuffle_xor(s2, UInt32(2))
-                s3 = s3 + warp.shuffle_xor(s3, UInt32(2))
-            s0 = s0 * scale
-            s1 = s1 * scale
-            s2 = s2 * scale
-            s3 = s3 * scale
-            var vh = vs.ptr.unsafe_load[width=HW](jj * HD + part * HW)
-            # The max rose: rescale what was accumulated under the old one.
-            # exp(old - new) is 0 on the first key (old is MASK_NEG), which
-            # is the zero start.
-            if s0 > m0:
-                var c = exp(m0 - s0)
-                l0 = l0 * c
-                o0 = o0 * c
-                m0 = s0
-            var p0 = exp(s0 - m0)
-            l0 = l0 + p0
-            o0 = o0 + p0 * vh
-            if s1 > m1:
-                var c = exp(m1 - s1)
-                l1 = l1 * c
-                o1 = o1 * c
-                m1 = s1
-            var p1 = exp(s1 - m1)
-            l1 = l1 + p1
-            o1 = o1 + p1 * vh
-            if s2 > m2:
-                var c = exp(m2 - s2)
-                l2 = l2 * c
-                o2 = o2 * c
-                m2 = s2
-            var p2 = exp(s2 - m2)
-            l2 = l2 + p2
-            o2 = o2 + p2 * vh
-            if s3 > m3:
-                var c = exp(m3 - s3)
-                l3 = l3 * c
-                o3 = o3 * c
-                m3 = s3
-            var p3 = exp(s3 - m3)
-            l3 = l3 + p3
-            o3 = o3 + p3 * vh
+                comptime for n in range(R * KU):
+                    sc[n] = sc[n] + warp.shuffle_xor(sc[n], UInt32(2))
+            # ── one softmax update per row over its KU scores ────────────
+            comptime for r in range(R):
+                var mnew = mx[r]
+                comptime for u in range(KU):
+                    var sv = sc[r * KU + u] * scale
+                    sc[r * KU + u] = sv
+                    if ok[u] and sv > mnew:
+                        mnew = sv
+                if mnew > mx[r]:
+                    # exp(old - new) is 0 on the first live key (old is
+                    # MASK_NEG), which is the zero start.
+                    var c = exp(mx[r] - mnew)
+                    l[r] = l[r] * c
+                    o[r] = o[r] * c
+                    mx[r] = mnew
+            comptime for u in range(KU):
+                var jj = jb + u
+                var jr = jj if jj < BK else BK - 1
+                var vh = vs.ptr.unsafe_load[width=HW](jr * HD + part * HW)
+                comptime for r in range(R):
+                    var pw = Scalar[DT](0)
+                    if ok[u]:
+                        pw = exp(sc[r * KU + u] - mx[r])
+                    l[r] = l[r] + pw
+                    o[r] = o[r] + pw * vh
         barrier()
 
     # Floored like the two-pass path: a fully masked row has l = 0 and
     # yields a zero context, not a NaN.
-    if r0 < QL:
-        var inv = Scalar[DT](0)
-        if l0 > XATTN_DENOM_FLOOR:
-            inv = Scalar[DT](1.0) / l0
-        dst.ptr.unsafe_store(qbase + r0 * DIM, o0 * inv)
-    if r0 + 1 < QL:
-        var inv = Scalar[DT](0)
-        if l1 > XATTN_DENOM_FLOOR:
-            inv = Scalar[DT](1.0) / l1
-        dst.ptr.unsafe_store(qbase + (r0 + 1) * DIM, o1 * inv)
-    if r0 + 2 < QL:
-        var inv = Scalar[DT](0)
-        if l2 > XATTN_DENOM_FLOOR:
-            inv = Scalar[DT](1.0) / l2
-        dst.ptr.unsafe_store(qbase + (r0 + 2) * DIM, o2 * inv)
-    if r0 + 3 < QL:
-        var inv = Scalar[DT](0)
-        if l3 > XATTN_DENOM_FLOOR:
-            inv = Scalar[DT](1.0) / l3
-        dst.ptr.unsafe_store(qbase + (r0 + 3) * DIM, o3 * inv)
-
-
-def _xa_fused_split[HD: Int]() -> Int:
-    """Lanes per query-row group: 4 where the head is wide enough (16+),
-    1 for the toy heads the gates run."""
-    return 4 if HD >= 16 else 1
-
-
-def xa_fused_block[HD: Int]() -> Int:
-    """Threads per block of `_xa_fused_kernel`: BQ/R row groups x lanes."""
-    return (XA_FUSED_BQ // XA_FUSED_R) * _xa_fused_split[HD]()
+    comptime for r in range(R):
+        var i = r0 + r
+        if i < QL:
+            var inv = Scalar[DT](0)
+            if l[r] > XATTN_DENOM_FLOOR:
+                inv = Scalar[DT](1.0) / l[r]
+            dst.ptr.unsafe_store(qbase + i * DIM, o[r] * inv)
 
 
 struct CrossAttention[
@@ -1101,10 +1071,13 @@ struct CrossAttention[
         comptime lay_q = Layout.row_major(B, Self.Q_DIM)
         comptime lay_kv = Layout.row_major(B, Self.KV_DIM)
         comptime lay_m = Layout.row_major(B, KL)
+        comptime SPLIT = _xa_fused_split[Self.HEAD_DIM]()
         comptime kern = _xa_fused_kernel[
-            B, Self.DIM, Self.N_HEADS, QL, KL, Self.HEAD_DIM, Self.MASKED
+            B, Self.DIM, Self.N_HEADS, QL, KL, Self.HEAD_DIM, Self.MASKED,
+            XA_FUSED_R, SPLIT, XA_FUSED_KU,
         ]
         comptime qtiles = (QL + XA_FUSED_BQ - 1) // XA_FUSED_BQ
+        comptime blk = xa_fused_block[XA_FUSED_R, SPLIT]()
         ref q = inputs[0]
         ref k = inputs[1]
         ref v = inputs[2]
@@ -1115,7 +1088,7 @@ struct CrossAttention[
                 v.lt["gpu", lay_kv](), m.lt["gpu", lay_m](),
                 out.lt["gpu", lay_q](),
                 grid_dim=(qtiles, Self.N_HEADS, B),
-                block_dim=xa_fused_block[Self.HEAD_DIM](),
+                block_dim=blk,
             )
         else:
             # The mask slot is never read; hand it the output as a stand-in
@@ -1128,7 +1101,7 @@ struct CrossAttention[
                 ),
                 out.lt["gpu", lay_q](),
                 grid_dim=(qtiles, Self.N_HEADS, B),
-                block_dim=xa_fused_block[Self.HEAD_DIM](),
+                block_dim=blk,
             )
 
     def _forward_gpu[
