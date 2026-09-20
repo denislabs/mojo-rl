@@ -56,6 +56,17 @@ comptime ACT_DEC_LAYERS: Int = 1
 comptime ACT_USE_LAST_HS: Bool = False
 
 comptime ACT_KL_WEIGHT: Float64 = 10.0  # `--kl_weight 10`
+comptime ACT_SHAPE_WEIGHT: Float64 = 0.0
+"""Weight of the chunk-SHAPE term: the masked L1 between the first differences
+along the chunk of the prediction and of the target (positions t+1 minus t).
+NOT in the paper (0 = the paper's loss). It exists because on LIBERO's
+demonstrations the within-chunk structure is worth ~0.02 of the per-position
+L1 (a k=5 neighbour chunk: 0.396 per position vs ~0.41 flat) and every fit
+settled on the flat solution — one action for all 40 positions, measured by
+`libero_act_inspect` at spread 0.0009 vs the recorded 0.48 — while that
+structure is what steers (the neighbour policy with it: 0.72 on LIBERO's
+inits; without it 0.15). The difference term makes the shape a first-class
+objective instead of a 5% residual of the level term."""
 comptime ACT_LR: Float64 = 1e-5  # `--lr 1e-5`
 comptime ACT_WEIGHT_DECAY: Float64 = 1e-4  # `detr/main.py --weight_decay`
 comptime ACT_BATCH: Int = 8  # `--batch_size 8`

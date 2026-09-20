@@ -117,6 +117,7 @@ from .config import (
     ACT_CLIP_MAX_NORM,
     ACT_DROPOUT,
     ACT_KL_WEIGHT,
+    ACT_SHAPE_WEIGHT,
     ACT_LR,
     ACT_WEIGHT_DECAY,
 )
@@ -509,6 +510,7 @@ struct ACTTrainer[
         weight_decay: Scalar[DT] = Scalar[DT](ACT_WEIGHT_DECAY),
         max_grad_norm: Scalar[DT] = Scalar[DT](ACT_CLIP_MAX_NORM),
         ctx: Optional[DeviceContext] = None,
+        shape_weight: Scalar[DT] = Scalar[DT](ACT_SHAPE_WEIGHT),
     ) raises -> Self:
         comptime if Self.target != "cpu":
             if not ctx:
@@ -519,6 +521,10 @@ struct ACTTrainer[
         t.ctx = ctx
         t.graph = Self.LG.make[Self.target, Kaiming](ctx)
         t.graph.set_node_attr["kls", "multiplier"](kl_weight)
+        # the chunk-shape term: the two negations are fixed, the weight is the knob
+        t.graph.set_node_attr["ahat_lo_neg", "multiplier"](Scalar[DT](-1.0))
+        t.graph.set_node_attr["act_lo_neg", "multiplier"](Scalar[DT](-1.0))
+        t.graph.set_node_attr["l1ds", "multiplier"](shape_weight)
         t.opt = Adam(lr=lr, wd=weight_decay)
         t.max_grad_norm = max_grad_norm
         # ⚠ The graph-IO staging tensors keep a HOST copy on both targets: the
@@ -1188,6 +1194,87 @@ struct ACTTrainer[
         zeroed latent reads them.
         """
         self.train_mode(False)
+        self._seed_inputs(qpos, images, actions, valid)
+        self.graph.forward[Self.BATCH, Self.target](self.loss_out, self.ctx)
+        comptime N = Self.BATCH * Self.K * Self.ADIM
+        if len(out_actions) != N:
+            out_actions = List[Scalar[DT]](unsafe_uninit_length=N)
+        ref ahat = self.graph.node_output["ahat"]()
+        comptime if Self.target != "cpu":
+            var c = self.ctx.value()
+            c.synchronize()
+            ahat.download(c)
+        for i in range(N):
+            out_actions[i] = ahat.data[i]
+        self.train_mode(True)
+
+
+
+    def predict_prior_sample(
+        mut self,
+        ref qpos: List[Scalar[DT]],
+        ref images: List[Scalar[DT]],
+        ref actions: List[Scalar[DT]],
+        ref valid: List[Scalar[DT]],
+        mut out_actions: List[Scalar[DT]],
+    ) raises:
+        """Inference with `z ~ N(0, I)` — a draw from the prior — where
+        `predict` uses the prior MEAN (`z = 0`, the reference's rule).
+
+        On demonstrations whose future timing varies across operators the
+        prior mean is the flat conditional median (one action for all 40
+        positions, 2026-09-20); a draw commits to one style per query, the way
+        the nearest-neighbour control (0.72 on LIBERO's inits) commits to one
+        demonstration. Meaningful only for a fit whose KL let the latent stay
+        informative (`ACT_KL` below the paper's 10); on a collapsed latent the
+        draw changes nothing. Eval mode otherwise (no dropout, BN running
+        stats). `actions` is unread past the encoder; zeros are fine.
+        """
+        self.train_mode(False)
+        self.graph.set_node_attr["zs", "multiplier"](Scalar[DT](1.0))
+        self.graph.set_node_attr["z", "deterministic"](Scalar[DT](0.0))
+        self.graph.set_node_attr["z", "prior"](Scalar[DT](1.0))
+        self._seed_inputs(qpos, images, actions, valid)
+        self.graph.forward[Self.BATCH, Self.target](self.loss_out, self.ctx)
+        comptime N = Self.BATCH * Self.K * Self.ADIM
+        if len(out_actions) != N:
+            out_actions = List[Scalar[DT]](unsafe_uninit_length=N)
+        ref ahat = self.graph.node_output["ahat"]()
+        comptime if Self.target != "cpu":
+            var c = self.ctx.value()
+            c.synchronize()
+            ahat.download(c)
+        for i in range(N):
+            out_actions[i] = ahat.data[i]
+        self.graph.set_node_attr["z", "prior"](Scalar[DT](0.0))
+        self.train_mode(True)
+    def predict_with_posterior(
+        mut self,
+        ref qpos: List[Scalar[DT]],
+        ref images: List[Scalar[DT]],
+        ref actions: List[Scalar[DT]],
+        ref valid: List[Scalar[DT]],
+        mut out_actions: List[Scalar[DT]],
+    ) raises:
+        """A DIAGNOSTIC forward, not a policy: eval mode (no dropout, BN
+        running stats, the latent draw pinned to its mean) but the latent
+        token kept — `z = mu(qpos, actions)`, the CVAE posterior of the chunk
+        handed in as `actions` — where `predict` scales it to zero, the
+        reference's inference rule (`detr_vae.py:110`).
+
+        It exists to split two readings of a flat inference chunk. The box
+        fits of 2026-09-20 predicted ONE action for all 40 positions under
+        `predict` while their TRAINING L1 (0.25-0.35) sat below any flat
+        predictor's floor (~0.41): in training the decoder does shape its
+        chunk, and the only input that differs between the two modes is the
+        latent. If this forward's chunk varies and `predict`'s does not, the
+        shape lives in `z` alone — the encoder is doing the decoder's job and
+        the prior mean carries none of it. That is the CVAE failure the paper's
+        KL weight is meant to prevent, and a shape term on the decoder's own
+        output (`ACT_SHAPE`) is the lever that does not depend on `z`.
+        """
+        self.train_mode(False)
+        self.graph.set_node_attr["zs", "multiplier"](Scalar[DT](1.0))
         self._seed_inputs(qpos, images, actions, valid)
         self.graph.forward[Self.BATCH, Self.target](self.loss_out, self.ctx)
         comptime N = Self.BATCH * Self.K * Self.ADIM

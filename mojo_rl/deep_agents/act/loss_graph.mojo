@@ -37,6 +37,9 @@ one input rather than two, so the two can never disagree.
 
     loss             L1MaskedPerSample(a_hat, actions, valid)
                        + Scale["kls"](KL(latent_info))
+                       + Scale["l1ds"](L1MaskedPerSample(Δa_hat, Δactions, valid[1:]))
+                     Δ = positions 1..K-1 minus 0..K-2 (Slice, Scale(-1), Add);
+                     the shape term, weight ACT_SHAPE_WEIGHT (0 = the paper)
 
 ## ⚠ ONE GRAPH SERVES TRAINING AND INFERENCE
 
@@ -203,5 +206,21 @@ comptime ACTLossGraph[
     Node["l1", L1MaskedPerSample[K, ADIM], "ahat", "actions", "valid"],
     Node["kl", GaussianKLStdNormal[LATENT], "latinfo"],
     Node["kls", Scale[1], "kl"],  # kl_weight
-    Node["loss", Add[1], "l1", "kls"],
+    Node["lossa", Add[1], "l1", "kls"],
+    # ── the chunk-shape term: first differences along the chunk ─────────
+    # `*_lo_neg` carry multiplier -1 (set in `ACTTrainer.make`); `l1ds` the
+    # shape weight. valid[1:] because a difference at t needs t and t+1 real,
+    # and `valid` is a prefix mask.
+    Node["ahat_hi", Slice[K * ADIM, ADIM, K * ADIM], "ahat"],
+    Node["ahat_lo", Slice[K * ADIM, 0, (K - 1) * ADIM], "ahat"],
+    Node["ahat_lo_neg", Scale[(K - 1) * ADIM], "ahat_lo"],
+    Node["dpred", Add[(K - 1) * ADIM], "ahat_hi", "ahat_lo_neg"],
+    Node["act_hi", Slice[K * ADIM, ADIM, K * ADIM], "actions"],
+    Node["act_lo", Slice[K * ADIM, 0, (K - 1) * ADIM], "actions"],
+    Node["act_lo_neg", Scale[(K - 1) * ADIM], "act_lo"],
+    Node["dtgt", Add[(K - 1) * ADIM], "act_hi", "act_lo_neg"],
+    Node["valid_hi", Slice[K, 1, K], "valid"],
+    Node["l1d", L1MaskedPerSample[K - 1, ADIM], "dpred", "dtgt", "valid_hi"],
+    Node["l1ds", Scale[1], "l1d"],  # shape_weight
+    Node["loss", Add[1], "lossa", "l1ds"],
 ]

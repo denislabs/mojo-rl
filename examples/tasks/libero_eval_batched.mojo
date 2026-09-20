@@ -55,7 +55,10 @@ the one place a policy plugs in; it reads the env's observation rows, which
 `DIR` is a `libero-act-train` checkpoint directory (`best.ckpt` + `norm.json`);
 `--act-ckpt last` evaluates `last.ckpt` instead — the recipe's checkpoint when
 the validation minimum is the noise floor (see `ACT_PATIENCE` in the trainer).
-`--act-m M` sets the temporal ensemble's weight (default `ACT_TEMPORAL_ENSEMBLE_M`
+`--act-latent sample` draws `z ~ N(0, I)` at every query instead of the
+paper's `z = 0`: a commitment to one style per query where the prior mean is
+the flat conditional median. Only a fit whose latent stayed informative
+(`ACT_KL` below 10) can differ here. `--act-m M` sets the temporal ensemble's weight (default `ACT_TEMPORAL_ENSEMBLE_M`
 = 0.01, the paper's): `w = exp(-M * rank)` with rank 0 the OLDEST query in the
 window, so the paper's positive M favours stale predictions (0.01 over 40
 chunks: 1.0 down to 0.68, near-uniform over two seconds); a NEGATIVE M favours
@@ -596,7 +599,7 @@ def run[T: PlacementTable, M: ModelDefLike](
     policy_path: String, act_dir: String, act_exec: Int, obs_store: String,
     video_path: String, video_lane: Int, trace_lane: Int,
     knn_store: String, knn_k: Int, knn_vel: Bool, demo_init: String,
-    only_task: Int, act_ckpt: String, act_m: Float64,
+    only_task: Int, act_ckpt: String, act_m: Float64, act_latent: String,
 ) raises:
     comptime E = Phyics3dBatchedEnv[
         M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
@@ -773,6 +776,8 @@ def run[T: PlacementTable, M: ModelDefLike](
               ", temporal ensemble m =", act_m,
               "(paper's 0.01; NEGATIVE favours the newest query)" if act_m != Float64(ACT_TEMPORAL_ENSEMBLE_M) else "")
         print("          fitted on", act_norm.store)
+        print("          latent :", "z ~ N(0, I), a prior DRAW per query (--act-latent sample)"
+              if act_latent == "sample" else "z = 0, the prior mean (the paper's)")
         if act_exec == 0:
             print("          chunk use: TEMPORAL ENSEMBLE (query every step)")
         else:
@@ -1307,7 +1312,10 @@ def run[T: PlacementTable, M: ModelDefLike](
                 #    each lane's ensemble or the chunk's next action
                 if query:
                     var tf0 = perf_counter_ns()
-                    act_opt[0].predict(act_qpos, act_images, act_dummy, act_valid, act_chunk)
+                    if act_latent == "sample":
+                        act_opt[0].predict_prior_sample(act_qpos, act_images, act_dummy, act_valid, act_chunk)
+                    else:
+                        act_opt[0].predict(act_qpos, act_images, act_dummy, act_valid, act_chunk)
                     forward_ns += perf_counter_ns() - tf0
                 for e in range(LANES):
                     if act_exec == 0:
@@ -1602,6 +1610,7 @@ def main() raises:
     var only_task = -1
     var act_ckpt = String("best")
     var act_m = Float64(ACT_TEMPORAL_ENSEMBLE_M)
+    var act_latent = String("zero")
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -1639,6 +1648,11 @@ def main() raises:
                 i += 1
         elif s == "--knn-vel":
             knn_vel = True
+        elif s == "--act-latent" and i + 1 < len(args):
+            act_latent = String(args[i + 1])
+            if act_latent != "zero" and act_latent != "sample":
+                raise Error("--act-latent must be zero (the paper) or sample (a prior draw)")
+            i += 1
         elif s == "--act-m" and i + 1 < len(args):
             act_m = Float64(String(args[i + 1]))
             i += 1
@@ -1669,7 +1683,8 @@ def main() raises:
                 " --steps N, --check-lanes K, --sampled, --policy PATH,"
                 " --act DIR, --act-exec N, --check-obs [STORE], --video F.mp4,"
                 " --video-lane L, --trace-lane L, --knn [STORE], --knn-k N, --knn-vel,"
-                " --demo-init [STORE], --task T, --act-ckpt best|last, --act-m M)"
+                " --demo-init [STORE], --task T, --act-ckpt best|last, --act-m M,"
+                " --act-latent zero|sample)"
             )
         i += 1
 
@@ -1682,31 +1697,31 @@ def main() raises:
         run[LiberoGoalPlacement, LiberoGoalModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init, only_task, act_ckpt, act_m,
+            knn_vel, demo_init, only_task, act_ckpt, act_m, act_latent,
         )
     elif FAMILY == "libero_object":
         run[LiberoObjectPlacement, LiberoObjectModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init, only_task, act_ckpt, act_m,
+            knn_vel, demo_init, only_task, act_ckpt, act_m, act_latent,
         )
     elif FAMILY == "libero_spatial":
         run[LiberoSpatialPlacement, LiberoSpatialModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init, only_task, act_ckpt, act_m,
+            knn_vel, demo_init, only_task, act_ckpt, act_m, act_latent,
         )
     elif FAMILY == "libero_kitchen_scene3":
         run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init, only_task, act_ckpt, act_m,
+            knn_vel, demo_init, only_task, act_ckpt, act_m, act_latent,
         )
     elif FAMILY == "libero_kitchen_scene5":
         run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init, only_task, act_ckpt, act_m,
+            knn_vel, demo_init, only_task, act_ckpt, act_m, act_latent,
         )
     else:
         comptime assert False, (

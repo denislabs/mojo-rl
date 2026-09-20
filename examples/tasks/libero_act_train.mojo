@@ -47,6 +47,7 @@ LIBERO's frozen inits, which are not demonstrations at all.
 | `ACT_STORE` | the `.h5` to train on; default `tasks/libero_act.LIBERO_ACT_STORE_RENDERED` |
 | `ACT_STEPS` | optimizer steps without a rebuild (default 50 000) |
 | `ACT_LR` | the learning rate (default `LIBERO_ACT_LR` = 1e-5, the paper's). An overfit at 1e-3 on a few episodes is the test of whether the graph can REPRESENT a per-position chunk at all (2026-09-20: the box fits' chunks were flat across the 40 positions after training even with unit-scale queries) |
+| `ACT_SHAPE` | weight of the chunk-shape term (L1 on first differences along the chunk; default `ACT_SHAPE_WEIGHT` = 0, the paper's loss). See `deep_agents/act/config.mojo` |
 | `ACT_PATIENCE` | validations without improvement before the early stop (default 10); `0` disables it. ⚠ On LIBERO the validation L1 bottoms at the DEMONSTRATOR NOISE FLOOR (task+phase oracle 0.386, the fits 0.41-0.42) 17-28k steps in, and its minimum there is noise: the fit's training L1 is still falling (0.25) and its closed-loop rate still moving. ACT's recipe trains thousands of epochs and the per-task drawer fit at the val minimum scored 1/20 against the multi-task 6/20; `ACT_PATIENCE=0 ACT_STEPS=300000` with `--act-ckpt last` at eval is the recipe's schedule |
 | `ACT_KL` | the KL weight (default `LIBERO_ACT_KL` = 10, the paper's). ⚠ Both 5090 fits collapsed the CVAE at 10 — `train/kl` 59 -> 0.05 — so the latent carried nothing and every chunk was the conditional median: half the demonstrations' action scale, 5/200. The paper's ablation says the CVAE is what absorbs demonstrator variability; a lower weight is the lever, and it is here so a sweep needs no rebuild |
 | `ACT_PRETRAINED` | defaults to `hub` (ImageNet ResNet18, no PyTorch); `random` opts out |
@@ -67,7 +68,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.core.run import RunContext, register_run
-from mojo_rl.deep_agents.act.config import act_pretrained_spec
+from mojo_rl.deep_agents.act.config import act_pretrained_spec, ACT_SHAPE_WEIGHT
 from mojo_rl.deep_agents.act.norm_file import act_norm_from
 from mojo_rl.deep_agents.act.trainer import ACTWindowMetrics
 from mojo_rl.deep_agents.training.checkpoint import announce_checkpoint
@@ -165,6 +166,12 @@ def main() raises:
         lr = Float64(env_lr)
         if lr <= 0.0:
             raise Error("ACT_LR must be > 0, got " + env_lr)
+    var shape_weight = Float64(ACT_SHAPE_WEIGHT)
+    var env_shape = getenv("ACT_SHAPE")
+    if env_shape.byte_length() > 0:
+        shape_weight = Float64(env_shape)
+        if shape_weight < 0.0:
+            raise Error("ACT_SHAPE must be >= 0, got " + env_shape)
     var patience = Int(PATIENCE)
     var env_pat = getenv("ACT_PATIENCE")
     if env_pat.byte_length() > 0:
@@ -193,6 +200,7 @@ def main() raises:
           + " dec=" + String(LIBERO_ACT_N_DEC))
     print("  kl      " + String(kl_weight) + ("" if env_kl.byte_length() == 0
           else " (ACT_KL; the declaration's is " + String(LIBERO_ACT_KL) + ")"))
+    print("  shape   " + String(shape_weight) + (" (the paper: 0)" if env_shape.byte_length() == 0 else " (ACT_SHAPE; the chunk-shape term, first differences along the chunk)"))
     print("  vision  ResNet18 cut after layer3: " + String(LIBERO_ACT_OH) + "x"
           + String(LIBERO_ACT_OW) + " tokens x " + String(LIBERO_ACT_FEAT_CH)
           + " ch per camera")
@@ -244,6 +252,7 @@ def main() raises:
     logger.set_config("batch", String(BATCH))
     logger.set_config("lr", String(lr))
     logger.set_config("kl_weight", String(kl_weight))
+    logger.set_config("shape_weight", String(shape_weight))
     logger.set_config("steps", String(steps))
     logger.set_config("train_episodes", String(len(ds.train_eps)))
     logger.set_config("val_episodes", String(len(ds.val_eps)))
@@ -255,6 +264,7 @@ def main() raises:
               else "local only (set RL_MONITOR_URL in .env)")))
 
     var tr = T.make(
+        shape_weight=Scalar[DT](shape_weight),
         lr=Scalar[DT](lr),
         kl_weight=Scalar[DT](kl_weight),
         max_grad_norm=Scalar[DT](0.0),

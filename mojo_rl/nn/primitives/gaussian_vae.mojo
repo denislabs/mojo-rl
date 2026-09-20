@@ -84,6 +84,18 @@ def _gr_forward_kernel[
     o[b, j] = mu + exp(lv * Scalar[DT](0.5)) * rebind[Scalar[DT]](eps[b, j])
 
 
+
+def _gr_prior_kernel[
+    N: Int
+](
+    eps: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    z: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    """z = eps: the prior draw, `GaussianReparam.prior`."""
+    var idx = Int(global_idx.x)
+    if idx < N:
+        z[idx] = rebind[Scalar[DT]](eps[idx])
+
 def _gr_zero_eps_kernel[
     N: Int
 ](eps: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]):
@@ -128,6 +140,15 @@ struct GaussianReparam[LATENT: Int](Module):
     var noise_offset: TensorImpl[DType.uint64]
     """GPU Philox offset (1 element, device-resident) — the storage RNG idiom
     `rsample.mojo` uses, so the draw stays CUDA-graph-capture friendly."""
+    var prior: Bool
+    """When set, `z = eps ~ N(0, I)` regardless of `mu`/`logvar` — a draw
+    from the PRIOR, for inference. The reference's rule is `z = 0` (the prior
+    MEAN, `detr_vae.py:110`), which on demonstrations whose future timing
+    varies across operators returns the flat conditional median (measured
+    2026-09-20: one action for all 40 chunk positions). A prior draw commits
+    to one style the way a nearest-neighbour chunk commits to one
+    demonstration; it is only as good as the KL let the latent stay
+    informative."""
     var deterministic: Bool
     """When set, `eps = 0` and `z = mu`. Not the reference's inference path (see
     the module docstring — that is a `Scale` on z); this exists so a gate can
@@ -137,12 +158,14 @@ struct GaussianReparam[LATENT: Int](Module):
     def __init__(out self):
         comptime assert Self.LATENT > 0, "GaussianReparam: LATENT must be > 0"
         self.eps = Tensor()
+        self.prior = False
         self.deterministic = False
         self.noise_seed = UInt64(0x5DEECE66D)
         self.noise_offset = TensorImpl[DType.uint64]()
 
     def __init__(out self, *, deinit move: Self):
         self.eps = move.eps^
+        self.prior = move.prior
         self.deterministic = move.deterministic
         self.noise_seed = move.noise_seed
         self.noise_offset = move.noise_offset^
@@ -165,6 +188,8 @@ struct GaussianReparam[LATENT: Int](Module):
         """`set_attr["deterministic"](1.0)` -> z = mu (gates only)."""
         comptime if ATTR == "deterministic":
             self.deterministic = value != Scalar[DT](0.0)
+        comptime if ATTR == "prior":
+            self.prior = value != Scalar[DT](0.0)
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
@@ -202,6 +227,13 @@ struct GaussianReparam[LATENT: Int](Module):
                     self.noise_offset.lt["gpu", Layout.row_major(1)](),
                     grid_dim=1, block_dim=1,
                 )
+            if self.prior:
+                c.enqueue_function[_gr_prior_kernel[NZ]](
+                    self.eps.lt["gpu", Layout.row_major(NZ)](),
+                    out.lt["gpu", Layout.row_major(NZ)](),
+                    grid_dim=nbz, block_dim=TPB,
+                )
+                return
             c.enqueue_function[_gr_forward_kernel[B, L]](
                 x.lt["gpu", Layout.row_major(B, 2 * L)](),
                 self.eps.lt["gpu", Layout.row_major(B, L)](),
@@ -217,6 +249,10 @@ struct GaussianReparam[LATENT: Int](Module):
                 self.eps.data[i] = Scalar[DT](0.0)
         else:
             box_muller_normal(mptr(self.eps.data), B * L)
+        if self.prior:
+            for i in range(B * L):
+                out.data[i] = self.eps.data[i]
+            return
         for b in range(B):
             for j in range(L):
                 var e = self.eps.data[b * L + j]

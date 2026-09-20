@@ -32,6 +32,10 @@ its `predict` is flat; the same box checkpoint read on Metal says whether
 the WEIGHTS carry position structure at all (a dead query embedding does
 not, wherever it is read).
 
+`--latent posterior` reads the decoder with `z = mu(qpos, true chunk)` instead
+of the zero the eval uses (`ACTTrainer.predict_with_posterior`): a chunk that
+varies here and not under `predict` puts the whole shape in the latent.
+
 Flags: `--act DIR` (best.ckpt + norm.json), `--store PATH`, `--ckpt best|last`,
 `--ep E` (episode, default 0), `--stride S` (rows at steps 0, S, 2S, ...;
 default 10), `--rows N` (≤ 20, default 12). Normalised units throughout.
@@ -133,6 +137,7 @@ def main() raises:
     var stride = 10
     var rows = 12
     var no_load = False
+    var latent = String("prior")
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -156,6 +161,11 @@ def main() raises:
             i += 1
         elif s == "--no-load":
             no_load = True
+        elif s == "--latent" and i + 1 < len(args):
+            latent = String(args[i + 1])
+            if latent != "prior" and latent != "posterior" and latent != "sample":
+                raise Error("--latent must be prior (z=0), posterior or sample (z ~ N(0,I))")
+            i += 1
         else:
             raise Error("libero act inspect: unknown argument '" + s + "' (--act DIR,"
                         " --store PATH, --ckpt best|last, --ep E, --stride S, --rows N)")
@@ -202,7 +212,14 @@ def main() raises:
         print("  --no-load: a FRESHLY INITIALISED model (Kaiming), nothing loaded")
     else:
         tr.load(path)
-    tr.predict(qpos, images, dummy, valid, pred)
+    if latent == "posterior":
+        print("  --latent posterior: z = mu(qpos, TRUE chunk); the eval uses z = 0")
+        tr.predict_with_posterior(qpos, images, truth, valid, pred)
+    elif latent == "sample":
+        print("  --latent sample: z ~ N(0, I), one prior draw per row; the eval uses z = 0")
+        tr.predict_prior_sample(qpos, images, dummy, valid, pred)
+    else:
+        tr.predict(qpos, images, dummy, valid, pred)
     # the position path, node by node: the learned queries, the decoder's
     # output, its norm, the action head
     _node_spread["qpe", K, DIM](tr, ctx)
