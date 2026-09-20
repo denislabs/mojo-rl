@@ -284,6 +284,34 @@ def main() raises:
     # near 1.0 means the ensemble is doing nothing and the handover is
     # unchanged.
     var ensemble = False
+    var sync = False
+    """⚠⚠ `--sync` IS THE REFERENCE'S EVALUATION LOOP, and the measurement
+    that asked for it is the two 20 Sep runs with the accum-64 checkpoints.
+    Pipelined, both aimed at the cube within 3 s and then OSCILLATED with
+    growing amplitude — `shoulder_lift` alternating -77 / +25 / -77 / +27 /
+    -60 … -102 at exactly the query period (0.7 s), `step at handover`
+    35 deg mean, 80 worst. That is a delayed-feedback loop, not a policy
+    preference: the observation for chunk k+1 is taken while the arm is
+    mid-way through chunk k, the answer lands 700 ms later with the arm
+    somewhere else, and it is executed from step ~21 — the part of the plan
+    that assumes the arm followed THAT chunk's first 20 steps, which it never
+    did. Each handover is a jump the servo chases; the next observation sees
+    an arm that overshot, and the correction flips sign. Gain ~1, delay
+    0.7 s, period 1.4 s, growing.
+
+    LeRobot's `record`-with-policy loop never pipelines: `select_action`
+    runs inference when its queue is empty, the robot HOLDS its last command
+    for the duration, and the 50 actions then execute one per tick from step
+    0. Every chunk starts from the exact state it was predicted for. The
+    "fast, freeze, fast" pattern in every SO-101 SmolVLA video is that loop,
+    and it is what the fine-tune's episodes look like too — the recording
+    never had a 35-degree jump in it.
+
+    So `--sync`: start a query only when the chunk is exhausted, block on it
+    (the servo holds the last waypoint), re-base the new chunk to NOW and
+    execute it from step 0. No skip, no lead, no overlap — `--ensemble` is
+    ignored with a note. `--exec-steps` still applies: fewer steps per
+    chunk means fresher pixels per pause."""
 
     var args = argv()
     for i in range(len(args)):
@@ -298,6 +326,8 @@ def main() raises:
             smooth_n = Int(String(args[i + 1]))
         elif a == "--ensemble":
             ensemble = True
+        elif a == "--sync":
+            sync = True
         elif a == "--project" and i + 1 < len(args):
             project = String(args[i + 1])
         elif a == "--ckpt" and i + 1 < len(args):
@@ -337,6 +367,11 @@ def main() raises:
             + " (the chunk is " + String(CHUNK) + " steps = "
             + fixed(Float64(CHUNK) / Float64(SO101_FPS), 2) + " s of motion)"
         )
+    if sync and ensemble:
+        # No two chunks ever cover the same instant under --sync, so the
+        # blend would have one contributor everywhere — `ensemble = 1.00`.
+        print("⚠ --sync: chunks do not overlap; --ensemble ignored")
+        ensemble = False
     if ckpt == "":
         ckpt = getenv("SMOLVLA_CKPT", String(""))
     if ckpt == "":
@@ -402,6 +437,9 @@ def main() raises:
     var qcells = SharedBlock(QW_N_CELLS)
     var worker = Optional[BackgroundThread[QWorker]](None)
 
+    if sync:
+        print("loop         --sync: hold during the query, execute each chunk"
+              " from step 0 (the reference's evaluation loop)")
     if threaded:
         print("device       the query runs on its own thread (--threaded)")
         worker = BackgroundThread(
@@ -702,6 +740,7 @@ def main() raises:
     var bus_skipped = 0
     var skipped_at_handover = 0
     var stalled_handovers = 0
+    var sync_rebases = 0
     var sum_q = 0.0
     var worst_q = 0.0
     var sum_cam = 0.0
@@ -949,7 +988,13 @@ def main() raises:
                 # trajectory. When that happens the arm has been stalled on the
                 # pose the observation was taken at, so the chunk still starts
                 # where the arm is: re-base the grid instead of skipping.
-                if t_now - t_obs >= CHUNK:
+                if sync:
+                    # ⚠ --sync: the arm HELD the pose the observation was
+                    # taken at, so the chunk starts where the arm is. Step 0,
+                    # now — nothing is stale and nothing is skipped.
+                    sync_rebases += 1
+                    t_obs = t_now
+                elif t_now - t_obs >= CHUNK:
                     stalled_handovers += 1
                     t_obs = t_now
                 else:
@@ -973,10 +1018,17 @@ def main() raises:
             #
             # ⚠ `images` and `noise` ARE THE GPU'S INPUTS until the collect
             # above, so they are only rebuilt here, with nothing in flight.
+            # ⚠ --sync starts a query ONLY when the chunk is exhausted; the
+            # collect above then blocks on it next iteration while the servo
+            # holds the last waypoint. The pipelined shape starts `lead`
+            # steps early, or continuously under --ensemble.
             if not pending and (
                 t_obs < 0
-                or ensemble
-                or exec_steps - (t_now - t_obs) <= lead
+                or (sync and t_now - t_obs >= exec_steps)
+                or (
+                    not sync
+                    and (ensemble or exec_steps - (t_now - t_obs) <= lead)
+                )
             ):
                 var t_c0 = perf_counter_ns()
                 # ⚠ FIRST REQUEST ONLY. The loop is silent by design, but the
@@ -1261,7 +1313,13 @@ def main() raises:
     # waiting for it. Any number here above zero means this machine cannot run
     # this policy closed-loop at this chunk size, whatever the rest of the
     # report says.
-    if stalled_handovers > 0:
+    if sync:
+        print(
+            "  --sync            = " + String(sync_rebases) + " chunks, each"
+            " from step 0 after the arm held for the query (the reference's"
+            " loop; nothing skipped)"
+        )
+    elif stalled_handovers > 0:
         print(
             "  ⚠⚠ stalled handovers = " + String(stalled_handovers) + " of "
             + String(queries) + " queries — the arm HELD STILL waiting for the"
