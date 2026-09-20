@@ -474,6 +474,7 @@ soarm-tower-record = { cmd = "mojo run -I . examples/so101/tower_teleop_record.m
 # lifts it / places it in the bowl on randomised placements, HEADLESS, writing
 # `.demo` files for `sac_tower_gpu.mojo --demos`. `-- [task] --episodes N --noise S`.
 soarm-tower-expert = { cmd = "mojo run -I . examples/so101/tower_expert_record.mojo", description = "Generate so101_tower demonstrations with a scripted IK expert (-- [task] --episodes N --noise SIGMA --seed S)" }
+soarm-tower-replay = { cmd = "mojo run -I . examples/so101/tower_demo_viewer.mojo", depends-on = ["build-imgui"], description = "Replay a so101_tower .demo file in the 3D viewer, posed from the recorded states (-- FILE.demo [--episode K] [--speed X] [--loop])" }
 soarm-tower-probe = { cmd = "mojo run -I . examples/so101/tower_policy_probe.mojo", description = "Probe a so101_tower SAC checkpoint: teacher-forced L1 on a .demo file, closed-loop episodes from fresh placements, step-by-step replay of one demo (-- --ckpt F --demos F [--replay-episode K [--open-loop]])" }
 soarm-tower-preview = { cmd = "mojo run -I . examples/so101/tower_camera_preview.mojo", description = "Render the so101_tower family's wrist and overhead cameras at a recorded state (-- --state deg,.. --out-dir DIR)" }
 soarm-calibrate-extrinsics = { cmd = "mojo run -I . examples/so101/calibrate_camera_extrinsics.mojo", depends-on = ["build-serial", "build-opencv", "build-imgui"], description = "Fit the camera -> robot-base transform (never energises the arm)" }
