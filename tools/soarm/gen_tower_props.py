@@ -92,6 +92,21 @@ BRICK_MM = 25.0
 BRICK_MASS_G = 10.0         # weighed, PLA matte
 BRICK_RGBA = "0.0 0.471 0.749 1"       # #0078BF
 
+CONTACT = 'solref="0.01 1" solimp="0.998 0.998 0.001"'
+"""The contact softness on every prop geom and the desk — robosuite's and
+LIBERO's object recipe, 2x stiffer than MuJoCo's default (timeconst 0.02) and
+an impedance of 0.998 instead of 0.9..0.95. Measured in MuJoCo on this scene
+(2026-09-20): a 5 N press sinks the brick 2.36 mm into the desk at the
+defaults and 0.80 mm here. Under teleop the arm presses harder than that
+while lining up, and the brick was visibly INSIDE the desk. `solref`/`solimp`
+are AVERAGED over a contact pair, so the desk carries the same values."""
+BRICK_FRICTION = "1.5 0.01 0.0001"
+"""Sliding / torsional / rolling. MuJoCo takes the MAX of the pair, so this
+is the jaw-brick friction too (the jaw hulls keep the default 1). The
+printed cube slipped out of the sim jaw under teleop where the real one
+does not; the real pinch has compliance and edges the convex hulls lack,
+and 1.5 is the fingertip value manipulation sims run with."""
+
 PLA_SPECULAR = 0.1          # matte print; MuJoCo's default is 0.5
 PLA_SHININESS = 0.1         # exponent 12.8; the default 0.5 is 64
 
@@ -222,7 +237,7 @@ def bowl_xml():
         '            density="0" group="0" material="bowl_pla"/>',
         '      <geom name="floor" type="box" pos="0 0 %s" size="%s %s %s"'
         % (_m(BOWL_FLOOR_MM / 2), _m(a), _m(a), _m(BOWL_FLOOR_MM / 2)),
-        '            density="%g" group="3" material="bowl_pla"/>' % BOWL_DENSITY,
+        '            density="%g" group="3" material="bowl_pla" %s/>' % (BOWL_DENSITY, CONTACT),
     ]
     for k in range(N_SIDES):
         th = 2 * HALF_ANGLE * k
@@ -231,8 +246,8 @@ def bowl_xml():
             % (k, _m(rc * math.cos(th)), _m(rc * math.sin(th)), _m(zc), th)
         )
         lines.append(
-            '            size="%s %s %s" density="%g" group="3" material="bowl_pla"/>'
-            % (_m(BOWL_WALL_MM / 2), _m(half_len), _m(half_h), BOWL_DENSITY)
+            '            size="%s %s %s" density="%g" group="3" material="bowl_pla" %s/>'
+            % (_m(BOWL_WALL_MM / 2), _m(half_len), _m(half_h), BOWL_DENSITY, CONTACT)
         )
     lines += ["    </body>", "  </worldbody>", "</mujoco>", ""]
     return "\n".join(lines), ro
@@ -260,7 +275,7 @@ def brick_xml():
         '    <body name="brick">',
         '      <freejoint name="free"/>',
         '      <geom name="geom" type="box" size="%s %s %s" density="%g"' % (_m(h), _m(h), _m(h), BRICK_DENSITY),
-        '            material="brick_pla"/>',
+        '            material="brick_pla" friction="%s" %s/>' % (BRICK_FRICTION, CONTACT),
         "    </body>",
         "  </worldbody>",
         "</mujoco>",

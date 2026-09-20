@@ -40,12 +40,14 @@
        contact) and the props still rest at 0.002. The brick never showed
        it: its box centre is 12.5 mm above its base.
 
-       ⚠ NO `<inertial>` — static, and the builder derives it anyway. -->
+       ⚠ `solref`/`solimp` AS ON THE PROPS (`gen_tower_props.CONTACT`): a
+       pair's softness is the AVERAGE of its two geoms', so a stiff brick on
+       a default desk is only half stiff. -->
   <compiler angle="radian"/>
   <worldbody>
     <body name="mat">
       <geom name="geom" type="box" pos="-0.055 0 -0.009" size="0.325 0.325 0.010" density="800"
-            rgba="0.93 0.93 0.91 1"/>
+            rgba="0.93 0.93 0.91 1" solref="0.01 1" solimp="0.998 0.998 0.001"/>
       <!-- THE SITE THE REGIONS ATTACH TO, on the top face — see
            `fixture.xml` for why it is site-relative and `group="3"`. -->
       <site name="surface" pos="0 0 0.001" size="0.005" group="3"/>

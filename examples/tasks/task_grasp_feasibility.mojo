@@ -395,6 +395,8 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
     best_off.append(0.0)
     best_off.append(0.0)
     var trials = 0
+    var n_held = 0
+    var slip_sum = 0.0
     var best_any = -1.0
     var best_any_gc = 0
     var best_any_spd = 0.0
@@ -447,6 +449,9 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
                         z_end > 0.06 and z_mid > 0.06 and gc > 0
                         and spd < 0.05 and slip < SLIP_MAX
                     )
+                    if held:
+                        n_held += 1
+                        slip_sum += slip
                     if held and z_end > best_hold:
                         best_hold = z_end
                         best_slip = slip
@@ -461,6 +466,13 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
                         best_any_spd = spd
     print("  swept", trials, "placements over a +-3 cm grid, both closing"
           " directions")
+    # ⚠ THE ROBUSTNESS NUMBER. "Best held z" says whether ANY placement
+    # holds; a teleoperator or a policy never lands exactly there. The
+    # fraction of the grid that holds, and the mean slip over those, is what
+    # "hard to grasp" measures (Denis, 2026-09-20: the printed cube slipped
+    # out of the sim jaw where the real one does not).
+    print("  HELD at", n_held, "of", trials, "placements; mean slip over held",
+          (slip_sum / Float64(n_held)) if n_held > 0 else 0.0, "m")
     print("  best HELD brick z", best_hold, "at offset", best_off[0],
           best_off[1], best_off[2], " gripper action", best_dir,
           " gripper contacts", best_contacts)

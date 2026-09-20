@@ -97,6 +97,40 @@ STOCK_MESH_ASSET = '    <mesh name="%s" file="%s.stl"/>' % (STOCK_MESH, STOCK_ME
 STOCK_MATERIAL = (
     '    <material name="%s_material" rgba="1 0.82 0.12 1"/>' % STOCK_MESH
 )
+# The stock moving-jaw collision line in `so_arm101.xml`. Asserted present.
+STOCK_JAW_COLLISION = (
+    '                  <geom type="mesh" class="collision"'
+    ' pos="-5.55112e-17 -5.55112e-17 0.0189"'
+    ' quat="1 -0 3.00524e-16 -2.00834e-17" mesh="moving_jaw_so101_v1"'
+    ' material="moving_jaw_so101_v1_material"/>'
+)
+
+# The jaws' collision boxes: (name, centre, half-size), metres.
+# FIXED JAW in the gripper body frame — the moving jaw is on +x, so the fixed
+# finger's inner face is its max-x face: x -8 mm at the tip (z -104), -13 at
+# z -64, -15 at z -42, then the servo pocket. Slices of the mesh:
+#   z -104..-70  x -22..-9   y +-7.5     the finger tip segment
+#   z  -70..-42  x -33..-13  y +-12      the finger base (outer side slopes)
+#   z  -42..-12  x -35..+12  y +-24      the pocket, lower half
+#   z  -12..0    x -17..+30  y -28..+24  the pocket, upper half (the servo)
+FIXED_JAW_BOXES = [
+    ("fixed_finger_tip",  (-0.0155,  0.000, -0.087), (0.0065, 0.0075, 0.017)),
+    ("fixed_finger_base", (-0.02325, 0.000, -0.056), (0.00975, 0.012, 0.014)),
+    ("gripper_pocket_low", (-0.0115, 0.000, -0.027), (0.0235, 0.024, 0.015)),
+    ("gripper_pocket_top", (0.0065, -0.002, -0.006), (0.0235, 0.026, 0.006)),
+]
+# MOVING JAW in its body frame (hinge axis z; the finger runs along -y; its
+# pad — the face toward the fixed jaw — is its min-x face). The stock geom's
+# z offset (0.0189) is folded into these. Slices of the mesh:
+#   y -84..-60  x -12.5..-2  z 12..26    the finger tip
+#   y -60..-24  x  -8.5..+6  z  9..29    the finger
+#   y -24..+10  x  +-10      z -5..43    the hinge block
+MOVING_JAW_BOXES = [
+    ("moving_jaw_tip",   (-0.00725, -0.072, 0.019), (0.00525, 0.012, 0.007)),
+    ("moving_jaw_mid",   (-0.00125, -0.042, 0.019), (0.00725, 0.018, 0.010)),
+    ("moving_jaw_hinge", (0.000,    -0.007, 0.019), (0.010,   0.017, 0.024)),
+]
+
 STOCK_CAM = (
     "                <!-- ADDITION: wrist camera, see so_arm_bake.py"
     " WRIST_CAM -->\n"
@@ -256,14 +290,47 @@ def bake():
         'material="%s_material"' % STOCK_MESH, 'material="%s_material"' % MOUNT_MESH
     )
     src = sub(STOCK_VISUAL, new_vis, "visual wrist geom")
+    # ⚠⚠ THE JAWS COLLIDE AS BOXES, NOT AS HULLS (2026-09-20). Every mesh
+    # collides as its CONVEX HULL, and the stock part's hull — servo pocket
+    # plus the fixed finger — spans the pinch cavity: measured against the
+    # mesh, 50 cm^3 of hull with no surface within 3 mm of it, from the
+    # finger's inner face (x -13 mm) to x +8 mm, over the finger's whole
+    # length. A cube could never touch the real pad; it was pinched between a
+    # ROUNDED PHANTOM surface and the moving jaw, whose own hull fills its
+    # L-shape the same way. `task_grasp_feasibility.mojo` held the printed
+    # cube at 4 of 250 placements on a +-3 cm grid, and under teleop it
+    # slipped out where the real one does not. MuJoCo hulls the same meshes
+    # (`mj_geomDistance`: the brick at the pinch centre is 1.5 mm INSIDE the
+    # fixed hull at every jaw angle), so this is the asset, not the engine.
+    # The boxes below are read off the meshes' z-slices (gripper frame) and
+    # y-slices (jaw frame), +-2 mm; the inner faces are the ones that matter.
     src = sub(
         STOCK_COLLISION,
-        STOCK_COLLISION + "\n"
+        "                <!-- RIG DEVIATION: the fixed jaw and the servo pocket as"
+        " BOXES (see bake_so_arm101_tower.py: the mesh's hull filled the"
+        " pinch) -->\n"
+        + "\n".join(
+            '                <geom type="box" class="collision" name="%s"'
+            ' pos="%s" size="%s"/>' % (n, _fmt(np.array(p3)), _fmt(np.array(h3)))
+            for n, p3, h3 in FIXED_JAW_BOXES
+        )
+        + "\n"
         "                <!-- RIG DEVIATION: the camera arm's envelope, as a box"
         " (see bake_so_arm101_tower.py) -->\n"
         '                <geom type="box" class="collision" pos="0.0025 -0.067 0.005"'
         ' size="0.0175 0.022 0.010" material="%s_material"/>' % MOUNT_MESH,
         "collision wrist geom",
+    )
+    src = sub(
+        STOCK_JAW_COLLISION,
+        "                  <!-- RIG DEVIATION: the moving jaw as BOXES (its hull"
+        " filled the L; see bake_so_arm101_tower.py) -->\n"
+        + "\n".join(
+            '                  <geom type="box" class="collision" name="%s"'
+            ' pos="%s" size="%s"/>' % (n, _fmt(np.array(p3)), _fmt(np.array(h3)))
+            for n, p3, h3 in MOVING_JAW_BOXES
+        ),
+        "collision moving-jaw geom",
     )
     src = sub(
         STOCK_MESH_ASSET,
@@ -355,7 +422,9 @@ def check(text):
     # the floor gone (-1 geom) and the camera arm box added (+1); one mesh
     # more (the mount beside the stock part); one light fewer, no texture,
     # the groundplane material gone and the mount's added
-    assert m.ngeom == ref.ngeom and m.nmesh == ref.nmesh + 1, (m.ngeom, m.nmesh)
+    # +5 geoms: the two jaw collision MESHES became 4 + 3 boxes (the camera-arm
+    # box was already counted against the stock's follower collision mesh).
+    assert m.ngeom == ref.ngeom + 5 and m.nmesh == ref.nmesh + 1, (m.ngeom, m.nmesh)
     assert m.nlight == ref.nlight - 1 and m.ntex == 0 and m.nmat == ref.nmat
     d = mujoco.MjData(m)
     mujoco.mj_forward(m, d)
