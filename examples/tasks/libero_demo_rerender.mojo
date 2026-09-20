@@ -15,8 +15,10 @@ geom group, the stove burner rule, the demo's own fixture draw. It writes
     build/demos/<suite>.rendered.h5
         action      (7)   f32    the recorded OSC_POSE words, as before
         state       (nq+nv) f64  as before
-        qpos        (9+T) f32    the 7 arm joints + 2 finger joints OF `state`,
-                                 then a one-hot of the task over the suite's T
+        qpos        (18+T) f32   the 7 arm joints + 2 finger joints OF `state`,
+                                 their one-step difference (zero on a demo's
+                                 first row), then a one-hot of the task over
+                                 the suite's T
         task_index  (1)   i32
         images      (2 x 3 x 128 x 128) u8  OURS, CHW, top row first
         psnr        (2)   f32    ours vs the recording, per camera, per row
@@ -87,7 +89,7 @@ from mojo_rl.io.hdf5.reader import H5File
 from mojo_rl.data.column import ColumnSpec
 from mojo_rl.data.store import TrajectoryStore, TrajectoryStoreWriter
 from mojo_rl.data.libero_demos import (
-    CAM_H, CAM_W, N_CAMS, CAM_ELEMS, ACTION_DIM, QPOS_PROPRIO,
+    CAM_H, CAM_W, N_CAMS, CAM_ELEMS, ACTION_DIM, QPOS_PROPRIO, QPOS_WORDS,
     COL_ACTION, COL_STATE, COL_QPOS, COL_TASK, COL_IMAGES,
 )
 from mojo_rl.physics3d.fields import Data, Model
@@ -347,7 +349,7 @@ def main() raises:
     # ── the store out ─────────────────────────────────────────────────────
     # ⚠ THE TASK RIDES IN `qpos` AS A ONE-HOT — the picture cannot carry it,
     # every libero_goal task being the same scene (`libero_demos.mojo`).
-    var QPOS_DIM = QPOS_PROPRIO + len(stems)
+    var QPOS_DIM = QPOS_WORDS + len(stems)
     var cols = List[ColumnSpec]()
     cols.append(ColumnSpec(String(COL_ACTION), DType.float32, ACTION_DIM))
     cols.append(ColumnSpec(String(COL_STATE), DType.float64, STATE_DIM))
@@ -494,11 +496,15 @@ def main() raises:
                 for k in range(STATE_DIM):
                     sb[unsafe_offset = l * STATE_DIM + k] = state_col[rr * STATE_DIM + k]
                 for k in range(QPOS_PROPRIO):
-                    qb[unsafe_offset = l * QPOS_DIM + k] = Scalar[DType.float32](
-                        state_col[rr * STATE_DIM + qadr[k]]
+                    var cur = Scalar[DType.float32](state_col[rr * STATE_DIM + qadr[k]])
+                    var prev = (
+                        Scalar[DType.float32](state_col[(rr - 1) * STATE_DIM + qadr[k]])
+                        if t > 0 else cur
                     )
+                    qb[unsafe_offset = l * QPOS_DIM + k] = cur
+                    qb[unsafe_offset = l * QPOS_DIM + QPOS_PROPRIO + k] = cur - prev
                 for k in range(len(stems)):
-                    qb[unsafe_offset = l * QPOS_DIM + QPOS_PROPRIO + k] = Scalar[
+                    qb[unsafe_offset = l * QPOS_DIM + QPOS_WORDS + k] = Scalar[
                         DType.float32
                     ](1.0 if k == ti else 0.0)
                 tb[unsafe_offset=l] = Int32(ti)

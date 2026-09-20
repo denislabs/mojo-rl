@@ -27,9 +27,22 @@ observation and nothing else from the recording.
 `ACTDataset` and `SmolVLABatchSampler` read the proprioceptive vector from a
 column called `qpos` — the LeRobot importer's `observation.state` — and refuse
 a store without one. LIBERO's is `joint_states` (7) ++ `gripper_states` (2),
-and then **a one-hot of `task_index` over the suite's tasks**, so the store
-carries `9 + n_tasks` float32 per row and the image policies train on it
-without a per-dataset column map.
+then **their one-step difference** (9 more: row r minus row r-1 of the same
+episode, zero on an episode's first row), and then **a one-hot of
+`task_index` over the suite's tasks**, so the store carries `18 + n_tasks`
+float32 per row and the image policies train on it without a per-dataset
+column map.
+
+⚠⚠ THE DIFFERENCE IS THERE BECAUSE ONE POSE DOES NOT CARRY THE PHASE. The
+operators disagree by ±10 steps on WHEN the sideways pull at a drawer handle
+starts; at one arm pose the demonstrations are half still-approaching and
+half already-pulling, and the L1 median of a split set is ~0 — the fitted
+ACT descended past the handle and never pulled (0-5/200, three fits). A
+nearest-neighbour median chunk from the nine joints alone reproduces that;
+the same with the nine one-step differences scores 0.60 on LIBERO's frozen
+inits with no network and no camera (`libero_eval_batched --knn --knn-vel`,
+5090, 2026-09-20). The difference is what the eval can compute from its own
+previous step, which is why it is a difference and not `qvel`.
 
 ⚠⚠ THE ONE-HOT IS THERE BECAUSE THE PICTURE DOES NOT CARRY THE TASK. Every
 libero_goal task is the SAME scene at the SAME layout; only the instruction
@@ -112,8 +125,14 @@ comptime GRIPPER_DIM: Int = 2
 comptime QPOS_PROPRIO: Int = JOINT_DIM + GRIPPER_DIM
 """`joint_states` ++ `gripper_states`: the first nine words of `qpos`,
 robosuite's `low_dim` modality. The task one-hot follows; the column's width
-is `QPOS_PROPRIO + n_tasks` and is read off the store's manifest."""
-
+is `QPOS_WORDS + n_tasks` (the differences sit between) and is read off the
+store's manifest."""
+comptime QPOS_DQ: Int = QPOS_PROPRIO
+"""The one-step difference of the nine proprio words, zero on an episode's
+first row; computed in float32 from the float32 words so a gate can compare
+it exactly."""
+comptime QPOS_WORDS: Int = QPOS_PROPRIO + QPOS_DQ
+"""Proprio ++ difference — everything before the task one-hot."""
 comptime COL_ACTION: StaticString = "action"
 comptime COL_STATE: StaticString = "state"
 comptime COL_JOINTS: StaticString = "joint_states"
@@ -210,7 +229,7 @@ def import_libero_demos(
     cols.append(ColumnSpec(String(COL_STATE), DType.float64, state_dim))
     cols.append(ColumnSpec(String(COL_JOINTS), DType.float32, JOINT_DIM))
     cols.append(ColumnSpec(String(COL_GRIPPER), DType.float32, GRIPPER_DIM))
-    var qpos_dim = QPOS_PROPRIO + len(task_names)
+    var qpos_dim = QPOS_WORDS + len(task_names)
     cols.append(ColumnSpec(String(COL_QPOS), DType.float32, qpos_dim))
     cols.append(ColumnSpec(String(COL_TASK), DType.int32, 1))
     if images:
@@ -337,8 +356,16 @@ def import_libero_demos(
                     qb[unsafe_offset = r * qpos_dim + JOINT_DIM + k] = Scalar[
                         DType.float32
                     ](raw_g[unsafe_offset = r * GRIPPER_DIM + k])
+                # the one-step difference, float32 from the float32 words
+                for k in range(QPOS_PROPRIO):
+                    var cur = qb[unsafe_offset = r * qpos_dim + k]
+                    var prev = (
+                        qb[unsafe_offset = (r - 1) * qpos_dim + k]
+                        if r > 0 else cur
+                    )
+                    qb[unsafe_offset = r * qpos_dim + QPOS_PROPRIO + k] = cur - prev
                 for k in range(len(task_names)):
-                    qb[unsafe_offset = r * qpos_dim + QPOS_PROPRIO + k] = Scalar[
+                    qb[unsafe_offset = r * qpos_dim + QPOS_WORDS + k] = Scalar[
                         DType.float32
                     ](1.0 if k == ti else 0.0)
                 for k in range(row_words):

@@ -846,6 +846,7 @@ def run[T: PlacementTable, M: ModelDefLike](
     var act_u8 = List[Scalar[DType.uint8]]()
     var act_images = List[Scalar[DT]]()
     var act_qpos = List[Scalar[DT]]()
+    var act_prev = List[Float64](length=LANES * AQP, fill=0.0)  # last step's joints
     var act_dummy = List[Scalar[DT]]()
     var act_valid = List[Scalar[DT]]()
     var act_chunk = List[Scalar[DT]]()
@@ -906,9 +907,9 @@ def run[T: PlacementTable, M: ModelDefLike](
         h_rgb = ctx.enqueue_create_host_buffer[DT](LANES * ANPIX * RGB_CHANNELS)
         act_u8 = List[Scalar[DType.uint8]](length=LANES * AIMG, fill=0)
     if have_act:
-        if AQ != AQP + n_tasks:
+        if AQ != 2 * AQP + n_tasks:
             raise Error("libero eval batched: the ACT declaration carries "
-                        + String(AQ - AQP) + " task words, the family has "
+                        + String(AQ - 2 * AQP) + " task words, the family has "
                         + String(n_tasks) + " tasks")
         act_opt.append(ACT_T.make(ctx=ctx))
         act_opt[0].load(act_dir + "/best.ckpt")
@@ -1260,17 +1261,27 @@ def run[T: PlacementTable, M: ModelDefLike](
                 # 2. the nine proprio words and the lane's task one-hot,
                 #    standardised as the fit was (`env.d.qpos` was downloaded
                 #    after the previous step; the task is the row's)
+                #    then the nine one-step differences (this step's joints
+                #    minus the previous policy step's, zero at the first,
+                #    as the store's episode-first row is), then the one-hot
                 for e in range(LANES):
                     var r_task = row_task[lane_row[e] if lane_row[e] >= 0 else 0]
                     for k in range(AQ):
-                        var raw = (
-                            Scalar[DT](env.d.qpos.data[e * NQ + qadr9[k]])
-                            if k < AQP else
-                            Scalar[DT](1.0 if k - AQP == r_task else 0.0)
-                        )
+                        var raw: Scalar[DT]
+                        if k < AQP:
+                            raw = Scalar[DT](env.d.qpos.data[e * NQ + qadr9[k]])
+                        elif k < 2 * AQP:
+                            var cur = Float64(env.d.qpos.data[e * NQ + qadr9[k - AQP]])
+                            raw = Scalar[DT](
+                                cur - act_prev[e * AQP + k - AQP] if t_pol > 0 else 0.0
+                            )
+                        else:
+                            raw = Scalar[DT](1.0 if k - 2 * AQP == r_task else 0.0)
                         act_qpos[e * AQ + k] = (
                             raw - act_norm.qpos_mean[k]
                         ) / act_norm.qpos_std[k]
+                    for k in range(AQP):
+                        act_prev[e * AQP + k] = Float64(env.d.qpos.data[e * NQ + qadr9[k]])
                 render_ns += perf_counter_ns() - tr0
                 # 3. one forward at LANES when a query is due, then either
                 #    each lane's ensemble or the chunk's next action

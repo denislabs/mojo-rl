@@ -48,7 +48,7 @@ store the norm file names so the two cannot be confused in a table.
 """
 
 from mojo_rl.data.libero_demos import (
-    CAM_H, CAM_W, N_CAMS, ACTION_DIM, QPOS_PROPRIO,
+    CAM_H, CAM_W, N_CAMS, ACTION_DIM, QPOS_PROPRIO, QPOS_WORDS,
 )
 from mojo_rl.deep_agents.act.config import (
     RUN_DIM, RUN_HEADS, RUN_FF, RUN_LATENT, RUN_ENC_LAYERS, RUN_DEC_LAYERS,
@@ -65,9 +65,12 @@ from mojo_rl.tasks.libero_osc_config import LIBERO_CONTROL_FREQ
 
 comptime LIBERO_GOAL_N_TASKS: Int = 10
 comptime LIBERO_ACT_PROPRIO: Int = QPOS_PROPRIO
-comptime LIBERO_ACT_QPOS: Int = QPOS_PROPRIO + LIBERO_GOAL_N_TASKS
-"""9 proprio words + the task one-hot. A store from another suite has another
-width and `ACTDataset` refuses it by name and size."""
+comptime LIBERO_ACT_QPOS: Int = QPOS_WORDS + LIBERO_GOAL_N_TASKS
+"""9 proprio words + their 9 one-step differences + the task one-hot. A store
+from another suite (or the 19-wide stores of 2026-09-18/19) has another width
+and `ACTDataset` refuses it by name and size. The differences are the phase
+the picture does not carry — see `libero_demos.mojo`'s header and the
+vision-free control at 0.60."""
 comptime LIBERO_ACT_ADIM: Int = ACTION_DIM
 comptime LIBERO_ACT_N_CAM: Int = N_CAMS
 comptime LIBERO_ACT_IMG_H: Int = CAM_H

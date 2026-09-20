@@ -66,7 +66,8 @@ from std.memory.alloc import unsafe_alloc
 from mojo_rl.io.hdf5.reader import H5File
 from mojo_rl.data.libero_demos import (
     import_libero_demos, CAM_H, CAM_W, N_CAMS, CAM_ELEMS, COL_STATE, COL_IMAGES,
-    COL_QPOS, COL_JOINTS, COL_GRIPPER, QPOS_PROPRIO, JOINT_DIM, GRIPPER_DIM,
+    COL_QPOS, COL_JOINTS, COL_GRIPPER, QPOS_PROPRIO, QPOS_WORDS, JOINT_DIM,
+    GRIPPER_DIM,
 )
 from mojo_rl.data.store import TrajectoryStore
 from mojo_rl.tasks.spec import load_task
@@ -251,14 +252,20 @@ def main() raises:
             + String(state_dim)
         )
 
-    # ── `qpos` is `joint_states` ++ `gripper_states` ++ onehot(task), row
+    # ── `qpos` is `joint_states` ++ `gripper_states` ++ their one-step
+    # difference (zero on an episode's first row) ++ onehot(task), row
     # for row. Four columns read back and compared: the concatenation is
     # trivial, the thing that can go wrong is a ROW misalignment between the
     # appends, and that is what an exact per-row comparison over the whole
     # store catches. The one-hot is checked against `task_index` and must
     # light EXACTLY one word.
-    var QPOS_DIM = QPOS_PROPRIO + len(full_names)
+    var QPOS_DIM = QPOS_WORDS + len(full_names)
     var q_all = st.load_column[DType.float32](String(COL_QPOS))
+    var ep_first = List[Bool](length=rep.n_rows, fill=False)
+    for e in range(st.n_episodes()):
+        ep_first[st.episodes.start_of(e)] = True
+    var dq_bad = 0
+    var dq_moving = 0
     var j_all = st.load_column[DType.float32](String(COL_JOINTS))
     var g_all = st.load_column[DType.float32](String(COL_GRIPPER))
     var t_all = st.load_column[DType.int32](String("task_index"))
@@ -277,9 +284,20 @@ def main() raises:
         for k in range(GRIPPER_DIM):
             if q_all[r * QPOS_DIM + JOINT_DIM + k] != g_all[r * GRIPPER_DIM + k]:
                 q_bad += 1
+        for k in range(QPOS_PROPRIO):
+            var want = (
+                Scalar[DType.float32](0)
+                if ep_first[r] else
+                q_all[r * QPOS_DIM + k] - q_all[(r - 1) * QPOS_DIM + k]
+            )
+            var got = q_all[r * QPOS_DIM + QPOS_PROPRIO + k]
+            if got != want:
+                dq_bad += 1
+            if got != 0.0:
+                dq_moving += 1
         var lit = 0
         for k in range(len(full_names)):
-            var v = q_all[r * QPOS_DIM + QPOS_PROPRIO + k]
+            var v = q_all[r * QPOS_DIM + QPOS_WORDS + k]
             if v == 1.0:
                 lit += 1
                 if k != Int(t_all[r]):
@@ -291,8 +309,15 @@ def main() raises:
         if r > 0 and q_all[r * QPOS_DIM] != q_all[(r - 1) * QPOS_DIM]:
             q_moving += 1
     print("  qpos  :", rep.n_rows, "rows == joint_states ++ gripper_states ++"
-          " onehot(task);", q_bad, "proprio words differ;", oh_bad,
-          "one-hot faults;", q_moving, "rows where joint 1 moved")
+          " diff ++ onehot(task);", q_bad, "proprio words differ;", dq_bad,
+          "difference words differ;", oh_bad, "one-hot faults;", q_moving,
+          "rows where joint 1 moved;", dq_moving, "non-zero difference words")
+    if dq_bad > 0:
+        raise Error("the one-step difference in `qpos` is wrong on "
+                    + String(dq_bad) + " words (row r - row r-1 of the same"
+                    " episode, zero on the first row)")
+    if dq_moving == 0:
+        raise Error("the one-step difference is zero everywhere — checked nothing")
     if oh_bad > 0:
         raise Error("the task one-hot in `qpos` is wrong on " + String(oh_bad)
                     + " counts — it must light exactly the row's task_index")
