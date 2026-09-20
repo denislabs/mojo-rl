@@ -152,7 +152,14 @@ this, rad/s."""
 # The legs' step budgets at 31.25 Hz.
 comptime N_PRE = 40
 comptime N_DESCEND = 40
-comptime N_CLOSE = 15
+comptime N_CLOSE = 1
+"""The close is a STEP: the jaw command goes to closed at once. It was a
+30-step ramp, then 15; a step labels the arrival state with the full-range
+jump the fitted policy needs (a ramp's first row is 1/30 of the range below
+open, next to the approach's "open" at the same state, and the policy's jaw
+never moved). A step only works with the jaw DEEP enough around the brick —
+see `Z_GRASP`: at the old 0.03 the tip brushed the brick's top edge (0.14 mm
+of overlap, in MuJoCo too) and a fast close missed it every time (0/20)."""
 comptime N_LIFT = 40
 comptime N_CARRY = 50
 comptime N_PLACE = 25
@@ -162,7 +169,14 @@ comptime N_HOLD_MAX = 120
 """Steps to wait for the predicate to hold after the last leg."""
 
 comptime Z_PRE = 0.08
-comptime Z_GRASP = 0.03
+comptime Z_GRASP = 0.01
+"""The gripper site's height above the brick CENTRE at the grasp. It was
+0.03 — measured against the jaws' phantom hull, before the box jaws — and
+the tips only brushed the brick's top edge, so the grasp worked by the slow
+ramp sweeping the brick into the fixed jaw. Sweep on 20 placements, stiff
+jaws (close steps 15 / 1): 0.03 16/0, 0.025 16/0, 0.02 16/0, 0.015 16/13,
+0.01 16/16, 0.005 16/16. At 0.01 a one-step close grasps as well as the
+ramp (30/40 on other seeds; 25/40 with flat noise 0.02)."""
 comptime Z_LIFT = 0.15
 comptime Z_CARRY = 0.16
 comptime Z_PLACE = 0.10
@@ -390,6 +404,8 @@ struct Expert(Movable):
     """Rows recorded while True carry the INTERVENED flag (the expert
     driving after a `--policy` handover — HIL-SERL's human, scripted)."""
     var close_steps: Int
+    var z_grasp: Float64
+    """The gripper site's height above the brick centre at the grasp (`--z-grasp`, default `Z_GRASP`)."""
     var frame_skip: Int
     var timestep: Float64
     var q_cmd: List[Float64]
@@ -411,6 +427,7 @@ struct Expert(Movable):
         self.flat_noise = False
         self.intervening = False
         self.close_steps = N_CLOSE
+        self.z_grasp = Z_GRASP
         self.frame_skip = CFG.FRAME_SKIP
         self.timestep = So101TowerModel.TIMESTEP
         self.q_cmd = List[Float64](length=ACT, fill=0.0)
@@ -672,7 +689,7 @@ def run_episode(
     var q1 = List[Float64](length=N_ARM, fill=0.0)
     var e1 = ex.arm.ik(env, _above(pb, Z_PRE), q, yaw, q1)
     var q2 = List[Float64](length=N_ARM, fill=0.0)
-    var e2 = ex.arm.ik(env, _above(pb, Z_GRASP), q1, yaw, q2)
+    var e2 = ex.arm.ik(env, _above(pb, ex.z_grasp), q1, yaw, q2)
     var q3 = List[Float64](length=N_ARM, fill=0.0)
     var e3 = ex.arm.ik(env, _above(pb, Z_LIFT), q2, yaw, q3)
     if verbose:
@@ -691,8 +708,8 @@ def run_episode(
             taper_noise=True,
         )
     if not done:
-        # ⚠ THE CLOSE IS A SHORTER RAMP (`--close-steps`, default 15; it
-        # was 30). A 30-step ramp labels the arrival state — arm settled at the
+        # ⚠ THE CLOSE IS A STEP (`--close-steps`, default 1; it was 30,
+        # then 15) — see `N_CLOSE` and `Z_GRASP`. A 30-step ramp labels the arrival state — arm settled at the
         # grasp pose, jaw open — with a command 1/30 of the range below
         # open, next to the approach's "open" at the same state: the fitted
         # policy's jaw command there is a hair below open, the jaw does not
@@ -731,7 +748,7 @@ def run_episode(
 
 def _usage():
     print("usage: tower_expert_record.mojo [task] [--episodes N] [--seed S]"
-          " [--noise SIGMA] [--flat-noise] [--close-steps N] [--feedback] [--out FILE]\n"
+          " [--noise SIGMA] [--flat-noise] [--close-steps N] [--z-grasp M] [--feedback] [--out FILE]\n"
           "       [--policy CKPT [--handover-mm MM] [--policy-steps N]]   # DAgger\n"
           "       [--keep-failures] [--quiet]")
 
@@ -745,6 +762,7 @@ def main() raises:
     var feedback = False
     var flat_noise = False
     var close_steps = N_CLOSE
+    var z_grasp = Z_GRASP
     var policy_ckpt = String("")
     var handover_mm = 25.0
     var policy_steps = 140
@@ -780,6 +798,9 @@ def main() raises:
             i += 1
         elif a == "--close-steps" and i + 1 < len(args):
             close_steps = Int(String(args[i + 1]))
+            i += 2
+        elif a == "--z-grasp" and i + 1 < len(args):
+            z_grasp = Float64(String(args[i + 1]))
             i += 2
         elif a == "--policy" and i + 1 < len(args):
             policy_ckpt = String(args[i + 1])
@@ -847,6 +868,7 @@ def main() raises:
     var ex = Expert(env, noise, feedback)
     ex.flat_noise = flat_noise
     ex.close_steps = close_steps
+    ex.z_grasp = z_grasp
     var agent: Agent = SAC["cpu", E.OBS_DIM, ACT, BATCH, CAP, HIDDEN](
         action_scale=1.0, learning_starts=0,
     )
