@@ -466,6 +466,10 @@ soarm-tower-policy-viewer = { cmd = "mojo run -I . examples/so101/tower_policy_v
 # from. ⚠ NEVER ENERGISES AN ARM: the leader is read with torque off. Pass
 # `-- <task> [--policy CKPT] [--out F] [--keep-failures] [--no-arm]`.
 soarm-tower-record = { cmd = "mojo run -I . examples/so101/tower_teleop_record.mojo", depends-on = ["build-serial", "build-imgui"], description = "Record so101_tower demonstrations from the leader arm in the sim (-- <task> [--policy CKPT]); `--no-arm` for a policy-only run" }
+# A scripted expert (waypoints + IK on the CPU env) that picks the cube and
+# lifts it / places it in the bowl on randomised placements, HEADLESS, writing
+# `.demo` files for `sac_tower_gpu.mojo --demos`. `-- [task] --episodes N --noise S`.
+soarm-tower-expert = { cmd = "mojo run -I . examples/so101/tower_expert_record.mojo", description = "Generate so101_tower demonstrations with a scripted IK expert (-- [task] --episodes N --noise SIGMA --seed S)" }
 soarm-tower-preview = { cmd = "mojo run -I . examples/so101/tower_camera_preview.mojo", description = "Render the so101_tower family's wrist and overhead cameras at a recorded state (-- --state deg,.. --out-dir DIR)" }
 soarm-calibrate-extrinsics = { cmd = "mojo run -I . examples/so101/calibrate_camera_extrinsics.mojo", depends-on = ["build-serial", "build-opencv", "build-imgui"], description = "Fit the camera -> robot-base transform (never energises the arm)" }
 # Run a trained ACT policy on the follower, from the two live cameras.
