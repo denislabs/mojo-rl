@@ -12,11 +12,12 @@
        ⚠ THE SLAB IS OFFSET FROM ITS BODY. The body — and the `surface` site
        the regions are drawn in — stays at world (0.32, 0, 0.001), where the
        first version of this mat put it, so every region rectangle and every
-       recorded placement keeps its meaning. The geom is shifted 9.5 cm back
-       so the slab spans world x -0.10..0.55, y -0.325..0.325: the tower foot
-       (x -0.03..0.07, y -0.16..0.08) and the arm base are inside it, with the
-       front edge where it was. The earlier 48 x 50 cm mat started 8 cm IN
-       FRONT of the arm, which is not the rig.
+       recorded placement keeps its meaning. The geom is shifted 5.5 cm back
+       so the slab spans world x -0.06..0.59, y -0.325..0.325: the arm and
+       the tower stand AT THE BACK EDGE of the desk, as on the rig (the arm
+       base reaches x -0.056, the tower foot x -0.032..0.071, y -0.16..0.08),
+       and the desk extends 59 cm in front of the arm. The earlier 48 x 50
+       cm mat started 8 cm IN FRONT of the arm, which is not the rig.
 
        ⚠ WHY A MAT AND NOT `fixture.xml`. Two reasons the tabletop family's
        2 cm slab does not serve here: (1) the props must rest at the SAME
@@ -43,7 +44,7 @@
   <compiler angle="radian"/>
   <worldbody>
     <body name="mat">
-      <geom name="geom" type="box" pos="-0.095 0 -0.009" size="0.325 0.325 0.010" density="800"
+      <geom name="geom" type="box" pos="-0.055 0 -0.009" size="0.325 0.325 0.010" density="800"
             rgba="0.93 0.93 0.91 1"/>
       <!-- THE SITE THE REGIONS ATTACH TO, on the top face — see
            `fixture.xml` for why it is site-relative and `group="3"`. -->
