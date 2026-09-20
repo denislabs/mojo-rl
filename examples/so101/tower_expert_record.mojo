@@ -118,7 +118,7 @@ this, rad/s."""
 # The legs' step budgets at 31.25 Hz.
 comptime N_PRE = 40
 comptime N_DESCEND = 40
-comptime N_CLOSE = 30
+comptime N_CLOSE = 15
 comptime N_LIFT = 40
 comptime N_CARRY = 50
 comptime N_PLACE = 25
@@ -352,6 +352,7 @@ struct Expert(Movable):
     var noise: Float64
     var feedback: Bool
     var flat_noise: Bool
+    var close_steps: Int
     var frame_skip: Int
     var timestep: Float64
     var q_cmd: List[Float64]
@@ -371,6 +372,7 @@ struct Expert(Movable):
         self.noise = noise
         self.feedback = feedback
         self.flat_noise = False
+        self.close_steps = N_CLOSE
         self.frame_skip = CFG.FRAME_SKIP
         self.timestep = So101TowerModel.TIMESTEP
         self.q_cmd = List[Float64](length=ACT, fill=0.0)
@@ -585,7 +587,17 @@ def run_episode(
     if not done:
         done = ex.step_to(env, q2, True, N_DESCEND, taper_noise=True)
     if not done:
-        done = ex.hold(env, False, N_CLOSE)
+        # ⚠ THE CLOSE IS A SHORTER RAMP (`--close-steps`, default 15; it
+        # was 30). A 30-step ramp labels the arrival state — arm settled at the
+        # grasp pose, jaw open — with a command 1/30 of the range below
+        # open, next to the approach's "open" at the same state: the fitted
+        # policy's jaw command there is a hair below open, the jaw does not
+        # move, the state does not change, and it waits for ever (probe,
+        # runs dd8d4a64 and c40b4a8b: gripper word 1.8 rad off the
+        # recording from step 90 on). Measured on 20 placements: 30 steps
+        # 18/20, 15 steps 18/20, 8 steps 14/20, 4 steps 0/20, 1 step 13/20 —
+        # the fast closes knock the cube. Fifteen doubles the label.
+        done = ex.hold(env, False, ex.close_steps)
     if not done:
         done = ex.step_to(env, q3, False, N_LIFT)
     if place and not done:
@@ -614,7 +626,8 @@ def run_episode(
 
 def _usage():
     print("usage: tower_expert_record.mojo [task] [--episodes N] [--seed S]"
-          " [--noise SIGMA] [--flat-noise] [--feedback] [--out FILE] [--keep-failures] [--quiet]")
+          " [--noise SIGMA] [--flat-noise] [--close-steps N] [--feedback] [--out FILE]\n"
+          "       [--keep-failures] [--quiet]")
 
 
 def main() raises:
@@ -625,6 +638,7 @@ def main() raises:
     var noise = 0.0
     var feedback = False
     var flat_noise = False
+    var close_steps = N_CLOSE
     var out_path = String("")
     var keep_failures = False
     var verbose = True
@@ -655,6 +669,9 @@ def main() raises:
         elif a == "--flat-noise":
             flat_noise = True
             i += 1
+        elif a == "--close-steps" and i + 1 < len(args):
+            close_steps = Int(String(args[i + 1]))
+            i += 2
         elif a == "--help" or a == "-h":
             _usage()
             return
@@ -709,6 +726,7 @@ def main() raises:
 
     var ex = Expert(env, noise, feedback)
     ex.flat_noise = flat_noise
+    ex.close_steps = close_steps
     var n_ok = 0
     for ep in range(n_episodes):
         _ = env.reset()
