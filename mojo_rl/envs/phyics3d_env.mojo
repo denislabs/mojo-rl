@@ -979,6 +979,14 @@ struct Phyics3dEnv[
             return
         self._renderer.value()[].request_free_camera()
 
+    def renderer_set_pip_cameras(mut self, var cams: List[Int]) -> None:
+        """Draw these model cameras as insets beside the main view — the
+        overhead and wrist cameras while teleoperating from the free camera.
+        Empty clears them."""
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].set_pip_cameras(cams^)
+
     def renderer_set_capture_scene_only(mut self, on: Bool) -> None:
         """Whether screenshots and recordings exclude the reserved UI strip.
 

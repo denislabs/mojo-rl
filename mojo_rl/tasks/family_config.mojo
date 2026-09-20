@@ -1365,3 +1365,13 @@ the family's `inherit_option=1` — it is held with 0.5 mm of slip over the
 pyramidal cone, which is why the two settings travel together (Menagerie's
 SO-100, the Robotiq 2F-85, robosuite). The tabletop family still runs the
 defaults; its FEASIBLE verdict was the 1.5 s one."""
+
+comptime So101TowerTeleopConfig = So101FamilyConfig[
+    So101TowerPlacement, 1200, 16, SO101_TOWER_NMESH_VERTS, 0.0226, 0.5, 0.25
+]
+"""`So101TowerConfig` with a 1200-step horizon (about 38 s) instead of 300:
+what `examples/so101/tower_teleop_record.mojo` runs. A human on the leader
+arm needs ~10 s just to reach and grasp in the sim (Denis, 2026-09-20), and
+300 steps is 9.6 s. Every other parameter is the tower's, so the reward the
+recorder pays through this config is the trainer's reward exactly; only the
+truncation differs, and the replay never sees truncation (`done` stays 0)."""

@@ -93,7 +93,7 @@ from mojo_rl.robot.so101.ports import leader_port, port_refusal
 from mojo_rl.robot.so101.sim_map import SimJointMap
 from mojo_rl.tasks.eval import region_sites, region_rects, region_half_heights
 from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import So101TowerConfig
+from mojo_rl.tasks.family_config import So101TowerConfig, So101TowerTeleopConfig
 from mojo_rl.tasks.gpu_eval import region_table_words
 from mojo_rl.tasks.host_reward import family_reward_host
 from mojo_rl.tasks.placement.so101_tower import So101TowerPlacement
@@ -359,7 +359,7 @@ struct TowerTeleop(ActionSource, StepObserver, Movable):
                 print("  `i` does nothing without --policy")
 
         # THE reward — the kernel's function on the host (see the header).
-        var rd = family_reward_host[So101TowerConfig, DTYPE, D, ACT_DIM](
+        var rd = family_reward_host[So101TowerTeleopConfig, DTYPE, D, ACT_DIM](
             d, mf, action, step_i, self.frame_skip, self.timestep
         )
         var reward = Float64(rd[0])
@@ -522,6 +522,8 @@ def main() raises:
     print("  keep failures:", keep_failures)
     print("  reward       : the family's GPU hook on the host, weights",
           w_goal, "/", w_reach, " margins", m_goal, "/", m_reach)
+    print("  views        : free camera + overhead and wrist insets (right edge)")
+    print("  horizon      :", So101TowerTeleopConfig.MAX_STEPS, "steps (~38 s) per episode")
     print("  keys         : `n` end+keep   `x` discard   `i` intervene (with --policy)")
     print("                 success = goal held", HOLD_STEPS_SUCCESS,
           "steps -> saved automatically")
@@ -529,7 +531,7 @@ def main() raises:
 
     var src = TowerTeleop(
         port, policy_ckpt, out_path, keep_failures,
-        So101TowerConfig.FRAME_SKIP, So101TowerModel.TIMESTEP,
+        So101TowerTeleopConfig.FRAME_SKIP, So101TowerModel.TIMESTEP,
     )
     if src.arm:
         print("\n" + src.map.range_report(src.arm.value().cal))
@@ -557,6 +559,11 @@ def main() raises:
     st.free_camera = True
     st.episode_steps = 0        # the task's own horizon is the only limit
     st.frame_ms = CONTROL_PERIOD_MS
+    # the overhead camera (1) above the wrist camera (0), as insets on the
+    # right of the free camera — three eyes at once
+    st.pip_cameras = List[Int]()
+    st.pip_cameras.append(1)
+    st.pip_cameras.append(0)
     st.reset_curriculum = List[Float64]()
     for k in range(MODEL_CURRICULUM_SIZE):
         st.reset_curriculum.append(cw[k])
@@ -572,7 +579,7 @@ def main() raises:
         )
         st.reset_meta_idx = mw[0].copy()
         st.reset_meta_val = mw[1].copy()
-        run_view[So101TowerModel, So101TowerConfig, TowerTeleop, TowerTeleop](
+        run_view[So101TowerModel, So101TowerTeleopConfig, TowerTeleop, TowerTeleop](
             name, st, pol, obs
         )
     _ = src

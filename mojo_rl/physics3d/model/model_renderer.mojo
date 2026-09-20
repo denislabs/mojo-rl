@@ -9,6 +9,7 @@ Supports all geom types: capsule, sphere, box, and plane (ground).
 from std.collections import Array
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from mojo_rl.render import Renderer3D, RendererHandoff, Camera3D, Color
+from mojo_rl.render.renderer3d import PipView
 from mojo_rl.render.ui import UIRect, UIText
 from mojo_rl.render.light import Light
 from mojo_rl.core import EnvRenderer3D
@@ -166,6 +167,8 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
 
     Deferred rather than done in `request_free_camera` because framing needs
     the torso position, which only `render_frame` has."""
+    # Model camera indices drawn as insets every frame — `set_pip_cameras`.
+    var pip_cameras: List[Int]
 
     var show_hud: Bool
     """Draw the built-in keybind/camera/step overlay.
@@ -339,6 +342,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.show_sites = show_sites
         self.show_hud = True
         self.free_cam_reframe = False
+        self.pip_cameras = List[Int]()
         self.hud_extra = List[String]()
         self.ui_rects = List[UIRect]()
         self.ui_texts = List[UIText]()
@@ -430,6 +434,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.show_sites = move.show_sites
         self.show_hud = move.show_hud
         self.free_cam_reframe = move.free_cam_reframe
+        self.pip_cameras = move.pip_cameras^
         self.hud_extra = move.hud_extra^
         self.ui_rects = move.ui_rects^
         self.ui_texts = move.ui_texts^
@@ -721,6 +726,28 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         if self.renderer.has_ground:
             self.renderer.camera.clamp_above_ground(self.renderer.ground_z)
 
+        # ── the insets: this frame's pose of each picture-in-picture camera ──
+        if len(self.pip_cameras) > 0:
+            var views = List[PipView]()
+            var scene_w = self.renderer.scene_width()
+            var tile_w = scene_w * 3 // 10
+            var x0 = self.renderer.ui_sidebar_width + scene_w - tile_w - 8
+            var y0 = 8
+            for k in range(len(self.pip_cameras)):
+                var ci = self.pip_cameras[k]
+                if ci < 0 or ci >= len(self.cameras):
+                    continue
+                var cam = self._camera_pose_now(ci, positions, quaternions)
+                var asp = cam.aspect if cam.aspect > 0.1 else 4.0 / 3.0
+                var tile_h = Int(Float64(tile_w) / asp)
+                if y0 + tile_h > self.renderer.height:
+                    break
+                views.append(PipView(camera=cam^, x=x0, y=y0, w=tile_w, h=tile_h))
+                y0 += tile_h + 8
+            self.renderer.set_pip_views(views^)
+        else:
+            self.renderer.set_pip_views(List[PipView]())
+
         self.renderer.begin_frame()
 
         # Render ground geoms (planes or fallback grid)
@@ -941,6 +968,39 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
 
     def request_camera(mut self, index: Int):
         self.renderer.request_camera(index)
+
+    def set_pip_cameras(mut self, var cams: List[Int]):
+        """Draw these model cameras as insets at the right edge of the 3D
+        viewport, stacked from the top (each 30% of the scene width, the
+        camera's own aspect) — a teleoperator's overhead and wrist views
+        beside the free camera. Empty clears them. An index out of range is
+        skipped, not an error."""
+        self.pip_cameras = cams^
+
+    def _camera_pose_now(
+        self, i: Int, positions: List[Vec3], quaternions: List[Quat]
+    ) -> Camera3D:
+        """Model camera `i` at THIS frame's FK — `mj_camlight`'s local2Global
+        for a fixed camera on a body; a world camera and the trackcom /
+        targetbody modes return the stored camera (the tower's two are both
+        fixed). The same arithmetic `render` applies to the ACTIVE camera."""
+        var cam = self.cameras[i].copy()
+        var mode = self.camera_modes[i] if i < len(self.camera_modes) else 1
+        if (
+            mode == 1 and i < len(self.camera_bodies)
+            and self.camera_bodies[i] > 0
+            and self.camera_bodies[i] < len(positions)
+        ):
+            var cb = self.camera_bodies[i]
+            var bq = quaternions[cb]
+            var cam_xpos = camera_world_pos(
+                positions[cb], bq, self.camera_local_pos[i]
+            )
+            var cam_xquat = camera_world_quat(bq, self.camera_local_quat[i])
+            cam.eye = cam_xpos
+            cam.target = cam_xpos + camera_look_dir(cam_xquat)
+            cam.up = camera_up_dir(cam_xquat)
+        return cam^
 
     def request_free_camera(mut self):
         """Detach from model cameras — dm_control's free camera.

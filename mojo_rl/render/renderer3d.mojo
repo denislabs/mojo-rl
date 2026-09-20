@@ -131,6 +131,7 @@ from .sdl import (
     submit_gpu_command_buffer,
     bind_gpu_graphics_pipeline,
     set_gpu_viewport,
+    set_gpu_scissor,
     bind_gpu_vertex_buffers,
     bind_gpu_index_buffer,
     draw_gpu_indexed_primitives,
@@ -193,6 +194,7 @@ from .gpu_types import (
     make_identity_f32,
 )
 from .sdl.sdl_keyboard import get_mod_state
+from .sdl.sdl_rect import Rect
 from .sdl.sdl_keycode import Keymod
 from .stl_loader import load_stl
 from .skn_loader import load_skn, SkinData
@@ -502,6 +504,28 @@ struct RendererHandoff(Copyable, Movable):
     `imgui_on`, which is exactly that."""
 
 
+@fieldwise_init
+struct PipView(Copyable, Movable):
+    """A picture-in-picture view: the scene drawn again from `camera` into
+    the window rectangle `(x, y, w, h)` (pixels, origin top-left), on top
+    of the main view — a teleoperator's second and third eye.
+
+    Set per frame through `Renderer3D.set_pip_views` (the model renderer
+    computes body-attached camera poses from that frame's FK). Each view is
+    its own render pass: colour LOADED (the main view stays underneath),
+    depth CLEARED (the inset must not depth-test against the main scene),
+    viewport AND scissor set to the rectangle so the skybox and ground do
+    not paint outside it. The shadow map is light-space and shared. No
+    reflections, lines or HUD text in an inset.
+    """
+
+    var camera: Camera3D
+    var x: Int
+    var y: Int
+    var w: Int
+    var h: Int
+
+
 struct Renderer3D(Movable):
     """GPU-accelerated 3D renderer using SDL3 GPU API.
 
@@ -588,6 +612,8 @@ struct Renderer3D(Movable):
 
     # Deferred draw commands
     var solid_draws: List[SolidDrawCommand]
+    # Extra views drawn after the main pass — see `PipView`.
+    var pip_views: List[PipView]
     var ground_uniforms: ObjectUniforms
     var has_ground: Bool
     var ground_texture_idx: Int  # -1 = no texture (use checker/solid)
@@ -758,6 +784,7 @@ struct Renderer3D(Movable):
         self.ui_sidebar_width = 0
         self.pointer_claimed = False
         self.text_input_mode = False
+        self.pip_views = List[PipView]()
         self.initialized = False
 
         # Copy camera
@@ -963,6 +990,7 @@ struct Renderer3D(Movable):
         self.text_budget_warned = move.text_budget_warned
         self.ui_sidebar_width = move.ui_sidebar_width
         self.pointer_claimed = move.pointer_claimed
+        self.pip_views = move.pip_views^
         self.text_input_mode = move.text_input_mode
         self.draw_grid = move.draw_grid
         self.draw_axes = move.draw_axes
@@ -3059,6 +3087,10 @@ struct Renderer3D(Movable):
         var w = self.width - self.ui_sidebar_width
         return w if w > 1 else 1
 
+    def set_pip_views(mut self, var views: List[PipView]):
+        """Replace the picture-in-picture views drawn this frame."""
+        self.pip_views = views^
+
     def set_ui_sidebar_width(mut self, w: Int):
         """Reserve `w` pixels on the left for UI and re-fit the camera.
 
@@ -4514,6 +4546,258 @@ struct Renderer3D(Movable):
         )
         draw_gpu_indexed_primitives(render_pass, n_idx, 1, 0, 0, 0)
 
+
+    # ── the scene phases, once for the main view and once per inset ──────
+    #
+    # ⚠ ONE BODY EACH, called from the main pass AND from `_draw_pip_views`.
+    # The picture-in-picture views replay exactly these draws from another
+    # camera; a phase written twice would let an inset drift from the main
+    # view (a material, a texture slot) with nothing to catch it.
+
+    def _draw_skybox_phase(
+        mut self,
+        render_pass: Ptr[GPURenderPass, MutAnyOrigin],
+        cmd_buf: Ptr[GPUCommandBuffer, MutAnyOrigin],
+    ) raises:
+        bind_gpu_graphics_pipeline(render_pass, self.skybox_pipeline.value())
+        # ⚠ SIZED FROM THE STRUCT, NOT BY HAND. This was a literal 32 —
+        # correct for two float4s — and adding the starfield's mark colour
+        # and camera basis made it 96. Nothing warns about the mismatch:
+        # the shader simply reads whatever follows the 32 bytes it was
+        # given, so the stars were computed from uninitialised memory and
+        # never appeared. The other push sites in this file are still
+        # hand-sized literals and carry the same hazard.
+        push_gpu_fragment_uniform_data(
+            cmd_buf,
+            0,
+            Ptr(to=self.skybox_uniforms).unsafe_bitcast[NoneType](),
+            UInt32(size_of[SkyboxUniforms]()),
+        )
+        # Draw fullscreen triangle (3 vertices, no vertex buffer)
+        draw_gpu_primitives(render_pass, 3, 1, 0, 0)
+
+    def _draw_ground_phase(
+        mut self,
+        render_pass: Ptr[GPURenderPass, MutAnyOrigin],
+        cmd_buf: Ptr[GPUCommandBuffer, MutAnyOrigin],
+        shadow_binding: GPUTextureSamplerBinding,
+    ) raises:
+        bind_gpu_graphics_pipeline(render_pass, self.ground_pipeline.value())
+
+        push_gpu_vertex_uniform_data(
+            cmd_buf,
+            0,
+            Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
+            SCENE_UNIFORMS_BYTES,
+        )
+        push_gpu_fragment_uniform_data(
+            cmd_buf,
+            0,
+            Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
+            SCENE_UNIFORMS_BYTES,
+        )
+        # Push shadow uniforms to fragment slot 1
+        push_gpu_fragment_uniform_data(
+            cmd_buf,
+            1,
+            Ptr(to=self.shadow_uniforms).unsafe_bitcast[NoneType](),
+            80,
+        )
+        push_gpu_vertex_uniform_data(
+            cmd_buf,
+            1,
+            Ptr(to=self.ground_uniforms).unsafe_bitcast[NoneType](),
+            OBJECT_UNIFORMS_BYTES,
+        )
+
+        # Bind shadow map + sampler to fragment sampler slot 0
+        bind_gpu_fragment_samplers(
+            render_pass, 0, Ptr(to=shadow_binding), 1
+        )
+
+        # Bind ground texture at fragment sampler slot 1
+        if self.ground_texture_idx >= 0:
+            var gti = self.ground_texture_idx
+            var gt_binding = GPUTextureSamplerBinding(
+                texture=untracked(self.texture_cache[gti].texture),
+                sampler=self.texture_cache[gti].sampler,
+            )
+            bind_gpu_fragment_samplers(
+                render_pass, 1, Ptr(to=gt_binding), 1
+            )
+        else:
+            var gt_def_binding = GPUTextureSamplerBinding(
+                texture=untracked(self.default_texture.value()),
+                sampler=self.default_tex_sampler.value(),
+            )
+            bind_gpu_fragment_samplers(
+                render_pass, 1, Ptr(to=gt_def_binding), 1
+            )
+
+        var gvb = GPUBufferBinding(
+            buffer=untracked(self.ground_mesh.value().vertex_buffer), offset=0
+        )
+        bind_gpu_vertex_buffers(render_pass, 0, Ptr(to=gvb), 1)
+
+        var gib = GPUBufferBinding(
+            buffer=untracked(self.ground_mesh.value().index_buffer), offset=0
+        )
+        bind_gpu_index_buffer(
+            render_pass,
+            Ptr(to=gib),
+            GPUIndexElementSize.GPU_INDEXELEMENTSIZE_32BIT,
+        )
+
+        draw_gpu_indexed_primitives(
+            render_pass,
+            self.ground_mesh.value().num_indices,
+            1,
+            0,
+            0,
+            0,
+        )
+
+    def _draw_solids_phase(
+        mut self,
+        render_pass: Ptr[GPURenderPass, MutAnyOrigin],
+        cmd_buf: Ptr[GPUCommandBuffer, MutAnyOrigin],
+        shadow_binding: GPUTextureSamplerBinding,
+    ) raises:
+        bind_gpu_graphics_pipeline(render_pass, self.solid_pipeline.value())
+
+        push_gpu_vertex_uniform_data(
+            cmd_buf,
+            0,
+            Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
+            SCENE_UNIFORMS_BYTES,
+        )
+        push_gpu_fragment_uniform_data(
+            cmd_buf,
+            0,
+            Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
+            SCENE_UNIFORMS_BYTES,
+        )
+        # Push shadow uniforms to fragment slot 1
+        push_gpu_fragment_uniform_data(
+            cmd_buf,
+            1,
+            Ptr(to=self.shadow_uniforms).unsafe_bitcast[NoneType](),
+            80,
+        )
+
+        # Bind shadow map + sampler
+        bind_gpu_fragment_samplers(
+            render_pass, 0, Ptr(to=shadow_binding), 1
+        )
+
+        for i in range(len(self.solid_draws)):
+            push_gpu_vertex_uniform_data(
+                cmd_buf,
+                1,
+                Ptr(to=self.solid_draws[i].uniforms).unsafe_bitcast[NoneType](),
+                OBJECT_UNIFORMS_BYTES,
+            )
+            # Bind texture at fragment sampler slot 1
+            var ti = self.solid_draws[i].texture_cache_idx
+            if ti >= 0:
+                var tex_binding = GPUTextureSamplerBinding(
+                    texture=untracked(self.texture_cache[ti].texture),
+                    sampler=self.texture_cache[ti].sampler,
+                )
+                bind_gpu_fragment_samplers(
+                    render_pass, 1, Ptr(to=tex_binding), 1
+                )
+            else:
+                var def_binding = GPUTextureSamplerBinding(
+                    texture=untracked(self.default_texture.value()),
+                    sampler=self.default_tex_sampler.value(),
+                )
+                bind_gpu_fragment_samplers(
+                    render_pass, 1, Ptr(to=def_binding), 1
+                )
+            self._select_and_draw(render_pass, self.solid_draws[i])
+
+    def _draw_pip_views(
+        mut self,
+        cmd_buf: Ptr[GPUCommandBuffer, MutAnyOrigin],
+        swapchain_tex: Ptr[GPUTexture, MutAnyOrigin],
+        sc_w: UInt32,
+        sc_h: UInt32,
+        shadow_binding: GPUTextureSamplerBinding,
+    ) raises:
+        """The picture-in-picture insets — see `PipView`. Runs AFTER the main
+        pass has ended and before the ImGui pass; restores the main camera's
+        scene uniforms when done."""
+        if len(self.pip_views) == 0:
+            return
+        var saved = self.camera.copy()
+        for v in range(len(self.pip_views)):
+            ref pv = self.pip_views[v]
+            if pv.w < 2 or pv.h < 2:
+                continue
+            var color_info = GPUColorTargetInfo(
+                texture=untracked(swapchain_tex),
+                mip_level=0,
+                layer_or_depth_plane=0,
+                clear_color=FColor(0.0, 0.0, 0.0, 1.0),
+                load_op=GPULoadOp.GPU_LOADOP_LOAD,
+                store_op=GPUStoreOp.GPU_STOREOP_STORE,
+                resolve_texture=_null_ptr[GPUTexture, MutUntrackedOrigin](),
+                resolve_mip_level=0,
+                resolve_layer=0,
+                cycle=False,
+                cycle_resolve_texture=False,
+                padding1=0,
+                padding2=0,
+            )
+            var depth_info = GPUDepthStencilTargetInfo(
+                texture=untracked(self.depth_texture.value()),
+                clear_depth=1.0,
+                load_op=GPULoadOp.GPU_LOADOP_CLEAR,
+                store_op=GPUStoreOp.GPU_STOREOP_DONT_CARE,
+                stencil_load_op=GPULoadOp.GPU_LOADOP_DONT_CARE,
+                stencil_store_op=GPUStoreOp.GPU_STOREOP_DONT_CARE,
+                cycle=True,
+                clear_stencil=0,
+                padding1=0,
+                padding2=0,
+            )
+            var pass_ = begin_gpu_render_pass(
+                cmd_buf, Ptr(to=color_info), 1, Ptr(to=depth_info)
+            )
+            var vp = GPUViewport(
+                x=c_float(pv.x), y=c_float(pv.y),
+                w=c_float(pv.w), h=c_float(pv.h),
+                min_depth=0.0, max_depth=1.0,
+            )
+            set_gpu_viewport(pass_, Ptr(to=vp))
+            var sc = Rect(x=c_int(pv.x), y=c_int(pv.y), w=c_int(pv.w), h=c_int(pv.h))
+            set_gpu_scissor(pass_, Ptr(to=sc))
+            # this view's camera: aspect from ITS rectangle
+            self.camera = pv.camera.copy()
+            self.camera.aspect = Float64(pv.w) / Float64(pv.h)
+            self._build_scene_uniforms()
+            self.scene_uniforms.ground_params[3] = Float32(self.ground_z)
+            # ⚠ THE SKY IS DRAWN UNCONDITIONALLY HERE. The main pass CLEARS to
+            # the background colour and draws the skybox only when the model
+            # has one; an inset LOADS the colour target, so without its own
+            # sky the main view would show through above the horizon — the
+            # arm from one camera floating in another's sky. The gradient's
+            # uniforms are whatever `set_skybox` (or its defaults) left.
+            self._draw_skybox_phase(pass_, cmd_buf)
+            if self.has_ground:
+                self._draw_ground_phase(pass_, cmd_buf, shadow_binding)
+            if len(self.solid_draws) > 0:
+                self._draw_solids_phase(pass_, cmd_buf, shadow_binding)
+            end_gpu_render_pass(pass_)
+        # back to the main camera, so anything reading the uniforms after
+        # this (the screenshot crop, next frame's picking) sees the main view
+        self.camera = saved.copy()
+        self._build_scene_uniforms()
+        self.scene_uniforms.ground_params[3] = Float32(self.ground_z)
+        _ = sc_w
+        _ = sc_h
+
     def end_frame(mut self) raises:
         """End frame: shadow pass, then main pass with reflections, ground, solids, lines, text.
         """
@@ -4762,101 +5046,13 @@ struct Renderer3D(Movable):
         # Phase 0: SKYBOX (fullscreen gradient, drawn first)
         # ------------------------------------------------------------------
         if self.draw_skybox:
-            bind_gpu_graphics_pipeline(render_pass, self.skybox_pipeline.value())
-            # ⚠ SIZED FROM THE STRUCT, NOT BY HAND. This was a literal 32 —
-            # correct for two float4s — and adding the starfield's mark colour
-            # and camera basis made it 96. Nothing warns about the mismatch:
-            # the shader simply reads whatever follows the 32 bytes it was
-            # given, so the stars were computed from uninitialised memory and
-            # never appeared. The other push sites in this file are still
-            # hand-sized literals and carry the same hazard.
-            push_gpu_fragment_uniform_data(
-                cmd_buf,
-                0,
-                Ptr(to=self.skybox_uniforms).unsafe_bitcast[NoneType](),
-                UInt32(size_of[SkyboxUniforms]()),
-            )
-            # Draw fullscreen triangle (3 vertices, no vertex buffer)
-            draw_gpu_primitives(render_pass, 3, 1, 0, 0)
+            self._draw_skybox_phase(render_pass, cmd_buf)
 
         # ------------------------------------------------------------------
         # Phase B1: GROUND (opaque checkerboard, shadow-mapped)
         # ------------------------------------------------------------------
         if self.has_ground:
-            bind_gpu_graphics_pipeline(render_pass, self.ground_pipeline.value())
-
-            push_gpu_vertex_uniform_data(
-                cmd_buf,
-                0,
-                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
-                SCENE_UNIFORMS_BYTES,
-            )
-            push_gpu_fragment_uniform_data(
-                cmd_buf,
-                0,
-                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
-                SCENE_UNIFORMS_BYTES,
-            )
-            # Push shadow uniforms to fragment slot 1
-            push_gpu_fragment_uniform_data(
-                cmd_buf,
-                1,
-                Ptr(to=self.shadow_uniforms).unsafe_bitcast[NoneType](),
-                80,
-            )
-            push_gpu_vertex_uniform_data(
-                cmd_buf,
-                1,
-                Ptr(to=self.ground_uniforms).unsafe_bitcast[NoneType](),
-                OBJECT_UNIFORMS_BYTES,
-            )
-
-            # Bind shadow map + sampler to fragment sampler slot 0
-            bind_gpu_fragment_samplers(
-                render_pass, 0, Ptr(to=shadow_binding), 1
-            )
-
-            # Bind ground texture at fragment sampler slot 1
-            if self.ground_texture_idx >= 0:
-                var gti = self.ground_texture_idx
-                var gt_binding = GPUTextureSamplerBinding(
-                    texture=untracked(self.texture_cache[gti].texture),
-                    sampler=self.texture_cache[gti].sampler,
-                )
-                bind_gpu_fragment_samplers(
-                    render_pass, 1, Ptr(to=gt_binding), 1
-                )
-            else:
-                var gt_def_binding = GPUTextureSamplerBinding(
-                    texture=untracked(self.default_texture.value()),
-                    sampler=self.default_tex_sampler.value(),
-                )
-                bind_gpu_fragment_samplers(
-                    render_pass, 1, Ptr(to=gt_def_binding), 1
-                )
-
-            var gvb = GPUBufferBinding(
-                buffer=untracked(self.ground_mesh.value().vertex_buffer), offset=0
-            )
-            bind_gpu_vertex_buffers(render_pass, 0, Ptr(to=gvb), 1)
-
-            var gib = GPUBufferBinding(
-                buffer=untracked(self.ground_mesh.value().index_buffer), offset=0
-            )
-            bind_gpu_index_buffer(
-                render_pass,
-                Ptr(to=gib),
-                GPUIndexElementSize.GPU_INDEXELEMENTSIZE_32BIT,
-            )
-
-            draw_gpu_indexed_primitives(
-                render_pass,
-                self.ground_mesh.value().num_indices,
-                1,
-                0,
-                0,
-                0,
-            )
+            self._draw_ground_phase(render_pass, cmd_buf, shadow_binding)
 
         # ------------------------------------------------------------------
         # Phase B2: REFLECTIONS (Z-flipped solids, blended ON TOP of the floor)
@@ -4917,59 +5113,7 @@ struct Renderer3D(Movable):
         # Phase C: SOLID OBJECTS (with shadow map sampling)
         # ------------------------------------------------------------------
         if len(self.solid_draws) > 0:
-            bind_gpu_graphics_pipeline(render_pass, self.solid_pipeline.value())
-
-            push_gpu_vertex_uniform_data(
-                cmd_buf,
-                0,
-                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
-                SCENE_UNIFORMS_BYTES,
-            )
-            push_gpu_fragment_uniform_data(
-                cmd_buf,
-                0,
-                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
-                SCENE_UNIFORMS_BYTES,
-            )
-            # Push shadow uniforms to fragment slot 1
-            push_gpu_fragment_uniform_data(
-                cmd_buf,
-                1,
-                Ptr(to=self.shadow_uniforms).unsafe_bitcast[NoneType](),
-                80,
-            )
-
-            # Bind shadow map + sampler
-            bind_gpu_fragment_samplers(
-                render_pass, 0, Ptr(to=shadow_binding), 1
-            )
-
-            for i in range(len(self.solid_draws)):
-                push_gpu_vertex_uniform_data(
-                    cmd_buf,
-                    1,
-                    Ptr(to=self.solid_draws[i].uniforms).unsafe_bitcast[NoneType](),
-                    OBJECT_UNIFORMS_BYTES,
-                )
-                # Bind texture at fragment sampler slot 1
-                var ti = self.solid_draws[i].texture_cache_idx
-                if ti >= 0:
-                    var tex_binding = GPUTextureSamplerBinding(
-                        texture=untracked(self.texture_cache[ti].texture),
-                        sampler=self.texture_cache[ti].sampler,
-                    )
-                    bind_gpu_fragment_samplers(
-                        render_pass, 1, Ptr(to=tex_binding), 1
-                    )
-                else:
-                    var def_binding = GPUTextureSamplerBinding(
-                        texture=untracked(self.default_texture.value()),
-                        sampler=self.default_tex_sampler.value(),
-                    )
-                    bind_gpu_fragment_samplers(
-                        render_pass, 1, Ptr(to=def_binding), 1
-                    )
-                self._select_and_draw(render_pass, self.solid_draws[i])
+            self._draw_solids_phase(render_pass, cmd_buf, shadow_binding)
 
         # ------------------------------------------------------------------
         # Phase D: LINES (unchanged)
@@ -5053,6 +5197,9 @@ struct Renderer3D(Movable):
 
         # End render pass
         end_gpu_render_pass(render_pass)
+
+        # Picture-in-picture insets, each its own pass — see `PipView`.
+        self._draw_pip_views(cmd_buf, swapchain_tex, sc_w, sc_h, shadow_binding)
 
         # ====================================================================
         # IMGUI PASS (color-only, loads the scene, no depth)

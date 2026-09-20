@@ -419,6 +419,12 @@ struct ViewerState(Copyable, Movable):
     reads the posed state too) at the initial reset, the button, and every
     episode end. Its length must be the model's `nq`, or it is ignored with
     a printed line rather than a silently truncated state."""
+    var pip_cameras: List[Int]
+    """Model camera indices drawn as picture-in-picture insets at the right
+    edge of the 3D viewport, stacked from the top — empty for none. A
+    teleoperator on the free camera keeps the overhead and wrist views in
+    sight without switching; applied after the renderer is built, like
+    `free_camera`."""
     var frame_ms: Int
     """The frame period the loop paces to, ms. Defaults to `FRAME_TARGET_MS`
     (~60 fps). A teleoperation front end sets it to the env's CONTROL period
@@ -460,6 +466,7 @@ struct ViewerState(Copyable, Movable):
         self.reset_meta_val = List[Float64]()
         self.reset_qpos = List[Float64]()
         self.frame_ms = FRAME_TARGET_MS
+        self.pip_cameras = List[Int]()
         self.reset_curriculum = List[Float64]()
 
 
@@ -929,6 +936,8 @@ def run_view[
     # model-scale information available — is still on hand.
     if st.free_camera:
         env.renderer_request_free_camera()
+    if len(st.pip_cameras) > 0:
+        env.renderer_set_pip_cameras(st.pip_cameras.copy())
 
     # Idempotent, and on the adopt path it is a no-op that returns True: the
     # ImGui context is attached to the window and device, both of which just
