@@ -23,6 +23,7 @@ Swapping two cameras between recording and deployment changes nothing
 observable except the policy's behaviour.
 """
 
+from std.memory import Pointer, unsafe_memcpy
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
@@ -100,6 +101,75 @@ def fill_camera_images[
         # resize path — and this runs once per control tick on a 6.3 MB
         # tensor. Measured at 127 ms per tick before this change.
         images.upload_resident(ctx.value())
+
+
+def fill_siglip_frames[
+    target: StaticString, N_CAM: Int, SIZE: Int = SIGLIP_INPUT
+](
+    ref frames: List[List[UInt8]],
+    mut images: Tensor,
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """`fill_camera_images` for frames the CAMERA THREAD already preprocessed
+    (`CameraReader(..., siglip=SIZE)`): each `frames[cam]` is the bytes of
+    the `3*SIZE*SIZE` float block, so this is N_CAM copies and an upload —
+    no resize on the control thread, which is the whole point.
+    """
+    comptime assert N_CAM >= 1, "fill_siglip_frames: need a camera"
+    comptime BLOCK: Int = 3 * SIZE * SIZE
+    comptime TOTAL: Int = N_CAM * BLOCK
+    _check_siglip_frames[N_CAM, SIZE](frames)
+    images.ensure(TOTAL)
+    for cam in range(N_CAM):
+        var src = frames[cam].unsafe_ptr().unsafe_bitcast[Float32]()
+        for i in range(BLOCK):
+            images.data[cam * BLOCK + i] = Scalar[DT](src[unsafe_offset=i])
+    comptime if target != "cpu":
+        images.upload_resident(ctx.value())
+
+
+def siglip_frames_into_slot[
+    N_CAM: Int, SIZE: Int = SIGLIP_INPUT
+](
+    ref frames: List[List[UInt8]],
+    dst: Pointer[UInt8, MutUntrackedOrigin],
+    byte_off: Int,
+) raises:
+    """The same frames straight into a request slot (the `--threaded` deploy):
+    N_CAM memcpys at `dst + byte_off`, back to back in camera order, which is
+    exactly the layout `fill_siglip_frames` gives `images`."""
+    comptime BLOCK_BYTES: Int = 3 * SIZE * SIZE * 4
+    _check_siglip_frames[N_CAM, SIZE](frames)
+    for cam in range(N_CAM):
+        unsafe_memcpy(
+            dest=dst.unsafe_offset(byte_off + cam * BLOCK_BYTES),
+            src=rebind[Pointer[UInt8, MutUntrackedOrigin]](
+                frames[cam].unsafe_ptr().as_unsafe_any_origin()
+            ),
+            count=BLOCK_BYTES,
+        )
+
+
+def _check_siglip_frames[N_CAM: Int, SIZE: Int](
+    ref frames: List[List[UInt8]]
+) raises:
+    """A frame of the wrong size here is a camera opened WITHOUT `siglip=`,
+    i.e. raw pixels about to be read as floats — refuse, do not truncate."""
+    comptime BLOCK_BYTES: Int = 3 * SIZE * SIZE * 4
+    if len(frames) != N_CAM:
+        raise Error(
+            "siglip frames: expected " + String(N_CAM) + " cameras, got "
+            + String(len(frames))
+        )
+    for cam in range(N_CAM):
+        if len(frames[cam]) != BLOCK_BYTES:
+            raise Error(
+                "siglip frames: camera " + String(cam) + " delivered "
+                + String(len(frames[cam])) + " bytes, not the "
+                + String(BLOCK_BYTES) + " of a " + String(SIZE) + "x"
+                + String(SIZE) + " float block — was the reader opened with"
+                " siglip=" + String(SIZE) + "?"
+            )
 
 
 def fill_store_images[

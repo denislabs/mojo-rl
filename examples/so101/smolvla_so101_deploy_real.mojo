@@ -95,7 +95,9 @@ from mojo_rl.deep_agents.smolvla.text import (
     SMOLLM_KV_W,
     SMOLLM_LAYERS,
 )
-from mojo_rl.deep_agents.smolvla.observation import fill_camera_images
+from mojo_rl.deep_agents.smolvla.observation import (
+    fill_camera_images, fill_siglip_frames, siglip_frames_into_slot,
+)
 from mojo_rl.deep_agents.smolvla.policy import SmolVLAPolicy
 from mojo_rl.deep_agents.smolvla.query_worker import (
     QW_DROPPED,
@@ -179,10 +181,12 @@ comptime QWorker = SmolVLAQueryWorker[
 comptime CAM_W = 640
 comptime CAM_H = 480
 """⚠⚠ THE CAMERA'S NATIVE SIZE, AND IT MUST BE THE ONE THE DEMONSTRATIONS WERE
-RECORDED AT. Unlike the ACT deployment nothing is resized before the policy:
-`fill_camera_images` does `resize_with_pad` to 512x512 itself, which is why the
-recording is imported at 480x640 for SmolVLA and 240x320 for ACT. Feeding it a
-pre-shrunk frame would resample twice."""
+RECORDED AT. The only resize is SmolVLA's own `resize_with_pad` from this size
+to 512x512 (`camera_frame_to_siglip`), which is why the recording is imported
+at 480x640 for SmolVLA and 240x320 for ACT. Feeding it a pre-shrunk frame would
+resample twice. Since 20 Sep that resize runs ON THE CAMERA THREAD
+(`CameraReader(..., siglip=512)`), the same function on the same frame; the
+control loop takes the newest finished block."""
 
 comptime WARMUP_QUERIES = 2
 """⚠ FEWER THAN ACT'S FIVE, because one query here costs hundreds of ms rather
@@ -613,15 +617,18 @@ def main() raises:
     var cams = List[CameraReader]()
     for i in range(N_CAM):
         print("camera slot " + String(i) + " <- " + devices[i])
-        # ⚠ NATIVE FRAMES, NOT RESIZED — unlike the ACT deployment, which asks
-        # the camera thread for 320x240 CHW. `fill_camera_images` does
-        # `resize_with_pad` to 512x512 itself, so a pre-shrunk frame would be
-        # resampled twice and the policy would see pixels the fine-tune never
-        # produced. rgb=False + swap_rb=True below: one swap, in the pass that
-        # already touches every byte.
+        # ⚠ siglip=512, NOT out_w/out_h: the thread runs SmolVLA's OWN
+        # `resize_with_pad` from the native frame to the 512x512 [-1, 1]
+        # block, the one function the fine-tune's frames went through. ACT's
+        # CHW resize would be a different filter and a double resample. It
+        # runs there because under --sync the arm holds for the observation
+        # build: 38-67 ms measured on the Orin for the two resizes on this
+        # thread, now one memcpy of the newest block. rgb=False: the frame is
+        # still BGR when the thread swaps it, in the pass that already
+        # touches every byte.
         var c = CameraReader.from_spec(
             devices[i], CAM_W, CAM_H, Float64(SO101_FPS), rgb=False,
-            fourcc=cam_fourcc,
+            fourcc=cam_fourcc, siglip=SIGLIP_INPUT,
         )
         c.start(wait_ms=8000)
         var where = c.resolved_node()
@@ -637,7 +644,8 @@ def main() raises:
         cams.append(c^)
     print(
         "            " + String(CAM_W) + "x" + String(CAM_H) + " native ->"
-        " 512x512 resize_with_pad (SmolVLA's own, not ours)"
+        " 512x512 resize_with_pad (SmolVLA's own, not ours), ON THE"
+        " CAMERA THREAD"
     )
 
     var frames = List[List[UInt8]]()
@@ -1052,16 +1060,17 @@ def main() raises:
                 for j in range(RDIM):
                     pose[j] = Float32(follower.cal.degrees(j, raw[j]))
                 if trace:
-                    print("  [first query] resize_with_pad to 512x512 ...")
-                if threaded:
-                    # HOST ONLY: the bytes go to the worker, which uploads
-                    # them with its own context. This thread has no context.
-                    fill_camera_images["cpu", N_CAM, SIGLIP_INPUT](
-                        frames, widths, heights, True, images, scratch, None
+                    print(
+                        "  [first query] frames arrive as 512x512 blocks"
+                        " (resized on the camera thread); staging ..."
                     )
-                else:
-                    fill_camera_images[TARGET, N_CAM, SIGLIP_INPUT](
-                        frames, widths, heights, True, images, scratch, dev_ctx
+                # ⚠ NO RESIZE HERE ANY MORE — `frames[i]` IS the float block
+                # the camera thread built. The worker path copies it straight
+                # into the request slot below; only the inline path needs it
+                # in `images`, on the device.
+                if not threaded:
+                    fill_siglip_frames[TARGET, N_CAM, SIGLIP_INPUT](
+                        frames, images, dev_ctx
                     )
                 var obs_ms = Float64(perf_counter_ns() - t_c0) / 1e6
                 sum_cam += obs_ms
@@ -1099,8 +1108,11 @@ def main() raises:
                     var cp = claim.data().unsafe_bitcast[Float32]()
                     for j in range(RDIM):
                         cp[unsafe_offset=j] = pose[j]
-                    for i in range(N_CAM * 3 * SIGLIP_INPUT * SIGLIP_INPUT):
-                        cp[unsafe_offset = RDIM + i] = Float32(images.data[i])
+                    # The frames ARE the float blocks: N_CAM memcpys after
+                    # the pose, no per-element loop over 1.5 M floats.
+                    siglip_frames_into_slot[N_CAM, SIGLIP_INPUT](
+                        frames, claim.data(), RDIM * 4
+                    )
                     req_ring.end_push(QWorker.REQ_BYTES)
                 else:
                     _fill_noise(noise, XN, queries * 7919 + 13, dev_ctx)
@@ -1369,17 +1381,31 @@ def main() raises:
         "  query lead        = " + String(lead)
         + " grid steps of warning (measured from the last query)"
     )
-    # ⚠ THE ONLY GAP LEFT. The observation build runs on the control thread
-    # with nothing in flight — it IS the query's input — so the arm holds for
-    # its duration: ~2 grid steps against the ~19 a blocking query cost.
-    # Moving the resize onto the camera thread, as the ACT loop does, closes it.
+    # The observation build runs on the control thread with nothing in
+    # flight — it IS the query's input — so the arm holds for its duration.
+    # It was ~2 grid steps (38-67 ms of resize) until the resize moved onto
+    # the camera thread; now it is the newest block's copy plus the bus read.
     print(
         "  observation gap   = " + String(sum_obs_gap)
         + " grid steps total (the build commands nothing)"
     )
     print("  observation build = "
           + fixed(sum_cam / Float64(queries) if queries > 0 else 0.0, 1)
-          + " ms mean (cameras + resize_with_pad + upload)")
+          + " ms mean (newest 512x512 block per camera + pose read;"
+          " the resize is on the camera thread)")
+    # ⚠ WHETHER THE CAMERA THREADS KEPT UP. Each frame costs its thread a
+    # resize_with_pad (~15-30 ms on the Orin's cores); at 30 fps that is
+    # most of a frame period, and a thread that falls behind delivers
+    # staler blocks with no other symptom. Below the requested rate = the
+    # observation is up to one dropped period older than the capture.
+    for i in range(N_CAM):
+        var nf = cams[i].frames_delivered()
+        print(
+            "  camera " + String(i) + " thread   = " + String(nf)
+            + " blocks in " + fixed(elapsed, 1) + " s = "
+            + fixed(Float64(nf) / elapsed if elapsed > 0.0 else 0.0, 1)
+            + " fps preprocessed (" + String(SO101_FPS) + " requested)"
+        )
     # ⚠ THE LOOP'S OWN RATE, not the policy's. `iterations` counts every pass
     # of the control loop; if it is far below the elapsed grid steps then the
     # loop body — not the query — is what fails to keep 30 Hz, and `body` and

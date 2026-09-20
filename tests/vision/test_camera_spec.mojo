@@ -185,6 +185,32 @@ def main() raises:
     # the wrong source dimensions produces different pixels, silently.
     if resized.width != 640 or resized.height != 480:
         raise Error("the native size must survive alongside the output size")
+    # SmolVLA's delivery: the 512x512 float block's BYTES, and never together
+    # with ACT's CHW resize — a reader that silently honoured one of the two
+    # would hand the policy the other's bytes as floats.
+    var siglip = CameraReader.at_path(
+        String("/dev/nope"), 640, 480, 30.0, siglip=512
+    )
+    if siglip.frame_bytes() != 3 * 512 * 512 * 4:
+        raise Error("with siglip=, `frame_bytes` must be the float block")
+    if siglip.width != 640 or siglip.height != 480:
+        raise Error("the native size must survive alongside siglip")
+    var both_refused = False
+    try:
+        var bad = CameraReader.at_path(
+            String("/dev/nope"), 640, 480, 30.0, out_w=320, out_h=240,
+            siglip=512,
+        )
+        _ = bad.frame_bytes()
+    except:
+        both_refused = True
+    if not both_refused:
+        raise Error("out_w and siglip together must be refused")
+    var siglip_spec = CameraReader.from_spec(
+        String("/dev/nope"), 640, 480, 30.0, siglip=512
+    )
+    if siglip_spec.frame_bytes() != 3 * 512 * 512 * 4:
+        raise Error("siglip must reach through `from_spec`")
     # And it reaches through `from_spec`, which is what every entry point calls.
     var viaspec = CameraReader.from_spec(
         String("/dev/nope"), 640, 480, 30.0, out_w=320, out_h=240

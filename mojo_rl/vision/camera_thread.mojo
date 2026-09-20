@@ -66,6 +66,7 @@ from ..core.concurrent.worker import (
 )
 from .opencv import VideoCapture, opencv_shim_available
 from .preprocess import camera_frame_to_chw_rgb
+from .resize_pad import camera_frame_to_siglip
 
 
 @always_inline
@@ -79,6 +80,17 @@ def _erase(mut lst: List[UInt8]) -> Pointer[UInt8, MutUntrackedOrigin]:
     """
     return rebind[Pointer[UInt8, MutUntrackedOrigin]](
         lst.unsafe_ptr().as_unsafe_any_origin()
+    )
+
+
+@always_inline
+def _erase_f32(
+    mut lst: List[Float32],
+) -> Pointer[UInt8, MutUntrackedOrigin]:
+    """`_erase` for the SigLIP float block: its BYTES, origin erased, so one
+    memcpy carries the floats into a ring slot bit-for-bit."""
+    return rebind[Pointer[UInt8, MutUntrackedOrigin]](
+        lst.unsafe_ptr().unsafe_bitcast[UInt8]().as_unsafe_any_origin()
     )
 
 
@@ -302,6 +314,11 @@ struct _CamWorker(BackgroundWorker):
     """The resized CHW frame, when `out_w > 0`. Owned by this thread."""
     var out_w: Int
     var out_h: Int
+    var siglip: Int
+    """When > 0, the SmolVLA preprocess runs HERE: each frame becomes the
+    `3*siglip*siglip` float block in `[-1, 1]` (`camera_frame_to_siglip`,
+    resize_with_pad + BGR->RGB), and the ring carries those floats' bytes."""
+    var f32: List[Float32]
     var opened: Bool
     var rgb: Bool
 
@@ -318,6 +335,7 @@ struct _CamWorker(BackgroundWorker):
         rgb: Bool,
         out_w: Int,
         out_h: Int,
+        siglip: Int,
     ) raises:
         self.ring = ring^
         self.block = block^
@@ -335,6 +353,8 @@ struct _CamWorker(BackgroundWorker):
         self.out = List[UInt8]()
         self.out_w = out_w
         self.out_h = out_h
+        self.siglip = siglip
+        self.f32 = List[Float32]()
         self.opened = False
         self.rgb = rgb
 
@@ -352,6 +372,8 @@ struct _CamWorker(BackgroundWorker):
         self.out = move.out^
         self.out_w = move.out_w
         self.out_h = move.out_h
+        self.siglip = move.siglip
+        self.f32 = move.f32^
         self.opened = move.opened
         self.rgb = move.rgb
 
@@ -384,6 +406,10 @@ struct _CamWorker(BackgroundWorker):
             if self.out_w > 0:
                 self.out = List[UInt8](
                     unsafe_uninit_length = self.out_w * self.out_h * 3
+                )
+            if self.siglip > 0:
+                self.f32 = List[Float32](
+                    length = 3 * self.siglip * self.siglip, fill=Float32(0)
                 )
             self.opened = True
             self.block.release_store(
@@ -451,6 +477,28 @@ struct _CamWorker(BackgroundWorker):
                 _ = self.block.fetch_add(CELL_READ_FAIL, Int64(1))
                 return POLL_IDLE
             n = self.out_w * self.out_h * 3
+        # ⚠⚠ AND THE SMOLVLA PREPROCESS, FOR THE SAME REASON AGAIN — with a
+        # larger prize. Under `--sync` the SmolVLA deploy takes its
+        # observation with nothing in flight, so the arm HOLDS for the whole
+        # build: measured 38-67 ms on the Orin for two 640x480 frames through
+        # `resize_with_pad` to 512x512, on top of the query. Here the same
+        # function runs on the frame the moment it lands, and the control
+        # loop's observation build becomes one memcpy of the newest block.
+        #
+        # ⚠ THE PIXELS DO NOT CHANGE: `camera_frame_to_siglip` is the function
+        # `fill_camera_images` called on the control thread, with the same
+        # arguments (`swap_rb` = the frame is still BGR, i.e. `not rgb`).
+        # `tests/deep_agents/smolvla/test_store_prefix.mojo` is its gate.
+        if self.siglip > 0:
+            try:
+                camera_frame_to_siglip(
+                    self.buf, self.width, self.height, not self.rgb,
+                    self.f32, 0, self.siglip,
+                )
+            except:
+                _ = self.block.fetch_add(CELL_READ_FAIL, Int64(1))
+                return POLL_IDLE
+            n = 3 * self.siglip * self.siglip * 4
         # Zero-copy claim, then one memcpy into the slot — the same shape
         # `io/http_sink.mojo:frame_into` uses, and it sidesteps handing a
         # `List`-derived pointer to a `MutUntrackedOrigin` parameter.
@@ -463,11 +511,14 @@ struct _CamWorker(BackgroundWorker):
             # where it is invisible and unbounded.
             v.drop_full()
             return POLL_DID_WORK
-        unsafe_memcpy(
-            dest=slot.data(),
-            src=_erase(self.out) if self.out_w > 0 else _erase(self.buf),
-            count=n,
-        )
+        if self.siglip > 0:
+            unsafe_memcpy(dest=slot.data(), src=_erase_f32(self.f32), count=n)
+        else:
+            unsafe_memcpy(
+                dest=slot.data(),
+                src=_erase(self.out) if self.out_w > 0 else _erase(self.buf),
+                count=n,
+            )
         v.end_push(n)
         return POLL_DID_WORK
 
@@ -496,6 +547,10 @@ struct CameraReader(Movable):
     var out_h: Int
     """Resize done ON THE CAMERA THREAD, 0 for none. When set, frames come back
     as CHW RGB uint8 at this size instead of native BGR HWC."""
+    var siglip: Int
+    """> 0: the thread delivers SmolVLA's `3*siglip*siglip` float block (its
+    bytes) instead of pixels — see `_CamWorker.siglip`. Exclusive with
+    `out_w`, and `frame_bytes()` reports the block."""
     var fps: Float64
     var _thread: Optional[BackgroundThread[_CamWorker]]
     var _starved: Int
@@ -513,10 +568,11 @@ struct CameraReader(Movable):
         rgb: Bool = False,
         out_w: Int = 0,
         out_h: Int = 0,
+        siglip: Int = 0,
     ) raises:
         self = Self(
             String(""), device, width, height, fps, slots, rgb, String(""),
-            out_w, out_h,
+            out_w, out_h, siglip,
         )
 
     @staticmethod
@@ -530,6 +586,7 @@ struct CameraReader(Movable):
         fourcc: String = String(""),
         out_w: Int = 0,
         out_h: Int = 0,
+        siglip: Int = 0,
     ) raises -> Self:
         """A camera named by device path — `/dev/soarm_cam_overhead`.
 
@@ -544,10 +601,11 @@ struct CameraReader(Movable):
         then arrive as CHW RGB uint8 at that size instead of native BGR HWC.
         ⚠ It is a latency decision, not a convenience — see the note in
         `_CamWorker.poll`. Leave both 0 for a recorder, which needs the full
-        frame for its encoder.
+        frame for its encoder. `siglip` is the SmolVLA counterpart: the
+        thread delivers the 512x512 `[-1, 1]` float block instead.
         """
         return Self(path, 0, width, height, fps, slots, rgb, fourcc,
-                    out_w, out_h)
+                    out_w, out_h, siglip)
 
     @staticmethod
     def from_spec(
@@ -560,13 +618,17 @@ struct CameraReader(Movable):
         fourcc: String = String(""),
         out_w: Int = 0,
         out_h: Int = 0,
+        siglip: Int = 0,
     ) raises -> Self:
         """An index or a path, as `--devices` gives it."""
         if camera_spec_is_path(spec):
             return Self.at_path(
-                spec, width, height, fps, slots, rgb, fourcc, out_w, out_h
+                spec, width, height, fps, slots, rgb, fourcc, out_w, out_h,
+                siglip,
             )
-        return Self(Int(spec), width, height, fps, slots, rgb, out_w, out_h)
+        return Self(
+            Int(spec), width, height, fps, slots, rgb, out_w, out_h, siglip
+        )
 
     def __init__(
         out self,
@@ -580,7 +642,13 @@ struct CameraReader(Movable):
         var fourcc: String,
         out_w: Int,
         out_h: Int,
+        siglip: Int,
     ) raises:
+        if siglip > 0 and out_w > 0:
+            raise Error(
+                "camera_thread: `out_w` (ACT's CHW resize) and `siglip`"
+                " (SmolVLA's float block) are two deliveries; ask for one"
+            )
         if not opencv_shim_available():
             raise Error(
                 "camera_thread: the OpenCV shim is not built — `pixi run"
@@ -605,9 +673,11 @@ struct CameraReader(Movable):
         # ⚠ THE RING IS SIZED FOR WHAT IT WILL CARRY, which is the RESIZED
         # frame when the worker resizes. At 320x240 CHW that is 230 KB against
         # 921 KB native — the eight slots go from 7.4 MB to 1.8 MB per camera.
-        var slot_bytes = (
-            out_w * out_h * 3 if out_w > 0 else width * height * 3
-        )
+        var slot_bytes = width * height * 3
+        if siglip > 0:
+            slot_bytes = 3 * siglip * siglip * 4
+        elif out_w > 0:
+            slot_bytes = out_w * out_h * 3
         self.ring = SharedRing(slots, slot_bytes)
         self.block = SharedBlock(N_CELLS)
         self.device = device
@@ -617,6 +687,7 @@ struct CameraReader(Movable):
         self.height = height
         self.out_w = out_w
         self.out_h = out_h
+        self.siglip = siglip
         self.fps = fps
         self._thread = None
         self._starved = 0
@@ -634,6 +705,7 @@ struct CameraReader(Movable):
         self.fps = move.fps
         self.out_w = move.out_w
         self.out_h = move.out_h
+        self.siglip = move.siglip
         self._thread = move._thread^
         self._starved = move._starved
         self.running = move.running
@@ -675,6 +747,8 @@ struct CameraReader(Movable):
     def frame_bytes(self) -> Int:
         """Bytes one frame occupies AS DELIVERED — resized when the worker
         resizes, native otherwise. Every `take` sizes its buffer from this."""
+        if self.siglip > 0:
+            return 3 * self.siglip * self.siglip * 4
         if self.out_w > 0:
             return self.out_w * self.out_h * 3
         return self.width * self.height * 3
@@ -694,7 +768,7 @@ struct CameraReader(Movable):
             _CamWorker(
                 self.ring, self.block, self.device, self.path, self.fourcc,
                 self.width, self.height, self.fps, self.rgb,
-                self.out_w, self.out_h,
+                self.out_w, self.out_h, self.siglip,
             )
         )
         self.running = True
