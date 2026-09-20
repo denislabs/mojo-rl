@@ -718,6 +718,10 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
     var num_steps = NUM_STEPS
     var warmup = WARMUP_STEPS
     var eval_every = EVAL_EVERY
+    # ⚠ A RUN THAT PLATEAUS AT ITS FIRST EVAL AND IS STOPPED THERE HAS LEFT
+    # NO CHECKPOINT to diagnose (50k default, first eval 25k): `--checkpoint-
+    # every` sets the cadence so a stopped run still has a policy to load.
+    var checkpoint_every = CHECKPOINT_EVERY
     var task_name = String(default_task)
     # ⚠⚠ FLAGS BECAUSE THESE TWO ARE WHAT A FLAT RUN ACTUALLY NEEDS SWEPT.
     # Measured on a 230k-step `gather` run: `mean_q` reached **1151** while the
@@ -894,6 +898,8 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
             warmup = Int(String(args[i + 1]))
         elif a == "--eval-every" and i + 1 < len(args):
             eval_every = Int(String(args[i + 1]))
+        elif a == "--checkpoint-every" and i + 1 < len(args):
+            checkpoint_every = Int(String(args[i + 1]))
         elif a == "--task" and i + 1 < len(args):
             task_name = String(args[i + 1])
         elif a == "--target-entropy" and i + 1 < len(args):
@@ -1428,7 +1434,7 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
             logger=logger_ptr,
             diag_every=DIAG_EVERY,
             episode_sync_every=32,
-            checkpoint_every=CHECKPOINT_EVERY,
+            checkpoint_every=checkpoint_every,
             checkpoint_path=ckpt_path,
             artifacts=artifacts,
             run_dir=run.dir,
