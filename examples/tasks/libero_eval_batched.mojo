@@ -129,6 +129,11 @@ lane now carries its seven arm joints, the grip site's xyz, and the match
 distance of the nearest row (std units) — where the arm IS beside what it
 was told — and every chunk ends with each drawer lane's largest opening.
 
+⚠ The four kNN box runs of 2026-09-19/20 (0/200 each) are VOID: the query
+was standardised without the mean the rows had subtracted, 6-7 std off
+(the trace's `nn` column said so). A load-time self-test now feeds a row's
+own words back and requires distance 0.
+
 `--demo-init [STORE]` — start each lane from its paired demo's OWN frame-0
 state (`state` column, our order; `_demo_state0`, the `--check-obs` leg)
 instead of the frozen init row, then the settle steps as usual. The
@@ -308,6 +313,23 @@ def _byte(x: Float64) -> Scalar[DType.uint8]:
     if v > 255:
         v = 255
     return Scalar[DType.uint8](v)
+
+
+def _fd(x: Float64, d: Int) -> String:
+    """`x` rounded to `d` decimals (the width helper `_f` TRUNCATES characters:
+    `_f(-2.404, 3)` is "-2." — a trace read as joints at -2 rad was that)."""
+    var scale = 1.0
+    for _ in range(d):
+        scale *= 10.0
+    var r = Float64(Int(x * scale + (0.5 if x >= 0 else -0.5))) / scale
+    var out = String(r)
+    var dot = out.find(".")
+    if dot < 0:
+        out += "."
+        dot = out.byte_length() - 1
+    while out.byte_length() - dot - 1 < d:
+        out += "0"
+    return out^
 
 
 def _f(x: Float64, n: Int) -> String:
@@ -505,7 +527,7 @@ def _check_obs[AIMG: Int, ACAM: Int, ANPIX: Int](
 
 def _knn_chunk[AK: Int, AA: Int](
     ref q9: List[Float64], KF: Int,
-    ref knn_q: List[Float64], ref knn_std: List[Float64],
+    ref knn_q: List[Float64], ref knn_std: List[Float64], ref knn_mean: List[Float64],
     ref knn_act: List[Float64], ref knn_left: List[Int],
     ref rows: List[Int], k: Int,
     mut out: List[Scalar[DT]], obase: Int,
@@ -516,10 +538,9 @@ def _knn_chunk[AK: Int, AA: Int](
     var q = List[Float64](length=KF, fill=0.0)
     var best_d = List[Float64](length=k, fill=1.0e300)
     var best_g = List[Int](length=k, fill=-1)
-    # the lane's joints, standardised the way the store's rows were: the
-    # mean cancels in a difference, only the spread matters
+    # the lane's words, standardised EXACTLY as the store's rows were
     for j in range(KF):
-        q[j] = q9[j] / knn_std[j]
+        q[j] = (q9[j] - knn_mean[j]) / knn_std[j]
     for i in range(len(rows)):
         var g = rows[i]
         var d = 0.0
@@ -906,6 +927,7 @@ def run[T: PlacementTable, M: ModelDefLike](
     var knn_act = List[Float64]()    # [n_rows_store, AA]
     var knn_left = List[Int]()       # steps left in the row's episode
     var knn_std = List[Float64](length=KF, fill=1.0)
+    var knn_mean = List[Float64](length=KF, fill=0.0)
     var knn_prev = List[Float64](length=LANES * AQP, fill=0.0)  # last step's joints
     var knn_rows_of = List[List[Int]]()  # rows per task, in store order
     if have_knn:
@@ -959,6 +981,34 @@ def run[T: PlacementTable, M: ModelDefLike](
         for g in range(n_st):
             for k in range(KF):
                 knn_q[g * KF + k] = (knn_q[g * KF + k] - mean[k]) / knn_std[k]
+        for k in range(KF):
+            knn_mean[k] = mean[k]
+        # ⚠ SELF-TEST, AT LOAD, BEFORE ANY KERNEL: a store row's own raw
+        # words fed back as a query must find ITSELF at distance 0. The
+        # first four box runs of this policy (2026-09-19/20, 0/200 each)
+        # standardised the rows with the mean and the query without it, so
+        # every lane was matched 6-7 std away from where it was; the trace's
+        # `nn` column read it, the rate could not.
+        var probe = List[Float64](length=KF, fill=0.0)
+        var scratch = List[Scalar[DT]](length=AK * AA, fill=Scalar[DT](0))
+        for ti in range(n_tasks):
+            if len(knn_rows_of[ti]) == 0:
+                continue
+            var g = knn_rows_of[ti][len(knn_rows_of[ti]) // 2]
+            for k in range(KF):
+                probe[k] = knn_q[g * KF + k] * knn_std[k] + knn_mean[k]
+            var d0 = _knn_chunk[AK, AA](
+                probe, KF, knn_q, knn_std, knn_mean, knn_act, knn_left,
+                knn_rows_of[ti], 1, scratch, 0,
+            )
+            var same = True
+            for j in range(AA):
+                if abs(Float64(scratch[j]) - knn_act[g * AA + j]) > 1.0e-6:
+                    same = False
+            if d0 > 1.0e-6 or not same:
+                raise Error("--knn self-test: store row " + String(g)
+                            + " queried with its own words is " + String(d0)
+                            + " std from its nearest row (must be 0)")
         # the shared denormalise below is the identity for a raw chunk
         act_norm.action_mean = List[Scalar[DT]](length=AA, fill=Scalar[DT](0))
         act_norm.action_std = List[Scalar[DT]](length=AA, fill=Scalar[DT](1))
@@ -1156,7 +1206,7 @@ def run[T: PlacementTable, M: ModelDefLike](
                             for k in range(AQP):
                                 q9[AQP + k] = q9[k] - (knn_prev[e * AQP + k] if t_pol > 0 else q9[k])
                         knn_dist[e] = _knn_chunk[AK, AA](
-                            q9, KF, knn_q, knn_std,
+                            q9, KF, knn_q, knn_std, knn_mean,
                             knn_act, knn_left, knn_rows_of[r_task], knn_k,
                             act_chunk, e * AK * AA,
                         )
@@ -1277,18 +1327,18 @@ def run[T: PlacementTable, M: ModelDefLike](
                 line += " | fingers " + _f(Float64(env.d.qpos.data[trace_lane * NQ + qadr9[7]]), 6)
                 line += " " + _f(Float64(env.d.qpos.data[trace_lane * NQ + qadr9[8]]), 6)
                 if drawer_qadr >= 0:
-                    line += " | drawer_mid " + _f(Float64(env.d.qpos.data[trace_lane * NQ + drawer_qadr]), 5)
+                    line += " | drawer_mid " + _fd(Float64(env.d.qpos.data[trace_lane * NQ + drawer_qadr]), 3)
                 line += " | q"
                 for k in range(ARM_DOF):
-                    line += " " + _f(Float64(env.d.qpos.data[trace_lane * NQ + qadr9[k]]), 3)
+                    line += " " + _fd(Float64(env.d.qpos.data[trace_lane * NQ + qadr9[k]]), 2)
                 if grip_site >= 0:
                     env.d.site_xpos.download(ctx)
                     ctx.synchronize()
                     line += " | grip"
                     for k in range(3):
-                        line += " " + _f(Float64(env.d.site_xpos.data[trace_lane * NS * 3 + grip_site * 3 + k]), 3)
+                        line += " " + _fd(Float64(env.d.site_xpos.data[trace_lane * NS * 3 + grip_site * 3 + k]), 3)
                 if have_knn:
-                    line += " | nn " + _f(knn_dist[trace_lane], 2)
+                    line += " | nn " + _fd(knn_dist[trace_lane], 2)
                 print(line)
             ctx.enqueue_copy(env._action, act_h)
             var tp0 = perf_counter_ns()
@@ -1385,7 +1435,7 @@ def run[T: PlacementTable, M: ModelDefLike](
                 if r < 0 or (row_task[r] != 0 and row_task[r] != 1):
                     continue
                 any_drawer = True
-                dline += " [" + String(e) + ": " + _f(drawer_max[e * 2], 3) + " " + _f(drawer_max[e * 2 + 1], 3) + "]"
+                dline += " [" + String(e) + ": " + _fd(drawer_max[e * 2], 3) + " " + _fd(drawer_max[e * 2 + 1], 3) + "]"
             if any_drawer:
                 print(dline)
         print("  chunk", chunk, "done — rows", base, "..",
