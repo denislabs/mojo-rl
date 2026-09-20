@@ -236,6 +236,34 @@ struct InitTable(Movable & Deinitable):
             self.tasks.copy(),
         )
 
+    def only_task(self, ti: Int) raises -> Self:
+        """The rows of task `ti` alone, as a table in its own right — the
+        same construction as `prefix_per_task`, for the same reason: a
+        per-task fit is scored against a table that holds only its task, so
+        the report covers every lane it ran and no lane it did not. Row `i`
+        of the result is init `i` of that task (the pairing `--demo-init` and
+        `--check-obs` rely on). Refuses a task with no rows."""
+        if ti < 0 or ti >= len(self.tasks):
+            raise Error("tasks: only_task(" + String(ti) + ") — the table has "
+                        + String(len(self.tasks)) + " tasks")
+        var words = self.row_words()
+        var state = List[Float64]()
+        var tix = List[Int32]()
+        var mask = List[Float64]()
+        for i in range(self.n_rows()):
+            if Int(self.task_index[i]) != ti:
+                continue
+            for w in range(words):
+                state.append(self._state[i * words + w])
+            tix.append(self.task_index[i])
+            mask.append(self.mask[i])
+        if len(tix) == 0:
+            raise Error("tasks: only_task(" + String(ti) + ") — no rows of that task")
+        return Self(
+            String(self.key), self.nq, self.nv, state^, tix^, mask^,
+            self.tasks.copy(),
+        )
+
     def task_label(self, i: Int) raises -> String:
         """The instruction for row `i`'s task.
 

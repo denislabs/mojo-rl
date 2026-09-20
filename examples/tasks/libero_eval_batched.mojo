@@ -585,6 +585,7 @@ def run[T: PlacementTable, M: ModelDefLike](
     policy_path: String, act_dir: String, act_exec: Int, obs_store: String,
     video_path: String, video_lane: Int, trace_lane: Int,
     knn_store: String, knn_k: Int, knn_vel: Bool, demo_init: String,
+    only_task: Int,
 ) raises:
     comptime E = Phyics3dBatchedEnv[
         M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
@@ -677,6 +678,13 @@ def run[T: PlacementTable, M: ModelDefLike](
     if have_table:
         var full = load_init_table(table_path, f.name, NQ, NV)
         var tbl = full.prefix_per_task(n_inits)
+        if only_task >= 0:
+            # ⚠ ONE TASK'S ROWS, REPORTED OVER ONE TASK: a per-task fit scored
+            # on the ten-task table spends 17 min on 180 episodes it was not
+            # fitted for. The report's denominators say which rows ran.
+            tbl = full.prefix_per_task(n_inits).only_task(only_task)
+            print("  task  : ONLY task", only_task, "(--task) —", tbl.n_rows(),
+                  "rows; NOT the ten-task benchmark number")
         # ⚠ THE TABLE'S LABEL AGAINST THE `.task`'s `language=`, per row: the
         # table's `task_index` is an ORDER, and `libero_eval.mojo` refuses a
         # table whose order is not this driver's task list.
@@ -1334,7 +1342,7 @@ def run[T: PlacementTable, M: ModelDefLike](
             if trace_lane >= 0 and chunk == 0:
                 var line = String("    t=") + _pad(String(step - SETTLE_STEPS), 4) + " a="
                 for k in range(OSC_ACTION_DIM):
-                    line += _pad(_f(Float64(ap[unsafe_offset = trace_lane * OSC_ACTION_DIM + k]), 6), 7)
+                    line += _pad(_fd(Float64(ap[unsafe_offset = trace_lane * OSC_ACTION_DIM + k]), 3), 7)
                 line += " | fingers " + _f(Float64(env.d.qpos.data[trace_lane * NQ + qadr9[7]]), 6)
                 line += " " + _f(Float64(env.d.qpos.data[trace_lane * NQ + qadr9[8]]), 6)
                 if drawer_qadr >= 0:
@@ -1579,6 +1587,7 @@ def main() raises:
     var knn_k = 5
     var knn_vel = False
     var demo_init = String("")
+    var only_task = -1
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -1616,6 +1625,9 @@ def main() raises:
                 i += 1
         elif s == "--knn-vel":
             knn_vel = True
+        elif s == "--task" and i + 1 < len(args):
+            only_task = Int(String(args[i + 1]))
+            i += 1
         elif s == "--demo-init":
             demo_init = String("build/demos/" + FAMILY + ".lowdim.h5")
             if i + 1 < len(args) and not String(args[i + 1]).startswith("--"):
@@ -1637,7 +1649,7 @@ def main() raises:
                 " --steps N, --check-lanes K, --sampled, --policy PATH,"
                 " --act DIR, --act-exec N, --check-obs [STORE], --video F.mp4,"
                 " --video-lane L, --trace-lane L, --knn [STORE], --knn-k N, --knn-vel,"
-                " --demo-init [STORE])"
+                " --demo-init [STORE], --task T)"
             )
         i += 1
 
@@ -1650,31 +1662,31 @@ def main() raises:
         run[LiberoGoalPlacement, LiberoGoalModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init,
+            knn_vel, demo_init, only_task,
         )
     elif FAMILY == "libero_object":
         run[LiberoObjectPlacement, LiberoObjectModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init,
+            knn_vel, demo_init, only_task,
         )
     elif FAMILY == "libero_spatial":
         run[LiberoSpatialPlacement, LiberoSpatialModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init,
+            knn_vel, demo_init, only_task,
         )
     elif FAMILY == "libero_kitchen_scene3":
         run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init,
+            knn_vel, demo_init, only_task,
         )
     elif FAMILY == "libero_kitchen_scene5":
         run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init,
+            knn_vel, demo_init, only_task,
         )
     else:
         comptime assert False, (
