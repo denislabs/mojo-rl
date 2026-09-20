@@ -29,6 +29,7 @@ from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.nn.core.initializer import Normal
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
@@ -86,7 +87,9 @@ def _lq_grad_param_kernel[
         grad_param.ptr[unsafe_offset=col] = rebind[Scalar[DT]](grad_param.ptr[unsafe_offset=col]) + total[0]
 
 
-struct LearnedQueries[IGNORE_DIM: Int, N: Int, D: Int](Module):
+struct LearnedQueries[
+    IGNORE_DIM: Int, N: Int, D: Int, EMB_STD: Float64 = 1.0
+](Module):
     comptime ARITY: Int = 1
     comptime IN_DIMS = Array[Int, 1](fill=Self.IGNORE_DIM)
     comptime OUT_DIM = Self.N * Self.D
@@ -109,7 +112,22 @@ struct LearnedQueries[IGNORE_DIM: Int, N: Int, D: Int](Module):
         )
         var m = Self()
         m.queries = Param["queries", False, Self.Q_SIZE].make[target](ctx)
-        INIT.init_weight[target](
+        # ⚠⚠ N(0, 1) — `torch.nn.Embedding`'s default — NOT THE GRAPH'S `INIT`.
+        # These rows are DETR's query / cls / additional-position embeddings
+        # (`detr_vae.py:54,68,76`, all `nn.Embedding`), and the reference
+        # draws them at unit scale. Under the graph's Kaiming rule they came
+        # out at std sqrt(2/D) = 0.088 for D=256, and at that scale the query
+        # rows are a perturbation on a near-uniform cross-attention softmax:
+        # every chunk position attends to the same memory average, the decoder
+        # output is IDENTICAL across the 40 positions (measured 2026-09-20,
+        # `libero_act_inspect`: queries spread 0.087, decoder output spread
+        # 0.0002 at rms 1.0, fresh and after training), and the gradient back
+        # to the rows is proportionally tiny, so training never grows them.
+        # Every ACT fit on LIBERO drove with the chunk's MEAN per state
+        # (0-31/200 against a vision-free control at 144/200) because of this
+        # line. The optimizer's INIT still names the rule for the rest of the
+        # graph; an embedding is not a weight matrix and has no fan-in.
+        Normal[0.0, Self.EMB_STD].init_weight[target](
             m.queries.val, Self.Q_SIZE, Self.D, Self.D, ctx
         )
         return m^
