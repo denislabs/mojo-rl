@@ -11,8 +11,8 @@
   <worldbody>
     <body name="brick">
       <freejoint name="free"/>
-      <geom name="geom" type="box" size="0.0125 0.0125 0.0125" density="600"
-            rgba="0.55 0.85 0.20 1"/>
+      <geom name="geom" type="box" size="0.0125 0.0125 0.0125" density="640"
+            rgba="0.0 0.471 0.749 1"/>
     </body>
   </worldbody>
 </mujoco>

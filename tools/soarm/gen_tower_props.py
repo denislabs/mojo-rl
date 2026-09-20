@@ -45,8 +45,14 @@ and not the object (`_the_task_was_not_feasible_and_the_curve_could_not_say_so`)
 Change `BRICK_MM` if the feasibility probe on THIS family says otherwise; the
 family's `slot_geom=` line is printed at the end and must follow.
 
-PLA densities: the bowl shell's mass comes from the boxes at `BOWL_DENSITY`
-(a 20 % infill print, ~70 g); the brick at `BRICK_DENSITY` (~10 g, hollow-ish).
+## THE MASSES ARE MEASURED, THE DENSITIES DERIVED
+
+The printed parts were weighed (2026-09-20): bowl 88 g (PLA basic, #FEC600),
+cube 10 g (PLA matte, #0078BF). The sim carries each as a `density` on its
+COLLISION boxes — MuJoCo sums geom masses, and the eight wall boxes overlap
+at the corners — so the density is `mass / (sum of the box volumes)`, computed
+below from the same numbers that size the boxes, and the total body mass
+comes out at the scale's reading. The colours are the filaments' as sRGB.
 """
 import argparse
 import math
@@ -66,16 +72,32 @@ BOWL_INRADIUS_MM = 50.0     # inner flat-to-centre
 BOWL_WALL_MM = 6.0
 BOWL_HEIGHT_MM = 45.0
 BOWL_FLOOR_MM = 4.0
-BOWL_DENSITY = 450.0        # kg/m^3, the boxes' (a 20 % infill PLA shell)
-BOWL_RGBA = "0.15 0.62 0.62 1"
+BOWL_MASS_G = 88.0          # weighed, PLA basic 20 % infill
+BOWL_RGBA = "0.996 0.776 0.0 1"        # #FEC600
 
 BRICK_MM = 25.0
-BRICK_DENSITY = 600.0
-BRICK_RGBA = "0.55 0.85 0.20 1"
+BRICK_MASS_G = 10.0         # weighed, PLA matte
+BRICK_RGBA = "0.0 0.471 0.749 1"       # #0078BF
 
 N_SIDES = 8
 HALF_ANGLE = math.pi / N_SIDES          # 22.5°
 COS_H = math.cos(HALF_ANGLE)
+
+
+def _bowl_box_volume_mm3():
+    """The sum of the collision boxes' volumes (overlaps counted, as MuJoCo
+    counts them when it sums geom masses)."""
+    a = BOWL_INRADIUS_MM
+    half_len = (a + BOWL_WALL_MM) * math.tan(HALF_ANGLE)
+    half_h = (BOWL_HEIGHT_MM - BOWL_FLOOR_MM) / 2.0
+    floor = (2 * a) * (2 * a) * BOWL_FLOOR_MM
+    walls = N_SIDES * BOWL_WALL_MM * (2 * half_len) * (2 * half_h)
+    return floor + walls
+
+
+# kg/m^3 = g / mm^3 * 1e6
+BOWL_DENSITY = round(BOWL_MASS_G / _bowl_box_volume_mm3() * 1e6, 1)
+BRICK_DENSITY = round(BRICK_MASS_G / BRICK_MM ** 3 * 1e6, 1)
 
 
 def _octagon(circumradius, z):
@@ -272,6 +294,8 @@ def main():
     area_i = N_SIDES * a ** 2 * math.tan(HALF_ANGLE)
     bowl_vol = area_o * BOWL_FLOOR_MM + (area_o - area_i) * (BOWL_HEIGHT_MM - BOWL_FLOOR_MM)
     print("  bowl print volume %.0f cm^3 (solid), brick %.1f cm^3" % (bowl_vol / 1000, BRICK_MM ** 3 / 1000))
+    print("  masses: bowl %g g -> density %g on %.1f cm^3 of boxes; brick %g g -> density %g"
+          % (BOWL_MASS_G, BOWL_DENSITY, _bowl_box_volume_mm3() / 1000, BRICK_MASS_G, BRICK_DENSITY))
     return 0
 
 
