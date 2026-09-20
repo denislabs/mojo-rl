@@ -180,7 +180,7 @@ def _pad(s: String, w: Int) -> String:
 
 def _launch_fused[
     B: Int, DIM: Int, H: Int, QL: Int, KL: Int, HD: Int, MASKED: Bool,
-    R: Int, S: Int, KU: Int,
+    R: Int, S: Int, KU: Int, DOT_FMA: Bool = False, EXP2: Bool = False,
 ](
     mut q: Tensor, mut k: Tensor, mut v: Tensor, mut m: Tensor,
     mut out: Tensor, mut ctx: DeviceContext,
@@ -192,7 +192,9 @@ def _launch_fused[
     comptime lay_m = Layout.row_major(B, KL)
     comptime qtiles = (QL + XA_FUSED_BQ - 1) // XA_FUSED_BQ
     ctx.enqueue_function[
-        _xa_fused_kernel[B, DIM, H, QL, KL, HD, MASKED, R, S, KU]
+        _xa_fused_kernel[
+            B, DIM, H, QL, KL, HD, MASKED, R, S, KU, DOT_FMA, EXP2
+        ]
     ](
         q.lt["gpu", lay_q](), k.lt["gpu", lay_kv](), v.lt["gpu", lay_kv](),
         m.lt["gpu", lay_m](), out.lt["gpu", lay_q](),
@@ -321,6 +323,11 @@ def run_shape[
         String("H  fused R4 S4 KU4 (ILP across keys)"),
         String("I  fused R2 S4 KU4 (both)"),
         String("J  fused R1 S2 KU1 (the first cut)"),
+        String("K  fused R1 S1 KU1 (no shuffles)"),
+        String("L  fused R4 S4 KU4 + FMA dot"),
+        String("M  fused R4 S4 KU4 + FMA + exp2"),
+        String("N  fused R1 S1 KU4 + FMA + exp2"),
+        String("O  fused R2 S1 KU4 + FMA + exp2"),
     ]
     var ok = True
     var best_a = 0.0
@@ -329,7 +336,7 @@ def run_shape[
     # reads of one buffer — opposite conclusions, the same printout.
     var a_out = List[Scalar[DT]]()
     var a_attn = List[Scalar[DT]]()
-    for variant in range(9):
+    for variant in range(14):
         var mod = XA.make["gpu", Deterministic](Optional(ctx))
         if variant == 4:
             mod.set_attr["fused_attention"](Scalar[DT](1.0))
@@ -384,10 +391,35 @@ def run_shape[
                     _launch_fused[B, DIM, H, QL, KL, HD, MASKED, 2, 4, 4](
                         q, k, v, m, out, ctx
                     )
-                else:
+                elif variant == 8:
                     _launch_fused[B, DIM, H, QL, KL, HD, MASKED, 1, 2, 1](
                         q, k, v, m, out, ctx
                     )
+                # ⚠ THE SECOND ROUND. The Orin put F..J all at 6.1-7.0 ms: the
+                # bound is what they SHARE — instructions per row-key (a
+                # multiply + reduce tree for the dot, ~25 for libm exp, the
+                # softmax bookkeeping replicated across the SPLIT lanes) —
+                # and these vary exactly those.
+                elif variant == 9:
+                    _launch_fused[B, DIM, H, QL, KL, HD, MASKED, 1, 1, 1](
+                        q, k, v, m, out, ctx
+                    )
+                elif variant == 10:
+                    _launch_fused[
+                        B, DIM, H, QL, KL, HD, MASKED, 4, 4, 4, True, False
+                    ](q, k, v, m, out, ctx)
+                elif variant == 11:
+                    _launch_fused[
+                        B, DIM, H, QL, KL, HD, MASKED, 4, 4, 4, True, True
+                    ](q, k, v, m, out, ctx)
+                elif variant == 12:
+                    _launch_fused[
+                        B, DIM, H, QL, KL, HD, MASKED, 1, 1, 4, True, True
+                    ](q, k, v, m, out, ctx)
+                else:
+                    _launch_fused[
+                        B, DIM, H, QL, KL, HD, MASKED, 2, 1, 4, True, True
+                    ](q, k, v, m, out, ctx)
             else:
                 if variant == 1 or variant == 2:
                     # V head-major, for the A.V matmul.
@@ -498,7 +530,7 @@ def main() raises:
     comptime assert has_accelerator(), "this benchmark times GPU kernels"
     var ctx = DeviceContext()
     print("=" * 100)
-    print("CrossAttention forward — nine variants, " + String(ctx.name()))
+    print("CrossAttention forward — fourteen variants, " + String(ctx.name()))
     print("=" * 100)
     var ok = True
     # SigLIP-B/16 @ 512: the target. B=1 — one tower call per camera.

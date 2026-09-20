@@ -53,7 +53,7 @@ and key/value streams, and per-sample masking folded into the softmax kernel.
 from mojo_rl.nn.core.mm import mm, bmm
 from mojo_rl.nn.core.mm_tiled import bmm_tiled
 from std.collections import Array
-from std.math import exp, sqrt
+from std.math import exp, exp2, fma, sqrt
 from max.gpu import barrier, block_dim, block_idx, thread_idx
 from max.gpu.primitives import warp
 from max.gpu.host import DeviceContext
@@ -470,6 +470,16 @@ comptime XA_FUSED_KU: Int = 1
 shuffled together before one softmax update, which breaks the per-key
 dependency chain (load -> dot -> 2 shuffles -> exp -> accumulate) that a
 few resident warps cannot hide."""
+comptime XA_FUSED_DOT_FMA: Bool = False
+"""Dot product as a chain of fused multiply-adds (HW instructions) instead
+of a multiply and a reduce tree (2*HW - 1). Shipped default follows the
+board."""
+comptime XA_FUSED_EXP2: Bool = False
+"""Softmax in base 2: scores pre-scaled by log2(e) once, weights by `exp2`
+(one MUFU op on NVIDIA, against ~25 instructions for the libm-accurate
+`exp`). Mathematically the same softmax; the rounding differs and the
+float64 gate in `benchmarks/cross_attention_bench.mojo` is the band."""
+comptime XA_LOG2E: Scalar[DT] = Scalar[DT](1.4426950408889634)
 
 
 def _xa_fused_split[HD: Int]() -> Int:
@@ -485,7 +495,7 @@ def xa_fused_block[R: Int, SPLIT: Int]() -> Int:
 
 def _xa_fused_kernel[
     B: Int, DIM: Int, NH: Int, QL: Int, KL: Int, HD: Int, MASKED: Bool,
-    R: Int, SPLIT: Int, KU: Int,
+    R: Int, SPLIT: Int, KU: Int, DOT_FMA: Bool = False, EXP2: Bool = False,
 ](
     q: LayoutTensor[DT, Layout.row_major(B, QL * DIM), MutAnyOrigin],
     k: LayoutTensor[DT, Layout.row_major(B, KL * DIM), MutAnyOrigin],
@@ -546,7 +556,11 @@ def _xa_fused_kernel[
     var tid = Int(thread_idx.x)
     var part = tid % SPLIT
     var r0 = qt * BQ + (tid // SPLIT) * R
+    # With EXP2 the scores carry log2(e) as well, so the softmax's exp(x)
+    # becomes exp2(x') with x' = x * log2(e) — the same weights.
     var scale = Scalar[DT](1.0) / sqrt(Scalar[DT](HD))
+    comptime if EXP2:
+        scale = scale * XA_LOG2E
     var qbase = b * (QL * DIM) + h * HD + part * HW
 
     var qr = Array[SIMD[DT, HW], R](fill=SIMD[DT, HW](0))
@@ -563,20 +577,24 @@ def _xa_fused_kernel[
         # Tile load: element e strided by the block, so a warp reads 32
         # consecutive floats of one key row — coalesced — and stores them
         # to the same offsets in shared memory.
-        var e = tid
-        while e < TILE:
-            var jj = e // HD
-            var d = e % HD
-            var j = j0 + jj
-            if j < KL:
-                var src = b * (KL * DIM) + j * DIM + h * HD + d
-                ks.ptr[unsafe_offset=e] = rebind[Scalar[DT]](
-                    k.ptr[unsafe_offset=src]
-                )
-                vs.ptr[unsafe_offset=e] = rebind[Scalar[DT]](
-                    v.ptr[unsafe_offset=src]
-                )
-            e += NT
+        # Unrolled at compile time so every global load of the tile is
+        # issued before the first store waits on one: as a `while` loop the
+        # 32 loads per thread were a chain of ~500-cycle LPDDR latencies
+        # under a barrier, the same in every configuration of this kernel.
+        comptime for it in range((TILE + NT - 1) // NT):
+            var e = it * NT + tid
+            if e < TILE:
+                var jj = e // HD
+                var d = e % HD
+                var j = j0 + jj
+                if j < KL:
+                    var src = b * (KL * DIM) + j * DIM + h * HD + d
+                    ks.ptr[unsafe_offset=e] = rebind[Scalar[DT]](
+                        k.ptr[unsafe_offset=src]
+                    )
+                    vs.ptr[unsafe_offset=e] = rebind[Scalar[DT]](
+                        v.ptr[unsafe_offset=src]
+                    )
         comptime if MASKED:
             if tid < BK:
                 var j = j0 + tid
@@ -604,7 +622,13 @@ def _xa_fused_kernel[
                 var jr = jj if jj < BK else BK - 1
                 var kh = ks.ptr.unsafe_load[width=HW](jr * HD + part * HW)
                 comptime for r in range(R):
-                    sc[r * KU + u] = (qr[r] * kh).reduce_add()
+                    comptime if DOT_FMA:
+                        var acc = Scalar[DT](0)
+                        comptime for d in range(HW):
+                            acc = fma(qr[r][d], kh[d], acc)
+                        sc[r * KU + u] = acc
+                    else:
+                        sc[r * KU + u] = (qr[r] * kh).reduce_add()
             comptime if SPLIT >= 2:
                 comptime for n in range(R * KU):
                     sc[n] = sc[n] + warp.shuffle_xor(sc[n], UInt32(1))
@@ -622,7 +646,11 @@ def _xa_fused_kernel[
                 if mnew > mx[r]:
                     # exp(old - new) is 0 on the first live key (old is
                     # MASK_NEG), which is the zero start.
-                    var c = exp(mx[r] - mnew)
+                    var c: Scalar[DT]
+                    comptime if EXP2:
+                        c = exp2(mx[r] - mnew)
+                    else:
+                        c = exp(mx[r] - mnew)
                     l[r] = l[r] * c
                     o[r] = o[r] * c
                     mx[r] = mnew
@@ -633,7 +661,10 @@ def _xa_fused_kernel[
                 comptime for r in range(R):
                     var pw = Scalar[DT](0)
                     if ok[u]:
-                        pw = exp(sc[r * KU + u] - mx[r])
+                        comptime if EXP2:
+                            pw = exp2(sc[r * KU + u] - mx[r])
+                        else:
+                            pw = exp(sc[r * KU + u] - mx[r])
                     l[r] = l[r] + pw
                     o[r] = o[r] + pw * vh
         barrier()
@@ -1074,7 +1105,7 @@ struct CrossAttention[
         comptime SPLIT = _xa_fused_split[Self.HEAD_DIM]()
         comptime kern = _xa_fused_kernel[
             B, Self.DIM, Self.N_HEADS, QL, KL, Self.HEAD_DIM, Self.MASKED,
-            XA_FUSED_R, SPLIT, XA_FUSED_KU,
+            XA_FUSED_R, SPLIT, XA_FUSED_KU, XA_FUSED_DOT_FMA, XA_FUSED_EXP2,
         ]
         comptime qtiles = (QL + XA_FUSED_BQ - 1) // XA_FUSED_BQ
         comptime blk = xa_fused_block[XA_FUSED_R, SPLIT]()
