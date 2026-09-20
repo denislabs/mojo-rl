@@ -108,6 +108,12 @@ comptime GS = CFG.GRIPPER_SITE
 comptime GRIPPER_BODY = CFG.GRIPPER_BODY
 comptime HOLD_STEPS: Int = 31
 """The goal held this many consecutive steps = success (the recorder's rule)."""
+comptime FB_MIN_STEP: Float64 = 0.02
+"""Feedback demonstrator: the slowest a joint is driven, rad per control step
+(0.6 rad/s) — the pull-back speed of a joint that noise displaced."""
+comptime FB_VEL: Float64 = 0.05
+"""Feedback demonstrator: the arm has settled when every joint is slower than
+this, rad/s."""
 
 # The legs' step budgets at 31.25 Hz.
 comptime N_PRE = 40
@@ -344,6 +350,8 @@ struct Expert(Movable):
     var arm: Arm
     var demos: DemoSet
     var noise: Float64
+    var feedback: Bool
+    var flat_noise: Bool
     var frame_skip: Int
     var timestep: Float64
     var q_cmd: List[Float64]
@@ -355,10 +363,14 @@ struct Expert(Movable):
     var ep_return: Float64
     var rung_rows: Int
 
-    def __init__(out self, mut env: E, noise: Float64) raises:
+    def __init__(
+        out self, mut env: E, noise: Float64, feedback: Bool = False,
+    ) raises:
         self.arm = Arm(env)
         self.demos = DemoSet(E.OBS_DIM, ACT)
         self.noise = noise
+        self.feedback = feedback
+        self.flat_noise = False
         self.frame_skip = CFG.FRAME_SKIP
         self.timestep = So101TowerModel.TIMESTEP
         self.q_cmd = List[Float64](length=ACT, fill=0.0)
@@ -381,20 +393,75 @@ struct Expert(Movable):
 
     def step_to(
         mut self, mut env: E, ref q_target: List[Float64], grip_open: Bool,
-        n_steps: Int, taper_noise: Bool = False,
+        n_steps: Int, taper_noise: Bool = False, until_held: Bool = False,
     ) raises -> Bool:
-        """Interpolate the joint command to `q_target` over `n_steps`, the
-        gripper to open/closed; record each transition. Returns True when
-        the goal held `HOLD_STEPS` steps (the episode is over)."""
+        """Drive the joints to `q_target` and the gripper open/closed;
+        record each transition. Returns True when the goal held
+        `HOLD_STEPS` steps (the episode is over).
+
+        ⚠ TWO DEMONSTRATORS. The default interpolates the COMMAND from where
+        it was to the target over exactly `n_steps` (ramps) — a function of
+        time, not of the state: a policy fitted to it to L1 0.004 still
+        parked, because its own rollout arrives at the grasp pose a few mm
+        off the recorded arrival and no recorded state says "close from
+        here" (`tower_policy_probe.mojo`, run dd8d4a64: the gripper word sat
+        1.8 rad from the recording from step 90 on, reward 1.233 for ever).
+        `--feedback` commands `q_now + clamp(q_target - q_now, ±d)` every
+        step — a STATE-FEEDBACK controller whose action is a function of the
+        observation and that moves on when the command has reached the
+        target and the arm has settled. ⚠ NOT YET THE BETTER DEMONSTRATOR:
+        17/20 clean against the ramps' 18/20 on the same seeds, and 9/20 at
+        noise 0.02 against 16/20 — the arm jitters through the arrival test
+        and the phases run to their cap. Opt-in until that is understood.
+        `--flat-noise` keeps the descent's noise flat instead of tapered:
+        the arrivals it records are PERTURBED, and the successes among them
+        are the "close from here" states the ramps never wrote.
+        `d` is the ramp's own speed (the phase's distance over `n_steps`),
+        floored at `FB_MIN_STEP` so a joint that should not move is still
+        pulled back when noise moves it."""
         var q_start = List[Float64]()
         for i in range(ACT):
             q_start.append(self.q_cmd[i])
         var g_target = self.arm.hi[5] if grip_open else self.arm.lo[5]
-        for k in range(n_steps):
+        var dmax = List[Float64]()
+        for i in range(N_ARM):
+            var qi = Float64(env.d.qpos.data[i])
+            var d = abs(q_target[i] - qi) / Float64(n_steps)
+            dmax.append(d if d > FB_MIN_STEP else FB_MIN_STEP)
+        var g0 = Float64(env.d.qpos.data[5])
+        var dg = abs(g_target - g0) / Float64(n_steps)
+        if dg < FB_MIN_STEP:
+            dg = FB_MIN_STEP
+        var max_steps = 2 * n_steps if self.feedback and not until_held else n_steps
+        var settled = 0
+        for k in range(max_steps):
             var a = Float64(k + 1) / Float64(n_steps)
-            for i in range(N_ARM):
-                self.q_cmd[i] = q_start[i] + (q_target[i] - q_start[i]) * a
-            self.q_cmd[5] = q_start[5] + (g_target - q_start[5]) * a
+            if a > 1.0:
+                a = 1.0
+            if self.feedback:
+                for i in range(N_ARM):
+                    var qi = Float64(env.d.qpos.data[i])
+                    var e = q_target[i] - qi
+                    if e > dmax[i]:
+                        e = dmax[i]
+                    if e < -dmax[i]:
+                        e = -dmax[i]
+                    self.q_cmd[i] = qi + e
+                # ⚠ THE GRIPPER IS RATE-LIMITED ON ITS COMMAND, NOT ON ITS
+                # POSITION: closed on the cube it stalls above `lo`, and a
+                # command of `g_now - d` squeezes with kp·d only — the brick
+                # slipped out on the lift (6/20). The command walks to `lo`
+                # and stays there, as the ramps did; the squeeze is kp·(g - lo).
+                var eg = g_target - self.q_cmd[5]
+                if eg > dg:
+                    eg = dg
+                if eg < -dg:
+                    eg = -dg
+                self.q_cmd[5] = self.q_cmd[5] + eg
+            else:
+                for i in range(N_ARM):
+                    self.q_cmd[i] = q_start[i] + (q_target[i] - q_start[i]) * a
+                self.q_cmd[5] = q_start[5] + (g_target - q_start[5]) * a
             var action = ContAction[ACT]()
             for i in range(ACT):
                 var v = self._normalized(i, self.q_cmd[i])
@@ -408,7 +475,7 @@ struct Expert(Movable):
                 # target is where the jaw sits when it closes, and 0.02 of the
                 # range is 11 mm at the cube — 10/20 with the noise flat.
                 if self.noise > 0.0 and grip_open:
-                    var sigma = self.noise * (1.0 - a) if taper_noise else self.noise
+                    var sigma = self.noise * (1.0 - a) if (taper_noise and not self.flat_noise) else self.noise
                     var u1 = random_float64(1e-12, 1.0)
                     var u2 = random_float64(0.0, 1.0)
                     v += sigma * sqrt(-2.0 * log(u1)) * cos(2.0 * pi * u2)
@@ -439,13 +506,36 @@ struct Expert(Movable):
                 self.held = 0
             if self.held >= HOLD_STEPS:
                 return True
+            if self.feedback and not until_held:
+                # arrived: the COMMAND of every arm joint is at its target
+                # (the clamp is inactive — under gravity the joint itself
+                # rests a sag below, and a position test never passes), the
+                # arm has stopped moving, and the gripper's command is at its
+                # target.
+                var arrived = True
+                for i in range(N_ARM):
+                    if abs(self.q_cmd[i] - q_target[i]) > 1e-9:
+                        arrived = False
+                    if abs(Float64(env.d.qvel.data[i])) > FB_VEL:
+                        arrived = False
+                if abs(self.q_cmd[5] - g_target) > 1e-9:
+                    arrived = False
+                if arrived:
+                    settled += 1
+                else:
+                    settled = 0
+                if settled >= 2 and k + 1 >= n_steps // 2:
+                    break
         return False
 
-    def hold(mut self, mut env: E, grip_open: Bool, n_steps: Int) raises -> Bool:
+    def hold(
+        mut self, mut env: E, grip_open: Bool, n_steps: Int,
+        until_held: Bool = False,
+    ) raises -> Bool:
         var q = List[Float64]()
         for i in range(N_ARM):
             q.append(self.q_cmd[i])
-        return self.step_to(env, q, grip_open, n_steps)
+        return self.step_to(env, q, grip_open, n_steps, until_held=until_held)
 
 
 def _body_pos(mut env: E, b: Int) -> List[Float64]:
@@ -512,7 +602,7 @@ def run_episode(
         if not done:
             done = ex.step_to(env, q4, True, N_RETREAT)
     if not done:
-        done = ex.hold(env, not place, N_HOLD_MAX)
+        done = ex.hold(env, not place, N_HOLD_MAX, until_held=True)
     var brick_z = Float64(env.d.xpos.data[brick * 3 + 2])
     print(
         "  ep", ep, "->", "SUCCESS" if done else "failed", " steps", ex.steps,
@@ -524,7 +614,7 @@ def run_episode(
 
 def _usage():
     print("usage: tower_expert_record.mojo [task] [--episodes N] [--seed S]"
-          " [--noise SIGMA] [--out FILE] [--keep-failures] [--quiet]")
+          " [--noise SIGMA] [--flat-noise] [--feedback] [--out FILE] [--keep-failures] [--quiet]")
 
 
 def main() raises:
@@ -533,6 +623,8 @@ def main() raises:
     var n_episodes = 20
     var seed0 = 0
     var noise = 0.0
+    var feedback = False
+    var flat_noise = False
     var out_path = String("")
     var keep_failures = False
     var verbose = True
@@ -557,6 +649,12 @@ def main() raises:
         elif a == "--quiet":
             verbose = False
             i += 1
+        elif a == "--feedback":
+            feedback = True
+            i += 1
+        elif a == "--flat-noise":
+            flat_noise = True
+            i += 1
         elif a == "--help" or a == "-h":
             _usage()
             return
@@ -580,7 +678,7 @@ def main() raises:
     print("so101_tower —", task, "— SCRIPTED EXPERT (waypoints + IK)")
     print("=" * 66)
     print("  episodes", n_episodes, " seed", seed0, " noise", noise,
-          " out", out_path)
+          " demonstrator", "feedback" if feedback else "ramps", " out", out_path)
 
     var ctx = DeviceContext()
     var env = E(ctx)
@@ -609,7 +707,8 @@ def main() raises:
     if brick < 0 or bowl < 0:
         raise Error("brick_brick / bowl_bowl not found in the composed scene")
 
-    var ex = Expert(env, noise)
+    var ex = Expert(env, noise, feedback)
+    ex.flat_noise = flat_noise
     var n_ok = 0
     for ep in range(n_episodes):
         _ = env.reset()
