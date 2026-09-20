@@ -135,22 +135,34 @@ comptime Agent = SACAgent[
 comptime N_DESCEND_HANDOVER = 20
 """The expert's descent after a handover: the policy already brought the
 jaw near the brick, so a short ramp to the grasp pose from wherever it is."""
+comptime JAW_OPEN: Float64 = 0.9
+"""The jaw's OPEN target (rad) on the approach — `--jaw-open`; the range is
+-0.17..1.75. The moving tip swings DOWN in an arc as the jaw closes (its
+lowest corner 80 mm above the desk at 1.75, ~40 at 0.9, 20 at 0.6, the
+brick's top at 27): from wide open the close is a long swing whose tip
+lands on the brick's top edge and whose success depends on the exact
+arrival (a close at the first settled row: 7/40; at the ramp's end 30/40).
+Half open, the close is a short swing and grasps 30/40 from the first
+settled row — so the close can be state-triggered (`Z_CLOSE_ABOVE_MM`)."""
 comptime HANDOVER_MIN_STEPS = 20
 comptime CLOSE_REACH_MM: Float64 = 36.0
 """The DAgger handover's reach (obs words GB+3..5): measured on 300 z-0.01
 demos, the reach at the grasp pose was 24.7-35.5 mm (median 24.9; the
 spread is the lateral error over placements)."""
-comptime Z_CLOSE_TOL: Float64 = 0.004
+comptime Z_CLOSE_ABOVE_MM: Float64 = 27.0
 """The close is STATE-TRIGGERED: the descent ends and the jaw closes at the
-first row where the gripper site is within this of the grasp HEIGHT and
-the arm has settled (`SETTLED_VEL`). On the ramp descent the arm had
-settled 7 rows before the recorded close — seven rows per episode of
-"settled at the grasp pose, jaw open, label OPEN" next to ONE row of the
-same state labelled CLOSED, and the fitted policy's jaw command at that
-state was open (the probe's teacher-forced error at the close row: 0.34,
-the full jump). ⚠ THE HEIGHT, NOT THE REACH: a reach test (< 36 mm,
-settled) fired 10 mm too high on the clean ramp (1/40) and at the DAgger
-handover before the descent (0/12), where a step close misses the brick."""
+first row where the gripper site is within this HEIGHT above the brick
+centre (the reach word GB+5, which is brick − site, so it reads −25 at the
+grasp) and the arm has settled (`SETTLED_VEL`). Measured on 300 z-0.01
+demos: the ramp descent overshoots to −23.1 mm and settles at −23.6..−24.8
+over its last 7 rows (p10 of placements: −31.7, the far ones the IK cannot
+reach lower — those fall back to the ramp's end). Those 7 rows were the
+defect: "settled at the grasp pose, jaw open, label OPEN" next to ONE row
+of the same state labelled CLOSED, and the fitted policy's jaw command at
+that state was open (the probe's teacher-forced error at the close row:
+0.34, the full jump). ⚠ NOT THE COMMANDED HEIGHT: a test against the IK
+target within 4 mm never fired (IK error + gravity sag), and a reach-norm
+test (< 36 mm) fired 10 mm too high (1/40 clean, 0/12 DAgger)."""
 comptime SETTLED_VEL: Float64 = 0.15
 """rad/s, every arm joint: settled (the median over the 7 rows before the
 recorded close was 0.04-0.10; the descent runs at 0.39)."""
@@ -420,8 +432,11 @@ struct Expert(Movable):
     """Rows recorded while True carry the INTERVENED flag (the expert
     driving after a `--policy` handover — HIL-SERL's human, scripted)."""
     var close_steps: Int
-    var z_grasp: Float64
-    """The gripper site's height above the brick centre at the grasp (`--z-grasp`, default `Z_GRASP`)."""
+    var z_grasp: Float64      # `--z-grasp`: the site's height above the brick centre at the grasp
+    var close_above_mm: Float64  # `--close-above-mm`: the close's height trigger; 0 = off (close at the ramp's end)
+    var jaw_open: Float64     # `--jaw-open`: the jaw's OPEN target (rad) on the approach; the moving tip
+                              # swings down in an arc as it closes (80 mm up at 1.75, ~40 at 0.9, 20 at 0.6),
+                              # so a half-open approach makes the close a short swing
     var frame_skip: Int
     var timestep: Float64
     var q_cmd: List[Float64]
@@ -444,6 +459,8 @@ struct Expert(Movable):
         self.intervening = False
         self.close_steps = N_CLOSE
         self.z_grasp = Z_GRASP
+        self.close_above_mm = Z_CLOSE_ABOVE_MM
+        self.jaw_open = JAW_OPEN
         self.frame_skip = CFG.FRAME_SKIP
         self.timestep = So101TowerModel.TIMESTEP
         self.q_cmd = List[Float64](length=ACT, fill=0.0)
@@ -523,7 +540,8 @@ struct Expert(Movable):
         return (False, False)
 
     def settled(self) -> Bool:
-        for i in range(N_ARM):
+        """Every joint — the jaw included — slower than `SETTLED_VEL`."""
+        for i in range(ACT):
             if abs(Float64(self.obs[NQ + i])) > SETTLED_VEL:
                 return False
         return True
@@ -531,7 +549,7 @@ struct Expert(Movable):
     def step_to(
         mut self, mut env: E, ref q_target: List[Float64], grip_open: Bool,
         n_steps: Int, taper_noise: Bool = False, until_held: Bool = False,
-        close_at_z: Float64 = -1.0,
+        close_on_height: Bool = False,
     ) raises -> Bool:
         """Drive the joints to `q_target` and the gripper open/closed;
         record each transition. Returns True when the goal held
@@ -560,7 +578,7 @@ struct Expert(Movable):
         var q_start = List[Float64]()
         for i in range(ACT):
             q_start.append(self.q_cmd[i])
-        var g_target = self.arm.hi[5] if grip_open else self.arm.lo[5]
+        var g_target = self.jaw_open if grip_open else self.arm.lo[5]
         var dmax = List[Float64]()
         for i in range(N_ARM):
             var qi = Float64(env.d.qpos.data[i])
@@ -600,6 +618,14 @@ struct Expert(Movable):
                 for i in range(N_ARM):
                     self.q_cmd[i] = q_start[i] + (q_target[i] - q_start[i]) * a
                 self.q_cmd[5] = q_start[5] + (g_target - q_start[5]) * a
+            if close_on_height:
+                # the descent's jaw target is a STEP to `jaw_open`: after a
+                # DAgger handover the policy's jaw is wide open, and a ramp
+                # from there is 20 rows of a time-indexed label at a settled
+                # arm — the defect this trigger removes. A step makes the
+                # half-close one state-indexed event (jaw at `jaw_open`,
+                # stopped: `settled` includes the jaw) and the close the next.
+                self.q_cmd[5] = g_target
             for i in range(ACT):
                 var v = self._normalized(i, self.q_cmd[i])
                 # ⚠ WHILE THE JAW IS OPEN ONLY — the approach and the descent.
@@ -624,11 +650,16 @@ struct Expert(Movable):
             if self._apply(env):
                 return True
             # the descent: hand over to the close at the first settled row
-            # at the grasp height — see `Z_CLOSE_TOL`
+            # at the grasp height — see `Z_CLOSE_ABOVE_MM`
             if (
-                close_at_z > 0.0 and k + 1 >= 3
-                and abs(Float64(env.d.site_xpos.data[GS * 3 + 2]) - close_at_z) < Z_CLOSE_TOL
+                close_on_height and self.close_above_mm > 0.0 and k + 1 >= 3
+                and Float64(self.obs[GB + 5]) * 1000.0 > -self.close_above_mm
                 and self.settled()
+                # and the jaw's command has reached its open target: after a
+                # DAgger handover the policy's jaw is FULLY open and the
+                # descent ramps it to `jaw_open`; a close from wide open is
+                # the long swing that misses (2/12 without this)
+                and abs(self.q_cmd[5] - g_target) < 1e-9
             ):
                 return False
             if self.feedback and not until_held:
@@ -734,7 +765,7 @@ def run_episode(
     if not done:
         done = ex.step_to(
             env, q2, True, N_DESCEND_HANDOVER if handed else N_DESCEND,
-            taper_noise=True, close_at_z=_above(pb, ex.z_grasp)[2],
+            taper_noise=True, close_on_height=True,
         )
     if not done:
         # ⚠ THE CLOSE IS A STEP (`--close-steps`, default 1; it was 30,
@@ -777,7 +808,8 @@ def run_episode(
 
 def _usage():
     print("usage: tower_expert_record.mojo [task] [--episodes N] [--seed S]"
-          " [--noise SIGMA] [--flat-noise] [--close-steps N] [--z-grasp M] [--feedback] [--out FILE]\n"
+          " [--noise SIGMA] [--flat-noise] [--close-steps N] [--z-grasp M] [--jaw-open RAD]\n"
+          "       [--close-above-mm MM] [--feedback] [--out FILE]\n"
           "       [--policy CKPT [--handover-mm MM] [--policy-steps N]]   # DAgger\n"
           "       [--keep-failures] [--quiet]")
 
@@ -792,6 +824,8 @@ def main() raises:
     var flat_noise = False
     var close_steps = N_CLOSE
     var z_grasp = Z_GRASP
+    var close_above_mm = Z_CLOSE_ABOVE_MM
+    var jaw_open = -1.0
     var policy_ckpt = String("")
     var handover_mm = CLOSE_REACH_MM
     var policy_steps = 140
@@ -830,6 +864,12 @@ def main() raises:
             i += 2
         elif a == "--z-grasp" and i + 1 < len(args):
             z_grasp = Float64(String(args[i + 1]))
+            i += 2
+        elif a == "--close-above-mm" and i + 1 < len(args):
+            close_above_mm = Float64(String(args[i + 1]))
+            i += 2
+        elif a == "--jaw-open" and i + 1 < len(args):
+            jaw_open = Float64(String(args[i + 1]))
             i += 2
         elif a == "--policy" and i + 1 < len(args):
             policy_ckpt = String(args[i + 1])
@@ -898,6 +938,9 @@ def main() raises:
     ex.flat_noise = flat_noise
     ex.close_steps = close_steps
     ex.z_grasp = z_grasp
+    ex.close_above_mm = close_above_mm
+    if jaw_open > 0.0:
+        ex.jaw_open = jaw_open
     var agent: Agent = SAC["cpu", E.OBS_DIM, ACT, BATCH, CAP, HIDDEN](
         action_scale=1.0, learning_starts=0,
     )
