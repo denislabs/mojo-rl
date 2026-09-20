@@ -42,7 +42,9 @@ base_pos=0.0,0.0,0.005
 # the real one is — the recorded overhead frames show the arm beside the
 # tower's foot at the bottom-left of the image.
 slot=tower:static:mojo_rl/tasks/assets/props/so101_tower_stand.xml:-0.019,-0.077,0.0
-# The mat: top face at z 0.002, 8..56 cm in front of the arm, +-25 cm.
+# The desk: 65 x 65 cm, top face at z 0.002, spanning x -0.10..0.55 (the
+# arm and the tower foot stand on it); the body/site stays at x 0.32 so the
+# regions below keep their frame — the slab is offset inside the asset.
 slot=desk:static:mojo_rl/tasks/assets/props/desk_mat.xml:0.32,0.0,0.001
 slot=bowl:free:mojo_rl/tasks/assets/props/bowl.xml
 slot=brick:free:mojo_rl/tasks/assets/props/brick.xml

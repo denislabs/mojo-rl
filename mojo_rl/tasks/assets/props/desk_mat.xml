@@ -1,12 +1,22 @@
 <mujoco model="desk_mat">
-  <!-- THE WORK SURFACE OF THE `so101-tower` RIG — a STATIC slot, 2 mm thick.
+  <!-- THE WORK SURFACE OF THE `so101-tower` RIG — a STATIC slot, the desk.
 
        On the rig the arm, the tower and the props all stand on ONE white
-       desk. In the family that desk is the composed scene's floor plane
-       (z = 0): the tower's foot and the base plate rest on it and the robot
-       sits 5 mm up, on the plate. This mat is the part of the desk the
-       props are placed on — a 48 x 50 cm white slab whose TOP face is at
-       z = 0.002, carrying the site every region hangs off.
+       desk, about 65 x 65 cm (measured 2026-09-20). This is that desk: a
+       65 x 65 cm white slab whose TOP face is at z = 0.002, carrying the
+       site every region hangs off. The tower's foot and the arm's base
+       plate stand ON it (they sit at the floor plane z = 0, i.e. 2 mm into
+       the slab — static geoms, no contact, and the plate hides the seam);
+       the props rest on it at 0.002.
+
+       ⚠ THE SLAB IS OFFSET FROM ITS BODY. The body — and the `surface` site
+       the regions are drawn in — stays at world (0.32, 0, 0.001), where the
+       first version of this mat put it, so every region rectangle and every
+       recorded placement keeps its meaning. The geom is shifted 9.5 cm back
+       so the slab spans world x -0.10..0.55, y -0.325..0.325: the tower foot
+       (x -0.03..0.07, y -0.16..0.08) and the arm base are inside it, with the
+       front edge where it was. The earlier 48 x 50 cm mat started 8 cm IN
+       FRONT of the arm, which is not the rig.
 
        ⚠ WHY A MAT AND NOT `fixture.xml`. Two reasons the tabletop family's
        2 cm slab does not serve here: (1) the props must rest at the SAME
@@ -33,7 +43,7 @@
   <compiler angle="radian"/>
   <worldbody>
     <body name="mat">
-      <geom name="geom" type="box" pos="0 0 -0.009" size="0.24 0.25 0.010" density="800"
+      <geom name="geom" type="box" pos="-0.095 0 -0.009" size="0.325 0.325 0.010" density="800"
             rgba="0.93 0.93 0.91 1"/>
       <!-- THE SITE THE REGIONS ATTACH TO, on the top face — see
            `fixture.xml` for why it is site-relative and `group="3"`. -->
