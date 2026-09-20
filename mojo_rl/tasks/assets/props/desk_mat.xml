@@ -15,16 +15,25 @@
        (2) the tracer draws it, and the recorded frames show a white desk,
        not a brown slab. `rgba` is the desk's colour for that reason.
 
-       ⚠ 1 mm HALF-THICKNESS, NOT 0. A slab coplanar with the floor plane
-       would put every resting prop in contact with BOTH, doubling the
-       contacts the budget pays for; 2 mm keeps the props on the mat alone
-       and is below anything the cameras resolve at this range.
+       ⚠⚠ 2 cm THICK, EXTENDING BELOW THE FLOOR PLANE, WITH ITS TOP STILL AT
+       z = 0.002. It was a 2 mm slab, and the printed bowl FELL THROUGH IT
+       (2026-09-20, in MuJoCo and in ours alike): a box-box contact's normal
+       points from the slab's centre toward the other box's centre, and the
+       bowl's collision floor is a 4 mm box whose centre sits 2 mm above the
+       bowl's base — so once the falling bowl had sunk 3 mm into a soft
+       contact the normal FLIPPED, the mat pushed it down onto the ground
+       plane, and it rested with its cavity floor coplanar with the mat's
+       top, which is what "the bottom of the bowl is white" was. A slab
+       thicker than any resting box's half-height cannot flip; 1 cm below
+       the floor plane costs nothing (the plane and a static geom never
+       contact) and the props still rest at 0.002. The brick never showed
+       it: its box centre is 12.5 mm above its base.
 
        ⚠ NO `<inertial>` — static, and the builder derives it anyway. -->
   <compiler angle="radian"/>
   <worldbody>
     <body name="mat">
-      <geom name="geom" type="box" size="0.24 0.25 0.001" density="800"
+      <geom name="geom" type="box" pos="0 0 -0.009" size="0.24 0.25 0.010" density="800"
             rgba="0.93 0.93 0.91 1"/>
       <!-- THE SITE THE REGIONS ATTACH TO, on the top face — see
            `fixture.xml` for why it is site-relative and `group="3"`. -->
