@@ -199,231 +199,158 @@ def _ba_context_kernel[
 # +--------------------------------------------------------------------------+ #
 # | Backward
 # +--------------------------------------------------------------------------+ #
+#
+# ⚠⚠ SIX ELEMENT-INDEXED KERNELS, FOR THE SAME REASON THE FORWARD IS THREE.
+# The first backward shipped as four kernels launched ONE BLOCK PER (b, h) with
+# the threads striding over rows: at this model's shapes that is 15 blocks and
+# 50 live threads each, every thread walking ~36 k serial MACs through
+# uncoalesced reads. `SMOLVLA_PROFILE` on a 5090 put it at 33.6 ms of a
+# 48.8 ms expert backward — 2.1 ms per layer for 15 x 50 x 190 x 64 MACs,
+# about 0.1 % of the card. The shape this repo already recorded as slow
+# (`_row_per_thread_kernels_are_uncoalesced_and_tiny_grid`), twice over.
+#
+# Now every kernel is indexed by the element it WRITES, over the whole grid:
+#
+#     probs   = softmax(scale q.k + mask)      the forward's own two kernels
+#     dP      = g . vᵀ                          one thread per (b,h,i,j)
+#     dS      = p (dP − Σ_j p dP) scale         one thread per (b,h,i), in place
+#     dQ      = dS . k                          one thread per (b,h,i,d)
+#     dK      = dSᵀ . q                         one thread per (b,h,j,d)
+#     dV      = pᵀ . g                          one thread per (b,h,j,d)
+#
+# `dS` lives in its own scratch (`dscore`), not over `probs`, so dV can run
+# whenever it likes and there is no ordering the stream has to be trusted with.
+#
+# ⚠ The probabilities are the FORWARD's kernels re-run, not a transcription of
+# them: `_ba_scores_kernel` then `_ba_softmax_kernel`, into `probs`. A backward
+# taken against a different softmax is the gradient of a different function,
+# and two copies of one softmax drift (`_a_rule_written_inline_twice_drifts`).
+# They have to be re-run at all because ONE instance serves all sixteen layers
+# and `fwd_scores` holds only the last one's.
 
 
-def _ba_probs_kernel[
+def _ba_dp_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, QL: Int, KL: Int, HD: Int
 ](
-    q: LayoutTensor[DT, Layout.row_major(BATCH, QL * DIM), MutAnyOrigin],
-    k: LayoutTensor[DT, Layout.row_major(BATCH, KL * DIM), MutAnyOrigin],
-    mask: LayoutTensor[DT, Layout.row_major(QL * KL), MutAnyOrigin],
-    probs: LayoutTensor[
+    grad_out: LayoutTensor[DT, Layout.row_major(BATCH, QL * DIM), MutAnyOrigin],
+    v: LayoutTensor[DT, Layout.row_major(BATCH, KL * DIM), MutAnyOrigin],
+    dscore: LayoutTensor[
         DT, Layout.row_major(BATCH, N_HEADS * QL * KL), MutAnyOrigin
     ],
 ):
-    """Re-run the forward's softmax, keeping the normalised weights.
+    """dP[i, j] = g[i] . v[j] — one thread per (b, h, i, j)."""
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * N_HEADS * QL * KL:
+        return
+    var j = idx % KL
+    var r = idx // KL
+    var i = r % QL
+    var r2 = r // QL
+    var h = r2 % N_HEADS
+    var b = r2 // N_HEADS
+    var gb = b * (QL * DIM) + i * DIM + h * HD
+    var vb = b * (KL * DIM) + j * DIM + h * HD
+    var acc = Scalar[DT](0)
+    for d in range(HD):
+        acc += rebind[Scalar[DT]](
+            grad_out.ptr[unsafe_offset = gb + d]
+        ) * rebind[Scalar[DT]](v.ptr[unsafe_offset = vb + d])
+    dscore.ptr[unsafe_offset = idx] = acc
 
-    ⚠ Byte-for-byte the forward's arithmetic — same two passes, same max shift,
-    same floored denominator. A backward taken against a *different* softmax is
-    the gradient of a different function, and nothing downstream would say so.
+
+def _ba_dscore_kernel[BATCH: Int, N_HEADS: Int, QL: Int, KL: Int, HD: Int](
+    probs: LayoutTensor[
+        DT, Layout.row_major(BATCH, N_HEADS * QL * KL), MutAnyOrigin
+    ],
+    dscore: LayoutTensor[
+        DT, Layout.row_major(BATCH, N_HEADS * QL * KL), MutAnyOrigin
+    ],
+):
+    """Softmax backward over one CONTIGUOUS row, in place over dP:
+
+        dot     = Σ_j p[i,j] dP[i,j]
+        dS[i,j] = p[i,j] (dP[i,j] − dot) scale
+
+    One thread per (b, h, i). A masked key has p = 0 and so dS = 0 exactly,
+    which is what makes dK and dV of that key exactly zero downstream; a fully
+    masked row has every p = 0 and yields an all-zero dS, not a NaN.
     """
     var idx = Int(global_idx.x)
     if idx >= BATCH * N_HEADS * QL:
         return
-    var i = idx % QL
-    var r = idx // QL
-    var h = r % N_HEADS
-    var b = r // N_HEADS
+    var base = idx * KL
     var scale = Scalar[DT](1.0) / sqrt(Scalar[DT](HD))
-    var qb = b * (QL * DIM) + i * DIM + h * HD
-    var pb = b * (N_HEADS * QL * KL) + h * QL * KL + i * KL
-
-    var mx = BA_MASK_NEG
+    var dot = Scalar[DT](0)
     for j in range(KL):
-        var m = rebind[Scalar[DT]](mask.ptr[unsafe_offset = i * KL + j])
-        # every entry written here, so a masked j is 0 and not stale scratch
-        probs.ptr[unsafe_offset = pb + j] = Scalar[DT](0)
-        if m <= BA_MASK_NEG:
-            continue
-        var kb = b * (KL * DIM) + j * DIM + h * HD
-        var s = Scalar[DT](0)
-        for d in range(HD):
-            s += rebind[Scalar[DT]](q.ptr[unsafe_offset = qb + d]) * rebind[
-                Scalar[DT]
-            ](k.ptr[unsafe_offset = kb + d])
-        s = s * scale + m
-        if s > mx:
-            mx = s
-
-    var denom = Scalar[DT](0)
+        dot += rebind[Scalar[DT]](probs.ptr[unsafe_offset = base + j]) * rebind[
+            Scalar[DT]
+        ](dscore.ptr[unsafe_offset = base + j])
     for j in range(KL):
-        var m = rebind[Scalar[DT]](mask.ptr[unsafe_offset = i * KL + j])
-        if m <= BA_MASK_NEG:
-            continue
-        var kb = b * (KL * DIM) + j * DIM + h * HD
-        var s = Scalar[DT](0)
-        for d in range(HD):
-            s += rebind[Scalar[DT]](q.ptr[unsafe_offset = qb + d]) * rebind[
-                Scalar[DT]
-            ](k.ptr[unsafe_offset = kb + d])
-        var w = exp(s * scale + m - mx)
-        denom += w
-        probs.ptr[unsafe_offset = pb + j] = w
-
-    var inv = Scalar[DT](0)
-    if denom > BA_DENOM_FLOOR:
-        inv = Scalar[DT](1.0) / denom
-    for j in range(KL):
-        probs.ptr[unsafe_offset = pb + j] = (
-            rebind[Scalar[DT]](probs.ptr[unsafe_offset = pb + j]) * inv
-        )
+        var p = rebind[Scalar[DT]](probs.ptr[unsafe_offset = base + j])
+        var dp = rebind[Scalar[DT]](dscore.ptr[unsafe_offset = base + j])
+        dscore.ptr[unsafe_offset = base + j] = p * (dp - dot) * scale
 
 
-def _ba_dv_kernel[
+def _ba_dq_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, QL: Int, KL: Int, HD: Int
 ](
-    probs: LayoutTensor[
-        DT, Layout.row_major(BATCH, N_HEADS * QL * KL), MutAnyOrigin
-    ],
-    grad_out: LayoutTensor[DT, Layout.row_major(BATCH, QL * DIM), MutAnyOrigin],
-    dv: LayoutTensor[DT, Layout.row_major(BATCH, KL * DIM), MutAnyOrigin],
-):
-    """dV[j] = Σ_i p[i,j]·g[i]. One block per (b,h), grid-stride over (j,d).
-
-    ⚠ Must run BEFORE `_ba_dscore_dq_kernel`, which overwrites `probs`.
-
-    Every (b, j, d) is written by exactly one thread of exactly one block —
-    head h owns the slice `[h*HD, (h+1)*HD)` of every token — so this is a
-    plain store, not a read-modify-write.
-    """
-    var blk = Int(block_idx.x)
-    var b = blk // N_HEADS
-    var h = blk % N_HEADS
-    if b >= BATCH:
-        return
-    var h_off = h * HD
-    var tid = Int(thread_idx.x)
-    var bs = Int(block_dim.x)
-    var t = tid
-    while t < KL * HD:
-        var j = t // HD
-        var d = t % HD
-        var acc = Scalar[DT](0)
-        for i in range(QL):
-            var p = rebind[Scalar[DT]](
-                probs.ptr[
-                    unsafe_offset = b * (N_HEADS * QL * KL)
-                    + h * QL * KL + i * KL + j
-                ]
-            )
-            acc += p * rebind[Scalar[DT]](
-                grad_out.ptr[
-                    unsafe_offset = b * (QL * DIM) + i * DIM + h_off + d
-                ]
-            )
-        dv.ptr[unsafe_offset = b * (KL * DIM) + j * DIM + h_off + d] = acc
-        t += bs
-
-
-def _ba_dscore_dq_kernel[
-    BATCH: Int, DIM: Int, N_HEADS: Int, QL: Int, KL: Int, HD: Int
-](
-    k: LayoutTensor[DT, Layout.row_major(BATCH, KL * DIM), MutAnyOrigin],
-    v: LayoutTensor[DT, Layout.row_major(BATCH, KL * DIM), MutAnyOrigin],
-    probs: LayoutTensor[
-        DT, Layout.row_major(BATCH, N_HEADS * QL * KL), MutAnyOrigin
-    ],
-    grad_out: LayoutTensor[DT, Layout.row_major(BATCH, QL * DIM), MutAnyOrigin],
-    dq: LayoutTensor[DT, Layout.row_major(BATCH, QL * DIM), MutAnyOrigin],
-):
-    """Softmax backward, in place, then dQ.
-
-        da[j] = g[i]·v[j]        dot = Σ_j p[i,j]·da[j]
-        ds[i,j] = p[i,j]·(da[j] − dot)·scale        (OVERWRITES p)
-        dQ[i]   = Σ_j ds[i,j]·k[j]
-
-    One block per (b,h), grid-stride over i. A row is owned entirely by one
-    thread, so the in-place overwrite of `probs` races with nothing.
-    """
-    var blk = Int(block_idx.x)
-    var b = blk // N_HEADS
-    var h = blk % N_HEADS
-    if b >= BATCH:
-        return
-    var h_off = h * HD
-    var tid = Int(thread_idx.x)
-    var bs = Int(block_dim.x)
-    var scale = Scalar[DT](1.0) / sqrt(Scalar[DT](HD))
-
-    var i = tid
-    while i < QL:
-        var qb = b * (QL * DIM) + i * DIM + h_off
-        var pb = b * (N_HEADS * QL * KL) + h * QL * KL + i * KL
-
-        var dot = Scalar[DT](0)
-        for j in range(KL):
-            var p = rebind[Scalar[DT]](probs.ptr[unsafe_offset = pb + j])
-            if p == Scalar[DT](0):
-                continue
-            var kb = b * (KL * DIM) + j * DIM + h_off
-            var da = Scalar[DT](0)
-            for d in range(HD):
-                da += rebind[Scalar[DT]](
-                    grad_out.ptr[unsafe_offset = qb + d]
-                ) * rebind[Scalar[DT]](v.ptr[unsafe_offset = kb + d])
-            dot += p * da
-
-        for j in range(KL):
-            var p = rebind[Scalar[DT]](probs.ptr[unsafe_offset = pb + j])
-            var ds = Scalar[DT](0)
-            if p != Scalar[DT](0):
-                var kb = b * (KL * DIM) + j * DIM + h_off
-                var da = Scalar[DT](0)
-                for d in range(HD):
-                    da += rebind[Scalar[DT]](
-                        grad_out.ptr[unsafe_offset = qb + d]
-                    ) * rebind[Scalar[DT]](v.ptr[unsafe_offset = kb + d])
-                ds = p * (da - dot) * scale
-            probs.ptr[unsafe_offset = pb + j] = ds
-
-        for d in range(HD):
-            var acc = Scalar[DT](0)
-            for j in range(KL):
-                acc += rebind[Scalar[DT]](
-                    probs.ptr[unsafe_offset = pb + j]
-                ) * rebind[Scalar[DT]](
-                    k.ptr[unsafe_offset = b * (KL * DIM) + j * DIM + h_off + d]
-                )
-            dq.ptr[unsafe_offset = qb + d] = acc
-        i += bs
-
-
-def _ba_dk_kernel[
-    BATCH: Int, DIM: Int, N_HEADS: Int, QL: Int, KL: Int, HD: Int
-](
-    q: LayoutTensor[DT, Layout.row_major(BATCH, QL * DIM), MutAnyOrigin],
     dscore: LayoutTensor[
         DT, Layout.row_major(BATCH, N_HEADS * QL * KL), MutAnyOrigin
     ],
-    dk: LayoutTensor[DT, Layout.row_major(BATCH, KL * DIM), MutAnyOrigin],
+    k: LayoutTensor[DT, Layout.row_major(BATCH, KL * DIM), MutAnyOrigin],
+    dq: LayoutTensor[DT, Layout.row_major(BATCH, QL * DIM), MutAnyOrigin],
 ):
-    """dK[j] = Σ_i ds[i,j]·q[i]. Reads what `_ba_dscore_dq_kernel` left in
-    `probs`, so it must run after it."""
-    var blk = Int(block_idx.x)
-    var b = blk // N_HEADS
-    var h = blk % N_HEADS
-    if b >= BATCH:
+    """dQ[i, d] = Σ_j dS[i,j] k[j, d] — one thread per (b, h, i, d)."""
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * N_HEADS * QL * HD:
         return
-    var h_off = h * HD
-    var tid = Int(thread_idx.x)
-    var bs = Int(block_dim.x)
-    var t = tid
-    while t < KL * HD:
-        var j = t // HD
-        var d = t % HD
-        var acc = Scalar[DT](0)
-        for i in range(QL):
-            var ds = rebind[Scalar[DT]](
-                dscore.ptr[
-                    unsafe_offset = b * (N_HEADS * QL * KL)
-                    + h * QL * KL + i * KL + j
-                ]
-            )
-            acc += ds * rebind[Scalar[DT]](
-                q.ptr[unsafe_offset = b * (QL * DIM) + i * DIM + h_off + d]
-            )
-        dk.ptr[unsafe_offset = b * (KL * DIM) + j * DIM + h_off + d] = acc
-        t += bs
+    var d = idx % HD
+    var r = idx // HD
+    var i = r % QL
+    var r2 = r // QL
+    var h = r2 % N_HEADS
+    var b = r2 // N_HEADS
+    var sb = ((b * N_HEADS + h) * QL + i) * KL
+    var kb = b * (KL * DIM) + h * HD + d
+    var acc = Scalar[DT](0)
+    for j in range(KL):
+        acc += rebind[Scalar[DT]](dscore.ptr[unsafe_offset = sb + j]) * rebind[
+            Scalar[DT]
+        ](k.ptr[unsafe_offset = kb + j * DIM])
+    dq.ptr[unsafe_offset = b * (QL * DIM) + i * DIM + h * HD + d] = acc
+
+
+def _ba_dkv_kernel[
+    BATCH: Int, DIM: Int, N_HEADS: Int, QL: Int, KL: Int, HD: Int
+](
+    coef: LayoutTensor[
+        DT, Layout.row_major(BATCH, N_HEADS * QL * KL), MutAnyOrigin
+    ],
+    src: LayoutTensor[DT, Layout.row_major(BATCH, QL * DIM), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(BATCH, KL * DIM), MutAnyOrigin],
+):
+    """dst[j, d] = Σ_i coef[i,j] src[i, d] — one thread per (b, h, j, d).
+
+    ONE kernel for dK and dV, because they are one formula: dK is it with
+    (dS, q), dV with (p, g). Two copies of one rule drift.
+    """
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * N_HEADS * KL * HD:
+        return
+    var d = idx % HD
+    var r = idx // HD
+    var j = r % KL
+    var r2 = r // KL
+    var h = r2 % N_HEADS
+    var b = r2 // N_HEADS
+    var cb = (b * N_HEADS + h) * QL * KL + j
+    var sb = b * (QL * DIM) + h * HD + d
+    var acc = Scalar[DT](0)
+    for i in range(QL):
+        acc += rebind[Scalar[DT]](
+            coef.ptr[unsafe_offset = cb + i * KL]
+        ) * rebind[Scalar[DT]](src.ptr[unsafe_offset = sb + i * DIM])
+    dst.ptr[unsafe_offset = b * (KL * DIM) + j * DIM + h * HD + d] = acc
 
 
 struct BlockCrossAttention[
@@ -437,11 +364,12 @@ struct BlockCrossAttention[
 
     var mask: Tensor
     var is_gpu: Bool
-    # Backward scratch: the probability matrix, then the scores' gradient in
-    # its place. Lazily sized by `vjp`, and NOT touched by `forward` — the
+    # Backward scratch: the probability matrix and, separately, dP then dS in
+    # place over it. Lazily sized by `vjp`, and NOT touched by `forward` — the
     # forward stays allocation-free and one instance stays reusable across the
     # sixteen layers a driver runs through it.
     var probs: Tensor
+    var dscore: Tensor
     var fwd_scores: Tensor
     """The GPU forward's materialised scores, then probabilities, in place.
     Sized on the first call and reused: `ensure_gpu` allocates only on a GROW,
@@ -455,12 +383,14 @@ struct BlockCrossAttention[
         self.mask = Tensor()
         self.is_gpu = False
         self.probs = Tensor()
+        self.dscore = Tensor()
         self.fwd_scores = Tensor()
 
     def __init__(out self, *, deinit move: Self):
         self.mask = move.mask^
         self.is_gpu = move.is_gpu
         self.probs = move.probs^
+        self.dscore = move.dscore^
         self.fwd_scores = move.fwd_scores^
 
     @staticmethod
@@ -687,59 +617,91 @@ struct BlockCrossAttention[
             dk.ensure_gpu(c, B * Self.KN)
             dv.ensure_gpu(c, B * Self.KN)
             self.probs.ensure_gpu(c, B * Self.PN)
+            self.dscore.ensure_gpu(c, B * Self.PN)
 
             comptime lay_q = Layout.row_major(B, Self.QN)
             comptime lay_k = Layout.row_major(B, Self.KN)
             comptime lay_p = Layout.row_major(B, Self.PN)
-            comptime grid_bh = B * Self.N_HEADS
-            # ⚠ ORDER: probs -> dV -> dscore(+dQ) -> dK. The third pass
-            # destroys what the second reads. One stream orders them.
-            comptime rows = B * Self.N_HEADS * Self.Q_LEN
-            comptime n_blocks = (rows + TPB - 1) // TPB
+            comptime lay_pf = Layout.row_major(B * Self.PN)
+            comptime n_scores = B * Self.PN
+            comptime n_rows = B * Self.N_HEADS * Self.Q_LEN
+            comptime n_q = B * Self.N_HEADS * Self.Q_LEN * Self.HD
+            comptime n_kv = B * Self.N_HEADS * Self.KV_LEN * Self.HD
+
+            # ── probs: the forward's two kernels, into `probs` ───────────
             c.enqueue_function[
-                _ba_probs_kernel[
+                _ba_scores_kernel[
                     B, Self.DIM, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN, Self.HD
                 ]
             ](
                 q.lt["gpu", lay_q](),
                 k.lt["gpu", lay_k](),
                 self.mask.lt["gpu", Layout.row_major(Self.MASK_N)](),
-                self.probs.lt["gpu", lay_p](),
-                grid_dim=n_blocks,
+                self.probs.lt["gpu", lay_pf](),
+                grid_dim=(n_scores + TPB - 1) // TPB,
                 block_dim=TPB,
             )
             c.enqueue_function[
-                _ba_dv_kernel[
+                _ba_softmax_kernel[B, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN]
+            ](
+                self.probs.lt["gpu", lay_pf](),
+                grid_dim=(n_rows + BA_ROW_BLOCK - 1) // BA_ROW_BLOCK,
+                block_dim=BA_ROW_BLOCK,
+            )
+            # ── dV = pᵀ g: reads probs only, so it can go first ──────────
+            c.enqueue_function[
+                _ba_dkv_kernel[
                     B, Self.DIM, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN, Self.HD
                 ]
             ](
                 self.probs.lt["gpu", lay_p](),
                 grad_out.lt["gpu", lay_q](),
                 dv.lt["gpu", lay_k](),
-                grid_dim=grid_bh,
+                grid_dim=(n_kv + TPB - 1) // TPB,
                 block_dim=TPB,
             )
+            # ── dP, then dS in place over it ─────────────────────────────
             c.enqueue_function[
-                _ba_dscore_dq_kernel[
+                _ba_dp_kernel[
                     B, Self.DIM, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN, Self.HD
                 ]
             ](
-                k.lt["gpu", lay_k](),
-                v.lt["gpu", lay_k](),
-                self.probs.lt["gpu", lay_p](),
                 grad_out.lt["gpu", lay_q](),
-                dq.lt["gpu", lay_q](),
-                grid_dim=grid_bh,
+                v.lt["gpu", lay_k](),
+                self.dscore.lt["gpu", lay_p](),
+                grid_dim=(n_scores + TPB - 1) // TPB,
                 block_dim=TPB,
             )
             c.enqueue_function[
-                _ba_dk_kernel[
+                _ba_dscore_kernel[
+                    B, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN, Self.HD
+                ]
+            ](
+                self.probs.lt["gpu", lay_p](),
+                self.dscore.lt["gpu", lay_p](),
+                grid_dim=(n_rows + BA_ROW_BLOCK - 1) // BA_ROW_BLOCK,
+                block_dim=BA_ROW_BLOCK,
+            )
+            # ── dQ = dS k,  dK = dSᵀ q ───────────────────────────────────
+            c.enqueue_function[
+                _ba_dq_kernel[
                     B, Self.DIM, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN, Self.HD
                 ]
             ](
+                self.dscore.lt["gpu", lay_p](),
+                k.lt["gpu", lay_k](),
+                dq.lt["gpu", lay_q](),
+                grid_dim=(n_q + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
+            c.enqueue_function[
+                _ba_dkv_kernel[
+                    B, Self.DIM, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN, Self.HD
+                ]
+            ](
+                self.dscore.lt["gpu", lay_p](),
                 q.lt["gpu", lay_q](),
-                self.probs.lt["gpu", lay_p](),
                 dk.lt["gpu", lay_k](),
-                grid_dim=grid_bh,
+                grid_dim=(n_kv + TPB - 1) // TPB,
                 block_dim=TPB,
             )
