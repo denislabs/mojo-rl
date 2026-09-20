@@ -60,6 +60,17 @@ strict vertical finger is unreachable beyond ~33 cm radius and the pinch
 works tilted up to ~20 deg, so relaxing the weight is what took the
 prototype from 3 of 10 to 10 of 10 placements in the bowl.
 
+DAGGER (`--policy CKPT`): the checkpoint drives, greedy, until the jaw is
+within `--handover-mm` (25) of the brick with the arm settled, or for
+`--policy-steps` (140); the expert then closes and lifts FROM THE POLICY'S
+OWN STATE — a short descent to the grasp pose from wherever the jaw is, the
+close, the lift, the hold — and those rows carry the INTERVENED flag. Five
+BC runs and a pure-BC run parked at the arrival because no recorded row
+says "close from here" for the states the policy reaches on its own; these
+are those rows, HIL-SERL's human intervention with the expert as the human.
+First smoke (checkpoint 69b67456, stiff jaws): handover in 7 of 12, lifts
+in 11 of 12, 1113 of 2113 rows intervened.
+
 ⚠ THE IK SETS THE ARM'S qpos TO EVALUATE FK AND RESTORES THE STATE AFTER.
 It never steps physics. The props' qpos are untouched.
 """
@@ -74,6 +85,9 @@ from mojo_rl.core.cont_action import ContAction
 from mojo_rl.core.run import epoch_seconds, iso8601_utc
 from mojo_rl.io.proc import quote_arg, run_capture
 from mojo_rl.deep_agents.data.demo_file import DemoSet, write_demo_file
+from mojo_rl.deep_agents.data.any_replay import AnyReplay
+from mojo_rl.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
+from mojo_rl.deep_agents.training.blocks import ReplaySampleStep
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.math3d import Quat, Vec3
 from max.gpu.host import DeviceContext
@@ -104,6 +118,26 @@ comptime NV = So101TowerModel.NV
 comptime NB = So101TowerModel.NBODY
 comptime ACT = 6
 comptime N_ARM = 5
+comptime GB = So101TowerConfig.OBS_GOAL_BASE
+"""The goal words: obs[GB+3..GB+5] is the jaw-to-brick vector (the reach)."""
+
+# ── DAgger: the policy drives to its own arrival, the expert takes over ──
+comptime HIDDEN = 256
+"""⚠ MUST MATCH `sac_family_driver.HIDDEN` for `--policy` to load."""
+comptime BATCH = 256
+comptime CAP = 1000
+comptime Agent = SACAgent[
+    "cpu",
+    ReplaySampleStep[AnyReplay["cpu", E.OBS_DIM, ACT, CAP], BATCH],
+    SACActorNet[E.OBS_DIM, ACT, HIDDEN],
+    SACCriticNet[E.OBS_DIM, ACT, HIDDEN],
+]
+comptime N_DESCEND_HANDOVER = 20
+"""The expert's descent after a handover: the policy already brought the
+jaw near the brick, so a short ramp to the grasp pose from wherever it is."""
+comptime HANDOVER_SETTLED: Float64 = 0.3
+"""rad/s: every arm joint slower than this counts as settled at the handover."""
+comptime HANDOVER_MIN_STEPS = 20
 comptime GS = CFG.GRIPPER_SITE
 comptime GRIPPER_BODY = CFG.GRIPPER_BODY
 comptime HOLD_STEPS: Int = 31
@@ -352,6 +386,9 @@ struct Expert(Movable):
     var noise: Float64
     var feedback: Bool
     var flat_noise: Bool
+    var intervening: Bool
+    """Rows recorded while True carry the INTERVENED flag (the expert
+    driving after a `--policy` handover — HIL-SERL's human, scripted)."""
     var close_steps: Int
     var frame_skip: Int
     var timestep: Float64
@@ -372,6 +409,7 @@ struct Expert(Movable):
         self.noise = noise
         self.feedback = feedback
         self.flat_noise = False
+        self.intervening = False
         self.close_steps = N_CLOSE
         self.frame_skip = CFG.FRAME_SKIP
         self.timestep = So101TowerModel.TIMESTEP
@@ -392,6 +430,66 @@ struct Expert(Movable):
         if a < -1.0:
             a = -1.0
         return a
+
+    def _apply(mut self, mut env: E) raises -> Bool:
+        """Step the env with `self.act_l`, pay the family's reward, record the
+        transition (flagged INTERVENED while `self.intervening`). Returns
+        True when the goal has held `HOLD_STEPS` steps."""
+        var action = ContAction[ACT]()
+        for i in range(ACT):
+            action.data[i] = self.act_l[i]
+        for i in range(E.OBS_DIM):
+            self.prev_obs[i] = self.obs[i]
+        var out = env.step(action)
+        for i in range(E.OBS_DIM):
+            self.obs[i] = Scalar[DT](out[0].data[i])
+        self.steps += 1
+        var rd = family_reward_host[CFG, DType.float64, E.MD, ACT](
+            env.d, env.mf, self.act_l, self.steps, self.frame_skip,
+            self.timestep,
+        )
+        var r = Float64(rd[0])
+        self.demos.add(
+            self.prev_obs, self.act_l, r, self.obs, 0.0, self.intervening
+        )
+        self.ep_return += r
+        if r > 1.5:
+            self.rung_rows += 1
+        if rd[1]:
+            self.held += 1
+        else:
+            self.held = 0
+        return self.held >= HOLD_STEPS
+
+    def reach_mm(self) -> Float64:
+        var x = Float64(self.obs[GB + 3])
+        var y = Float64(self.obs[GB + 4])
+        var z = Float64(self.obs[GB + 5])
+        return sqrt(x * x + y * y + z * z) * 1000.0
+
+    def policy_approach(
+        mut self, mut env: E, mut agent: Agent, handover_mm: Float64,
+        max_steps: Int,
+    ) raises -> Tuple[Bool, Bool]:
+        """DAgger's first half: the CHECKPOINT drives (greedy) until the jaw
+        is within `handover_mm` of the brick with the arm settled, or
+        `max_steps` have passed. Rows are recorded unflagged. Returns
+        (handed over at the arrival, episode already done)."""
+        var a32 = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
+        for k in range(max_steps):
+            agent.select_greedy_action(self.obs, a32)
+            for i in range(ACT):
+                self.act_l[i] = Float64(a32[i])
+            if self._apply(env):
+                return (False, True)
+            if k + 1 >= HANDOVER_MIN_STEPS and self.reach_mm() < handover_mm:
+                var settled = True
+                for i in range(N_ARM):
+                    if abs(Float64(self.obs[NQ + i])) > HANDOVER_SETTLED:
+                        settled = False
+                if settled:
+                    return (True, False)
+        return (False, False)
 
     def step_to(
         mut self, mut env: E, ref q_target: List[Float64], grip_open: Bool,
@@ -464,7 +562,6 @@ struct Expert(Movable):
                 for i in range(N_ARM):
                     self.q_cmd[i] = q_start[i] + (q_target[i] - q_start[i]) * a
                 self.q_cmd[5] = q_start[5] + (g_target - q_start[5]) * a
-            var action = ContAction[ACT]()
             for i in range(ACT):
                 var v = self._normalized(i, self.q_cmd[i])
                 # ⚠ WHILE THE JAW IS OPEN ONLY — the approach and the descent.
@@ -485,28 +582,8 @@ struct Expert(Movable):
                         v = 1.0
                     if v < -1.0:
                         v = -1.0
-                action.data[i] = v
                 self.act_l[i] = v
-            for i in range(E.OBS_DIM):
-                self.prev_obs[i] = self.obs[i]
-            var out = env.step(action)
-            for i in range(E.OBS_DIM):
-                self.obs[i] = Scalar[DT](out[0].data[i])
-            self.steps += 1
-            var rd = family_reward_host[CFG, DType.float64, E.MD, ACT](
-                env.d, env.mf, self.act_l, self.steps, self.frame_skip,
-                self.timestep,
-            )
-            var r = Float64(rd[0])
-            self.demos.add(self.prev_obs, self.act_l, r, self.obs, 0.0)
-            self.ep_return += r
-            if r > 1.5:
-                self.rung_rows += 1
-            if rd[1]:
-                self.held += 1
-            else:
-                self.held = 0
-            if self.held >= HOLD_STEPS:
+            if self._apply(env):
                 return True
             if self.feedback and not until_held:
                 # arrived: the COMMAND of every arm joint is at its target
@@ -558,13 +635,33 @@ def _above(ref p: List[Float64], dz: Float64) -> List[Float64]:
 def run_episode(
     mut env: E, mut ex: Expert, brick: Int, bowl: Int, place: Bool,
     ep: Int, verbose: Bool,
+    agent: Optional[Pointer[Agent, MutAnyOrigin]] = None,
+    handover_mm: Float64 = 25.0, policy_steps: Int = 140,
 ) raises -> Bool:
-    """One scripted pick (and place). Returns success."""
+    """One scripted pick (and place). Returns success.
+
+    With `agent` (DAgger, `--policy`): the checkpoint drives first —
+    `policy_approach` — and the expert takes over FROM THE POLICY'S OWN
+    STATE, its rows flagged INTERVENED: the descent from wherever the jaw
+    is (a short ramp if the policy arrived, the full pre + descent if it
+    did not), then the close, the lift and the hold. Those rows are the
+    ones no expert-only file holds — "close from HERE", where here is a
+    state the policy reaches on its own (five runs parked on exactly that)."""
     ex.demos.begin_episode()
     ex.held = 0
     ex.steps = 0
     ex.ep_return = 0.0
     ex.rung_rows = 0
+    ex.intervening = False
+    var handed = False
+    var done = False
+    var policy_steps_used = 0
+    if agent:
+        var res = ex.policy_approach(env, agent.value()[], handover_mm, policy_steps)
+        handed = res[0]
+        done = res[1]
+        policy_steps_used = ex.steps
+        ex.intervening = True
     for i in range(ACT):
         ex.q_cmd[i] = Float64(env.d.qpos.data[i])
     var pb = _body_pos(env, brick)
@@ -582,10 +679,17 @@ def run_episode(
         print("  ep", ep, "brick", fixed(pb[0], 3), fixed(pb[1], 3),
               " ik err mm: pre", fixed(e1 * 1000.0, 1), "grasp",
               fixed(e2 * 1000.0, 1), "lift", fixed(e3 * 1000.0, 1))
-    var done = False
-    done = ex.step_to(env, q1, True, N_PRE)
+    if verbose and agent:
+        print("  ep", ep, " policy drove", policy_steps_used, "steps ->",
+              "handover at reach " + fixed(ex.reach_mm(), 1) + " mm" if handed
+              else "no arrival (cap), the expert does the full approach")
+    if not done and not handed:
+        done = ex.step_to(env, q1, True, N_PRE)
     if not done:
-        done = ex.step_to(env, q2, True, N_DESCEND, taper_noise=True)
+        done = ex.step_to(
+            env, q2, True, N_DESCEND_HANDOVER if handed else N_DESCEND,
+            taper_noise=True,
+        )
     if not done:
         # ⚠ THE CLOSE IS A SHORTER RAMP (`--close-steps`, default 15; it
         # was 30). A 30-step ramp labels the arrival state — arm settled at the
@@ -615,6 +719,7 @@ def run_episode(
             done = ex.step_to(env, q4, True, N_RETREAT)
     if not done:
         done = ex.hold(env, not place, N_HOLD_MAX, until_held=True)
+    ex.intervening = False
     var brick_z = Float64(env.d.xpos.data[brick * 3 + 2])
     print(
         "  ep", ep, "->", "SUCCESS" if done else "failed", " steps", ex.steps,
@@ -627,6 +732,7 @@ def run_episode(
 def _usage():
     print("usage: tower_expert_record.mojo [task] [--episodes N] [--seed S]"
           " [--noise SIGMA] [--flat-noise] [--close-steps N] [--feedback] [--out FILE]\n"
+          "       [--policy CKPT [--handover-mm MM] [--policy-steps N]]   # DAgger\n"
           "       [--keep-failures] [--quiet]")
 
 
@@ -639,6 +745,9 @@ def main() raises:
     var feedback = False
     var flat_noise = False
     var close_steps = N_CLOSE
+    var policy_ckpt = String("")
+    var handover_mm = 25.0
+    var policy_steps = 140
     var out_path = String("")
     var keep_failures = False
     var verbose = True
@@ -672,6 +781,15 @@ def main() raises:
         elif a == "--close-steps" and i + 1 < len(args):
             close_steps = Int(String(args[i + 1]))
             i += 2
+        elif a == "--policy" and i + 1 < len(args):
+            policy_ckpt = String(args[i + 1])
+            i += 2
+        elif a == "--handover-mm" and i + 1 < len(args):
+            handover_mm = Float64(String(args[i + 1]))
+            i += 2
+        elif a == "--policy-steps" and i + 1 < len(args):
+            policy_steps = Int(String(args[i + 1]))
+            i += 2
         elif a == "--help" or a == "-h":
             _usage()
             return
@@ -687,7 +805,9 @@ def main() raises:
     seed_rng(seed0)
     if out_path.byte_length() == 0:
         var stamp = iso8601_utc(epoch_seconds()).replace(":", "-")
-        out_path = String(DEMO_DIR) + "/" + stamp + "_" + task + "_expert.demo"
+        out_path = String(DEMO_DIR) + "/" + stamp + "_" + task + (
+            "_dagger.demo" if policy_ckpt.byte_length() > 0 else "_expert.demo"
+        )
     if not Path(DEMO_DIR).exists():
         _ = run_capture(String("mkdir -p ") + quote_arg(String(DEMO_DIR)), 4096)
 
@@ -727,6 +847,19 @@ def main() raises:
     var ex = Expert(env, noise, feedback)
     ex.flat_noise = flat_noise
     ex.close_steps = close_steps
+    var agent: Agent = SAC["cpu", E.OBS_DIM, ACT, BATCH, CAP, HIDDEN](
+        action_scale=1.0, learning_starts=0,
+    )
+    var agent_ptr = Optional[Pointer[Agent, MutAnyOrigin]](None)
+    if policy_ckpt.byte_length() > 0:
+        if not Path(policy_ckpt).exists():
+            raise Error("--policy: no such checkpoint: " + policy_ckpt)
+        agent.load(policy_ckpt)
+        agent_ptr = Pointer(to=agent).as_unsafe_any_origin()
+        print("  DAgger   : the checkpoint drives to its own arrival"
+              " (handover under", handover_mm, "mm settled, cap",
+              policy_steps, "steps); the expert closes and lifts from there,"
+              " those rows flagged INTERVENED")
     var n_ok = 0
     for ep in range(n_episodes):
         _ = env.reset()
@@ -748,7 +881,10 @@ def main() raises:
             var o = env.step(zero)
             for k in range(E.OBS_DIM):
                 ex.obs[k] = Scalar[DT](o[0].data[k])
-        var ok = run_episode(env, ex, brick, bowl, place, ep, verbose)
+        var ok = run_episode(
+            env, ex, brick, bowl, place, ep, verbose, agent_ptr, handover_mm,
+            policy_steps,
+        )
         if ok or keep_failures:
             ex.demos.end_episode(success=ok)
             write_demo_file(out_path, ex.demos)
