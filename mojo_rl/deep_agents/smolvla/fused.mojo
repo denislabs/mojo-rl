@@ -33,6 +33,7 @@ a vjp. Training (mode 1, both streams concatenated) reuses these weights through
 a different driver.
 """
 
+from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
@@ -578,6 +579,28 @@ def _store_cache_grad[
         )
 
 
+@always_inline
+def _prof_tick[
+    target: StaticString
+](
+    profile: Bool, mut prof: List[Int], slot: Int, mut t: Int,
+    ctx: Optional[DeviceContext],
+) raises:
+    """Charge the time since `t` to `prof[slot]`, after draining the device,
+    and restart `t`. A no-op unless `profile` is on.
+
+    A free function, not a method: `backward` holds `ref PK = self.pools[i]`
+    across a whole layer, and a `mut self` call there invalidates that
+    borrow. Borrowing `self.prof` alone leaves `pools` untouched."""
+    if not profile:
+        return
+    comptime if target != "cpu":
+        ctx.value().synchronize()
+    var now = Int(perf_counter_ns())
+    prof[slot] += now - t
+    t = now
+
+
 struct SmolVLADenoise[
     P: Int,
     S: Int,
@@ -752,6 +775,29 @@ struct SmolVLADenoise[
 
     var g: TensorPack[Self.G_SLOTS]
 
+    # ── the backward's stage profile ─────────────────────────────────────
+    # ⚠ OFF by default. On, `backward` DRAINS the device at every stage
+    # boundary (about ten per layer) so each slot is the wall time of that
+    # stage and not of its enqueues. The drains themselves cost ~1-2 ms per
+    # backward, which is why `profile` is a flag and the numbers are read as
+    # relative shares, not as the un-profiled step's absolute cost.
+    comptime PR_GLUE = 0      # residual vjps, hand sums, copies, tails, stores
+    comptime PR_MLP_DOWN = 1  # mlp.down.vjp        [S x EFF] -> [S x EW]
+    comptime PR_GLU = 2       # SwiGLU refill + vjp, concat vjp
+    comptime PR_MLP_UPGATE = 3  # mlp.up.vjp + mlp.gate.vjp
+    comptime PR_NORM = 4      # both RMSNorm vjps per layer, plus the final norm's
+    comptime PR_O = 5         # o.vjp               [S x W] -> [S x EW]
+    comptime PR_ATTN = 6      # BlockCrossAttention.vjp (self and cross)
+    comptime PR_REP = 7       # RepeatKVHeads.vjp, scratch rebuild
+    comptime PR_ROPE = 8      # RoPE vjps
+    comptime PR_QKV = 9       # q/k/v.vjp (self: 3 at S; cross: q at S, k/v at P)
+    comptime PR_N = 10
+
+    var profile: Bool
+    var prof: List[Int]
+    """Nanoseconds per stage, summed over every `backward` since the last
+    `reset_profile`. Read with the caller's own observation count."""
+
     def __init__(out self):
         self.rope_q_self = Self.RoPEQSelf()
         self.rope_q_cross = Self.RoPEQCross()
@@ -769,6 +815,8 @@ struct SmolVLADenoise[
         for _ in range(Self.N_POOLS):
             self.pools.append(TensorPack[Self.N_SLOTS]())
         self.g = TensorPack[Self.G_SLOTS]()
+        self.profile = False
+        self.prof = List[Int](length=Self.PR_N, fill=0)
 
     def __init__(out self, *, deinit move: Self):
         self.rope_q_self = move.rope_q_self^
@@ -785,6 +833,12 @@ struct SmolVLADenoise[
         self.res = move.res^
         self.pools = move.pools^
         self.g = move.g^
+        self.profile = move.profile
+        self.prof = move.prof^
+
+    def reset_profile(mut self):
+        for i in range(Self.PR_N):
+            self.prof[i] = 0
 
     @staticmethod
     def make[
@@ -1068,6 +1122,12 @@ struct SmolVLADenoise[
                 ctx.value(), Self.LAYERS * CACHE_LAYER
             )
 
+        var t = 0
+        if self.profile:
+            comptime if target != "cpu":
+                ctx.value().synchronize()
+            t = Int(perf_counter_ns())
+
         # out = norm(pools[LAST][X])
         expert.norm.vjp[target, TOK_S](
             TensorRefs[1](self.pools[Self.LAST][Self.X]),
@@ -1075,6 +1135,7 @@ struct SmolVLADenoise[
             TensorRefs[1](self.g[Self.GXO]),
             ctx,
         )
+        _prof_tick[target](self.profile, self.prof, Self.PR_NORM, t, ctx)
 
         for ridx in range(Self.LAYERS):
             var i = Self.LAYERS - 1 - ridx
@@ -1090,6 +1151,7 @@ struct SmolVLADenoise[
                 TensorRefs[2](self.g[Self.GX2], self.g[Self.GDOWN]),
                 ctx,
             )
+            _prof_tick[target](self.profile, self.prof, Self.PR_GLUE, t, ctx)
             if is_self:
                 expert.self_layers[li].mlp.down.vjp[target, TOK_S](
                     TensorRefs[1](PK[Self.GLU]), self.g[Self.GDOWN],
@@ -1100,6 +1162,7 @@ struct SmolVLADenoise[
                     TensorRefs[1](PK[Self.GLU]), self.g[Self.GDOWN],
                     TensorRefs[1](self.g[Self.GGLU]), ctx,
                 )
+            _prof_tick[target](self.profile, self.prof, Self.PR_MLP_DOWN, t, ctx)
 
             # ⚠ SwiGLU is OUTPUT-CACHING and there is ONE instance for all
             # sixteen layers, so by now `self.glu`'s cache holds layer 15's
@@ -1121,6 +1184,7 @@ struct SmolVLADenoise[
                 TensorRefs[2](self.g[Self.GUP], self.g[Self.GGATE]),
                 ctx,
             )
+            _prof_tick[target](self.profile, self.prof, Self.PR_GLU, t, ctx)
             if is_self:
                 ref L = expert.self_layers[li]
                 L.mlp.up.vjp[target, TOK_S](
@@ -1141,8 +1205,10 @@ struct SmolVLADenoise[
                     TensorRefs[1](PK[Self.H2]), self.g[Self.GGATE],
                     TensorRefs[1](self.g[Self.GHB]), ctx,
                 )
+            _prof_tick[target](self.profile, self.prof, Self.PR_MLP_UPGATE, t, ctx)
             # dH2 = up's + gate's — both read H2, so both contribute.
             accum_into[target, XN](self.g[Self.GHA], self.g[Self.GHB], ctx)
+            _prof_tick[target](self.profile, self.prof, Self.PR_GLUE, t, ctx)
             if is_self:
                 expert.self_layers[li].post_attention_layernorm.vjp[
                     target, TOK_S
@@ -1157,6 +1223,7 @@ struct SmolVLADenoise[
                     TensorRefs[1](PK[Self.X2]), self.g[Self.GHA],
                     TensorRefs[1](self.g[Self.GHC]), ctx,
                 )
+            _prof_tick[target](self.profile, self.prof, Self.PR_NORM, t, ctx)
             # X2 feeds the residual AND the norm.
             accum_into[target, XN](self.g[Self.GX2], self.g[Self.GHC], ctx)
 
@@ -1168,18 +1235,21 @@ struct SmolVLADenoise[
                 TensorRefs[2](self.g[Self.GHC], self.g[Self.GAO]),
                 ctx,
             )
+            _prof_tick[target](self.profile, self.prof, Self.PR_GLUE, t, ctx)
             if is_self:
                 ref L = expert.self_layers[li]
                 L.o.vjp[target, TOK_S](
                     TensorRefs[1](PK[Self.ATT]), self.g[Self.GAO],
                     TensorRefs[1](self.g[Self.GATT]), ctx,
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_O, t, ctx)
                 self.attn_self.vjp[target, Self.B](
                     PK[Self.QR], PK[Self.KXF], PK[Self.VXF],
                     self.g[Self.GATT],
                     self.g[Self.GQR], self.g[Self.GKXF], self.g[Self.GVXF],
                     ctx,
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_ATTN, t, ctx)
                 # ⚠ Rebuild this layer's [prefix; suffix] from the tape. The
                 # cache's own scratch holds the LAST self layer's, and the
                 # repeat's `vjp` takes a forward input.
@@ -1219,6 +1289,7 @@ struct SmolVLADenoise[
                 _store_cache_grad[target, CACHE_LAYER](
                     i, self.g[Self.GVP], grad_cache_v, ctx
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_REP, t, ctx)
                 self.rope_k_self.vjp[target, Self.B](
                     TensorRefs[1](PK[Self.KS]), self.g[Self.GKRS],
                     TensorRefs[1](self.g[Self.GKS]), ctx,
@@ -1227,6 +1298,7 @@ struct SmolVLADenoise[
                     TensorRefs[1](PK[Self.Q]), self.g[Self.GQR],
                     TensorRefs[1](self.g[Self.GQ]), ctx,
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_ROPE, t, ctx)
                 L.q.vjp[target, TOK_S](
                     TensorRefs[1](PK[Self.H]), self.g[Self.GQ],
                     TensorRefs[1](self.g[Self.GHA]), ctx,
@@ -1239,25 +1311,30 @@ struct SmolVLADenoise[
                     TensorRefs[1](PK[Self.H]), self.g[Self.GVS],
                     TensorRefs[1](self.g[Self.GXO]), ctx,
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_QKV, t, ctx)
                 # dH = q's + k's + v's — H feeds all three.
                 accum_into[target, XN](self.g[Self.GHA], self.g[Self.GHB], ctx)
                 accum_into[target, XN](self.g[Self.GHA], self.g[Self.GXO], ctx)
+                _prof_tick[target](self.profile, self.prof, Self.PR_GLUE, t, ctx)
                 L.input_layernorm.vjp[target, TOK_S](
                     TensorRefs[1](PK[Self.X]), self.g[Self.GHA],
                     TensorRefs[1](self.g[Self.GHB]), ctx,
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_NORM, t, ctx)
             else:
                 ref L = expert.cross_layers[li]
                 L.o.vjp[target, TOK_S](
                     TensorRefs[1](PK[Self.ATT]), self.g[Self.GAO],
                     TensorRefs[1](self.g[Self.GATT]), ctx,
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_O, t, ctx)
                 self.attn_cross.vjp[target, Self.B](
                     PK[Self.QR], PK[Self.KXP], PK[Self.VXP],
                     self.g[Self.GATT],
                     self.g[Self.GQR], self.g[Self.GKXP], self.g[Self.GVXP],
                     ctx,
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_ATTN, t, ctx)
                 self.rep_pre_k.vjp[target, Self.B](
                     TensorRefs[1](PK[Self.KS]), self.g[Self.GKXP],
                     TensorRefs[1](self.g[Self.GKSP]), ctx,
@@ -1266,6 +1343,7 @@ struct SmolVLADenoise[
                     TensorRefs[1](PK[Self.VS]), self.g[Self.GVXP],
                     TensorRefs[1](self.g[Self.GVSP]), ctx,
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_REP, t, ctx)
                 # dL/d(cached prefix K/V). Formed because `Linear.vjp` needs a
                 # destination, then dropped — see this method's docstring.
                 L.k.vjp[target, TOK_P](
@@ -1276,16 +1354,19 @@ struct SmolVLADenoise[
                     TensorRefs[1](PK[Self.VP]), self.g[Self.GVSP],
                     TensorRefs[1](self.g[Self.GVP]), ctx,
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_QKV, t, ctx)
                 _store_cache_grad[target, CACHE_LAYER](
                     i, self.g[Self.GKP], grad_cache_k, ctx
                 )
                 _store_cache_grad[target, CACHE_LAYER](
                     i, self.g[Self.GVP], grad_cache_v, ctx
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_GLUE, t, ctx)
                 self.rope_q_cross.vjp[target, Self.B](
                     TensorRefs[1](PK[Self.Q]), self.g[Self.GQR],
                     TensorRefs[1](self.g[Self.GQ]), ctx,
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_ROPE, t, ctx)
                 # ⚠ A cross layer's H feeds q ONLY: k and v come from the
                 # cache, not from this stream. No sum here, and adding one
                 # would double-count nothing — it would add a stale slab.
@@ -1293,17 +1374,21 @@ struct SmolVLADenoise[
                     TensorRefs[1](PK[Self.H]), self.g[Self.GQ],
                     TensorRefs[1](self.g[Self.GHA]), ctx,
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_QKV, t, ctx)
                 L.input_layernorm.vjp[target, TOK_S](
                     TensorRefs[1](PK[Self.X]), self.g[Self.GHA],
                     TensorRefs[1](self.g[Self.GHB]), ctx,
                 )
+                _prof_tick[target](self.profile, self.prof, Self.PR_NORM, t, ctx)
 
             # X feeds the residual AND the first norm. This is the next
             # (earlier) layer's dL/d(output).
             accum_into[target, XN](self.g[Self.GHC], self.g[Self.GHB], ctx)
             copy_into[target, XN](self.g[Self.GXO], self.g[Self.GHC], ctx)
+            _prof_tick[target](self.profile, self.prof, Self.PR_GLUE, t, ctx)
 
         copy_into[target, XN](grad_x, self.g[Self.GXO], ctx)
+        _prof_tick[target](self.profile, self.prof, Self.PR_GLUE, t, ctx)
         _ = CN
         _ = QN
         _ = KVN_S

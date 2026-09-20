@@ -365,7 +365,7 @@ struct Phases(Movable):
         self.prefix = move.prefix
         self.n = move.n
 
-    def report(self, profile: Bool, ref st: Step) -> String:
+    def report(self, profile: Bool, ref st: Step, ref pol: Pol) -> String:
         var tot = Float64(self.img + self.step)
         if tot <= 0.0 or self.n == 0:
             return String("")
@@ -380,7 +380,7 @@ struct Phases(Movable):
         # loss download — small, and named so a surprise there is visible.
         var k = 1.0e-6 / Float64(self.n)
         var other = self.step - self.prefix - st.ns_fwd - st.ns_bwd
-        return (
+        var s = (
             "per obs: images/cache-read " + String(Float64(self.img) * k)
             + " ms, prefix " + String(Float64(self.prefix) * k)
             + " ms, suffix fwd " + String(Float64(st.ns_fwd) * k)
@@ -388,6 +388,23 @@ struct Phases(Movable):
             + " ms, other " + String(Float64(other) * k)
             + " ms  (total " + String(tot * k) + " ms)"
         )
+        # The backward by op class — the expert's own stage timers. Their
+        # sum is the backward less the heads' vjps and the drains.
+        ref pr = pol.denoiser.prof
+        comptime D = Pol.Den
+        s += (
+            "\n           backward by op: glue " + String(Float64(pr[D.PR_GLUE]) * k)
+            + ", mlp.down " + String(Float64(pr[D.PR_MLP_DOWN]) * k)
+            + ", swiglu " + String(Float64(pr[D.PR_GLU]) * k)
+            + ", mlp.up+gate " + String(Float64(pr[D.PR_MLP_UPGATE]) * k)
+            + ", norms " + String(Float64(pr[D.PR_NORM]) * k)
+            + ", o " + String(Float64(pr[D.PR_O]) * k)
+            + ", attention " + String(Float64(pr[D.PR_ATTN]) * k)
+            + ", kv-repeat " + String(Float64(pr[D.PR_REP]) * k)
+            + ", rope " + String(Float64(pr[D.PR_ROPE]) * k)
+            + ", q/k/v " + String(Float64(pr[D.PR_QKV]) * k) + " ms"
+        )
+        return s
 
 
 struct Group(Movable):
@@ -625,6 +642,9 @@ def main() raises:
 
     var st = Step.make["gpu"](Optional(ctx))
     st.profile = profile
+    # ⚠ The denoiser's own stage timers — the backward split by op class.
+    # Same flag, same caveat: on, it drains at every stage boundary.
+    pol.denoiser.profile = profile
     var opt = Adam(
         lr=Scalar[DT](lr_at(0, steps)), beta1=BETA1, beta2=BETA2, eps=EPS,
         wd=WD,
@@ -781,7 +801,7 @@ def main() raises:
                 + "   " + String(el / Float64(s + 1)) + " s/step"
                 + "   lr " + String(opt.get_lr())
                 + "   |g| " + String(gnorm)
-                + "   " + ph.report(profile, st)
+                + "   " + ph.report(profile, st, pol)
             )
             var names = List[String]()
             var vals = List[Float64]()
