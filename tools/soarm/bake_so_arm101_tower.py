@@ -105,6 +105,16 @@ STOCK_JAW_COLLISION = (
     ' material="moving_jaw_so101_v1_material"/>'
 )
 
+# ⚠ THE JAW BOXES ARE STIFF, LIKE THE PROPS (`gen_tower_props.CONTACT`).
+# A pair's softness is the AVERAGE of its two geoms', and the stock arm's
+# geoms carry MuJoCo's defaults (solref 0.02, solimp 0.9 0.95): against the
+# stiff brick the pair came out at solref 0.015 / solimp 0.95, and the 3.35 N
+# squeeze sank each jaw 6-8 mm INTO the cube while holding it — MuJoCo
+# itself, fed the recorded actions, reproduced our trajectory to 0.03 mrad
+# and ended in the same penetration (2026-09-20), so it was the model, not
+# the engine. The stiff pair keeps the jaws on the cube's faces.
+JAW_CONTACT = 'solref="0.01 1" solimp="0.998 0.998 0.001"'
+
 # The jaws' collision boxes: (name, centre, half-size), metres.
 # FIXED JAW in the gripper body frame — the moving jaw is on +x, so the fixed
 # finger's inner face is its max-x face: x -8 mm at the tip (z -104), -13 at
@@ -311,7 +321,7 @@ def bake():
         " pinch) -->\n"
         + "\n".join(
             '                <geom type="box" class="collision" name="%s"'
-            ' pos="%s" size="%s"/>' % (n, _fmt(np.array(p3)), _fmt(np.array(h3)))
+            ' pos="%s" size="%s" %s/>' % (n, _fmt(np.array(p3)), _fmt(np.array(h3)), JAW_CONTACT)
             for n, p3, h3 in FIXED_JAW_BOXES
         )
         + "\n"
@@ -327,7 +337,7 @@ def bake():
         " filled the L; see bake_so_arm101_tower.py) -->\n"
         + "\n".join(
             '                  <geom type="box" class="collision" name="%s"'
-            ' pos="%s" size="%s"/>' % (n, _fmt(np.array(p3)), _fmt(np.array(h3)))
+            ' pos="%s" size="%s" %s/>' % (n, _fmt(np.array(p3)), _fmt(np.array(h3)), JAW_CONTACT)
             for n, p3, h3 in MOVING_JAW_BOXES
         ),
         "collision moving-jaw geom",

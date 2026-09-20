@@ -6,7 +6,8 @@
 Every recorded row carries the FULL state — the observation is `qpos`, then
 `qvel`, then the task words — so playback poses the sim at each row and
 renders; no physics runs, nothing can drift from what was recorded, and any
-`.demo` (expert, leader, intervention) plays the same way. The sidebar shows
+`.demo` (expert, leader, intervention) plays the same way. `x` switches to
+PHYSICS playback (the recorded actions stepped live). The sidebar shows
 the episode, the step, the recorded action (the six normalised joint targets)
 and reward, and whether the row paid the rung (reward > 1.5 = the brick held
 above the desk).
@@ -18,6 +19,10 @@ ESC quit, mouse orbit; `pixi run soarm-tower-record` lists the rest):
     b         restart the episode
     [ / ]     slower / faster (x0.5 / x2)
     l         loop the episode
+    x         PHYSICS playback: the env steps the recorded actions live
+              (collision + solver run; the sidebar shows the largest drift
+              from the recording, which is 0 when the engine is the one
+              that recorded it) — posed playback otherwise
 
 Three eyes at once, as in the recorder: the free camera, with the overhead
 and the wrist camera as insets on the right.
@@ -63,6 +68,8 @@ comptime KEY_B: Int = 98
 comptime KEY_L: Int = 108
 comptime KEY_LBRACKET: Int = 91
 comptime KEY_RBRACKET: Int = 93
+comptime KEY_X: Int = 120
+"""`x`: toggle PHYSICS playback — see `Playback.physics`."""
 
 def _joint_name(j: Int) -> String:
     if j == 0:
@@ -92,6 +99,17 @@ struct Playback(Movable):
     var loop: Bool
     var ep_return: Float64  # return of the rows played so far
     var rung_rows: Int
+    var physics: Bool
+    """PHYSICS playback: instead of posing the sim at each recorded state, the
+    env STEPS the recorded action from where it is, so the collision and the
+    solver run live and the picture is the engine's own answer to the
+    recorded commands. `drift` is the largest gap between the live state and
+    the recorded one (qpos + qvel words), and `drift_word` which word — the
+    check that the recording is what this engine does (the probe's open-loop
+    leg found 0.0000 at every word; MuJoCo fed the same actions agrees to
+    0.03 mrad). Toggling it on continues from the current pose."""
+    var drift: Float64
+    var drift_word: Int
 
     def __init__(out self, episode: Int, speed: Float64, loop: Bool):
         self.episode = episode
@@ -100,11 +118,16 @@ struct Playback(Movable):
         self.loop = loop
         self.ep_return = 0.0
         self.rung_rows = 0
+        self.physics = False
+        self.drift = 0.0
+        self.drift_word = -1
 
     def restart(mut self):
         self.frame = 0
         self.ep_return = 0.0
         self.rung_rows = 0
+        self.drift = 0.0
+        self.drift_word = -1
 
 
 def _pose(mut env: E, ref d: DemoSet, row: Int, next_obs: Bool):
@@ -184,6 +207,18 @@ def _sidebar(
     var sp32 = Float32(pb.speed)
     if ig_slider_float(String("speed"), sp32, 0.1, 4.0, String("x%.2f")):
         pb.speed = Float64(sp32)
+    var was_physics = pb.physics
+    if ig_checkbox(String("physics (x): step the recorded actions"), pb.physics):
+        pass
+    if pb.physics != was_physics:
+        pb.drift = 0.0
+        pb.drift_word = -1
+    if pb.physics:
+        ig_text_colored(String("LIVE physics — drift from the recording "
+                        + fixed(pb.drift, 4) + " (word " + String(pb.drift_word)
+                        + ")"), 0.9, 0.8, 0.3, 1.0)
+    else:
+        ig_text_disabled(String("posed from the recorded states (no physics)"))
 
     ig_separator_text(String("this row"))
     var row = start + (pb.frame if pb.frame < ln else ln - 1)
@@ -206,7 +241,7 @@ def _sidebar(
         ig_progress_bar(Float32((a + 1.0) * 0.5), -1.0, 0.0,
                         _joint_name(j) + " " + fixed(a, 2))
     ig_spacing()
-    ig_text_disabled(String("n/p episode  b restart  [ ] speed  l loop"))
+    ig_text_disabled(String("n/p episode  b restart  [ ] speed  l loop  x physics"))
     ig_text_disabled(String("SPACE pause  RIGHT step  ESC quit"))
     ig_end()
     return picked
@@ -309,24 +344,53 @@ def main() raises:
             pb.speed = pb.speed * 0.5 if pb.speed > 0.1 else pb.speed
         elif key == KEY_RBRACKET:
             pb.speed = pb.speed * 2.0 if pb.speed < 4.0 else pb.speed
+        elif key == KEY_X:
+            pb.physics = not pb.physics
+            pb.drift = 0.0
+            pb.drift_word = -1
+            print("  physics playback", "ON" if pb.physics else "OFF")
         if picked >= 0 and picked != pb.episode:
             pb.episode = picked
             pb.restart()
+        if pb.physics and pb.frame == 0:
+            # a restart (or a fresh episode) under physics starts from the
+            # recorded first state, not from wherever the last step left it
+            _pose(env, d, d.ep_start[pb.episode], False)
             print("  episode", pb.episode, "—",
                   "SUCCESS" if d.ep_success[pb.episode] else "failed",
                   d.ep_len[pb.episode], "steps")
 
         var start = d.ep_start[pb.episode]
         var ln = d.ep_len[pb.episode]
-        # pose this frame
-        if pb.frame < ln:
-            _pose(env, d, start + pb.frame, False)
-        else:
-            _pose(env, d, start + ln - 1, True)
-        env.render_frame()
-
         # advance, unless paused (RIGHT ARROW steps one frame while paused)
         var advance = not paused or env.renderer_step_once()
+        if pb.physics:
+            # the env is where the last frame left it (posed, or stepped);
+            # step the recorded action, then measure against the recording
+            if advance and pb.frame < ln:
+                var row = start + pb.frame
+                var action = E.ActionType()
+                for j in range(ACT):
+                    action.data[j] = Float64(d.act[row * d.act_dim + j])
+                var out = env.step(action)
+                var gap = 0.0
+                var gap_w = -1
+                for k in range(NQ + NV):
+                    var g = abs(out[0].data[k] - Float64(d.nobs[row * d.obs_dim + k]))
+                    if g > gap:
+                        gap = g
+                        gap_w = k
+                if gap > pb.drift:
+                    pb.drift = gap
+                    pb.drift_word = gap_w
+        else:
+            # pose this frame
+            if pb.frame < ln:
+                _pose(env, d, start + pb.frame, False)
+            else:
+                _pose(env, d, start + ln - 1, True)
+        env.render_frame()
+
         if advance:
             if pb.frame < ln:
                 var r = Float64(d.rew[start + pb.frame])
@@ -336,6 +400,8 @@ def main() raises:
                 pb.frame += 1
             elif pb.loop:
                 pb.restart()
+                if pb.physics:
+                    _pose(env, d, start, False)
 
         var period_ms = Int(CONTROL_PERIOD_MS / pb.speed)
         var spent_ms = Int((perf_counter_ns() - frame_t0) // 1_000_000)

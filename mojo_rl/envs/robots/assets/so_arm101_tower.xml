@@ -108,10 +108,10 @@
                 <!-- Part wrist_cam_mount_32x32_uvc_module_so101 — RIG DEVIATION: replaces wrist_roll_follower_so101_v1 (Wrist_Cam_Mount_32x32_UVC_Module_SO101.stl, mm, same frame) -->
                 <geom type="mesh" class="visual" pos="8.32667e-17 -0.000218214 0.000949706" quat="0 1 0 0" mesh="wrist_cam_mount_32x32_uvc_module_so101" material="wrist_cam_mount_32x32_uvc_module_so101_material"/>
                 <!-- RIG DEVIATION: the fixed jaw and the servo pocket as BOXES (see bake_so_arm101_tower.py: the mesh's hull filled the pinch) -->
-                <geom type="box" class="collision" name="fixed_finger_tip" pos="-0.0155 0 -0.087" size="0.0065 0.0075 0.017"/>
-                <geom type="box" class="collision" name="fixed_finger_base" pos="-0.02325 0 -0.056" size="0.00975 0.012 0.014"/>
-                <geom type="box" class="collision" name="gripper_pocket_low" pos="-0.0115 0 -0.027" size="0.0235 0.024 0.015"/>
-                <geom type="box" class="collision" name="gripper_pocket_top" pos="0.0065 -0.002 -0.006" size="0.0235 0.026 0.006"/>
+                <geom type="box" class="collision" name="fixed_finger_tip" pos="-0.0155 0 -0.087" size="0.0065 0.0075 0.017" solref="0.01 1" solimp="0.998 0.998 0.001"/>
+                <geom type="box" class="collision" name="fixed_finger_base" pos="-0.02325 0 -0.056" size="0.00975 0.012 0.014" solref="0.01 1" solimp="0.998 0.998 0.001"/>
+                <geom type="box" class="collision" name="gripper_pocket_low" pos="-0.0115 0 -0.027" size="0.0235 0.024 0.015" solref="0.01 1" solimp="0.998 0.998 0.001"/>
+                <geom type="box" class="collision" name="gripper_pocket_top" pos="0.0065 -0.002 -0.006" size="0.0235 0.026 0.006" solref="0.01 1" solimp="0.998 0.998 0.001"/>
                 <!-- RIG DEVIATION: the camera arm's envelope, as a box (see bake_so_arm101_tower.py) -->
                 <geom type="box" class="collision" pos="0.0025 -0.067 0.005" size="0.0175 0.022 0.010" material="wrist_cam_mount_32x32_uvc_module_so101_material"/>
                 <!-- Frame gripperframe -->
@@ -128,9 +128,9 @@
                   <!-- Part moving_jaw_so101_v1 -->
                   <geom type="mesh" class="visual" pos="-5.55112e-17 -5.55112e-17 0.0189" quat="1 -0 3.00524e-16 -2.00834e-17" mesh="moving_jaw_so101_v1" material="moving_jaw_so101_v1_material"/>
                   <!-- RIG DEVIATION: the moving jaw as BOXES (its hull filled the L; see bake_so_arm101_tower.py) -->
-                  <geom type="box" class="collision" name="moving_jaw_tip" pos="-0.00725 -0.072 0.019" size="0.00525 0.012 0.007"/>
-                  <geom type="box" class="collision" name="moving_jaw_mid" pos="-0.00125 -0.042 0.019" size="0.00725 0.018 0.01"/>
-                  <geom type="box" class="collision" name="moving_jaw_hinge" pos="0 -0.007 0.019" size="0.01 0.017 0.024"/>
+                  <geom type="box" class="collision" name="moving_jaw_tip" pos="-0.00725 -0.072 0.019" size="0.00525 0.012 0.007" solref="0.01 1" solimp="0.998 0.998 0.001"/>
+                  <geom type="box" class="collision" name="moving_jaw_mid" pos="-0.00125 -0.042 0.019" size="0.00725 0.018 0.01" solref="0.01 1" solimp="0.998 0.998 0.001"/>
+                  <geom type="box" class="collision" name="moving_jaw_hinge" pos="0 -0.007 0.019" size="0.01 0.017 0.024" solref="0.01 1" solimp="0.998 0.998 0.001"/>
                 </body>
               </body>
             </body>
