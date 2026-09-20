@@ -71,9 +71,9 @@ from mojo_rl.nn.primitives.cross_attention import (
     _xa_unpack_kernel,
 )
 from mojo_rl.deep_agents.smolvla.block_attention import (
-    BA_ROW_BLOCK,
     _ba_context_kernel,
     _ba_softmax_kernel,
+    ba_warp_rows_grid,
 )
 
 
@@ -368,8 +368,8 @@ def run_shape[
                       grid_dim=(SC + TPB - 1) // TPB, block_dim=TPB)
                     ctx.enqueue_function[_ba_softmax_kernel[B, H, QL, KL]](
                         attn.lt["gpu", lay_s](),
-                        grid_dim=(BH * QL + BA_ROW_BLOCK - 1) // BA_ROW_BLOCK,
-                        block_dim=BA_ROW_BLOCK,
+                        grid_dim=ba_warp_rows_grid(BH * QL),
+                        block_dim=TPB,
                     )
                     if variant == 2:
                         bmm[A0=BH, A1=QL, A2=KL, B0=BH, B1=KL, B2=HD, O0=BH, O1=QL, O2=HD](

@@ -69,7 +69,8 @@ guard, and the same constant, as `cross_attention.mojo`.
 """
 
 from std.math import exp, sqrt
-from max.gpu import global_idx, thread_idx, block_idx, block_dim
+from max.gpu import global_idx, thread_idx, block_idx, block_dim, WARP_SIZE
+from max.gpu.primitives import warp
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
@@ -79,7 +80,6 @@ from mojo_rl.nn.core.tensor import Tensor
 
 comptime BA_MASK_NEG: Scalar[DT] = Scalar[DT](-1.0e30)
 comptime BA_DENOM_FLOOR: Scalar[DT] = Scalar[DT](1.0e-30)
-comptime BA_ROW_BLOCK: Int = 32
 """One warp: the block size the row softmax was measured at on the Orin."""
 
 
@@ -110,17 +110,78 @@ comptime BA_ROW_BLOCK: Int = 32
 # normalised weights rather than a normalised sum. Held to ~2.5e-6 std units of
 # a float64 reference on the board, and to `test_block_attention.mojo`'s
 # GPU-vs-CPU band, which also exercises B = 2 (the benchmark is B = 1).
+#
+# ⚠⚠ SECOND PASS (20 Sep 2026): element-indexed was necessary, not sufficient.
+# `benchmarks/smolvla_denoise_stages_bench.mojo` on the Orin put these three
+# kernels at 16.8 ms of a 27.8 ms denoising step — 1.05 ms per layer for 18 M
+# MACs, 1.2% of the board's fp32 peak — while the expert's linears ran at 38%.
+# The scores kernel's lanes were adjacent in j, so each lane read its OWN key
+# row at a stride of DIM floats: 32 cache lines per warp per head-dim step,
+# 64 steps, 4 336 warps — the K reads alone were ~280 MB of L2 sector traffic
+# for a 710 KB matrix. And the softmax was one THREAD per row: 750 threads on
+# the whole board, three serial passes of 185 loads each, at stride KL.
+#
+# Now K is packed once per call into `kt[b, h, d, j]` (contiguous in j, the
+# same trick as `cross_attention.mojo` §2.1 "Kt contiguous"), so the scores
+# kernel's warp reads 128 B per step instead of 32 lines; and the two row
+# kernels (the softmax here, `_ba_dscore_kernel` in the backward) are one WARP
+# per row — lanes stride the row by 32, coalesced, and the reductions are
+# warp reductions. The context kernel was already coalesced (lanes adjacent
+# in d) and is unchanged.
+#
+# ⚠ The row reductions are now warp-tree sums, not serial ones: the
+# probabilities and dS move at the last bit. `test_block_attention.mojo`
+# (1e-5 vs the torch-gated CPU path) and `test_block_attention_vjp.mojo`
+# (central differences) are the bands; the old serial kernels are not a
+# reference.
+
+
+def ba_warp_rows_grid(rows: Int) -> Int:
+    """Blocks of `TPB` for a one-warp-per-row kernel over `rows` rows
+    (`_ba_softmax_kernel`, `_ba_dscore_kernel`). `TPB % WARP_SIZE == 0` is
+    what makes those kernels' early return warp-uniform — a warp reduction
+    with a lane missing is undefined — and it is asserted here, at the one
+    place the grid is formed."""
+    comptime assert TPB % WARP_SIZE == 0, (
+        "block_attention: TPB must be a whole number of warps"
+    )
+    return (rows * WARP_SIZE + TPB - 1) // TPB
+
+
+def _ba_pack_kt_kernel[
+    BATCH: Int, D: Int, NH: Int, KL: Int, H: Int
+](
+    k: LayoutTensor[DT, Layout.row_major(BATCH, KL * D), MutAnyOrigin],
+    kt: LayoutTensor[DT, Layout.row_major(BATCH * NH * H * KL), MutAnyOrigin],
+):
+    """`kt[b, h, d, j] = k[b, j, h*H + d]` — one thread per INPUT element, so
+    the reads are the coalesced side and the strided side is the writes,
+    which do not stall a warp."""
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * KL * D:
+        return
+    var c = idx % D
+    var r = idx // D
+    var j = r % KL
+    var b = r // KL
+    var h = c // H
+    var d = c % H
+    kt.ptr[unsafe_offset = ((b * NH + h) * H + d) * KL + j] = rebind[
+        Scalar[DT]
+    ](k.ptr[unsafe_offset = idx])
 
 
 def _ba_scores_kernel[
     BATCH: Int, D: Int, NH: Int, Q: Int, KL: Int, H: Int
 ](
     q: LayoutTensor[DT, Layout.row_major(BATCH, Q * D), MutAnyOrigin],
-    k: LayoutTensor[DT, Layout.row_major(BATCH, KL * D), MutAnyOrigin],
+    kt: LayoutTensor[DT, Layout.row_major(BATCH * NH * H * KL), MutAnyOrigin],
     mask: LayoutTensor[DT, Layout.row_major(Q * KL), MutAnyOrigin],
     scores: LayoutTensor[DT, Layout.row_major(BATCH * NH * Q * KL), MutAnyOrigin],
 ):
-    """One thread per (b, h, i, j): scaled score plus the additive mask."""
+    """One thread per (b, h, i, j): scaled score plus the additive mask.
+    `kt` is `_ba_pack_kt_kernel`'s `[b, h, d, j]`: adjacent lanes (adjacent j)
+    read adjacent addresses at every d."""
     var idx = Int(global_idx.x)
     if idx >= BATCH * NH * Q * KL:
         return
@@ -131,12 +192,12 @@ def _ba_scores_kernel[
     var h = r2 % NH
     var b = r2 // NH
     var qb = b * (Q * D) + i * D + h * H
-    var kb = b * (KL * D) + j * D + h * H
+    var kb = ((b * NH + h) * H) * KL + j
     var s = Scalar[DT](0)
     for d in range(H):
         s += rebind[Scalar[DT]](q.ptr[unsafe_offset = qb + d]) * rebind[
             Scalar[DT]
-        ](k.ptr[unsafe_offset = kb + d])
+        ](kt.ptr[unsafe_offset = kb + d * KL])
     scores.ptr[unsafe_offset = idx] = s * (
         Scalar[DT](1.0) / sqrt(Scalar[DT](H))
     ) + rebind[Scalar[DT]](mask.ptr[unsafe_offset = i * KL + j])
@@ -145,29 +206,44 @@ def _ba_scores_kernel[
 def _ba_softmax_kernel[BATCH: Int, NH: Int, Q: Int, KL: Int](
     scores: LayoutTensor[DT, Layout.row_major(BATCH * NH * Q * KL), MutAnyOrigin],
 ):
-    """One thread per (b, h, i): stable softmax over one CONTIGUOUS row, in place.
+    """One WARP per (b, h, i): stable softmax over one CONTIGUOUS row, in
+    place. Lanes stride the row by `WARP_SIZE`, so every pass is coalesced;
+    the max and the denominator are warp reductions. Launch with
+    `ba_warp_rows_grid(rows)` blocks of `TPB`.
 
     ⚠ A FULLY MASKED ROW gives zero weights, not NaN: every score is ~-1e30, so
     the running max never rises above half of `BA_MASK_NEG` and the row is
     zeroed — the same zero context the CPU path produces.
     """
     var idx = Int(global_idx.x)
-    if idx >= BATCH * NH * Q:
+    var row = idx // WARP_SIZE
+    var lane = idx % WARP_SIZE
+    if row >= BATCH * NH * Q:
         return
-    var base = idx * KL
+    var base = row * KL
     var mx = BA_MASK_NEG
-    for j in range(KL):
+    var j = lane
+    while j < KL:
         mx = max(mx, rebind[Scalar[DT]](scores.ptr[unsafe_offset = base + j]))
-    var denom = Scalar[DT](0)
-    for j in range(KL):
-        denom += exp(rebind[Scalar[DT]](scores.ptr[unsafe_offset = base + j]) - mx)
+        j += WARP_SIZE
+    mx = warp.max(mx)
+    var part = Scalar[DT](0)
+    j = lane
+    while j < KL:
+        part += exp(
+            rebind[Scalar[DT]](scores.ptr[unsafe_offset = base + j]) - mx
+        )
+        j += WARP_SIZE
+    var denom = warp.sum(part)
     var inv = Scalar[DT](0)
     if mx > BA_MASK_NEG * Scalar[DT](0.5) and denom > BA_DENOM_FLOOR:
         inv = Scalar[DT](1.0) / denom
-    for j in range(KL):
+    j = lane
+    while j < KL:
         scores.ptr[unsafe_offset = base + j] = exp(
             rebind[Scalar[DT]](scores.ptr[unsafe_offset = base + j]) - mx
         ) * inv
+        j += WARP_SIZE
 
 
 def _ba_context_kernel[
@@ -271,24 +347,33 @@ def _ba_dscore_kernel[BATCH: Int, N_HEADS: Int, QL: Int, KL: Int, HD: Int](
         dot     = Σ_j p[i,j] dP[i,j]
         dS[i,j] = p[i,j] (dP[i,j] − dot) scale
 
-    One thread per (b, h, i). A masked key has p = 0 and so dS = 0 exactly,
-    which is what makes dK and dV of that key exactly zero downstream; a fully
-    masked row has every p = 0 and yields an all-zero dS, not a NaN.
+    One WARP per (b, h, i), lanes striding the row, `dot` a warp reduction;
+    launch with `ba_warp_rows_grid(rows)` blocks of `TPB`. A masked key has
+    p = 0 and so dS = 0 exactly, which is what makes dK and dV of that key
+    exactly zero downstream; a fully masked row has every p = 0 and yields
+    an all-zero dS, not a NaN.
     """
     var idx = Int(global_idx.x)
-    if idx >= BATCH * N_HEADS * QL:
+    var row = idx // WARP_SIZE
+    var lane = idx % WARP_SIZE
+    if row >= BATCH * N_HEADS * QL:
         return
-    var base = idx * KL
+    var base = row * KL
     var scale = Scalar[DT](1.0) / sqrt(Scalar[DT](HD))
-    var dot = Scalar[DT](0)
-    for j in range(KL):
-        dot += rebind[Scalar[DT]](probs.ptr[unsafe_offset = base + j]) * rebind[
+    var part = Scalar[DT](0)
+    var j = lane
+    while j < KL:
+        part += rebind[Scalar[DT]](probs.ptr[unsafe_offset = base + j]) * rebind[
             Scalar[DT]
         ](dscore.ptr[unsafe_offset = base + j])
-    for j in range(KL):
+        j += WARP_SIZE
+    var dot = warp.sum(part)
+    j = lane
+    while j < KL:
         var p = rebind[Scalar[DT]](probs.ptr[unsafe_offset = base + j])
         var dp = rebind[Scalar[DT]](dscore.ptr[unsafe_offset = base + j])
         dscore.ptr[unsafe_offset = base + j] = p * (dp - dot) * scale
+        j += WARP_SIZE
 
 
 def _ba_dq_kernel[
@@ -370,6 +455,10 @@ struct BlockCrossAttention[
     # sixteen layers a driver runs through it.
     var probs: Tensor
     var dscore: Tensor
+    var kt: Tensor
+    """`_ba_pack_kt_kernel`'s `[b, h, d, j]` copy of K, rebuilt by every GPU
+    forward and by every vjp's probability refill: one instance serves all
+    sixteen layers, so nothing from the forward can be relied on."""
     var fwd_scores: Tensor
     """The GPU forward's materialised scores, then probabilities, in place.
     Sized on the first call and reused: `ensure_gpu` allocates only on a GROW,
@@ -384,6 +473,7 @@ struct BlockCrossAttention[
         self.is_gpu = False
         self.probs = Tensor()
         self.dscore = Tensor()
+        self.kt = Tensor()
         self.fwd_scores = Tensor()
 
     def __init__(out self, *, deinit move: Self):
@@ -391,6 +481,7 @@ struct BlockCrossAttention[
         self.is_gpu = move.is_gpu
         self.probs = move.probs^
         self.dscore = move.dscore^
+        self.kt = move.kt^
         self.fwd_scores = move.fwd_scores^
 
     @staticmethod
@@ -462,18 +553,28 @@ struct BlockCrossAttention[
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.QN)
             self.fwd_scores.ensure_gpu(c, B * Self.PN)
+            self.kt.ensure_gpu(c, B * Self.KN)
             comptime n_scores = B * Self.PN
             comptime n_rows = B * Self.N_HEADS * Self.Q_LEN
             comptime n_ctx = B * Self.N_HEADS * Self.Q_LEN * Self.HD
-            # Block sizes are the ones measured on the board: TPB for the two
-            # thin element kernels, one warp (32) for the row softmax.
+            comptime n_k = B * Self.KN
+            c.enqueue_function[
+                _ba_pack_kt_kernel[
+                    B, Self.DIM, Self.N_HEADS, Self.KV_LEN, Self.HD
+                ]
+            ](
+                k.lt["gpu", Layout.row_major(B, Self.KN)](),
+                self.kt.lt["gpu", Layout.row_major(B * Self.KN)](),
+                grid_dim=(n_k + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
             c.enqueue_function[
                 _ba_scores_kernel[
                     B, Self.DIM, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN, Self.HD
                 ]
             ](
                 q.lt["gpu", Layout.row_major(B, Self.QN)](),
-                k.lt["gpu", Layout.row_major(B, Self.KN)](),
+                self.kt.lt["gpu", Layout.row_major(B * Self.KN)](),
                 self.mask.lt["gpu", Layout.row_major(Self.MASK_N)](),
                 self.fwd_scores.lt["gpu", Layout.row_major(B * Self.PN)](),
                 grid_dim=(n_scores + TPB - 1) // TPB,
@@ -483,8 +584,8 @@ struct BlockCrossAttention[
                 _ba_softmax_kernel[B, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN]
             ](
                 self.fwd_scores.lt["gpu", Layout.row_major(B * Self.PN)](),
-                grid_dim=(n_rows + BA_ROW_BLOCK - 1) // BA_ROW_BLOCK,
-                block_dim=BA_ROW_BLOCK,
+                grid_dim=ba_warp_rows_grid(n_rows),
+                block_dim=TPB,
             )
             c.enqueue_function[
                 _ba_context_kernel[
@@ -628,14 +729,25 @@ struct BlockCrossAttention[
             comptime n_q = B * Self.N_HEADS * Self.Q_LEN * Self.HD
             comptime n_kv = B * Self.N_HEADS * Self.KV_LEN * Self.HD
 
-            # ── probs: the forward's two kernels, into `probs` ───────────
+            # ── probs: the forward's three kernels, into `probs` ─────────
+            self.kt.ensure_gpu(c, B * Self.KN)
+            c.enqueue_function[
+                _ba_pack_kt_kernel[
+                    B, Self.DIM, Self.N_HEADS, Self.KV_LEN, Self.HD
+                ]
+            ](
+                k.lt["gpu", lay_k](),
+                self.kt.lt["gpu", Layout.row_major(B * Self.KN)](),
+                grid_dim=(B * Self.KN + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
             c.enqueue_function[
                 _ba_scores_kernel[
                     B, Self.DIM, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN, Self.HD
                 ]
             ](
                 q.lt["gpu", lay_q](),
-                k.lt["gpu", lay_k](),
+                self.kt.lt["gpu", Layout.row_major(B * Self.KN)](),
                 self.mask.lt["gpu", Layout.row_major(Self.MASK_N)](),
                 self.probs.lt["gpu", lay_pf](),
                 grid_dim=(n_scores + TPB - 1) // TPB,
@@ -645,8 +757,8 @@ struct BlockCrossAttention[
                 _ba_softmax_kernel[B, Self.N_HEADS, Self.Q_LEN, Self.KV_LEN]
             ](
                 self.probs.lt["gpu", lay_pf](),
-                grid_dim=(n_rows + BA_ROW_BLOCK - 1) // BA_ROW_BLOCK,
-                block_dim=BA_ROW_BLOCK,
+                grid_dim=ba_warp_rows_grid(n_rows),
+                block_dim=TPB,
             )
             # ── dV = pᵀ g: reads probs only, so it can go first ──────────
             c.enqueue_function[
@@ -679,8 +791,8 @@ struct BlockCrossAttention[
             ](
                 self.probs.lt["gpu", lay_p](),
                 self.dscore.lt["gpu", lay_p](),
-                grid_dim=(n_rows + BA_ROW_BLOCK - 1) // BA_ROW_BLOCK,
-                block_dim=BA_ROW_BLOCK,
+                grid_dim=ba_warp_rows_grid(n_rows),
+                block_dim=TPB,
             )
             # ── dQ = dS k,  dK = dSᵀ q ───────────────────────────────────
             c.enqueue_function[

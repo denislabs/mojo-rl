@@ -19,7 +19,8 @@ Each variant changes EXACTLY ONE thing relative to the one above it:
     B  same kernel, block 32 (one warp)         occupancy        BIT-IDENTICAL
     C  branchless: no `continue`, `max`          lane divergence  BIT-IDENTICAL
     D  one pass, online softmax (C's launch)     duplicated q.k   tolerance
-    E  scores -> softmax -> A.V (SHIPS)          launch shape     tolerance
+    E  pack Kt -> scores -> softmax -> A.V      launch shape     tolerance
+       (SHIPS; coalesced K + warp-per-row softmax since 20 Sep)
 
 ⚠ READING THE RESULT. The CROSS shape has no mask at all (every prefix key is
 visible), so masking cannot diverge the lanes there. If C beats B on SELF but
@@ -52,10 +53,11 @@ from mojo_rl.deep_agents.smolvla.attn_mask import att_2d_mask, smolvla_ar
 from mojo_rl.deep_agents.smolvla.block_attention import (
     BA_DENOM_FLOOR,
     BA_MASK_NEG,
-    BA_ROW_BLOCK,
     _ba_context_kernel,
+    _ba_pack_kt_kernel,
     _ba_scores_kernel,
     _ba_softmax_kernel,
+    ba_warp_rows_grid,
 )
 
 
@@ -451,6 +453,8 @@ comptime _c_self = _c_kernel[B, DIM, HEADS, QL, KL_SELF, HD]
 comptime _c_cross = _c_kernel[B, DIM, HEADS, QL, KL_CROSS, HD]
 comptime _d_self = _d_kernel[B, DIM, HEADS, QL, KL_SELF, HD]
 comptime _d_cross = _d_kernel[B, DIM, HEADS, QL, KL_CROSS, HD]
+comptime _e_pack_self = _ba_pack_kt_kernel[B, DIM, HEADS, KL_SELF, HD]
+comptime _e_pack_cross = _ba_pack_kt_kernel[B, DIM, HEADS, KL_CROSS, HD]
 comptime _e_scores_self = _ba_scores_kernel[B, DIM, HEADS, QL, KL_SELF, HD]
 comptime _e_scores_cross = _ba_scores_kernel[B, DIM, HEADS, QL, KL_CROSS, HD]
 comptime _e_softmax_self = _ba_softmax_kernel[B, HEADS, QL, KL_SELF]
@@ -499,6 +503,8 @@ def run_shape(
     var nominal = Float64(ROWS) * Float64(3 * kl * HD)
     var probs = Tensor()
     probs.ensure_gpu(ctx, B * HEADS * QL * kl)
+    var kt = Tensor()
+    kt.ensure_gpu(ctx, B * kl * DIM)
 
     for variant in range(5):
         var out = Tensor()
@@ -572,16 +578,21 @@ def run_shape(
                 var n_sc = B * HEADS * QL * kl
                 var n_cx = B * HEADS * QL * HD
                 if kl == KL_SELF:
+                    ctx.enqueue_function[_e_pack_self](
+                        k.lt["gpu", Layout.row_major(B, KL_SELF * DIM)](),
+                        kt.lt["gpu", Layout.row_major(B * KL_SELF * DIM)](),
+                        grid_dim=(B * KL_SELF * DIM + TPB - 1) // TPB, block_dim=TPB,
+                    )
                     ctx.enqueue_function[_e_scores_self](
                         q.lt["gpu", Layout.row_major(B, QN)](),
-                        k.lt["gpu", Layout.row_major(B, KL_SELF * DIM)](),
+                        kt.lt["gpu", Layout.row_major(B * KL_SELF * DIM)](),
                         mask_t.lt["gpu", Layout.row_major(QL * KL_SELF)](),
                         probs.lt["gpu", Layout.row_major(B * HEADS * QL * KL_SELF)](),
                         grid_dim=(n_sc + TPB - 1) // TPB, block_dim=TPB,
                     )
                     ctx.enqueue_function[_e_softmax_self](
                         probs.lt["gpu", Layout.row_major(B * HEADS * QL * KL_SELF)](),
-                        grid_dim=(ROWS + BA_ROW_BLOCK - 1) // BA_ROW_BLOCK, block_dim=BA_ROW_BLOCK,
+                        grid_dim=ba_warp_rows_grid(ROWS), block_dim=TPB,
                     )
                     ctx.enqueue_function[_e_context_self](
                         probs.lt["gpu", Layout.row_major(B * HEADS * QL * KL_SELF)](),
@@ -590,16 +601,21 @@ def run_shape(
                         grid_dim=(n_cx + TPB - 1) // TPB, block_dim=TPB,
                     )
                 else:
+                    ctx.enqueue_function[_e_pack_cross](
+                        k.lt["gpu", Layout.row_major(B, KL_CROSS * DIM)](),
+                        kt.lt["gpu", Layout.row_major(B * KL_CROSS * DIM)](),
+                        grid_dim=(B * KL_CROSS * DIM + TPB - 1) // TPB, block_dim=TPB,
+                    )
                     ctx.enqueue_function[_e_scores_cross](
                         q.lt["gpu", Layout.row_major(B, QN)](),
-                        k.lt["gpu", Layout.row_major(B, KL_CROSS * DIM)](),
+                        kt.lt["gpu", Layout.row_major(B * KL_CROSS * DIM)](),
                         mask_t.lt["gpu", Layout.row_major(QL * KL_CROSS)](),
                         probs.lt["gpu", Layout.row_major(B * HEADS * QL * KL_CROSS)](),
                         grid_dim=(n_sc + TPB - 1) // TPB, block_dim=TPB,
                     )
                     ctx.enqueue_function[_e_softmax_cross](
                         probs.lt["gpu", Layout.row_major(B * HEADS * QL * KL_CROSS)](),
-                        grid_dim=(ROWS + BA_ROW_BLOCK - 1) // BA_ROW_BLOCK, block_dim=BA_ROW_BLOCK,
+                        grid_dim=ba_warp_rows_grid(ROWS), block_dim=TPB,
                     )
                     ctx.enqueue_function[_e_context_cross](
                         probs.lt["gpu", Layout.row_major(B * HEADS * QL * KL_CROSS)](),
@@ -627,7 +643,7 @@ def run_shape(
             String("B  same kernel, block 32"),
             String("C  branchless, block 32"),
             String("D  one-pass softmax"),
-            String("E  3 kernels (SHIPS now)"),
+            String("E  pack+3 kernels (SHIPS now)"),
         ]
         rows.append(
             Row(names[variant], best, _median(times), macs, cmp[0], cmp[1])
