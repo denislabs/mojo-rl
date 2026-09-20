@@ -1,5 +1,5 @@
 # +--------------------------------------------------------------------------+ #
-# | CrossAttention's GPU forward — four variants, at SigLIP's shape AND ACT's
+# | CrossAttention's GPU forward — sixteen variants, at SigLIP's shape AND ACT's
 # +--------------------------------------------------------------------------+ #
 """Which CrossAttention forward to ship, measured at the shapes that use it.
 
@@ -48,6 +48,20 @@ On the Orin the element-indexed variants LOSE at every shape and the whole
 cost was the transposed matmul — so "Kt contiguous" shipped: faster at every
 Orin shape, bit-identical everywhere. On a 5090 C/D are a further ~1.8x at
 SigLIP; that is a separate, per-device decision, not taken here.
+
+⚠ ROWS P AND Q ARE MAX'S OWN FLASH ATTENTION (`nn.attention.gpu.mha`, the
+package ships it and it imports). Our `[B, L*DIM]` slab with the heads
+contiguous inside DIM IS the BSHD layout it takes, so the rows hand it our
+buffers with no pack. Its fp32 path runs BOTH matmuls on the tensor cores as
+TF32 (`get_mma_shape[float32, float32]` = 16x8x8, 10 mantissa bits per
+operand), so those two rows are gated in the GEMM path's band, not the fp32
+kernels'. P is what `flash_attention` picks by itself: its admission test
+admits depth 64 on A100 / H100 / B200 BY NAME, the Orin resolves to the
+`OrinNano` entry and a 5090 to its own, so on both boards P is MAX's naive
+two-BMM fallback. Q calls `flash_attention_dispatch` with the admission test
+overridden — the FA2 kernel itself, which is what a depth-64 Ampere part
+actually runs. NVIDIA only; unmasked, head dim 64 only (its config pads the
+head dim to 64, and the masked user needs a `MaterializedMask` we do not build).
 """
 
 from std.math import exp, sqrt
@@ -56,7 +70,11 @@ from std.sys import has_accelerator
 from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
-from layout import Layout, LayoutTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major, Idx
+from std.sys.info import has_nvidia_gpu_accelerator
+from nn.attention.gpu.mha import flash_attention, flash_attention_dispatch
+from nn.attention.mha_mask import NullMask
+from nn.attention.mha_operand import LayoutTensorMHAOperand
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.initializer import Deterministic
@@ -83,6 +101,10 @@ from mojo_rl.deep_agents.smolvla.block_attention import (
 comptime WARMUP = 2
 comptime REPS = 8
 comptime GATE_STD_UNITS = 1.0e-3
+comptime GATE_TF32_STD_UNITS = 5.0e-2
+"""The band for MAX's rows: TF32 operands (10 mantissa bits) in both matmuls.
+The network's GEMMs already run in that band on CUDA (the Metal-vs-CUDA
+memory: 8.8e-08 on Metal, 1.25e-03 on the 5090, weights bit-identical)."""
 comptime POISON = 12345.0
 """Far outside any softmax weight (0..1) or context value (|v| <= 1 here)."""
 
@@ -200,6 +222,57 @@ def _launch_fused[
         m.lt["gpu", lay_m](), out.lt["gpu", lay_q](),
         grid_dim=(qtiles, H, B), block_dim=xa_fused_block[R, S](),
     )
+
+
+def _launch_max_fa[
+    B: Int, DIM: Int, H: Int, QL: Int, KL: Int, HD: Int, FORCE: Bool
+](
+    mut q: Tensor, mut k: Tensor, mut v: Tensor, mut out: Tensor,
+    mut ctx: DeviceContext,
+) raises:
+    """MAX's flash attention over our slabs UNCHANGED — `[B, L*DIM]` with the
+    heads contiguous inside DIM is the BSHD it wants, so the views below are
+    reinterpretations, not copies. FORCE=False is `flash_attention`'s own
+    choice (naive two-BMM on any part its depth table does not name);
+    FORCE=True is `flash_attention_dispatch` with the admission test
+    overridden: the FA2 kernel, TF32 tensor-core matmuls, online softmax."""
+    comptime if not has_nvidia_gpu_accelerator():
+        raise Error("MAX's flash attention rows run on NVIDIA only")
+    else:
+        # ⚠ `.unsafe_ptr()` severs the borrow; the Tensors are the caller's
+        # live locals and outlive the synchronised launch.
+        var qp = q.dev.value().unsafe_ptr().as_imm().as_unsafe_any_origin()
+        var kp = k.dev.value().unsafe_ptr().as_imm().as_unsafe_any_origin()
+        var vp = v.dev.value().unsafe_ptr().as_imm().as_unsafe_any_origin()
+        var q_tt = TileTensor(qp, row_major((B, QL, Idx[H], Idx[HD])))
+        var k_tt = TileTensor(kp, row_major((B, KL, Idx[H], Idx[HD])))
+        var v_tt = TileTensor(vp, row_major((B, KL, Idx[H], Idx[HD])))
+        var o_tt = TileTensor(
+            out.dev.value(), row_major((B, QL, Idx[H], Idx[HD]))
+        )
+        var scale = Float32(1.0 / sqrt(Float64(HD)))
+        comptime if FORCE:
+            flash_attention_dispatch[
+                kv_num_heads=H,
+                ragged=False,
+                sink=False,
+                _is_flash_attention_applicable=True,
+                _is_cache_length_accurate=True,
+                _use_valid_length=False,
+            ](
+                o_tt.to_layout_tensor(),
+                q_tt.to_layout_tensor(),
+                LayoutTensorMHAOperand(k_tt),
+                LayoutTensorMHAOperand(v_tt),
+                NullMask(),
+                QL,
+                KL,
+                scale,
+                False,
+                ctx,
+            )
+        else:
+            flash_attention(o_tt, q_tt, k_tt, v_tt, NullMask(), scale, ctx)
 
 
 def run_shape[
@@ -328,7 +401,12 @@ def run_shape[
         String("M  fused R4 S4 KU4 + FMA + exp2"),
         String("N  fused R1 S1 KU4 + FMA + exp2"),
         String("O  fused R2 S1 KU4 + FMA + exp2"),
+        String("P  MAX flash_attention, its own pick"),
+        String("Q  MAX FA2 kernel forced (TF32 mma)"),
     ]
+    # MAX's rows: NVIDIA, unmasked, head dim 64 (see the header).
+    comptime MAX_ROWS = has_nvidia_gpu_accelerator() and not MASKED and HD == 64
+    comptime N_VARIANTS = 16 if MAX_ROWS else 14
     var ok = True
     var best_a = 0.0
     # ⚠ A's output and cache as their OWN lists. Without a bit count, rows that
@@ -336,7 +414,7 @@ def run_shape[
     # reads of one buffer — opposite conclusions, the same printout.
     var a_out = List[Scalar[DT]]()
     var a_attn = List[Scalar[DT]]()
-    for variant in range(14):
+    for variant in range(N_VARIANTS):
         var mod = XA.make["gpu", Deterministic](Optional(ctx))
         if variant == 4:
             mod.set_attr["fused_attention"](Scalar[DT](1.0))
@@ -373,6 +451,16 @@ def run_shape[
                             TensorRefs[3, MutAnyOrigin](q, k, v)
                         ), out, ctx,
                     )
+            elif variant >= 14:
+                comptime if MAX_ROWS:
+                    if variant == 14:
+                        _launch_max_fa[B, DIM, H, QL, KL, HD, False](
+                            q, k, v, out, ctx
+                        )
+                    else:
+                        _launch_max_fa[B, DIM, H, QL, KL, HD, True](
+                            q, k, v, out, ctx
+                        )
             elif variant >= 5:
                 # ⚠ THE (R, SPLIT, KU) GRID, launched directly. F is the
                 # shipped default through `forward`; these separate the two
@@ -511,9 +599,12 @@ def run_shape[
                 if attn.data[n] != a_attn[n]:
                     attn_bits += 1
         var flag = String("")
-        if out_err > GATE_STD_UNITS or cache_err > GATE_STD_UNITS:
+        var band = GATE_TF32_STD_UNITS if variant >= 14 else GATE_STD_UNITS
+        if out_err > band or cache_err > band:
             flag = "   ⚠⚠ DISAGREES"
             ok = False
+        elif variant >= 14:
+            flag = "   (TF32 band " + String(GATE_TF32_STD_UNITS) + ")"
         print(
             "   " + _pad(names[variant], 36) + _pad(_fmt(best, 3), 10)
             + _pad(_fmt(best_a / best, 2) + "x", 8)
@@ -530,7 +621,7 @@ def main() raises:
     comptime assert has_accelerator(), "this benchmark times GPU kernels"
     var ctx = DeviceContext()
     print("=" * 100)
-    print("CrossAttention forward — fourteen variants, " + String(ctx.name()))
+    print("CrossAttention forward — sixteen variants, " + String(ctx.name()))
     print("=" * 100)
     var ok = True
     # SigLIP-B/16 @ 512: the target. B=1 — one tower call per camera.
@@ -546,4 +637,7 @@ def main() raises:
     print("")
     if not ok:
         raise Error("a variant produced different numbers — its timing is not a result")
-    print("  every variant within 1e-3 std units of float64, output AND cached weights")
+    print(
+        "  every variant within 1e-3 std units of float64 (MAX's TF32 rows: "
+        + String(GATE_TF32_STD_UNITS) + "), output AND cached weights"
+    )
