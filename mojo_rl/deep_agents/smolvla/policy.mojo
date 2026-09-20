@@ -386,6 +386,9 @@ struct SmolVLAPrefixEmbed[
     """
 
     comptime IMG_N: Int = Self.IMG_TOK * Self.W
+    comptime IMG_SEG: Int = Self.N_CAM * Self.IMG_N
+    """The image segment: every camera's 64 tokens, the part of the prefix a
+    frame determines on its own and the unit `vision_cache.mojo` stores."""
     comptime P: Int = Self.N_CAM * Self.IMG_TOK + Self.N_LANG + 1
     comptime OUT_N: Int = Self.B * Self.P * Self.W
     comptime VIS_IN: Int = 3 * SIGLIP_IMG * SIGLIP_IMG
@@ -462,6 +465,28 @@ struct SmolVLAPrefixEmbed[
         """`images` is `[N_CAM, 3*512*512]` (batch 1 per camera, as SmolVLA
         runs them); `lang_ids` are PRE-TOKENISED ids.
 
+        Two halves, callable separately: `run_images` writes the image
+        segment, `run_tail` the language and state tokens after it. The
+        fine-tune's vision cache (`vision_cache.mojo`) stores what the first
+        half produces and feeds `run_tail` directly.
+        """
+        self.run_images[target, CONN_IN](vision, connector, images, out, ctx)
+        self.run_tail[target, VOCAB, SDIM](
+            embed_weight, state_proj, lang_ids, state, out, ctx
+        )
+
+    def run_images[
+        target: StaticString, CONN_IN: Int
+    ](
+        mut self,
+        mut vision: Self.Vision,
+        mut connector: Tokenwise[Self.IMG_TOK, Linear[CONN_IN, Self.W]],
+        mut images: Tensor,
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """`out[0 : IMG_SEG]` <- every camera's scaled connector output.
+
         ⚠ **On GPU, `images` must ALREADY BE DEVICE-RESIDENT.** Each camera's
         slab is taken with a device-to-device sub-buffer copy, which is what
         makes it free; a host-only tensor would have to be uploaded per camera,
@@ -478,11 +503,6 @@ struct SmolVLAPrefixEmbed[
                     " the caller must upload first —"
                     " `fill_camera_images` does."
                 )
-        if len(lang_ids) != Self.N_LANG:
-            raise Error(
-                "SmolVLAPrefixEmbed: expected " + String(Self.N_LANG)
-                + " language ids, got " + String(len(lang_ids))
-            )
         comptime if target == "cpu":
             out.ensure(Self.OUT_N)
         else:
@@ -522,6 +542,38 @@ struct SmolVLAPrefixEmbed[
                 out, off, self.conn, scale, ctx
             )
             off += Self.IMG_N
+        if off != Self.IMG_SEG:
+            raise Error(
+                "SmolVLAPrefixEmbed.run_images: wrote " + String(off)
+                + " of " + String(Self.IMG_SEG)
+            )
+
+    def run_tail[
+        target: StaticString, VOCAB: Int, SDIM: Int
+    ](
+        mut self,
+        mut embed_weight: Tensor,
+        mut state_proj: Linear[SDIM, Self.W],
+        ref lang_ids: List[Int],
+        mut state: Tensor,
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """`out[IMG_SEG : OUT_N]` <- language tokens, then the state token.
+
+        Assumes the image segment is ALREADY in `out` — from `run_images` or
+        from a cache row uploaded by `SmolVLAPolicy.build_prefix_from_segment`.
+        """
+        if len(lang_ids) != Self.N_LANG:
+            raise Error(
+                "SmolVLAPrefixEmbed: expected " + String(Self.N_LANG)
+                + " language ids, got " + String(len(lang_ids))
+            )
+        comptime if target == "cpu":
+            out.ensure(Self.OUT_N)
+        else:
+            out.ensure_gpu(ctx.value(), Self.OUT_N)
+        var off = Self.IMG_SEG
 
         # ── language: a row gather, scaled the same way ──────────────────
         embed_language_tokens[VOCAB, Self.W](
@@ -903,6 +955,79 @@ struct SmolVLAPolicy[
         is a policy acting on the previous scene, silently — and in training
         it is a batch element conditioned on its predecessor's images.
         """
+        self.embed_images[target](images, ctx)
+        self._tail_and_prefill[target](lang_ids, raw_state, ctx)
+
+    def embed_images[
+        target: StaticString
+    ](mut self, mut images: Tensor, ctx: Optional[DeviceContext] = None) raises:
+        """The image segment of the prefix, and nothing after it — SigLIP,
+        shuffle, connector, sqrt(960) — into `prefix_buf[0 : IMG_SEG]`. What
+        `vision_cache.mojo` stores; `image_segment` reads it back."""
+        self.prefix.run_images[target, SMOLVLA_CONNECTOR_IN](
+            self.vision, self.connector, images, self.prefix_buf, ctx
+        )
+
+    def image_segment[
+        target: StaticString
+    ](
+        mut self, mut dst: List[Float32], ctx: Optional[DeviceContext] = None
+    ) raises:
+        """`dst` <- `prefix_buf[0 : IMG_SEG]`, after `embed_images`.
+
+        ⚠ SYNCHRONISES on GPU (a download). Used when BUILDING the cache, once
+        per store row, never in the training step."""
+        comptime if target != "cpu":
+            self.prefix_buf.download(ctx.value())
+        dst.resize(Self.Prefix.IMG_SEG, 0.0)
+        for i in range(Self.Prefix.IMG_SEG):
+            dst[i] = Float32(self.prefix_buf.data[i])
+
+    def build_prefix_from_segment[
+        target: StaticString
+    ](
+        mut self,
+        ref seg: List[Float32],
+        ref lang_ids: List[Int],
+        ref raw_state: List[Float32],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """`build_prefix` with the image segment supplied instead of computed.
+
+        `seg` is what `image_segment` returned for this frame — a vision-cache
+        row. The prefix from here on is IDENTICAL to `build_prefix`'s: the same
+        `run_tail`, the same cache reset, the same prefill. `test_vision_cache`
+        asserts the prefix buffer and the prefill output are bit-identical
+        between the two doors.
+
+        ⚠ The whole `prefix_buf` host slab is uploaded, language and state
+        slots included; `run_tail` then overwrites those ON THE DEVICE, so
+        whatever the host slab held there is never read.
+        """
+        if len(seg) != Self.Prefix.IMG_SEG:
+            raise Error(
+                "SmolVLAPolicy.build_prefix_from_segment: segment has "
+                + String(len(seg)) + " floats, the prefix's image segment is "
+                + String(Self.Prefix.IMG_SEG)
+            )
+        self.prefix_buf.ensure(Self.Prefix.OUT_N)
+        for i in range(Self.Prefix.IMG_SEG):
+            self.prefix_buf.data[i] = Scalar[DT](seg[i])
+        comptime if target != "cpu":
+            self.prefix_buf.upload_resident(ctx.value())
+        self._tail_and_prefill[target](lang_ids, raw_state, ctx)
+
+    def _tail_and_prefill[
+        target: StaticString
+    ](
+        mut self,
+        ref lang_ids: List[Int],
+        ref raw_state: List[Float32],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """Everything after the image segment: the state normalisation, the
+        language and state tokens, the cache reset, the prefill. ONE copy,
+        shared by both `build_prefix` doors."""
         if self.stats.state_dim() == 0:
             raise Error(
                 "SmolVLAPolicy: no stats — call load_stats() before"
@@ -921,10 +1046,9 @@ struct SmolVLAPolicy[
             # `upload_resident`: reuses the buffer instead of recreating it.
             self.state_buf.upload_resident(ctx.value())
 
-        # ── prefix, then prefill ─────────────────────────────────────────
-        self.prefix.run[target, Self.VOCAB, SMOLVLA_CONNECTOR_IN, Self.SDIM](
-            self.vision, self.connector, self.embed.weight.val,
-            self.state_proj, images, lang_ids, self.state_buf,
+        # ── language + state tokens, then prefill ────────────────────────
+        self.prefix.run_tail[target, Self.VOCAB, Self.SDIM](
+            self.embed.weight.val, self.state_proj, lang_ids, self.state_buf,
             self.prefix_buf, ctx,
         )
         self.cache.reset()

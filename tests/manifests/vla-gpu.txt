@@ -71,6 +71,13 @@ tests/deep_agents/smolvla/test_prefix_embed.mojo
 # ⚠ ~4 min, nearly all compile — one instantiation of all 44 layers.
 tests/deep_agents/smolvla/test_policy.mojo
 
+# The fine-tune's vision cache: the prefix built from a cached image segment
+# (through a real file, closed and reopened) is BIT-IDENTICAL to the prefix
+# built from the frames — prefix buffer and prefill output both — and a
+# perturbed row is seen. Plus the file's contract: wrong row count refused,
+# resume point, unwritten rows unreadable. Same shallow fixture as above.
+tests/deep_agents/smolvla/test_vision_cache.mojo
+
 # V2 — the backward driver, every gradient against Richardson-extrapolated
 # central differences of its OWN forward: 704 components, 16 parameter kinds,
 # total ||err||/||fd|| 2.7e-05. Self-consistency, not parity — it says the

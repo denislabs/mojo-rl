@@ -81,6 +81,7 @@ is read from `tools/vla/`.
 | `SMOLVLA_INIT` | a `*_best.ckpt` to start from, applied ON TOP of the base checkpoint |
 | `SMOLVLA_VAL_EPISODES` | episodes held out at the END of the recording; default one fifth. **`0` trains on every episode** — see below |
 | `SMOLVLA_PROFILE` | set to anything: per-phase wall times (host images / prefix / suffix forward / backward) in the log line, at the cost of three extra drains per observation |
+| `SMOLVLA_VISION_CACHE` | path of the vision cache; default `<store>.vision.bin`; `off` recomputes the tower every observation (the pre-cache path, kept for A/B) |
 | `SMOLVLA_NO_MONITOR` | force the metrics logger inert |
 
 ⚠ **The held-out fifth is never trained on, and the deployed checkpoint is the
@@ -155,19 +156,34 @@ rather than a restart with a cold optimizer — and a cold optimizer's first
 step is precisely what damages a pretrained model (see `VAL_SEED` and the
 warmup note). ~98 M parameters is 393 MB of weights, ~1.2 GB with moments.
 
-### The obvious optimisation, and why it is not here
+### The vision cache
 
-Under `train_state_proj = False` the whole prefix — SigLIP over two 512x512
-images, twelve vision layers, then sixteen VLM layers — is a CONSTANT for a
-given (frame, instruction), and it is recomputed every time that frame is
-drawn. Caching it would remove the dominant cost. It is 2.76 MB per row and
-the recording is ~15 k rows, so caching all of it is 42 GB: the useful version
-caches a subset, which is a design with a memory budget in it rather than a
-one-line change. Measure first — this file exists to produce that measurement.
+Under `train_state_proj = False` everything a FRAME contributes to the prefix
+— SigLIP over two 512x512 images, the shuffle, the connector, the sqrt(960)
+— is a constant of that frame, and it was recomputed on every visit. Measured
+with `SMOLVLA_PROFILE` on a 5090: host images 44.8 ms + prefix 26.0 ms of a
+125 ms observation. So the image segment is cached: 491 KB per row, 9.5 GB
+for the recording, in `<store>.vision.bin` beside the store
+(`SMOLVLA_VISION_CACHE` overrides the path; `off` disables). The first run
+builds it — every row through the tower once, resumable if killed — and
+every observation after that uploads a row and runs the tower from the
+language tokens on. See `vision_cache.mojo`.
+
+⚠ **Exact.** The rows are the fp32 numbers `build_prefix` produces, and
+`test_vision_cache.mojo` asserts the prefix and the prefill output are
+bit-identical through either door. On top of that, this file recomputes two
+rows at startup and refuses a cache whose rows differ — a cache built from a
+different store, or with different frozen weights, is a plausible policy
+trained on the wrong pictures, and nothing downstream could tell.
+
+⚠ The 26 ms "prefix" was the whole tower; what remains per observation is
+the sixteen VLM layers over 140 tokens, which the profile line now shows on
+its own.
 """
 
 from std.math import cos, pi
 from std.os import getenv
+from std.os.path import exists
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
@@ -189,6 +205,7 @@ from mojo_rl.deep_agents.smolvla.tasks import TaskTokens
 from mojo_rl.deep_agents.smolvla.dataset import SmolVLABatchSampler
 from mojo_rl.deep_agents.smolvla.observation import fill_store_images
 from mojo_rl.deep_agents.smolvla.train_step import SmolVLATrainStep
+from mojo_rl.deep_agents.smolvla.vision_cache import VisionCache
 from mojo_rl.deep_agents.smolvla.finetune import (
     zero_trainable_grads, adam_step_trainables, save_trainables,
     load_trainables, adopt_trainables, clip_trainables,
@@ -275,6 +292,10 @@ comptime Step = SmolVLATrainStep[
 comptime Sampler = SmolVLABatchSampler[SDIM, ADIM_REAL, PAD, CHUNK, B]
 comptime IMG_ELEMS = N_CAM * 3 * SRC_H * SRC_W
 comptime AN = B * CHUNK * PAD
+comptime VSEG = Pol.Prefix.IMG_SEG
+"""One vision-cache row: N_CAM x 64 tokens x 960, fp32 — 491 520 bytes."""
+comptime VC_FLUSH_EVERY = 200
+comptime VC_PRINT_EVERY = 1000
 
 
 def lr_at(step: Int, total: Int) -> Float64:
@@ -360,7 +381,7 @@ struct Phases(Movable):
         var k = 1.0e-6 / Float64(self.n)
         var other = self.step - self.prefix - st.ns_fwd - st.ns_bwd
         return (
-            "per obs: images " + String(Float64(self.img) * k)
+            "per obs: images/cache-read " + String(Float64(self.img) * k)
             + " ms, prefix " + String(Float64(self.prefix) * k)
             + " ms, suffix fwd " + String(Float64(st.ns_fwd) * k)
             + " ms, backward " + String(Float64(st.ns_bwd) * k)
@@ -658,6 +679,19 @@ def main() raises:
     var row = List[Scalar[DType.uint8]](unsafe_uninit_length=IMG_ELEMS)
     var img_col = sam.store.open_column[DType.uint8](String("images"))
 
+    # ── the vision cache: the frozen half of every observation, once ────
+    var vc_path = getenv("SMOLVLA_VISION_CACHE")
+    var vcache = VisionCache()
+    if vc_path != "off" and vc_path != "0":
+        if vc_path.byte_length() == 0:
+            vc_path = store_path + ".vision.bin"
+        vcache = open_or_build_vision_cache(
+            vc_path, n_rows, pol, img_col, row, images, scratch, ctx
+        )
+    else:
+        print("  vcache  OFF — the tower runs on every observation")
+    var seg = List[Float32]()
+
     # ⚠ The held-out groups are drawn ONCE, here, and reused by every
     # validation — rows, chunks, NOISE and TIMESTEPS all fixed. Pinning only
     # the row sampler leaves the noise and t coming from the global RNG, and
@@ -687,7 +721,7 @@ def main() raises:
             base_sum += run_one(
                 m, vgroups[vi], sam, tasks, pol, st, img_col, row, images,
                 scratch, acts_t, valid_t, noise_t, times_t, x_t, u_t, ctx,
-                ph,
+                ph, vcache, seg,
             )
     var base_val = base_sum / Float64(VAL_GROUPS)
     var best_val = base_val
@@ -725,6 +759,7 @@ def main() raises:
             loss += run_one(
                 m, gr, sam, tasks, pol, st, img_col, row, images, scratch,
                 acts_t, valid_t, noise_t, times_t, x_t, u_t, ctx, ph,
+                vcache, seg,
             )
         # ⚠ Clip BEFORE the step, over the JOINT norm of the whole trainable
         # set — `optimizer_grad_clip_norm = 10` in the reference. Clipping the
@@ -764,7 +799,7 @@ def main() raises:
                     vsum += run_one(
                         m, vgroups[vi], sam, tasks, pol, st, img_col, row,
                         images, scratch, acts_t, valid_t, noise_t, times_t,
-                        x_t, u_t, ctx, ph,
+                        x_t, u_t, ctx, ph, vcache, seg,
                     )
             var vloss = vsum / Float64(VAL_GROUPS)
             print(
@@ -819,6 +854,111 @@ def main() raises:
     print("done")
 
 
+def fresh_segment(
+    g: Int,
+    mut pol: Pol,
+    mut img_col: H5Dataset,
+    mut row: List[Scalar[DType.uint8]],
+    mut images: Tensor,
+    mut scratch: List[Float32],
+    mut seg: List[Float32],
+    ctx: DeviceContext,
+) raises:
+    """Row `g` through the tower: what a vision-cache row IS. Used to build
+    the cache and, at startup, to check two of its rows against the store."""
+    img_col.read_range[DType.uint8](g, g + 1, mptr(row))
+    fill_store_images["gpu", N_CAM](
+        row, SRC_W, SRC_H, images, scratch, Optional(ctx)
+    )
+    pol.embed_images["gpu"](images, Optional(ctx))
+    pol.image_segment["gpu"](seg, Optional(ctx))
+
+
+def open_or_build_vision_cache(
+    var path: String,
+    n_rows: Int,
+    mut pol: Pol,
+    mut img_col: H5Dataset,
+    mut row: List[Scalar[DType.uint8]],
+    mut images: Tensor,
+    mut scratch: List[Float32],
+    ctx: DeviceContext,
+) raises -> VisionCache:
+    """Open `path`, building or resuming it first if it is not complete, then
+    check two rows against a fresh forward — bit for bit.
+
+    ⚠ The check is what makes an existing file trustworthy. The header pins
+    only the row count and the segment width, and two stores of the same
+    recording length have the same header. Rows 0 and n/2 through the tower
+    cost a quarter of a second and rule out a cache built from another store,
+    with other frozen weights, or by a build that was interrupted and then
+    edited — every one of which trains a policy on the wrong pictures without
+    an error anywhere else.
+    """
+    var vc: VisionCache
+    if exists(path):
+        vc = VisionCache.open(path, n_rows, VSEG)
+        if vc.complete():
+            print("  vcache  " + vc.path + "  (" + String(n_rows)
+                  + " rows, complete)")
+        else:
+            print("  vcache  " + vc.path + "  resuming at row "
+                  + String(vc.rows_done) + " of " + String(n_rows))
+    else:
+        vc = VisionCache.create(path, n_rows, VSEG)
+        print("  vcache  " + vc.path + "  building " + String(n_rows)
+              + " rows x " + String(VSEG * 4) + " bytes = "
+              + String(Float64(n_rows) * Float64(VSEG) * 4.0 / 1.0e9)
+              + " GB")
+
+    var seg = List[Float32]()
+    if not vc.complete():
+        var t0 = perf_counter_ns()
+        var start = vc.rows_done
+        for g in range(start, n_rows):
+            fresh_segment(g, pol, img_col, row, images, scratch, seg, ctx)
+            vc.write_row(g, seg)
+            if (g + 1) % VC_FLUSH_EVERY == 0:
+                vc.flush_progress()
+            if (g + 1) % VC_PRINT_EVERY == 0 or g + 1 == n_rows:
+                var el = Float64(perf_counter_ns() - t0) / 1.0e9
+                var done = g + 1 - start
+                var rate = Float64(done) / el
+                print(
+                    "          row " + String(g + 1) + " / " + String(n_rows)
+                    + "   " + String(rate) + " rows/s   ETA "
+                    + String(Float64(n_rows - g - 1) / rate / 60.0) + " min"
+                )
+        vc.flush_progress()
+        print("  vcache  built in "
+              + String(Float64(perf_counter_ns() - t0) / 60.0e9) + " min")
+
+    # ── two rows against the store, bit for bit ──────────────────────────
+    var probe = List[Int]()
+    probe.append(0)
+    probe.append(n_rows // 2)
+    var cached = List[Float32]()
+    for k in range(len(probe)):
+        var g = probe[k]
+        fresh_segment(g, pol, img_col, row, images, scratch, seg, ctx)
+        vc.read_row(g, cached)
+        var diff = 0
+        for i in range(VSEG):
+            if seg[i] != cached[i]:
+                diff += 1
+        if diff != 0:
+            raise Error(
+                "vision cache " + vc.path + ": row " + String(g) + " differs"
+                " from a fresh forward in " + String(diff) + " of "
+                + String(VSEG) + " floats — it was built from another store"
+                " or with other frozen weights. Delete it (or set"
+                " SMOLVLA_VISION_CACHE=off) and rerun."
+            )
+    print("  vcache  rows 0 and " + String(n_rows // 2)
+          + " match a fresh forward bit for bit")
+    return vc^
+
+
 def run_one(
     m: Int,
     ref gr: Group,
@@ -838,6 +978,8 @@ def run_one(
     mut u_t: Tensor,
     ctx: DeviceContext,
     mut ph: Phases,
+    mut vcache: VisionCache,
+    mut seg: List[Float32],
 ) raises -> Float64:
     """One observation: its prefix, its interpolant, one denoising step.
 
@@ -848,20 +990,31 @@ def run_one(
     measure the enqueues (`_a_per_call_sweep_is_an_upper_bound_on_a_step`).
     Under `SMOLVLA_PROFILE` the prefix gets its own drain, and `run` two more,
     so the GPU time splits into prefix / suffix forward / backward.
+
+    With the vision cache the "images" phase is a 491 KB file read and the
+    "prefix" phase is the row's upload plus the VLM prefill — the tower is
+    not run at all.
     """
     var t_img = perf_counter_ns()
     var g = gr.rows[m * B]
-    img_col.read_range[DType.uint8](g, g + 1, mptr(row))
-    fill_store_images["gpu", N_CAM](
-        row, SRC_W, SRC_H, images, scratch, Optional(ctx)
-    )
-    ph.img += Int(perf_counter_ns() - t_img)
-    var t_step = perf_counter_ns()
     var lang = tasks.for_index(gr.tasks[m * B])
     var rs = List[Float32]()
     for j in range(SDIM):
         rs.append(gr.raw_state[m * B * SDIM + j])
-    pol.build_prefix["gpu"](images, lang, rs, Optional(ctx))
+    var t_step = t_img
+    if vcache.active:
+        vcache.read_row(g, seg)
+        ph.img += Int(perf_counter_ns() - t_img)
+        t_step = perf_counter_ns()
+        pol.build_prefix_from_segment["gpu"](seg, lang, rs, Optional(ctx))
+    else:
+        img_col.read_range[DType.uint8](g, g + 1, mptr(row))
+        fill_store_images["gpu", N_CAM](
+            row, SRC_W, SRC_H, images, scratch, Optional(ctx)
+        )
+        ph.img += Int(perf_counter_ns() - t_img)
+        t_step = perf_counter_ns()
+        pol.build_prefix["gpu"](images, lang, rs, Optional(ctx))
     if st.profile:
         # ⚠ The drain that makes `prefix` a wall time. Without it this timer
         # would end at the last enqueue, and `run`'s first drain would be
