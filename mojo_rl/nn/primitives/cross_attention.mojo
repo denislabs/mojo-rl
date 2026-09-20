@@ -459,22 +459,32 @@ comptime XA_FUSED_BQ: Int = 128
 """Query rows per block of the fused forward."""
 comptime XA_FUSED_BK: Int = 32
 """Keys per shared-memory tile of the fused forward."""
-comptime XA_FUSED_R: Int = 4
-"""Query rows per THREAD (shipped default). One row per lane and a whole key
-row re-read from shared memory for it was 6.6 ms per SigLIP layer on the
-Orin (1.28x over the two-pass path); four rows per fetch was 6.9 — so the
-shared-memory pipe was NOT the bound. `benchmarks/cross_attention_bench.mojo`
-ranks the (R, SPLIT, KU) grid on the board; these defaults follow it."""
-comptime XA_FUSED_KU: Int = 1
+comptime XA_FUSED_R: Int = 1
+"""Query rows per THREAD (shipped default). `benchmarks/cross_attention_bench.mojo`
+ranks the (R, SPLIT, KU, DOT_FMA, EXP2) grid on the Orin; the defaults are
+its row N, the best at SigLIP's shape on 20 Sep 2026:
+
+    two-pass path (A)                      8.45 ms
+    R4 S4 KU1, while-loop loader           6.97      (the first shipped cut)
+    R1 S2 KU1                              6.27
+    R4 S4 KU1, unrolled loader             5.57
+    R4 S4 KU4                              4.50
+    R4 S4 KU4 + FMA dot                    4.41
+    R4 S4 KU4 + FMA + exp2                 4.25
+    R1 S1 KU4 + FMA + exp2   (SHIPS)       4.11      2.06x
+
+Each knob bought its share and none was the bound alone: the kernel is
+issue-bound, and what is left is a register-tiled inner loop."""
+comptime XA_FUSED_KU: Int = 4
 """Keys per inner step (shipped default): scores for KU keys are formed and
 shuffled together before one softmax update, which breaks the per-key
 dependency chain (load -> dot -> 2 shuffles -> exp -> accumulate) that a
 few resident warps cannot hide."""
-comptime XA_FUSED_DOT_FMA: Bool = False
+comptime XA_FUSED_DOT_FMA: Bool = True
 """Dot product as a chain of fused multiply-adds (HW instructions) instead
 of a multiply and a reduce tree (2*HW - 1). Shipped default follows the
 board."""
-comptime XA_FUSED_EXP2: Bool = False
+comptime XA_FUSED_EXP2: Bool = True
 """Softmax in base 2: scores pre-scaled by log2(e) once, weights by `exp2`
 (one MUFU op on NVIDIA, against ~25 instructions for the libm-accurate
 `exp`). Mathematically the same softmax; the rounding differs and the
@@ -483,9 +493,10 @@ comptime XA_LOG2E: Scalar[DT] = Scalar[DT](1.4426950408889634)
 
 
 def _xa_fused_split[HD: Int]() -> Int:
-    """Lanes per query-row group (shipped default): 4 where the head is
-    wide enough (16+), 1 for the toy heads the gates run."""
-    return 4 if HD >= 16 else 1
+    """Lanes per query-row group (shipped default): ONE — every warp
+    instruction then serves 32 rows and no softmax bookkeeping is
+    replicated; the Orin preferred it to 2 and 4 (row N vs J/M above)."""
+    return 1
 
 
 def xa_fused_block[R: Int, SPLIT: Int]() -> Int:
