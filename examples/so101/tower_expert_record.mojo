@@ -33,11 +33,16 @@ is axis-aligned at reset and the jaw closes across it either way):
 
 Each leg interpolates joint targets linearly over its step budget, so the
 actions are the normalised joint targets the batched env takes. `--noise`
-adds per-step Gaussian noise to those targets. ⚠ IT BREAKS THE PINCH FAST:
-on the same 20 placements, 20 of 20 succeed at 0, 10 of 20 at 0.01 and 3 of
-20 at 0.02 — a position servo jittered by 1% of its range every 32 ms is a
-jaw that never settles on the cube. Coverage comes from the PLACEMENTS
-(seeds), not from noise; leave it at 0 unless you want failures in the file.
+adds per-step Gaussian noise to those targets WHILE THE JAW IS OPEN — flat
+on the approach, tapered to zero along the descent (the last noisy target is
+where the jaw closes: 11 mm off at 0.02 flat, 10/20); the lift and the hold
+are noise-free, because noise on the lift jiggles the pinch.
+Leave the noise ON for a training file: a policy fitted to noiseless ramps
+reads its phase off the velocity words, and a 0.004 action error puts the
+stiff servo 0.6 rad/s off the ramp, where the fit is unconstrained — the
+closed loop then diverges at step 2 (`tower_policy_probe.mojo`, 2026-09-20).
+The recorded action is the EXECUTED (noisy) one; its conditional mean is the
+clean ramp, which is what the L1 fit converges to.
 
 Success is the family's own predicate held `HOLD_STEPS` consecutive steps
 (the recorder's rule); the episode ends there. A failed episode (the script
@@ -376,7 +381,7 @@ struct Expert(Movable):
 
     def step_to(
         mut self, mut env: E, ref q_target: List[Float64], grip_open: Bool,
-        n_steps: Int,
+        n_steps: Int, taper_noise: Bool = False,
     ) raises -> Bool:
         """Interpolate the joint command to `q_target` over `n_steps`, the
         gripper to open/closed; record each transition. Returns True when
@@ -393,10 +398,20 @@ struct Expert(Movable):
             var action = ContAction[ACT]()
             for i in range(ACT):
                 var v = self._normalized(i, self.q_cmd[i])
-                if self.noise > 0.0:
+                # ⚠ WHILE THE JAW IS OPEN ONLY — the approach and the descent.
+                # Noise on the lift jiggles the pinch (10/20 at 0.01); noise on
+                # the approach is the coverage the closed loop NEEDS: a policy
+                # fitted to noiseless ramps reads its phase off the velocity
+                # words, and one 0.004 action error puts the stiff servo 0.6
+                # rad/s off the ramp, where the fit says nothing (probe, 20 Sep).
+                # ⚠ AND TAPERED TO ZERO ALONG THE DESCENT: the last noisy
+                # target is where the jaw sits when it closes, and 0.02 of the
+                # range is 11 mm at the cube — 10/20 with the noise flat.
+                if self.noise > 0.0 and grip_open:
+                    var sigma = self.noise * (1.0 - a) if taper_noise else self.noise
                     var u1 = random_float64(1e-12, 1.0)
                     var u2 = random_float64(0.0, 1.0)
-                    v += self.noise * sqrt(-2.0 * log(u1)) * cos(2.0 * pi * u2)
+                    v += sigma * sqrt(-2.0 * log(u1)) * cos(2.0 * pi * u2)
                     if v > 1.0:
                         v = 1.0
                     if v < -1.0:
@@ -478,7 +493,7 @@ def run_episode(
     var done = False
     done = ex.step_to(env, q1, True, N_PRE)
     if not done:
-        done = ex.step_to(env, q2, True, N_DESCEND)
+        done = ex.step_to(env, q2, True, N_DESCEND, taper_noise=True)
     if not done:
         done = ex.hold(env, False, N_CLOSE)
     if not done:
