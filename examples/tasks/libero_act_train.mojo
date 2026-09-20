@@ -46,6 +46,7 @@ LIBERO's frozen inits, which are not demonstrations at all.
 |---|---|
 | `ACT_STORE` | the `.h5` to train on; default `tasks/libero_act.LIBERO_ACT_STORE_RENDERED` |
 | `ACT_STEPS` | optimizer steps without a rebuild (default 50 000) |
+| `ACT_LR` | the learning rate (default `LIBERO_ACT_LR` = 1e-5, the paper's). An overfit at 1e-3 on a few episodes is the test of whether the graph can REPRESENT a per-position chunk at all (2026-09-20: the box fits' chunks were flat across the 40 positions after training even with unit-scale queries) |
 | `ACT_PATIENCE` | validations without improvement before the early stop (default 10); `0` disables it. ⚠ On LIBERO the validation L1 bottoms at the DEMONSTRATOR NOISE FLOOR (task+phase oracle 0.386, the fits 0.41-0.42) 17-28k steps in, and its minimum there is noise: the fit's training L1 is still falling (0.25) and its closed-loop rate still moving. ACT's recipe trains thousands of epochs and the per-task drawer fit at the val minimum scored 1/20 against the multi-task 6/20; `ACT_PATIENCE=0 ACT_STEPS=300000` with `--act-ckpt last` at eval is the recipe's schedule |
 | `ACT_KL` | the KL weight (default `LIBERO_ACT_KL` = 10, the paper's). ⚠ Both 5090 fits collapsed the CVAE at 10 — `train/kl` 59 -> 0.05 — so the latent carried nothing and every chunk was the conditional median: half the demonstrations' action scale, 5/200. The paper's ablation says the CVAE is what absorbs demonstrator variability; a lower weight is the lever, and it is here so a sweep needs no rebuild |
 | `ACT_PRETRAINED` | defaults to `hub` (ImageNet ResNet18, no PyTorch); `random` opts out |
@@ -158,6 +159,12 @@ def main() raises:
         steps = Int(env_steps)
         if steps < 1:
             raise Error("ACT_STEPS must be >= 1, got " + env_steps)
+    var lr = Float64(LIBERO_ACT_LR)
+    var env_lr = getenv("ACT_LR")
+    if env_lr.byte_length() > 0:
+        lr = Float64(env_lr)
+        if lr <= 0.0:
+            raise Error("ACT_LR must be > 0, got " + env_lr)
     var patience = Int(PATIENCE)
     var env_pat = getenv("ACT_PATIENCE")
     if env_pat.byte_length() > 0:
@@ -235,7 +242,7 @@ def main() raises:
     logger.set_config("hidden_dim", String(LIBERO_ACT_DIM))
     logger.set_config("dim_feedforward", String(LIBERO_ACT_FF))
     logger.set_config("batch", String(BATCH))
-    logger.set_config("lr", String(LIBERO_ACT_LR))
+    logger.set_config("lr", String(lr))
     logger.set_config("kl_weight", String(kl_weight))
     logger.set_config("steps", String(steps))
     logger.set_config("train_episodes", String(len(ds.train_eps)))
@@ -248,7 +255,7 @@ def main() raises:
               else "local only (set RL_MONITOR_URL in .env)")))
 
     var tr = T.make(
-        lr=Scalar[DT](LIBERO_ACT_LR),
+        lr=Scalar[DT](lr),
         kl_weight=Scalar[DT](kl_weight),
         max_grad_norm=Scalar[DT](0.0),
         ctx=ctx,
