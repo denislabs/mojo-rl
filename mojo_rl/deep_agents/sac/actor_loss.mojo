@@ -138,7 +138,8 @@ struct SACActorLoss[
         Node["mu_t", Tanh[Self.ACT_DIM], "mu"],              # the greedy action
         Node["bc", L1MaskedPerSample[1, Self.ACT_DIM], "mu_t", "a_demo", "bc_mask"],
         Node["bc_w", Scale[1], "bc"],                        # λ·bc
-        Node["loss", BinaryAdd[1], "loss_q", "bc_w"],        # loss_per_b (output)
+        Node["loss_qw", Scale[1], "loss_q"],                 # w·(α·logp − min_q), see `set_q_weight`
+        Node["loss", BinaryAdd[1], "loss_qw", "bc_w"],       # loss_per_b (output)
     ]
 
     var graph: Self.Graph
@@ -186,6 +187,7 @@ struct SACActorLoss[
         # BC off: a zero mask and a zero weight. Scale by 0 kills the
         # gradient; the zero mask keeps the L1 itself at 0.
         blk.graph.set_node_attr["bc_w", "multiplier"](Scalar[DT](0.0))
+        blk.graph.set_node_attr["loss_qw", "multiplier"](Scalar[DT](1.0))
         blk._bc_mask = Tensor.make[target](Self.BATCH, ctx)
         # the host copy `set_bc` writes and uploads (zeros until then)
         blk._bc_mask.ensure(Self.BATCH)
@@ -222,6 +224,15 @@ struct SACActorLoss[
         if self._bc_mask.dev:
             self._bc_mask.upload(ctx.value())
         self.graph.set_node_attr["bc_w", "multiplier"](weight)
+
+    def set_q_weight(mut self, weight: Scalar[DT]) raises:
+        """The multiplier on the SAC half of the loss, `α·logp − min_q`: 1 by
+        default; 0 makes the actor loss the BC term alone (a behaviour-cloning
+        phase inside the same trainer — the critics keep training on the
+        imitator's own rollouts, the actor ignores them). ⚠ 0 ALSO SILENCES
+        THE ENTROPY TERM: nothing then moves `log_std` but the BC gradient
+        through `mu`, so the exploration noise stays where the init put it."""
+        self.graph.set_node_attr["loss_qw", "multiplier"](weight)
 
     # ── Device-α accessors (GPU only) ────────────────────────────────
     def lp_mean_dev(mut self) -> DeviceBuffer[DT]:

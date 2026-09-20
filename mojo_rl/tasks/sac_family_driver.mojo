@@ -200,6 +200,7 @@ scores somewhere near but not at zero; anything sustained above ~0.1 is
 learning.
 """
 
+from std.pathlib import Path
 from std.random import seed as seed_rng
 from std.time import perf_counter_ns
 
@@ -722,6 +723,17 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
     # NO CHECKPOINT to diagnose (50k default, first eval 25k): `--checkpoint-
     # every` sets the cadence so a stopped run still has a policy to load.
     var checkpoint_every = CHECKPOINT_EVERY
+    # ⚠ THE TWO HALVES OF A WARM START. `--bc-only` zeroes the SAC half of
+    # the actor loss (`SACActorLoss.set_q_weight(0)`): the actor is fitted
+    # to the demo half of every batch alone while the critics train on ITS
+    # rollouts, so the run's checkpoint is an imitator with critics that
+    # have seen the lift. `--init CKPT` loads that checkpoint (actor + twin
+    # critics; targets hard-copied) into a normal run. Four `--bc-weight`
+    # runs parked at 351-360 with the SAC half on from step one: the
+    # critic's gradient owns every state the demos do not cover, and it
+    # says park.
+    var bc_only = False
+    var init_ckpt = String("")
     var task_name = String(default_task)
     # ⚠⚠ FLAGS BECAUSE THESE TWO ARE WHAT A FLAT RUN ACTUALLY NEEDS SWEPT.
     # Measured on a 230k-step `gather` run: `mean_q` reached **1151** while the
@@ -924,6 +936,12 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
             demos_arg = String(args[i + 1])
         elif a == "--bc-weight" and i + 1 < len(args):
             bc_weight = Scalar[DT](Float64(String(args[i + 1])))
+        elif a == "--bc-only":
+            # ⚠ A FLAG WITHOUT A VALUE — the one exception to "every flag
+            # takes a value" below, so it is matched here, before that guard.
+            bc_only = True
+        elif a == "--init" and i + 1 < len(args):
+            init_ckpt = String(args[i + 1])
         elif a == "--demo-filter" and i + 1 < len(args):
             demo_filter = String(args[i + 1])
             if (
@@ -1318,6 +1336,19 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
                 logger.log_scalar(String("cfg/bc_weight"), Float64(bc_weight), 0)
         elif bc_weight > Scalar[DT](0):
             raise Error("sac task: --bc-weight needs --demos")
+        if bc_only:
+            if bc_weight <= Scalar[DT](0):
+                raise Error("sac task: --bc-only needs --bc-weight > 0")
+            agent.trainer.set_q_weight(Scalar[DT](0))
+            print("  bc-only  : the SAC half of the actor loss is OFF —"
+                  " the actor fits the demo half of every batch, the critics"
+                  " train on its rollouts")
+            logger.log_scalar(String("cfg/bc_only"), 1.0, 0)
+        if init_ckpt.byte_length() > 0:
+            if not Path(init_ckpt).exists():
+                raise Error("sac task: --init: no such checkpoint: " + init_ckpt)
+            agent.load(init_ckpt)
+            print("  init     : actor + critics loaded from", init_ckpt)
 
         # ── the region table, once; the tape and mask, once per lane ──────
         #

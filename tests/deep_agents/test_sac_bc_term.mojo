@@ -86,4 +86,14 @@ def main() raises:
     var after = _mean_l1(actor, mb_s, mb_a)
     print("  masked L1 after 60 BC steps:", before, "->", after)
     assert_true(after < 0.5 * before, "BC pulls the actor toward the demo actions")
+
+    # ── 4. q weight 0: the loss is the BC term alone ─────────────────────
+    blk.set_q_weight(Scalar[DT](0.0))
+    var l1_only = _mean_l1(actor, mb_s, mb_a)
+    var out_only = blk.forward_backward["cpu"](actor, opt, c1, c2, mb_s, mb_a, Scalar[DT](0.0), None)
+    print("  loss with q weight 0:", out_only.loss, " expected", Float64(LAMBDA) * l1_only)
+    assert_almost_equal(Float64(out_only.loss), Float64(LAMBDA) * l1_only, atol=1e-4,
+                        msg="q weight 0 => loss = λ·mean(mask·L1) alone")
+    blk.set_q_weight(Scalar[DT](1.0))
+    print("SAC BC TERM OK (q weight leg too)")
     print("SAC BC TERM OK")

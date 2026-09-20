@@ -433,6 +433,11 @@ struct SACTrainer[
         `SACActorLoss.set_bc`. Call after the demos are pinned."""
         self.actor_loss_blk.set_bc(weight, n_demo_rows, self.ctx)
 
+    def set_q_weight(mut self, weight: Scalar[DT]) raises:
+        """Multiplier on the SAC half of the actor loss — 0 = BC only.
+        `SACActorLoss.set_q_weight`."""
+        self.actor_loss_blk.set_q_weight(weight)
+
     def set_beta(mut self, beta: Scalar[DT]):
         """PER IS-β anneal hook. No-op for uniform sample blocks."""
         self.sample_blk.set_beta(beta)
