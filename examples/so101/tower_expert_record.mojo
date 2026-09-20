@@ -61,7 +61,7 @@ works tilted up to ~20 deg, so relaxing the weight is what took the
 prototype from 3 of 10 to 10 of 10 placements in the bowl.
 
 DAGGER (`--policy CKPT`): the checkpoint drives, greedy, until the jaw is
-within `--handover-mm` (25) of the brick with the arm settled, or for
+within `--handover-mm` (36, `CLOSE_REACH_MM`) of the brick with the arm settled, or for
 `--policy-steps` (140); the expert then closes and lifts FROM THE POLICY'S
 OWN STATE — a short descent to the grasp pose from wherever the jaw is, the
 close, the lift, the hold — and those rows carry the INTERVENED flag. Five
@@ -135,9 +135,25 @@ comptime Agent = SACAgent[
 comptime N_DESCEND_HANDOVER = 20
 """The expert's descent after a handover: the policy already brought the
 jaw near the brick, so a short ramp to the grasp pose from wherever it is."""
-comptime HANDOVER_SETTLED: Float64 = 0.3
-"""rad/s: every arm joint slower than this counts as settled at the handover."""
 comptime HANDOVER_MIN_STEPS = 20
+comptime CLOSE_REACH_MM: Float64 = 36.0
+"""The DAgger handover's reach (obs words GB+3..5): measured on 300 z-0.01
+demos, the reach at the grasp pose was 24.7-35.5 mm (median 24.9; the
+spread is the lateral error over placements)."""
+comptime Z_CLOSE_TOL: Float64 = 0.004
+"""The close is STATE-TRIGGERED: the descent ends and the jaw closes at the
+first row where the gripper site is within this of the grasp HEIGHT and
+the arm has settled (`SETTLED_VEL`). On the ramp descent the arm had
+settled 7 rows before the recorded close — seven rows per episode of
+"settled at the grasp pose, jaw open, label OPEN" next to ONE row of the
+same state labelled CLOSED, and the fitted policy's jaw command at that
+state was open (the probe's teacher-forced error at the close row: 0.34,
+the full jump). ⚠ THE HEIGHT, NOT THE REACH: a reach test (< 36 mm,
+settled) fired 10 mm too high on the clean ramp (1/40) and at the DAgger
+handover before the descent (0/12), where a step close misses the brick."""
+comptime SETTLED_VEL: Float64 = 0.15
+"""rad/s, every arm joint: settled (the median over the 7 rows before the
+recorded close was 0.04-0.10; the descent runs at 0.39)."""
 comptime GS = CFG.GRIPPER_SITE
 comptime GRIPPER_BODY = CFG.GRIPPER_BODY
 comptime HOLD_STEPS: Int = 31
@@ -499,18 +515,23 @@ struct Expert(Movable):
                 self.act_l[i] = Float64(a32[i])
             if self._apply(env):
                 return (False, True)
-            if k + 1 >= HANDOVER_MIN_STEPS and self.reach_mm() < handover_mm:
-                var settled = True
-                for i in range(N_ARM):
-                    if abs(Float64(self.obs[NQ + i])) > HANDOVER_SETTLED:
-                        settled = False
-                if settled:
-                    return (True, False)
+            if (
+                k + 1 >= HANDOVER_MIN_STEPS and self.reach_mm() < handover_mm
+                and self.settled()
+            ):
+                return (True, False)
         return (False, False)
+
+    def settled(self) -> Bool:
+        for i in range(N_ARM):
+            if abs(Float64(self.obs[NQ + i])) > SETTLED_VEL:
+                return False
+        return True
 
     def step_to(
         mut self, mut env: E, ref q_target: List[Float64], grip_open: Bool,
         n_steps: Int, taper_noise: Bool = False, until_held: Bool = False,
+        close_at_z: Float64 = -1.0,
     ) raises -> Bool:
         """Drive the joints to `q_target` and the gripper open/closed;
         record each transition. Returns True when the goal held
@@ -602,6 +623,14 @@ struct Expert(Movable):
                 self.act_l[i] = v
             if self._apply(env):
                 return True
+            # the descent: hand over to the close at the first settled row
+            # at the grasp height — see `Z_CLOSE_TOL`
+            if (
+                close_at_z > 0.0 and k + 1 >= 3
+                and abs(Float64(env.d.site_xpos.data[GS * 3 + 2]) - close_at_z) < Z_CLOSE_TOL
+                and self.settled()
+            ):
+                return False
             if self.feedback and not until_held:
                 # arrived: the COMMAND of every arm joint is at its target
                 # (the clamp is inactive — under gravity the joint itself
@@ -653,7 +682,7 @@ def run_episode(
     mut env: E, mut ex: Expert, brick: Int, bowl: Int, place: Bool,
     ep: Int, verbose: Bool,
     agent: Optional[Pointer[Agent, MutAnyOrigin]] = None,
-    handover_mm: Float64 = 25.0, policy_steps: Int = 140,
+    handover_mm: Float64 = CLOSE_REACH_MM, policy_steps: Int = 140,
 ) raises -> Bool:
     """One scripted pick (and place). Returns success.
 
@@ -705,7 +734,7 @@ def run_episode(
     if not done:
         done = ex.step_to(
             env, q2, True, N_DESCEND_HANDOVER if handed else N_DESCEND,
-            taper_noise=True,
+            taper_noise=True, close_at_z=_above(pb, ex.z_grasp)[2],
         )
     if not done:
         # ⚠ THE CLOSE IS A STEP (`--close-steps`, default 1; it was 30,
@@ -764,7 +793,7 @@ def main() raises:
     var close_steps = N_CLOSE
     var z_grasp = Z_GRASP
     var policy_ckpt = String("")
-    var handover_mm = 25.0
+    var handover_mm = CLOSE_REACH_MM
     var policy_steps = 140
     var out_path = String("")
     var keep_failures = False
