@@ -121,7 +121,20 @@ the picture is what is missing. `--knn-vel` adds the nine joints' one-step
 differences to the match (the eval keeps each lane's previous nine values;
 the store's row t uses row t-1 of its episode, zero at t=0): on the held-out
 drawer demos the joint-only neighbours pull sideways at the hook moment in 2
-of 7, the joint+velocity neighbours in 6 of 7 (2026-09-19).
+of 7, the joint+velocity neighbours in 6 of 7 (2026-09-19). Both scored
+0/200 on the 5090 the same day with the drawer joint never moving on lane 0;
+the joint-only trace latched onto a demonstrator's RETRY rows (lift + back,
+44 rows of 7027) and the velocity one onto episode-end rows, so the traced
+lane now carries its seven arm joints, the grip site's xyz, and the match
+distance of the nearest row (std units) — where the arm IS beside what it
+was told — and every chunk ends with each drawer lane's largest opening.
+
+`--demo-init [STORE]` — start each lane from its paired demo's OWN frame-0
+state (`state` column, our order; `_demo_state0`, the `--check-obs` leg)
+instead of the frozen init row, then the settle steps as usual. The
+recorded-action replay that opened 19 drawers in 20 (§6t) started there; a
+policy that opens them from here and not from the frozen inits is a policy
+whose first chunk is wrong, not its hook.
 
 ⚠ `norm.json` NAMES THE STORE THE CHECKPOINT WAS FITTED ON, and this driver
 prints it: a checkpoint from the RECORDED store crosses the pixel-domain gap
@@ -496,7 +509,7 @@ def _knn_chunk[AK: Int, AA: Int](
     ref knn_act: List[Float64], ref knn_left: List[Int],
     ref rows: List[Int], k: Int,
     mut out: List[Scalar[DT]], obase: Int,
-) raises:
+) raises -> Float64:
     """The k nearest rows of `rows` to this lane's nine joints, then the
     per-step, per-word median of their next AK recorded actions, RAW units.
     Past a neighbour's episode end its contribution is the zero action."""
@@ -543,13 +556,14 @@ def _knn_chunk[AK: Int, AA: Int](
                 vals[b] = v
             var med = vals[n // 2] if n % 2 == 1 else 0.5 * (vals[n // 2 - 1] + vals[n // 2])
             out[obase + t * AA + j] = Scalar[DT](med)
+    return sqrt(best_d[0])
 
 
 def run[T: PlacementTable, M: ModelDefLike](
     n_inits: Int, max_steps: Int, check_lanes: Int, sampled: Bool,
     policy_path: String, act_dir: String, act_exec: Int, obs_store: String,
     video_path: String, video_lane: Int, trace_lane: Int,
-    knn_store: String, knn_k: Int, knn_vel: Bool,
+    knn_store: String, knn_k: Int, knn_vel: Bool, demo_init: String,
 ) raises:
     comptime E = Phyics3dBatchedEnv[
         M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
@@ -736,6 +750,14 @@ def run[T: PlacementTable, M: ModelDefLike](
                   "open-loop, then re-query (--act-exec)")
     else:
         print("  policy: ZERO ACTION —", "the L6 gate is that the rate is 0")
+    if demo_init != "":
+        if not exists(demo_init):
+            raise Error("libero eval batched: --demo-init store not found: " + demo_init)
+        if not have_table:
+            raise Error("libero eval batched: --demo-init pairs init row i of task"
+                        " t with demo i of task t and needs the frozen table")
+        print("  inits : REPLACED by each lane's paired demo's frame-0 state from",
+              demo_init, "(--demo-init) — NOT a benchmark number")
     if not have_table:
         # ⚠ AND ON THE BOX THE TABLE IS SIMPLY NOT THERE: it is a gitignored
         # build artifact (642 KB), so a machine that pulled the repo has the
@@ -830,9 +852,18 @@ def run[T: PlacementTable, M: ModelDefLike](
     var word_abs = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
     var word_n = 0
     var drawer_qadr = -1
+    var drawer_top_qadr = -1
     for j in range(len(fmd.joint_names)):
         if fmd.joint_names[j] == "wooden_cabinet_1_middle_level":
             drawer_qadr = qadr_all[j]
+        if fmd.joint_names[j] == "wooden_cabinet_1_top_level":
+            drawer_top_qadr = qadr_all[j]
+    var drawer_max = List[Float64](length=LANES * 2, fill=0.0)  # |top|, |mid| per lane
+    var knn_dist = List[Float64](length=LANES, fill=0.0)
+    var grip_site = -1
+    for j in range(len(fmd.site_names)):
+        if fmd.site_names[j] == "robot_grip_site":
+            grip_site = j
     for j in range(ARM_DOF):
         qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_joint") + String(j + 1))])
     qadr9.append(qadr_all[_index(fmd.joint_names, String("robot_finger_joint1"))])
@@ -1065,6 +1096,22 @@ def run[T: PlacementTable, M: ModelDefLike](
             # rest-pose anchor `reset_batch` gave it, which is robosuite's own
             # order and NOT the replay gate's.
 
+        if demo_init != "":
+            var ds0 = _demo_state0(demo_init, lane_row, row_task, n_inits, NQ, NV)
+            for e in range(LANES):
+                if lane_row[e] < 0:
+                    continue
+                for k in range(NQ):
+                    env.d.qpos.data[e * NQ + k] = Scalar[DT](ds0[e * (NQ + NV) + k])
+                for k in range(NV):
+                    env.d.qvel.data[e * NV + k] = Scalar[DT](ds0[e * (NQ + NV) + NQ + k])
+            env.d.qpos.upload(ctx)
+            env.d.qvel.upload(ctx)
+            ctx.synchronize()
+            env._run_fields_fk(ctx)
+            ctx.synchronize()
+        for e in range(LANES * 2):
+            drawer_max[e] = 0.0
         var obs_row = List[Float64]()
         var _action = List[Float64](length=OSC_ACTION_DIM, fill=0.0)
         for e in range(len(ens)):
@@ -1108,7 +1155,7 @@ def run[T: PlacementTable, M: ModelDefLike](
                         if knn_vel:
                             for k in range(AQP):
                                 q9[AQP + k] = q9[k] - (knn_prev[e * AQP + k] if t_pol > 0 else q9[k])
-                        _knn_chunk[AK, AA](
+                        knn_dist[e] = _knn_chunk[AK, AA](
                             q9, KF, knn_q, knn_std,
                             knn_act, knn_left, knn_rows_of[r_task], knn_k,
                             act_chunk, e * AK * AA,
@@ -1231,6 +1278,17 @@ def run[T: PlacementTable, M: ModelDefLike](
                 line += " " + _f(Float64(env.d.qpos.data[trace_lane * NQ + qadr9[8]]), 6)
                 if drawer_qadr >= 0:
                     line += " | drawer_mid " + _f(Float64(env.d.qpos.data[trace_lane * NQ + drawer_qadr]), 5)
+                line += " | q"
+                for k in range(ARM_DOF):
+                    line += " " + _f(Float64(env.d.qpos.data[trace_lane * NQ + qadr9[k]]), 3)
+                if grip_site >= 0:
+                    env.d.site_xpos.download(ctx)
+                    ctx.synchronize()
+                    line += " | grip"
+                    for k in range(3):
+                        line += " " + _f(Float64(env.d.site_xpos.data[trace_lane * NS * 3 + grip_site * 3 + k]), 3)
+                if have_knn:
+                    line += " | nn " + _f(knn_dist[trace_lane], 2)
                 print(line)
             ctx.enqueue_copy(env._action, act_h)
             var tp0 = perf_counter_ns()
@@ -1242,6 +1300,14 @@ def run[T: PlacementTable, M: ModelDefLike](
             ctx.synchronize()
             if env.osc_singular_lanes(ctx) > 0:
                 singular_steps += 1
+            if drawer_qadr >= 0 and drawer_top_qadr >= 0:
+                for e in range(LANES):
+                    var top = abs(Float64(env.d.qpos.data[e * NQ + drawer_top_qadr]))
+                    var mid = abs(Float64(env.d.qpos.data[e * NQ + drawer_qadr]))
+                    if top > drawer_max[e * 2]:
+                        drawer_max[e * 2] = top
+                    if mid > drawer_max[e * 2 + 1]:
+                        drawer_max[e * 2 + 1] = mid
 
             var want_host = check_lanes > 0 and (
                 step < SETTLE_STEPS + 2 or step % 25 == 0
@@ -1311,6 +1377,17 @@ def run[T: PlacementTable, M: ModelDefLike](
                         if eval_bad <= 10:
                             print("   EVAL MISMATCH row", r, names[row_task[r]],
                                   "step", step, ": device", dev, "host", host)
+        if drawer_qadr >= 0 and drawer_top_qadr >= 0 and have_policy:
+            var dline = String("    drawer lanes (task 0/1), largest |top| |mid| opening:")
+            var any_drawer = False
+            for e in range(LANES):
+                var r = lane_row[e]
+                if r < 0 or (row_task[r] != 0 and row_task[r] != 1):
+                    continue
+                any_drawer = True
+                dline += " [" + String(e) + ": " + _f(drawer_max[e * 2], 3) + " " + _f(drawer_max[e * 2 + 1], 3) + "]"
+            if any_drawer:
+                print(dline)
         print("  chunk", chunk, "done — rows", base, "..",
               (base + LANES - 1) if base + LANES <= n_rows else n_rows - 1,
               flush=True)
@@ -1440,6 +1517,7 @@ def main() raises:
     var knn_store = String("")
     var knn_k = 5
     var knn_vel = False
+    var demo_init = String("")
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -1477,6 +1555,11 @@ def main() raises:
                 i += 1
         elif s == "--knn-vel":
             knn_vel = True
+        elif s == "--demo-init":
+            demo_init = String("build/demos/" + FAMILY + ".lowdim.h5")
+            if i + 1 < len(args) and not String(args[i + 1]).startswith("--"):
+                demo_init = String(args[i + 1])
+                i += 1
         elif s == "--knn-k" and i + 1 < len(args):
             knn_k = Int(String(args[i + 1]))
             i += 1
@@ -1492,7 +1575,8 @@ def main() raises:
                 "libero eval batched: unknown argument '" + s + "' (--inits N,"
                 " --steps N, --check-lanes K, --sampled, --policy PATH,"
                 " --act DIR, --act-exec N, --check-obs [STORE], --video F.mp4,"
-                " --video-lane L, --trace-lane L, --knn [STORE], --knn-k N, --knn-vel)"
+                " --video-lane L, --trace-lane L, --knn [STORE], --knn-k N, --knn-vel,"
+                " --demo-init [STORE])"
             )
         i += 1
 
@@ -1505,31 +1589,31 @@ def main() raises:
         run[LiberoGoalPlacement, LiberoGoalModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel,
+            knn_vel, demo_init,
         )
     elif FAMILY == "libero_object":
         run[LiberoObjectPlacement, LiberoObjectModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel,
+            knn_vel, demo_init,
         )
     elif FAMILY == "libero_spatial":
         run[LiberoSpatialPlacement, LiberoSpatialModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel,
+            knn_vel, demo_init,
         )
     elif FAMILY == "libero_kitchen_scene3":
         run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel,
+            knn_vel, demo_init,
         )
     elif FAMILY == "libero_kitchen_scene5":
         run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel,
+            knn_vel, demo_init,
         )
     else:
         comptime assert False, (
