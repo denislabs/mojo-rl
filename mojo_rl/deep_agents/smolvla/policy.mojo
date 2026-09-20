@@ -87,19 +87,20 @@ def copy_into[
     target: StaticString
 ](
     mut dst: Tensor, dst_off: Int, mut src: Tensor, n: Int,
-    ctx: Optional[DeviceContext] = None,
+    ctx: Optional[DeviceContext] = None, src_off: Int = 0,
 ) raises:
-    """Place `n` elements of `src` at `dst[dst_off:]` — prefix assembly's only
-    primitive. Kept explicit rather than folded into a `Concat` because the
-    prefix is built from a variable number of cameras."""
+    """Place `n` elements of `src[src_off:]` at `dst[dst_off:]` — prefix
+    assembly's only primitive. Kept explicit rather than folded into a
+    `Concat` because the prefix is built from a variable number of cameras.
+    `src_off` is what lets a `[B, W]` state projection land row by row."""
     comptime if target == "cpu":
         for i in range(n):
-            dst.data[dst_off + i] = src.data[i]
+            dst.data[dst_off + i] = src.data[src_off + i]
     else:
         var c = ctx.value()
         c.enqueue_copy(
             dst.dev.value().create_sub_buffer[DT](dst_off, n),
-            src.dev.value().create_sub_buffer[DT](0, n),
+            src.dev.value().create_sub_buffer[DT](src_off, n),
         )
 
 
@@ -559,47 +560,62 @@ struct SmolVLAPrefixEmbed[
         mut out: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        """`out[IMG_SEG : OUT_N]` <- language tokens, then the state token.
+        """`out[b, IMG_SEG : P*W]` <- language tokens, then the state token,
+        for every batch row `b`.
 
         Assumes the image segment is ALREADY in `out` — from `run_images` or
-        from a cache row uploaded by `SmolVLAPolicy.build_prefix_from_segment`.
+        from cache rows uploaded by `SmolVLAPolicy.build_prefix_from_segment`.
+
+        `lang_ids` is either ONE instruction (`N_LANG` ids, shared by every
+        row — the single-task recording) or `B * N_LANG` ids, one instruction
+        per row. `state` is `[B, SDIM]`.
         """
-        if len(lang_ids) != Self.N_LANG:
+        var per_row = len(lang_ids) == Self.B * Self.N_LANG
+        if not per_row and len(lang_ids) != Self.N_LANG:
             raise Error(
                 "SmolVLAPrefixEmbed: expected " + String(Self.N_LANG)
-                + " language ids, got " + String(len(lang_ids))
+                + " language ids (shared) or " + String(Self.B * Self.N_LANG)
+                + " (one instruction per row), got " + String(len(lang_ids))
             )
         comptime if target == "cpu":
             out.ensure(Self.OUT_N)
         else:
             out.ensure_gpu(ctx.value(), Self.OUT_N)
-        var off = Self.IMG_SEG
+        comptime ROW = Self.P * Self.W
+        comptime LANG_N = Self.N_LANG * Self.W
 
-        # ── language: a row gather, scaled the same way ──────────────────
-        embed_language_tokens[VOCAB, Self.W](
-            embed_weight, lang_ids, self.lang, True
-        )
-        # ⚠ `upload_resident`, not `upload`: the latter recreates the device
-        # buffer and synchronises twice on every call. The gather is host-side
-        # (an index lookup per token), so the transfer stays — the realloc does
-        # not need to.
-        comptime if target != "cpu":
-            self.lang.upload_resident(ctx.value())
-        copy_into[target](out, off, self.lang, Self.N_LANG * Self.W, ctx)
-        off += Self.N_LANG * Self.W
-
-        # ── state: projected, and NOT scaled ─────────────────────────────
+        # ── state: projected for the whole batch, and NOT scaled ─────────
         state_proj.forward[target, Self.B](
             TensorRefs[1](state), self.st, ctx
         )
-        copy_into[target](out, off, self.st, Self.W, ctx)
-        off += Self.W
 
-        if off != Self.OUT_N:
-            raise Error(
-                "SmolVLAPrefixEmbed: wrote " + String(off) + " of "
-                + String(Self.OUT_N) + " — the segment widths do not sum to P*W"
-            )
+        for b in range(Self.B):
+            var off = b * ROW + Self.IMG_SEG
+            # ── language: a row gather, scaled the same way ──────────────
+            # Gathered once when shared, per row otherwise. The gather is
+            # host-side, so its transfer stays; `upload_resident` keeps the
+            # buffer rather than recreating it per row.
+            if per_row or b == 0:
+                var ids = List[Int]()
+                var base = b * Self.N_LANG if per_row else 0
+                for t in range(Self.N_LANG):
+                    ids.append(lang_ids[base + t])
+                embed_language_tokens[VOCAB, Self.W](
+                    embed_weight, ids, self.lang, True
+                )
+                comptime if target != "cpu":
+                    self.lang.upload_resident(ctx.value())
+            copy_into[target](out, off, self.lang, LANG_N, ctx)
+            off += LANG_N
+            # ── state token: row b of the projection ─────────────────────
+            copy_into[target](out, off, self.st, Self.W, ctx, b * Self.W)
+            off += Self.W
+            if off != (b + 1) * ROW:
+                raise Error(
+                    "SmolVLAPrefixEmbed: row " + String(b) + " wrote to "
+                    + String(off) + ", expected " + String((b + 1) * ROW)
+                    + " — the segment widths do not sum to P*W"
+                )
 
 
 struct SmolVLAPolicy[
@@ -954,7 +970,18 @@ struct SmolVLAPolicy[
         ⚠ The cache is RESET every call. A cache carried across observations
         is a policy acting on the previous scene, silently — and in training
         it is a batch element conditioned on its predecessor's images.
+
+        ⚠ B = 1 ONLY. `run_images` runs the tower on one frame set and writes
+        row 0; a B > 1 policy builds its prefix from vision-cache rows with
+        `build_prefix_from_segment`. Raised, not assumed, because rows 1.. of
+        a stale `prefix_buf` are finite, plausible and wrong.
         """
+        if Self.B != 1:
+            raise Error(
+                "SmolVLAPolicy.build_prefix: the image path is B = 1; this"
+                " policy is B = " + String(Self.B)
+                + " — use build_prefix_from_segment with vision-cache rows"
+            )
         self.embed_images[target](images, ctx)
         self._tail_and_prefill[target](lang_ids, raw_state, ctx)
 
@@ -992,27 +1019,32 @@ struct SmolVLAPolicy[
         ref raw_state: List[Float32],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        """`build_prefix` with the image segment supplied instead of computed.
+        """`build_prefix` with the image segments supplied instead of computed.
 
-        `seg` is what `image_segment` returned for this frame — a vision-cache
-        row. The prefix from here on is IDENTICAL to `build_prefix`'s: the same
-        `run_tail`, the same cache reset, the same prefill. `test_vision_cache`
-        asserts the prefix buffer and the prefill output are bit-identical
-        between the two doors.
+        `seg` is `B` vision-cache rows back to back (`B * IMG_SEG` floats),
+        `raw_state` is `B` poses back to back, `lang_ids` one instruction or
+        `B` (see `run_tail`). The prefix from here on is IDENTICAL to
+        `build_prefix`'s: the same `run_tail`, the same cache reset, the same
+        prefill. `test_vision_cache` asserts the prefix buffer and the prefill
+        output are bit-identical between the two doors at B = 1;
+        `test_train_step_batched` that B rows reproduce B separate runs.
 
         ⚠ The whole `prefix_buf` host slab is uploaded, language and state
         slots included; `run_tail` then overwrites those ON THE DEVICE, so
         whatever the host slab held there is never read.
         """
-        if len(seg) != Self.Prefix.IMG_SEG:
+        comptime SEG = Self.Prefix.IMG_SEG
+        comptime ROW = Self.P * Self.W
+        if len(seg) != Self.B * SEG:
             raise Error(
-                "SmolVLAPolicy.build_prefix_from_segment: segment has "
-                + String(len(seg)) + " floats, the prefix's image segment is "
-                + String(Self.Prefix.IMG_SEG)
+                "SmolVLAPolicy.build_prefix_from_segment: got "
+                + String(len(seg)) + " floats, B = " + String(Self.B)
+                + " rows of " + String(SEG) + " need " + String(Self.B * SEG)
             )
         self.prefix_buf.ensure(Self.Prefix.OUT_N)
-        for i in range(Self.Prefix.IMG_SEG):
-            self.prefix_buf.data[i] = Scalar[DT](seg[i])
+        for b in range(Self.B):
+            for i in range(SEG):
+                self.prefix_buf.data[b * ROW + i] = Scalar[DT](seg[b * SEG + i])
         comptime if target != "cpu":
             self.prefix_buf.upload_resident(ctx.value())
         self._tail_and_prefill[target](lang_ids, raw_state, ctx)
@@ -1034,14 +1066,26 @@ struct SmolVLAPolicy[
                 " build_prefix, or the state goes in unnormalised"
             )
 
-        # ── state: normalise, pad to 32 ──────────────────────────────────
-        var st = List[Float32]()
-        normalize_state(self.stats, raw_state, st, Self.SDIM)
+        # ── state: normalise, pad to 32, one row per batch element ───────
+        var rdim = self.stats.state_dim()
+        if len(raw_state) != Self.B * rdim:
+            raise Error(
+                "SmolVLAPolicy: raw_state has " + String(len(raw_state))
+                + " values; B = " + String(Self.B) + " poses of "
+                + String(rdim) + " need " + String(Self.B * rdim)
+            )
         # ⚠ `ensure` on both paths: it sizes `data`, the host slab. The GPU
         # path differs only by the `upload` after the writes.
         self.state_buf.ensure(Self.B * Self.SDIM)
-        for i in range(Self.SDIM):
-            self.state_buf.data[i] = Scalar[DT](st[i])
+        var st = List[Float32]()
+        var one = List[Float32]()
+        for b in range(Self.B):
+            one.clear()
+            for j in range(rdim):
+                one.append(raw_state[b * rdim + j])
+            normalize_state(self.stats, one, st, Self.SDIM)
+            for i in range(Self.SDIM):
+                self.state_buf.data[b * Self.SDIM + i] = Scalar[DT](st[i])
         comptime if target != "cpu":
             # `upload_resident`: reuses the buffer instead of recreating it.
             self.state_buf.upload_resident(ctx.value())

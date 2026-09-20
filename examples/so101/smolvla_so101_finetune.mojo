@@ -57,8 +57,9 @@ pixi run -e nvidia mojo build -I . -o /tmp/smolvla_finetune \\
 # what a step costs, not whether the loss falls.
 SMOLVLA_STEPS=3 SMOLVLA_NO_MONITOR=1 /tmp/smolvla_finetune
 
-# then the real thing. 2000 x 8 = 16k observations, about one pass over the
-# recording. Read the s/step the smoke run printed before choosing a number.
+# then the real thing. 2000 x 64 = 128k observations, about seven passes over
+# the recording; the reference recipe is 20 000 x 64. Read the s/step the
+# smoke run printed before choosing a number.
 /tmp/smolvla_finetune
 ```
 
@@ -75,7 +76,7 @@ is read from `tools/vla/`.
 | `SMOLVLA_REPO` | the dataset repo the statistics come from; defaults to the recording named above |
 | `SMOLVLA_TASKS` | the tokenised instruction table; defaults to the checked-in one for this recording |
 | `SMOLVLA_STEPS` | optimizer steps, without a rebuild. ⚠ **A SHORT RUN IS NOT A GENTLE RUN** — see below |
-| `SMOLVLA_ACCUM` | observations per optimizer step (default 8) |
+| `SMOLVLA_ACCUM` | observations per optimizer step (default 64, the reference's batch size); a multiple of the build's `B` |
 | `SMOLVLA_LR` | default 1e-4 |
 | `SMOLVLA_CKPT` | checkpoint path prefix; default `/tmp/smolvla_so101` |
 | `SMOLVLA_INIT` | a `*_best.ckpt` to start from, applied ON TOP of the base checkpoint |
@@ -105,11 +106,12 @@ expert, the action projections, and nothing else. `state_proj` IS supported
 backward through sixteen frozen VLM layers to train one 32x960 matrix. Turn it
 on when the cheaper regime has been shown to work, not before.
 
-⚠ **The batch is gradient ACCUMULATION at B = 1, not a batched forward.** B > 1
-is a comptime parameter of every container here and it is not established: the
-only B > 1 leg anywhere in the port is `test_kv_cache.mojo`'s, added when the
-KV scratch turned out not to be batch-major. Accumulating micro-batches uses
-only the B = 1 paths every gate covers, and `Linear.vjp` accumulates natively.
+⚠ **The batch is `B` observations per forward, accumulated `accum // B` times
+per update.** `B` is a comptime of this file (8; see its note) and is
+established by `test_train_step_batched.mojo`: a batch of four distinct
+observations reproduces four separate B = 1 runs, per row for the prefill
+and summed for every trainable gradient. `Linear.vjp` accumulates natively
+across the micro-batches.
 
 ⚠ **The loss denominator is the GROUP's, not the micro-batch's.** Each
 accumulation group is sampled FIRST, its total valid-timestep count summed,
@@ -236,7 +238,22 @@ cannot hold two — a multi-task fine-tune needs a padding decision first."""
 
 comptime CHUNK = 50
 comptime STEPS_EULER = 10        # inference only; training denoises ONCE
-comptime B = 1
+comptime B = 8
+"""⚠ Observations per FORWARD — the batch the expert, the prefill and the
+backward run over at once. A comptime, so changing it is a rebuild.
+
+Why not 1: at B = 1 the step is LAUNCH-BOUND. With the vision cache and the
+element-indexed attention backward, a 5090 spent 33 ms per observation on
+~1 500 kernel launches of a few microseconds' work each — prefill 9.9 ms,
+suffix forward 6.2, backward 16.8, of which 112 `Linear.vjp` calls at ~85 us.
+The same launches serve B observations when they are batched, which is what
+the reference does at 64. `test_train_step_batched.mojo` gates that B rows
+reproduce B separate runs.
+
+Why not 64: the tape. The recording driver keeps every layer's activations
+for the backward, and that scales with B — about 320 MB at B = 1, so ~2.6 GB
+at 8 and ~20 GB at 64 on top of the 3.2 GB policy. 8 fits a 5090 with room;
+raise it once the number below says the launches still dominate."""
 comptime PAD = SMOLVLA_ACTION_DIM
 
 comptime REPO = String("lerobot/smolvla_base")
@@ -244,10 +261,12 @@ comptime DEFAULT_TASKS = String(SO101_TASKS)
 comptime DEFAULT_DATA_REPO = String("DenisLabs/record-test_20260828_092736")
 
 comptime DEFAULT_STEPS = 2000
-"""⚠ 2000 x accum 8 is ~16 k observations, roughly one pass over the
-recording. NOT a converged fine-tune — a first answer to whether the held-out
-loss moves at all. Raise it with `SMOLVLA_STEPS` once a step time is known."""
-comptime DEFAULT_ACCUM = 8
+"""⚠ 2000 x 64 is ~128 k observations, about seven passes over the recording.
+The reference recipe is 20 000 x 64. Raise it with `SMOLVLA_STEPS` once a
+step time is known."""
+comptime DEFAULT_ACCUM = 64
+"""Observations per OPTIMIZER step — the reference's `batch_size`. Must be a
+multiple of `B`; `accum // B` forwards of `B` accumulate into one update."""
 comptime PEAK_LR = 1.0e-4
 comptime DECAY_LR = 2.5e-6
 comptime WARMUP_STEPS = 1000
@@ -339,7 +358,9 @@ def _need(name: String) raises -> String:
 
 
 struct Phases(Movable):
-    """Where an observation's wall time goes, summed over `n` observations.
+    """Where an observation's wall time goes, summed over `n` observations
+    (`B` per `run_one`; every number `report` prints is per OBSERVATION, so
+    the batch's amortisation shows directly).
 
     `img` is host work (decode + resize + upload, ends synchronised); `step`
     is everything after it, prefix through loss. `prefix` is only filled
@@ -456,11 +477,12 @@ struct Group(Movable):
 
 
 def draw_group(
-    mut sam: Sampler, accum: Int, lo: Int, hi: Int,
+    mut sam: Sampler, micro: Int, lo: Int, hi: Int,
     mut state_t: Tensor, mut acts_t: Tensor, mut valid_t: Tensor,
 ) raises -> Group:
+    """`micro` forwards of `B` observations each — `accum` observations."""
     var gr = Group()
-    for _ in range(accum):
+    for _ in range(micro):
         var tk = List[Int]()
         var rw = List[Int]()
         var rs = List[Float32]()
@@ -483,13 +505,13 @@ def draw_group(
         for b in range(B):
             gr.times.append(tl[b])
     # ⚠ The bound `flow_mse` used to carry, at the only place that knows
-    # `accum`. A group total above this means a micro-batch reported more
+    # the group's size. A total above it means a micro-batch reported more
     # valid timesteps than it has slots; below 1 means every timestep in the
     # group is padding and the loss has no terms.
-    if gr.total_valid <= 0 or gr.total_valid > accum * B * CHUNK:
+    if gr.total_valid <= 0 or gr.total_valid > micro * B * CHUNK:
         raise Error(
             "draw_group: total_valid " + String(gr.total_valid)
-            + " is outside (0, " + String(accum * B * CHUNK) + "]"
+            + " is outside (0, " + String(micro * B * CHUNK) + "]"
         )
     return gr^
 
@@ -540,6 +562,13 @@ def main() raises:
     var e_accum = getenv("SMOLVLA_ACCUM")
     if e_accum.byte_length() > 0:
         accum = Int(e_accum)
+    if accum <= 0 or accum % B != 0:
+        raise Error(
+            "SMOLVLA_ACCUM=" + String(accum) + " must be a positive multiple"
+            " of this build's B = " + String(B)
+            + " (observations per forward)"
+        )
+    var micro = accum // B
     var e_val = getenv("SMOLVLA_VAL_EPISODES")
     var profile = getenv("SMOLVLA_PROFILE").byte_length() > 0
 
@@ -547,8 +576,9 @@ def main() raises:
     print("  device  " + String(ctx.name()))
     print("  store   " + store_path)
     print("  stats   " + stats_path)
-    print("  steps   " + String(steps) + " x accum " + String(accum)
-          + "   peak lr " + String(PEAK_LR) + ", warmup "
+    print("  steps   " + String(steps) + " x " + String(accum)
+          + " observations (" + String(micro) + " x B=" + String(B)
+          + ")   peak lr " + String(PEAK_LR) + ", warmup "
           + String(WARMUP_STEPS) + " (auto-scaled), beta2 " + String(BETA2))
 
     var tasks = TaskTokens(tasks_path)
@@ -709,6 +739,12 @@ def main() raises:
             vc_path, n_rows, pol, img_col, row, images, scratch, ctx
         )
     else:
+        if B != 1:
+            raise Error(
+                "SMOLVLA_VISION_CACHE=off needs a B = 1 build: the image path"
+                " runs the tower on one frame set. This build is B = "
+                + String(B) + "."
+            )
         print("  vcache  OFF — the tower runs on every observation")
     var seg = List[Float32]()
 
@@ -722,7 +758,7 @@ def main() raises:
     var vgroups = List[Group]()
     for _ in range(VAL_GROUPS):
         vgroups.append(
-            draw_group(sam, accum, val_lo, n_rows, state_t, acts_t, valid_t)
+            draw_group(sam, micro, val_lo, n_rows, state_t, acts_t, valid_t)
         )
     sam.rng = keep_rng
     print("  val     " + String(VAL_GROUPS) + " fixed groups x "
@@ -737,7 +773,7 @@ def main() raises:
     var ph = Phases()
     var base_sum = 0.0
     for vi in range(VAL_GROUPS):
-        for m in range(accum):
+        for m in range(micro):
             base_sum += run_one(
                 m, vgroups[vi], sam, tasks, pol, st, img_col, row, images,
                 scratch, acts_t, valid_t, noise_t, times_t, x_t, u_t, ctx,
@@ -773,9 +809,9 @@ def main() raises:
             opt, pol.expert, pol.action_in, pol.time_mlp_in,
             pol.time_mlp_out, pol.action_out, sp_frozen, Optional(ctx),
         )
-        var gr = draw_group(sam, accum, 0, split, state_t, acts_t, valid_t)
+        var gr = draw_group(sam, micro, 0, split, state_t, acts_t, valid_t)
         var loss = 0.0
-        for m in range(accum):
+        for m in range(micro):
             loss += run_one(
                 m, gr, sam, tasks, pol, st, img_col, row, images, scratch,
                 acts_t, valid_t, noise_t, times_t, x_t, u_t, ctx, ph,
@@ -815,7 +851,7 @@ def main() raises:
             # does not replay the same batches for ever.
             var vsum = 0.0
             for vi in range(VAL_GROUPS):
-                for m in range(accum):
+                for m in range(micro):
                     vsum += run_one(
                         m, vgroups[vi], sam, tasks, pol, st, img_col, row,
                         images, scratch, acts_t, valid_t, noise_t, times_t,
@@ -1016,18 +1052,26 @@ def run_one(
     not run at all.
     """
     var t_img = perf_counter_ns()
-    var g = gr.rows[m * B]
-    var lang = tasks.for_index(gr.tasks[m * B])
+    # ⚠ One instruction per ROW, B*N_LANG ids — the rows of a batch may come
+    # from different tasks once a recording has more than one. `run_tail`
+    # gathers per row when it is handed B instructions.
+    var lang = List[Int]()
     var rs = List[Float32]()
-    for j in range(SDIM):
-        rs.append(gr.raw_state[m * B * SDIM + j])
+    for b in range(B):
+        var ids = tasks.for_index(gr.tasks[m * B + b])
+        for t in range(len(ids)):
+            lang.append(ids[t])
+        for j in range(SDIM):
+            rs.append(gr.raw_state[(m * B + b) * SDIM + j])
     var t_step = t_img
     if vcache.active:
-        vcache.read_row(g, seg)
+        for b in range(B):
+            vcache.read_row(gr.rows[m * B + b], seg, b * VSEG)
         ph.img += Int(perf_counter_ns() - t_img)
         t_step = perf_counter_ns()
         pol.build_prefix_from_segment["gpu"](seg, lang, rs, Optional(ctx))
     else:
+        var g = gr.rows[m * B]
         img_col.read_range[DType.uint8](g, g + 1, mptr(row))
         fill_store_images["gpu", N_CAM](
             row, SRC_W, SRC_H, images, scratch, Optional(ctx)
@@ -1069,5 +1113,5 @@ def run_one(
         Optional(ctx),
     )
     ph.step += Int(perf_counter_ns() - t_step)
-    ph.n += 1
+    ph.n += B
     return l

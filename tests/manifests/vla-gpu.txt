@@ -78,6 +78,13 @@ tests/deep_agents/smolvla/test_policy.mojo
 # resume point, unwritten rows unreadable. Same shallow fixture as above.
 tests/deep_agents/smolvla/test_vision_cache.mojo
 
+# The batched training step: B = 4 observations in one forward reproduce
+# four B = 1 steps — prefill per row (bit-identical), loss (3e-7), and every
+# trainable gradient within 10x the path's own measured one-ulp sensitivity
+# and under 1e-3 outright; a perturbed row moves only its own prefill row.
+# Two shallow policies. ⚠ ~5 min, nearly all compile.
+tests/deep_agents/smolvla/test_train_step_batched.mojo
+
 # V2 — the backward driver, every gradient against Richardson-extrapolated
 # central differences of its OWN forward: 704 components, 16 parameter kinds,
 # total ||err||/||fd|| 2.7e-05. Self-consistency, not parity — it says the

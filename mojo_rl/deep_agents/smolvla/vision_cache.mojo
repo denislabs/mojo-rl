@@ -225,9 +225,12 @@ struct VisionCache(Movable):
             )
         self.rows_done += 1
 
-    def read_row(mut self, i: Int, mut dst: List[Float32]) raises:
-        """`dst` <- row `i`. Raises past `rows_done` rather than reading the
-        zeros an unwritten region would return."""
+    def read_row(
+        mut self, i: Int, mut dst: List[Float32], dst_off: Int = 0
+    ) raises:
+        """`dst[dst_off : dst_off + seg]` <- row `i`. Raises past `rows_done`
+        rather than reading the zeros an unwritten region would return.
+        `dst_off` is how a batch of rows lands back to back in one list."""
         if not self.active:
             raise Error("VisionCache: inactive")
         if i < 0 or i >= self.rows_done:
@@ -236,10 +239,13 @@ struct VisionCache(Movable):
                 " cache (" + String(self.rows_done) + " of "
                 + String(self.n_rows) + " written)"
             )
-        dst.resize(self.seg, 0.0)
+        if dst_off < 0:
+            raise Error("VisionCache.read_row: negative dst_off")
+        if len(dst) < dst_off + self.seg:
+            dst.resize(dst_off + self.seg, 0.0)
         self._seek(VC_HEADER_BYTES + i * self.seg * 4)
         var n = external_call["fread", Int](
-            mptr(dst), Int(1), self.seg * 4, self._fp
+            mptr(dst) + dst_off, Int(1), self.seg * 4, self._fp
         )
         if n != self.seg * 4:
             raise Error(
