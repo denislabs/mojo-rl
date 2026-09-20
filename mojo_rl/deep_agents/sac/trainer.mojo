@@ -428,6 +428,11 @@ struct SACTrainer[
             ere_c_min=ere_c_min,
             ere_k_max=ere_k_max,
         )
+    def set_bc(mut self, weight: Scalar[DT], n_demo_rows: Int) raises:
+        """Behaviour-cloning penalty on the batch's first `n_demo_rows` rows —
+        `SACActorLoss.set_bc`. Call after the demos are pinned."""
+        self.actor_loss_blk.set_bc(weight, n_demo_rows, self.ctx)
+
     def set_beta(mut self, beta: Scalar[DT]):
         """PER IS-β anneal hook. No-op for uniform sample blocks."""
         self.sample_blk.set_beta(beta)
@@ -470,6 +475,7 @@ struct SACTrainer[
             self.pair1.online,
             self.pair2.online,
             self.state.mb_s,
+            self.state.mb_a,
             self.state.alpha,
             self.ctx,
         )
@@ -631,6 +637,7 @@ struct SACTrainer[
             self.pair1.online,
             self.pair2.online,
             self.state.mb_s,
+            self.state.mb_a,
             self.state.alpha,
             octx,
         )

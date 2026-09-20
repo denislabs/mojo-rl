@@ -181,8 +181,8 @@ def main() raises:
             var out = agent.trainer.actor_loss_blk.forward_backward["gpu"](
                 agent.trainer.actor, agent.trainer.actor_opt,
                 agent.trainer.pair1.online, agent.trainer.pair2.online,
-                agent.trainer.state.mb_s, agent.trainer.state.alpha,
-                agent.trainer.ctx,
+                agent.trainer.state.mb_s, agent.trainer.state.mb_a,
+                agent.trainer.state.alpha, agent.trainer.ctx,
             )
             ctx.synchronize()
             t[3] = Float64(perf_counter_ns() - t0) / 1e6

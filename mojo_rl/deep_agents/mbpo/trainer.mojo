@@ -935,6 +935,7 @@ struct MBPOTrainer[
                 self.pair1.online,
                 self.pair2.online,
                 self.state.mb_s,
+                self.state.mb_a,
                 self.state.alpha,
                 self.ctx,
             )
@@ -1042,6 +1043,7 @@ struct MBPOTrainer[
                 self.pair1.online,
                 self.pair2.online,
                 self.state.mb_s,
+                self.state.mb_a,
                 self.state.alpha,
                 self.ctx,
             )

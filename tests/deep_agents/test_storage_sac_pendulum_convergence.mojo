@@ -159,7 +159,7 @@ def main() raises:
             twin.step["cpu"](state, pair1.online, c1_opt, pair2.online, c2_opt)
             var out = aloss.forward_backward["cpu"](
                 actor, actor_opt, pair1.online, pair2.online, state.mb_s,
-                state.alpha,
+                state.mb_a, state.alpha,
             )
             state.log_prob_mean = out.log_prob_mean
             alpha_blk.step["cpu"](state, alpha_opt)

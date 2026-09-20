@@ -757,6 +757,12 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
     # for a run that has nothing else to learn from.
     var demos_arg = String("")
     var demo_filter = String("all")
+    # ⚠ `--bc-weight λ`: a behaviour-cloning penalty on the DEMO half of every
+    # batch (`SACActorLoss.set_bc`). Symmetric sampling alone left the lift
+    # policy parked (eval 356/355 at 25k/50k with 7677 expert rows pinned);
+    # TD3+BC's normalisation puts λ near mean|Q| / 2.5 ≈ 40 on this task.
+    # Needs `--demos`; 0 (the default) is plain SAC.
+    var bc_weight = Scalar[DT](0.0)
     # ⚠⚠ 0.50/0.25 IS THE ONLY PAIR THE CRITIC HAS SURVIVED. Measured, all at
     # 32 envs / 32 updates / tau 0.0025 — the SAME 7.7% tracking rate:
     #
@@ -910,6 +916,8 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
             seed = Int(String(args[i + 1]))
         elif a == "--demos" and i + 1 < len(args):
             demos_arg = String(args[i + 1])
+        elif a == "--bc-weight" and i + 1 < len(args):
+            bc_weight = Scalar[DT](Float64(String(args[i + 1])))
         elif a == "--demo-filter" and i + 1 < len(args):
             demo_filter = String(args[i + 1])
             if (
@@ -1140,6 +1148,7 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
         remote.set_config("tau", String(tau))
         remote.set_config("demos", demos_arg)
         remote.set_config("demo_filter", demo_filter)
+        remote.set_config("bc_weight", String(bc_weight))
         remote.set_config("target_track_per_iter", String(track))
         # ⚠ THE MEASURED FLOOR TRAVELS WITH THE RUN. A rate on a dashboard is
         # unreadable without it — 0.05 is nothing on `reach` and would be real
@@ -1294,6 +1303,15 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
             logger.log_scalar(
                 String("cfg/demo_mean_reward"), sum_r / Float64(n_demo_rows), 0
             )
+            if bc_weight > Scalar[DT](0):
+                # the demo rows are the first BATCH/2 of every batch by the
+                # sampler's construction (`_mixed_indices_dev_kernel`)
+                agent.trainer.set_bc(bc_weight, BATCH // 2)
+                print("  bc       : weight", bc_weight, "on the demo half of"
+                      " every batch (", BATCH // 2, "rows )")
+                logger.log_scalar(String("cfg/bc_weight"), Float64(bc_weight), 0)
+        elif bc_weight > Scalar[DT](0):
+            raise Error("sac task: --bc-weight needs --demos")
 
         # ── the region table, once; the tape and mask, once per lane ──────
         #

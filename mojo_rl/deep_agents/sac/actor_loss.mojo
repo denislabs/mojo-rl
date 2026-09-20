@@ -13,7 +13,26 @@ carries the moving α (host scalar). Mean loss + mean log_prob are host reductio
 (per-step D2H on GPU; cheap at SAC scales).
 
   graph: s → actor → rsample → {action, logp} ; (s, action) → concat →
-         q1, q2 → min_q ;  α·logp = Scale(logp) ;  loss = α·logp − min_q (output)
+         q1, q2 → min_q ;  α·logp = Scale(logp) ;  loss_q = α·logp − min_q
+         + a BEHAVIOUR-CLONING term on the demo half (HIL-SERL / RLPD runs):
+         mu_t = tanh(mu) ; bc = L1(mu_t, a_batch) masked to the demo rows ;
+         loss = loss_q + λ·bc                                      (output)
+
+## THE BC TERM (`set_bc`)
+
+RLPD's symmetric sampling alone did not pull the actor onto the expert's
+manifold here: `so101_tower_lift_brick` with 7677 expert rows pinned as half
+of every batch plateaued at the parked-on-the-brick return (eval 356 at 25k
+and 355 at 50k, 2026-09-20) — the critic learned the demos' value but the
+actor never entered the pinch states from where its own rollouts sit. The
+TD3+BC / DAPG remedy is a per-row behaviour-cloning penalty on the DEMO rows
+only: `λ · (1/ACT) Σ_j |tanh(mu_j(s)) − a_j|` for rows `[0, n_demo)` of the
+batch and 0 elsewhere. The demo rows are the first `BATCH/2` rows by the
+replay's construction (`_mixed_indices_dev_kernel`), so the mask is a
+constant `[B, 1]` tensor set once. `λ = 0` (the default) leaves the graph's
+answer bit-identical to the plain SAC loss: the extra nodes multiply by 0.
+Scale: with Q ~ 100 and the L1 in [0, 2], TD3+BC's `α = 2.5` normalisation
+puts λ around `mean|Q| / 2.5` ≈ 40.
 """
 
 from max.gpu import thread_idx
@@ -32,8 +51,13 @@ from mojo_rl.nn.primitives.slice import Slice
 from mojo_rl.nn.primitives.concat import Concat2
 from mojo_rl.nn.primitives.scale import Scale
 from mojo_rl.nn.primitives.binary_elementwise import (
-    BinaryElemMin, BinarySub,
+    BinaryElemMin, BinarySub, BinaryElementwise,
 )
+from mojo_rl.nn.primitives.ops.binary_add_op import BinaryAddOp
+from mojo_rl.nn.primitives.activations import Tanh
+from mojo_rl.nn.primitives.l1_masked_per_sample import L1MaskedPerSample
+
+comptime BinaryAdd[DIM: Int] = BinaryElementwise[DIM, BinaryAddOp]
 from mojo_rl.nn.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn.combinators.graph_decl import InputSlot, Node, ExternalNode
 from ..loss.loss_block import LossBlock
@@ -106,7 +130,15 @@ struct SACActorLoss[
         ExternalNode["q2", Self.CRITIC, "concat"],
         Node["min_q", BinaryElemMin[1], "q1", "q2"],
         Node["alogp", Scale[1], "logp"],                     # α·logp
-        Node["loss", BinarySub[1], "alogp", "min_q"],        # loss_per_b (output)
+        Node["loss_q", BinarySub[1], "alogp", "min_q"],      # α·logp − min_q
+        # ── the BC term on the demo half — see `set_bc` ──
+        InputSlot["a_demo", Self.ACT_DIM],                   # the batch's actions
+        InputSlot["bc_mask", 1],                             # 1 on demo rows
+        Node["mu", Slice[2 * Self.ACT_DIM, 0, Self.ACT_DIM], "actor"],
+        Node["mu_t", Tanh[Self.ACT_DIM], "mu"],              # the greedy action
+        Node["bc", L1MaskedPerSample[1, Self.ACT_DIM], "mu_t", "a_demo", "bc_mask"],
+        Node["bc_w", Scale[1], "bc"],                        # λ·bc
+        Node["loss", BinaryAdd[1], "loss_q", "bc_w"],        # loss_per_b (output)
     ]
 
     var graph: Self.Graph
@@ -117,6 +149,8 @@ struct SACActorLoss[
     # actor-loss metric accumulator drained at flush cadence. Empty on CPU.
     var _lp_mean: Tensor
     var _loss_acc: Tensor
+    var _bc_mask: Tensor    # [B] 1.0 on the demo rows, 0 elsewhere — `set_bc`
+    var bc_weight: Scalar[DT]
 
     def __init__(out self):
         self.graph = Self.Graph()
@@ -124,6 +158,8 @@ struct SACActorLoss[
         self._grad_seed = Tensor()
         self._lp_mean = Tensor()
         self._loss_acc = Tensor()
+        self._bc_mask = Tensor()
+        self.bc_weight = Scalar[DT](0.0)
 
     @staticmethod
     def make[
@@ -147,6 +183,12 @@ struct SACActorLoss[
         var blk = Self()
         blk.graph = Self.Graph.make[target, Zero](ctx)
         blk.graph.set_node_attr["rsample", "action_scale"](action_scale)
+        # BC off: a zero mask and a zero weight. Scale by 0 kills the
+        # gradient; the zero mask keeps the L1 itself at 0.
+        blk.graph.set_node_attr["bc_w", "multiplier"](Scalar[DT](0.0))
+        blk._bc_mask = Tensor.make[target](Self.BATCH, ctx)
+        # the host copy `set_bc` writes and uploads (zeros until then)
+        blk._bc_mask.ensure(Self.BATCH)
         comptime if target == "cpu":
             blk._loss_out = Tensor.alloc(Self.BATCH)
             blk._grad_seed = Tensor.alloc(Self.BATCH)
@@ -164,6 +206,22 @@ struct SACActorLoss[
             blk._loss_acc = Tensor.alloc_gpu(c, 2)
             blk._loss_acc.dev.value().enqueue_fill(Scalar[DT](0))
         return blk^
+
+    def set_bc(
+        mut self, weight: Scalar[DT], n_demo_rows: Int,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """Turn the behaviour-cloning term on: weight λ, applied to the first
+        `n_demo_rows` rows of every batch (the replay's pinned-demo half).
+        See the header. `weight` 0 turns it off again."""
+        if n_demo_rows < 0 or n_demo_rows > Self.BATCH:
+            raise Error("set_bc: n_demo_rows out of [0, BATCH]")
+        self.bc_weight = weight
+        for b in range(Self.BATCH):
+            self._bc_mask.data[b] = Scalar[DT](1.0) if b < n_demo_rows else Scalar[DT](0.0)
+        if self._bc_mask.dev:
+            self._bc_mask.upload(ctx.value())
+        self.graph.set_node_attr["bc_w", "multiplier"](weight)
 
     # ── Device-α accessors (GPU only) ────────────────────────────────
     def lp_mean_dev(mut self) -> DeviceBuffer[DT]:
@@ -201,6 +259,7 @@ struct SACActorLoss[
         mut critic1: Self.CRITIC,
         mut critic2: Self.CRITIC,
         mut mb_s: Tensor,
+        mut mb_a: Tensor,
         alpha: Scalar[DT],
         ctx: Optional[DeviceContext] = None,
     ) raises -> SACActorLossOut:
@@ -215,6 +274,11 @@ struct SACActorLoss[
         # Seed the graph input slot with s (a COPY into the graph pool), then
         # forward (actor + online critics threaded as tracked refs).
         self.graph.set_input["s", BB](mb_s, ctx)
+        # The BC inputs: the batch's stored actions and the demo-row mask.
+        # Seeded every step (a D2D copy on GPU, capture-safe); with the mask
+        # and weight at zero they cost two copies and nothing else.
+        self.graph.set_input["a_demo", BB](mb_a, ctx)
+        self.graph.set_input["bc_mask", BB](self._bc_mask, ctx)
         self.graph.forward[BB, target, POLICY](
             self._loss_out, ctx, actor, critic1, critic2
         )
