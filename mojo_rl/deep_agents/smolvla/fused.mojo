@@ -798,6 +798,20 @@ struct SmolVLADenoise[
     """Nanoseconds per stage, summed over every `backward` since the last
     `reset_profile`. Read with the caller's own observation count."""
 
+    # ── the forward's stage profile, same slots ──────────────────────────
+    # A SEPARATE flag and list, not `profile`/`prof`, on purpose: the
+    # fine-tune turns `profile` on to split its backward by op, and reads its
+    # "suffix fwd" phase from timers around the whole step. Draining inside
+    # the step would inflate that phase and leak the forward's ticks into the
+    # backward's table. `profile_step` is for the deploy-side question — WHY
+    # is one denoising step 28 ms on the Orin — and is read by
+    # `benchmarks/smolvla_denoise_stages_bench.mojo`.
+    var profile_step: Bool
+    var prof_step: List[Int]
+    """Nanoseconds per stage, summed over every `step` since the last
+    `reset_profile`. The scratch build / cache read are charged to PR_REP,
+    the residual adds and the input copy to PR_GLUE."""
+
     def __init__(out self):
         self.rope_q_self = Self.RoPEQSelf()
         self.rope_q_cross = Self.RoPEQCross()
@@ -817,6 +831,8 @@ struct SmolVLADenoise[
         self.g = TensorPack[Self.G_SLOTS]()
         self.profile = False
         self.prof = List[Int](length=Self.PR_N, fill=0)
+        self.profile_step = False
+        self.prof_step = List[Int](length=Self.PR_N, fill=0)
 
     def __init__(out self, *, deinit move: Self):
         self.rope_q_self = move.rope_q_self^
@@ -835,10 +851,13 @@ struct SmolVLADenoise[
         self.g = move.g^
         self.profile = move.profile
         self.prof = move.prof^
+        self.profile_step = move.profile_step
+        self.prof_step = move.prof_step^
 
     def reset_profile(mut self):
         for i in range(Self.PR_N):
             self.prof[i] = 0
+            self.prof_step[i] = 0
 
     @staticmethod
     def make[
@@ -883,6 +902,7 @@ struct SmolVLADenoise[
         comptime TOK_P = Self.B * Self.P
         comptime TOK_F = Self.B * Self.FULL
         comptime XN = Self.B * Self.XN
+        var t = Int(perf_counter_ns())
 
         comptime if target == "cpu":
             self.pools[0][Self.X].ensure(XN)
@@ -895,6 +915,9 @@ struct SmolVLADenoise[
                 self.pools[0][Self.X].dev.value().create_sub_buffer[DT](0, XN),
                 x.dev.value().create_sub_buffer[DT](0, XN),
             )
+        _prof_tick[target](
+            self.profile_step, self.prof_step, Self.PR_GLUE, t, ctx
+        )
 
         for i in range(Self.LAYERS):
             var is_self = (i % Self.SELF_EVERY) == 0
@@ -912,6 +935,9 @@ struct SmolVLADenoise[
                 L.input_layernorm.forward[target, TOK_S](
                     TensorRefs[1](PK[Self.X]), PK[Self.H], ctx
                 )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_NORM, t, ctx
+                )
                 L.q.forward[target, TOK_S](
                     TensorRefs[1](PK[Self.H]), PK[Self.Q], ctx
                 )
@@ -921,12 +947,18 @@ struct SmolVLADenoise[
                 L.v.forward[target, TOK_S](
                     TensorRefs[1](PK[Self.H]), PK[Self.VS], ctx
                 )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_QKV, t, ctx
+                )
                 # absolute positions: the suffix sits after the prefix
                 self.rope_q_self.forward[target, Self.B](
                     TensorRefs[1](PK[Self.Q]), PK[Self.QR], ctx
                 )
                 self.rope_k_self.forward[target, Self.B](
                     TensorRefs[1](PK[Self.KS]), PK[Self.KRS], ctx
+                )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_ROPE, t, ctx
                 )
                 # [prefix; suffix] into SCRATCH — the cache is not touched.
                 cache.build_scratch[target](
@@ -938,28 +970,49 @@ struct SmolVLADenoise[
                 self.rep_full_v.forward[target, Self.B](
                     TensorRefs[1](cache.sv), PK[Self.VXF], ctx
                 )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_REP, t, ctx
+                )
                 self.attn_self.forward[target, Self.B](
                     PK[Self.QR], PK[Self.KXF],
                     PK[Self.VXF], PK[Self.ATT], ctx,
                 )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_ATTN, t, ctx
+                )
                 L.o.forward[target, TOK_S](
                     TensorRefs[1](PK[Self.ATT]), PK[Self.AO], ctx
+                )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_O, t, ctx
                 )
             else:
                 ref L = expert.cross_layers[li]
                 L.input_layernorm.forward[target, TOK_S](
                     TensorRefs[1](PK[Self.X]), PK[Self.H], ctx
                 )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_NORM, t, ctx
+                )
                 L.q.forward[target, TOK_S](
                     TensorRefs[1](PK[Self.H]), PK[Self.Q], ctx
+                )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_QKV, t, ctx
                 )
                 # ⚠ re-based to 0, unlike the self layers
                 self.rope_q_cross.forward[target, Self.B](
                     TensorRefs[1](PK[Self.Q]), PK[Self.QR], ctx
                 )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_ROPE, t, ctx
+                )
                 # k/v are the VLM's CACHED prefix K/V through [320,320] projs
                 cache.read_layer_into[target](
                     i, PK[Self.KP], PK[Self.VP], ctx
+                )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_REP, t, ctx
                 )
                 L.k.forward[target, TOK_P](
                     TensorRefs[1](PK[Self.KP]), PK[Self.KS], ctx
@@ -967,23 +1020,38 @@ struct SmolVLADenoise[
                 L.v.forward[target, TOK_P](
                     TensorRefs[1](PK[Self.VP]), PK[Self.VS], ctx
                 )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_QKV, t, ctx
+                )
                 self.rep_pre_k.forward[target, Self.B](
                     TensorRefs[1](PK[Self.KS]), PK[Self.KXP], ctx
                 )
                 self.rep_pre_v.forward[target, Self.B](
                     TensorRefs[1](PK[Self.VS]), PK[Self.VXP], ctx
                 )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_REP, t, ctx
+                )
                 self.attn_cross.forward[target, Self.B](
                     PK[Self.QR], PK[Self.KXP],
                     PK[Self.VXP], PK[Self.ATT], ctx,
                 )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_ATTN, t, ctx
+                )
                 L.o.forward[target, TOK_S](
                     TensorRefs[1](PK[Self.ATT]), PK[Self.AO], ctx
+                )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_O, t, ctx
                 )
 
             self.res.forward[target, Self.B](
                 TensorRefs[2](PK[Self.X], PK[Self.AO]),
                 PK[Self.X2], ctx,
+            )
+            _prof_tick[target](
+                self.profile_step, self.prof_step, Self.PR_GLUE, t, ctx
             )
 
             # ── MLP branch (identical for both kinds) ────────────────────
@@ -992,6 +1060,9 @@ struct SmolVLADenoise[
                 L.post_attention_layernorm.forward[target, TOK_S](
                     TensorRefs[1](PK[Self.X2]), PK[Self.H2], ctx
                 )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_NORM, t, ctx
+                )
                 L.mlp.gate.forward[target, TOK_S](
                     TensorRefs[1](PK[Self.H2]), PK[Self.GATE], ctx
                 )
@@ -1003,18 +1074,27 @@ struct SmolVLADenoise[
                 L.post_attention_layernorm.forward[target, TOK_S](
                     TensorRefs[1](PK[Self.X2]), PK[Self.H2], ctx
                 )
+                _prof_tick[target](
+                    self.profile_step, self.prof_step, Self.PR_NORM, t, ctx
+                )
                 L.mlp.gate.forward[target, TOK_S](
                     TensorRefs[1](PK[Self.H2]), PK[Self.GATE], ctx
                 )
                 L.mlp.up.forward[target, TOK_S](
                     TensorRefs[1](PK[Self.H2]), PK[Self.UP], ctx
                 )
+            _prof_tick[target](
+                self.profile_step, self.prof_step, Self.PR_MLP_UPGATE, t, ctx
+            )
             self.glu_cat.forward[target, Self.B](
                 TensorRefs[2](PK[Self.UP], PK[Self.GATE]),
                 PK[Self.CAT], ctx,
             )
             self.glu.forward[target, Self.B](
                 TensorRefs[1](PK[Self.CAT]), PK[Self.GLU], ctx
+            )
+            _prof_tick[target](
+                self.profile_step, self.prof_step, Self.PR_GLU, t, ctx
             )
             if is_self:
                 expert.self_layers[li].mlp.down.forward[target, TOK_S](
@@ -1026,9 +1106,15 @@ struct SmolVLADenoise[
                     TensorRefs[1](PK[Self.GLU]), PK[Self.DOWN],
                     ctx,
                 )
+            _prof_tick[target](
+                self.profile_step, self.prof_step, Self.PR_MLP_DOWN, t, ctx
+            )
             self.res.forward[target, Self.B](
                 TensorRefs[2](PK[Self.X2], PK[Self.DOWN]),
                 PK[Self.XO], ctx,
+            )
+            _prof_tick[target](
+                self.profile_step, self.prof_step, Self.PR_GLUE, t, ctx
             )
 
             # Hand the running activation to the next layer's pack. Comptime-
@@ -1051,8 +1137,13 @@ struct SmolVLADenoise[
                     ).create_sub_buffer[DT](0, XN)
                     c2.enqueue_copy(db, sb)
 
+        # The RECORD hand-off copy above lands in whichever slot follows it;
+        # it is comptime-dead on the deploy path this profile is for.
         expert.norm.forward[target, TOK_S](
             TensorRefs[1](self.pools[Self.LAST][Self.X]), out, ctx
+        )
+        _prof_tick[target](
+            self.profile_step, self.prof_step, Self.PR_NORM, t, ctx
         )
 
     def backward[
