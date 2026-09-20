@@ -52,7 +52,9 @@ the one place a policy plugs in; it reads the env's observation rows, which
 
 ## `--act DIR` — THE IMAGE POLICY, WITH THE CAMERAS IN THE LOOP (L7c)
 
-`DIR` is a `libero-act-train` checkpoint directory (`best.ckpt` + `norm.json`).
+`DIR` is a `libero-act-train` checkpoint directory (`best.ckpt` + `norm.json`);
+`--act-ckpt last` evaluates `last.ckpt` instead — the recipe's checkpoint when
+the validation minimum is the noise floor (see `ACT_PATIENCE` in the trainer).
 Every policy step then renders BOTH of LIBERO's cameras for every lane with the
 batched tracer — `raytrace/batch.mojo` over `env.d`, 128x128, 4x MSAA, the
 visual group, after the step's FK sync — packs the pixels the way the store
@@ -585,7 +587,7 @@ def run[T: PlacementTable, M: ModelDefLike](
     policy_path: String, act_dir: String, act_exec: Int, obs_store: String,
     video_path: String, video_lane: Int, trace_lane: Int,
     knn_store: String, knn_k: Int, knn_vel: Bool, demo_init: String,
-    only_task: Int,
+    only_task: Int, act_ckpt: String,
 ) raises:
     comptime E = Phyics3dBatchedEnv[
         M, LiberoOscConfig[T], LANES, CRBA_TREEWALK=True
@@ -751,12 +753,12 @@ def run[T: PlacementTable, M: ModelDefLike](
         norm = load_bc_norm(policy_path + ".norm", OD, OSC_ACTION_DIM)
         print("  policy:", policy_path, "| obs", OD, "-> 7, clamped to [-1, 1]")
     elif have_act:
-        if not exists(act_dir + "/best.ckpt") or not exists(act_dir + "/norm.json"):
-            raise Error("libero eval batched: --act " + act_dir + " has no"
-                        " best.ckpt + norm.json (a libero-act-train checkpoint"
-                        " directory)")
+        if not exists(act_dir + "/" + act_ckpt + ".ckpt") or not exists(act_dir + "/norm.json"):
+            raise Error("libero eval batched: --act " + act_dir + " has no "
+                        + act_ckpt + ".ckpt + norm.json (a libero-act-train"
+                        " checkpoint directory; --act-ckpt best|last)")
         act_norm = ACTNorm.load(act_dir + "/norm.json", AQ, AA)
-        print("  policy: ACT", act_dir + "/best.ckpt", "| qpos", AQ, "+",
+        print("  policy: ACT", act_dir + "/" + act_ckpt + ".ckpt", "| qpos", AQ, "+",
               LIBERO_ACT_N_CAM, "cameras", LIBERO_ACT_IMG_W, "x",
               LIBERO_ACT_IMG_H, "-> chunk", AK, "x", AA,
               ", temporal ensemble m =", ACT_TEMPORAL_ENSEMBLE_M)
@@ -920,7 +922,7 @@ def run[T: PlacementTable, M: ModelDefLike](
                         + String(AQ - 2 * AQP) + " task words, the family has "
                         + String(n_tasks) + " tasks")
         act_opt.append(ACT_T.make(ctx=ctx))
-        act_opt[0].load(act_dir + "/best.ckpt")
+        act_opt[0].load(act_dir + "/" + act_ckpt + ".ckpt")
         act_images = List[Scalar[DT]](length=LANES * AIMG, fill=Scalar[DT](0))
         act_qpos = List[Scalar[DT]](length=LANES * AQ, fill=Scalar[DT](0))
         act_dummy = List[Scalar[DT]](length=LANES * AK * AA, fill=Scalar[DT](0))
@@ -1588,6 +1590,7 @@ def main() raises:
     var knn_vel = False
     var demo_init = String("")
     var only_task = -1
+    var act_ckpt = String("best")
     var i = 1
     while i < len(args):
         var s = String(args[i])
@@ -1625,6 +1628,9 @@ def main() raises:
                 i += 1
         elif s == "--knn-vel":
             knn_vel = True
+        elif s == "--act-ckpt" and i + 1 < len(args):
+            act_ckpt = String(args[i + 1])
+            i += 1
         elif s == "--task" and i + 1 < len(args):
             only_task = Int(String(args[i + 1]))
             i += 1
@@ -1649,7 +1655,7 @@ def main() raises:
                 " --steps N, --check-lanes K, --sampled, --policy PATH,"
                 " --act DIR, --act-exec N, --check-obs [STORE], --video F.mp4,"
                 " --video-lane L, --trace-lane L, --knn [STORE], --knn-k N, --knn-vel,"
-                " --demo-init [STORE], --task T)"
+                " --demo-init [STORE], --task T, --act-ckpt best|last)"
             )
         i += 1
 
@@ -1662,31 +1668,31 @@ def main() raises:
         run[LiberoGoalPlacement, LiberoGoalModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init, only_task,
+            knn_vel, demo_init, only_task, act_ckpt,
         )
     elif FAMILY == "libero_object":
         run[LiberoObjectPlacement, LiberoObjectModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init, only_task,
+            knn_vel, demo_init, only_task, act_ckpt,
         )
     elif FAMILY == "libero_spatial":
         run[LiberoSpatialPlacement, LiberoSpatialModel](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init, only_task,
+            knn_vel, demo_init, only_task, act_ckpt,
         )
     elif FAMILY == "libero_kitchen_scene3":
         run[LiberoKitchenScene3Placement, LiberoKitchenScene3Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init, only_task,
+            knn_vel, demo_init, only_task, act_ckpt,
         )
     elif FAMILY == "libero_kitchen_scene5":
         run[LiberoKitchenScene5Placement, LiberoKitchenScene5Model](
             n_inits, max_steps, check_lanes, sampled, policy_path, act_dir, act_exec,
             obs_store, video_path, video_lane, trace_lane, knn_store, knn_k,
-            knn_vel, demo_init, only_task,
+            knn_vel, demo_init, only_task, act_ckpt,
         )
     else:
         comptime assert False, (
