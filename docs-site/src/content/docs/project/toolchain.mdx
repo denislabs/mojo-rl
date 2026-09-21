@@ -1,0 +1,213 @@
+---
+title: Toolchain
+description: The pinned Mojo and MAX versions, how to upgrade them, the Mojo 1.1 migration, the Python and ptxas rules, the native shims, and the precompiled-package tasks.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+noeira builds with one exact toolchain, declared in `pixi.toml`. This page
+covers what is pinned and why, how an upgrade is done, and the pieces of the
+build that are not Mojo: the C shims, the `ptxas` redirection and the embedded
+Python.
+
+## What is pinned
+
+| Package | Pin | Where |
+|---|---|---|
+| `mojo` | `==1.1.0` | `[dependencies]` |
+| `max` | `==26.6.0` | `[dependencies]` |
+| `mojo-compiler` | `==1.1.0` | `[package.host-dependencies]`, `[package.build-dependencies]`, `[package.run-dependencies]` |
+| `python` | `>=3.13.14,<3.14` | the `nvidia`, `jetson` and `cpu` features |
+
+The pins are exact on purpose. The channel list includes Modular's nightly
+channel, but a `==` pin means every machine, CI runner and Jetson resolves the
+same compiler — a kernel that compiles on one box compiles on all of them.
+
+The workspace declares three platforms — `linux-64`, `linux-aarch64` and
+`osx-arm64` (macOS 15 or later) — and seven environments: `default` (which is
+the `nvidia` feature), `nvidia`, `jetson`, `amd`, `apple`, `cpu` and `act-ref`.
+See [Installation](/start/installation/) for which to pick.
+
+## Upgrading the toolchain
+
+An upgrade changes five lines: the `mojo` and `max` pins, and the three
+`mojo-compiler` pins under `[package.*]`. Then:
+
+1. `pixi install` re-solves `pixi.lock`. Commit the lock with the pins — it
+   carries all three platforms.
+2. `pixi run build` precompiles the whole package (`mojo precompile noeira`)
+   and is the fastest way to see every error in the tree at once.
+3. Run the gates that exercise what changed, then `pixi run test-smoke` and
+   `pixi run examples-compile`. The Mojo 1.1 upgrade was verified with
+   `tests/nn/test_im2col_cpu.mojo` (exact across 18 shapes, including the
+   threaded path) and `tests/vision/test_act_preprocess.mojo` (byte for byte
+   against PIL through the parallel resize).
+
+:::caution[One failed import looks like hundreds of errors]
+On the Mojo 1.1 upgrade, `pixi run build` reported 367 errors; 355 of them were
+a single problem. When an `import` at the top of a file fails, the parser goes
+on to report "statement indentation must match the rest of the block" in the
+kernels below it. Fix the imports first and rebuild before reading any other
+error.
+:::
+
+`mojo precompile` stops at elaboration and does not instantiate generic code,
+so a clean `pixi run build` does not prove every driver compiles. The
+`examples-compile` tier and the gates cover that.
+
+## The Mojo 1.1 migration
+
+Mojo 1.1.0 / MAX 26.6.0 landed in commit `5896331cf`. The changes it forced:
+
+| Before (Mojo 1.0) | After (Mojo 1.1) | Notes |
+|---|---|---|
+| `from std.gpu… import …` | `from max.gpu… import …` | The GPU API moved into MAX. 311 files, a rename only. |
+| `Atomic[DType.int64]` | `Atomic[Int64]` | The parameter is a value type now (`noeira/core/concurrent/block.mojo`). |
+| `@parameter` closure + `parallelize[f](n)` | `def f(i: Int) {imm}:` + `parallelize(f, n)` | The closure is a runtime argument and captures by immutable reference; writes through captured pointers are unchanged. |
+
+For example, the im2col row loop in `noeira/nn/primitives/conv2d.mojo`:
+
+```mojo
+def _row(oh: Int) {imm}:
+    ...
+
+parallelize(_row, OH)
+```
+
+Two migrations were left for a deliberate pass and still produce warnings:
+the remaining `@parameter` closures (the replacement is a capture list), and
+`as_c_string_slice().unsafe_ptr()` in the FFI bindings, which becomes
+`as_c_string_span().ptr`.
+
+Syntax the tree already uses throughout: `def` is the only function keyword,
+parameters are `mut` / `var` / `out` / `deinit` rather than `inout` / `owned`,
+and compile-time constants are `comptime`.
+
+## Python: the 3.13 rule
+
+Mojo's Python interop loads the library named by `MOJO_PYTHON_LIBRARY`. pixi
+sets it per platform, pointing at the *active* environment:
+
+```toml
+[target.osx-arm64.activation]
+env = { MOJO_PYTHON_LIBRARY = "$CONDA_PREFIX/lib/libpython3.13.dylib" }
+
+[target.linux-64.activation]
+env = { MOJO_PYTHON_LIBRARY = "$CONDA_PREFIX/lib/libpython3.13.so" }
+```
+
+The file name is hard-coded to 3.13, so every environment must resolve Python
+3.13 — that is why the `nvidia`, `jetson` and `cpu` features pin
+`python = ">=3.13.14,<3.14"`. If an environment resolves another minor version,
+the library path does not exist and interop aborts on the first import.
+
+Pointing at `$CONDA_PREFIX` rather than a fixed environment matters too:
+`pixi run -e apple` and `-e nvidia` each load their own libpython, so a module
+installed only in that environment (MAX's Python package, for instance) is
+found.
+
+## NVIDIA: the ptxas redirection
+
+The `nvidia` and `jetson` features set:
+
+```toml
+MODULAR_NVPTX_COMPILER_PATH = "/usr/local/cuda/bin/ptxas"
+```
+
+This makes MAX assemble PTX with the system `ptxas` instead of its built-in
+compiler library, which is tied to CUDA 13 and a driver of 580 or later. With
+the redirection, any CUDA 12.x or 13.x installation on a driver of 570 or later
+works: a CUDA 13 `ptxas` knows `sm_120` (RTX 50xx), a CUDA 12.8 one knows
+`sm_89` (RTX 40xx). On a Jetson the same line lets JetPack 6.2's driver run
+without a reflash.
+
+The consequence: `/usr/local/cuda/bin/ptxas` must exist, and the architectures
+you can compile for are the ones that `ptxas` knows.
+
+:::note[Jetson needs the target on the command line]
+MAX picks the kernel target through NVML, which Tegra does not provide. Build
+and run with `--target-accelerator sm_87`, which the `run-jetson` and
+`build-jetson` tasks pass for you. See [Jetson](/robots/jetson/).
+:::
+
+## Native shims
+
+A few C and C++ libraries are called through small shims, built once per
+machine. None of the built libraries are tracked in git, and a missing one is
+a `dlopen` abort **at run time**, not a compile error.
+
+| Task | Builds | Why it exists | Needed by |
+|---|---|---|---|
+| `pixi run build-http` | `libnra_http` in `noeira/io/` | `curl_easy_setopt` is C-variadic, which Mojo's FFI cannot call; also carries zlib's `inflate` for `.gz` downloads | every network call: run logging and noeira cloud, the dataset catalog, the Hugging Face client, the MNIST and TinyShakespeare loaders |
+| `pixi run build-serial` | `libnra_serial` in `noeira/io/serial/` | `ioctl` is C-variadic; on Apple arm64 the variadic arguments go on the stack, so a direct call fails silently with `EFAULT` | anything under `noeira/robot/` — the SO-101 |
+| `pixi run build-qhull` | `libnra_qhull` in `noeira/physics3d/collision/` | MuJoCo calls qhull to build a mesh's convex hull, and qhull's facet order decides every merged polygon's normal | any model with a mesh |
+| `pixi run build-opencv` | `libmojo_cv` in `noeira/vision/opencv/` | OpenCV has had no C API since 4.x | camera capture and ArUco detection |
+| `pixi run build-imgui` | `libmojo_imgui` in `noeira/render/imgui/` | Dear ImGui is C++; the script clones it into `third_party/` on first run | the [ImGui viewers](/rendering/viewers/) and recording UIs |
+
+Tasks that need a shim declare it: `soarm-record-ui`, for instance, depends on
+`build-serial`, `build-opencv` and `build-imgui`, so pixi builds them first. A
+plain `pixi run mojo run -I . …` does not, so run the build task once on a
+fresh checkout or a new machine. `noeira/io/http.mojo` also honours
+`NOEIRA_HTTP_LIB` if the HTTP shim lives elsewhere.
+
+The `nvidia` and `jetson` environments build one more library themselves: their
+activation runs `scripts/build_cuda_intercept.sh`, which compiles
+`noeira/cuda/cuda_intercept.c` into `libcuda_intercept.so` and loads it with
+`LD_PRELOAD`. It hooks `dlsym` to trace calls that are illegal during CUDA-graph
+capture, and on a Jetson it answers NVML's PCI query with CUDA's own location
+for the integrated GPU.
+
+## The precompiled package
+
+Building a large driver from source pays an uncached import cost that scales
+with the symbols it references. The precompiled-package tasks take that out of
+the edit-compile loop when you are iterating on a driver, a config or an
+example rather than on `noeira/` itself:
+
+```bash
+pixi run build-pkg                                # precompile noeira into build/pkg/ (~3 min)
+pixi run run-pkg <driver>.mojo [args]            # build a driver against the package, then run it
+pixi run compile-pkg <driver>.mojo -o out [...]  # mojo build against the package
+```
+
+Measured on the SAC HalfCheetah driver (Mojo 1.0): a warm rebuild went from
+38 s to 8 s, with an identical binary.
+
+The traps, all handled by `scripts/pkg.sh`:
+
+- **The source tree shadows the package.** Whenever the working directory
+  holds `noeira/`, the compiler reads the sources, not `noeira.mojoc`. The
+  script compiles from `build/pkg/` with the driver's absolute path.
+- **Shims and assets are found from the project root.** The script runs the
+  binary from the root, not from `build/pkg/`.
+- **A stale package builds against the old library.** `run-pkg` and
+  `compile-pkg` warn when any file under `noeira/` is newer than the package.
+  Rebuild with `pixi run build-pkg` after you change the library.
+- **`build-pkg` wants the whole machine** for its three minutes; do not run it
+  next to another compile.
+
+`pixi run build` is a different task: it writes `noeira.mojoc` into the project
+root. A stale copy there produces errors that point at code that no longer
+exists — delete it with `rm -f noeira.mojoc`.
+
+## The macOS linker's symbol-length assertion
+
+The generic code in noeira produces very long symbol names, and on large
+drivers (ACT-sized) the default macOS linker fails an assertion on them. The
+known workaround is the classic linker:
+
+```bash
+pixi run mojo build -I . -Xlinker -ld_classic -o /tmp/act_deploy examples/so101/act_so101_deploy_real.mojo
+```
+
+`run-pkg` adds `-Xlinker -ld_classic` on macOS automatically, and the
+`soarm-act-deploy` task passes it. It is an `ld64` flag: do not pass it on
+Linux or on the Jetson, which link with `lld`.
+
+## Next
+
+- [Cloud GPUs](/project/cloud-gpu/) — the image and the setup for a rented box
+- [Testing](/project/testing/) — the tiers and the manifests
+- [Contributing](/project/contributing/) — the development workflow

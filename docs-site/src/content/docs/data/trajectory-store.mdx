@@ -24,7 +24,8 @@ is declared by whoever writes the store — `qpos`/`qvel` for dm_control,
 `pixels`/`proprio`/`state` for PushT, `ram` for Atari.
 
 The layout is deliberately a superset of the schema the PushT expert dataset
-already uses, so LeRobot-style datasets stay cheap to ingest.
+already uses, so LeRobot-style datasets stay cheap to ingest — see
+[importers](#importers) below.
 
 ## Writing
 
@@ -82,6 +83,58 @@ A file we did not write — a HuggingFace dataset with no manifest of ours — o
 the same way. The schema is recovered by enumerating the datasets and
 introspecting each one's shape and dtype. This is gated against the real 44 GB
 `pusht_expert_train.h5`, not only against a fixture.
+
+## Importers
+
+Demonstration datasets from elsewhere arrive as stores, through native
+importers with no Python in the path. Each one is gated against an independent
+implementation.
+
+| Source | Importer | Run it with | Columns |
+|---|---|---|---|
+| LeRobot v3.0 (SO-101 recordings, Hub datasets) | `noeira/data/lerobot.mojo` | `examples/so101/act_so101_import_dataset.mojo` | `qpos`, `action`, `task_index`, `images` |
+| LIBERO's demonstration HDF5 | `noeira/envs/libero/demos.mojo` | `pixi run libero-demo-import` | `state`, `joint_states`, `gripper_states`, `qpos`, `action`, `task_index`, `images` |
+| LAFAN1 motion for the Unitree G1 | `noeira/data/lafan.mojo` | `examples/g1/lafan_import.mojo` | the reference's motion states, column by column |
+
+LeRobot has its own page: [LeRobot datasets](/data/lerobot/).
+
+### LIBERO demonstrations
+
+```bash
+pixi run libero-demo-import                           # libero_goal, with images
+pixi run libero-demo-import --no-images --demos 2     # a smoke run
+pixi run libero-demo-import libero_goal --out build/demos/libero_goal.h5
+```
+
+It reads the suite's demonstration files from `references/libero_demos/<suite>`
+and writes `build/demos/<suite>.h5` (`.lowdim.h5` with `--no-images`).
+`--demos N` caps the demonstrations per task. The columns:
+
+- **`state`** is LIBERO's recorded `(time, qpos, qvel)` rewritten into noeira's
+  joint addresses. A wrong remap would produce a file of the right shape, so
+  the run checks the rows against the Python remap's dumps
+  (`pixi run libero-demo-dump`), to within 2 ULP, and prints how many values it
+  compared.
+- **`qpos`** is what the image policies read: `joint_states` (7) and
+  `gripper_states` (2), then their one-step difference (9 more, zero on an
+  episode's first row), then a one-hot of the task. Its width is
+  `18 + n_tasks`.
+- **`images`** holds the two recorded cameras, agent view and eye-in-hand.
+
+The difference and the one-hot are there because a single pose does not
+identify the phase of a motion, and in `libero_goal` the picture does not
+identify the task: every task is the same scene at the same layout. See
+[LIBERO](/environments/libero/) for the environment and
+[ACT](/algorithms/imitation/act/) for the policy trained on it.
+
+:::note[`.demo` files are not stores]
+Transitions recorded for an off-policy replay — teleoperation and DAgger
+interventions on the SO-101 tabletop — go into a flat `.demo` file
+(`noeira/deep_agents/demos/file.mojo`), not a trajectory store. It holds
+`(obs, action, reward, next_obs, done)` rows with an intervention flag, and is
+loaded as the replay's [pinned demo prefix](/data/replay/#demonstrations-a-pinned-prefix).
+See [HIL-SERL](/algorithms/imitation/hil-serl/).
+:::
 
 ## Residency
 

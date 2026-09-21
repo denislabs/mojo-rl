@@ -94,9 +94,19 @@ forward, loss accumulate, `vjp`, optimizer step — as a graph and replays it. T
 batch build stays eager, and the captured graph reads fixed buffers.
 
 :::caution[Off by default, and for a specific reason]
-On NVIDIA the nn GEMM (`linalg.matmul`) allocates a **split-K workspace per
-call**, which is illegal under stream capture. Enabling capture can abort in a
-shape-dependent way.
+Stream capture forbids any device allocation inside the captured region, and
+MAX allocates in places the trainer does not control. The best-known one is
+split-K: `linalg.matmul` allocates its reduction workspace on every call that
+partitions K. The six weight-gradient (dW) GEMMs in `Linear`, `LinearAct`,
+`NoisyLinear`, `Embedding`, `Conv2D` and `Conv2DTranspose` now own that
+workspace (`noeira/nn/core/splitk_gemm.mojo`), but only where MAX itself would
+take the multistage path — sm_80, sm_89 and sm_120. H100 and datacenter
+Blackwell fall back to `linalg.matmul`, which still allocates, and other
+per-call allocations inside MAX's memory manager also abort capture. Enabling
+capture can therefore still abort in a shape- and hardware-dependent way.
+
+Owning the workspace also pays outside capture: on an RTX 5090, ACT's dW
+GEMMs went from 3.05 to 0.35 ms per step once the partition count was tuned.
 
 It is fp32-only and contiguous-sweep only — no shuffle or augmentation under
 capture. On non-NVIDIA targets the flag is a no-op and the run is bit-identical.

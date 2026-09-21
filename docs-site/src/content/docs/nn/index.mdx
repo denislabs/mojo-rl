@@ -39,12 +39,12 @@ var trainer = Trainer[Net, NC, IN_DIM, BATCH, "gpu"].make[Kaiming](
 		without registration boilerplate.
 	</Card>
 	<Card title="70+ primitives" icon="puzzle">
-		[The layer catalogue](/nn/primitives/) — Linear, Conv2D, attention,
-		LSTM/GRU, normalizations, and RL-specific ops.
+		[The layer catalogue](/nn/primitives/) — Linear, Conv2D, self- and
+		cross-attention, RoPE, LSTM/GRU, normalizations, and RL-specific ops.
 	</Card>
 	<Card title="Combinators & models" icon="list-format">
 		[Composition](/nn/combinators/) — Sequential, Residual, Parallel, Repeat,
-		plus ResNet, GPT and ViT, and the ComputeGraph DAG builder.
+		plus ResNet-18, GPT and ViT, and the ComputeGraph DAG builder.
 	</Card>
 	<Card title="Optimizers & losses" icon="approve-check">
 		[SGD, Adam, AdamW](/nn/optimizers/), gradient clipping, LR schedules,
@@ -93,7 +93,7 @@ MNIST to 97%+ in five epochs, on GPU
 (`examples/nn/mlp/mlp_mnist_training_storage_gpu.mojo`):
 
 ```mojo
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from noeira.nn.datasets import MNIST
 from noeira.nn.constants import DT
 from noeira.nn.core.initializer import Kaiming
@@ -144,10 +144,11 @@ sub-buffer view — no per-batch host-to-device transfer.
 
 ```
 noeira/nn/
-├── core/          Module trait, Param, Tensor, initializers, checkpoint, AMP
+├── core/          Module trait, Param, Tensor, initializers, checkpoint, AMP,
+│                  safetensors + PyTorch name maps, split-K GEMM
 ├── primitives/    70+ leaf layers
 ├── combinators/   Sequential, Residual, Parallel, Repeat, ComputeGraph
-├── models/        ResNet, GPT, ViT, conv and CIFAR feature nets
+├── models/        ResNet blocks, ResNet-18, GPT, ViT, conv and CIFAR feature nets
 ├── optimizer/     SGD, Adam, AdamW, grad clipping, LR schedules
 ├── loss/          CrossEntropy, MSE, SoftCE, TwoHot, GaussianNLL
 ├── training/      Trainer, autoregressive trainer, augmenter

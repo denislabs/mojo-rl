@@ -1,14 +1,16 @@
 ---
 title: Testing
-description: The three test tiers, what CI runs, and the discipline for validating a change.
+description: The test tiers, the manifests and their pixi tasks, what CI runs, and the discipline for validating a change.
 ---
 
 import Maturity from '~/components/Maturity.astro';
 
 <Maturity level="stable" />
 
-619 test files across 16 directories. Because running them all takes hours, they
-are organised into **tiers** by cost.
+There are 1,161 test files (`test_*.mojo`) under `tests/`, 107 of them GPU
+tests. Running them all takes hours, so they are organised into **tiers** by
+cost, plus **manifests** for the gates that need something the default tiers
+do not have — a reference dump, a download, a GPU, hardware.
 
 ## The tiers
 
@@ -20,19 +22,55 @@ pixi run -e apple  test-gpu      # GPU tests on Metal
 pixi run -e nvidia test-gpu      # GPU tests on CUDA
 ```
 
-**`test-smoke`** runs a curated manifest (`tests/manifests/smoke.txt`) and is
-deliberately self-contained: no `references/`, no ROMs, no GPU. It is the gate
-on every push.
+**`test-smoke`** runs the curated manifest `tests/manifests/smoke.txt` (90
+entries). It is deliberately self-contained: no `references/`, no ROMs, no
+GPU, no downloads. It is the gate on every push.
 
-**`examples-compile`** type-checks the root examples without running them.
+**`examples-compile`** builds the examples listed in
+`tests/manifests/examples-compile.txt` (27 entries) without running them.
 Examples rot faster than tests because nothing forces them to compile — this
 catches it cheaply.
 
-**`test-cpu`** discovers everything non-GPU under `tests/`. Run before a large
-merge; CI runs it weekly.
+**`test-cpu`** discovers every `test_*.mojo` under `tests/` that is not a GPU
+test. Run it before a large merge; CI runs it weekly.
 
-**`test-gpu`** discovers `*_gpu.mojo`. Never runs in CI — there are no free GPU
-runners — so it is a local or rented-box task.
+**`test-gpu`** discovers the GPU tests — files ending in `_gpu.mojo`,
+`_gpu_vs_cpu.mojo` or `_gpu_parity.mojo`. It never runs in CI (there are no
+free GPU runners), so it is a local or [rented-box](/project/cloud-gpu/) task.
+
+All of them go through `scripts/run_tests.sh`, which prints the last 40 lines
+of each failing test, a summary table, and exits with the number of failures.
+It reads the **exit code only**: a test that prints `FAIL` and returns normally
+counts as a pass, so a gate must raise or exit non-zero to fail.
+
+## The manifests
+
+A manifest is a list of test files, one per line, optionally with arguments.
+Each header says what the gates need before they can run.
+
+| Task | Manifest | Needs |
+|---|---|---|
+| `test-smoke` | `smoke.txt` | nothing — the CI tier |
+| `examples-compile` | `examples-compile.txt` | nothing (compile only) |
+| `test-io` | `io.txt` | Parquet, resize and synthetic LeRobot dumps from `tools/io/` and `tools/act/` |
+| `test-act` | `act.txt` | the PyTorch ACT reference dump (`-e act-ref`) and a converted LeRobot store |
+| `test-act-gpu` | `act-gpu.txt` | `-e apple` or `-e nvidia` |
+| `test-interop` | `interop.txt` | `act-ref` dumps — safetensors and torch-name interop |
+| `test-vla` | `vla.txt` | nothing — SmolVLA structural gates, no weights |
+| `test-vla-gpu` | `vla-gpu.txt` | a GPU environment |
+| `test-vla-weights` | `vla-weights.txt` | the published SmolVLA weights (~907 MB, cached) |
+| `test-vla-ref` | `vla-ref.txt` | `pixi run dump-vla-ref` first |
+| `test-fb` | `fb.txt` | nothing — Forward-Backward, CPU |
+| `test-fb-gpu` | `fb-gpu.txt` | `-e nvidia` or `-e apple` |
+| `test-g1` | `g1.txt` | the baked Unitree G1 assets and motion file |
+| `test-bfm-ref` | `bfm-ref.txt` | runs in `-e act-ref` (PyTorch in-process) |
+| `test-physics3d-mujoco` | `physics3d-mujoco.txt` | the pixi MuJoCo 3.12 runtime; about two hours |
+| `test-physics3d-gpu` | `physics3d-gpu.txt` | `-e nvidia` |
+| `test-concurrent` | `concurrent.txt` | nothing — the pthread / ring / atomics backbone |
+| `test-swm` | `swm.txt` | nothing — experimental, CPU |
+| — | `vision.txt` | `pixi run build-opencv`; run with `bash scripts/run_tests.sh tests/manifests/vision.txt` |
+
+All manifests live in `tests/manifests/`.
 
 ## Running one test
 
@@ -42,38 +80,67 @@ pixi run mojo run -I . tests/physics3d/test_euler_fields_vs_mujoco.mojo
 pixi run -e nvidia mojo run -I . tests/deep_agents/test_storage_sac_gpu_pendulum.mojo
 ```
 
+Several single gates also have a named task — `pixi run appearance-test`,
+`pixi run device-placement`, `pixi run libero-task-hooks` and others; see
+`pixi run --list`.
+
 ## What lives where
 
-| Directory | Covers |
-|---|---|
-| `physics3d/` | 54 files — MuJoCo comparison, solvers, collision, integrators |
-| `nn/` | modules, autodiff, optimizers, checkpoints |
-| `deep_agents/` | agent convergence and parity |
-| `envs/` | environment dynamics |
-| `arcade_games/` · `atari/` | game engines and emulator |
-| `board_games/` · `planners/` | self-play and MCTS |
-| `physics2d/` · `render/` · `io/` · `core/` | the rest |
+| Directory | Test files | Covers |
+|---|---|---|
+| `physics3d/` | 264 | MuJoCo comparison (131 `*_vs_mujoco` files), solvers, collision, integrators, cameras |
+| `nn/` | 234 | modules, autodiff, optimizers, checkpoints, kernels |
+| `deep_agents/` | 220 | agent convergence, GPU parity, imitation |
+| `pcn/` · `experimental/` | 83 · 61 | research code |
+| `dm_control/` | 69 | DeepMind Control domains |
+| `envs/` | 65 | environment dynamics |
+| `io/` · `data/` | 23 · 12 | native I/O, trajectory store, LeRobot |
+| `tasks/` · `libero/` | 19 · 12 | the task layer and LIBERO |
+| `planners/` | 18 | MPPI, CEM, iLQR, tree search |
+| `robots/` · `robot/` · `vision/` | 13 · 6 · 6 | robot models, the servo bus, cameras |
+| `arcade_games/` · `atari/` · `board_games/` | 13 · 1 · 4 | game engines, emulator, self-play |
+| `core/` · `concurrent/` · `cuda/` · `render/` · `physics2d/` | the rest | |
 
 ## CI
 
-`.github/workflows/ci.yml`:
+`.github/workflows/ci.yml` runs everything in the `cpu` environment, which
+leaves out the CUDA toolchain:
 
-| Trigger | Job |
+| Trigger | Jobs |
 |---|---|
-| push / PR to `dev` or `main` | `smoke` + `examples-compile` |
-| weekly cron (Sun 03:17 UTC) | `cpu-full` |
-| manual dispatch | either tier |
+| push to `dev` or `main`, pull request | `smoke` (`test-smoke`), `model-dims` (`gen-dims-check`), `examples-compile` |
+| weekly cron, Sunday 03:17 UTC | `cpu-full` (`test-cpu`) |
+| manual dispatch | the `smoke` tier or `cpu-full` |
 
-The pixi environment is cached on `pixi.lock`, so steady-state runs skip the
-toolchain download. The `cpu-full` job is `continue-on-error` — parts of the
-long tail need local-only assets and fail on a runner; the summary still shows
-*what* is red and whether that changed week to week.
+Pushes that touch only Markdown, images or `docs/` are skipped. The pixi
+environment is cached on `pixi.lock`, so steady-state runs skip the toolchain
+download. `cpu-full` is `continue-on-error`: parts of the long tail need
+local-only assets and fail on a runner; the summary still shows *what* is red
+and whether that changed week to week.
+
+`model-dims` exists because the compile-time model dimensions are generated
+from the `.xml` assets through MuJoCo. A stale generated file still compiles —
+it just sizes the buffers for a model that no longer exists — so the check runs
+on every push. The other generators carry `--check` tasks too
+(`gen-park-scenes-check`, `gen-family-scenes-check`,
+`gen-placement-tables-check`, `gen-libero-envs-check`, `vendor-panda-check`,
+`libero-arenas-check`, `libero-objects-check`), but CI does not run them; run
+them after changing a family, a scene or a generated asset.
+
+`.github/workflows/docs.yml` builds this site on changes under `docs-site/`,
+with two guards around the build: `check:refs` fails on any repository path a
+page cites that does not exist, and `check:og` fails if a page's social image
+does not resolve.
+
+**Nothing on a GPU runs in CI.** `test-gpu`, `test-act-gpu`, `test-vla-gpu`,
+`test-fb-gpu` and `test-physics3d-gpu` are run by hand, on a Mac for Metal and
+on an NVIDIA box for CUDA.
 
 ## The discipline
 
 Two rules that have repeatedly paid off in this project.
 
-:::tip[Search at smoke scale, SARSA at scale]
+:::tip[Prove it small first]
 Prove an algorithm on something small and exactly solvable before spending GPU
 hours. CartPole for anything discrete, Pendulum for continuous, Tic-Tac-Toe for
 self-play — all fast, all with a known correct answer.
@@ -106,23 +173,27 @@ Finite differences work, with two constraints:
 - **`eps ≈ 1e-2` for deep chains.** Smaller steps drown in accumulated float error.
 - **Never on TF32.** The reduced mantissa makes the comparison meaningless. Force fp32.
 
-## Known failures
+## Known platform limits
 
-Some tests are known-red rather than regressions:
+Some gates are expected to fail on one backend:
 
-- `tests/physics3d/test_equality_tendon_fields.mojo` and `test_crba_treewalk_fields.mojo` fail on CUDA
-- `tests/deep_agents/test_storage_sac_gpu_pendulum.mojo` pre-existing-fails on Apple
-- Parts of `test-cpu` need `references/` or ROMs and fail on a bare runner
-
-Check against this list before assuming a change caused a failure.
+- `pixi run box-box-sap-gpu` fails on Metal: the block SAP kernel drops the
+  box/box pair.
+- `pixi run libero-osc-batched` is NVIDIA only — Metal cannot compile the
+  kernel library at that model size.
+- Parts of `test-cpu` need `references/` or ROMs and fail on a bare runner.
 
 ## Adding a test
 
-Put it in the directory matching the subsystem. If it is fast, CPU-only and
-self-contained, add it to `tests/manifests/smoke.txt` so CI runs it on every
-push — that is the only tier with a real feedback loop.
+Put it in the directory matching the subsystem and name it `test_*.mojo` —
+discovery only picks up that prefix — with a `_gpu.mojo` suffix if it needs an
+accelerator. If it is fast, CPU-only and self-contained, add it to
+`tests/manifests/smoke.txt` so CI runs it on every push. If it needs a dump, a
+download or a GPU, add it to the manifest for its area and write the
+prerequisite commands in the manifest header.
 
 ## Next
 
 - [Contributing](/project/contributing/) — the development workflow
+- [Toolchain](/project/toolchain/) — pins, shims and package builds
 - [Validating the physics](/physics/validation/) — the MuJoCo comparison suite

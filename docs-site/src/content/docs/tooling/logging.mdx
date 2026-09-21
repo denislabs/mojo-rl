@@ -18,7 +18,7 @@ from noeira.core.logger import NoOpLogger, CsvLogger, RemoteLogger, CompositeLog
 |---|---|
 | `NoOpLogger` | discards — the default |
 | `CsvLogger` | a local CSV file |
-| `RemoteLogger` | HTTP POST to the [training monitor](/tooling/monitor/) |
+| `RemoteLogger` | HTTP POST to [noeira cloud](/tooling/monitor/) |
 | `CompositeLogger` | several loggers at once |
 
 ## Attaching one
@@ -32,7 +32,7 @@ logger.set_config("env", "HalfCheetah")
 
 _ = agent.train[L=CsvLogger](
     env, NUM_STEPS,
-    logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+    logger=Pointer(to=logger).as_unsafe_any_origin(),
     print_every=50_000,
     diag_every=1_000,
 )
@@ -61,8 +61,9 @@ it is a policy problem.
 
 ## RemoteLogger
 
-Streams to a dashboard over HTTP — batched JSON POSTs, registering the run on
-first flush.
+Streams to [noeira cloud](/tooling/monitor/) over HTTP as batched JSON POSTs.
+The run is announced by `register()` — call it through `register_run` with a
+`RunContext`, before step 0 — and ended by `close()`, which sends the finish.
 
 ```mojo
 from noeira.core.dotenv import load_dotenv
@@ -77,30 +78,40 @@ var logger = RemoteLogger(
 logger.set_config("algorithm", "SAC")
 logger.set_config("env", "HalfCheetah")
 logger.set_config("n_envs", String(N_ENVS))
+logger.register()   # or register_run(run, logger) — see noeira cloud
 ```
+
+A logger that is never registered still registers lazily on its first flush,
+so older drivers keep working — but a run that dies before that flush never
+appears on the dashboard. New drivers should use a `RunContext` and
+`register_run`; see [how a run is registered](/tooling/monitor/#how-a-run-is-registered).
 
 Configuration comes from a `.env` file at the repo root, read by
 `noeira.core.dotenv`:
 
 ```
-NOEIRA_CLOUD_URL=https://your-monitor-url
+NOEIRA_CLOUD_URL=https://cloud.noeira.ai
 NOEIRA_CLOUD_API_KEY=...
 ```
 
-`buffer_size` controls batching. Smaller means fresher charts and more requests;
-64–200 is the usual range. `logger.total_logged()` reports how many points were
-sent.
+`buffer_size` controls batching (default 200). Smaller means fresher charts
+and more requests; 64–200 is the usual range. `logger.total_logged()` reports
+how many points were logged.
 
-:::caution[The logger uses Python `urllib`]
-Two consequences.
+The POST never happens on the training thread. `flush` serialises the batch
+and queues it; a background thread in `noeira/io/http_sink.mojo` owns the
+connection, sends in order, and sends a heartbeat when the run has been quiet
+for a minute. There is no Python in this path.
 
-Python temporaries created inside a Mojo function are not freed until that
-function **returns**, so a logger held across a very long training loop can
-accumulate. The batching keeps this bounded in practice, but it is why
-`buffer_size` exists.
+:::caution[It needs the HTTP shim, and it drops rather than stalls]
+The sender is a small libcurl shim: build it once per machine with
+`pixi run build-http`. If it is missing, the logger says so once and drops
+metrics from then on — training continues.
 
-And in a headless or cron context where the network is unavailable, the logger
-should be configured out rather than left to fail per flush.
+The queue is bounded. If the dashboard falls behind, batches are refused
+rather than blocking training, and every refusal is counted. `close()` drains
+the queue, joins the thread and prints the tally; without `close()`, whatever
+is still queued at exit is lost.
 :::
 
 ## `set_config`
@@ -128,7 +139,7 @@ Each algorithm defines a metrics struct. Representative fields:
 | PPO | `actor_loss`, `critic_loss`, `train_steps`, `n_updates` |
 | MuZero | policy / value / reward losses, search statistics |
 
-All drivers additionally emit `env/mean_ret` and `env/ep_count`.
+The shared training drivers additionally emit `avg_reward` and `episodes` at the driver cadence.
 
 ## What to watch
 
@@ -158,5 +169,5 @@ examples default to it.
 
 ## Next
 
-- [Training monitor](/tooling/monitor/) — where `RemoteLogger` sends
+- [noeira cloud](/tooling/monitor/) — where `RemoteLogger` sends
 - [Checkpoints](/concepts/checkpoints/) — persisting the run itself

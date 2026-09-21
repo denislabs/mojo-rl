@@ -9,7 +9,7 @@ import Papers from '~/components/Papers.astro';
 
 <Maturity level="stable" />
 
-Around seventy leaf modules live in `noeira.nn.primitives`. Every one
+Around eighty leaf modules live in `noeira.nn.primitives`. Every one
 implements [`Module`](/nn/modules/) with explicit `forward` and `vjp`, and most
 have both a CPU and a GPU kernel.
 
@@ -78,21 +78,96 @@ movement first.
 
 | Module | Notes |
 |---|---|
-| `Attention` | scaled dot-product attention |
-| `MaskedAttention` | causal masking |
-| `QkvToMajor` | QKV layout transform |
+| `ScaledDotProductAttention` | self-attention over one packed `[Q\|K\|V]` input |
+| `MaskedAttention` | causal masking — one `[SEQ, SEQ]` bias shared by the batch |
+| `CrossAttention[DIM, N_HEADS, Q_LEN, KV_LEN, MASKED]` | separate query and key/value streams, optional per-sample key padding mask |
+| `SelfAttentionPos` · `SelfAttentionPosMasked` | `CrossAttention` at `Q_LEN == KV_LEN` — DETR self-attention |
+| `RoPE[SEQ, N_HEADS, HEAD_DIM, THETA]` | rotary position embedding, applied to q and k |
+| `RepeatKVHeads[SEQ, N_KV, REP, HEAD_DIM]` | broadcasts K/V heads for grouped-query attention |
+| `QKVToMajor` | QKV layout transform |
 | `DecoderBlock` | pre-norm transformer decoder block |
 | `ConditionalTransformerBlock` | conditioned variant |
-| `Embedding` · `SinusoidalPos` | token and position embeddings |
-| `LearnedQueries` · `LearnedTokens` · `BroadcastTokens` | latent-query patterns |
-| `SwiGLU` · `Gate` · `Modulate` | gating and modulation |
+| `Embedding` · `SinusoidalPosAdd` · `SinusoidalPos1DTokens` · `SinusoidalPos2DTokens` | token and position embeddings |
+| `LearnedQueries[IGNORE_DIM, N, D]` · `LearnedTokens` · `BroadcastTokens` | latent-query patterns |
+| `PixelShuffle[GRID, EMBED, SCALE]` | folds a patch grid's space into channels |
+| `SwiGLU[HIDDEN]` · `Gate` · `Modulate` | gating and modulation |
+
+The modules the imitation policies ([ACT](/algorithms/imitation/act/),
+[SmolVLA](/algorithms/imitation/smolvla/)) are built from:
+
+**`CrossAttention`** takes `q`, `k` and `v` as three inputs (a fourth, the key
+padding mask, when `MASKED=True`). This is what DETR-style models need and
+`ScaledDotProductAttention` cannot express: queries attending to a memory of a
+different length, and a positional embedding added to q and k but not to v.
+The mask polarity is **1.0 = attend, 0.0 = ignore** — the inverse of PyTorch's
+`key_padding_mask`. A fully masked row produces a zero context vector rather
+than NaN.
+
+**`RoPE`** implements the split-halves pairing (channel `j` with `j + HEAD_DIM/2`)
+that Hugging Face safetensors checkpoints use, not GGUF's interleaved pairs.
+The wrong pairing loads and runs and computes a different function;
+`tests/nn/test_rope_vs_max_kernel.mojo` checks it against MAX's own RoPE
+kernel.
+
+**`RepeatKVHeads`** maps output head `g` to K/V head `g // REP`, matching
+Hugging Face's `repeat_kv` (SmolLM2 has 15 query heads over 5 K/V heads). Its
+backward *sums* the `REP` copies' gradients.
+
+**`PixelShuffle`** turns `[B, GRID², EMBED]` into
+`[B, (GRID/SCALE)², EMBED·SCALE²]` — SmolVLM's connector, 1024 tokens × 768
+into 64 tokens × 12288. It is a pure permutation, so its gate is the adjoint
+identity.
+
+**`SwiGLU`** is the parameter-free middle of a gated FFN:
+`Sequential[Linear[d, 2*hidden], SwiGLU[hidden], Linear[hidden, d]]`.
+
+**`LearnedQueries`** is a learned constant token sequence whose input is read
+only for its batch size — the DETR decoder's queries. It draws its initial
+values from N(0, 1) (`EMB_STD = 1.0`), as `nn.Embedding` does; a narrower
+draw left ACT's decoder returning the same action at every position of the
+chunk.
 
 :::caution[QKV layout mismatches scramble attention silently]
 A wrong QKV layout produces attention that runs, trains, and is wrong. Worse,
 a numerical parity test against a reference **will not catch it** if the test
 does not exercise causality — the shapes match and the values look plausible.
 Test masked attention with a sequence where position `t` must not see `t+1`.
+The same holds for RoPE's pairing, `RepeatKVHeads`' grouping and
+`PixelShuffle`'s permutation: every wrong choice is shape-legal.
 :::
+
+### Attention performance
+
+`CrossAttention` has a second, **inference-only** GPU forward: a fused
+online-softmax kernel that never materialises the score matrix. It is off by
+default and selected with `set_attr["fused_attention"](1.0)`, which every
+container forwards. It writes no softmax weights, so `vjp` after a fused
+forward raises. The SmolVLA deploy turns it on for the frozen vision tower
+(`--no-fused-vision` turns it off in
+`examples/so101/smolvla_so101_deploy_real.mojo`).
+
+On NVIDIA, at head dim 64 and without a mask, the fused flag routes to MAX's
+own FA2 flash-attention kernel instead (`xa_fused_routes_to_max` in
+`noeira/nn/primitives/cross_attention.mojo`). Measured on a Jetson Orin at
+SigLIP's shape (batch 1, 12 heads, 1024 × 1024 tokens, head dim 64):
+
+| Path | ms per layer |
+|---|---|
+| two-pass (scores materialised) | 8.42 |
+| noeira's fused kernel | 4.13 |
+| MAX FA2 kernel, routed | 1.26 |
+
+:::note[The routed path is TF32]
+MAX's kernel runs both matmuls on the tensor cores in TF32: about 3.7e-3
+standard units against a float64 reference at that shape, where the fp32
+kernels sit near 7e-6. That is the band the network's GEMMs already run in on
+CUDA, and `tests/nn/test_cross_attention_gpu_shapes.mojo` carries a TF32 band
+for exactly the routed shapes. Metal, ACT's head dim 32 and masked attention
+keep noeira's own kernel.
+:::
+
+The benchmark behind the table is `benchmarks/cross_attention_bench.mojo`
+(`pixi run -e jetson cross-attn-bench-jetson` builds it for the Orin).
 
 ## Recurrence
 
@@ -113,10 +188,14 @@ the state.
 | Module | Notes |
 |---|---|
 | `LayerNorm` · `LayerNormNoAffine` | the deep-RL default |
-| `RMSNorm` · `ConvRMSNorm` | cheaper, no mean subtraction |
+| `RMSNorm[DIM, EPS]` · `ConvRMSNorm` | cheaper, no mean subtraction |
 | `BatchNorm1D` · `BatchNorm2D` | running statistics |
 | `SimNorm` | simplicial normalization — TD-MPC2 latents |
 | `MinMaxNorm` | bounded normalization |
+
+`RMSNorm`'s default epsilon is `1e-4`. SmolLM2 and Llama use `1e-5`, and the
+difference shows in a parity check while passing every shape and NaN test —
+pass `RMSNorm[DIM, EPS=…]` when porting a model.
 
 :::tip[Prefer LayerNorm in deep RL]
 Value scales drift over training in ways batch statistics cannot track, and RL
@@ -130,7 +209,7 @@ that evaluates catastrophically while looking fine.
 
 ## Activations
 
-`ReLU`, `Tanh`, `Sigmoid`, `Softmax`, `Mish`, `SiLU`, `Swish`, `Symlog`,
+`ReLU`, `Tanh`, `Sigmoid`, `GELU`, `Mish`, `SiLU`, `Swish`, `Symlog`,
 `Clamp`, `Scale`.
 
 ```mojo
@@ -151,7 +230,7 @@ These are why `nn` is not a general-purpose framework wearing an RL hat:
 | `GatherActionSlice` | select the taken action's Q-value |
 | `MSEPerSample` | per-sample loss for prioritized replay weights |
 | `StopGrad` · `StopGradParams` | detach in a loss graph |
-| `SigReg` | SIGReg regularizer — the LeWM world-model work |
+| `SIGReg` | SIGReg regularizer — the LeWM world-model work |
 | `TokenMean` · `Slice` · `Concat` · `Reduce` | plumbing |
 
 ## Utility

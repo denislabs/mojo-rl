@@ -99,19 +99,37 @@ actually reaches it.
 
 ## Pre-built models
 
+The models are `comptime` compositions of the primitives and combinators above,
+exported from `noeira.nn.models`:
+
 ```mojo
-from noeira.nn.models.resnet import ResNet
-from noeira.nn.models.gpt import GPT
-from noeira.nn.models.vit import ViT
+from noeira.nn.models import ResNet18Backbone, GPT, ViT, PatchEmbed
+from noeira.nn.models import ResBlockConv2DBN, ResBlockDownsampleBN
 ```
 
 | Model | Notes |
 |---|---|
-| `ResNet` | residual CNN — ResNet-20 on CIFAR-10 in the examples |
-| `GPT` | decoder-only transformer, weight tying available |
-| `ViT` | vision transformer |
-| `Transformer` | generic encoder/decoder stack |
-| `Conv` · `CifarFeatureNet` | small convolutional trunks |
+| `ResBlockConv2DBN` · `ResBlockDownsampleBN` | CIFAR ResNet blocks — ResNet-20 on CIFAR-10 in the examples |
+| `ResNet18Backbone[IN_CH, H, W]` | ImageNet ResNet-18 topology, head-less — the ACT image backbone |
+| `GPT` · `GPTDrop` · `GPTDropTied` | decoder-only transformer; the tied variant shares the embedding |
+| `ViT` · `PatchEmbed` | vision transformer encoder with a classification head |
+| `TransformerBlock` · `MultiHeadAttention` · `TransformerFFN` | the shared transformer pieces |
+| `Conv2DReLU` · `Conv2DBatchNormReLU` · `CifarFeatureClassifier` | small convolutional trunks |
+
+**`ResNet18Backbone`** is torchvision's `resnet18` without its classifier: a
+7×7 stride-2 stem and a 3×3 stride-2 max-pool, then four stages of two basic
+blocks, for a total stride of 32 and a `[BATCH, 512 · H/32 · W/32]` NCHW
+output (a 240×320 frame becomes 8×10 = 80 tokens). It uses ordinary trainable
+`BatchNorm2D`, not torchvision's frozen batch norm. ImageNet weights load by
+name from `timm/resnet18.tv_in1k` through the map in
+`noeira/nn/models/resnet18_torch.mojo`, with no PyTorch install: the map
+renames torchvision's parameters and zero-fills the convolution biases
+torchvision does not have.
+
+**`ViT`** is `PatchEmbed` (a patch-stride `Conv2D` and a transpose) → a
+position bias → `n_layers` transformer blocks → `LayerNorm` → mean-pool → a
+linear head. SmolVLA's SigLIP vision tower is a separate model in
+`noeira/deep_agents/smolvla/vision.mojo`, built from the same primitives.
 
 ```bash
 pixi run -e nvidia mojo run -I . examples/nn/resnet/resnet20_cifar10_training_storage_gpu.mojo

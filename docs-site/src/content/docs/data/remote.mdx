@@ -1,16 +1,26 @@
 ---
 title: Remote datasets
-description: A catalog client that resolves a dataset name to bytes on disk — presigned object-store URLs, sha256 caching, and provenance for regeneration.
+description: Datasets, project recordings and asset packs on noeira cloud — presigned object-store URLs, sha256 caching, and provenance for regeneration.
 ---
 
 import Maturity from '~/components/Maturity.astro';
 
-<Maturity level="beta" note="Requires a catalog service and an object store you control. The client is stable; the deployment is yours to provide." />
+<Maturity level="beta" note="Needs a noeira cloud account, or a catalog service and object store you run yourself." />
 
 Training happens on rented GPU boxes that are created and destroyed. Without a
 remote store, every dataset is either regenerated on each box or pushed from a
-laptop each time. `RemoteCatalog` closes that gap: it resolves a dataset name to
-bytes at a local path, fetching only if the local copy is missing or stale.
+laptop each time. `RemoteCatalog` (`noeira/data/remote.mojo`) closes that gap: it
+resolves a dataset name to bytes at a local path, fetching only if the local
+copy is missing or stale. The catalog it talks to is
+[noeira cloud](/tooling/monitor/), the same service that records runs.
+
+Three kinds of thing move through it:
+
+| What | Where it lives locally | Commands |
+|---|---|---|
+| A catalog dataset (a trajectory store) | any path | `RemoteCatalog.pull` / `push` |
+| A project recording (LeRobot v3) | `projects/<project>/datasets/<dataset>/` | `pixi run dataset-push` / `dataset-pull` / `dataset-list` |
+| An environment asset pack | beside the env's `assets.kv` | `pixi run assets-status` / `assets-pull` / `assets-where` |
 
 ```mojo
 from noeira.data.remote import RemoteCatalog
@@ -20,11 +30,11 @@ var path = cat.pull(String("walker-random-v1"), String("data/walker.h5"))
 var store = TrajectoryStore(path^)
 ```
 
-Credentials come from a dotenv file, the same two keys the training monitor
-already uses:
+Credentials come from a dotenv file, the same two keys
+[run logging](/tooling/logging/) uses:
 
 ```
-NOEIRA_CLOUD_URL=https://…
+NOEIRA_CLOUD_URL=https://cloud.noeira.ai
 NOEIRA_CLOUD_API_KEY=…
 ```
 
@@ -51,10 +61,10 @@ the object store. This is a deliberate shape, not an implementation detail:
 - **multipart upload for large objects is never implemented by us** — those
   tools do it.
 
-The reference deployment runs on Cloudflare R2 behind the existing monitor
-Worker, chosen because egress is free: pulling datasets to GPU boxes as often as
-you like costs nothing, which is the entire argument when boxes are torn down
-and re-pull everything.
+noeira cloud stores the bytes in Cloudflare R2 behind its Worker, chosen
+because egress is free: pulling datasets to GPU boxes as often as you like
+costs nothing, which is the entire argument when boxes are torn down and
+re-pull everything.
 
 ## `pull` is a cache, not a toll booth
 
@@ -88,24 +98,90 @@ purpose. The catalog row stays `pending` between them, and `describe` refuses to
 serve a pending row. So an interrupted upload leaves a row that cannot be
 downloaded, rather than one advertising a truncated object.
 
+## Project recordings
+
+A recording made under a [project](/concepts/projects/) lives at
+`projects/<project>/datasets/<dataset>/`. The projects root is `projects/` by
+default; `NOEIRA_PROJECTS`, from the environment or from `.env`, moves it. A
+recording is mirrored file by file, including while it is still being recorded:
+
+```bash
+pixi run dataset-push -- --project so101-tower --dataset cube-in-bowl --watch
+pixi run dataset-pull -- --project so101-tower --dataset cube-in-bowl
+pixi run dataset-list -- --project so101-tower
+```
+
+Every file is offered with its digest, and the server answers `unchanged` for
+one it already holds, so a `--watch` cycle costs one small request per file.
+The video still being written is held back and metadata goes last. The details
+are on [LeRobot datasets](/data/lerobot/#to-noeira-cloud).
+
+## Asset packs
+
+Meshes and textures an environment needs can be declared as a *pack* in an
+`assets.kv` next to the environment, rather than tracked in git. LIBERO's
+assets are the pack declared so far (`noeira/envs/libero/assets.kv`, 189 MB).
+
+```
+pack=libero@v1
+provider=hf
+url=https://huggingface.co/datasets/DenisLabs/mojo-rl-assets/resolve/main/libero_v1.tar.zst
+sha256=8c7616b2…
+bytes=188991117
+dest=assets
+```
+
+```bash
+pixi run assets-status          # what is on this box, what is not
+pixi run assets-pull            # fetch everything declared
+pixi run assets-pull libero     # only the assets.kv files whose path matches
+pixi run assets-pull --force    # re-fetch even if present
+pixi run assets-where           # the URL each pack comes from, and whether a token is sent
+```
+
+`provider=` decides which credential is sent, which a URL alone cannot tell:
+
+| Provider | Locator | Credential | How the bytes are reached |
+|---|---|---|---|
+| `https` | `url=` | none, or the variable named by `token_env=` | a plain GET |
+| `hf` | `url=` | `HF_TOKEN`, or the `hf` CLI's token | a bearer on the GET |
+| `noeira` | `id=` | `NOEIRA_CLOUD_API_KEY` | catalog call → presigned URL → an unauthenticated GET |
+
+The archive is fetched to the cache, verified against its sha256, extracted
+once, and hard-linked into place (copied if a hard link is impossible, never
+symlinked). The cache is keyed by the archive's hash, not the pack name, so two
+declarations of the same bytes share one download. It lives at
+`~/.cache/noeira/assets`, or under `NOEIRA_CACHE`.
+
+Run `assets-pull` as a preflight on a fresh box. A missing mesh found forty
+minutes into training is the failure it exists to prevent. One pack failing
+does not stop the others, and the command exits non-zero if any failed.
+
 ## The downloader
 
-`noeira/io/fetch.mojo` handles the transfer. It was generalised from the PushT
-dataset loader rather than rewritten, because the parts worth keeping are the
-ones that were painful to get right:
+`noeira/io/fetch.mojo` handles the transfer, on top of libcurl through the HTTP
+shim in `noeira/io/http.mojo` (build it once with `pixi run build-http`). The
+behaviour worth knowing:
 
 - **Resume by HTTP Range** across a bounded number of retries, so a multi-GB
-  transfer survives a dropped connection instead of restarting.
+  transfer survives a dropped connection instead of restarting. A server that
+  ignores `Range` answers 200 with the whole file. Appending that to a partial
+  download would corrupt it silently, so those bytes are refused and the
+  transfer restarts from zero.
 - **`F_NOCACHE` on macOS, periodic fsync + `POSIX_FADV_DONTNEED` on Linux**, so
   a multi-GB write does not evict everything else from the page cache.
-- **The whole loop runs inside Python** — one exec, one call from Mojo. Driving
-  it chunk-by-chunk from Mojo leaked every large per-iteration `PythonObject`
-  until the function returned. Resident memory looked flat while the process
-  footprint grew roughly 1:1 with the downloaded volume: 23 GB at 34% of one
-  download, filling swap.
+- **No total timeout.** The guard is on throughput instead: under 1 KB/s for
+  60 s is treated as a dead connection, at any file size.
 - **Downloads to `<dest>.part`, renames only on success.** A crashed transfer
   must never leave a truncated file where the next run would treat it as
   complete.
+
+:::note[It used to be Python]
+The loop was once a Python program run from Mojo. Driving its chunk loop
+through `PythonObject` leaked every chunk until the function returned, 23 GB at
+34% of one download. The libcurl shim retired the question: the loop is C,
+writing straight to a file descriptor.
+:::
 
 ## Working example
 
