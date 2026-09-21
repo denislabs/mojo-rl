@@ -18,7 +18,7 @@ Resolution order, highest first:
 
 | source             | follower                    | leader                    |
 |--------------------|-----------------------------|---------------------------|
-| CLI argument       | `--port` / `--follower`     | `--leader`                |
+| CLI argument       | `--port` (tools that take it) | —                       |
 | environment        | `SOARM_FOLLOWER_PORT`       | `SOARM_LEADER_PORT`       |
 | default, Linux     | `/dev/soarm_follower`       | `/dev/soarm_leader`       |
 | default, macOS     | `/dev/cu.usbmodem5B8E11...` | `/dev/cu.usbmodem5B9104...`|

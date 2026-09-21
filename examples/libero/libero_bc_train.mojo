@@ -1,7 +1,7 @@
 """BEHAVIOUR CLONING ON LIBERO'S DEMONSTRATIONS — the port's first policy.
 
     pixi run libero-bc-train
-    pixi run libero-bc-train --epochs 40 --batch 512 --lr 3e-4
+    pixi run libero-bc-train --epochs 40 --lr 3e-4     # the batch is comptime: BATCH
     pixi run libero-bc-train --demos 10 --epochs 5        # a smoke run
 
 Reads `build/demos/<family>.lowdim.h5` (`data/libero_demos.mojo`'s store: one

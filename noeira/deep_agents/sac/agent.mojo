@@ -195,8 +195,9 @@ struct SACAgent[
         capture win). Returns stay exact at every print/diag boundary.
 
         Set `checkpoint_every > 0` + `checkpoint_path` to auto-save the
-        trainer's one-file `nn-ckpt v2` envelope (actor + twin critics +
-        optimizers + alpha optimizer) every `checkpoint_every` env-steps and
+        trainer's one-file v3 binary checkpoint (actor + the two online
+        critics; optimizer moments and α are NOT saved — a resume re-warms
+        them) every `checkpoint_every` env-steps and
         one final time at the end — the batched GPU counterpart of
         `train_single`'s checkpoint cadence. The save runs in host code
         between iterations (D2H of live params on the GPU target) so it is

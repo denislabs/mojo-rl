@@ -26,7 +26,7 @@ transition: each driver iteration steps all `N_ENVS` envs once and runs
 `N_ENVS` gradient updates.
 
 Checkpointing: the batched `train` entry point auto-saves the SAC
-weights+optimizers (one-file `nn-ckpt v2`) every `CHECKPOINT_EVERY` env-steps
+weights (one-file v3 checkpoint: actor + online critics, no optimizer state) every `CHECKPOINT_EVERY` env-steps
 and once at the end (a host-side D2H between iterations, safe with the CUDA-
 graph capture). It writes `CHECKPOINT_PATH` (`sac_half_cheetah_nn.ckpt`) —
 render it with `sac_half_cheetah_nn_eval_cpu.mojo`, which rebuilds the same

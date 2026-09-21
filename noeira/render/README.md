@@ -18,7 +18,7 @@ render/
 ├── gpu_shaders.mojo        # MSL Metal shaders (macOS): solid, ground, line, shadow, reflection, skybox, text
 ├── gpu_shaders_spirv.mojo  # SPIR-V shader loader (Linux/Vulkan): loads pre-compiled .spv bytecode
 ├── stl_loader.mojo         # STL mesh file loader (binary/ASCII) for custom 3D models
-├── png_loader.mojo         # PNG texture loader via Python PIL for object texturing
+├── png_loader.mojo         # Native PNG texture loader (no Python) for object texturing
 ├── font_atlas.mojo         # 8x8 bitmap font atlas for GPU text rendering
 ├── renderer2d.mojo         # Renderer2D: SDL3 2D renderer (fill_rect, draw_line, draw_circle, draw_text)
 ├── renderer3d.mojo         # Renderer3D: GPU-accelerated 3D renderer (Blinn-Phong, shadows, skybox)
@@ -28,7 +28,7 @@ render/
 │   ├── *.frag.glsl         # GLSL 450 fragment shaders (7 files)
 │   ├── *.spv               # Pre-compiled SPIR-V bytecode (13 files)
 │   └── compile.sh          # GLSL → SPIR-V compilation script (uses glslc)
-└── sdl/                    # SDL3 FFI bindings (38 files)
+└── sdl/                    # SDL3 FFI bindings (35 files)
     ├── sdl_init.mojo       # SDL initialization
     ├── sdl_video.mojo      # Window management
     ├── sdl_render.mojo     # 2D rendering API
@@ -63,7 +63,7 @@ GPU-accelerated 3D renderer using SDL3 GPU API with cross-platform shaders (MSL 
 - Cross-platform: MSL shaders on macOS (Metal), SPIR-V shaders on Linux (Vulkan) — selected at compile-time
 - Deferred draw commands (sphere, box, capsule, cylinder, line, ground, text)
 - STL mesh loading for custom 3D models (binary and ASCII formats)
-- PNG texture support for object texturing (loaded via Python PIL)
+- PNG texture support for object texturing (native decoder, no Python)
 - Mesh caching (static meshes + LRU capsule/cylinder cache)
 - Up to 4 directional/point lights with shadow casting (PCF soft shadows)
 - Interactive camera: orbit (left drag), pan (right drag), zoom (scroll)

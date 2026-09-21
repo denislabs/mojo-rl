@@ -87,9 +87,14 @@ struct Trainer[
     # contiguous-slice D2D copy into FIXED owned `batch_x`/`batch_y`) stays
     # eager; the captured graph reads those fixed buffers and replays. fp32-only
     # + contiguous-sweep only (no shuffle/aug under capture in this pass).
-    # Default OFF — on NVIDIA the nn GEMM (`linalg.matmul`) allocates a split-K
-    # workspace per call, illegal under stream capture; enable only once that's
-    # resolved. No-op on non-NVIDIA (runs eagerly, bit-identical).
+    # Default OFF — anything that ALLOCATES inside the captured region aborts
+    # stream capture on NVIDIA. The dW GEMMs of Linear/Conv2D own their split-K
+    # workspace now, but only where MAX's split-K dispatch applies (sm_80 /
+    # sm_89 / sm_120; H100 and B200 still allocate per call), and MAX
+    # memory-manager allocations elsewhere in the step abort capture too
+    # (`NOEIRA_ALLOC_TRACE=1` names the first blocker). Enable only on
+    # a model whose step captures clean. No-op on non-NVIDIA (runs eagerly,
+    # bit-identical).
     USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](Movable & Deinitable):
     # Model activation-flow dtype: `DT` for an fp32 model, `bfloat16` for a

@@ -4,11 +4,13 @@
 container for a definition (which env, which tasks, which datasets) plus the
 runs made under it.
 
-⚠⚠ THE DEFINITION IS TRACKED; THE RUNS ARE NOT. `project.kv` and the pointers
-beside it are a few KB of text saying exactly what a run was — that is the
-reproducibility story, and ignoring it would leave the recipe on one laptop's
-filesystem, which is the pain being fixed one level up. Only `runs/`, blobs and
-materialised weights are ignored (`.gitignore`).
+⚠⚠ NOTHING HERE IS IN GIT — `projects/` is gitignored, because a project is
+private data, not code. `project.kv` and the pointers beside it are still a
+few KB of text saying exactly what a run was, and leaving that recipe on one
+laptop's filesystem is the pain being fixed: they travel through noeira cloud
+(`project-push` / `project-pull`, `core/project_sync.mojo`) instead of git.
+Runs are append-only and per-machine; their weights move only with
+`--weights`.
 
 ⚠ IT REFERENCES `.family` AND `.task`; IT NEVER REDEFINES THEM. The task layer
 owns those. A project that copied them would fork the definition, and the fork

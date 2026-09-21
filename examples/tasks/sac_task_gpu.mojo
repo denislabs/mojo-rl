@@ -1,7 +1,7 @@
 """SAC on `so101_tabletop` — the tabletop entry of the one family driver.
 
     pixi run -e nvidia mojo run -I . examples/tasks/sac_task_gpu.mojo so101_reach_clear
-    ... --steps 200000 --envs 64
+    ... --steps 200000        # lanes are comptime: N_ENVS = 32 in sac_family_driver.mojo
 
 ⚠⚠ NVIDIA ONLY: `nv = 24` exceeds Metal's per-thread stack (the driver's
 header says where that was measured).

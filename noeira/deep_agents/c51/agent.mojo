@@ -214,7 +214,7 @@ struct C51Agent[
         enables periodic noise-off greedy eval on a separate env instance.
         All kwargs forward to the driver unchanged.
 
-        `USE_TRAIN_CUDA_GRAPH` (default True; no-op on non-NVIDIA) captures the
+        `USE_TRAIN_CUDA_GRAPH` (default False; no-op on non-NVIDIA) captures the
         per-update device kernel sequence into a CUDA graph and replays it,
         removing per-kernel launch overhead from the train step. Pair it with
         `episode_sync_every > 1` to batch the reward/done readback so the host

@@ -6,8 +6,8 @@ dataset is uploaded once, the sampler writes indices on device, and the batch is
 assembled by the gather/pack kernels. Nothing crosses PCIe in the training loop
 except the occasional logged loss.
 
-Prerequisite: run `examples/fb/collect_dm_control.mojo` first. This reads the
-store it writes.
+Prerequisite: run `examples/fb/collect_walker_all.mojo` first. This reads the
+store it writes (`STORE_PATH`, `fb_walker_all_sac.h5`).
 
     pixi run -e nvidia mojo run -I . examples/fb/fb_train_gpu.mojo
 

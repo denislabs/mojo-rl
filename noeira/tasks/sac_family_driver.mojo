@@ -14,8 +14,8 @@ tabletop's.
 
 SAC ON THE TASK FAMILY — the first policy this layer has ever carried.
 
-    pixi run -e nvidia mojo run -I . examples/tasks/sac_task_reach_gpu.mojo
-    ... --steps 200000 --envs 64
+    pixi run -e nvidia mojo run -I . examples/tasks/sac_task_gpu.mojo so101_reach_clear
+    ... --steps 200000        # lanes are comptime (N_ENVS below), not a flag
 
 ⚠⚠ NVIDIA ONLY. The family is `nv = 24`, where the P0 park probe died on
 Metal ("Compute function exceeds available stack space" — the physics kernels

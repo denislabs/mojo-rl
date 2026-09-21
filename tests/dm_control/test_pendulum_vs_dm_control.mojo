@@ -11,9 +11,10 @@ Three layers are gated, innermost first:
   3. REWARD — ours vs the reference `rewards.tolerance` fed MuJoCo's xmat_zz,
      i.e. `SwingUp.get_reward`.
 
-Why MuJoCo directly and not the dm_control package: dm-control 1.0.41 needs
-mujoco >= 3.11 (its bindings reference `mjModel.flex_bandwidth`) and
-conda-forge tops out at 3.10, so importing `dm_control.suite` fails. The XML
+Why MuJoCo directly and not the dm_control package: `dm_control` is not a
+dependency of the pixi environment. (It was left out when dm-control 1.0.41
+needed mujoco >= 3.11 and conda-forge topped out at 3.10; the pin is 3.12 now,
+but the package was never added, and nothing here needs it.) The XML
 and `rewards.py` are consumed straight from `references/dm_control-main`
 instead — `rewards.py` is pure numpy — and the ~6 lines of task glue
 (which xmat columns, which bounds) are transcribed here from

@@ -2,7 +2,7 @@
 
     pixi run -e nvidia mojo run -I . examples/tasks/sac_tower_gpu.mojo so101_tower_reach_clear
     pixi run -e nvidia mojo run -I . examples/tasks/sac_tower_gpu.mojo so101_tower_cube_in_bowl \\
-        --steps 1000000 --envs 64
+        --steps 1000000       # lanes are comptime: N_ENVS = 32 in sac_family_driver.mojo
     pixi run -e apple  mojo run -I . examples/tasks/sac_tower_gpu.mojo so101_tower_reach_clear \\
         --steps 20000 --warmup 20000      # does nv = 18 launch on Metal? (nv = 24 did not)
 

@@ -25,7 +25,7 @@ deployable-policy signal) — the always-on stochastic `avg_reward` under-report
 SAC by the entropy term.
 
 NOTE on checkpointing: the batched `train` entry point auto-saves the SAC
-weights+optimizers (one-file `nn-ckpt v2`) every `CHECKPOINT_EVERY` env-steps
+weights (one-file v3 checkpoint: actor + online critics, no optimizer state) every `CHECKPOINT_EVERY` env-steps
 and once at the end (a host-side D2H between iterations, safe with the CUDA-
 graph capture). The LayerNorm critic changes `PARAM_SIZE`, so this checkpoint
 (`sac_humanoid_nn_ln.ckpt`) is NOT loadable by the preset-based eval script —

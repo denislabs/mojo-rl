@@ -5,9 +5,9 @@
     pixi run assets-pull robots         # just one env's packs
     pixi run assets-pull --force        # re-fetch even if present
 
-⚠⚠ NOTHING IS MIGRATED YET. This walks `noeira/**/assets.kv`, of which there
-are currently NONE — the meshes and textures are still tracked in git. That is
-deliberate (`docs/PROJECT_LAYER_PLAN.md` §9): the infrastructure exists first,
+⚠⚠ ONE ENV IS MIGRATED: LIBERO (`noeira/envs/libero/assets.kv` — its pack is
+pulled, not tracked). Every other env's meshes and textures are still in git.
+Migrating one env at a time is deliberate (`docs/PROJECT_LAYER_PLAN.md` §9): the infrastructure exists first,
 so moving an env's assets out becomes a reversible decision made one env at a
 time rather than a single commit nobody can undo.
 

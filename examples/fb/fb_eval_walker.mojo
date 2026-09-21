@@ -31,13 +31,11 @@ would look fine and mean nothing. Checked explicitly below.
 Run (CPU: dm_control envs are CPU-only, gap G10):
     pixi run mojo run -I . examples/fb/fb_eval_walker.mojo
 
-⚠⚠ **THIS FILE HAS NEVER BEEN COMPILED.** It was written while
-`physics3d/model/model_renderer.mojo` had an uncommitted in-progress change
-calling `MODEL_DEF.render_skin(...)`, a method not yet declared on
-`ModelDefLike` — which breaks every build that touches `Phyics3dEnv`, and this
-script needs one to relabel rewards. Committed so the work is not lost, NOT
-because it is verified. Build it once that trait method lands, and expect the
-usual first-compile corrections before trusting a number out of it.
+⚠ **IT COMPILES (2026-09-21) BUT HAS NOT BEEN RUN END TO END.** It was
+written while `physics3d/model/model_renderer.mojo` called a
+`MODEL_DEF.render_skin(...)` not yet declared on `ModelDefLike`, which broke
+every build touching `Phyics3dEnv`; that has landed and the file now builds.
+Verify its numbers against `fb_eval_walker_online.mojo` before trusting one.
 """
 
 from std.math import abs, sqrt

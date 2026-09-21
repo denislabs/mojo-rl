@@ -71,7 +71,7 @@ comptime Block = Residual[Sequential[Linear[D, D], ReLU[D], Linear[D, D]]]
 parameters; the count is compile-time, so there is no runtime loop.
 
 ```mojo
-comptime Trunk = Repeat[Block, 6]      # six residual blocks
+comptime Trunk = Repeat[6, Block]      # six residual blocks
 ```
 
 **`Parallel[A, B, …]`** — run several modules on the same input and combine.

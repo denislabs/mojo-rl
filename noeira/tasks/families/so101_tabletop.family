@@ -76,14 +76,11 @@ region=table_top:site:table_surface:-0.10,-0.10,0.10,0.10:0.03
 # props drawn from opposite strips start at LEAST 0.08 apart, so a goal of
 # `Near(..., 0.06)` is FALSE at reset for every draw, not merely for most.
 #
-# ⚠⚠ A GOAL MAY NAME ONLY REGION 0 — `table_top`. The device evaluator reads
-# ONE region table out of `curriculum[0, 0..4]` (`gpu_eval.mojo`:
-# MODEL_CURRICULUM_SIZE is 8 and a region costs 5 words) and it reads it
-# UNCONDITIONALLY: a term's region index never indexes anything on device. So
-# `On(brick, table_left)` would evaluate against `table_top`'s rectangle on the
-# GPU and against `table_left`'s on the CPU — a silent disagreement in the
-# reward. `gpu_eval.require_gpu_regions` refuses that goal instead; these two
-# regions are reachable from `init=`, which is sampled on the HOST and never
-# consults the device table.
+# All three regions may appear in a goal. (This used to say "only region 0":
+# the device evaluator read ONE region table and every term evaluated against
+# `table_top` on the GPU. Since L3 the table is indexed by the term's region —
+# 16 regions of 8 words, `gpu_eval.mojo` — and `require_gpu_regions` refuses a
+# goal past that.) `table_left` / `table_right` are also where `init=` draws,
+# on the host.
 region=table_left:site:table_surface:-0.10,0.04,0.10,0.12
 region=table_right:site:table_surface:-0.10,-0.12,0.10,-0.04

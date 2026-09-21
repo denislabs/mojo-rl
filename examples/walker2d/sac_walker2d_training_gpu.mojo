@@ -178,7 +178,7 @@ def main() raises:
             # only stalls the GPU pipeline ~1/32 as often (returns are drained
             # exactly at every print/diag boundary, so logged values are fresh).
             episode_sync_every=32,
-            # Auto-save the SAC weights+optimizers every CHECKPOINT_EVERY
+            # Auto-save the SAC weights (no optimizer state) every CHECKPOINT_EVERY
             # env-steps (and once more at the end). Safe alongside the
             # CUDA-graph capture above — the save is host-side D2H between
             # iterations. Resume/eval later via `agent.load(CHECKPOINT_PATH)`.

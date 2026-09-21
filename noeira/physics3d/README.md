@@ -2,7 +2,7 @@
 
 MuJoCo-inspired constraint-based physics engine using generalized (joint-space) coordinates. Supports CPU and GPU simulation with configurable constraint solvers.
 
-MuJoCo 3.12.0 compatibility: see `docs/PHYSICS3D_MUJOCO_312_AUDIT.md` (feature matrix + bug log).
+Checked against live MuJoCo 3.12.0 — see [Validation](https://noeira.ai/docs/physics/validation/) and the `tests/physics3d/*_vs_mujoco*` gates.
 
 ## Architecture
 
@@ -12,60 +12,25 @@ The engine follows MuJoCo's design: models are defined at compile time with bodi
 
 ```
 physics3d/
-├── types.mojo              # Model[NQ,NV,NBODY,NJOINT], Data, ContactInfo
-├── constants.mojo          # Geometry types, physics defaults, GPU config
-├── joint_types.mojo        # JointDef, JNT_FREE/BALL/SLIDE/HINGE
-├── model/                  # Compile-time model specification (17 files)
-│   ├── body_spec.mojo      # BodySpec trait + CapsuleBody, SphereBody, BoxBody
-│   ├── joint_spec.mojo     # JointSpec trait + HingeJoint, SlideJoint
-│   ├── geom_spec.mojo      # GeomSpec trait + Plane, Sphere, Box, Capsule
-│   ├── actuator_spec.mojo  # ActuatorSpec (motor/position/velocity control)
-│   ├── equality_spec.mojo  # EqualitySpec (ball-joint/weld constraints)
-│   ├── tendon_spec.mojo    # TendonSpec (fixed-distance constraints)
-│   ├── site_spec.mojo      # SiteSpec (named body points)
-│   ├── model_def.mojo      # ModelDef compositor (variadic iteration)
-│   ├── model_renderer.mojo # 3D rendering integration
-│   ├── inertia_from_geom.mojo # Auto-compute inertia from geometry
-│   └── defaults_spec.mojo  # Default model parameters
-├── kinematics/             # Forward kinematics + quaternion math
-│   ├── forward_kinematics.mojo # qpos -> xpos/xquat (CPU + GPU)
-│   └── quat_math.mojo     # Quaternion ops (CPU + GPU)
-├── dynamics/               # Equation of motion computation (8 files)
-│   ├── mass_matrix.mojo    # CRBA: M(q), LDL/LU decomposition, sparse variants
-│   ├── bias_forces.mojo    # RNE: C(q,qdot) + g(q)
-│   ├── jacobian.mojo       # Contact/analytical Jacobians, composite inertia
-│   ├── velocity_derivatives.mojo # d(bias)/d(qvel) for implicit integration
-│   ├── lu_factorization.mojo # Non-symmetric factorization
-│   └── cfrc_ext.mojo       # External/actuator forces
-├── integrator/             # Time-stepping algorithms (5 files)
-│   ├── euler_integrator.mojo         # MuJoCo-style Euler
-│   ├── implicit_fast_integrator.mojo # Default: M + arm - dt*qDeriv (fast)
-│   ├── implicit_integrator.mojo      # Full implicit with RNE velocity derivative
-│   └── rk4_integrator.mojo           # 4th-order Runge-Kutta
-├── solver/                 # Constraint solvers (14 files)
-│   ├── pgs_solver.mojo     # Projected Gauss-Seidel (dual, lambda space)
-│   ├── newton_solver.mojo  # Newton (primal, qacc space)
-│   ├── cg_solver.mojo      # Conjugate Gradient (primal)
-│   ├── island_detection.mojo    # Connected component analysis
-│   ├── island_solver.mojo       # Per-island early termination
-│   ├── island_pgs_solver.mojo   # Island-aware PGS
-│   ├── qcqp.mojo           # Quadratic constraint QP (2/3/5-dim)
-│   └── friction_solver.mojo # Friction-specific solving
-├── collision/              # Contact detection (4 files)
-│   ├── collision_primitives.mojo # Sphere/capsule/box narrow-phase
-│   ├── contact_detection.mojo    # Contact manifold generation (CPU + GPU)
-│   └── broadphase_sap.mojo      # Sweep-and-Prune broadphase
-├── constraints/            # Constraint representation (3 files)
-│   ├── constraint_data.mojo      # ConstraintRow, ConstraintData
-│   ├── constraint_builder.mojo   # CPU constraint building
-│   └── constraint_builder_gpu.mojo # GPU constraint building
-├── gpu/                    # GPU buffer management (4 files)
-├── traits/                 # Integrator + ConstraintSolver traits
-├── parser/                 # MJCF XML model loading (4 files)
-│   ├── xml_parser.mojo     # DOM parser
-│   ├── flat_model.mojo     # Flattened model representation
-│   └── full_parser.mojo    # Complete XML -> Model/Data pipeline
-└── tests/                  # 75 validation tests (CPU/GPU, MuJoCo comparison)
+├── types.mojo · constants.mojo · joint_types.mojo   Core types, defaults, JNT_FREE/BALL/SLIDE/HINGE
+├── model/        Compile-time model specification (body, joint, geom, actuator, ModelDef, renderer hook)
+├── parser/       MJCF: xml_parser, full_parser, expander (<include>/<attach>/defaults), flat_model,
+│                 fields_build, runtime_load, model_def_from_xml, mesh_bvh_build, hfield_loader
+├── fields/       Model / Data storage, dims, scratch pools (contact, dynamics, implicit, RK4)
+├── kinematics/   Forward kinematics, quaternion math, sites (CPU + GPU)
+├── dynamics/     CRBA mass matrix, RNE bias forces, Jacobians, LDL/LU, tendons + wrap,
+│                 actuation, gravity compensation, OSC pose, velocity derivatives
+├── collision/    SAP broadphase, primitives, GJK/EPA, multi-CCD, native multi-contact,
+│                 convex hulls (qhull shim + hull cache), heightfields, robust predicates
+├── constraints/  Constraint rows: contacts, limits, equality, tendons, friction (CPU + GPU)
+├── solver/       PGS, island PGS, Newton (incl. blocked and elliptic-cooperative), CG,
+│                 elliptic cones, noslip, warm start
+├── integrator/   Euler, ImplicitFast, Implicit, RK4
+├── sensors/      Touch, rangefinder, frame, subtree, site acceleration
+├── ray/          Ray casts against geoms, meshes and heightfields
+├── raytrace/     Batched GPU ray-traced camera renderer, appearance, host renderer
+├── gpu/          Shared GPU kernels and constants
+└── studio/       Physics studio: pick, gizmo, edit, history, validate, MJCF writer
 ```
 
 ## Supported Joint Types
@@ -85,6 +50,9 @@ physics3d/
 | **Newton** | Primal (qacc) | Quadratic convergence for stiff contacts |
 | **CG** | Primal (qacc) | Conjugate Gradient for well-conditioned systems |
 | **IslandPGS** | Dual | PGS with per-island early termination |
+| **Newton, blocked** | Primal | GPU Newton with per-block factorisation (NVIDIA; not routed on Metal) |
+| **Newton, elliptic-coop** | Primal | Newton over elliptic friction cones |
+| **Noslip** | Post-pass | MuJoCo's noslip iterations on the friction rows |
 
 ## Integrators
 
