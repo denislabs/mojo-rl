@@ -1,6 +1,6 @@
 ---
 title: 3D physics engine
-description: A MuJoCo-inspired generalized-coordinates engine — CRBA, RNE, constraint solvers, collision detection and MJCF loading.
+description: A MuJoCo-following generalized-coordinates engine — CRBA, RNE, a Newton constraint solver, native collision, sensors and MJCF loading, on CPU and GPU.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -9,18 +9,18 @@ import Papers from '~/components/Papers.astro';
 import Demo from '~/components/Demo.astro';
 import Physics3dPipeline from '~/components/diagrams/Physics3dPipeline.astro';
 
-<Maturity level="stable" note="Contact-rich models and elliptic friction cones are the least settled areas." />
+<Maturity level="stable" note="Newton is the only solver that is a MuJoCo port; PGS and CG are our own algorithms. Flex, SDF geoms and several actuator types are not modelled." />
 
 `noeira.physics3d` simulates articulated rigid bodies in **generalized
-coordinates** — joint space rather than world space — following MuJoCo's design.
-Models are defined in MJCF XML, the same format MuJoCo reads.
+coordinates** — joint space rather than world space — following MuJoCo's design
+routine by routine. Models are MJCF XML, the format MuJoCo reads, and the
+reference it is checked against is the MuJoCo 3.12.0 runtime pixi installs.
 
 Working in joint space means constraints like "this hinge has one degree of
 freedom" are structural rather than enforced numerically. A hinge joint *is* one
 number.
 
 <Demo name="ant" caption="Ant" meta="27 obs · 8 actuators · contact-rich" />
-
 
 <Papers label="Papers">
 	<Paper
@@ -45,135 +45,170 @@ number.
 
 <Physics3dPipeline />
 
-State lives in `Data` (`qpos`, `qvel`, `xpos`, `xquat`, …); the compile-time
-model description lives in `Model`. Both are in `physics3d/fields/`.
+State lives in `Data` (`qpos`, `qvel`, `xpos`, `xquat`, `sensordata`, …); the
+model lives in `Model`. Both are per-field tensors in `physics3d/fields/`, so
+each kernel binds exactly the arrays it reads. The stage order is MuJoCo's
+`mj_step`: kinematics and position-stage sensors, velocities and velocity-stage
+sensors, CRBA and factorization, RNE, passive and actuator forces, collision,
+the constraint solve, acceleration-stage sensors, integration.
+
+## Package layout
+
+| Package | Contents |
+|---|---|
+| `kinematics/` | forward kinematics, quaternion math, site and camera frames, mocap bodies |
+| `dynamics/` | CRBA, RNE, LDL and LU, tendons and wrapping, actuation, gravity compensation, fluid forces, OSC and site IK |
+| `collision/` | broadphase, analytic pairs, GJK/EPA, multi-contact, hulls, heightfields — see [Collision](/physics/collision/) |
+| `constraints/` | contact, limit, friction, equality and tendon rows — see [Constraints and tendons](/physics/constraints/) |
+| `solver/` | Newton (per-env and blocked), CG, island PGS, elliptic cone, noslip, warm start |
+| `integrator/` | Euler, RK4, implicit / implicitfast |
+| `sensors/` | the `<sensor>` table and its per-type kernels |
+| `ray/` | ray casting against every geom type, mesh BVH |
+| `parser/` | MJCF reader, `<attach>` expander, compile-time and runtime model builders |
+| `studio/` | the model inspector's editing, validation and stepping logic |
 
 ## Dynamics
 
-| Component | Algorithm |
+| Stage | Implementation |
 |---|---|
-| Mass matrix | **CRBA** — composite rigid-body algorithm |
-| Bias forces | **RNE** — recursive Newton-Euler (Coriolis, centrifugal, gravity) |
-| Jacobians | contact and site Jacobians via `cdof` |
-| Factorization | `LDL` and `LU` |
-| Inverse inertia | `invweight` |
-| Subtree quantities | `subtree_com` |
-| Fluid forces | `fluid_forces` — Swimmer's viscous drag |
-| Derivatives | `qderiv` — velocity derivatives for implicit integration |
+| Mass matrix | **CRBA**, dense or tree-walk (`CRBA_TREEWALK`), then `LDL` |
+| Bias forces | **RNE** — Coriolis, centrifugal, gravity; `rne_post` fills `cacc` / `cfrc_int` / `cfrc_ext` for the force sensors |
+| Passive forces | joint springs and dampers, tendon springs, **gravity compensation** (`<body gravcomp>`), fluid forces (inertia-box model, `<option wind>`) |
+| Tendons | fixed tendons, spatial tendons through sites, **sphere and cylinder wrapping** with side sites (`dynamics/tendon.mojo`, `dynamics/wrap.mojo`) |
+| Actuation | motor, position (`kp`, `kv`, `dampratio`), velocity, general affine gain/bias, adhesion, the `mujoco.pid` plugin; `ctrlrange` / `forcerange` / `actuatorfrcrange`; `filter` / `filterexact` / `integrator` activation dynamics |
+| Transmissions | joint, fixed tendon, spatial tendon, site (6-vector gear) |
+| Operational-space control | robosuite 1.4's `OSC_POSE`, the controller LIBERO's demonstrations were recorded with, one arithmetic for host and device (`dynamics/osc_pose_gpu.mojo`) |
+| Site IK | dm_control's damped least-squares `qpos_from_site_pose` (`dynamics/ik_site.mojo`), used by manipulation resets |
+| Velocity derivatives | `qderiv` — actuator and RNE derivatives for the implicit integrators |
+
+Spatial tendon wrapping and the site / spatial-tendon transmissions are
+CPU-only. The compile-time model builder refuses an actuator the GPU actuation
+kernel cannot drive, so a batched model cannot silently lose one.
 
 ## Integrators
 
-```
-euler · implicit · rk4
-```
-
 | Integrator | Notes |
 |---|---|
-| `euler` | semi-implicit; HalfCheetah and Ant use it |
-| `implicit` / `implicitfast` | stiffer systems, larger stable timestep |
-| `rk4` | fourth-order; Humanoid uses it — needs extra workspace |
+| `euler` | semi-implicit with implicit joint damping, honours `<flag eulerdamp>`; HalfCheetah, Pusher, Sawyer and the dm_control suite use it |
+| `rk4` | four stages, constraint re-solve per stage; the environment trait's default, so Hopper, Walker2d, Ant, Swimmer and Humanoid use it |
+| `implicit` / `implicitfast` | `M − h·qDeriv`, LU-factored; used by the [studio](/rendering/viewers/) for models that ask for it |
 
 The choice is a compile-time constant on the environment config, along with any
 workspace it requires:
 
 ```mojo
-comptime INTEGRATOR: StaticString = "euler"
+comptime INTEGRATOR: StaticString = "rk4"
 comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[NQ, NV]()
 ```
 
 ## Constraint solvers
 
-| Solver | Character |
+| Solver | Status |
 |---|---|
-| `newton_solve` | Newton — the production default; fast convergence |
-| `cg_solve` | conjugate gradient |
-| `island_pgs_solve` | projected Gauss-Seidel over contact islands |
-| `primal` · `qcqp` · `cholesky` | supporting formulations |
+| `newton` | A port of MuJoCo's Newton: warm start, the 3-phase line search, incremental Hessian updates, elliptic-cone Hessian, `<option iterations tolerance ls_*>`. The environment default. |
+| Newton, **blocked** | One environment per GPU block with the matrices in shared memory. Pyramidal and elliptic cones, bit-identical to the per-env kernel on the gated fixtures. NVIDIA only. |
+| `cg` | Polak-Ribière nonlinear CG with a fixed 100-iteration cap; not MuJoCo's algorithm |
+| `pgs`, `island` | acceleration-level projected Gauss-Seidel, and a variant that freezes converged contact islands; not MuJoCo's algorithms |
+| noslip | `mj_solNoSlip` for both cones, run after Newton when the model sets `noslip_iterations` |
 
-Contacts are solved with a friction cone that is either **pyramidal**
-(linearised, cheap) or **elliptic** (exact, expensive).
+Contacts use a **pyramidal** or **elliptic** friction cone at condim 1, 3, 4
+or 6. The cone comes from the model's `<option cone>`; the solver is a
+compile-time parameter of the integrator (`SOLVER`), and the environment
+facades build Newton. [Constraints and tendons](/physics/constraints/) covers
+which row types each solver handles.
 
-:::caution[Two friction-cone traps]
-**Never pass `cone=ELLIPTIC` with the RK4 integrator.** The serial solver's
-local-memory requirement exceeds what the GPU provides, and it fails at launch.
-Use `PYRAMIDAL`.
+## Sensors
 
-**Elliptic contacts carry a known drift.** The Metaworld-style Sawyer model uses
-an elliptic cone and exposed a pre-existing divergence in elliptic-contact
-handling — see [3D manipulation](/environments/3d-manipulation/). Pyramidal is
-the well-tested path.
-:::
+`<sensor>` is parsed into a sensor table, `Data` carries `sensordata`, and
+`sensors/eval.mojo` runs MuJoCo's three stage passes — position, velocity,
+acceleration — at the points `mj_forward` runs them, with `cutoff` applied.
+Served kinds:
 
-## Collision
+```
+jointpos · jointvel · jointactuatorfrc · actuatorpos · tendonpos
+framepos · framequat · framexaxis · frameyaxis · framezaxis
+framelinvel · frameangvel · subtreecom · subtreelinvel · subtreeangmom
+accelerometer · velocimeter · gyro · force · torque · touch
+rangefinder · magnetometer
+```
 
-| Stage | Implementation |
-|---|---|
-| Broadphase | `broadphase_sap` — sweep and prune |
-| Narrowphase | `collision_primitives`, `contact_detection` |
-| Convex | `convex_hull`, `gjk`, `gjk_support` |
-
-Primitive pairs (sphere, capsule, box, plane) have closed-form tests; general
-convex shapes fall back to GJK. Meshes are reduced to convex hulls at model-build
-time.
+A declared kind that is not served still gets its address, so every later
+sensor lands at MuJoCo's offset; its slot reads NaN and looking it up by name
+raises. The acceleration-stage sensors that read `cacc` / `cfrc_int` need
+`RNE_POST=True`, which only the Euler integrator wires. `tendonpos` is CPU-only
+in a batch.
 
 ## MJCF loading
 
+Two routes into the same parser:
+
 ```mojo
+# Compile time — the model's dimensions become part of its type.
 from noeira.physics3d.parser import ModelDefFromXML
+
+# Run time — one binary, any file.
+from noeira.physics3d.parser import (
+    parse_model_runtime, dims_from_flat, build_model_runtime,
+)
+var fmd = parse_model_runtime("path/to/scene.xml")
+var dims = dims_from_flat(fmd, max_contacts=20)
 ```
 
-The parser reads MJCF XML into a flat model description, which is then built
-into the compile-time `Model`. It handles `inertiafromgeom`, `settotalmass` and
-mesh hulls, so the standard Gymnasium MuJoCo model files load directly.
+Every shipped environment uses the compile-time route; the runtime route is
+what the studio uses to open any file, and it is **CPU-only**. The parser
+covers default-class chains, `<include>`, `<attach>` with name prefixing and
+unit conversion, `<frame pos quat>`, the three inertia modes, `settotalmass`,
+meshes (STL and OBJ), heightfields, keyframes and `<pair>` / `<exclude>`.
+Gymnasium's MuJoCo files, the dm_control suite and the Menagerie scenes the
+validation sweeps use are read as published, not edited copies.
 
-That is the reason the [environments](/environments/3d-locomotion/) are faithful
-ports rather than reimplementations — they read the same XML the reference does.
+A feature MuJoCo has and this engine does not is **counted and printed at
+load**, or refused, rather than dropped. The MuJoCo 3.12 audit tallied those
+prints over 83 Menagerie scenes and every dm_control asset and got zero —
+see [Validation](/physics/validation/).
+
+:::note[What is not modelled]
+Flex and deformables, SDF geoms, the muscle / cylinder / damper / intvelocity /
+dcmotor / orientation / native `pid` actuators, sleep, MuJoCo's island solver,
+energy, inverse dynamics, finite-difference derivatives, `xfrc_applied`,
+actuator delays and `mj_getState` / `mj_setState`. Ball-joint limits are
+printed and not built.
+:::
 
 ## GPU execution
 
-The whole pipeline runs batched on GPU, one environment per block for the
-contact solve. Environment state is laid out per field rather than as an
-interleaved slab, which is what lets each kernel read exactly the arrays it
-needs.
+The pipeline runs batched on GPU. Most stages run one thread per environment,
+with cooperative (`PARALLEL_GPU`) variants of FK, CRBA, the LDL factor and RNE
+that are bit-exact against the serial kernels.
+
+Two stages have block-per-environment kernels on NVIDIA: the **blocked Newton
+solver**, and a **block collision kernel** that runs a warp's candidate pairs
+on the same routine. Metal keeps the per-environment kernels — the blocked
+solver's threadgroup memory exceeds Metal's 32 KB limit on most models — so an
+Apple run does not exercise the blocked paths, and `pixi run -e nvidia
+test-physics3d-gpu` is the gate for them.
 
 :::caution[The blocked Newton kernel is not CUDA-graph-safe]
-Solving pyramidal contacts uses a one-environment-per-block kernel with
-cooperative shared memory. Capturing it in a CUDA graph produces illegal
-addresses on replay.
-
-The GPU examples therefore set `USE_ENV_CUDA_GRAPH=False` while keeping
-`USE_TRAIN_CUDA_GRAPH=True`. Eager environment stepping is correct; only the
-per-step launch collapse is lost.
+Replaying a CUDA-graph capture of the environment step illegal-addresses when
+the blocked kernel is in it. The GPU examples therefore set
+`USE_ENV_CUDA_GRAPH=False` while keeping `USE_TRAIN_CUDA_GRAPH=True`. Eager
+environment stepping is correct; only the per-step launch collapse is lost.
 :::
 
-:::caution[Apple: no heavy blocked kernels]
-The blocked solver kernels hard-crash on Metal. The fields path is correct on
-CUDA — and notably, the *legacy* slab-based GPU path miscomputed there, which is
-part of why it was retired.
-:::
+Two measured numbers, each only meaningful with its setup:
 
-## Model specification
+| Measurement | Result |
+|---|---|
+| Block collision kernel vs the serial kernel, 1024 sprawled Unitree G1 lanes, RTX 5090 (`benchmarks/physics3d_gpu/bench_g1_collision.mojo`) | 107.7 → 10.4 ms per launch, bit-identical output |
+| Single-env CPU step time as a ratio of MuJoCo 3.10.0's, Apple M1 Pro, interleaved runs (2026-09-06) | humanoid 0.66×, hopper 0.67×, walker2d 0.73×, ant 0.78×, dog 0.82×, humanoid_CMU 0.91×, Sawyer 1.06×, a 3-brick reassembly scene 1.14× |
 
-Models can be built from MJCF or declared directly. The compile-time pieces:
-
-```
-model/
-├── model_def.mojo          ModelDefLike — the model description trait
-├── inertia_from_geom.mojo  derive inertia from geometry
-└── model_renderer.mojo     3D rendering adapter
-```
-
-Joint types are `FREE` (7 DOF), `BALL` (4), `SLIDE` (1) and `HINGE` (1).
-
-:::note[The package README predates the sunset]
-`noeira/physics3d/README.md` describes a `types.mojo` holding
-`Model[NQ,NV,NBODY,NJOINT]` and a 17-file `model/` directory. That layout was
-retired: `Model` and `Data` now live in `physics3d/fields/`, `types.mojo` is 29
-lines, and `model/` holds three files. Trust the source.
-:::
+A ratio below 1 is faster than MuJoCo. The CPU ratios predate the move to the
+3.12 runtime and come from the compile-time path; the runtime-loaded path is
+slower on the same XML.
 
 ## Next
 
-- [2D physics](/physics/physics2d/) — the batched impulse engine
+- [Collision](/physics/collision/) — pairs, meshes, heightfields, broadphase
+- [Constraints and tendons](/physics/constraints/) — equality, limits, friction, solver choice
 - [Validation](/physics/validation/) — how this is checked against MuJoCo
-- [3D locomotion](/environments/3d-locomotion/) — what runs on it
+- [2D physics](/physics/physics2d/) — the batched impulse engine

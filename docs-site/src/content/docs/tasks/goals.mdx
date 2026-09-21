@@ -1,0 +1,187 @@
+---
+title: Goals
+description: The goal language — predicates, tiers, the device tape and the success word.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" />
+
+A task's `goal=` line is a small predicate expression:
+
+```ini
+goal=Near(brick, cube_a, 0.06)
+goal=In(akita_black_bowl_1, wooden_cabinet_1_top_region)
+goal=Joint(flat_stove_1_button, ge, 0.5)
+```
+
+The goal is the task's definition of success, and it is evaluated **where the
+reward is computed** — inside the GPU reward kernel, per lane, every step. A
+per-step round trip to the host at 1024 lanes would dominate the step; LIBERO
+itself calls its success check from Python every step, which is the design
+this avoids.
+
+## Two passes: parse, then bind
+
+`noeira/tasks/predicates.mojo` handles the language in two steps:
+
+1. **`parse_goal`** turns the text into a tree of terms that still hold
+   *names*.
+2. **`bind_goal`** resolves every name against the family and the composed
+   model, once, at task load. The result is a `BoundGoal`: a flat list of
+   `(op, a, b, param)` terms holding body, site, region and joint indices.
+
+A kernel never sees a string. Terms are stored in post-order — every child's
+index is lower than its parent's — so an evaluator can sweep them forward in
+one pass.
+
+## Predicates
+
+Arguments name **slots** (resolved to the slot's root body), **regions**, the
+robot's **sites**, or **joints**, depending on the predicate.
+
+| Predicate | Form | True when |
+|---|---|---|
+| `In` | `In(obj, region)` | The object's origin is inside the region's rectangle, within the region's z half-band |
+| `On` | `On(obj, region)` | Inside the rectangle and resting on it: height above the site in `[-0.005, 0.08]` m |
+| `On` | `On(obj, other_obj)` | LIBERO's `check_ontop`: above the other object, **in contact** with it, xy distance under 0.03 m |
+| `Near` | `Near(a, b, d)` | Origins within `d` metres |
+| `Above` | `Above(a, b, margin)` | `a` is at least `margin` metres higher than `b` (no xy test) |
+| `Upright` | `Upright(obj, tol)` | The body's +z axis is within `tol` of world +z, in cosine units |
+| `AtRegion` | `AtRegion(site, region)` | A **site** (e.g. `robot_gripperframe`) is inside the region's volume |
+| `Joint` | `Joint(joint, lt\|le\|gt\|ge, thr)` | The joint's `qpos` compares to `thr` |
+| `Touching` | `Touching(a, b)` | Any body of slot `a` is in contact with any body of slot `b` |
+| `And`, `Or`, `Not` | composition | As written |
+
+`On`'s second argument decides its meaning: a region name uses the region
+test; a slot name binds to the object-on-object test. A name that is both a
+region and a slot is refused as ambiguous. `In` against a slot is refused —
+an object has no interior; declare a `:box:` region on the container's site
+instead.
+
+**Box regions** (`region=<name>:box:<site>:...`) change what `In` and `On`
+mean for that region: they evaluate LIBERO's `SiteObject.in_box` and `under`
+tests in the site's own rotated frame, and an optional contact slot makes `On`
+also require contact with that fixture. See [placement](/tasks/placement/)
+for the region syntax.
+
+:::note[Two ops that parse but do not run]
+**`Open(joint, frac)`** parses and is refused at bind: use
+`Joint(<joint>, lt|le|gt|ge, <threshold>)`, which is how LIBERO's
+`Open` / `Close` / `Turnon` / `Turnoff` are translated. **`Grasped(obj)`**
+parses and binds but has no defined semantics yet (see below).
+:::
+
+### Margins are part of the task
+
+Goals are evaluated on body origins, so a margin of zero is often already
+true. `Above(brick, table)` with no margin holds at reset — a brick resting on
+the table is above the table body's origin — so `so101_lift_brick` uses
+`Above(brick, table, 0.06)`. Likewise a region's z half-band defaults to
+0.12 m if the `.family` gives none; on `so101_tabletop` that made
+`AtRegion(robot_gripperframe, table_top)` a box an untrained policy satisfied
+on 64 of 64 episodes. The family now declares a 0.03 m band.
+
+Before training on a new goal, check two different things: that it is false
+at reset (`tests/tasks/test_task_reset_steps.mojo` asserts this for the shipped
+tasks), and that a constant action does not solve it — an untrained policy
+emits a near-constant action, so whatever a constant action reaches is the
+floor of every training curve. `examples/tasks/task_null_action.mojo`
+measures the second.
+
+## Tier A and Tier B
+
+| Tier | Reads | Predicates | Where it runs |
+|---|---|---|---|
+| **A** | Per-lane `Data` the reward kernel already has: body and site poses, `qpos`, the model's site and body tables, and the lane's contact list | everything except `Grasped` | Host and device |
+| **B** | Not defined yet | `Grasped` | Refused by `require_tier_a` and by the tape encoder |
+
+Contact-reading predicates (`Touching`, object-on-object `On`, box regions
+with a contact slot) are Tier A: the batched env hands each lane's contact
+list to the reward kernel, and LIBERO's most common goal predicate needs it.
+A Tier B goal cannot be a reward — a task using one would train against a
+constant, so it is refused rather than approximated.
+
+## The tape
+
+The device form of a goal is the **tape**: `noeira/tasks/tape.mojo`
+`encode_goal` writes a `BoundGoal` as twelve floats — four per term
+(`op, a, b, param`), three terms at most — into each lane's
+`META_IDX_TASK_PARAM_0..11` words of `meta`.
+
+- Unused terms are written as `OP_NONE` (-1). `meta` is not zeroed between
+  episodes, so a shorter goal must overwrite a longer one's leftovers.
+- **A goal with more than three terms is refused, not truncated.** A truncated
+  goal still evaluates — to something simpler than the author wrote. This is
+  why one LIBERO-10 task (`put both moka pots on the stove`, three goal atoms,
+  five terms after folding) has no `.task` file.
+- The parser accepts up to 16 terms; only the host evaluator can run goals
+  longer than three.
+- The op codes are a wire format: new ops are appended, never renumbered.
+
+The family's region table goes to `curriculum`, shared by all lanes because a
+region belongs to the family: 8 words per region, 16 regions. A goal naming a
+region past the table is refused by `require_gpu_regions`, because the device
+would read garbage where the host reads the right region.
+
+### Host == tape == kernel
+
+There are three evaluators of one goal, and they share arithmetic:
+
+| Evaluator | File | Container |
+|---|---|---|
+| `eval_goal` | `noeira/tasks/eval.mojo` | a `BoundGoal` on the host |
+| `eval_tape` | `noeira/tasks/tape.mojo` | the twelve-float tape on the host |
+| `eval_tape_gpu` | `noeira/tasks/gpu_eval.mojo` | the tape in `meta`, inside a kernel |
+
+The predicates themselves (`pred_in_rect`, `pred_near`, `pred_above`,
+`pred_upright`, `pred_joint`, `pred_ontop`, `pred_box_in`, `pred_box_under`)
+are scalar functions generic over dtype, defined once in `eval.mojo`. The host
+instantiates them at float64; the kernel at float32, with no float64 anywhere
+(Metal has no double). Only the loop over terms is written more than once.
+
+The gates: `tests/tasks/test_task_tape.mojo` (host goal vs host tape),
+`tests/tasks/test_tape_gpu_parity.mojo` (host vs device), and at scale
+`examples/tasks/task_batched_gpu.mojo`.
+
+## The success word
+
+The reward hook writes one more word per lane: `META_IDX_GOAL_HELD`, 1.0 if the
+goal held on the last step, else 0.0. It is written by the hook that already
+evaluates the goal, so there is exactly one answer.
+
+Success is **not** read from the reward. The reward started sparse — `+1` when
+the goal held — and three files came to read `reward > 0.5` as "solved"; once
+shaping was added, every shaping weight had to stay small enough to keep that
+test working. Giving success its own word frees the reward to take any shape.
+
+Evaluation drivers read the success word and, on a sample of lanes, re-check it
+with the host evaluator on the downloaded state:
+`examples/libero/libero_eval_batched.mojo --check-lanes K` raises on any
+disagreement.
+
+## Shaping words
+
+The SO-101 families' reward is two per-lane `tolerance` terms in `[0, 1]`:
+
+- a **goal term** on the tape's distance — a shortfall that is zero exactly
+  when the goal holds;
+- a **reach term** on the gripper-to-subject distance, for goals whose first
+  term names a body (`Near`, `Above`, `On`, `In`).
+
+Their weights and margins are four more `meta` words, `META_IDX_SHAPE_W_GOAL`,
+`META_IDX_SHAPE_W_REACH`, `META_IDX_GOAL_MARGIN` and `META_IDX_REACH_MARGIN`,
+written by `noeira/tasks/shaping.mojo` `shaping_words`. They are per lane
+because what a weight is worth depends on the task's own distance scale:
+measured on `so101_tabletop` at identical weights and margins, the three
+shipped tasks got a 4.7× spread in total reward and 91× in the goal term.
+
+| Rule | Why |
+|---|---|
+| All-zero words mean **no shaping** — the sparse reward | An untouched `meta` is zero-filled, so a driver that never writes them gets the safe reward |
+| Negative weights are refused | A negative weight pays the policy to move away from the goal |
+| A nonzero weight with a zero margin is refused | `tolerance` with margin 0 is a hard indicator — the term silently becomes sparse |
+
+The SAC driver exposes them as `--shape-goal`, `--shape-reach`,
+`--goal-margin` and `--reach-margin`, each accepting a comma list for a
+multi-task run.

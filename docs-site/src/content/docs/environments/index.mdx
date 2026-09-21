@@ -7,12 +7,13 @@ import Maturity from '~/components/Maturity.astro';
 import Demo from '~/components/Demo.astro';
 import DemoGrid from '~/components/DemoGrid.astro';
 
-<Maturity level="stable" note="Procgen and the Metaworld-style Sawyer tasks are newer — see their pages." />
+<Maturity level="stable" note="DeepMind Control, the robot ports and LIBERO are parity-gated against MuJoCo but newer to training — see their pages." />
 
-25+ worlds, all in pure Mojo. Nothing here wraps a C library: the tabular grids,
-the classic-control dynamics, the 2D and 3D physics, the arcade engines and the
-Atari 2600 emulator are all Mojo, which is what lets an environment step inside
-the same GPU pipeline that trains on its output.
+Thirteen families, from a 5×5 grid to dm_control's dog. Everything except the
+Gymnasium wrappers is Mojo: the tabular grids, the classic-control dynamics, the
+2D and 3D physics, the robot and LIBERO scenes, the arcade engines and the Atari
+2600 emulator. That is what lets an environment step inside the same GPU
+pipeline that trains on its output.
 
 <DemoGrid min="13rem">
 	<Demo name="half_cheetah_sac_trained" caption="HalfCheetah" meta="SAC · physics3d" />
@@ -32,11 +33,18 @@ the same GPU pipeline that trains on its output.
 | [2D physics](/environments/2d-physics/) | LunarLander · BipedalWalker · CarRacing | `physics2d` | yes |
 | [3D locomotion](/environments/3d-locomotion/) | HalfCheetah · Hopper · Walker2d · Ant · Swimmer · Humanoid · pendula | `physics3d` | yes |
 | [3D manipulation](/environments/3d-manipulation/) | Reacher · Pusher · Sawyer | `physics3d` | yes |
+| [DeepMind Control](/environments/dm-control/) | 18 suite domains, 49 tasks · 13 manipulation tasks | `physics3d` | 15 domains |
+| [Robots](/environments/robots/) | SO-ARM100 · SO-ARM101 · Unitree G1 · Franka Panda | `physics3d` | yes (G1: NVIDIA only) |
+| [LIBERO](/environments/libero/) | 23 task families on the Panda | `physics3d` | yes |
 | [Arcade](/environments/arcade/) | Pong · Breakout · Space Invaders | native GPU | yes |
 | [Atari 2600](/environments/atari/) | 103 ROMs | 6502 emulation | CPU only |
 | [Board games](/environments/board-games/) | Tic-Tac-Toe · Connect Four · Go · Chess | — | yes |
-| [Procgen](/environments/procgen/) | 16 procedurally generated games | native | yes |
+| [Procgen & Craftax](/environments/procgen/) | 16 Procgen games · Craftax Classic and full | native | yes |
 | [Gymnasium](/environments/gymnasium/) | 20+ wrappers | Python interop | — |
+
+The SO-101 and LIBERO scenes are also where the [task layer](/tasks/) lives:
+families of scenes with goals, placement rules and resets, rather than one
+hand-written environment per task.
 
 ## Full reference
 
@@ -66,7 +74,7 @@ Where noeira differs from Gymnasium's defaults, it is noted.
 | Environment | Obs | Actions | Notes |
 |---|---|---|---|
 | LunarLander | 8 | 4 discrete **or** 2 continuous | terrain + flame particles |
-| BipedalWalker | 24 | 4 continuous | revolute joints, LIDAR, hardcore mode |
+| BipedalWalker | 24 | 4 continuous | revolute joints, 10-ray LIDAR |
 | CarRacing | 13 clean **or** pixels | 3 continuous **or** 5 discrete | slip-based tire model |
 
 ### 3D — `physics3d`
@@ -92,6 +100,18 @@ which push it to 348–376 dimensions. noeira's Humanoid observes
 project README and slide deck quote 376; the source is authoritative and the GPU
 example reads `HumanoidModel.OBS_DIM  # 45`.
 :::
+
+### DeepMind Control, robots — `physics3d`
+
+| Environment | Obs | Actions | Episode |
+|---|---|---|---|
+| dm_control suite (walker, cheetah, humanoid, dog, …) | per task | per task | 1000 steps, reward in [0, 1] per step |
+| dm_control manipulation (Jaco arm and hand, bricks) | per task | 9 actuators | 250 steps |
+| SO-ARM100 / SO-ARM101 reach | 27 | 6 joint position targets, in [−1, 1] per joint | 500 steps |
+| Unitree G1 | 64 proprioceptive + 463 privileged | 29 PD targets | 500 steps at 50 Hz |
+
+See [DeepMind Control](/environments/dm-control/) and
+[Robots](/environments/robots/) for the per-task tables.
 
 ### Arcade — native GPU engines
 
@@ -132,6 +152,14 @@ deceptive reward that punishes greedy agents.
 
 **Stressing the physics engine** — Humanoid. 45 observations, 17 actuators, and
 contact-rich dynamics that expose solver problems immediately.
+
+**Comparing against published continuous-control numbers** — the
+[DeepMind Control](/environments/dm-control/) ports, whose returns are bounded
+by 1000 and comparable across tasks. They are parity-gated against MuJoCo but
+none has a training result documented yet.
+
+**A robot you can own** — [SO-ARM101](/environments/robots/), which has a
+[real-hardware path](/robots/).
 
 **Pixel-based agents** — the arcade engines in `OBS_MODE=1`. Native and
 GPU-batched, so they are far faster than the Atari emulator for training; the

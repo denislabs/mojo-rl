@@ -1,0 +1,151 @@
+---
+title: Constraints and tendons
+description: Equality constraints, tendons and wrapping, joint and tendon limits, dry friction, friction cones, noslip — and which solver handles which rows.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" note="Ball-joint limits, tendon frictionloss and the two-tendon equality are not built; each is printed or refused at load." />
+
+Everything that is not a smooth force is a **constraint row**: a contact, a
+joint at its limit, a weld holding two bodies together, a tendon pulled taut, a
+joint with dry friction. Each row carries MuJoCo's impedance model — `solref`
+(standard or direct form) and the five-parameter `solimp` — and the solver
+finds the forces that satisfy all of them at once. The rows are built in
+`constraints/` and solved in `solver/`.
+
+## Equality constraints
+
+| MJCF | Rows | Notes |
+|---|---|---|
+| `<connect>` | 3 | a ball joint between two bodies at an anchor |
+| `<weld>` | 6 | `relpose` and `torquescale` honoured; welds to a mocap body are how the Sawyer arm tracks its target |
+| `<joint>` | 1 | `polycoef` polynomial coupling of two joints, or one joint held at a value |
+| `<tendon>` | 1 | one tendon held at its reference length |
+
+`<equality active="false">`, the `solref` / `solimp` inherited from a default
+class and the velocity term `J̇·v` all follow MuJoCo. The two-tendon form
+(`tendon2`) and a non-trivial tendon `polycoef` raise at load.
+
+```bash
+pixi run mojo run -I . tests/physics3d/test_connect_equality_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_weld_rows_pyramidal_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_joint_equality_vs_mujoco.mojo
+```
+
+## Tendons
+
+| Kind | What it is | Where |
+|---|---|---|
+| Fixed | a linear combination of joint positions, `<fixed><joint coef>` | `dynamics/tendon.mojo` |
+| Spatial | a path through sites; its length and a dense Jacobian change with the pose | `dynamics/tendon.mojo` |
+| Wrapped | a spatial tendon passing a sphere or cylinder, with an optional side site choosing which way round | `dynamics/wrap.mojo` |
+
+A tendon enters the dynamics in four ways: as an actuator transmission, as a
+spring and damper, as a limit row, and as an equality. dm_control's
+`point_mass` (fixed tendons) and `ball_in_cup` (a tendon limit holding the
+string) are the suite tasks that depend on them; Menagerie's tendon-driven
+hands exercise spatial tendons and wrapping.
+
+Spatial wrapping is CPU-only. Tendon `frictionloss` and `armature` are counted
+and printed at load, not applied.
+
+```bash
+pixi run mojo run -I . tests/physics3d/test_spatial_tendon_transmission_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_wrap_tendon_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_fixed_tendon_limit_vs_mujoco.mojo
+```
+
+## Limits
+
+A hinge or slide joint whose `range` is limited gets a one-sided row per
+violated side; a limited tendon gets the same row with a dense Jacobian. The
+row's diagonal comes from `dof_invweight0` or `tendon_invweight0`, computed at
+`qpos0` as MuJoCo does — a wrong value there is a silent multiplicative error
+on the limit force. Per-joint `solreflimit`, `solimplimit` and `margin` are
+read.
+
+Limits are **in the solve**, not a pass after it. Solving them after the
+contacts was measured as the whole of the dm_control finger's contact
+residual. Ball-joint limits are printed and not built.
+
+## Dry friction
+
+`frictionloss` on a joint is a constraint row per DOF
+(`constraints/friction_dof.mojo`), as in MuJoCo, not an explicit force. An
+explicit force of fixed size cannot bring a joint to rest — it overshoots zero
+every step and settles into a two-step oscillation — where a row can hold the
+joint still.
+
+## Contacts and friction cones
+
+Each contact has a `condim`: 1 (frictionless), 3 (sliding), 4 (+ torsional)
+or 6 (+ rolling). The friction cone is chosen by `<option cone>`:
+
+| Cone | Rows per contact | Character |
+|---|---|---|
+| pyramidal | `2·(condim − 1)` edge rows | linear; the default |
+| elliptic | 1 normal + `condim − 1` tangential | the exact cone |
+
+Both cones work at every condim on the CPU and GPU paths, and the blocked
+NVIDIA solver has a leg for each. The environment's `MAX_CONDIM` comes from the
+model; a contact whose condim exceeds it is clamped. `<option impratio>`
+scales the friction rows' impedance relative to the normal's.
+
+```bash
+pixi run mojo run -I . tests/physics3d/test_elliptic_condim46_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_impratio_pyramidal_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_rolling_friction_vs_mujoco.mojo
+```
+
+## Noslip
+
+`mj_solNoSlip` is a friction-only sweep after the main solve that removes the
+slow creep a soft contact allows. Enable it with `<option
+noslip_iterations="N">`; the pyramidal and elliptic versions are different
+algorithms over different row layouts, and both are ported
+(`solver/noslip.mojo`). dm_control's dog is the suite model that uses it.
+
+Noslip runs after **Newton** only; MuJoCo also runs it after PGS and CG. On
+NVIDIA, an elliptic model with noslip stays on the per-environment kernel,
+because the blocked kernel's elliptic leg has no noslip.
+
+```bash
+pixi run mojo run -I . tests/physics3d/test_noslip_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_noslip_elliptic_vs_mujoco.mojo
+```
+
+## Choosing a solver
+
+The solver is a compile-time parameter of the integrator —
+`SOLVER` is `"newton"`, `"cg"`, `"pgs"` or `"island"` — and both environment
+facades default to Newton. `<option solver>` in the MJCF is read; the studio
+warns when a model asks for one it does not build.
+
+| Rows | Newton | CG | PGS / island PGS |
+|---|---|---|---|
+| contacts, both cones | in the solve | in the solve | in the solve |
+| joint limits, dof friction | in the solve | in the solve | sequential passes after the contacts |
+| equality and tendon rows | in the solve | sequential passes | sequential passes |
+| noslip | yes | no | no |
+| warm start | yes | cold start | reuses the previous forces |
+| a port of MuJoCo's algorithm | yes | no | no |
+
+Use Newton. It is the solver every environment runs and every MuJoCo parity
+gate goes through; CG and PGS are kept as alternatives and are not MuJoCo's
+algorithms, so their answers differ from MuJoCo's by construction.
+
+On the GPU, Newton on NVIDIA runs the **blocked** kernel — one environment per
+block, matrices in shared memory — for both cones. `pixi run -e nvidia
+test-physics3d-gpu` gates it against the CPU and per-environment paths
+(`tests/physics3d/test_newton_freejoint_vs_cpu.mojo`,
+`tests/physics3d/test_newton_blocked_fields.mojo`,
+`tests/physics3d/test_noslip_blocked_kernel.mojo`, among others); the elliptic
+leg has its own gate, `tests/physics3d/test_newton_blocked_elliptic.mojo`.
+Metal uses the per-environment kernel.
+
+## Next
+
+- [Collision](/physics/collision/) — where the contacts come from
+- [3D physics](/physics/physics3d/) — dynamics, integrators, sensors
+- [Validation](/physics/validation/) — the gates against MuJoCo

@@ -1,0 +1,155 @@
+---
+title: Robots and humanoids
+description: Models of robots you can buy — SO-ARM100 and SO-ARM101, the Unitree G1 humanoid under BFM-Zero's controller, and robosuite's Franka Panda — on physics3d.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" note="Each model is gated against MuJoCo on the same XML. The SO-101 has a real-hardware path; the G1 and the Panda are simulation only." />
+
+`noeira/envs/robots/` holds models of **physical robots**, as distinct from
+benchmark suites like [DeepMind Control](/environments/dm-control/). The point
+of each port is that a policy trained on it can be run on, or compared with,
+the real machine — so each one names the exact upstream model it came from,
+and each is checked against MuJoCo stepping that same file.
+
+| Robot | Source model | DoF | Environments | GPU batch |
+|---|---|---|---|---|
+| SO-ARM100 | MuJoCo Menagerie `trs_so_arm100` | 5 + gripper | `SoArm100Reach` | yes |
+| SO-ARM101 | The Robot Studio's `Simulation/SO101` (`new_calib`) | 5 + gripper | `SoArm101Reach`, the SO-101 task families | yes |
+| Unitree G1 | BFM-Zero's sim-to-sim `g1_29dof` | 29 + floating base | `UnitreeG1`, `UnitreeG1Batched` | NVIDIA only |
+| Franka Panda | robosuite's Panda, gripper and mount, vendored | 7 + gripper | the [LIBERO](/environments/libero/) scenes | yes |
+
+## SO-ARM100 and SO-ARM101
+
+The two versions of the low-cost SO arm. They share a topology and a task —
+`SoArmReachConfig` serves both — and they are **not interchangeable**: moving
+mass differs by about 25% and the moving jaw by 68%, the base frames point
+different ways, and `qpos` does not transfer between them because the joint
+axes are spelled differently.
+
+- **SO-ARM100** comes from Menagerie with hand-authored collision shapes and an
+  elliptic cone (`impratio="10"`). It needs no engine feature the others do not.
+- **SO-ARM101** is the arm on the desk and the one to train on for hardware.
+  Its model collides with thirteen full-resolution meshes, about ten times the
+  collision cost of SO-ARM100. Upstream writes its inertias as `fullinertia`,
+  which the parser refuses; `tests/robots/so_arm_bake.py` diagonalises them
+  with MuJoCo and the bake is gated per body, including the inertia frame.
+
+**The reach task.** Observation is 27 values — joint positions and velocities,
+end-effector and target positions, the vector between them, and the previous
+action. Actions are six joint position targets, normalised to [−1, 1] and
+mapped onto each joint's own `ctrlrange`. Reward is `tolerance` on the
+end-effector's distance to a target sampled inside the arm's reachable cone;
+episodes are 500 control steps at 50 Hz with no early termination.
+
+```mojo
+from noeira.envs.robots import SoArm101Reach
+
+var env = SoArm101Reach[DType.float64]()
+```
+
+```bash
+pixi run build-imgui                                                     # once
+pixi run mojo run -I . examples/robots/so_arm_viewer_imgui.mojo so_arm101_reach
+pixi run -e nvidia mojo run -I . examples/so101/sac_so_arm101_reach_training_gpu.mojo
+```
+
+Run the viewer from the repository root: both models reference their meshes by
+repo-relative path.
+
+**Variants of the SO-101 scene.**
+
+| File | What it is |
+|---|---|
+| `so_arm101.xml` | the arm alone — the reach task |
+| `so_arm101_tower.xml` | the follower with the printed wrist-camera mount and `wrist_cam`; the base of the `so101_tower` task family, which adds the overhead camera stand, the desk mat, a bowl and a brick |
+| `so101_park_k*.xml` | the arm plus k parked props, for measuring what an idle slot costs the physics step; a probe with zero reward, not a task |
+
+The SO-101's tasks — reach, settle, lift, gather, cube-in-bowl — are written
+with the [task layer](/tasks/), not as environment configs. The real arm, its
+cameras and the path from a simulated policy to hardware are under
+[Robots](/robots/); [Sim twin](/robots/sim-twin/) covers how the simulated rig
+matches the physical one.
+
+## Unitree G1
+
+The 29-DoF humanoid exactly as BFM-Zero trains it, so the released BFM-Zero
+policy can be run and reproduced here. See
+[Forward-Backward and BFM-Zero](/algorithms/forward-backward/) for the agent
+and the reproduction.
+
+| | |
+|---|---|
+| Control | 29 PD targets at 50 Hz over 200 Hz physics; torque = `kp·(target − q) − kd·q̇`, clipped, re-evaluated **every substep** |
+| Observation | 64 proprioceptive values (joint offsets and velocities, projected gravity, root angular velocity) followed by the 463-value privileged `max_local_self` from the simulator's bodies |
+| Reward | none — BFM-Zero's agent computes its own |
+| Episode | 500 control steps, no early termination |
+| Reset | the XML's standing pose, or **reference-state initialisation** from a motion clip: a random frame of a random LAFAN1 clip, with a 30% chance of a lie-down start |
+
+The PD gains are generated from BFM-Zero's robot config into
+`noeira/envs/robots/unitree_g1_pd.mojo` by `tests/robots/g1_bake.py`. Reset from
+motion data lives in `noeira/envs/robots/unitree_g1_rsi.mojo`, and the
+privileged observation in `noeira/envs/robots/unitree_g1_priv_obs.mojo`.
+
+```mojo
+from noeira.envs.robots import UnitreeG1, UnitreeG1Batched
+
+var env = UnitreeG1[DType.float64]()            # CPU, any platform
+var batch = UnitreeG1Batched[N_ENVS=256](ctx)   # GPU, NVIDIA only
+```
+
+**LAFAN1 motion data.** The motion clips come in as a trajectory store,
+converted in Mojo with no Python dependency:
+
+```bash
+pixi run mojo run -I . examples/g1/lafan_import.mojo
+```
+
+It downloads BFM-Zero's `lafan_29dof.pkl` (checked by size and SHA-256),
+converts its 40 clips to a 50 Hz store with our forward kinematics, and
+writes `lafan_g1_50hz.h5`, the file the training and evaluation scripts read.
+`tests/robots/test_lafan_import_vs_oracle.mojo` holds it against the reference
+pipeline's own dump.
+
+The G1 gates — the environment against MuJoCo, the motion store against our
+kinematics, the privileged observation against the reference function — run
+with `pixi run test-g1` once those artefacts exist.
+
+## Franka Panda
+
+`noeira/envs/robots/assets/panda_robosuite.xml` is robosuite's Panda, its
+gripper and LIBERO's mount, flattened into one MJCF file (a variant without the
+mount sits beside it). It is generated, not hand-edited:
+
+```bash
+pixi run vendor-panda          # regenerate from robosuite
+pixi run vendor-panda-check    # CI: the vendored files match the tool
+```
+
+The LIBERO scenes attach it with `<attach>` and drive it with robosuite's
+`OSC_POSE` operational-space controller — see [LIBERO](/environments/libero/).
+
+## How close to MuJoCo
+
+The arms and the G1 each have a gate that steps our engine and MuJoCo on the
+same XML:
+`tests/robots/test_so_arm100_vs_mujoco.mojo`,
+`tests/robots/test_so_arm101_vs_mujoco.mojo` and
+`tests/robots/test_unitree_g1_vs_mujoco.mojo`, which drives MuJoCo with the
+reference's own torque law per substep. The tower rig's wrist camera is gated
+by `tests/robots/test_so_arm101_camera_vs_mujoco.mojo`, and both of its
+cameras' world poses by `tests/tasks/test_so101_tower_cameras.mojo`. The
+Panda is checked inside the LIBERO scenes it is attached to.
+
+Beyond these, MuJoCo Menagerie's scenes are used as the engine's fidelity
+test set rather than packaged as environments: see
+[Validation](/physics/validation/). Menagerie models can be opened in the
+[studio](/rendering/viewers/).
+
+## Next
+
+- [Robots](/robots/) — the physical SO-101, safety, teleoperation
+- [Forward-Backward and BFM-Zero](/algorithms/forward-backward/) — the G1's agent
+- [LIBERO](/environments/libero/) — the Panda's benchmark
+- [Tasks](/tasks/) — how the SO-101 and LIBERO tasks are written

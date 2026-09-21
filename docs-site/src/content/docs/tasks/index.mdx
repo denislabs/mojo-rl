@@ -1,0 +1,226 @@
+---
+title: The task layer
+description: Families, tasks and suites — many manipulation tasks on one compiled scene, with goals that evaluate on the GPU.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" note="One policy has trained on it (SO-101, one seed). LIBERO runs on it end to end." />
+
+The task layer turns "a manipulation task" into data. A task is a text file
+naming which objects are in play, where they start and what counts as success.
+Many tasks share one compiled scene, so switching task — or running ten
+different tasks in one GPU batch — needs no rebuild.
+
+It lives in `noeira/tasks/`. [LIBERO](/environments/libero/) is built on it,
+as are the SO-101 tabletop and tower families.
+
+## Why a layer
+
+The obvious design is one environment per task. For a suite that is expensive
+twice over:
+
+- **Compile time.** Every environment is its own model, and every model is its
+  own set of GPU kernels. A 100-task suite would be 100 monomorphisations, each
+  minutes of compile.
+- **Batching.** A GPU batch steps one model. One model per task means one task
+  per batch, which is exactly what multi-task learning does not want.
+
+The task layer composes **one scene per family** instead, with a fixed slot
+budget. Every task in the family instantiates every slot; a task simply
+*activates* the ones it uses and the rest are **parked** — moved to a pose far
+from the workspace (`park=10.0,0.0,50.0` in the shipped families), pinned there
+before every step, and hidden from the observation. The model's `nq`, `nv` and
+`ngeom` are therefore constant across the family, and the family compiles once.
+
+## Family, task, suite
+
+| Concept | File | What it fixes |
+|---|---|---|
+| **Family** | `families/<name>.family` | The compile unit: base robot, slots (props and fixtures), regions, horizon, control rate |
+| **Task** | `tasks/<name>.task` | Data: active slots, start distribution (`init=`, `jinit=`), goal, instruction |
+| **Suite** | `suite=` inside a `.task` | A label grouping tasks for evaluation — e.g. `libero_goal`, `libero_90` |
+
+A slot is either `free` (a movable prop: six dofs) or `static` (a fixture: no
+dofs, composed at a fixed pose). The distinction is the cost model. Measured on
+an RTX 5090 at 1024 lanes, three free slots cost 1.51× the bare arm, six cost
+2.74×, and thirteen is the compile ceiling; a static slot adds no dofs at all.
+Add fixtures freely; add a free slot only when a task has to move the thing.
+
+Both formats are `key=value` lines with repeatable keys. **An unknown key
+raises** — a dropped `goal=` or a mistyped `active=` would otherwise produce a
+different task silently.
+
+### A family: `so101_tabletop`
+
+From `noeira/tasks/families/so101_tabletop.family`, comments trimmed:
+
+```ini
+schema_version=1
+family=so101_tabletop
+base=noeira/envs/robots/assets/so_arm101.xml    # the robot every task shares
+horizon=300
+control_freq=20
+
+# name : kind : asset [: pose — required on a static slot]
+slot=table:static:noeira/tasks/assets/props/fixture.xml:0.25,0.0,0.01
+slot=brick:free:noeira/tasks/assets/props/cube.xml
+slot=cube_a:free:noeira/tasks/assets/props/cube.xml
+slot=cube_b:free:noeira/tasks/assets/props/cube.xml
+
+park=10.0,0.0,50.0                              # where inactive free slots wait
+
+# name : site : <slot>_<site> : xmin,ymin,xmax,ymax [: z half-band]
+region=table_top:site:table_surface:-0.10,-0.10,0.10,0.10:0.03
+region=table_left:site:table_surface:-0.10,0.04,0.10,0.12
+region=table_right:site:table_surface:-0.10,-0.12,0.10,-0.04
+```
+
+A region is a rectangle in a site's frame, so a region on a movable object
+travels with it. Site names are the *composed* ones: the `surface` site in
+`fixture.xml` becomes `table_surface` once the `table` slot instantiates it.
+
+### A task: `so101_gather_bricks`
+
+From `noeira/tasks/tasks/so101_gather_bricks.task`:
+
+```ini
+schema_version=1
+task=so101_gather_bricks
+family=so101_tabletop
+language=Push the two blocks together
+
+goal=Near(brick, cube_a, 0.06)
+
+active=table
+active=brick
+active=cube_a                  # cube_b stays parked
+
+init=brick@table_left          # a distribution, not a pose
+init=cube_a@table_right
+```
+
+The two strips are separated by an 8 cm gutter, so the props start at least
+0.08 m apart on every draw and the 0.06 goal is false at reset. That is a
+design rule worth copying: **check that the goal does not already hold at
+reset.** The same family ships `so101_settle_brick`, whose goal *does* hold at
+reset on purpose — it is a probe for the harness, not a task to train on.
+
+### A generated task: LIBERO
+
+LIBERO's tasks are produced from its `.bddl` files by an importer. From
+`noeira/envs/libero/tasks/libero_goal__open_the_top_drawer_and_put_the_bowl_inside.task`:
+
+```ini
+task=libero_goal__open_the_top_drawer_and_put_the_bowl_inside
+family=libero_goal
+suite=libero_goal
+language=Open the top layer of the drawer and put the bowl inside
+goal=In(akita_black_bowl_1, wooden_cabinet_1_top_region)
+active=arena
+active=wooden_cabinet_1
+# ... every slot of the family
+init=akita_black_bowl_1@main_table_akita_black_bowl_region
+init=plate_1@main_table_plate_region
+```
+
+## Task roots
+
+A **task root** is a directory holding `families/`, `tasks/` and `scenes/`
+(plus `placement/` when a family has a generated device table). A loaded
+`FamilySpec` remembers its root, and `noeira/tasks/family.mojo` derives every
+other path from it: `scene_path(f)`, `scene_dir(f)` and `task_path(f, name)`.
+
+| Root | Families |
+|---|---|
+| `noeira/tasks` | `so101_tabletop`, `so101_tower` |
+| `noeira/envs/libero` | the 23 LIBERO families |
+
+The generic layer never names an environment package. Only the tools that
+enumerate every family — `tools/tasks/gen_family_scene.mojo` and
+`tools/tasks/gen_placement_tables.mojo` — list both roots.
+
+## Dependencies point one way
+
+`noeira/tasks` imports `physics3d`; `physics3d` never imports `tasks`. A family
+is composed by the physics engine's own scene composer (`physics3d/studio`,
+which emits MJCF `<attach>` elements), and the composed scene is an ordinary
+MJCF file that MuJoCo loads — which is how the family's dimensions are checked
+against MuJoCo by `pixi run gen-dims-check`.
+
+The per-lane state a task needs travels in words the physics already carries:
+the goal, the active mask, the start regions and the reward's shaping
+parameters all sit in the per-lane `meta` array, and the family's region table
+in `curriculum`. No task-specific kernel operand exists.
+
+## Multi-task batching
+
+One compiled family, one task per lane. Before each episode the driver writes
+each lane's goal (as a [tape](/tasks/goals/#the-tape)), its active mask and its
+start regions into that lane's `meta` words. The device reset places the active
+props (see [placement](/tasks/placement/)); a pre-step hook re-pins the
+inactive ones at their park poses; the reward hook evaluates each lane's own
+goal.
+
+The SAC driver takes a comma-separated task list and splits the lanes between
+the tasks:
+
+```bash
+pixi run -e nvidia mojo run -I . examples/tasks/sac_task_gpu.mojo \
+    so101_gather_bricks,so101_settle_brick --steps 2000000
+```
+
+`examples/tasks/task_batched_gpu.mojo` is the gate for this: 1024 lanes, two
+different tasks in one binary, every lane's GPU reward checked against a CPU
+evaluation of its downloaded state — plus a negative leg asserting that the two
+task groups do *not* agree, which is what catches a tape misindexed by lane.
+
+:::caution[Metal]
+`so101_tabletop` has `nv = 24`, which exceeds Metal's per-thread stack at
+pipeline creation: its batched examples compile on Apple but only launch on
+NVIDIA. The smaller `so101_tower` family (`nv = 18`) is not yet confirmed to
+launch on Metal either.
+:::
+
+## Evaluation
+
+| Piece | Where | What it does |
+|---|---|---|
+| Host evaluator | `noeira/tasks/eval.mojo` | `eval_goal` over a bound goal, on a CPU `Data` |
+| Device evaluator | `noeira/tasks/gpu_eval.mojo` | `eval_tape_gpu`, inside the reward kernel, per lane |
+| Success word | `META_IDX_GOAL_HELD` in `meta` | 1.0 if the lane's goal held on the last step |
+| Frozen inits | `noeira/tasks/init_table.mojo` | A `TrajectoryStore` of start states, so two runs are a comparison |
+| Report | `noeira/tasks/eval_report.mojo` | Per-task success rates over a frozen table, and a per-lane comparison between two runs |
+
+Both evaluators call the same scalar predicate functions, generic over dtype,
+so the float64 host and the float32 device share one definition of every
+predicate. The success word is written by the reward hook — the one place that
+already evaluates the goal — and is separate from the reward, so shaping cannot
+change what counts as success. See [goals](/tasks/goals/).
+
+A success rate over start states a run sampled for itself is not comparable
+with another run's. Frozen init tables fix that:
+`examples/tasks/task_eval_frozen.mojo` runs one table twice under different
+reset seeds (the results must match bit for bit) and once without the table
+(the results must differ).
+
+## Results
+
+| Task | Result | Caveat |
+|---|---|---|
+| `so101_settle_brick` | 1.000 (64/64) | A probe: its goal holds at reset by design |
+| `so101_gather_bricks` | 0.375 (24/64) | One SAC policy on a two-task batch with `settle`; **one seed**, not reproduced |
+| `so101_gather_bricks`, single task | 0.168 (43/256) | Two seeds |
+| `so101_lift_brick` | 0.00 | Before HIL-SERL; see [HIL-SERL](/algorithms/imitation/hil-serl/) for the tower family |
+| LIBERO goals vs ground truth | 500/500 demonstrations | `libero_goal`; see [LIBERO](/environments/libero/) |
+
+The multi-task number does not show that multi-task training *helps*: the
+two-task run made twice the gradient updates of the single-task one, and the
+matching control has not been run. What it shows is two tasks in one policy,
+each at or above its single-task rate.
+
+## Next
+
+- [Goals](/tasks/goals/) — the predicate language and how it reaches the GPU.
+- [Placement](/tasks/placement/) — regions, start distributions and the device reset.
+- [Writing a family](/tasks/writing-a-family/) — a worked example on the SO-101.

@@ -39,22 +39,21 @@ noeira/physics2d/
 
 `PhysicsLayout` computes every field offset at compile time, so a kernel indexes
 directly into the slab with no runtime arithmetic and no per-body object to
-chase. One kernel launch advances every environment.
-
-`PhysicsKernel` exposes the whole step as a single `step_gpu()` call.
+chase. One kernel launch advances every environment. CarRacing goes furthest:
+`CarPhysicsKernel` fuses its whole physics step into a single `step_gpu()`
+call.
 
 ## Components
 
 | Package | Contents |
 |---|---|
 | `integrators/` | semi-implicit Euler |
-| `collision/` | flat and edge terrain detection |
-| `solvers/` | impulse solver + unified constraint solver |
-| `joints/` | revolute joint solver |
-| `articulated/` | multi-body chains |
-| `car/` | slip-based tire friction |
+| `collision/` | flat terrain, edge terrain, circle against polygon |
+| `solvers/` | the impulse contact solver |
+| `joints/` | revolute joints with limits, motors and springs |
+| `car/` | slip-based tire friction, tile collision, the fused car kernel |
 | `lidar/` | distance sensing |
-| `traits/` | shared solver traits (also used by physics3d) |
+| `traits/` | the `Integrator`, `CollisionSystem` and `ConstraintSolver` traits |
 
 ## Impulse solving
 
@@ -67,10 +66,11 @@ each environment's contacts are independent.
 ## Articulated chains
 
 BipedalWalker's legs are a connected multi-body system, not free rigid bodies.
-The `joints/` and `articulated/` packages solve revolute joint constraints along
-the chain, which is what keeps the limbs attached under load.
+`RevoluteJointSolver` in `joints/` solves the revolute constraints along the
+chain — anchor coincidence, plus optional angle limits, motors and springs —
+which is what keeps the limbs attached under load.
 
-The same machinery supports multi-body chains generally, so a new jointed
+The solver works on any set of revolute joints in the layout, so a new jointed
 2D robot does not need new solver code.
 
 ## The tire model
@@ -89,8 +89,7 @@ policies do not transfer between them.
 
 BipedalWalker's 10 rangefinder readings come from `lidar/`, casting rays against
 the terrain each step. They are what let the agent see upcoming ground rather
-than react to contact alone — and they are the reason the hardcore terrain
-variant is learnable at all.
+than react to contact alone.
 
 ## Using it directly
 
@@ -98,11 +97,14 @@ The environments are the intended interface, but the engine is usable on its
 own:
 
 ```mojo
-from noeira.physics2d import PhysicsLayout, PhysicsKernel
+from noeira.physics2d import (
+    PhysicsLayout, PhysicsState, SemiImplicitEuler, ImpulseSolver,
+    RevoluteJointSolver,
+)
 ```
 
-Define a layout for your bodies, contacts and joints; the kernel steps the
-batch.
+Define a layout for your bodies, contacts and joints, then compose an
+integrator, a collision system and the solvers over the batched state.
 
 ## Relationship to physics3d
 

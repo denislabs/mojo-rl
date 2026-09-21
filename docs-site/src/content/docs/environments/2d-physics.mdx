@@ -71,9 +71,9 @@ readings** that let the agent see the ground ahead.
 
 Four continuous actions — torques for both hip and knee joints.
 
-Two modes: normal terrain, and **hardcore** with stumps, pits and stairs. The
-hardcore variant is a genuinely hard exploration problem; the normal one is a
-reasonable SAC/TD3 benchmark.
+The native environment implements the normal terrain, a reasonable SAC/TD3
+benchmark. Gymnasium's hardcore variant (stumps, pits and stairs) is reachable
+only through the [Gymnasium wrapper](/environments/gymnasium/).
 
 The interesting engine feature here is the articulated chain — the legs are a
 connected multi-body system solved with revolute joint constraints, not

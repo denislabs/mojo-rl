@@ -1,0 +1,189 @@
+---
+title: Writing a family
+description: A worked example on the SO-101 tabletop — add a task, check it, view it, train it with SAC, evaluate it; then what a new family costs.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" note="The tabletop SAC driver launches on NVIDIA only." />
+
+There are two sizes of change. **A new task in an existing family** is a text
+file and nothing else — no Mojo, no rebuild of the model. **A new family** is a
+new compile unit: a composed scene, generated dimensions, a model definition
+and a config. This page walks through the first on the SO-101 tabletop, then
+lists what the second adds.
+
+## A new task on `so101_tabletop`
+
+The family (`noeira/tasks/families/so101_tabletop.family`) has three free
+slots — `brick`, `cube_a`, `cube_b` — a static `table`, and three regions on
+the table: `table_top`, and the two disjoint strips `table_left` and
+`table_right`. The shipped `so101_gather_bricks` pushes `brick` and `cube_a`
+together. A variant that uses the third cube, saved as `so101_push_to_cube.task` in
+`noeira/tasks/tasks/`:
+
+```ini
+schema_version=1
+task=so101_push_to_cube
+family=so101_tabletop
+language=Push the brick against the other cube
+
+goal=Near(brick, cube_b, 0.06)
+
+active=table
+active=brick
+active=cube_b
+
+init=brick@table_left
+init=cube_b@table_right
+```
+
+Line by line:
+
+- **Name the file after `task=`** — tools load a task by name, as
+  `<root>/tasks/<name>.task`. `family=` must name the family the driver was
+  built for; the driver refuses a task from another family, whose body indices
+  would address the wrong props.
+- **`active=`** lists every slot the task uses, fixtures included. `cube_a` is
+  not listed, so it is parked for the whole episode and zeroed in the
+  observation.
+- **`init=`** gives each active free slot a region to be drawn from. The strips
+  are 8 cm apart, so the 0.06 m goal is false on every draw — not merely on
+  most of them.
+- **`goal=`** uses `Near`, which names no region. See [goals](/tasks/goals/)
+  for the language and the region limit on the device.
+
+Unknown keys raise, so a typo fails at load rather than producing a different
+task.
+
+## Check it before training
+
+A goal can be degenerate in two separate ways: it can hold at reset, or a
+constant action can reach it. An untrained policy emits a near-constant
+action, so the second is the floor of every training curve.
+
+```bash
+pixi run mojo run -I . examples/tasks/task_null_action.mojo so101_push_to_cube
+```
+
+This runs on the CPU against `so101_tabletop` and reads the task from
+`noeira/tasks/tasks/`.
+
+## View it
+
+The viewer composes the family, samples a reset and re-evaluates the goal
+every frame. The arm is deliberately undriven, so what you watch is the reset:
+whether the props land where the regions say, and whether the goal readout is
+false when it should be.
+
+```bash
+pixi run build-imgui                                             # once
+pixi run mojo run -I . examples/tasks/task_viewer.mojo so101_push_to_cube 7
+pixi run mojo run -I . examples/tasks/task_viewer.mojo so101_push_to_cube --check
+```
+
+The second argument is the reset seed. `--check` runs everything but the
+window — load, build, reset, step, evaluate — and is safe over ssh.
+
+:::caution[Add the task to the viewer's list]
+`examples/tasks/task_viewer.mojo` offers the tasks named in its `task_names()`
+function, and opens the first of them if the name you pass is not in that
+list. Add `so101_push_to_cube` there before viewing it.
+:::
+
+## Train it with SAC
+
+`examples/tasks/sac_task_gpu.mojo` binds the generic family driver,
+`noeira/tasks/sac_family_driver.mojo` `run_sac`, to `so101_tabletop`. The task
+name is the positional argument:
+
+```bash
+pixi run -e nvidia mojo run -I . examples/tasks/sac_task_gpu.mojo \
+    so101_push_to_cube --steps 1000000
+```
+
+Useful flags (every flag takes a value; an unknown or valueless flag is
+refused rather than silently running the default task):
+
+| Flag | Meaning |
+|---|---|
+| `--steps`, `--warmup` | Environment steps, and uniform-random warmup steps |
+| `--seed` | One seed for the host RNG and the env's per-lane device stream |
+| `--updates-per-step`, `--tau` | Gradient updates per env step; target-network rate |
+| `--shape-goal`, `--shape-reach`, `--goal-margin`, `--reach-margin` | The per-lane [shaping words](/tasks/goals/#shaping-words); comma lists in a multi-task run |
+| `--eval-every`, `--checkpoint-every` | Cadence of evaluation and checkpoints |
+| `--init` | Load actor and critics from a checkpoint |
+
+The lane count is a compile-time constant (`N_ENVS = 32` in the driver), not a
+flag.
+
+For a multi-task run, pass a comma list —
+`so101_gather_bricks,so101_push_to_cube` — and the lanes are split between the
+tasks, each lane evaluating its own goal. See
+[the task layer](/tasks/#multi-task-batching).
+
+:::caution[One run is one sample]
+The driver's header records two `gather` runs at an identical configuration
+that ended at 0.5625 and 0.0, the second after its critic peaked at 273× its
+fixed point. Run more than one seed before reading a rate, and read the
+critic-health line the driver prints at the end.
+:::
+
+`examples/tasks/sac_tower_gpu.mojo` is the same driver on `so101_tower`, the
+family modelled on the physical rig; it also takes `--demos` for
+[HIL-SERL](/algorithms/imitation/hil-serl/).
+
+## Evaluate it
+
+At the end of training the driver runs a greedy evaluation: four rounds of
+`N_ENVS` episodes, pooled, reported per task as the rate met at any step and
+the rate held at the end, beside the task's recorded baselines. A task with
+no recorded baseline is reported as unmeasured rather than given a floor of
+zero — measure one with a warmup-only run (`--warmup` at least `--steps`). Success
+is read from the per-lane [success word](/tasks/goals/#the-success-word), not
+from the reward. The driver prints the checkpoint path.
+
+For a comparison between runs rather than a single number, evaluate on a
+**frozen init table** — the same start states every time — see
+[placement](/tasks/placement/#frozen-init-tables). The harness gate for that is
+`examples/tasks/task_eval_frozen.mojo`.
+
+## A new family
+
+A new family changes the model, so it adds build steps. For `so101_tabletop`,
+each piece already exists and is the template:
+
+| Step | Tabletop's version |
+|---|---|
+| 1. Write the `.family`: base robot, slots, `park=`, regions | `noeira/tasks/families/so101_tabletop.family` |
+| 2. Compose the scene: `pixi run gen-family-scenes` | writes `noeira/tasks/scenes/so101_tabletop.xml` |
+| 3. List the model in `tools/gen_model_dims.py`, then `pixi run gen-dims` | writes `noeira/tasks/so101_tabletop_dims.mojo` |
+| 4. A comptime model definition over those dims | `noeira/tasks/so101_tabletop_xml.mojo` |
+| 5. A placement table: give every free slot `slot_geom=` and run `pixi run gen-placement-tables`, or hand-write one | hand-written `So101TabletopPlacement` in `noeira/tasks/family_config.mojo`; `so101_tower` uses a generated one |
+| 6. A config: `So101FamilyConfig[P, horizon, frame_skip, ...]` | `So101TabletopConfig` in `noeira/tasks/family_config.mojo` |
+| 7. A driver binding `run_sac` to the model and config | `examples/tasks/sac_task_gpu.mojo` |
+
+Step 1 is where the budget is decided. Every task in the family instantiates
+every slot, so choose the free slots for the most demanding task you intend to
+write: three free slots cost 1.51× the bare arm on a 5090 at 1024 lanes, six
+cost 2.74×, and thirteen is the compile ceiling. Static fixtures add no dofs
+and are nearly free. A static slot must carry its pose — it has no joint, so
+it can never be moved after composition. A free slot must not carry one; its
+pose comes from `init=`.
+
+The config restates a few numbers from the `.family` (horizon, control rate,
+the free-slot addresses), because a comptime type cannot read a runtime file.
+Those restatements are checked by tests — `tests/tasks/test_active_mask.mojo`
+for the tabletop, `tests/tasks/test_so101_tower_config.mojo` for the tower —
+so add the equivalent check for a new family.
+
+Keep generated files current:
+
+```bash
+pixi run gen-family-scenes-check
+pixi run gen-dims-check
+pixi run gen-placement-tables-check
+```
+
+Each fails if its output is stale. A stale dimension count sizes a buffer
+wrong while the model still builds, so these checks exist to make that loud.
