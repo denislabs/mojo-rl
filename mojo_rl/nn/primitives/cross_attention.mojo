@@ -58,8 +58,12 @@ from max.gpu import barrier, block_dim, block_idx, thread_idx
 from max.gpu.primitives import warp
 from max.gpu.host import DeviceContext
 from max.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major, Idx
 from linalg.bmm import batched_matmul
+from std.sys.info import has_nvidia_gpu_accelerator
+from nn.attention.gpu.mha import flash_attention_dispatch
+from nn.attention.mha_mask import NullMask
+from nn.attention.mha_operand import LayoutTensorMHAOperand
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor, TensorImpl
@@ -454,6 +458,28 @@ def _xa_zero_kernel[N: Int](
 # key order with rescales, the two-pass one sums exp(s - max) once. Both are
 # gated against the CPU leaf in `test_cross_attention_gpu_shapes.mojo` and
 # against float64 in `benchmarks/cross_attention_bench.mojo` (variant F).
+#
+# ⚠⚠ ON NVIDIA, AT HEAD DIM 64, UNMASKED, THE FUSED FLAG ROUTES TO MAX'S OWN
+# FLASH ATTENTION (`nn.attention.gpu.mha`, the FA2 kernel) — see
+# `xa_fused_routes_to_max` and `_forward_gpu_max_fa`. Our token-major slab
+# IS the BSHD layout it takes, so it gets our buffers with no pack. Orin, the
+# SigLIP shape (B1, 12 heads, 1024 x 1024, HD 64), 21 Sep 2026:
+#
+#     two-pass path (A)                 8.42 ms
+#     our fused kernel, row N           4.13
+#     MAX `flash_attention` on its own 34.5      (naive fallback: its depth-64
+#                                                 admission is by GPU NAME —
+#                                                 A100/H100/B200 — and the
+#                                                 Orin is `OrinNano`)
+#     MAX FA2 kernel, dispatch forced   1.26      6.7x   <- routed
+#
+# It runs both matmuls on the tensor cores as TF32 (16x8x8 mma, 10 mantissa
+# bits per operand): 3.7e-3 std units against float64 at that shape, where
+# the fp32 kernels sit at ~7e-6. That is the band the network's GEMMs
+# already run in on CUDA, and the gates carry a TF32 band for exactly the
+# shapes this routes (`test_cross_attention_gpu_shapes.mojo`, bench row F).
+# `XA_FUSED_VIA_MAX = False` puts our kernel back everywhere for a bisect;
+# the deploy's `--no-fused-vision` is the runtime fallback.
 
 comptime XA_FUSED_BQ: Int = 128
 """Query rows per block of the fused forward."""
@@ -490,6 +516,21 @@ comptime XA_FUSED_EXP2: Bool = True
 `exp`). Mathematically the same softmax; the rounding differs and the
 float64 gate in `benchmarks/cross_attention_bench.mojo` is the band."""
 comptime XA_LOG2E: Scalar[DT] = Scalar[DT](1.4426950408889634)
+comptime XA_FUSED_VIA_MAX: Bool = True
+"""Route the fused forward to MAX's FA2 kernel where `xa_fused_routes_to_max`
+admits it. Off = our `_xa_fused_kernel` everywhere (the bisect switch)."""
+
+
+def xa_fused_routes_to_max[MASKED: Bool, HD: Int]() -> Bool:
+    """Whether the fused forward at this shape is MAX's FA2 kernel: NVIDIA,
+    no key-padding mask (MAX would need a `MaterializedMask` we do not build)
+    and head dim 64 (its fp32 config pads the head dim to 64 and its own
+    table admits nothing narrower on Ampere). The gates and the benchmark
+    read this to pick the TF32 band for exactly these shapes."""
+    comptime if not XA_FUSED_VIA_MAX:
+        return False
+    else:
+        return has_nvidia_gpu_accelerator() and (not MASKED) and HD == 64
 
 
 def _xa_fused_split[HD: Int]() -> Int:
@@ -811,7 +852,10 @@ struct CrossAttention[
             out.ensure_gpu(c, B * Self.OUT_DIM)
             if self.fused:
                 # No cache: the 50 MB slab at SigLIP's shape is never sized.
-                self._forward_gpu_fused[B](inputs, out, c)
+                comptime if xa_fused_routes_to_max[Self.MASKED, Self.HEAD_DIM]():
+                    self._forward_gpu_max_fa[B](inputs, out, c)
+                else:
+                    self._forward_gpu_fused[B](inputs, out, c)
                 return
             self.attn.ensure_gpu(c, B * Self.ATTN_SIZE)
             self._forward_gpu[B](inputs, out, c)
@@ -1144,6 +1188,64 @@ struct CrossAttention[
                 out.lt["gpu", lay_q](),
                 grid_dim=(qtiles, Self.N_HEADS, B),
                 block_dim=blk,
+            )
+
+    def _forward_gpu_max_fa[
+        B: Int, o: MutOrigin
+    ](
+        mut self,
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        c: DeviceContext,
+    ) raises:
+        """MAX's FA2 flash attention over our slabs UNCHANGED: `[B, L*DIM]`
+        with the heads contiguous inside DIM is the BSHD it takes, so the
+        views below reinterpret, they do not copy. `flash_attention_dispatch`
+        rather than `flash_attention` because the latter's depth table admits
+        depth 64 by GPU name and falls back to a naive two-BMM kernel on the
+        Orin (34.5 ms against 1.26 ms). No cache, `vjp` raises, as for the
+        other fused path. TF32 matmuls — see the header."""
+        comptime if not xa_fused_routes_to_max[Self.MASKED, Self.HEAD_DIM]():
+            raise Error(
+                "CrossAttention: MAX's flash attention is not routed at this"
+                " shape (NVIDIA, unmasked, head dim 64 only)"
+            )
+        else:
+            comptime H = Self.N_HEADS
+            comptime HD = Self.HEAD_DIM
+            comptime QL = Self.Q_LEN
+            comptime KL = Self.KV_LEN
+            # ⚠ `.unsafe_ptr()` severs the borrow: the inputs are the
+            # caller's tensors and `out` is resident; both outlive the
+            # launch, which the caller synchronises before reading.
+            var qp = inputs[0].dev.value().unsafe_ptr().as_imm().as_unsafe_any_origin()
+            var kp = inputs[1].dev.value().unsafe_ptr().as_imm().as_unsafe_any_origin()
+            var vp = inputs[2].dev.value().unsafe_ptr().as_imm().as_unsafe_any_origin()
+            var q_tt = TileTensor(qp, row_major((B, QL, Idx[H], Idx[HD])))
+            var k_tt = TileTensor(kp, row_major((B, KL, Idx[H], Idx[HD])))
+            var v_tt = TileTensor(vp, row_major((B, KL, Idx[H], Idx[HD])))
+            var o_tt = TileTensor(
+                out.dev.value(), row_major((B, QL, Idx[H], Idx[HD]))
+            )
+            var scale = Float32(1.0 / sqrt(Float64(HD)))
+            flash_attention_dispatch[
+                kv_num_heads=H,
+                ragged=False,
+                sink=False,
+                _is_flash_attention_applicable=True,
+                _is_cache_length_accurate=True,
+                _use_valid_length=False,
+            ](
+                o_tt.to_layout_tensor(),
+                q_tt.to_layout_tensor(),
+                LayoutTensorMHAOperand(k_tt),
+                LayoutTensorMHAOperand(v_tt),
+                NullMask(),
+                QL,
+                KL,
+                scale,
+                False,
+                c,
             )
 
     def _forward_gpu[

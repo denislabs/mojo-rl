@@ -175,6 +175,41 @@ def main() raises:
     comptime if TARGET != "cpu":
         d.synchronize()
 
+    # ── the fused vision attention against the two-pass path ─────────────
+    # The deploy runs the vision towers' attention FUSED (no softmax cache;
+    # on NVIDIA at SigLIP's shape that is MAX's FA2 kernel, whose matmuls are
+    # TF32). Same observation through both paths, and the chunk they
+    # produce compared in the action's own units — the number that says
+    # whether a kernel's precision band reaches the arm. The timed queries
+    # below run the fused path, as the deploy does.
+    comptime if TARGET != "cpu":
+        var act_two = List[Float32]()
+        pol.set_fused_vision_attention(False)
+        pol.select_action[TARGET](
+            images, ids, pose, noise, act_two, Optional(d)
+        )
+        d.synchronize()
+        var act_fused = List[Float32]()
+        pol.set_fused_vision_attention(True)
+        for _ in range(WARMUP):
+            pol.select_action[TARGET](
+                images, ids, pose, noise, act_fused, Optional(d)
+            )
+        d.synchronize()
+        var worst = Float64(0.0)
+        var ss = Float64(0.0)
+        var n_cmp = min(len(act_two), len(act_fused))
+        for i in range(n_cmp):
+            var dlt = Float64(act_two[i]) - Float64(act_fused[i])
+            ss += dlt * dlt
+            if abs(dlt) > worst:
+                worst = abs(dlt)
+        print()
+        print("  vision attention FUSED vs two-pass, same observation:")
+        print("     max |delta action| =", worst, "  rms =",
+              sqrt(ss / Float64(max(n_cmp, 1))), "  over", n_cmp,
+              "chunk values (the action's units)")
+
     # ── end to end, the honest total ─────────────────────────────────────
     var launches_before = _launch_count()
     var best = 0
@@ -209,7 +244,7 @@ def main() raises:
               100.0 * overhead_ms / ms(best), "% of the query")
     print()
     print("  camera preprocessing (CPU, 2 frames):", ms(preproc_ns), "ms")
-    print("  query, min of", REPS, ":", ms(best), "ms")
+    print("  query, min of", REPS, ":", ms(best), "ms  (vision attention fused)")
     print("  query, mean     :", ms(total // REPS), "ms")
     print("  queries/s (min) :", 1000.0 / ms(best))
 

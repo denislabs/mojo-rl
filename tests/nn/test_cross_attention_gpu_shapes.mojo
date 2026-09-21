@@ -31,13 +31,22 @@ from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_pack import TensorPack
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.primitives.cross_attention import CrossAttention
+from mojo_rl.nn.primitives.cross_attention import (
+    CrossAttention,
+    xa_fused_routes_to_max,
+)
 
 
 comptime TOL_STD: Float64 = 1e-4
 """Fp32 CPU (BLAS, token-major loops) vs fp32 GPU (packed batched matmul):
 different reduction orders. The float64-referenced bench measures each side at
 ~1e-6..1e-5 std units at these shapes; 1e-4 is headroom, not agreement."""
+comptime TOL_TF32: Float64 = 2e-2
+"""The fused forward's band where it routes to MAX's FA2 kernel
+(`xa_fused_routes_to_max`: NVIDIA, unmasked, head dim 64): both matmuls run
+as TF32 on the tensor cores, 10 mantissa bits per operand. The float64 bench
+measured 3.7e-3 std units at SigLIP's shape on the Orin; 2e-2 is headroom.
+⚠ A Metal-written 1e-4 here would be the TF32 trap on CUDA."""
 
 
 struct Lcg(Movable):
@@ -65,8 +74,8 @@ def std_err(mut cpu: Tensor, mut gpu: Tensor, n: Int) -> Float64:
     return w / rms
 
 
-def check(mut fails: Int, name: String, err: Float64):
-    var ok = err < TOL_STD
+def check(mut fails: Int, name: String, err: Float64, tol: Float64 = TOL_STD):
+    var ok = err < tol
     if not ok:
         fails += 1
     print(
@@ -227,7 +236,13 @@ def run_shape[
         ctx.synchronize()
         of.download(ctx)
         mg.attn.download(ctx)
-        check(fails, "FUSED forward output", std_err(oc, of, QN))
+        comptime if xa_fused_routes_to_max[MASKED, DIM // H]():
+            check(
+                fails, "FUSED forward output (MAX FA2, TF32 band)",
+                std_err(oc, of, QN), TOL_TF32,
+            )
+        else:
+            check(fails, "FUSED forward output", std_err(oc, of, QN))
         var untouched = 0
         for n in range(AN):
             if mg.attn.data[n] == Scalar[DT](-7.0):

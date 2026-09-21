@@ -89,6 +89,7 @@ from mojo_rl.nn.primitives.cross_attention import (
     _xa_unpack_kernel,
     _xa_fused_kernel,
     xa_fused_block,
+    xa_fused_routes_to_max,
     XA_FUSED_BQ,
 )
 from mojo_rl.deep_agents.smolvla.block_attention import (
@@ -391,7 +392,7 @@ def run_shape[
         String("B  pre-port: bmm Q.Kt transposed"),
         String("C  scores+softmax in cache, bmm A.V"),
         String("D  element-indexed, no pack"),
-        String("F  FUSED online softmax (inference)"),
+        String("F  FUSED, as forward ships it"),
         String("G  fused R2 S4 KU1 (occupancy)"),
         String("H  fused R4 S4 KU4 (ILP across keys)"),
         String("I  fused R2 S4 KU4 (both)"),
@@ -599,11 +600,16 @@ def run_shape[
                 if attn.data[n] != a_attn[n]:
                     attn_bits += 1
         var flag = String("")
-        var band = GATE_TF32_STD_UNITS if variant >= 14 else GATE_STD_UNITS
+        # Row F is whatever `forward` ships: on NVIDIA at head dim 64,
+        # unmasked, that is MAX's FA2 kernel and its band is TF32's.
+        var tf32 = variant >= 14 or (
+            variant == 4 and xa_fused_routes_to_max[MASKED, HD]()
+        )
+        var band = GATE_TF32_STD_UNITS if tf32 else GATE_STD_UNITS
         if out_err > band or cache_err > band:
             flag = "   ⚠⚠ DISAGREES"
             ok = False
-        elif variant >= 14:
+        elif tf32:
             flag = "   (TF32 band " + String(GATE_TF32_STD_UNITS) + ")"
         print(
             "   " + _pad(names[variant], 36) + _pad(_fmt(best, 3), 10)

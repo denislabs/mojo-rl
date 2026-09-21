@@ -290,10 +290,14 @@ def main() raises:
     var ensemble = False
     var fused_vision = True
     """The SigLIP towers' attention through `CrossAttention`'s fused
-    inference kernel (no scores, no cache, no packs) — the default since
-    20 Sep. `--no-fused-vision` runs the two-pass path instead, for an A/B
-    on the query cost; the pixels the policy sees differ at the last bit only
-    (`test_cross_attention_gpu_shapes.mojo`, 1e-5 std units at this shape)."""
+    inference path (no scores, no cache, no packs) — the default since
+    20 Sep. On NVIDIA at SigLIP's shape that path is MAX's own FA2 flash
+    attention (21 Sep): 1.26 ms per layer against 4.1 for our kernel and 8.4
+    for the two-pass path, with TF32 tensor-core matmuls — 3.7e-3 std units
+    against float64 per layer, the band the GEMMs already run in on CUDA.
+    `--no-fused-vision` runs the two-pass fp32 path instead, for an A/B on
+    the query cost or on the chunk; `smolvla_so101_latency_probe.mojo`
+    prints the chunk delta between the two paths in the action's units."""
     var sync = False
     """⚠⚠ `--sync` IS THE REFERENCE'S EVALUATION LOOP, and the measurement
     that asked for it is the two 20 Sep runs with the accum-64 checkpoints.
@@ -454,8 +458,8 @@ def main() raises:
               " from step 0 (the reference's evaluation loop)")
     print(
         "vision       SigLIP attention "
-        + ("FUSED (online softmax, no cache)" if fused_vision
-           else "two-pass (--no-fused-vision)")
+        + ("FUSED (MAX FA2, TF32 matmuls, on NVIDIA at this shape; no cache)"
+           if fused_vision else "two-pass fp32 (--no-fused-vision)")
     )
     if threaded:
         print("device       the query runs on its own thread (--threaded)")
