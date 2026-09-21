@@ -1,6 +1,6 @@
 ---
-title: The layered stack
-description: How noeira is organised — five layers from environments to training drivers, every one of them running on CPU or GPU.
+title: The stack
+description: How noeira is organised — simulation and the real world at the bottom, networks and data above them, learning, then the drivers that own the loops — every layer on CPU or GPU.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -8,121 +8,138 @@ import LayeredStack from '~/components/diagrams/LayeredStack.astro';
 
 <Maturity level="stable" />
 
-noeira is five layers. Each one is usable on its own — the physics engines
-without the agents, the neural-network framework without the RL — and each one
-has both a CPU and a GPU path.
+noeira is organised in layers. At the bottom sit the two things a policy runs
+against — a simulated world and the real one. Above them, the deep-learning
+framework and the data pipeline; above that, the learning algorithms; at the
+top, the drivers that own the loops: training, recording, deployment.
 
 <LayeredStack />
 
-The bottom three layers are ordinary libraries that happen to live in an RL
-repository. [`nn`](/nn/) does not import an agent; `physics3d` does not import a
-network. That is worth knowing before you decide how much of this you are taking
-on: using the physics engine to drive your own controller costs you nothing
-above it.
+The lower layers are libraries in their own right. [`nn`](/nn/) imports no
+agent. `physics3d` imports no learning code — it borrows `nn`'s `Tensor`
+storage, not its networks. `robot` depends only on the I/O layer, and
+`vision` only on the 3D math. Using the physics engine to drive your own
+controller, or the servo driver to run your own arm, costs you nothing above
+it.
+
+Two edges point up, deliberately: environment packages implement the
+`BatchedEnv` trait that lives beside the training drivers, and an environment
+package may ship the adapter for a policy trained on it (LIBERO carries its
+ACT dataset and observation glue). Neither pulls an algorithm into the
+physics.
 
 Generic traits let the compiler specialize the whole pipeline for the target
-device, which is why the same source produces both a CPU loop and a fused GPU
-one.
+device, which is why the same source produces a CPU loop, a fused GPU one, and
+a Jetson binary.
 
 ## Package layout
 
 ```
 noeira/
-├── core/           Traits, tabular replay buffers, tile coding, metrics, logging
+├── core/           Traits, projects and runs, logging, tabular replay, metrics
 ├── agents/         Tabular & linear algorithms (Q-Learning → linear SAC)
-├── deep_agents/    Deep RL, one facade package per algorithm
-│   ├── dqn/ c51/ ddpg/ td3/ sac/ a2c/ ppo/ ppo_discrete/
-│   ├── redq/ redq_ofe/ mbpo/ tdmpc2/ dreamerv3/ dreamer4/
-│   ├── alphazero/ muzero/ efficient_zero_v2/ zero/
-│   ├── core/       Module/Trainer/agent traits + shared infrastructure
+├── deep_agents/    One facade package per learning algorithm
+│   ├── dqn/ c51/ ddpg/ td3/ sac/ a2c/ ppo/ ppo_discrete/ redq/ redq_ofe/
+│   ├── mbpo/ tdmpc2/ dreamerv3/ dreamer4/ alphazero/ muzero/ efficient_zero_v2/
+│   ├── act/ smolvla/ bc/ hil_serl/ fb/     Imitation, VLAs, zero-shot RL
+│   ├── demos/      The .demo format, recorders, DAgger handover
 │   ├── training/   CPU/GPU drivers, BatchedEnv wrappers
-│   └── primitives/ loss/ data/
+│   └── core/ primitives/ loss/ data/ zero/
 ├── nn/             Deep-learning framework (Module + Param)
-├── data/           Trajectory store, deep-RL replay buffers, index policies
-├── io/             Native HDF5 FFI + resumable HTTP fetch
+├── data/           Trajectory store, replay buffers, LeRobot v3 import/export
+├── io/             Native HDF5, Parquet, video, JSON, HTTP, safetensors, serial
 ├── physics3d/      MuJoCo-inspired generalized-coordinates engine
 ├── physics2d/      GPU-batched 2D impulse engine
+├── envs/           Environments: classic, MuJoCo-style, DM Control, LIBERO, robots
+├── tasks/          The task layer: families, goals, placement, evaluation
 ├── planners/       Trajectory optimizers (MPPI, CEM, iLQR) + GPU tree search
+├── robot/          The SO-101 over its Feetech servo bus
+├── vision/         Cameras, calibration, the OpenCV shim
+├── render/         SDL3 renderers, ImGui viewers, video recording
 ├── math3d/         Vec3, Quat, Mat3, Mat4 (+ GPU variants)
-├── render/         SDL3 renderers, Metal shaders, video recording
-├── envs/           25+ environments + Gymnasium wrappers
+├── cuda/           CUDA graphs, the NVML intercept
 └── experimental/   Research code — APIs may break
 ```
 
-## Layer 1 — Environments
+## Simulation and tasks
 
-25+ worlds in pure Mojo, grouped by the physics behind them:
-
-| Family | Members | Engine |
-|---|---|---|
-| Tabular | GridWorld · FrozenLake · CliffWalking · Taxi | grid |
-| Classic control | CartPole · MountainCar · Pendulum · Acrobot | Gymnasium-matching |
-| 2D physics | LunarLander · BipedalWalker · CarRacing | `physics2d` |
-| 3D locomotion | HalfCheetah · Hopper · Walker2d · Ant · Swimmer · Humanoid | `physics3d` |
-| 3D manipulation | Reacher · Pusher · Sawyer | `physics3d` |
-| Arcade | Pong · Breakout · Space Invaders | native GPU engines |
-| Emulation | Atari 2600 (6502 · TIA · RIOT) | CPU only |
-| Board games | Tic-Tac-Toe · Connect Four · Go · Chess | — |
-
-Plus 20+ Gymnasium wrappers, used mainly as correctness references: the native
-environments are faithful ports, and the wrappers let both be run side by side.
-
-## Layer 2 — Physics
-
-Two engines, written from scratch, because the environments needed different
-things.
-
-**`physics3d`** follows MuJoCo's design: models defined at compile time as
-bodies, joints, geoms and actuators; simulation state in generalized
-(joint-space) coordinates. The pipeline is collision detection → constraint
-building → constraint solving → integration, with CRBA for the mass matrix, RNE
-for bias forces, a choice of PGS / Newton / CG / island solvers, and MJCF XML
-loading.
+**`physics3d`** follows MuJoCo's design: models loaded from MJCF, simulation
+state in generalized (joint-space) coordinates, and the pipeline collision
+detection → constraint building → constraint solving → integration. It carries
+CRBA and RNE, PGS / Newton / CG solvers, elliptic friction cones, tendons,
+equality constraints, meshes and heightfields, sensors and ray-traced cameras,
+and is checked against live MuJoCo test by test — see
+[validation](/physics/validation/).
 
 **`physics2d`** is impulse-based and GPU-batched, with state in a strided
 `[BATCH, STATE_SIZE]` layout so one kernel launch steps hundreds of
-environments. It carries revolute joints, articulated chains, a slip-based tire
-model for CarRacing, and LIDAR distance sensing for BipedalWalker.
+environments — LunarLander, BipedalWalker, CarRacing.
 
-## Layer 3 — Deep learning
+**`envs`** holds the worlds: tabular and classic control, 2D physics, the
+MuJoCo-style locomotion and manipulation suites, DeepMind Control, LIBERO,
+Menagerie robots, arcade engines and an Atari 2600 emulator — see
+[environments](/environments/).
 
-[`noeira.nn`](/nn/) — described in the project's own words as *"something
-between Tinygrad and PyTorch"*. Networks are assembled from small reusable `Module`
-blocks, each `Param` owning its own value and gradient tensors.
+**`tasks`** is a declarative layer over the physics: a *family* composes one
+scene with a fixed budget of slots, and a *task* names a goal, the active
+slots and where things start. Many tasks run in one batched scene, one per
+lane.
 
-- **70+ primitives**: Linear, Conv2D, attention, LSTMCell, NoisyLinear, LayerNorm/RMSNorm
+## The real world
+
+**`robot`** drives the SO-101 arm over its Feetech servo bus — calibration,
+torque, synchronized reads and writes — with a safety rule throughout: nothing
+moves unless a command was explicitly armed. **`vision`** covers camera
+capture on its own thread, intrinsic and extrinsic calibration, and the image
+preprocessing a policy expects. Teleoperation records both into LeRobot v3
+datasets through **`data`** and **`io`**.
+
+## Deep learning and data
+
+[`noeira.nn`](/nn/) — networks assembled from small `Module` blocks, each
+`Param` owning its value and gradient tensors.
+
+- **70+ primitives**: Linear, Conv2D, attention (fused, and MAX's flash
+  attention on NVIDIA), RoPE, LSTMCell, NoisyLinear, LayerNorm/RMSNorm
 - **Combinators**: Sequential, Residual, Parallel, Repeat
 - **Pre-built models**: ResNet, GPT, ViT, LSTM
 - **Optimizers**: SGD, Adam, AdamW, with grouped multi-tensor apply
 - **Automatic fusion**: MatMul+Bias+Activation and Conv2D+Activation collapse into single GPU kernels
 - **Training**: supervised `Trainer` with AMP and CUDA-graph capture
 
-## Layer 4 — Algorithms
+**`data`** is the trajectory store (HDF5), the replay buffers the off-policy
+agents sample from, and LeRobot v3 datasets in both directions. **`io`** is the
+native I/O underneath — Parquet, H.264 video through ffmpeg, safetensors, HTTP
+— with no Python in the data path.
 
-Ordered by increasing sophistication:
+## Learning
 
-| Tier | Algorithms |
+| Family | Algorithms |
 |---|---|
-| **1 · Tabular** | Q-Learning · SARSA · Expected SARSA · Double Q · Dyna-Q · SARSA(λ) |
-| **2 · Deep value** | DQN · Double · Dueling · Noisy · C51 · Rainbow |
-| **3 · Policy gradient** | REINFORCE · Actor-Critic · A2C · PPO |
-| **4 · Continuous control** | DDPG · TD3 · SAC · REDQ |
-| **5 · Model-based** | MBPO · TD-MPC2 · DreamerV3 · AlphaZero · MuZero · EfficientZero V2 |
+| **Tabular and linear** | Q-Learning · SARSA · Expected SARSA · Double Q · Dyna-Q · SARSA(λ) · tile coding |
+| **Value-based** | DQN · Double · Dueling · Noisy · C51 · Rainbow |
+| **Policy gradient** | REINFORCE · Actor-Critic · A2C · PPO |
+| **Continuous control** | DDPG · TD3 · SAC · REDQ |
+| **Model-based** | MBPO · TD-MPC2 · DreamerV3 · Dreamer 4 |
+| **Planning** | AlphaZero · MuZero · EfficientZero V2 |
+| **Imitation and VLAs** | Behaviour cloning · ACT · SmolVLA |
+| **From demonstrations** | HIL-SERL (RLPD + BC) · DAgger interventions |
+| **Zero-shot** | Forward-Backward representations (BFM-Zero) |
 
 Deep agents follow a **facade pattern**: one package per algorithm, each
 exposing an `XxxAgent` over a trainer plus a shared training driver. Networks
 arrive as compile-time parameters, so `SACAgent` does not know or care what
 architecture it is optimizing.
 
-Tier 5 splits once more. Most agents decide by evaluating a policy network;
-TD-MPC2 and the zero-series decide by running a **search** at every step. That
-search is not part of the agent — it lives in [`noeira.planners`](/planners/),
-written against callback traits, which is why the same MPPI implementation
-drives a learned world model in production and a closed-form oracle in a test.
+Some agents decide by running a **search** at every step — TD-MPC2's MPPI, the
+zero-series' MCTS. That search lives in [`noeira.planners`](/planners/),
+written against callback traits, so the same MPPI drives a learned world model
+in training and a closed-form oracle in a test.
 
-## Layer 5 — Training drivers
+## Drivers and deployment
 
-The drivers own the loop so the agents do not have to. They come in a matrix:
+The drivers own the loops so the agents do not have to. For training they come
+in a matrix:
 
 |  | Single env | Batched |
 |---|---|---|
@@ -130,14 +147,19 @@ The drivers own the loop so the agents do not have to. They come in a matrix:
 | **On-policy** | `run_onpolicy_train` | `run_onpolicy_train_batched` |
 
 each with CPU and GPU variants. `BatchedEnv` wrappers such as
-`Phyics3dBatchedEnv` and `BatchedGpuDiscreteEnv` adapt an environment to the
-batched interface. Everything an agent facade's `train()` does is select the
-right driver and hand it the trainer.
+`Phyics3dBatchedEnv` adapt an environment to the batched interface. The newer
+drivers (task families, ACT, Forward-Backward, the G1) record each run as a
+`RunContext`: a directory with its own record, checkpoints and metrics, filed
+under a project and mirrored to [noeira cloud](/tooling/monitor/).
 
-## The through-line: every layer runs on GPU
+The other loops follow the same shape: a recorder drives the robot or the
+simulator and writes demonstrations; a deployment loop loads a checkpoint and
+its normalisation, reads the cameras and the joints, and commands the arm —
+on a workstation or a Jetson Orin.
 
-The reason the layering matters is that it does not break at the device
-boundary. On a GPU run, this entire sequence stays on-device:
+## The through-line: every layer runs on the GPU
+
+On a simulated GPU run, the whole sequence stays on the device:
 
 ```
 env step → observe → network fwd/bwd → replay sample → target update
@@ -145,8 +167,9 @@ env step → observe → network fwd/bwd → replay sample → target update
 
 No host round-trips; the data never leaves the device. That is only possible
 because the physics engine, the networks and the driver are all Mojo, compiled
-together. On NVIDIA the whole loop can additionally be captured as a CUDA graph
-and replayed, worth roughly **1.4×** on SAC.
+together. On NVIDIA the loop can additionally be captured as a CUDA graph and
+replayed, worth roughly **1.4×** on SAC. On the robot, the same modules run
+the policy on the Jetson's GPU.
 
 ## Next
 

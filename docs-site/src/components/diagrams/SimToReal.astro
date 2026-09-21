@@ -1,0 +1,85 @@
+---
+/**
+ * SimToReal — the loop the project is built around.
+ *
+ * Four stages left to right: SIMULATE (the physics and the task suites),
+ * LEARN (RL, world models, imitation and VLAs), ACT (the policy on a real arm,
+ * on a Jetson), RECORD (teleoperation and cameras into LeRobot datasets). The
+ * return edge is the point of drawing it: what the robot records flows back
+ * into learning, so the loop is closed in both directions — dream in
+ * simulation, act in the world, learn from both. The bar underneath is the one
+ * service every stage reports to.
+ *
+ * Tones: cyan = simulation, spark = learning, green = the real world,
+ * purple = data. Same palette as the other diagrams (`.diagram` in noeira.css).
+ */
+
+const STAGES = [
+	{ x: 0, tone: 'cyan', title: 'SIMULATE', l1: 'MuJoCo-parity physics,', l2: 'DM Control, LIBERO, tasks' },
+	{ x: 230, tone: 'spark', title: 'LEARN', l1: 'RL · world models ·', l2: 'imitation · VLAs' },
+	{ x: 460, tone: 'green', title: 'ACT', l1: 'SO-101 arm, cameras,', l2: 'Jetson Orin at 30 Hz' },
+	{ x: 690, tone: 'purple', title: 'RECORD', l1: 'teleop, interventions,', l2: 'LeRobot datasets' },
+];
+const W = 190;
+const Y = 70;
+const H = 120;
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 320" role="img"
+		aria-label="The noeira loop: simulate, learn, act on a real robot, record demonstrations. Recordings flow back into learning. noeira cloud tracks runs, datasets and policies across every stage.">
+		<defs>
+			<marker id="s2r-muted" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-muted" />
+			</marker>
+			<marker id="s2r-purple" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-purple" />
+			</marker>
+		</defs>
+
+		<text x="440" y="30" class="dg-title">Dream in simulation. Act in the world.</text>
+		<text x="440" y="52" class="dg-sub">One Mojo codebase from the MJCF file to the robot's motors</text>
+
+		{
+			STAGES.map((s) => (
+				<g class={`dg-node dg-node--${s.tone}`}>
+					<rect x={s.x} y={Y} width={W} height={H} rx="12" />
+					<text x={s.x + 20} y={Y + 36} class="dg-title dg-title--left">{s.title}</text>
+					<text x={s.x + 20} y={Y + 70} class="dg-sub dg-sub--left">{s.l1}</text>
+					<text x={s.x + 20} y={Y + 92} class="dg-sub dg-sub--left">{s.l2}</text>
+				</g>
+			))
+		}
+
+		{/* forward edges, in the 40-unit gaps */}
+		{
+			[0, 1, 2].map((i) => (
+				<path class="dg-edge dg-edge--muted" marker-end="url(#s2r-muted)"
+					d={`M ${STAGES[i].x + W + 4} ${Y + H / 2} L ${STAGES[i + 1].x - 6} ${Y + H / 2}`} />
+			))
+		}
+
+		{/* the return edge: recordings back into learning */}
+		<path class="dg-edge dg-edge--purple" marker-end="url(#s2r-purple)"
+			d={`M 785 ${Y + H} C 785 ${Y + H + 48}, 325 ${Y + H + 48}, 325 ${Y + H + 8}`} />
+		<text x="555" y={Y + H + 56} class="dg-label dg-label--purple dg-label--center">
+			demonstrations · interventions · datasets
+		</text>
+
+		<g class="dg-node dg-node--muted">
+			<rect x="0" y="270" width="880" height="40" rx="10" />
+		</g>
+		<text x="440" y="295" class="dg-sub">
+			noeira cloud — runs, datasets, policies and live metrics from every stage
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">simulation</span>
+		<span class="diagram__key diagram__key--spark">learning</span>
+		<span class="diagram__key diagram__key--green">the real world</span>
+		<span class="diagram__key diagram__key--purple">data</span>
+	</figcaption>
+</figure>

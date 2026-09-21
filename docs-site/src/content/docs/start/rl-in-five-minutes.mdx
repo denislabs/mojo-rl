@@ -28,8 +28,10 @@ That exchange repeats. The agent acts, observes the consequence, and adjusts its
 policy to collect more reward over time. Millions of iterations later, the
 adjustments amount to a skill.
 
-Building an RL framework means building **both sides of this loop**, plus
-everything that makes the adjusting work.
+noeira builds **both sides of this loop** — the simulated (or real) world and
+the learner — plus everything that makes the adjusting work. Imitation
+learning keeps the same loop but learns the policy from demonstrations first;
+the vocabulary below carries over.
 
 ## The vocabulary
 
