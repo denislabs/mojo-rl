@@ -332,13 +332,23 @@ def scene_path(f: FamilySpec) -> String:
     reads and what a `ModelDefFromXML` points at, so it must be a stable path
     and not a temp file.
     """
-    return SCENE_DIR + "/" + f.name + ".xml"
+    return scene_dir(f) + "/" + f.name + ".xml"
+
+
+def scene_dir(f: FamilySpec) -> String:
+    """`<root>/scenes` — `SCENE_DIR` for the task layer's own families."""
+    return f.root + "/scenes"
+
+
+def task_path(f: FamilySpec, task: String) -> String:
+    """`<root>/tasks/<task>.task` — a task lives beside its family."""
+    return f.root + "/tasks/" + task + ".task"
 
 
 def write_family_scene(f: FamilySpec) raises -> String:
     """Compose and write to `scene_path(f)`; returns that path."""
     var out = scene_path(f)
-    var xml = compose_family(f, SCENE_DIR)
+    var xml = compose_family(f, scene_dir(f))
     with open(out, "w") as fh:
         fh.write(xml)
     return out^

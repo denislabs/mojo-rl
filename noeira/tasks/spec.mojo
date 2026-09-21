@@ -496,6 +496,11 @@ struct JointInitSpec(Copyable, ImplicitlyCopyable, Movable):
         return self.joint + "@" + String(self.lo) + "," + String(self.hi)
 
 
+comptime DEFAULT_TASK_ROOT = "noeira/tasks"
+"""The task layer's own root (SO-101 families). Env packages keep theirs
+beside their code, e.g. `noeira/envs/libero/`."""
+
+
 struct FamilySpec(Movable & Deinitable):
     """The compile unit. Every task in the family instantiates EVERY slot."""
 
@@ -536,6 +541,14 @@ struct FamilySpec(Movable & Deinitable):
     density=1.2 viscosity=2e-5 timestep=0.002`, authored once in the vendored
     Panda; MuJoCo's `<attach>` ignores a child's `<option>`, so without this
     the composed scene would run robosuite's robot under our defaults."""
+    var root: String
+    """The TASK ROOT this family was loaded from: the directory holding its
+    `families/`, `tasks/` and `scenes/`. `load_family(path)` sets it to the
+    grandparent of `path`; default `DEFAULT_TASK_ROOT` (the task layer's
+    own). NOT part of the spec — never encoded, never compared — it only
+    tells `scene_path` / `task_path` where this family's siblings live, so an
+    env package (`noeira/envs/libero/`) can own its families without the
+    generic layer naming it."""
 
     def __init__(out self):
         self.schema_version = SCHEMA_VERSION
@@ -568,6 +581,7 @@ struct FamilySpec(Movable & Deinitable):
         self.floor = True
         self.base_qpos = List[Float64]()
         self.inherit_option = False
+        self.root = String(DEFAULT_TASK_ROOT)
 
     def __init__(out self, *, deinit move: Self):
         self.schema_version = move.schema_version
@@ -586,6 +600,7 @@ struct FamilySpec(Movable & Deinitable):
         self.floor = move.floor
         self.base_qpos = move.base_qpos^
         self.inherit_option = move.inherit_option
+        self.root = move.root^
 
     def init_target_kind(self, name: String) raises -> Int:
         """`INIT_TARGET_REGION`, `INIT_TARGET_SLOT`, or raises.
@@ -1409,9 +1424,26 @@ def validate_task_against_family(t: TaskSpec, f: FamilySpec) raises:
             )
 
 
+def task_root_of(path: String) -> String:
+    """`<root>/families/x.family` -> `<root>`. A path with fewer than two
+    directory levels falls back to `DEFAULT_TASK_ROOT`."""
+    var parts = path.split("/")
+    if len(parts) < 3:
+        return String(DEFAULT_TASK_ROOT)
+    var out = String()
+    for i in range(len(parts) - 2):
+        if i > 0:
+            out += "/"
+        out += parts[i]
+    return out^
+
+
 def load_family(path: String) raises -> FamilySpec:
+    var f: FamilySpec
     with open(path, "r") as fh:
-        return parse_family(fh.read())
+        f = parse_family(fh.read())
+    f.root = task_root_of(path)
+    return f^
 
 
 def load_task(path: String) raises -> TaskSpec:

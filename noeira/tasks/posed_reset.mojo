@@ -29,7 +29,7 @@ from noeira.physics3d.gpu.constants import (
 )
 from noeira.physics3d.parser.runtime_load import parse_model_runtime
 from .spec import load_family, load_task, validate_task_against_family, SLOT_FREE
-from .family import scene_path
+from .family import scene_path, task_path
 from .sampler import sample_placements, RegionFrame, SampleReport
 from .reset import reset_slots, SlotAddress
 from .placement.table import PlacementTable
@@ -39,20 +39,21 @@ from .active import active_mask, init_region_words
 from .shaping import shaping_words, SHAPING_WORDS
 
 comptime DT = DType.float64
-comptime FAMILY_DIR = "noeira/tasks/families/"
-comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime DEFAULT_ROOT = "noeira/tasks"
+"""Where `family` / `task` names are looked up unless `root=` says otherwise."""
 
 
 def posed_qpos[P: PlacementTable](
     task: String, family: String, fallback_radius: Float64,
     seed: UInt64 = 0,
+    root: String = DEFAULT_ROOT,
 ) raises -> List[Float64]:
     """The composed scene's `qpos0` with the task's `init=` placements drawn.
 
     `fallback_radius` is what the host sampler uses for a free slot WITHOUT
     `slot_geom=` (every tabletop slot; no tower slot)."""
-    var f = load_family(String(FAMILY_DIR) + family + ".family")
-    var t = load_task(String(TASK_DIR) + task + ".task")
+    var f = load_family(root + "/families/" + family + ".family")
+    var t = load_task(task_path(f, task))
     validate_task_against_family(t, f)
     var q0 = List[Float64](length=P.NQ, fill=0.0)
     for j in range(P.N_FREE):
@@ -90,6 +91,7 @@ def task_meta_words(
     task: String, family: String,
     w_goal: Float64, w_reach: Float64, goal_margin: Float64,
     reach_margin: Float64,
+    root: String = DEFAULT_ROOT,
 ) raises -> Tuple[List[Int], List[Float64]]:
     """The `meta` words a task's lane carries: tape, mask, init words, shaping.
 
@@ -97,8 +99,8 @@ def task_meta_words(
     shaping words are the config's `SHAPE_W_GOAL`, `SHAPE_W_REACH`,
     `GOAL_MARGIN`, `REACH_MARGIN` — the caller hands them in from the type it
     knows, as the SAC driver does."""
-    var f = load_family(String(FAMILY_DIR) + family + ".family")
-    var t = load_task(String(TASK_DIR) + task + ".task")
+    var f = load_family(root + "/families/" + family + ".family")
+    var t = load_task(task_path(f, task))
     validate_task_against_family(t, f)
     var fmd = parse_model_runtime(scene_path(f))
     var g = bind_goal(parse_goal(t.goal), f, fmd.body_names, fmd.site_names)

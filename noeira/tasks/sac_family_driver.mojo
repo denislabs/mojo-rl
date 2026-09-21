@@ -233,7 +233,7 @@ from noeira.tasks.spec import (
     TaskSpec,
     load_family, load_task, validate_task_against_family, SLOT_FREE,
 )
-from noeira.tasks.family import scene_path
+from noeira.tasks.family import scene_path, task_path
 from noeira.envs.phyics3d_env import Phyics3dEnvConfig
 from noeira.physics3d.model import ModelDefLike
 from noeira.tasks.predicates import parse_goal, bind_goal, require_tier_a
@@ -987,7 +987,7 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
     var n_tasks = len(task_names)
     var tasks = List[TaskSpec]()
     for i in range(n_tasks):
-        var ti = load_task("noeira/tasks/tasks/" + task_names[i] + ".task")
+        var ti = load_task(task_path(f, task_names[i]))
         validate_task_against_family(ti, f)
         # ⚠ EVERY TASK MUST BE THIS FAMILY'S. The env is monomorphised on one
         # family, so a task from another has the wrong slot table and its
