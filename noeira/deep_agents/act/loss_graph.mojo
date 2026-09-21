@@ -31,7 +31,7 @@ one input rather than two, so the two can never disagree.
                        -> N_ENC x DETREncoderLayer(c = mem_pos)     =: memory
                        mem_pos = Concat(learned 2 tokens, 2-D sine x N_CAM)
 
-    decoder          ZeroTokens -> N_DEC x DETRDecoderLayer(
+    decoder          LearnedQueries (content) -> N_DEC x DETRDecoderLayer(
                                      c = [query_embed | memory+pos | memory])
                        -> Tok LayerNorm -> Tok Linear[DIM, ADIM]    =: a_hat
 
@@ -106,7 +106,6 @@ from noeira.nn.primitives.l1_masked_per_sample import L1MaskedPerSample
 from noeira.nn.primitives.sinusoidal_pos_tokens import (
     SinusoidalPos2DTokens,
     SinusoidalPos1DTokens,
-    ZeroTokens,
 )
 
 from .layers import DETRDecoderLayer, DETREncoderLayer, DETREncoderLayerMasked
@@ -187,7 +186,23 @@ comptime ACTLossGraph[
     # ── transformer decoder ──────────────────────────────────────────────
     Node["kmem", Add[MEM * DIM], "memory", "mempos"],  # layer-invariant
     Node["qpe", LearnedQueries[QPOS, K, DIM], "qpos"],  # query_embed
-    Node["tgt0", ZeroTokens[QPOS, K, DIM], "qpos"],
+    # ⚠ THE DECODER'S TARGET TOKENS ARE A SECOND LEARNED EMBEDDING, NOT THE
+    # REFERENCE'S ZEROS (`transformer.py:72`). With `tgt = 0` the only route
+    # from "which chunk position" to the output is the cross-attention
+    # WEIGHTS over the memory (self-attention values are zero, the residual
+    # stream is zero, the FFN sees the attended memory alone), and on LIBERO
+    # every fit — per-task, multi-task, 300k steps, unit-scale queries, KL
+    # 0.1, a shape term — converged to ONE action for all 40 positions
+    # (`libero_act_inspect`: decoder spread 0.0003-0.0009 at rms 1, from
+    # 0.0157 fresh): the per-position part of the output is a small residual
+    # the L1 fit removes while it fits the per-state mean, and flat is the
+    # attractor. A learned content query per position (the construction
+    # conditional-DETR-style decoders use) puts the position in the residual
+    # stream: self-attention values, the residual and the FFN all see it, a
+    # per-position offset per state is trivially expressible, and flat is no
+    # longer the easy solution. `qpe` stays the positional query added to q
+    # and k as before. A pre-change checkpoint does not load (one more Param).
+    Node["tgt0", LearnedQueries[QPOS, K, DIM], "qpos"],  # content queries
     Node[
         "dc", Concat[K * DIM, MEM * DIM, MEM * DIM], "qpe", "kmem", "memory"
     ],
