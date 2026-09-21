@@ -1,0 +1,210 @@
+---
+title: Forward-Backward
+description: Zero-shot RL with Forward-Backward representations — train once without a reward, pick a policy for any reward afterwards — and the BFM-Zero reproduction on the Unitree G1.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="experimental" note="The losses, sampler and device path are gated, and the released BFM-Zero actor reproduces the paper's MuJoCo numbers in our G1. Our own G1 training still trails the reference's curve." />
+
+Every other agent in this section is trained for one reward. Change the task
+and you train again. **Forward-Backward (FB)** representations learn, without
+any reward, a family of policies `π_z` indexed by a latent vector `z`, together
+with a way to pick the `z` for a reward given **after** training — by a
+weighted average over states, not by another training run.
+
+Behavioural foundation models such as Meta Motivo and BFM-Zero are FB with a
+regulariser (FB-CPR) that keeps the policies close to human motion data.
+noeira has both, and uses them to reproduce BFM-Zero on the Unitree G1.
+
+<Papers label="Papers">
+	<Paper
+		title="Learning One Representation to Optimize All Rewards"
+		authors="Touati, Ollivier"
+		year="2021"
+		arxiv="2103.07945"
+		venue="NeurIPS 2021"
+		note="Forward-Backward representations."
+	/>
+	<Paper
+		title="Zero-Shot Whole-Body Humanoid Control via Behavioral Foundation Models"
+		authors="Tirinzoni et al."
+		year="2025"
+		arxiv="2504.11054"
+		note="FB-CPR and Meta Motivo."
+	/>
+	<Paper
+		title="BFM-Zero: A Promptable Behavioral Foundation Model for Humanoid Control Using Unsupervised Reinforcement Learning"
+		authors="Li, Luo, Zhang, Dai, Kanervisto et al."
+		year="2025"
+		arxiv="2511.04131"
+		note="FB-CPR on a real Unitree G1 — the reproduction target."
+	/>
+</Papers>
+
+## The idea
+
+Two networks, both into `R^d`:
+
+- **B(s′)** — the *backward* embedding of a state;
+- **F(s, a, z)** — the *forward* embedding of a state, action and task vector.
+
+They are trained so that `F(s, a, z)ᵀ B(s′)` approximates the **successor
+measure** of `π_z`: how much discounted time the policy spends near `s′`
+starting from `(s, a)`. The actor is trained to maximise `F(s, a, z)ᵀ z`.
+
+For any reward `r`, the Q-function of `π_z` is then `F(s, a, z)ᵀ z` when
+`z = E_ρ[B(s) · r(s)]` over the training states. So the zero-shot step is: label
+a batch of states with the new reward, average `B(s) · r(s)`, project onto the
+sphere, and run `π_z`. In code that is `z_from_reward`
+(`noeira/deep_agents/fb/z_sampler.mojo`).
+
+### Sampling `z`
+
+During training each `z` comes from a mixture: half uniform on the sphere, half
+`B(s)` of states from the batch (`UNIFORM_FRAC = 0.5`, the published setting). A
+purely uniform `z` asks for rewards no reachable state distribution produces; a
+purely `B`-based one never leaves what `B` already encodes.
+
+`z` lives on the sphere of radius `√d`. A `z` with the wrong norm raises
+nothing and trains a policy that emits plausible garbage, so every producer —
+`sample_z`, `z_from_b`, `z_from_reward` — renormalises inside itself, and no
+call site is trusted to.
+
+### Why the loss curve is not enough
+
+`L_FB` descends when `B` collapses, when `B` expands, when `F` runs away and when
+the actor goes bang-bang. The gates therefore check properties the curve cannot
+show — `B`'s row spread, the effective rank of `E[B Bᵀ]`, the direction of the
+orthonormality term — and the G1 trainer logs `norm/B_rank_eff`, which must sit
+at `d`. The norm of `B` is `√d` by construction and can never warn of anything.
+
+## Variants
+
+| Package piece | What it is | Driver |
+|---|---|---|
+| `FBTrainer` (`noeira/deep_agents/fb/trainer.mojo`) | offline FB from a collected dataset | `examples/fb/fb_train_gpu.mojo` |
+| `FBOnlineAgent` (`noeira/deep_agents/fb/online.mojo`) | online, off-policy FB on a batched GPU env, no dataset | `examples/fb/fb_online_walker_gpu.mojo` |
+| `FBCPRTrainer` (`noeira/deep_agents/fb/cpr.mojo`) | FB-CPR offline: a z-conditioned discriminator `D(s, z)` and style critic around an unchanged `FBTrainer` | `examples/fb/fb_train_cpr_gpu.mojo` |
+| `FBCPROnlineAgent` (`noeira/deep_agents/fb/online_cpr.mojo`) | FB-CPR online — the reference's own setting | `examples/fb/fb_online_cpr_walker_gpu.mojo` |
+
+The CPR head is composed around the plain trainer: with the regularisation
+weight at 0 its FB half is bit-identical to `FBTrainer`, which a gate checks.
+Supporting pieces: RND novelty (`rnd.mojo`), fixed and running observation
+normalisers (`obs_norm.mojo`, `obs_ema.mojo`), and dataset collection with a
+coverage measurement (`examples/fb/collect_dm_control.mojo`, which measures with
+RND whether a widened reset adds states).
+
+On dm_control walker. The offline store holds rollouts of SAC policies
+trained for stand, walk and run (`examples/dm_control/sac_dm_walker_training_gpu.mojo`,
+one run per task first):
+
+```bash
+pixi run mojo run -I . examples/fb/point_mass_fb_milestone1.mojo       # the smallest case, checkable by hand
+pixi run mojo run -I . examples/fb/collect_walker_all.mojo             # fb_walker_all_sac.h5, from three SAC ladders
+pixi run -e nvidia mojo run -I . examples/fb/fb_train_gpu.mojo         # offline FB on that store
+pixi run -e nvidia mojo run -I . examples/fb/fb_online_cpr_walker_gpu.mojo --tag cpr_online
+pixi run mojo run -I . examples/fb/fb_eval_walker_online.mojo <ckpt>   # zero-shot: stand / walk / run
+```
+
+The walker results so far are modest. Offline FB, scored on three rewards
+supplied after training, reached 1.46 / 1.56 / 1.43× a uniform-random policy
+(stand / walk / run) and recovered a small fraction of the SAC experts in its
+own dataset. In online FB-CPR, the style term is what moved locomotion (walk
+1.93 vs 1.14 without it, two seeds); the latent mixture alone did nothing.
+Scores vary widely between checkpoints of one run, so read them as means over
+several.
+
+## BFM-Zero on the Unitree G1
+
+BFM-Zero is FB-CPR trained on retargeted LAFAN1 motion capture for the 29-DoF
+Unitree G1, and deployed on the real robot. The reproduction is staged, each
+rung gated against an external reference before the next.
+
+**G0 — the robot.** The G1 in noeira's physics engine against MuJoCo: tables,
+joint order, control ranges, standing, a driven rollout, the reset
+observation. See [Robots](/environments/robots/).
+
+**G1 — the motion data.** LAFAN1 for the G1, imported natively (no Python) into
+a TrajectoryStore of 441k rows at 50 Hz:
+
+```bash
+pixi run mojo run -I . examples/g1/lafan_import.mojo    # downloads lafan_29dof.pkl (~200 MB), writes lafan_g1_50hz.h5
+```
+
+The pickle is pinned by size and SHA-256. The importer transcribes the
+reference's motion library and is gated column by column against the
+reference's own dump.
+
+**G2 — the released actor in our G1.** `examples/g1/bfm_zero_tracking_gate.mojo`
+runs the released BFM-Zero actor (ONNX, through Python interop) in three
+simulators with one protocol: noeira's G1, MuJoCo on the reference's scene,
+and the released Isaac evaluation. Everything except physics — segments,
+observation, actor, `z`, PD control, metrics — is shared, so the difference
+between columns is the simulator.
+
+```bash
+pixi run mojo run -I . examples/g1/bfm_zero_tracking_gate.mojo
+G2_CLIPS=25 G2_MAX_SEGMENTS=3 pixi run mojo run -I . examples/g1/bfm_zero_tracking_gate.mojo   # smoke
+```
+
+**G3 — training our own.** `examples/g1/bfm_zero_train_gpu.mojo` trains FB-CPR
+the reference's way: online, 1024 lanes, reset from motion-capture states,
+expert-tracking rollouts, 16 updates per batched step. It runs the tracking
+evaluation in the loop and logs to `runs/<id>/metrics.csv`. NVIDIA only — the
+batched G1 env does not compile for Metal.
+
+```bash
+pixi run -e nvidia mojo run -I . examples/g1/bfm_zero_train_gpu.mojo --smoke
+pixi run -e nvidia mojo run -I . examples/g1/bfm_zero_train_gpu.mojo --steps 192000000 --tag g3_priv
+```
+
+`examples/g1/bfm_zero_eval_tracking.mojo` scores a checkpoint with its own `B`
+on the same protocol as G2; `--random` gives the null baseline.
+
+:::caution[Licence of the released model]
+The released BFM-Zero weights and the actor the G2 gate runs are CC BY-NC 4.0.
+Only the gate uses them; nothing under `noeira/` imports them.
+:::
+
+## Results
+
+**The released actor in our G1** — mean tracking distance (the paper's
+"tracking", mean L2 joint-angle error) over each clip's ten-second segments:
+
+| Clip | Segments | noeira | MuJoCo (re-run) | Isaac (released) |
+|---|---|---|---|---|
+| dance1_subject2 | 13 | 1.275 | 1.274 | 1.268 |
+| walk1_subject1 | 26 | 0.758 | 0.758 | 0.793 |
+
+Per segment, noeira matches MuJoCo to three decimals on **37 of 39** segments
+and within 0.014 on the other two, which are chaotic 500-step contact
+rollouts. These are the two clips for which the release ships `z` vectors — 39
+of the 862 segments — spanning the easy and hard ends of the reference's table.
+
+**Our own training** has not caught up. Measured on 15 Sep 2026 against the
+reference's released training curve, at 19.2M environment steps our tracking
+distance was 1.33 against the reference's 1.13, and falling at a fraction of
+its rate. The diagnosis is in progress; a reproduction of the trained model is
+not claimed.
+
+## Gates
+
+| Task | What it checks |
+|---|---|
+| `pixi run test-fb` | losses by finite differences, `z` on the sphere, trainer smoke, checkpoints, FB-CPR composition, observation normalisers, RND, reward relabelling — CPU only |
+| `pixi run -e nvidia test-fb-gpu` | the device path against the CPU path; CUDA-graph safety; the online agents on a batched env (also `-e apple`) |
+| `pixi run test-g1` | the G1 against MuJoCo, the LAFAN1 store against our FK and the reference's dump, the 463-D privileged observation, the reset table |
+| `pixi run test-bfm-ref` | the residual towers and the running normaliser against the reference's PyTorch classes, in process |
+
+`test-g1` needs the baked G1 assets and `lafan_g1_50hz.h5`, which a fresh
+clone does not have. `test-bfm-ref` runs under the `act-ref` environment, which
+has PyTorch.
+
+## Next
+
+- [SAC](/algorithms/sac/) — the single-reward alternative
+- [DM Control](/environments/dm-control/) — walker and the other domains
+- [Robots](/environments/robots/) — the Unitree G1 model

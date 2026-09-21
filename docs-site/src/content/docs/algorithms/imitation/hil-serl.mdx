@@ -1,0 +1,267 @@
+---
+title: HIL-SERL and DAgger
+description: SAC that learns from demonstrations and corrections — a pinned demo buffer sampled 50/50 with online data, an optional BC term, the .demo format and the recorders that produce it.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="Runs in simulation on the SO-101 tower family and produced the first learned lift there. Not yet run on the real arm." />
+
+Off-policy RL learns only from what enters its replay buffer. On a task whose
+success needs a precise, rare event — closing a gripper on a cube at the right
+height — random exploration may never produce one, and SAC settles on the best
+thing it has seen. On the simulated SO-101 `lift` task that was parking the jaw
+on the brick: three SAC runs plateaued there, and a random policy grasped in 0
+of 128 episodes.
+
+**HIL-SERL** puts the rare event into the buffer by hand. Demonstrations sit in
+the replay from the first step and supply half of every minibatch, and
+corrections recorded against a trained checkpoint add the states the policy
+reaches on its own. **DAgger** is how those corrections are collected: a policy
+drives, an expert or a human takes over, and the rows after the takeover are
+flagged.
+
+<Papers label="Papers">
+	<Paper
+		title="Precise and Dexterous Robotic Manipulation via Human-in-the-Loop Reinforcement Learning"
+		authors="Luo, Xu, Wu, Levine"
+		year="2024"
+		arxiv="2410.21845"
+		note="HIL-SERL. The port maps onto its RLPD training script, train_rlpd.py."
+	/>
+	<Paper
+		title="Efficient Online Reinforcement Learning with Offline Data"
+		authors="Ball, Smith, Kostrikov, Levine"
+		year="2023"
+		arxiv="2302.02948"
+		venue="ICML 2023"
+		note="RLPD — the symmetric 50/50 sampling."
+	/>
+	<Paper
+		title="A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning"
+		authors="Ross, Gordon, Bagnell"
+		year="2011"
+		arxiv="1011.0686"
+		venue="AISTATS 2011"
+		note="DAgger."
+	/>
+</Papers>
+
+## How it works
+
+**One replay, a pinned prefix.** The demonstration transitions are written
+into SAC's replay before the first online step and pinned:
+`pin_demo_prefix(n)` keeps rows `[0, n)` out of the ring, so online data never
+overwrites them. The sampler then draws `BATCH/2` rows from the prefix and
+`BATCH/2` from the online rows for the whole run — RLPD's symmetric sampling.
+The mixed-index kernel (`noeira/data/replay_gpu.mojo`) keeps the demo count on
+the device, so the step stays CUDA-graph capturable.
+
+**An optional BC term.** `--bc-weight λ` adds an L1 penalty
+`λ · |tanh(mu(s)) − a|` on the demo half of every batch to the SAC actor loss
+(`SACActorLoss.set_bc`, `noeira/deep_agents/sac/actor_loss.mojo`). HIL-SERL
+does not have it: it runs 10–20 updates per step with critic ensembles, which
+symmetric sampling needs and a laptop cannot afford. With sampling alone the
+tower policy stayed parked; λ near `mean|Q| / 2.5` (≈ 40 there) follows
+TD3+BC's normalisation.
+
+**A warm start.** `--bc-only` zeroes the SAC half of the actor loss
+(`set_q_weight(0)`): the actor fits the demo half of every batch while the
+critics learn from its rollouts. `--init CKPT` then loads that checkpoint's
+actor and critics into a normal run.
+
+**Rows, not episodes.** Demos are added through the sample block, not the
+trainer's `record`, so they never count as episodes this run played. They must
+be loaded before the first train step; `apply_hil_serl` refuses afterwards.
+
+## Training with demonstrations
+
+The SO-101 tower driver takes the flags; any driver can, through
+`HilSerlConfig` and `apply_hil_serl` (`noeira/deep_agents/hil_serl/`).
+
+```bash
+pixi run -e apple mojo run -I . examples/tasks/sac_tower_gpu.mojo so101_tower_lift_brick \
+    --steps 200000 --warmup 1000 --target-entropy -3 \
+    --demos projects/so101-tower/demos/expert_lift_brick_500.demo,projects/so101-tower/demos/dagger1_lift_brick_600.demo \
+    --bc-weight 40
+```
+
+| Flag | Meaning |
+|---|---|
+| `--demos a.demo[,b.demo]` | files loaded into the pinned prefix; half of every minibatch comes from them. Several files aggregate — this is how DAgger rounds accumulate |
+| `--demo-filter all\|success\|intervened` | which rows to keep: all, rows of successful episodes, or only intervened rows |
+| `--bc-weight λ` | the BC penalty on the demo half; needs `--demos`; `0` (default) is plain RLPD |
+| `--bc-only` | zero the SAC half of the actor loss; needs `--bc-weight > 0` |
+| `--init CKPT` | load actor and critics from a checkpoint (the second half of a warm start) |
+| `--warmup N` | random-action steps before learning. HIL-SERL starts learning after ~100 steps because the demos already cover the space; the driver warns if it is left at the default |
+
+The run logs `cfg/demo_rows` and `cfg/demo_mean_reward`. Early on, the demos'
+mean reward should sit above the online `mean_reward`; if it does not, the
+demos are not showing the policy anything better than what it already does.
+A `.demo` file recorded on another family is refused by its widths.
+
+## The `.demo` format
+
+`noeira/deep_agents/demos/file.mojo`, version 1, little-endian:
+
+```text
+magic       8 bytes   "MRLDEMO1"
+version     u32       1
+obs_dim     u32
+act_dim     u32
+n           u64       transitions
+n_episodes  u32
+rows        n × [obs f32×obs_dim | act f32×act_dim | rew f32 |
+                 next_obs f32×obs_dim | done f32 | flags u32]
+episodes    n_episodes × [start u64 | length u64 | success u32]
+```
+
+`flags` bit 0 is `INTERVENED` — the row came from a takeover while a policy was
+driving; bit 1 is `SUCCESS` — its episode succeeded. Both are per row, so a
+loader filters without reading the episode table. Values are float32 on disk
+whatever the build's precision.
+
+`done` is the replay's terminal flag, not "the episode ended". The tower driver
+does not terminate on failure, so online rows carry `done = 0`, and recorders
+write the same: an episode ending at the horizon, on success or on a key is a
+truncation. The boundary lives in the episode table.
+
+```bash
+pixi run python tools/demo/demo_stats.py projects/so101-tower/demos/*.demo
+pixi run python tools/demo/demo_stats.py FILE --episodes      # one line per episode
+```
+
+`tools/demo/demo_stats.py` prints dimensions, rows, successes, intervened rows,
+reward and action ranges. It needs only numpy; the trainer's loader is the Mojo
+one.
+
+## Recording demonstrations
+
+`noeira/deep_agents/demos/recorder.mojo` holds the rules every recorder shares.
+`EpisodeRecorder` calls an episode a success when the task's goal has held for
+a set number of consecutive steps (31 — one second — on the tower), keeps
+successes (and failures with `--keep-failures`), and rewrites the file after
+every kept episode so a crash loses at most the one in progress. `CtrlRange`
+maps joint targets onto the family's normalised `[-1, 1]` action, so a recorded
+row is the action the policy will be asked to produce. The reward in each row is
+the family's own reward function evaluated on the host
+(`noeira/tasks/host_reward.mojo`) — the device kernel's function, not a copy.
+
+### Teleoperation in simulation
+
+```bash
+pixi run build-imgui && pixi run build-serial      # once
+pixi run soarm-tower-record                        # lift_brick; the leader arm drives the sim arm
+pixi run soarm-tower-record -- so101_tower_cube_in_bowl
+```
+
+The leader arm is read with torque off and its joint angles become the sim
+arm's action. Success saves and resets on its own; `n` ends and keeps the
+episode, `x` discards it. The sim runs at real time under the operator's hand.
+Files go to `projects/so101-tower/demos/`; `--out` overrides. See
+[Teleoperation and recording](/robots/teleop-recording/).
+
+### A scripted expert
+
+```bash
+pixi run soarm-tower-expert                                  # lift_brick, 20 episodes
+pixi run soarm-tower-expert -- so101_tower_cube_in_bowl --episodes 50
+pixi run soarm-tower-expert -- --episodes 30 --noise 0.05 --seed 7
+```
+
+`examples/so101/tower_expert_record.mojo` plans waypoints over the task's own
+randomised placements and solves inverse kinematics on the CPU environment's
+forward kinematics (damped least squares, several restarts). The approach is
+half-open (`--jaw-open`, 0.9 rad) and the jaw closes in one step at the first
+settled row within `--close-above-mm` (27 mm) of the brick. Teleoperating from a
+screen is hard — there is no depth from touch or parallax — and the script
+produces hundreds of clean episodes at physics speed.
+
+`--noise σ` jitters the executed target while the jaw is open, tapered to zero
+down the descent. Leave it on for a training file: a policy fitted to noiseless
+ramps leaves them at the first step of closed loop, where the fit says nothing.
+
+### DAgger: a policy drives, the expert takes over
+
+```bash
+pixi run soarm-tower-expert -- --policy projects/so101-tower/runs/<run>/checkpoints/last.ckpt \
+    --episodes 600 --out projects/so101-tower/demos/dagger1_lift_brick_600.demo
+```
+
+With `--policy CKPT` the checkpoint drives, greedily, until its jaw is within
+`--handover-mm` (36 mm) of the brick with the arm settled, or for
+`--policy-steps` (140). The expert then closes and lifts **from the policy's own
+state**, and those rows carry `INTERVENED`. The takeover test is `Handover` in
+`noeira/deep_agents/demos/recorder.mojo`.
+
+The human version uses the teleoperation recorder:
+`pixi run soarm-tower-record -- --policy CKPT` lets the checkpoint drive and
+`i` toggles the leader arm in; the rows while intervening are flagged.
+`--no-arm --policy CKPT` runs without a leader, as a pipeline check.
+
+Both kinds of correction are recorded **offline**, against a checkpoint, and
+fed to the next run with `--demos`. The trainer itself is batched GPU lanes
+with no human in the loop.
+
+### Looking at a file
+
+```bash
+pixi run soarm-tower-replay -- FILE.demo --episode 3 --speed 0.5 --loop
+pixi run soarm-tower-probe -- --ckpt CKPT --demos FILE.demo
+```
+
+`examples/so101/tower_demo_viewer.mojo` replays a file in the 3D viewer, posed
+from the recorded states. `examples/so101/tower_policy_probe.mojo` scores a
+checkpoint against a file three ways: teacher-forced L1, closed-loop episodes
+from fresh placements, and a step-by-step replay of one demonstration.
+
+## What was not ported
+
+The reward classifier (the sim pays the family's reward), the pixel encoder and
+image augmentation (the tower policy is state-based, 49 words), the discrete
+grasp critic (the gripper is the sixth continuous joint), the actor/learner
+process split, and the critic-only update ratio. SAC's own settings —
+ReLU critics without LayerNorm, α starting at 0.2, γ 0.99 — were kept.
+
+## Results
+
+All in simulation, on `so101_tower_lift_brick`.
+
+| Run | Result |
+|---|---|
+| SAC alone (three runs) | shaped return ~362; parks on the brick; never grasps |
+| 50 expert demos, symmetric sampling only | eval 356 at 25k, 355 at 50k — the same plateau |
+| + `--bc-weight` (earlier runs) | the actor fits the demos, but never closes the gripper in closed loop |
+| DAgger smoke (expert takeover from a checkpoint) | handover reached in 7 of 12 episodes, the expert lifted in 11; 1113 of 2113 rows intervened |
+| **Run `6e295df9`**: half-open expert approach + close at the first settled row + DAgger rows | eval return **414** at 25k steps (earlier runs 342–363); the 25k checkpoint **lifts 6 of 8** fresh placements |
+
+Caveats:
+
+- **One run.** The first learned lift, 20 Sep 2026. Not replicated across seeds.
+- **It did not hold.** At 50k steps the same run scores 400 and lifts 1 of 8:
+  the BC weight is fixed while the critic's values grow, so the RL term's
+  share of the actor loss rises and the lift drifts.
+- **What fixed it was the demonstrator.** The SO-101's moving jaw closes in a
+  downward arc. From wide open, the earlier expert's close was a long swing
+  whose success hung on the exact arrival, and its files held several rows of
+  "settled at the grasp, jaw open" before one row "closed" — so the fitted
+  actor learned to stay open. The half-open approach and a close indexed on
+  the state removed that.
+- **Simulation only.** Nothing here has run on the real arm.
+
+## Gates
+
+```bash
+pixi run -e apple mojo run -I . tests/data/test_replay_demo_prefix.mojo   # prefix survives the ring wrapping; batches split 8/8; CPU + GPU
+pixi run mojo run -I . tests/deep_agents/test_demo_file.mojo              # file round trip, flags, open episode excluded
+pixi run mojo run -I . tests/deep_agents/test_demo_golden.mojo            # recordings on disk still read
+pixi run mojo run -I . tests/tasks/test_tower_host_reward.mojo            # host reward == the device function
+```
+
+## Next
+
+- [SAC](/algorithms/sac/) — the learner underneath
+- [Behaviour cloning](/algorithms/imitation/bc/) — the same `.demo` files, fitted directly
+- [Tasks](/tasks/) — the SO-101 tower family and its reward

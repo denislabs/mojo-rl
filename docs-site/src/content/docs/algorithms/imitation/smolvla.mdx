@@ -1,0 +1,236 @@
+---
+title: SmolVLA
+description: A 450M-parameter vision-language-action model — SigLIP, SmolLM2 and a flow-matching action expert — loaded from the published weights, fine-tuned on SO-101 recordings and run on the arm.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+import Demo from '~/components/Demo.astro';
+
+<Maturity level="experimental" note="Inference and fine-tuning work and are gated. First grasp-and-place on the real arm on 20 Sep 2026; no success rate has been measured." />
+
+SmolVLA is a vision-language-action model: it reads camera images, the joint
+state and a written instruction, and produces a 50-step action chunk. It is
+built from a small vision-language model (SigLIP + SmolLM2, from SmolVLM2) and
+an **action expert** — a second transformer that attends to the VLM's keys and
+values and generates actions by **flow matching**.
+
+noeira implements the whole model natively, loads `lerobot/smolvla_base`
+directly from its safetensors file, fine-tunes it on a LeRobot v3 recording and
+drives the SO-101 with it. No PyTorch is on the inference or training path.
+
+<Papers label="Papers">
+	<Paper
+		title="SmolVLA: A Vision-Language-Action Model for Affordable and Efficient Robotics"
+		authors="Shukor et al."
+		year="2025"
+		arxiv="2506.01844"
+	/>
+	<Paper
+		title="Flow Matching for Generative Modeling"
+		authors="Lipman, Chen, Ben-Hamu, Nickel, Le"
+		year="2022"
+		arxiv="2210.02747"
+		venue="ICLR 2023"
+		note="The training objective of the action expert."
+	/>
+	<Paper
+		title="Sigmoid Loss for Language Image Pre-Training"
+		authors="Zhai, Mustafa, Kolesnikov, Beyer"
+		year="2023"
+		arxiv="2303.15343"
+		note="SigLIP, the vision tower."
+	/>
+</Papers>
+
+## Architecture
+
+The shapes below are read from the checkpoint itself: 500 tensors,
+450,046,176 parameters.
+
+| Part | Structure | Code |
+|---|---|---|
+| Vision tower (SigLIP) | 12 layers, width 768, 512×512 input in 16×16 patches, LayerNorm and MHA with biases | `noeira/deep_agents/smolvla/vision.mojo` |
+| Connector | pixel shuffle ×4 (64 tokens per image), then a linear projection to 960 | `noeira/deep_agents/smolvla/heads.mojo` |
+| Language model (SmolLM2) | 16 layers, width 960, grouped-query attention (15 query heads over 5 KV heads, head dim 64), RoPE, SwiGLU, RMSNorm | `noeira/deep_agents/smolvla/text.mojo` |
+| Action expert | 16 layers, width 720; even layers self-attend, odd layers cross-attend to the VLM's cached K/V | `noeira/deep_agents/smolvla/expert.mojo` |
+| Action head | flow matching, 10 Euler steps, chunk of 50 | `noeira/deep_agents/smolvla/flow.mojo` |
+
+A query runs the VLM once over the **prefix** — two camera images, the
+tokenised instruction and one state token — and caches its keys and values
+(`noeira/deep_agents/smolvla/kv_cache.mojo`). The expert then denoises the
+**suffix**, the action chunk: starting from Gaussian noise at `t = 1`, each of
+the 10 Euler steps predicts a velocity field and moves toward `t = 0`. The
+prefix is computed once per query, the expert ten times.
+
+The prefix and suffix are joined by a block attention mask: the prefix cannot
+see the actions, so training's single joint pass and inference's prefill +
+denoise produce the same prefix activations. That property is what lets the
+fine-tune reuse the inference forward.
+
+The robot's six joints sit inside the model's 32-wide padded state and action
+vectors; the deployment drops the padding.
+
+## Weights
+
+The published checkpoint is `lerobot/smolvla_base` on the Hugging Face Hub,
+906,712,520 bytes of safetensors, fetched by `noeira/io/hf.mojo` and read by
+`noeira/io/safetensors.mojo`. The mapping from PyTorch's parameter names to
+noeira's is `noeira/deep_agents/smolvla/names.mojo`, built in loops so that
+each per-layer rule appears once. Two details carry weight:
+
+- `nn.Linear` stores `[out, in]` and noeira `[in, out]`, so linear weights are
+  transposed on load; convolutions and norms load as they are.
+- SigLIP's four attention projections are all `[768, 768]`. A wrong index
+  would load real weights into the wrong slot with no shape error, so those
+  four have named fields rather than positional paths.
+
+`pixi run test-vla` checks the name map both ways against a 500-tensor
+manifest checked into `tools/vla/` — every published tensor is claimed exactly
+once, with the right shape — without downloading the weights.
+
+:::caution[Licence]
+When the weights were surveyed in September 2026, `lerobot/smolvla_base`
+declared no licence in its model card and listed no source datasets. The
+LeRobot code and the SmolVLM2 backbone are Apache 2.0. Check the model card
+before redistributing a fine-tuned derivative.
+:::
+
+## Fine-tuning
+
+`examples/so101/smolvla_so101_finetune.mojo` fine-tunes the published
+checkpoint on a LeRobot v3 recording. No robot is needed.
+
+**The trainable set is the shipped recipe.** SmolVLA's defaults are
+`freeze_vision_encoder` and `train_expert_only`: the 16 expert layers and the
+action and time projections train; SigLIP, the 16 language-model layers and
+the connector are frozen. `noeira/deep_agents/smolvla/finetune.mojo` lists the
+set once, beside the functions that zero and update it. Training
+`state_proj` is supported (the `TRAIN_STATE_PROJ` switch in the fine-tune script) but off: it sits upstream of the
+frozen VLM and costs a backward pass through all sixteen of its layers.
+
+**The vision cache.** With the vision tower and connector frozen, a frame's
+image tokens are a constant of that frame. The fine-tune stores them once per
+store row (`noeira/deep_agents/smolvla/vision_cache.mojo`, 491,520 bytes per
+row) and reads them back bit-identically; on a 5090 the image path and prefix
+had been 71 ms of a 125 ms observation. The cache is refused at startup if
+two recomputed rows do not match it.
+
+```bash
+# the recording at 480x640 — SmolVLA does its own resize to 512x512
+pixi run -e nvidia mojo run -I . examples/so101/act_so101_import_dataset.mojo \
+    --repo DenisLabs/record-test_20260828_092736 --height 480 --width 640
+export SMOLVLA_STORE=~/.cache/noeira/act_so101/DenisLabs__record-test_20260828_092736_480x640.h5
+
+pixi run -e nvidia test-vla          # structure, no download
+pixi run -e nvidia test-vla-gpu      # kernels at real shapes
+pixi run -e nvidia test-vla-weights  # the real checkpoint loads (~907 MB, cached)
+
+pixi run -e nvidia mojo build -I . -o /tmp/smolvla_finetune \
+    examples/so101/smolvla_so101_finetune.mojo
+SMOLVLA_STEPS=3 SMOLVLA_NO_MONITOR=1 /tmp/smolvla_finetune   # does it start, what does a step cost
+/tmp/smolvla_finetune
+```
+
+| Variable | Meaning |
+|---|---|
+| `SMOLVLA_STORE` | the store to train on — required, no default |
+| `SMOLVLA_STATS` · `SMOLVLA_REPO` | normalisation: a local `meta/stats.json`, or the dataset repo to fetch it from |
+| `SMOLVLA_STEPS` · `SMOLVLA_ACCUM` · `SMOLVLA_LR` | optimizer steps, observations per step (default 64), learning rate (default 1e-4) |
+| `SMOLVLA_CKPT` · `SMOLVLA_INIT` | checkpoint path prefix; a checkpoint to start from |
+| `SMOLVLA_VAL_EPISODES` | episodes held out at the end (default one fifth; `0` trains on all) |
+| `SMOLVLA_VISION_CACHE` | cache path, or `off` |
+| `SMOLVLA_PROFILE` · `SMOLVLA_NO_MONITOR` | per-phase timings; keep the run off the dashboard |
+
+Normalisation comes from the dataset's own `meta/stats.json`, not recomputed:
+LeRobot's statistics and a recomputation differ by the sample-vs-population
+factor, and training under one while deploying under the other is a silent
+scale error.
+
+:::caution[The held-out fifth is a whole cube position]
+The published SO-101 recording is 5 cube positions × 10 episodes, in order, so
+the default held-out fifth is one position the policy never sees. Use the
+default split to choose a step count, then retrain with
+`SMOLVLA_VAL_EPISODES=0` at that count for the checkpoint that goes on the arm.
+:::
+
+A short run is not a gentle one: the learning-rate schedule scales warmup and
+decay to the run length, so `SMOLVLA_STEPS=3` runs near peak rate. The
+three-step run checks that training starts; its loss means nothing.
+
+## Deployment
+
+```bash
+# on the Jetson: time one query first
+pixi run -e jetson smolvla-probe-jetson
+
+# dry run: reads arm and cameras, prints what it would command
+pixi run -e jetson smolvla-deploy-jetson -- --project so101-tower \
+    --devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist
+
+# moves the follower
+pixi run -e jetson smolvla-deploy-jetson -- --project so101-tower \
+    --devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist --arm --seconds 30
+```
+
+One query takes hundreds of milliseconds, so SmolVLA is not queried every
+step. It queries, executes the 50-step chunk on the 30 Hz grid, and queries
+again before the chunk runs out. Steps that elapse during inference are
+skipped, not replayed late.
+
+| Flag | Effect |
+|---|---|
+| `--arm` | energise the follower; without it nothing moves |
+| `--ckpt` · `--stats` | the fine-tuned checkpoint and its `meta/stats.json` |
+| `--tasks` · `--task-index` | the tokenised instruction table and which instruction |
+| `--devices` · `--port` · `--fourcc` | cameras (index or path), follower port, pixel format |
+| `--seconds` · `--exec-steps` | run length; steps of each chunk executed before re-querying (default 50) |
+| `--threaded` | run the query on its own thread |
+| `--smooth N` | low-pass the chunk's waypoints (off by default) |
+| `--ensemble` | blend overlapping chunks with ACT's temporal ensemble |
+| `--sync` | LeRobot's loop: hold, query, execute the new chunk from step 0 |
+| `--no-fused-vision` | the two-pass vision attention, for A/B |
+| `--no-return` | release torque in place on exit instead of ramping home |
+
+The inference device is a build-time choice, `-DSMOLVLA_GPU=1`, which the
+`smolvla-deploy-jetson` task sets. The number of Euler steps at inference is
+`STEPS` in `examples/so101/smolvla_so101_deploy_real.mojo` (10, the published
+value); 4 was measured faster on the arm but its effect on accuracy was not
+measured, so it is not the default.
+
+## Results
+
+| Measurement | Result | What it does not say |
+|---|---|---|
+| Inference | all 500 checkpoint tensors mapped and loaded | — |
+| Fine-tune, RTX 5090, 2000 steps × 64 observations | held-out flow-matching loss **0.5509 → 0.2170**, over 10 episodes never trained on | a loss is not a success rate |
+| Real arm, first success | on 20 Sep 2026 the policy **picked up the cube and dropped it into the bowl** | roughly 20% of attempts by informal count — not a measured rate; more and better data needed |
+| Real arm, best control configuration (`--threaded --smooth 9 --ensemble`, 4 Euler steps) | query 2329 → **491 ms**; control rate 17.4 → **27.2 Hz**; jump at chunk handover 63.6° → **15.1°** | latency and smoothness, not success |
+| Expert attention kernels | **6.1×** faster on the Orin, **68×** on an RTX 5090, over the previous kernel | a kernel speed-up, measured in isolation |
+
+<Demo
+	name="smolvla_so101_grasp"
+	caption="SmolVLA on the SO-101: the cube picked and dropped into the bowl"
+	meta="real arm · 20 Sep 2026 · one of the successful attempts"
+/>
+
+The control-side changes made the arm move like the demonstrations — the
+per-step motion with `--smooth 9` matches theirs. How often the task succeeds
+is the open measurement: roughly one attempt in five succeeds by informal
+count, it needs many armed runs to measure properly, and more and better
+demonstrations to improve.
+
+## Gates
+
+| Task | What it checks |
+|---|---|
+| `pixi run test-vla` | name maps, attention mask, embeddings, tokenised tasks — no weights, no network |
+| `pixi run test-vla-gpu` | vision tower forward and backward at real shapes |
+| `pixi run test-vla-weights` | gates needing the published weights |
+| `pixi run test-vla-ref` | activations against a SmolVLM reference dump (`pixi run dump-vla-ref` first) |
+
+## Next
+
+- [ACT](/algorithms/imitation/act/) — the smaller policy that runs at 30 Hz
+- [Jetson](/robots/jetson/) — the board both deployments run on

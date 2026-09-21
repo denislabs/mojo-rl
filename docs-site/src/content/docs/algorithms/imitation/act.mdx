@@ -1,0 +1,251 @@
+---
+title: ACT
+description: Action Chunking with Transformers — a CVAE transformer that predicts two seconds of actions from two cameras and the joint state, trained from LeRobot datasets and deployed on the SO-101.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="Gated against the reference implementation and against LeRobot's training. Runs closed loop on the arm at 30 Hz; no real-arm success rate has been measured." />
+
+ACT predicts a **chunk** of future actions — two seconds of them — from the
+current joint positions and camera images, in one forward pass. At inference
+the overlapping chunks from successive queries are blended by a **temporal
+ensemble**. Predicting a chunk instead of one step reduces the number of
+decisions per task, which reduces how often a small error can compound.
+
+It is the image policy the SO-101 pipeline is built around: recorded with the
+leader arm, imported from LeRobot v3, trained on a GPU, deployed on the arm or
+on a Jetson.
+
+<Papers label="Paper">
+	<Paper
+		title="Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware"
+		authors="Zhao, Kumar, Levine, Finn"
+		year="2023"
+		arxiv="2304.13705"
+		venue="RSS 2023"
+		note="ACT and the ALOHA hardware. The port follows its reference code, references/act-main."
+	/>
+</Papers>
+
+## The model
+
+**A CVAE.** During training an encoder reads the recorded action chunk and the
+joint state and produces a latent `z`; the decoder predicts the chunk from `z`
+and the observation. A KL term pulls `z` toward a unit Gaussian. At inference
+`z` is set to zero — the prior's mean. The latent exists to absorb the
+variability between human demonstrations, which is why the paper finds it
+matters for human-collected data.
+
+**A DETR-style transformer.** The decoder is an encoder–decoder transformer:
+the encoder attends over image feature tokens, the joint-state token and the
+latent token; the decoder turns `K` learned queries into `K` actions. The
+attention is `noeira/nn/primitives/cross_attention.mojo`, which carries what
+DETR needs and plain self-attention cannot express: query and key lengths that
+differ, and positional embeddings added to queries and keys but not values.
+
+**A ResNet18 backbone with frozen BatchNorm.** Each camera image goes through
+one shared ResNet18 (`noeira/nn/models/resnet18.mojo`). By default the backbone
+starts from ImageNet weights, fetched from the Hub with no PyTorch, and its
+BatchNorm statistics are frozen — both references do this, and trainable
+BatchNorm replaces the ImageNet statistics within a few hundred steps.
+
+**Chunking and the temporal ensemble.** The policy is queried every control
+step. Each query returns `K` future actions; the command for step `t` is a
+weighted average of every chunk that covers `t`, with weight
+`exp(-m · age)` and `m = ACT_TEMPORAL_ENSEMBLE_M = 0.01`
+(`noeira/deep_agents/act/inference.mojo`).
+
+### Two quirks of the reference, reproduced
+
+- **Only the first decoder layer matters.** The reference returns the stack of
+  intermediate decoder outputs and takes index `[0]`, so layers 2–7 of its
+  published `dec_layers = 7` model never affect the output. The port uses one
+  decoder layer, which is output-equivalent and seven times cheaper.
+- **The CVAE latent collapses.** At the paper's KL weight of 10 the KL term
+  falls to ~0 within a few epochs and `z` carries no information. LeRobot's
+  ACT shows the same collapse on the same data, so it is faithful — but it
+  means the model runs as a plain chunk predictor.
+
+## Configuration on the SO-101
+
+The run dimensions live in one place, the `RUN_*` block of
+`noeira/deep_agents/act/config.mojo`, because they are the checkpoint's
+parameter shapes and every script that loads a checkpoint must agree with them.
+
+| | here | paper |
+|---|---|---|
+| chunk `K` | 60 | 100 |
+| hidden dim | 256 | 512 |
+| feedforward | 1024 | 3200 |
+| encoder / decoder layers | 4 / 1 | 4 / 7 (output-equivalent) |
+| heads / latent | 8 / 32 | 8 / 32 |
+| batch | 16 | 8 |
+| images | 2 × 240×320 | 4 × 480×640 |
+
+`K = 60` is the paper's horizon, not a reduction: ALOHA chunks 100 steps at
+50 Hz, which is two seconds; the SO-101 records at 30 fps, so two seconds is 60.
+
+## The GPU data path
+
+On the GPU trainer, batches are drawn and normalised on the device: the whole
+image column is uploaded once as `uint8` and a device sampler gathers and
+converts each batch (`noeira/deep_agents/act/data_gpu.mojo`, the `GPU_DATA`
+switch in the training script). On an RTX 5090 this took an iteration from
+144.8 ms to 61.6 ms. The cost is memory — the 50-episode store is 7.1 GB of
+images — and a different random stream from the host sampler, so a run with it
+on is not step-for-step comparable with one without.
+
+## The pipeline on the SO-101
+
+```bash
+# 1. import a LeRobot v3 recording (pure Mojo; needs curl and ffmpeg)
+pixi run -e nvidia mojo run -I . examples/so101/act_so101_import_dataset.mojo \
+    --repo DenisLabs/record-test_20260828_092736 --height 240 --width 320
+export ACT_STORE=~/.cache/noeira/act_so101/DenisLabs__record-test_20260828_092736_240x320.h5
+
+# 2. train on the GPU (the real run; ~100k steps)
+pixi run -e nvidia mojo build -I . -o /tmp/act_train_gpu \
+    examples/so101/act_so101_train_gpu.mojo
+/tmp/act_train_gpu
+
+# 3. open-loop evaluation on held-out episodes
+pixi run mojo build -I . -Xlinker -ld_classic -o /tmp/act_eval \
+    examples/so101/act_so101_openloop_eval.mojo && /tmp/act_eval
+```
+
+`examples/so101/act_so101_train_cpu.mojo` is the same model on the CPU, useful
+as a smoke run. A project's recording can come from the platform instead of
+the Hub — `pixi run dataset-pull -- --project P --dataset D`, then
+`act_so101_import_dataset.mojo --project P --dataset D`; see
+[Projects](/concepts/projects/).
+
+:::caution[Build and run from the project root]
+`noeira/io/hdf5` resolves libhdf5 through a path relative to the working
+directory; a binary run from anywhere else aborts with
+`symbol not found: H5PLprepend`. On Apple, `mojo build` of the trainer needs
+`-Xlinker -ld_classic` because the fully expanded graph type mangles to a
+symbol longer than the new linker accepts. `mojo run` does not.
+:::
+
+The trainer writes `runs/<id>/checkpoints/best.ckpt` whenever validation
+improves and `last.ckpt` at every validation, with `norm.json` beside them.
+Validation is deterministic — the sampler's RNG is pinned around each pass —
+so successive points on the curve score the same batches. Training stops after
+`ACT_PATIENCE` validations without improvement (10 by default).
+
+### Environment variables
+
+All are optional and read at run time, so none needs a rebuild.
+
+| Variable | Read by | Meaning |
+|---|---|---|
+| `ACT_STORE` | train, deploy, LIBERO train | the `.h5` store to train on |
+| `ACT_PROJECT` | train | the project the run is filed under (`so101` on the arm, `libero` on LIBERO) |
+| `ACT_PRETRAINED` | train | backbone init: unset or `hub` = ImageNet from the Hub; a directory = a torchvision dump; `random` = from scratch |
+| `ACT_NO_FREEZE_BN` | train | leave BatchNorm trainable — an ablation |
+| `ACT_STEPS` | train | optimizer steps |
+| `ACT_NO_MONITOR` | train | keep a smoke run off the metrics dashboard |
+| `ACT_CKPT` | open-loop eval | the checkpoint to evaluate |
+| `ACT_LR` · `ACT_KL` · `ACT_SHAPE` · `ACT_PATIENCE` | LIBERO train | learning rate, KL weight, chunk-shape term weight, early-stop patience (`0` disables it) |
+
+The inference device of the deployment is a build-time choice, `-DACT_GPU=1`.
+
+### Deploying without the store
+
+A checkpoint does not carry its normalisation statistics, and the training
+store is several gigabytes. The trainer therefore writes `norm.json` beside the
+checkpoints: the joint and action means and spreads, the demonstrated action
+and joint ranges, and the camera slot order (`noeira/deep_agents/act/norm_file.mojo`).
+`pixi run project-promote` carries it along as `policies/<role>.norm.json`.
+For a run that predates the file, `examples/so101/act_so101_export_norm.mojo`
+writes it from the store in seconds.
+
+```bash
+# dry run: reads the arm and cameras, prints what it would command
+pixi run soarm-act-deploy -- --project so101-tower --role act --devices 0,1
+
+# moves the follower — be at the desk
+pixi run soarm-act-deploy -- --project so101-tower --role act --devices 0,1 --arm --seconds 30
+
+# on the Jetson, inference on the Orin's GPU
+pixi run -e jetson act-deploy-jetson -- --project so101-tower \
+    --devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist
+```
+
+Before arming, the deployment prints the follower's pose against the
+demonstrated joint range and the camera slot mapping. While running, it clamps
+each command to the demonstrated action range (plus a 5 % margin) and counts
+how often that fires. On shutdown it ramps back to the starting pose rather than
+releasing torque where the arm stands. `--store` is optional; given, it replays
+a held-out episode through the policy before arming. See
+[Deployment](/robots/deployment/) and [Jetson](/robots/jetson/).
+
+The loop runs on a 30 Hz grid defined by wall clock. A query's chunk enters the
+ensemble at the step its observation was captured, and the command is the
+ensemble's action for the current step, so inference latency shifts which
+actions are used instead of slowing the motion.
+
+## ACT on LIBERO
+
+`examples/libero/libero_act_train.mojo` is the same loop on LIBERO's
+demonstrations: 28 proprio words (9 joints, their one-step difference and a
+task one-hot), 7 OSC_POSE action words, two 128×128 cameras and `K = 40`
+(two seconds at 20 Hz), from a store re-rendered through noeira's own cameras.
+
+```bash
+pixi run -e nvidia libero-demo-rerender
+ACT_STORE=build/demos/libero_goal.rendered.h5 pixi run -e nvidia libero-act-train
+pixi run -e nvidia libero-eval-batched -- --act runs/<id>/checkpoints
+```
+
+`libero-eval-batched` runs LIBERO's own protocol on the frozen initial states.
+Its default ACT inference is the temporal ensemble; `--act-exec N` executes
+`N` steps of each chunk instead, and `--act-ckpt last` evaluates `last.ckpt`.
+`--knn` runs the vision-free nearest-neighbour control. See
+[LIBERO](/environments/libero/).
+
+## Results
+
+| Measurement | Result |
+|---|---|
+| LeRobot parity: stock LeRobot ACT on the same 50 episodes, same 40/10 split | ours: val L1 **0.3941** at epoch 7.7 (≈0.414 in LeRobot's units, which divide by valid slots only); LeRobot: best **0.3726**, plateau 0.3791 |
+| Closed loop on a Jetson Orin NX (CUDA) | **30.0 Hz** — cameras 2.2 + preprocess 3.4 + forward 27.6 = 33.2 ms per query |
+| LIBERO `libero_goal`, 200 episodes, temporal ensemble | **31/200** |
+| LIBERO control: kNN over the same proprio words, no camera | 144/200 |
+
+How to read them:
+
+- **Parity.** LeRobot reached its number with 52M parameters, 480×640 images
+  and chunk 100 against ~11M, 240×320 and 60, and both implementations show
+  the same ~5–6× train/validation gap. The shared plateau near 0.38 is the
+  data's ceiling at 50 episodes; more episodes is the lever, not more code.
+  The script is `tools/act/lerobot_act_baseline.sh`.
+- **The Orin number is latency, not success.** It means the policy is queried
+  at the rate it was trained at. No success rate on the real arm has been
+  measured yet.
+- **LIBERO.** 31/200 is below the vision-free control, so the image policy is
+  not yet using what the proprioception alone can solve. These rates come
+  from noeira's LIBERO port and are not comparable to LIBERO's published
+  tables.
+
+## Gates
+
+```bash
+pixi run -e act-ref python tools/act/dump_act_reference.py --out /tmp/act_ref
+pixi run test-act                 # CPU, against the reference DETRVAE
+pixi run -e apple test-act-gpu    # GPU against CPU
+```
+
+The CPU model is compared against the reference layer by layer and end to end;
+the GPU model is compared against the CPU model. The PyTorch environment
+(`-e act-ref`) is for these gates only — nothing on the training or inference
+path imports it.
+
+## Next
+
+- [SmolVLA](/algorithms/imitation/smolvla/) — a larger policy that also reads a language instruction
+- [Teleoperation and recording](/robots/teleop-recording/) — making the dataset
+- [LeRobot datasets](/data/lerobot/) — the importer
