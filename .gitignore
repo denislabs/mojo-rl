@@ -258,6 +258,9 @@ checkpoints/
 # (`core/project_sync.mojo`). This revises PROJECT_LAYER_PLAN.md §4.
 projects/
 *.mp4
+# …except the docs site's demo videos: small, re-encoded by
+# docs-site/scripts/build-media.mjs (or by hand), and the site needs them.
+!docs-site/public/media/*.mp4
 # ...except the vision gate's INPUT. `*.mp4` above is for renderer recordings;
 # this 3 KB file is a committed test fixture, and without it a fresh checkout
 # cannot run tests/vision/test_opencv_shim.mojo at all.
