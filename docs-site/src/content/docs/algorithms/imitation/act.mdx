@@ -6,6 +6,8 @@ description: Action Chunking with Transformers — a CVAE transformer that predi
 import Maturity from '~/components/Maturity.astro';
 import Paper from '~/components/Paper.astro';
 import Papers from '~/components/Papers.astro';
+import ActModel from '~/components/diagrams/ActModel.astro';
+import TemporalEnsemble from '~/components/diagrams/TemporalEnsemble.astro';
 
 <Maturity level="beta" note="Gated against the reference implementation and against LeRobot's training. Runs closed loop on the arm at 30 Hz; no real-arm success rate has been measured." />
 
@@ -52,11 +54,16 @@ starts from ImageNet weights, fetched from the Hub with no PyTorch, and its
 BatchNorm statistics are frozen — both references do this, and trainable
 BatchNorm replaces the ImageNet statistics within a few hundred steps.
 
+<ActModel />
+
 **Chunking and the temporal ensemble.** The policy is queried every control
 step. Each query returns `K` future actions; the command for step `t` is a
-weighted average of every chunk that covers `t`, with weight
-`exp(-m · age)` and `m = ACT_TEMPORAL_ENSEMBLE_M = 0.01`
+weighted average of every chunk that covers `t`, with weight `exp(-m · i)`,
+where `i` counts from the **oldest** chunk covering `t` — the oldest
+prediction weighs most — and `m = ACT_TEMPORAL_ENSEMBLE_M = 0.01`
 (`noeira/deep_agents/act/inference.mojo`).
+
+<TemporalEnsemble />
 
 ### Two quirks of the reference, reproduced
 

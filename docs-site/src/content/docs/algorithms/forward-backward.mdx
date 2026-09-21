@@ -6,6 +6,7 @@ description: Zero-shot RL with Forward-Backward representations — train once w
 import Maturity from '~/components/Maturity.astro';
 import Paper from '~/components/Paper.astro';
 import Papers from '~/components/Papers.astro';
+import ForwardBackward from '~/components/diagrams/ForwardBackward.astro';
 
 <Maturity level="experimental" note="The losses, sampler and device path are gated, and the released BFM-Zero actor reproduces the paper's MuJoCo numbers in our G1. Our own G1 training still trails the reference's curve." />
 
@@ -60,6 +61,8 @@ For any reward `r`, the Q-function of `π_z` is then `F(s, a, z)ᵀ z` when
 a batch of states with the new reward, average `B(s) · r(s)`, project onto the
 sphere, and run `π_z`. In code that is `z_from_reward`
 (`noeira/deep_agents/fb/z_sampler.mojo`).
+
+<ForwardBackward />
 
 ### Sampling `z`
 

@@ -6,6 +6,7 @@ description: SAC that learns from demonstrations and corrections — a pinned de
 import Maturity from '~/components/Maturity.astro';
 import Paper from '~/components/Paper.astro';
 import Papers from '~/components/Papers.astro';
+import HilSerlReplay from '~/components/diagrams/HilSerlReplay.astro';
 
 <Maturity level="beta" note="Runs in simulation on the SO-101 tower family and produced the first learned lift there. Not yet run on the real arm." />
 
@@ -58,6 +59,8 @@ overwrites them. The sampler then draws `BATCH/2` rows from the prefix and
 `BATCH/2` from the online rows for the whole run — RLPD's symmetric sampling.
 The mixed-index kernel (`noeira/data/replay_gpu.mojo`) keeps the demo count on
 the device, so the step stays CUDA-graph capturable.
+
+<HilSerlReplay />
 
 **An optional BC term.** `--bc-weight λ` adds an L1 penalty
 `λ · |tanh(mu(s)) − a|` on the demo half of every batch to the SAC actor loss
