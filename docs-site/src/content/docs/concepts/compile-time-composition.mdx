@@ -51,9 +51,9 @@ brackets. If it is just a number the algorithm reads, it goes in parentheses.
 
 **No runtime graph.** There is nothing to construct, traverse or dispatch
 through. The forward pass of `QNet` is compiled straight-line code — the
-compiler knows every shape, so it can fuse, unroll and vectorize across layer
-boundaries. `MatMul + Bias + Activation` collapses into one GPU kernel because
-by the time codegen runs, nothing about the composition is dynamic.
+compiler knows every shape, so it can unroll and vectorize with no dispatch
+between layers. By the time codegen runs, nothing about the composition is
+dynamic.
 
 **Shapes are checked before you run.** A dimension mismatch between two `Linear`
 layers is a compile error, not a shape error 40 minutes into training.
@@ -95,14 +95,17 @@ network for a 376-dimensional observation and 17 actions. Nothing else changes.
 Combinators are types that take types:
 
 ```mojo
-from noeira.nn.combinators import Sequential, Residual, Repeat
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.combinators.residual import Residual
+from noeira.nn.combinators.repeat import Repeat
 
 comptime Block = Residual[Sequential[Linear[D, D], ReLU[D], Linear[D, D]]]
-comptime Trunk = Repeat[Block, 6]        # six residual blocks
+comptime Trunk = Repeat[6, Block]        # six residual blocks
 ```
 
-`Repeat[Block, 6]` produces six specialized copies at compile time. There is no
-loop at runtime and no list of layers to iterate.
+`Repeat[6, Block]` chains six independent copies of `Block`, each with its own
+parameters. The chain is walked by a compile-time loop over the stages, so
+there is no dispatch over layer types at run time.
 
 Because `Module` is a trait, anything satisfying it composes with everything
 else. A `StochasticActor` wrapping two `LinearReLU`s is a `Module`; so is the

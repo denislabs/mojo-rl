@@ -29,10 +29,16 @@ trait Env:
         """Take an action and return (next_state, reward, done)."""
 
     def reset(mut self) -> Self.StateType: ...
-    def get_state(self) -> Self.StateType: ...
+    def get_state(mut self) -> Self.StateType: ...
     def close(mut self): ...
     def was_terminated(self) -> Bool: ...
 ```
+
+`get_state` takes `mut self` although it changes nothing. Building an
+observation can mean building a tensor view over the physics state — rays for a
+rangefinder or lidar, for instance — and such a view needs mutable access to
+its container. One `mut` on the trait keeps a single ray implementation for CPU
+and GPU.
 
 `was_terminated()` deserves attention. It is `True` only for genuine
 termination — the pole fell, the walker became unhealthy, the goal was reached —
@@ -146,14 +152,19 @@ transition.
 ## `Module` — the neural-network interface
 
 ```mojo
-trait Module:
-    comptime ARITY: Int        # number of inputs
-    comptime IN_DIMS: ...      # input dimensions
-    comptime OUT_DIM: Int      # output dimension
+trait Module(ParamWalkable & Defaultable):
+    comptime ARITY: Int                          # number of inputs
+    comptime IN_DIMS: Array[Int, Self.ARITY]     # one width per input
+    comptime OUT_DIM: Int                        # output width
+    comptime ACT_DT: DType = DT                  # activation dtype (fp32 unless bf16-flow)
 
-    fn make[target: StaticString, INIT: Initializer](...) -> Self
-    fn forward(...)            # over TensorPack
-    fn vjp(...)                # vector-Jacobian product (backward)
+    def make[target: StaticString, INIT: Initializer](
+        ctx: Optional[DeviceContext] = None
+    ) raises -> Self: ...
+    def forward[target: StaticString, B: Int, ...](mut self, inputs, mut out, ctx) raises: ...
+    def vjp[target: StaticString, B: Int, ...](
+        mut self, forward_input, mut grad_output, grad_inputs, ctx
+    ) raises: ...      # vector-Jacobian product (backward)
 ```
 
 A `Module` owns its weights as `Param` fields, each holding a value tensor and a
@@ -161,8 +172,12 @@ gradient tensor. The default `for_each_param` implementation discovers those
 fields automatically, which is how optimizers and checkpointing work without
 registration boilerplate.
 
-`forward` and `vjp` both operate over `TensorPack`, which is what lets
+`make` allocates and initializes the parameters in one step, on the CPU or on
+the device (`ctx` is required on the GPU). `forward` and `vjp` take their inputs
+as `TensorRefs[ARITY, …]` — one reference per input — which is what lets
 combinators like `Parallel` handle modules with different arities uniformly.
+The batch size `B` is a compile-time parameter, like everything else that
+shapes memory.
 
 Because `Module` is a trait rather than a base class, composition is
 type-level — see [compile-time composition](/concepts/compile-time-composition/).
@@ -173,8 +188,9 @@ The two extension points most people want:
 
 **A new environment** — pick the trait combination that matches your state and
 action spaces, define `State` and `Action` structs, and implement the required
-methods. The [environments guide](/concepts/architecture/) covers the families
-you might model yours on.
+methods. The [environments overview](/environments/) covers the families you
+might model yours on; for a manipulation task on an existing robot, a task
+family is usually the better starting point — see [Tasks](/tasks/).
 
 **A new deep agent** — create a package under `noeira/deep_agents/<algo>/` with
 a trainer and a facade, mirroring an existing one such as `dqn/` or

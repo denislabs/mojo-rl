@@ -17,11 +17,10 @@ pixi run -e apple  mojo run -I . examples/half_cheetah/sac_half_cheetah_training
 pixi run -e nvidia mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo
 ```
 
-On a single RTX 5090 this reaches a running gait in about six minutes.
-
 :::note
 Drop `NUM_STEPS` to ~50,000 in the example for a smoke run. The default of
-600,000 env-steps is a real training run, not a demo.
+600,000 env-steps is a real training run, not a demo. On a Mac, remember
+`-e apple`: the `default` environment is the NVIDIA one.
 :::
 
 ## The shape of a GPU training script
@@ -29,7 +28,7 @@ Drop `NUM_STEPS` to ~50,000 in the example for a smoke run. The default of
 Stripped of logging and checkpointing, the whole program is this:
 
 ```mojo
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from noeira.nn.constants import DT
 from noeira.nn.combinators.sequential import Sequential
@@ -113,7 +112,7 @@ experience.
 **One `train` call is the whole loop.** Collection, replay insertion, sampling,
 the twin-critic update, the actor update, temperature tuning and Polyak target
 updates all live inside the batched off-policy driver — on-device, and on NVIDIA
-captured as a CUDA graph.
+captured as a CUDA graph (see [CPU and GPU paths](/concepts/cpu-gpu/#cuda-graphs)).
 
 ## Swapping the environment
 
@@ -136,7 +135,8 @@ Working GPU training scripts exist for several of these:
 
 ```bash
 examples/humanoid/sac_humanoid_training_gpu.mojo
-examples/walker2d/sac_walker2d_profile_graph_nn.mojo
+examples/walker2d/sac_walker2d_training_gpu.mojo
+examples/hopper/sac_hopper_training_gpu.mojo
 examples/half_cheetah/redq_half_cheetah_training_gpu.mojo
 examples/half_cheetah/tdmpc2_half_cheetah_gpu.mojo
 ```
@@ -156,15 +156,49 @@ plain `Sequential` Q-network and no `DeviceContext`.
 ## Monitoring a run
 
 Long runs stream metrics to a dashboard rather than scrolling a terminal. The
-real example wires up `RemoteLogger`, which POSTs `actor_loss`, `critic_loss`,
-`alpha`, `mean_q` and episode returns to the
-[training monitor](https://github.com/noeira/noeira) over HTTP. Configuration
-comes from a `.env` file read by `noeira.core.dotenv`.
+example wires up `RemoteLogger`, which sends `actor_loss`, `critic_loss`,
+`alpha`, `mean_q` and episode returns to [noeira cloud](/tooling/monitor/).
+Two things have to be in place:
 
-Training also auto-checkpoints. The batched driver writes weights and optimizer
-state every `checkpoint_every` env-steps, and the paired
-`examples/half_cheetah/sac_half_cheetah_nn_eval_cpu.mojo` script reloads and
-renders the result.
+1. **The HTTP shim.** `RemoteLogger` talks through libcurl via
+   `noeira/io/http.mojo`, which needs its native shim built once:
+
+   ```bash
+   pixi run build-http
+   ```
+
+   Without it the logger reports the missing library once and drops metrics;
+   training carries on.
+
+2. **Credentials in `.env`** at the repository root. The example reads them
+   with `load_dotenv()` from `noeira/core/dotenv.mojo`:
+
+   ```bash
+   NOEIRA_CLOUD_URL=...
+   NOEIRA_CLOUD_API_KEY=...
+   ```
+
+   With an empty URL the logger sends nothing, so the example also runs
+   without an account.
+
+Posting happens on a background thread: the training loop only queues
+batches, and if the dashboard falls behind, batches are dropped and counted
+rather than stalling training. `close()` prints the tally.
+
+Training also auto-checkpoints. The batched driver writes the actor and the two
+online critics every `checkpoint_every` env-steps and once at the end, and the
+paired `examples/half_cheetah/sac_half_cheetah_nn_eval_cpu.mojo` script reloads
+and renders the result. This checkpoint holds weights only — optimizer moments
+and the temperature are not saved, so a resumed run re-warms them. See
+[Checkpoints](/concepts/checkpoints/).
+
+:::note[Runs under a project]
+This example writes its checkpoint to a fixed path in the working directory.
+Drivers built on `RunContext` — the task-layer SAC entries, ACT, the
+Forward-Backward trainers — name a project instead, and each execution gets a
+run directory with its own `run.kv`, metrics and checkpoints. See
+[Projects and runs](/concepts/projects/).
+:::
 
 ## Next
 

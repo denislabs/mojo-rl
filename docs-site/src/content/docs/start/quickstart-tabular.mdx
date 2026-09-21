@@ -8,7 +8,7 @@ import Maturity from '~/components/Maturity.astro';
 <Maturity level="stable" />
 
 The fastest way to see noeira work end to end. No GPU, no neural networks —
-just a Q-table, a 5×5 grid, and about five seconds of CPU time.
+just a Q-table, a 5×5 grid, and a few seconds of CPU once it has compiled.
 
 ```bash
 pixi run mojo run -I . examples/solve_gridworld.mojo
@@ -17,9 +17,9 @@ pixi run mojo run -I . examples/solve_gridworld.mojo
 ## The environment
 
 GridWorld is a 5×5 navigation task. The agent starts at `(0, 0)` and must reach
-the goal at `(4, 4)`. Each step costs `-1`; reaching the goal pays `+10`. The
-optimal path is 8 steps — right four, up four — for a total return of
-`-8 + 10 = 2`.
+the goal at `(4, 4)`. Each step costs `-1`, except the step that reaches the
+goal, which pays `+10` instead. The optimal path is 8 steps — four along each
+axis — for a total return of `-7 + 10 = 3`.
 
 Small enough that the optimal policy is obvious to you, which makes it a good
 place to check that an algorithm actually works.
@@ -93,7 +93,8 @@ var agent = SARSALambdaAgent(
 
 `examples/solve_gridworld.mojo` runs Q-Learning, SARSA and SARSA(λ) side by side
 and prints a comparison table, which is the point of the example: on a task this
-small, eligibility traces converge in noticeably fewer episodes.
+small you can see what eligibility traces do to convergence and reason about
+why.
 
 Other tabular environments follow the same shape:
 
