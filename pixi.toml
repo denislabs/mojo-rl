@@ -198,6 +198,13 @@ imageio-ffmpeg = ">=0.6.0,<0.7"
 # natural cleanup now that neither imports it — would take `ffmpeg` with it and
 # break both, at runtime, on a machine where it used to work.
 ffmpeg = ">=7,<9"
+# ⚠ DECLARED, NOT TRANSITIVE — the same rule again. libSDL3 (and its headers,
+# which `scripts/build_imgui.sh` compiles against) reached this environment
+# only because conda-forge's `sdl2` is now sdl2-compat, built on SDL3, pulled
+# in by pygame and ffmpeg. `noeira/render/sdl` dlopens it from $CONDA_PREFIX,
+# so the docs can say "pixi installs it" — which stops being true the day
+# either of those drops sdl2. Ubuntu 24.04 has no SDL3 package to fall back on.
+sdl3 = ">=3.2.22,<4"
 # Used by `noeira/data/lerobot.mojo` to fetch a dataset from the HuggingFace
 # Hub. Present as /usr/bin/curl on macOS and most Linux images, absent from
 # slim containers; declared so the import path does not depend on the base

@@ -64,7 +64,7 @@ the robot.
 
 ## Quick start
 
-This project uses [pixi](https://pixi.sh) (`curl -fsSL https://pixi.sh/install.sh | bash`, or `brew install pixi`). SDL3 is only needed for the viewers and video (`brew install sdl3`, `apt install libsdl3-dev`).
+This project uses [pixi](https://pixi.sh) (`curl -fsSL https://pixi.sh/install.sh | bash`, or `brew install pixi`). `pixi install` also brings SDL3, which the viewers use; there is nothing to install system-wide.
 
 ```bash
 pixi install
