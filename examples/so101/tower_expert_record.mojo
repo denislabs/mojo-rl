@@ -84,7 +84,7 @@ from noeira.nn.constants import DT
 from noeira.core.cont_action import ContAction
 from noeira.core.run import epoch_seconds, iso8601_utc
 from noeira.io.proc import quote_arg, run_capture
-from noeira.deep_agents.data.demo_file import DemoSet, write_demo_file
+from noeira.deep_agents.demos.file import DemoSet, write_demo_file
 from noeira.deep_agents.data.any_replay import AnyReplay
 from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
 from noeira.deep_agents.training.blocks import ReplaySampleStep

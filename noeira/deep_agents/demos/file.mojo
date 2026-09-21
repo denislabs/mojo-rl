@@ -1,6 +1,6 @@
 """`.demo` — a flat file of recorded transitions, for a replay's demo prefix.
 
-    from noeira.deep_agents.data.demo_file import DemoSet, write_demo_file, read_demo_file
+    from noeira.deep_agents.demos.file import DemoSet, write_demo_file, read_demo_file
 
     var demos = DemoSet(obs_dim, act_dim)
     demos.begin_episode()

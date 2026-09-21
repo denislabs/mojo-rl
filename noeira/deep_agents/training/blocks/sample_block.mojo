@@ -73,6 +73,18 @@ trait SampleBlock(Defaultable, Deinitable, Movable):
     ) raises:
         pass
 
+    def pin_demo_prefix(
+        mut self, n: Int, ctx: Optional[DeviceContext] = None
+    ) raises:
+        """Everything `add`ed so far becomes the demo half of every batch
+        (HIL-SERL / RLPD). ⚠ THE DEFAULT RAISES, not `pass`: a block that
+        cannot keep a prefix would otherwise train on "demos" that the ring
+        overwrites, silently. `ReplaySampleStep` implements it."""
+        raise Error(
+            "pin_demo_prefix: this sample block cannot pin a demo prefix"
+            " (use a ReplaySampleStep)"
+        )
+
     def set_beta(mut self, beta: Scalar[DT]):
         pass
 

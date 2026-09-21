@@ -34,7 +34,7 @@ from std.pathlib import Path
 
 from max.gpu.host import DeviceContext
 
-from noeira.deep_agents.data.demo_file import DemoSet, read_demo_file
+from noeira.deep_agents.demos.file import DemoSet, read_demo_file
 from noeira.envs.phyics3d_env import Phyics3dEnv
 from noeira.render.imgui import (
     ig_begin_panel, ig_end, ig_text, ig_text_colored, ig_text_disabled,

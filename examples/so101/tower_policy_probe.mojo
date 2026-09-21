@@ -40,7 +40,7 @@ from max.gpu.host import DeviceContext
 from noeira.nn.constants import DT
 from noeira.core.cont_action import ContAction
 from noeira.deep_agents.data.any_replay import AnyReplay
-from noeira.deep_agents.data.demo_file import DemoSet, read_demo_file
+from noeira.deep_agents.demos.file import DemoSet, read_demo_file
 from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
 from noeira.deep_agents.training.blocks import ReplaySampleStep
 from noeira.envs.phyics3d_env import Phyics3dEnv

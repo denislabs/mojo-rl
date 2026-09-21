@@ -9,7 +9,7 @@ An OPEN episode must not reach the file.
 
 from std.testing import assert_equal, assert_true
 
-from noeira.deep_agents.data.demo_file import (
+from noeira.deep_agents.demos.file import (
     DemoSet, read_demo_file, write_demo_file, DEMO_FLAG_INTERVENED,
     DEMO_FLAG_SUCCESS,
 )

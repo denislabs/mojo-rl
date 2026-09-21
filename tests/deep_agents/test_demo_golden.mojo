@@ -13,7 +13,7 @@ set today produces the SAME BYTES. A format change fails here first.
 from std.sys import argv
 from std.testing import assert_equal, assert_true
 
-from noeira.deep_agents.data.demo_file import (
+from noeira.deep_agents.demos.file import (
     DemoSet, read_demo_file, write_demo_file,
 )
 

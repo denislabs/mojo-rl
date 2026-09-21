@@ -280,6 +280,8 @@ tests/tasks/test_goal_distance.mojo
 tests/data/test_replay_demo_prefix.mojo
 tests/deep_agents/test_demo_file.mojo
 tests/deep_agents/test_demo_golden.mojo
+tests/deep_agents/test_demo_load.mojo
+tests/deep_agents/test_hil_serl_config.mojo
 tests/tasks/test_tower_host_reward.mojo
 # The SAC actor loss's behaviour-cloning term (`set_bc`): λ 0 inert, loss = plain + λ·mean(mask·L1)
 # to 1e-9, 60 BC steps pull the actor onto the demo actions.
