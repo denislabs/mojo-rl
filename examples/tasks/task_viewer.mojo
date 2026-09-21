@@ -125,6 +125,8 @@ def task_names() -> List[String]:
     out.append(String("so101_reach_brick"))
     out.append(String("so101_lift_brick"))
     out.append(String("so101_gather_bricks"))
+    out.append(String("so101_settle_brick"))
+    out.append(String("so101_reach_clear"))
     return out^
 
 
@@ -162,10 +164,22 @@ def main() raises:
     # ── the task layer: all data, no code ─────────────────────────────────
     var f = load_family(String(FAMILY))
     var names = task_names()
-    var cur = 0
+    # ⚠ AN UNKNOWN NAME IS REFUSED. It used to open the first task in silence,
+    # so a typo — or a new `.task` not yet added to `task_names()` — showed a
+    # different task under the name you typed.
+    var cur = -1
     for i in range(len(names)):
         if names[i] == task_name:
             cur = i
+    if cur < 0:
+        var known = String("")
+        for i in range(len(names)):
+            known += ("" if i == 0 else ", ") + names[i]
+        raise Error(
+            "task viewer: '" + task_name + "' is not in task_names() ("
+            + known + "). A new task needs its line there as well as its"
+            " .task file."
+        )
     var t = load_task(String(TASK_DIR) + names[cur] + ".task")
     validate_task_against_family(t, f)
     print("  family :", f.name, "|", len(f.slots), "slots,",

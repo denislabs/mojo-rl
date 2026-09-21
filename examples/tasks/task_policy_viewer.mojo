@@ -13,8 +13,9 @@ the same family, the same sampler, the same goal, driven by the SAC checkpoint
 trained on that `.task`.
 
 ⚠⚠ **THE TASK PICKER SWITCHES THE CHECKPOINT TOO.** One policy per task —
-`checkpoints/sac_task_<task>.ckpt`, which is what
-`examples/tasks/sac_task_gpu.mojo` writes. Selecting a task reloads the `.task`
+the newest run of that task that
+`examples/tasks/sac_task_gpu.mojo` wrote (`<project runs>/<date>_sac-<task>_<hash>/
+checkpoints/last.ckpt`), or the pre-run-layout `checkpoints/sac_task_<task>.ckpt`. Selecting a task reloads the `.task`
 AND the weights trained on it, because a `gather` policy driving `lift` is a
 demo of nothing. The model is NOT rebuilt: every task in a family instantiates
 every slot, so `nq`/`nv`/`ngeom` are constant and the switch is a data reload.
@@ -61,6 +62,7 @@ blocks on it. CPU physics and a CPU policy on purpose: one env at 60 Hz and a
 ⚠ SO-101 IS THE SLOW ONE TO COMPILE: 33 280 hull vertices.
 """
 
+from std.os import listdir
 from std.pathlib import Path
 from std.random import seed as seed_rng
 from std.sys import argv
@@ -78,6 +80,7 @@ from noeira.tasks.sac_family_policy import (
 from noeira.deep_agents.training.blocks import ReplaySampleStep
 
 from noeira.core.cont_action import ContAction
+from noeira.core.project import runs_root_for
 from noeira.envs.phyics3d_env import Phyics3dEnv
 from noeira.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
@@ -179,10 +182,44 @@ def task_names() -> List[String]:
     return out^
 
 
+comptime RUN_PROJECT = "so101"
+"""The project `sac_task_gpu.mojo` files its runs under."""
+
+
+def newest_run_ckpt(task: String) -> String:
+    """The newest `<runs>/<id>/checkpoints/last.ckpt` whose run is `task`'s,
+    or "" when there is none.
+
+    ⚠ The driver writes through a `RunContext`, so its checkpoint lives in the
+    run's own directory: `<date>_sac-<task>_<hash>/checkpoints/last.ckpt`.
+    Run ids start with the date, so the lexicographic maximum is the newest.
+    A multi-task run (`sac-a+b`) is not picked for either task alone."""
+    var root = runs_root_for(String(RUN_PROJECT))
+    if not Path(root).exists():
+        return String("")
+    var want = String("_sac-") + task + "_"
+    var best = String("")
+    try:
+        for e in listdir(root):
+            var id = String(e)
+            if want not in id:
+                continue
+            var c = root + "/" + id + "/checkpoints/last.ckpt"
+            if Path(c).exists() and id > best:
+                best = id
+    except:
+        return String("")
+    if best.byte_length() == 0:
+        return String("")
+    return root + "/" + best + "/checkpoints/last.ckpt"
+
+
 def ckpt_path(task: String) -> String:
-    """`checkpoints/` first, then the CWD — the trainer writes to the CWD and
-    the checkpoints on this machine were moved into `checkpoints/`. Same probe
-    order as `sac_so_arm101_reach_policy_viewer.mojo`."""
+    """The task's newest run first; then the pre-run-layout files, in
+    `checkpoints/` and the CWD (where the trainer used to write)."""
+    var r = newest_run_ckpt(task)
+    if r.byte_length() > 0:
+        return r^
     var a = String("checkpoints/") + CKPT_PREFIX + task + ".ckpt"
     if Path(a).exists():
         return a^

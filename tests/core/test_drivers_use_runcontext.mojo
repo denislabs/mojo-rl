@@ -28,7 +28,9 @@ from noeira.core.kv import split_on
 
 
 comptime DRIVERS = (
-    "examples/tasks/sac_task_gpu.mojo"
+    # the task-family SAC run lives in the shared driver; `sac_task_gpu.mojo`
+    # and `sac_tower_gpu.mojo` are one-call entries into it (since 3311b28a0)
+    "noeira/tasks/sac_family_driver.mojo"
     "|examples/so101/act_so101_train_gpu.mojo"
     "|examples/fb/fb_train_gpu.mojo"
     "|examples/fb/fb_train_cpr_gpu.mojo"

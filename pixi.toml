@@ -302,6 +302,7 @@ test-cpu = { cmd = "bash scripts/run_tests.sh --discover tests --cpu-only", desc
 # see tests/manifests/act.txt for the two prerequisite commands.
 test-act = { cmd = "bash scripts/run_tests.sh tests/manifests/act.txt", description = "ACT reference gates (needs -e act-ref dumps)" }
 test-io = { cmd = "bash scripts/run_tests.sh tests/manifests/io.txt", description = "Native parquet / resize / LeRobot-import gates (needs the dumps in tests/manifests/io.txt)" }
+test-vision = { cmd = "bash scripts/run_tests.sh tests/manifests/vision.txt", depends-on = ["build-opencv"], description = "The vision gates (OpenCV shim, calibration, capture) — needs the OpenCV shim, so not in test-smoke" }
 test-swm = { cmd = "bash scripts/run_tests.sh tests/manifests/swm.txt", description = "SWM-H sheaf world model gates (experimental, CPU)" }
 test-fb = { cmd = "bash scripts/run_tests.sh tests/manifests/fb.txt", description = "Forward-Backward zero-shot RL gates (CPU; docs/BFM_ZERO_SHOT_RL.md)" }
 test-concurrent = { cmd = "bash scripts/run_tests.sh tests/manifests/concurrent.txt", description = "Concurrency backbone (noeira/core/concurrent): pthread, SPSC ring, atomic cells" }
@@ -329,16 +330,16 @@ test-bfm-ref = { cmd = "pixi run -e act-ref bash scripts/run_tests.sh tests/mani
 gen-dims = { cmd = "python tools/gen_model_dims.py", description = "Regenerate noeira/envs/**/*_dims.mojo from the .xml assets" }
 gen-dims-check = { cmd = "python tools/gen_model_dims.py --check", description = "Fail if any generated *_dims.mojo is stale (CI)" }
 gen-park-scenes = { cmd = "python tools/tasks/gen_park_scenes.py", description = "Regenerate the P0 parked-slot scenes + pose module" }
-gen-park-scenes-check = { cmd = "python tools/tasks/gen_park_scenes.py --check", description = "Fail if the P0 park scenes or pose module are stale (CI)" }
+gen-park-scenes-check = { cmd = "python tools/tasks/gen_park_scenes.py --check", description = "Fail if the P0 park scenes or pose module are stale (a check to run by hand — not in ci.yml)" }
 gen-family-scenes = { cmd = "mojo run -I . tools/tasks/gen_family_scene.mojo", description = "Compose every .family into its task root's scenes/ (noeira/tasks, noeira/envs/libero)" }
-gen-family-scenes-check = { cmd = "mojo run -I . tools/tasks/gen_family_scene.mojo --check", description = "Fail if a composed family scene is stale (CI)" }
+gen-family-scenes-check = { cmd = "mojo run -I . tools/tasks/gen_family_scene.mojo --check", description = "Fail if a composed family scene is stale (a check to run by hand — not in ci.yml)" }
 gen-placement-tables = { cmd = "mojo run -I . tools/tasks/gen_placement_tables.mojo", description = "Generate every generatable family's device placement table (<task root>/placement/) from the .family + composed scene FK" }
-gen-placement-tables-check = { cmd = "mojo run -I . tools/tasks/gen_placement_tables.mojo --check", description = "Fail if a device placement table is stale (CI)" }
+gen-placement-tables-check = { cmd = "mojo run -I . tools/tasks/gen_placement_tables.mojo --check", description = "Fail if a device placement table is stale (a check to run by hand — not in ci.yml)" }
 device-placement = { cmd = "mojo run -I . tests/tasks/test_device_placement.mojo", description = "The device reset's free-slot placement against the host sampler: so101_tabletop + every LIBERO task, exact, with rule coverage" }
 libero-demo-batched = { cmd = "mojo run -I . examples/libero/libero_demo_batched.mojo", description = "LIBERO demonstrations replayed on the batched env (a real task per lane) against the CPU replay: success word exact, physics window, success side by side; args: [--demo-offset K] [--steps S] [--window W]" }
 libero-task-hooks = { cmd = "mojo run -I . tests/libero/test_libero_task_hooks.mojo", description = "Every LIBERO family: comptime facts (obs width, dims, cone, contact budget, the config's restated constants), the per-step task hooks on every task (device == host == oracle), and LiberoOscConfig[P]'s own hooks" }
 gen-libero-envs = { cmd = "mojo run -I . tools/libero/gen_libero_envs.mojo", description = "Generate every LIBERO family's contact budget (noeira/envs/libero/models/budgets.mojo) and the 20 scene families' batched model defs, from contact_budget.kv; then run gen-dims" }
-gen-libero-envs-check = { cmd = "mojo run -I . tools/libero/gen_libero_envs.mojo --check", description = "Fail if a generated LIBERO env module or budget is stale (CI)" }
+gen-libero-envs-check = { cmd = "mojo run -I . tools/libero/gen_libero_envs.mojo --check", description = "Fail if a generated LIBERO env module or budget is stale (a check to run by hand — not in ci.yml)" }
 libero-contact-budget = { cmd = "mojo run -I . tools/libero/libero_contact_budget.mojo", description = "Measure every LIBERO family's null-action contact peak on the CPU (sampled resets + frozen inits where they exist) into noeira/envs/libero/tables/contact_budget.kv; arg: [family] measures one and writes nothing" }
 libero-bc-train = { cmd = "mojo run -I . examples/libero/libero_bc_train.mojo", description = "Behaviour cloning on LIBERO's demonstrations: rebuilds each frame's batched observation, fits an MLP, writes build/policies/<family>_bc.ckpt (+ .norm); args: [--epochs N] [--lr X] [--val-demos K] [--demos N] [--out PATH]" }
 bc-policy = { cmd = "mojo run -I . tests/deep_agents/test_bc_policy.mojo", description = "The BC checkpoint survives the trip from the trainer to the eval driver: round trip bit for bit, the unloaded control, the normalisation and its refusals" }
