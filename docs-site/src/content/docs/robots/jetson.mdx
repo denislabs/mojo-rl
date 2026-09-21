@@ -1,0 +1,224 @@
+---
+title: Jetson Orin
+description: Run noeira on a Jetson Orin NX with its factory JetPack install. Covers the jetson pixi environment, why every kernel build needs --target-accelerator sm_87, the NVML shims, and the ACT and SmolVLA deploy tasks with their measured latencies.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" note="Proven on one board: an Orin NX 16 GB on JetPack 6.2." />
+
+noeira runs on the robot's own computer. The ACT and SmolVLA deployments,
+the servo tools and the camera pipeline run on a Jetson Orin NX, with the
+policy on its GPU. They use the factory JetPack install as it is: no reflash,
+and no second CUDA toolkit.
+
+## The board
+
+| | |
+|---|---|
+| Module | Jetson Orin NX 16 GB, Ampere GPU (`sm_87`, 1024 CUDA cores), `linux-aarch64` |
+| JetPack | 6.2, which ships driver 540.4.0 |
+| CUDA | 12.6, from JetPack, at `/usr/local/cuda` (`ptxas` V12.6.68) |
+
+## Install
+
+```bash
+pixi install -e jetson
+```
+
+The `jetson` environment deliberately declares **no CUDA package**. On
+aarch64, the `nvidia` channel's `cuda-toolkit` and `cudnn` resolve to SBSA
+builds for ARM servers, which do not match a Tegra driver. Instead, the
+environment uses JetPack's own toolchain in `/usr/local/cuda`.
+
+The workspace declares a `cuda = "12"` system requirement for
+`linux-aarch64`. pixi detects the system CUDA version through the driver, and
+that detection can fail on Tegra. If `pixi install -e jetson` reports unmet
+system requirements, override the detection:
+
+```bash
+CONDA_OVERRIDE_CUDA=12 pixi install -e jetson
+```
+
+Activating the environment sets two variables:
+
+| Variable | Value | Why |
+|---|---|---|
+| `MODULAR_NVPTX_COMPILER_PATH` | `/usr/local/cuda/bin/ptxas` | MAX's built-in PTX compiler needs CUDA 13 and driver ≥ 580. JetPack 6.2's driver is 540.4.0, so without this line the board would need a JetPack 7.2 reflash. |
+| `LD_PRELOAD` | `libcuda_intercept.so`, built from `noeira/cuda/cuda_intercept.c` | The NVML shims below |
+
+Activation also runs `scripts/build_cuda_intercept.sh`, which rebuilds the
+shim when its source is newer than the library.
+
+:::caution[Run through pixi, including built binaries]
+MAX compiles GPU kernels at run time too, so the process that *runs* a binary
+needs `MODULAR_NVPTX_COMPILER_PATH` as well as the one that built it. Only
+`pixi run -e jetson` and `pixi shell -e jetson` set it. To wrap a binary in a
+profiler, wrap the pixi call: `pixi run -e jetson nsys profile … /tmp/binary`.
+:::
+
+## Always pass `--target-accelerator sm_87`
+
+MAX chooses its kernel target through NVML
+(`nvmlDeviceGetCudaComputeCapability`), and Tegra's NVML does not answer that
+query. Without an explicit target, the fallback compiles through `ptxas`
+without a warning, and then the driver rejects the image at the first kernel
+load:
+
+```
+CUDA_ERROR_INVALID_SOURCE ("device kernel image is invalid")
+```
+
+MAX reads no environment variable for the target, so the flag has to be on
+the command line. Two tasks add it for you:
+
+```bash
+pixi run -e jetson run-jetson   examples/nn/mlp/mlp_mnist_training_storage_gpu.mojo
+pixi run -e jetson build-jetson -o /tmp/mlp examples/nn/mlp/mlp_mnist_training_storage_gpu.mojo
+```
+
+`run-jetson` is `mojo run -I . --target-accelerator sm_87`, and
+`build-jetson` is `mojo build` with the same flag. Use one of them, or
+another `*-jetson` task, for **anything** on the board that compiles a kernel:
+tests, benchmarks and the deploy binaries. Never use a bare `mojo run`. With
+the flag, that MNIST MLP reaches 97.75% on the board's GPU.
+
+## The NVML shims
+
+Since MAX 26.6, the runtime no longer assumes NVML device N is CUDA device N.
+It reads each NVML device's PCI location and keeps the one at the location
+CUDA reports. Tegra's NVML and the CUDA driver do not agree on a location for
+the integrated GPU, so every `DeviceContext()` failed with:
+
+```
+NVML: no device at the PCI location CUDA reports for device 0
+```
+
+`noeira/cuda/cuda_intercept.c`, preloaded by the environment, answers two
+NVML queries with CUDA's own values for device 0:
+
+- `nvmlDeviceGetPciInfo_v3` gets CUDA's PCI location, so the device lookup
+  succeeds.
+- `nvmlDeviceGetCudaComputeCapability` gets CUDA's compute capability
+  attributes. The PTX that MAX embeds for `sm_87` targets `sm_80`, and the
+  real architecture is chosen when the runtime passes it to `ptxas`. A wrong
+  answer here brings back the `CUDA_ERROR_INVALID_SOURCE` failure.
+
+The shims switch on only when `/etc/nv_tegra_release` exists. Everywhere
+else, the symbols are not even wrapped. `NOEIRA_NVML_PCI_FROM_CUDA=0` turns
+them off on a Tegra, and `=1` forces them on elsewhere. On first use, each
+shim prints one `[intercept] Tegra NVML…` line with both answers, so a run
+that still fails shows which field disagreed.
+
+:::caution[The shim build hides compiler errors]
+`scripts/build_cuda_intercept.sh` discards `gcc`'s output. If the Tegra line
+does not appear after you pull an update, rebuild the shim by hand and read
+the output:
+
+```bash
+gcc -shared -fPIC -o ./noeira/cuda/libcuda_intercept.so noeira/cuda/cuda_intercept.c -ldl
+```
+:::
+
+### Check what MAX sees
+
+```bash
+pixi run -e jetson run-jetson tools/jetson/device_probe.mojo
+```
+
+`tools/jetson/device_probe.mojo` prints the API, the device name, the compute
+capability, the architecture name and the compile-time device info, then
+allocates a small buffer. On an Orin the architecture must be `sm_87`. If it
+is anything else, every kernel load fails, whatever `--target-accelerator`
+said at build time.
+
+## Devices on the board
+
+The follower and leader default to `/dev/soarm_follower` and
+`/dev/soarm_leader` on Linux. Cameras are passed by path, for example
+`--devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist`. All four names are
+udev symlinks that you create; noeira does not ship the rules. See
+[SO-101 setup](/robots/so101-setup/#linux-stable-names-through-udev) and
+[Cameras](/robots/cameras/#opening-cameras-indices-paths-and-formats).
+
+The SO-101 tasks run on the board as they do elsewhere:
+
+```bash
+pixi run -e jetson soarm-diag
+pixi run -e jetson soarm-torque-off
+```
+
+## Deploying on the board
+
+### ACT: run both builds and compare
+
+```bash
+# the policy on the Orin's GPU
+pixi run -e jetson act-deploy-jetson -- --project so101-tower \
+    --devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist
+
+# the same policy on the Orin's CPU
+pixi run -e jetson act-deploy-jetson-cpu -- --project so101-tower \
+    --devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist
+```
+
+Both tasks build `examples/so101/act_so101_deploy_real.mojo` with
+`--target-accelerator sm_87`. The GPU task adds `-DACT_GPU=1`, then runs the
+binary. The inference device is a build-time parameter. A runtime flag would
+compile the whole ACT graph twice into one binary, and the build is already
+the slowest step on the Orin's ARM cores.
+
+Run both before choosing a device. The Mac result (Metal slower than the CPU
+at batch size 1) comes from Metal's per-launch overhead, and says nothing
+about CUDA on a Tegra. Each binary prints `forward N ms warm (first M ms, …)`
+before anything is armed, and that line is the measurement to compare. As
+elsewhere, `--arm` is what moves the follower.
+
+These tasks take no `-ld_classic`. That is a macOS linker flag, and the board
+links with `lld`.
+
+### SmolVLA: probe, then deploy
+
+```bash
+pixi run -e jetson smolvla-probe-jetson        # time ONE query first
+pixi run -e jetson smolvla-deploy-jetson -- --project so101-tower \
+    --devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist \
+    --stats <meta/stats.json>
+```
+
+The weights are 3.2 GB, on the host and on the device. Each binary is built
+for one target only, because a binary with both would need 6.4 GB. See
+[Deployment](/robots/deployment/#smolvla) for the loop and its flags.
+
+Three more tasks time SmolVLA and attention kernels on the board:
+`smolvla-attn-bench-jetson`, `smolvla-denoise-bench-jetson` and
+`cross-attn-bench-jetson`.
+
+## Measured on the Orin NX
+
+| What | Result |
+|---|---|
+| ACT closed loop, 30 s, two cameras, arm attached | **30.0 Hz**. Mean per query: cameras 2.2 ms + preprocess 3.4 ms + forward 27.6 ms = 33.2 ms, against a 33.3 ms frame period. |
+| ACT first forward, cold kernel cache | 9.9 s, paid once, before arming |
+| SmolVLA query, best configuration (4 denoising steps, `--threaded`) | 491 ms; control rate 27.2 Hz |
+| MNIST MLP on the GPU | 97.75% |
+
+The ACT loop is saturated: the camera rate is the limit. Getting there took
+two changes. The ACT preprocess moved onto the camera thread, and the
+overhead camera's dynamic frame rate was turned off. That camera had been
+delivering 20 fps while reporting 30 (see
+[Cameras](/robots/cameras/#opening-cameras-indices-paths-and-formats)).
+
+## Known risks
+
+- **First-compile latency.** A kernel's first run compiles it, which took
+  9.9 s for ACT's first forward on a cold cache. Inside a control loop, that
+  would mean one command arriving seconds late with the arm already
+  energised. Both deployments run warm-up queries before arming. Any new
+  program that drives the arm on the board must do the same. Measure the
+  control budget on steady state, never on the first pass.
+- **bf16.** bf16 has failed to build on this board family before. It has not
+  been re-tested since the environment was fixed, so treat it as an open risk
+  and plan on fp32, fp16 or int8 for anything that runs on the board.
+- **Built binaries outside pixi.** Running a built binary outside pixi fails
+  on the driver version check. See the caution under [Install](#install).

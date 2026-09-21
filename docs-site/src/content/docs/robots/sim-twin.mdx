@@ -1,0 +1,198 @@
+---
+title: Sim twin
+description: "The SO-101 rig as simulated task families: the tabletop and tower families, the viewers, demonstrations recorded in simulation with the real leader arm, a scripted expert, and a sim-trained reach run on the real arm."
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="experimental" note="The tower family's cameras are CAD-derived starting values, not yet calibrated against the rig." />
+
+The sim twin is the reference rig built as a [task family](/tasks/): the
+follower with its printed wrist-camera mount, the overhead camera tower, the
+desk mat, a bowl and a Duplo brick. It uses the same two cameras and the same
+30 Hz cadence as the real arm. A policy trained on it sees the world through
+the cameras it will deploy with. The same model also serves as the
+kinematics oracle for the real arm.
+
+## Families
+
+Both SO-101 families use one config type, `So101FamilyConfig`, in
+`noeira/tasks/family_config.mojo`. It is parameterised by the family's
+[placement table](/tasks/placement/). The table holds everything specific to
+the family: slot addresses, park pose, regions, gripper site, and joint and
+velocity counts. The type parameters hold what no table does: horizon, frame
+skip, hull-vertex budget, sampler fallback radius, and the grasp and close
+reward weights.
+
+| Config | Family | Horizon | Frame skip | Tasks |
+|---|---|---|---|---|
+| `So101TabletopConfig` | `so101_tabletop` | 300 | 2 | `so101_reach_clear`, `so101_reach_brick`, `so101_lift_brick`, `so101_settle_brick`, `so101_gather_bricks` |
+| `So101TowerConfig` | `so101_tower` | 300 | 16 | `so101_tower_reach_clear`, `so101_tower_lift_brick`, `so101_tower_cube_in_bowl` |
+| `So101TowerTeleopConfig` | `so101_tower` | 1200 | 16 | The tower tasks, with a horizon of about 38 s for a human on the leader arm |
+
+The tower's frame skip of 16 on the 2 ms timestep gives a 31.25 Hz policy,
+the closest integer match to the family's `control_freq=30`. The rig records
+and deploys at 30 fps. Both families integrate with Euler, as MuJoCo steps this
+model, and map actions in [-1, 1] onto each actuator's `ctrlrange`.
+
+`so101_tower_cube_in_bowl` is the task the real demonstrations were recorded
+for: `goal=Near(brick, bowl, 0.045)`. The family files are
+`noeira/tasks/families/so101_tower.family` and
+`noeira/tasks/families/so101_tabletop.family`. The tower's follower asset,
+`noeira/envs/robots/assets/so_arm101_tower.xml`, is generated from the stock
+arm by `tools/soarm/bake_so_arm101_tower.py`.
+
+:::note[What makes the tower grasp hold]
+The printed 25 mm cube used to creep out of the simulated jaw. Two changes
+fixed it:
+
+- The tower asset sets `cone="elliptic" impratio="10"`.
+- The bake replaces the jaws' convex hulls, which filled the pinch cavity,
+  with box decompositions.
+
+Before training a lift, check that the grasp holds:
+
+```bash
+pixi run mojo run -I . examples/tasks/task_grasp_feasibility.mojo so101_tower_lift_brick
+```
+:::
+
+## Viewers
+
+| Task | What it shows |
+|---|---|
+| `soarm-tower-viewer` | Both families with props placed, the tower with both cameras. The first argument picks the task that opens first; all tasks are selectable in the window. |
+| `soarm-tower-policy-viewer` | A trained `so101_tower` SAC checkpoint driving the CPU env. The status line gives the reach and goal distances in mm. Arguments: `-- <task> [ckpt]` |
+| `soarm-tower-replay` | A `.demo` file played back from its recorded states. Arguments: `-- FILE.demo [--episode K] [--speed X] [--loop]` |
+| `soarm-tower-preview` | Renders the wrist and overhead cameras at a recorded arm state, in LeRobot units, to PNGs. Arguments: `-- --state deg,.. --out-dir DIR` |
+
+The viewers need `pixi run build-imgui`, run from the repository root (for the
+mesh paths), and open an SDL3 window. `soarm-tower-preview` is the cheapest
+check that the sim cameras sit roughly where the rig's do. Put the arm where
+a recording had it and compare the two frames:
+
+```bash
+pixi run soarm-tower-preview -- --state 24.4,-105.8,95.8,77.1,59.2,25.1 \
+    --out-dir /tmp/tower_preview
+```
+
+For the bare arm without a family, see `examples/robots/so_arm_viewer_imgui.mojo`.
+To have the real leader drive the simulated arm with no task, use
+`examples/so101/teleop_sim.mojo`. That program is read-only on the hardware:
+it never writes to a follower.
+
+## Real joints to simulated joints
+
+`noeira/robot/so101/sim_map.mojo` maps a calibrated servo angle to the MJCF
+joint. The mapping is the one in `so101-nexus` (`motor_ticks_to_sim_rad`):
+body joints are `(ticks - mid)` scaled to radians with sign +1, since LeRobot
+hard-codes `drive_mode=0` for every SO-101 joint, and the gripper maps by
+fraction of its range. When the real calibration spans past the model's
+range, the mapping clamps and reports it. The gates are in
+`tests/robot/test_so101_sim_map.mojo`.
+
+## Demonstrations in the sim, from the real leader
+
+```bash
+pixi run build-imgui && pixi run build-serial     # once
+pixi run soarm-tower-record                       # so101_tower_lift_brick by default
+pixi run soarm-tower-record -- so101_tower_cube_in_bowl
+```
+
+`examples/so101/tower_teleop_record.mojo` reads the physical leader and drives
+the **simulated** tower scene. It pays the family's own reward on the host and
+writes each episode to a `.demo` file. The SAC driver samples half of every
+batch from that file, the RLPD recipe
+[HIL-SERL](/algorithms/imitation/hil-serl/) builds on.
+
+It never energises an arm: the leader is read with torque off.
+
+- A success ends the episode by itself: once the goal has held for 1 s, the
+  episode is saved and the scene resets.
+- `n` ends the episode now and keeps it. `x` discards it.
+- A timeout is a failure and is dropped unless you pass `--keep-failures`.
+- With `--policy CKPT`, the checkpoint drives, and `i` toggles you in. Rows
+  recorded while you intervene are flagged `INTERVENED`.
+- The file is rewritten after every kept episode. By default it goes to
+  `projects/so101-tower/demos/<utc-time>_<task>.demo`; `--out` overrides.
+
+:::caution[The first step after a reset swings the arm]
+A reset folds the simulated arm to HOME, and the reset cannot see the leader.
+On the next step the arm jumps to wherever the leader is. Park the leader near
+the folded pose before each episode. This happens only in simulation, but it
+matters for the recorded data.
+:::
+
+Train on the recorded file:
+
+```bash
+pixi run -e apple mojo run -I . examples/tasks/sac_tower_gpu.mojo so101_tower_lift_brick \
+    --steps 200000 --warmup 1000 --target-entropy -3 \
+    --demos projects/so101-tower/demos/<file>.demo
+```
+
+`--demo-filter all|success|intervened` selects which rows to use. The driver
+is `noeira/tasks/sac_family_driver.mojo`.
+
+## The scripted expert
+
+```bash
+pixi run soarm-tower-expert -- so101_tower_lift_brick --episodes 50 --seed 0
+```
+
+`examples/so101/tower_expert_record.mojo` generates demonstrations without a
+human. It uses waypoints and a finite-difference IK on the CPU env's own
+kinematics, runs headless, and records in the trainer's observation and
+reward. With `--policy CKPT`, a checkpoint drives until the jaw is near the
+brick, then the expert takes over from there. This is a DAgger-style
+handover, and those rows are flagged as interventions. Its flags include
+`--noise`, `--flat-noise`, `--close-steps`, `--z-grasp`, `--jaw-open` and
+`--feedback`. Run it with `--help` for the full list.
+
+To see why a checkpoint fails, use `soarm-tower-probe`. It reports the
+teacher-forced L1 error on a `.demo` file, runs closed-loop episodes from
+fresh placements, and replays one demo step by step:
+
+```bash
+pixi run soarm-tower-probe -- --ckpt F --demos F [--replay-episode K [--open-loop]]
+```
+
+## Sim-trained reach on the real arm
+
+The first sim-to-real rung is a reach policy. Train it with SAC in simulation
+(`examples/so101/sac_so_arm101_reach_training_gpu.mojo`), check it on the CPU
+(`examples/so101/sac_so_arm101_reach_eval_cpu.mojo`), then run the same
+checkpoint on the follower:
+
+```bash
+pixi run build-serial
+pixi run mojo run -I . examples/so101/deploy_reach_real.mojo            # dry run
+pixi run mojo run -I . examples/so101/deploy_reach_real.mojo --live     # moves the arm
+```
+
+The policy's observation includes the end-effector position, and no sensor on
+the arm measures that. `deploy_reach_real.mojo` therefore keeps a simulated
+`Phyics3dEnv` alive as a **kinematics oracle**. The measured joint angles go
+in through `set_state`, and forward kinematics gives the end-effector position.
+That FK is gated against MuJoCo. The target is three numbers you choose, so
+the arm is not looking for anything. The program exercises every piece a real
+task needs: building the observation, mapping actions, the control rate (50
+Hz, matching training) and the guards. It also produces a transfer number:
+the commanded point against where the end-effector actually ends up.
+
+The checkpoint is resolved by role (`reach` in project `so101`). See
+[projects](/concepts/projects/).
+
+:::caution[This program releases torque where the arm stands]
+`deploy_reach_real.mojo` moves the arm only with `--live` (it has no `--arm`
+flag). It does **not** use the return-home shutdown of the ACT and
+SmolVLA deployments. It releases torque in a `finally`, wherever the arm is at
+that moment, so support the arm when the run ends. Its runs are short: 5 s by
+default, changed with `--seconds`. `--step` sets the step clamp.
+:::
+
+## Next
+
+- [The task layer](/tasks/) and [writing a family](/tasks/writing-a-family/)
+- [HIL-SERL](/algorithms/imitation/hil-serl/)
+- [Deployment](/robots/deployment/): policies trained on real demonstrations

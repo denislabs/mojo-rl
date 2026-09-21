@@ -1,0 +1,220 @@
+---
+title: SO-101 setup
+description: Build the serial shim, point noeira at the right ports, check both arms read-only, and calibrate each servo's EEPROM with a backup.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" />
+
+The steps below take a pair of SO-101 arms from unplugged to calibrated. Only
+calibration with `--write` changes anything on the arm. Nothing on this page
+energises a motor. Read the [safety rules](/robots/#safety-rules) first anyway.
+
+## 1. Build the serial shim
+
+```bash
+pixi run build-serial
+```
+
+This compiles one small C file (`noeira/io/serial/native/nra_serial.c`) into a
+shared library: `libnra_serial.dylib` on macOS, `libnra_serial.so` on Linux.
+The library exists for a single call, `ioctl`, which is C-variadic. On Apple
+arm64, variadic arguments go on the stack while Mojo's `external_call` puts
+them in registers, and the result is a silent `EFAULT`. Everything else about
+the tty (raw 8N1 mode, deadlines, reads and writes) is Mojo in
+`noeira/io/serial/port.mojo`.
+
+Every pixi task that touches an arm depends on `build-serial`, so it rebuilds
+when the source changes. It is not tracked in git, so a fresh checkout needs
+this step.
+
+## 2. Tell noeira which port is which arm
+
+`noeira/robot/so101/ports.mojo` is the only place that maps arms to ports. It
+resolves each port at run time, in this order:
+
+| Source | Follower | Leader |
+|---|---|---|
+| Command-line flag | `--port`, on the programs that take one | none |
+| Environment | `SOARM_FOLLOWER_PORT` | `SOARM_LEADER_PORT` |
+| Default, Linux | `/dev/soarm_follower` | `/dev/soarm_leader` |
+| Default, macOS | `/dev/cu.usbmodem5B8E1139971` | `/dev/cu.usbmodem5B910455171` |
+
+The macOS defaults are the reference rig's adapters. On your machine, set the
+two environment variables:
+
+```bash
+ls /dev/cu.usbmodem*                       # macOS
+export SOARM_FOLLOWER_PORT=/dev/cu.usbmodemXXXXXXXXXXX
+export SOARM_LEADER_PORT=/dev/cu.usbmodemYYYYYYYYYYY
+```
+
+:::caution[Getting the pair backwards]
+If you swap the two ports, teleop drives the arm you are holding. The two
+arms look identical on the bus. The only way to tell them apart is the USB
+adapter's serial number, which appears in the macOS `cu.usbmodem` name.
+:::
+
+On macOS, use `/dev/cu.*`, not `/dev/tty.*`. The `tty.` device blocks in
+`open` while it waits for carrier detect.
+
+### Linux: stable names through udev
+
+On Linux, `/dev/ttyACM0` and `/dev/ttyACM1` can swap between boots. The SO-101
+adapters are CH9102 chips (`1a86:55d3`) and share one VID:PID, so only their
+serial numbers tell them apart. The Linux defaults assume a udev rule,
+`/etc/udev/rules.d/99-soarm.rules`, that keys on each adapter's serial number
+and creates `/dev/soarm_follower` and `/dev/soarm_leader`. noeira does not ship
+this rule. Write one for your adapters' serial numbers, or set the environment
+variables above instead.
+
+If a port does not exist, the tools check it before opening. On Linux, a
+missing `/dev/soarm_*` name produces an error that points at the udev rule, so
+you are not left with a bare "no such file".
+
+## 3. Check both arms, read-only
+
+```bash
+pixi run soarm-diag
+```
+
+`tools/soarm/so101_mojo_diag.mojo` dumps the registers of every servo on both
+arms: firmware, homing offset, position limits, present position, load,
+temperature, voltage and torque state. It writes no register and never changes
+torque, so it is safe to run with the arms powered and holding a pose. If a
+servo does not answer, opening the arm fails with the joint's name and a hint
+to check power and the daisy chain.
+
+The dump is laid out to diff against `tools/soarm/so101_diag.py`, a Python
+twin that uses `lerobot` and `scservo_sdk`. Run both back to back on the same
+arms in the same pose: every integer in the shared columns must match. This
+comparison is how the Mojo bus layer is checked against LeRobot.
+
+## 4. Calibrate
+
+Calibration sets three EEPROM registers per servo: `Homing_Offset`,
+`Min_Position_Limit` and `Max_Position_Limit`. It is the Mojo equivalent of
+`lerobot-calibrate` and produces the same values. Because the calibration
+lives on the servos, `SO101Arm` reads it back on every connect and needs no
+calibration file at run time.
+
+:::danger[This writes EEPROM, and a wrong value raises no error]
+Every joint angle noeira computes comes from these three numbers. If you
+corrupt them, every recording, policy and sim-to-real comparison is silently
+offset. Always pass `--backup` together with `--write`.
+:::
+
+The tool never energises a motor. Torque is off throughout, and you move the
+arm by hand. Turning torque off also clears `Lock`, which is what makes the
+EEPROM writable.
+
+`--port` is **required**, and this is the one tool that ignores the default
+ports. Both arms look alike on the bus, so you have to name the arm you are
+calibrating.
+
+```bash
+# 1. dry run: sweep, compute, print what it WOULD write. No EEPROM access.
+pixi run soarm-calibrate -- --port /dev/cu.usbmodemXXXXXXXXXXX \
+    --backup follower-before.json
+
+# 2. the real thing
+pixi run soarm-calibrate -- --port /dev/cu.usbmodemXXXXXXXXXXX \
+    --write --backup follower-before.json
+
+# undo
+pixi run soarm-calibrate -- --port /dev/cu.usbmodemXXXXXXXXXXX \
+    --restore follower-before.json --write
+```
+
+The procedure:
+
+1. Move the arm by hand to its middle pose and press Enter. The tool sets
+   each homing offset so that this pose reads 2047, the centre of the
+   0–4095 turn. If a joint is more than half a turn from centre, the offset
+   cannot be encoded and the tool refuses the pose rather than wrapping.
+2. Sweep every joint to both end stops and press Enter. The extremes become
+   `range_min` and `range_max`. The sweep has a ten-minute cap, which
+   `--seconds` changes.
+3. Confirm the write.
+
+The backup is plain JSON in `lerobot-calibrate`'s format, so LeRobot's own
+tools can restore it too. Each run also saves the arm's current calibration
+under `~/.cache/noeira/so101_calibration/`. Set `NOEIRA_CACHE` to move it.
+
+| Flag | Effect |
+|---|---|
+| `--port PATH` | The arm to calibrate. Required. |
+| `--backup FILE` | Save the current calibration before anything else |
+| `--write` | Actually write EEPROM. Without it, nothing is written. |
+| `--restore FILE` | Write a saved calibration back (needs `--write`) |
+| `--limited wrist_roll` | Sweep `wrist_roll` as a limited joint (see below) |
+| `--allow-narrower` | Accept a joint range narrower than the current one |
+| `--seconds N` | Cap on the sweep, in seconds (default 600) |
+| `--plain` | Plain table output, no cursor control |
+
+### `wrist_roll` and the camera cable
+
+`wrist_roll` has no end stops on the SO-101, so by default the tool treats
+it as continuous and keeps its full `0..4095` range. If a camera is mounted on
+the wrist-roll part, a full turn winds its cable round the wrist. In that case
+pass `--limited wrist_roll` for the follower. The joint is then swept like the
+others, only as far as the cable allows. Its range is mirrored about the
+middle pose to the tighter side, so the joint's zero still matches the
+leader's. For this joint, the middle pose must be the middle of the arc the
+cable allows.
+
+### What the tool refuses to write
+
+With `--write`, the tool refuses a sweep in two cases:
+
+- A joint lost more than 10% of its previous range. That usually means it was
+  not swept to both stops. A new physical stop, such as a camera mount, can
+  narrow a range legitimately. Pass `--allow-narrower` in that case.
+- A joint barely moved during the sweep.
+
+If a `--write` run fails partway, the tool writes the previous values back.
+That recovery does not run on Ctrl-C or a kill. If one of those interrupts a
+write, restore by hand with `--restore` and the automatic backup path the tool
+printed at start-up.
+
+## Torque off
+
+```bash
+pixi run soarm-torque-off
+```
+
+This command releases both arms. It is the recovery for any control loop that
+ended without cleaning up. See the [safety rules](/robots/#3-the-recovery-tool-is-soarm-torque-off).
+
+## The Feetech bus, briefly
+
+The servos are Feetech STS3215s on a half-duplex serial bus at 1 Mbaud. The
+code comes in three layers:
+
+| Layer | File | Role |
+|---|---|---|
+| Packets | `noeira/robot/feetech/packet.mojo` | Codec: `FF FF id len inst params checksum`, little-endian. No I/O. Tested against byte strings captured from `scservo_sdk`. |
+| Registers | `noeira/robot/feetech/control_table.mojo` | Addresses and sizes. For example `Torque_Enable` is 40, `Goal_Position` 42, `Lock` 55, `Present_Position` 56. |
+| Bus | `noeira/robot/feetech/bus.mojo` | `FeetechBus`: ping, read and write, `sync_read` and `sync_write`, with retries and a per-transaction deadline. No allocation per tick. |
+
+A `sync_read` of all six positions takes about 1.3 ms on the follower,
+measured back to back. That leaves plenty of room at a 30–50 Hz control rate.
+Control loops set the reply deadline to 20 ms instead of the 50 ms setup
+default. A loop that sleeps between ticks also pays host-controller latency,
+and a 5 ms deadline produced "0 of 6 motors reported a position".
+
+Units follow LeRobot exactly, so a policy trained in simulation and a LeRobot
+dataset use the same numbers:
+
+- Body joints are in degrees: `(raw - mid) * 360 / 4095`, with
+  `mid = (range_min + range_max) / 2`, unclamped. The divisor is 4095, not
+  4096; using 4096 would introduce a 0.09° error.
+- The gripper is 0–100 across its calibrated range.
+
+The CI gates for this layer are in `tests/robot/`. None of them needs an arm.
+
+## Next
+
+- [Cameras](/robots/cameras/): intrinsics, then where each camera sits
+- [Teleop and recording](/robots/teleop-recording/): drive the follower from the leader

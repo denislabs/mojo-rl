@@ -1,0 +1,214 @@
+---
+title: Cameras
+description: Capture from UVC cameras through the OpenCV shim, calibrate intrinsics with a ChArUco board in the camera studio, and fit the camera-to-robot transform with the arm as the ruler.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" />
+
+Cameras come in through OpenCV, called from Mojo through a small C++ shim.
+Everything above the capture is Mojo: the per-camera thread, the resize for
+each policy, the calibration file, and the rigid fit that places a camera in
+the robot's frame. The workflow has three steps: open the camera and check it
+delivers what you asked for, calibrate its intrinsics, then find where it sits
+relative to the arm.
+
+## Build the OpenCV shim
+
+```bash
+pixi run build-opencv
+```
+
+OpenCV has had no C API since 4.x, so `noeira/vision/opencv/` wraps the
+pieces it needs behind an `extern "C"` surface: capture, ArUco and ChArUco
+detection, `solvePnP` and camera calibration. Nothing is vendored. The pixi
+environments already carry the C++ OpenCV. Every recorder and deployment
+depends on this task.
+
+## The camera studio
+
+```bash
+pixi run camera-studio                                  # camera 0
+pixi run camera-studio -- --device 1 --camera overhead
+pixi run camera-studio -- --file tests/fixtures/vision/capture_12f.mp4
+```
+
+`examples/vision/camera_studio.mojo` shows one camera in a window, with ArUco
+detection drawn on top. It needs `build-imgui` and `build-opencv`, and the pixi
+task depends on both. `--file` plays any video in a loop and `--image` shows a
+still, so you can try the UI without a camera.
+
+Look at three readouts first:
+
+- **capture ms**: how long `read()` blocks. If a camera quietly negotiated a
+  larger resolution than you asked for, it shows up here as tens of
+  milliseconds.
+- **the resolution line**: what the device actually delivered. OpenCV reports
+  no error when it substitutes a different size.
+- **markers**: ids and corner overlay. The pose readout uses a focal length,
+  which is a guess until the camera is calibrated.
+
+## Intrinsics: a ChArUco calibration
+
+1. Generate a board and print the **PDF** at 100%, never "fit to page":
+
+   ```bash
+   pixi run python tools/vision/make_printable_marker.py --charuco
+   ```
+
+   This writes a PNG and a PDF into `scratch/markers/`. The default board is
+   5×7 squares of 30 mm with 22 mm markers from the `4x4_50` dictionary.
+   Measure the printed ruler. Mount the board flat; a clipboard is enough.
+2. Run the studio and tick **detect board**. It should report 24/24 corners.
+3. Click **capture view** at six or more *different* poses: near, far, tilted
+   left, right, up and down, and with the board near the frame corners.
+4. Click **calibrate**. The studio shows fx, fy, cx, cy and the RMS residual,
+   then saves the file.
+
+:::caution[A low RMS does not mean the calibration is good]
+The RMS is the model's residual against the corners it was given. It says
+nothing about accuracy. Six captures of one pose fit beautifully and pin down
+the focal length badly. Tilt the board between captures, and put it near the
+edges of the frame, where distortion is.
+:::
+
+The board flags (`--board 5x7 --square-mm 30 --marker-mm 22`) must match
+the printed sheet. A mismatched board does not fail. It finds corners at the
+wrong board coordinates and calibrates a confidently wrong camera.
+
+The same rule applies to a single marker: the size is the **black square**,
+not the white border. `make_printable_marker.py --size-mm 60` generates a
+60 mm marker. A wrong size produces a pose that looks fine but has the wrong
+scale.
+
+## The calibration file
+
+The studio writes `scratch/camera_<name>.txt`, where `<name>` comes from
+`--camera`. Pass `--calib PATH` to write elsewhere. The file is keyed text:
+`#` starts a comment, lines can come in any order, and unknown keys are
+ignored.
+
+```
+mojo-rl-camera-calibration 1
+name overhead
+device 0
+size 640 480
+intrinsics <fx> <fy> <cx> <cy>
+dist <k1> <k2> [p1 p2 k3 ...]
+rms_px <intrinsics fit residual>
+extrinsics_rot <r00 .. r22, row-major, camera -> base>
+extrinsics_trans <tx ty tz, metres>
+rms_mm <extrinsics fit residual, in the robot frame>
+poses <correspondences behind the extrinsics>
+```
+
+The first line is the format's magic string and version. Keep it exactly as
+shown; readers check it. `noeira/vision/calib_file.mojo` reads and writes the
+file.
+
+- The file records **which camera** (`name`, with `device` kept only as a
+  hint) and **at what size**. A reader that needs a different size refuses the
+  file rather than rescaling it. A camera that reports a different resolution
+  has usually changed its crop or binning, so rescaling would give wrong
+  numbers. Recalibrate instead.
+- The `extrinsics_*` lines are optional. Check `has_extrinsics` before you
+  treat the file as a pose. A missing pose must never be read as a camera at
+  the base origin.
+
+## Extrinsics: where the camera is
+
+```bash
+pixi run soarm-calibrate-extrinsics -- --camera overhead --device 0 \
+    --marker-mm 30 --offset 0.0 -0.045 0.012
+```
+
+`examples/so101/calibrate_camera_extrinsics.mojo` finds the camera-to-base
+transform using the arm as the ruler. Tape a marker to the gripper. At each
+pose, two instruments locate it:
+
+| Instrument | Where it says the marker is | Frame |
+|---|---|---|
+| The camera | `solvePnP` on the detected corners | camera |
+| The arm | Forward kinematics on the measured joint angles, plus `--offset` | robot base |
+
+The tool collects N such pairs and solves for the rigid transform between
+the two frames with Kabsch (`fit_rigid` in `noeira/vision/extrinsics.mojo`).
+A fixed camera makes this a 3D-to-3D problem, so no hand-eye calibration is
+needed. The forward kinematics come from the same simulated SO-101 model the
+policies train in.
+
+:::note[It never energises the arm]
+This program has no `--arm` flag. It releases torque at start-up and again in
+a `finally`, and you move the gripper **by hand**. That is the safest way to
+reach the corners of the workspace and the most accurate. If it dies hard,
+run `pixi run soarm-torque-off`.
+:::
+
+It needs an intrinsics file for the same camera first. By default it reads
+`scratch/camera_<name>.txt`; `--calib` points elsewhere. It refuses to start
+without one, because a guessed focal length puts an unknown scale on every
+correspondence, and the fit turns that scale error into a rotation error. The
+result is written back into the same file as the `extrinsics_*` lines.
+
+Four things go wrong silently:
+
+1. **`--offset` is a measurement.** It is the marker centre in the gripper
+   body's frame, in metres. It rotates with the wrist, so the fit cannot absorb
+   an error in it: an offset that is 10 mm wrong raises the residual by about
+   10 mm, however many poses you take.
+2. **Put the marker on the gripper body, not the moving jaw.** `--body`
+   defaults to the gripper body, because the jaw moves when the gripper opens.
+3. **Hold still.** A frame taken while the arm moves pairs a pose with a
+   marker that was somewhere else. Capture is refused until the arm has been
+   still for a few ticks.
+4. **Spread matters more than count.** Twenty poses in one corner fit well and
+   determine little. The panel shows the three principal extents of the
+   captured points; watch the smallest one. Sweeping across the table gives a
+   plane, and a point well above that plane is then located along a direction
+   nobody measured. Three poses fit exactly and prove nothing.
+
+Other flags: `--marker-id`, `--port` (the follower's port), `--body`.
+
+## Opening cameras: indices, paths and formats
+
+Every program that captures takes `--devices` as indices (`0,1`), device paths
+(`/dev/soarm_cam_overhead,/dev/soarm_cam_wrist`), or a mix. One parser,
+`parse_camera_specs` in `noeira/vision/camera_thread.mojo`, handles all of
+them.
+
+- **By path, on Linux.** OpenCV's V4L2 backend cannot capture by name, so a
+  path is resolved to its `/dev/videoN` index and opened with V4L2 explicitly.
+  The resolved node is printed. A stable name therefore needs a udev symlink,
+  such as the `soarm_cam_*` names above. noeira does not ship these rules.
+- **Identical cameras.** The two cameras on the reference rig report the
+  same serial number, so a udev rule cannot tell them apart by serial. Key
+  them on something else, such as the USB port they are plugged into.
+- **Indices move.** On macOS, cameras open by index through AVFoundation, and
+  indices follow enumeration order. Unplugging a camera, or a phone nearby,
+  can shift them. The ACT deployment's `--snap` mode compares each live camera
+  against the frames it was trained on.
+- **Pixel format.** On Linux the default request is MJPEG. Two YUYV streams
+  at 640×480 and 30 fps need about 295 Mbit/s, close to the practical limit of
+  a USB 2.0 bus, and camera traffic reserves bus time ahead of the servo
+  adapters. MJPEG is about 15 times smaller. Pass `--fourcc` to request
+  another format, or `--fourcc none` to keep the device default. Record and
+  deploy in the **same** format.
+
+:::caution[A UVC camera can halve its frame rate without telling you]
+With auto-exposure in low light, a UVC camera can lengthen its exposure by
+dropping frames. On the reference rig, the overhead camera negotiated 30 fps,
+reported 30 fps, and delivered 20. That silently paced the whole ACT control
+loop. The fix was turning off the camera's dynamic frame rate control
+(`exposure_dynamic_framerate=0` through `v4l2-ctl` on the Jetson). For this
+reason, the ACT and SmolVLA deployments print the number of frames each camera
+**delivered** next to its negotiated rate. When the two disagree, believe the
+delivered count. The recorders print the negotiated rate and count dropped
+frames.
+:::
+
+## Next
+
+- [Teleop and recording](/robots/teleop-recording/)
+- [Sim twin](/robots/sim-twin/): the same two cameras in simulation
+- [Camera rendering](/rendering/cameras/)
