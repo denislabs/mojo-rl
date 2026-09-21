@@ -13,7 +13,7 @@ Run (Apple = parity only):
     pixi run -e apple  mojo run -I . benchmarks/bench_pool_nhwc_parity_gpu.mojo
 """
 
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor

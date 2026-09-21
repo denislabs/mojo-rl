@@ -27,16 +27,16 @@ from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
     JLIM_SIZE,
     METADATA_SIZE,
 )
-from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims
+from noeira.physics3d.fields import Data, Model, SpecFields, Dims
 
 comptime DTYPE = DType.float32
 

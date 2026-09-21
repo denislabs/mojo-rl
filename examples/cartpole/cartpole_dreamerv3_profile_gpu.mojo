@@ -54,10 +54,10 @@ from std.random import random_float64, seed
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.deep_agents.dreamerv3.agent import DreamerV3Agent
+from noeira.envs.cartpole import CartPoleEnv
 
 
 # ── real per-train_step dims (UNCHANGED from cartpole_dreamerv3_training_gpu) ──

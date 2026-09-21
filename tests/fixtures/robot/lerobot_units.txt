@@ -1,0 +1,92 @@
+# generated from /Users/denislaboureyras/Documents/mojo-rl/dev/lerobot/lerobot/src/lerobot/motors/motors_bus.py
+resolution 4096
+joint shoulder_pan 812 3170 body
+joint shoulder_lift 720 3260 body
+joint elbow_flex 900 3100 body
+joint wrist_flex 780 3250 body
+joint wrist_roll 0 4095 body
+joint gripper 2020 3480 gripper
+norm shoulder_pan 512 -130.02197802197801 -100.0 0.0
+norm shoulder_pan 812 -103.64835164835165 -100.0 0.0
+norm shoulder_pan 813 -103.56043956043956 -99.91518235793045 0.04240882103477523
+norm shoulder_pan 1991 0.0 0.0 50.0
+norm shoulder_pan 3169 103.56043956043956 99.91518235793043 99.95759117896522
+norm shoulder_pan 3170 103.64835164835165 100.0 100.0
+norm shoulder_pan 3470 130.02197802197801 100.0 100.0
+norm shoulder_lift 420 -138.02197802197801 -100.0 0.0
+norm shoulder_lift 720 -111.64835164835165 -100.0 0.0
+norm shoulder_lift 721 -111.56043956043956 -99.92125984251969 0.03937007874015748
+norm shoulder_lift 1990 0.0 0.0 50.0
+norm shoulder_lift 3259 111.56043956043956 99.9212598425197 99.96062992125985
+norm shoulder_lift 3260 111.64835164835165 100.0 100.0
+norm shoulder_lift 3560 138.02197802197801 100.0 100.0
+norm elbow_flex 600 -123.07692307692308 -100.0 0.0
+norm elbow_flex 900 -96.7032967032967 -100.0 0.0
+norm elbow_flex 901 -96.61538461538461 -99.9090909090909 0.045454545454545456
+norm elbow_flex 2000 0.0 0.0 50.0
+norm elbow_flex 3099 96.61538461538461 99.9090909090909 99.95454545454545
+norm elbow_flex 3100 96.7032967032967 100.0 100.0
+norm elbow_flex 3400 123.07692307692308 100.0 100.0
+norm wrist_flex 480 -134.94505494505495 -100.0 0.0
+norm wrist_flex 780 -108.57142857142857 -100.0 0.0
+norm wrist_flex 781 -108.48351648351648 -99.91902834008097 0.04048582995951417
+norm wrist_flex 2015 0.0 0.0 50.0
+norm wrist_flex 3249 108.48351648351648 99.91902834008098 99.95951417004049
+norm wrist_flex 3250 108.57142857142857 100.0 100.0
+norm wrist_flex 3550 134.94505494505495 100.0 100.0
+norm wrist_roll -300 -206.37362637362637 -100.0 0.0
+norm wrist_roll 0 -180.0 -100.0 0.0
+norm wrist_roll 1 -179.9120879120879 -99.95115995115995 0.02442002442002442
+norm wrist_roll 2047 -0.04395604395604396 -0.024420024420024333 49.98778998778999
+norm wrist_roll 4094 179.9120879120879 99.95115995115995 99.97557997557998
+norm wrist_roll 4095 180.0 100.0 100.0
+norm wrist_roll 4395 206.37362637362637 100.0 100.0
+norm gripper 1720 -90.54945054945055 -100.0 0.0
+norm gripper 2020 -64.17582417582418 -100.0 0.0
+norm gripper 2021 -64.08791208791209 -99.86301369863014 0.0684931506849315
+norm gripper 2750 0.0 0.0 50.0
+norm gripper 3479 64.08791208791209 99.86301369863014 99.93150684931507
+norm gripper 3480 64.17582417582418 100.0 100.0
+norm gripper 3780 90.54945054945055 100.0 100.0
+unnorm shoulder_pan -181.0 -67
+unnorm shoulder_pan -90.0 967
+unnorm shoulder_pan -0.5 1985
+unnorm shoulder_pan 0.0 1991
+unnorm shoulder_pan 12.34 2131
+unnorm shoulder_pan 90.0 3014
+unnorm shoulder_pan 181.0 4049
+unnorm shoulder_lift -181.0 -68
+unnorm shoulder_lift -90.0 966
+unnorm shoulder_lift -0.5 1984
+unnorm shoulder_lift 0.0 1990
+unnorm shoulder_lift 12.34 2130
+unnorm shoulder_lift 90.0 3013
+unnorm shoulder_lift 181.0 4048
+unnorm elbow_flex -181.0 -58
+unnorm elbow_flex -90.0 976
+unnorm elbow_flex -0.5 1994
+unnorm elbow_flex 0.0 2000
+unnorm elbow_flex 12.34 2140
+unnorm elbow_flex 90.0 3023
+unnorm elbow_flex 181.0 4058
+unnorm wrist_flex -181.0 -43
+unnorm wrist_flex -90.0 991
+unnorm wrist_flex -0.5 2009
+unnorm wrist_flex 0.0 2015
+unnorm wrist_flex 12.34 2155
+unnorm wrist_flex 90.0 3038
+unnorm wrist_flex 181.0 4073
+unnorm wrist_roll -181.0 -11
+unnorm wrist_roll -90.0 1023
+unnorm wrist_roll -0.5 2041
+unnorm wrist_roll 0.0 2047
+unnorm wrist_roll 12.34 2187
+unnorm wrist_roll 90.0 3071
+unnorm wrist_roll 181.0 4106
+unnorm gripper -10.0 2020
+unnorm gripper 0.0 2020
+unnorm gripper 1.0 2034
+unnorm gripper 37.5 2567
+unnorm gripper 99.9 3478
+unnorm gripper 100.0 3480
+unnorm gripper 110.0 3480

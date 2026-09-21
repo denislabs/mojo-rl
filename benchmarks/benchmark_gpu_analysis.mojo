@@ -23,12 +23,12 @@ from std.time import perf_counter_ns
 from std.math import sqrt
 from std.random import random_float64, seed
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
-from mojo_rl.core.fmt import fit
+from noeira.core.fmt import fit
 
 
 # =============================================================================

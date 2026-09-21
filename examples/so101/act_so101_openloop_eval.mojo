@@ -37,41 +37,66 @@ ignoring the gripper — the one dimension that decides whether a grasp happens.
 
 from std.python import Python, PythonObject
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.act.config import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.act.config import (
     ACT_TEMPORAL_ENSEMBLE_M,
+    RUN_DEC_LAYERS,
+    RUN_DIM,
+    RUN_ENC_LAYERS,
+    RUN_FF,
+    RUN_HEADS,
+    RUN_K,
+    RUN_LATENT,
     SO101_ADIM,
     SO101_IMG_H,
     SO101_IMG_W,
     SO101_N_CAM,
     SO101_QPOS,
 )
-from mojo_rl.deep_agents.act.data import ACTDataset
-from mojo_rl.deep_agents.act.inference import TemporalEnsemble, denormalize
-from mojo_rl.deep_agents.act.trainer import ACTTrainer
+from noeira.deep_agents.act.data import ACTDataset
+from noeira.deep_agents.act.inference import TemporalEnsemble, denormalize
+from noeira.deep_agents.act.trainer import ACTTrainer
 
 
-# Must match act_so101_train_cpu.mojo.
 comptime QPOS = SO101_QPOS
 comptime ADIM = SO101_ADIM
 comptime N_CAM = SO101_N_CAM
 comptime IMG_H = SO101_IMG_H
 comptime IMG_W = SO101_IMG_W
-comptime K = 20
-comptime DIM = 64
-comptime HEADS = 4
-comptime FF = 256
-comptime LATENT = 32
-comptime N_ENC = 1
-comptime N_DEC = 1
+# ⚠ FROM `act.config`, not restated here. These dims ARE the checkpoint's
+# parameter shapes: this file used to carry its own K=20/dim=64 copy while the
+# training example moved to K=60/dim=256, so the checkpoint the trainer told
+# you to evaluate could not be loaded by the evaluator.
+comptime K = RUN_K
+comptime DIM = RUN_DIM
+comptime HEADS = RUN_HEADS
+comptime FF = RUN_FF
+comptime LATENT = RUN_LATENT
+comptime N_ENC = RUN_ENC_LAYERS
+comptime N_DEC = RUN_DEC_LAYERS
 comptime BATCH = 1  # one step at a time, as a deployment would
 
 comptime T = ACTTrainer[
-    QPOS, ADIM, N_CAM, IMG_H, IMG_W, K, DIM, HEADS, FF, LATENT, N_ENC, N_DEC,
+    QPOS,
+    ADIM,
+    N_CAM,
+    IMG_H,
+    IMG_W,
+    K,
+    DIM,
+    HEADS,
+    FF,
+    LATENT,
+    N_ENC,
+    N_DEC,
     BATCH,
 ]
 comptime IMG_ELEMS = N_CAM * 3 * IMG_H * IMG_W
-comptime CKPT = "/tmp/act_so101_best.ckpt"
+comptime DEFAULT_CKPT = "act_so101_best_gpu.ckpt"
+"""The GPU run's best checkpoint. `ACT_CKPT` overrides — point it at
+`/tmp/act_so101_best.ckpt` for a CPU run, or at a `_last_` checkpoint to
+evaluate a run that was killed."""
+
 
 # Joint names, in the dataset's own order (meta/info.json `action.names`).
 def joint_names() -> List[String]:
@@ -86,13 +111,28 @@ def joint_names() -> List[String]:
 
 
 def store_path() raises -> String:
+    """`$ACT_STORE` if set, else the recording the header names.
+
+    The default is a specific recording, not a pattern: an example that
+    silently picked up whichever store happened to be newest in the cache
+    would report numbers nobody could attribute to a dataset. Point
+    `ACT_STORE` at another store to train on it.
+    """
     var os = Python.import_module("os")
+    var env = String(
+        os.environ.get(PythonObject("ACT_STORE"), PythonObject(""))
+    )
+    if env.byte_length() > 0:
+        return env
     var home = String(os.path.expanduser(PythonObject("~")))
     return (
         home
-        + "/.cache/mojo_rl/act_so101/"
+        + "/.cache/noeira/act_so101/"
         + "DenisLabs__record-test_20260825_094319_"
-        + String(IMG_H) + "x" + String(IMG_W) + ".h5"
+        + String(IMG_H)
+        + "x"
+        + String(IMG_W)
+        + ".h5"
     )
 
 
@@ -102,9 +142,17 @@ def main() raises:
     if not Bool(os.path.exists(PythonObject(path))):
         print("MISSING STORE: " + path)
         raise Error("store not found")
-    if not Bool(os.path.exists(PythonObject(String(CKPT)))):
-        print("MISSING CHECKPOINT: " + String(CKPT))
-        print("run examples/so101/act_so101_train_cpu.mojo first")
+    var ckpt = String(
+        os.environ.get(PythonObject("ACT_CKPT"), PythonObject(""))
+    )
+    if ckpt.byte_length() == 0:
+        ckpt = String(DEFAULT_CKPT)
+    if not Bool(os.path.exists(PythonObject(ckpt))):
+        print("MISSING CHECKPOINT: " + ckpt)
+        print(
+            "run examples/so101/act_so101_train_gpu.mojo first, or set"
+            " ACT_CKPT to a checkpoint written at the act.config run dims"
+        )
         raise Error("checkpoint not found")
 
     var ds = ACTDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W](String(path), seed=7)
@@ -115,13 +163,18 @@ def main() raises:
     var ep_len = ds.store.episodes.length_of(ep)
 
     var tr = T.make()
-    tr.load(String(CKPT))
+    tr.load(String(ckpt))
 
     print("ACT / SO-ARM101 — open-loop evaluation")
-    print("  checkpoint " + String(CKPT))
+    print("  checkpoint " + ckpt)
     print(
-        "  episode " + String(ep) + " (held out), " + String(ep_len)
-        + " steps, chunk " + String(K) + ", m = "
+        "  episode "
+        + String(ep)
+        + " (held out), "
+        + String(ep_len)
+        + " steps, chunk "
+        + String(K)
+        + ", m = "
         + String(ACT_TEMPORAL_ENSEMBLE_M)
     )
     print("")
@@ -162,7 +215,9 @@ def main() raises:
 
         if t % 50 == 0:
             print(
-                "    t=" + String(t) + "  contributors "
+                "    t="
+                + String(t)
+                + "  contributors "
                 + String(te.n_contributors(t))
             )
 
@@ -184,13 +239,22 @@ def main() raises:
         while nm.byte_length() < 14:
             nm += " "
         print(
-            "    " + nm + "  " + String(a) + "   " + String(h) + "   "
+            "    "
+            + nm
+            + "  "
+            + String(a)
+            + "   "
+            + String(h)
+            + "   "
             + String(m)
         )
     print("")
     print(
-        "    ALL             " + String(tot_act / Float64(ADIM)) + "   "
-        + String(tot_hold / Float64(ADIM)) + "   "
+        "    ALL             "
+        + String(tot_act / Float64(ADIM))
+        + "   "
+        + String(tot_hold / Float64(ADIM))
+        + "   "
         + String(tot_mean / Float64(ADIM))
     )
     print("")

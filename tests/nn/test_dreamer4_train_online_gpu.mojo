@@ -16,19 +16,19 @@ Run: pixi run -e apple  mojo run -I . tests/nn/test_dreamer4_train_online_gpu.mo
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.core.state import State
-from mojo_rl.core.action import Action
-from mojo_rl.core.env_traits import BoxDiscreteActionEnv
-from mojo_rl.core.logger import NoOpLogger
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Xavier
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.core.state import State
+from noeira.core.action import Action
+from noeira.core.env_traits import BoxDiscreteActionEnv
+from noeira.core.logger import NoOpLogger
 
-from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
-from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
-from mojo_rl.deep_agents.dreamer4.online import run_online_dreamer4
-from mojo_rl.nn.models.cifar_feature_net import CifarBackbone
+from noeira.deep_agents.dreamer4.agent import Dreamer4Agent
+from noeira.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
+from noeira.deep_agents.dreamer4.online import run_online_dreamer4
+from noeira.nn.models.cifar_feature_net import CifarBackbone
 
 
 struct StubState(State):

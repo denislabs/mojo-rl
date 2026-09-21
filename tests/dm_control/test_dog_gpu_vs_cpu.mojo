@@ -65,14 +65,14 @@ from max.gpu.host import DeviceContext
 from std.math import abs, sin
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
-from mojo_rl.envs.dm_control.dog import (
+from noeira.nn.constants import DT
+from noeira.core.cont_action import ContAction
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from noeira.envs.dm_control.dog import (
     DMDogStandWalkModel,
     DMDogStandConfig,
     DMDogMoveConfig,

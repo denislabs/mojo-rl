@@ -30,19 +30,19 @@ from std.random import seed
 from max.gpu.host import DeviceContext
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.deep_agents.dqn.trainer import DQNTrainer
-from mojo_rl.deep_agents.training.driver_offpolicy_discrete import (
+from noeira.nn.constants import DT
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.deep_agents.dqn.trainer import DQNTrainer
+from noeira.deep_agents.training.driver_offpolicy_discrete import (
     run_offpolicy_discrete_train,
 )
-from mojo_rl.deep_agents.training.blocks import (
+from noeira.deep_agents.training.blocks import (
     UniformSampleGpuStep, UniformSampleCpuStep,
 )
 
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.envs.cartpole import CartPoleEnv
 
 
 comptime OBS_DIM = 4

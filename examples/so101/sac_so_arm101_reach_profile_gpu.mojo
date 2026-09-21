@@ -38,17 +38,17 @@ from std.random import seed
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
-from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
-from mojo_rl.core.fmt import fit
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.sac import SACAgent
+from noeira.deep_agents.training.blocks import UniformSampleGpuStep
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.robots.so_arm101_xml import SoArm101Model
+from noeira.envs.robots.so_arm101 import SoArm101ReachConfig
+from noeira.core.fmt import fit
 
 
 # ─── Profiling knobs ──────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ comptime BatchedEnvT = Phyics3dBatchedEnv[
     SoArm101Model, SoArm101ReachConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=False
 ]
 
-comptime OBS_DIM = BatchedEnvT.OBS_DIM  # 21
+comptime OBS_DIM = BatchedEnvT.OBS_DIM  # 27 (incl. the previous action)
 comptime ACT_DIM = 6
 comptime HIDDEN = 256
 comptime BUFFER_CAPACITY = 100_000

@@ -7,7 +7,7 @@ Run (NVIDIA): pixi run -e nvidia mojo run -I . benchmarks/bench_storage_gru_gpu.
 """
 
 from std.math import exp, tanh
-from std.gpu import thread_idx, block_idx, global_idx
+from max.gpu import thread_idx, block_idx, global_idx
 from max.gpu.host import DeviceContext
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor, TileTensor, row_major

@@ -26,7 +26,7 @@ from std.math import abs
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.cartpole import CartPoleEnv, CartPoleAction
+from noeira.envs.cartpole import CartPoleEnv, CartPoleAction
 
 comptime F = DType.float32
 comptime STATE_SIZE = 5  # x, x_dot, theta, theta_dot, steps

@@ -1,0 +1,239 @@
+---
+title: LIBERO
+description: LIBERO's 130 manipulation tasks as 23 task families on noeira's engine — goals, placements, the OSC_POSE controller, demonstrations and LIBERO's own eval protocol, batched on the GPU.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="The batched OSC path runs on NVIDIA. Frozen inits exist for libero_goal only. Policy results are early." />
+
+LIBERO is a benchmark of language-conditioned
+tabletop manipulation for a Franka Panda: 130 tasks, each a `.bddl` file naming
+the objects, where they start and what counts as success, with 50 human
+demonstrations per task. noeira runs it on its own physics engine, as an
+application of the [task layer](/tasks/): every LIBERO scene is a task family,
+every `.bddl` file a `.task`.
+
+It lives in its own package and task root, `noeira/envs/libero/`, with
+examples in `examples/libero/`, tests in `tests/libero/` and generators in
+`tools/libero/`.
+
+<Papers label="Reference">
+	<Paper
+		title="LIBERO: Benchmarking Knowledge Transfer for Lifelong Robot Learning"
+		authors="Liu et al."
+		year="2023"
+		arxiv="2306.03310"
+		venue="NeurIPS 2023 Datasets and Benchmarks"
+		note="The task suites, demonstrations and eval protocol ported here."
+	/>
+</Papers>
+
+## Suites and families
+
+A family is one compiled scene with a fixed slot budget. LIBERO's suites map
+onto families like this:
+
+| Suite | `.bddl` files | Families | `.task` files |
+|---|---|---|---|
+| `libero_goal` | 10 | `libero_goal` — one scene, ten goals | 10 |
+| `libero_spatial` | 10 | `libero_spatial` — one scene, ten layouts | 10 |
+| `libero_object` | 10 | `libero_object` — eleven props pooled, seven per task | 10 |
+| `libero_10` + `libero_90` | 100 | 20 scene families: `libero_kitchen_scene1`–`10`, `libero_living_room_scene1`–`6`, `libero_study_scene1`–`4` | 99 |
+
+That is **23 families and 129 tasks**. `libero_10` and `libero_90` share
+twenty scenes, so they are grouped by scene rather than by suite; each `.task`
+keeps its benchmark in a `suite=` line.
+
+One file does not translate: `KITCHEN_SCENE8_put_both_moka_pots_on_the_stove`
+in `libero_10` has three goal atoms, which fold into five goal terms, and the
+[device tape](/tasks/goals/#the-tape) holds three. It is refused rather than
+truncated.
+
+Every family runs robosuite's Panda under OSC_POSE at 20 Hz on a 2 ms physics
+step (25 substeps per action), with a 600-step horizon — LIBERO's own settings.
+
+## Goals
+
+LIBERO's goal predicates are `On`, `In`, `Open` / `Close`, `Turnon` /
+`Turnoff`, joined by `And`. They translate to the task layer's
+[goal language](/tasks/goals/):
+
+| LIBERO | noeira | Semantics |
+|---|---|---|
+| `(In obj fixture_region)` | `In(obj, region)` on a `:box:` region | `SiteObject.in_box`, in the site's frame |
+| `(On obj fixture_region)` | `On(obj, region)` on a `:box:` region | `SiteObject.under` plus contact with the fixture |
+| `(On obj other_obj)` | `On(obj, other_obj)` | `check_ontop`: above, in contact, xy within 0.03 m |
+| `(Open X)`, `(Turnon X)`, … | `Joint(joint, cmp, thr)` | a per-class joint threshold, from `noeira/envs/libero/tables/categories.kv` |
+
+The box-region tests transcribe LIBERO's arithmetic as written, including its
+slacks and its multiplication by `site_xmat` rather than its transpose.
+
+**Against ground truth: 500 of 500.** Every LIBERO demonstration is a
+successful teleoperation of its task, so a state it reaches is one the
+benchmark calls solved. Driving the engine to each of the 50 demonstrations'
+states for all ten `libero_goal` tasks and asking the bound goal: 500 of 500
+fire.
+
+## Assets
+
+LIBERO's meshes and textures are a separate asset pack (about 189 MB,
+CC-BY-4.0), declared in `noeira/envs/libero/assets.kv` and fetched into
+`noeira/envs/libero/assets/`:
+
+```bash
+pixi run assets-pull libero
+```
+
+Without the pack, tests that need the composed scenes skip with a message
+rather than fail.
+
+## Regeneration
+
+Families, tasks, scenes, placement tables, model definitions and dimensions are
+generated and checked in. You only regenerate after changing a generator or
+an upstream source. The generators read LIBERO's and robosuite's sources from
+`references/` (not part of the repository), plus the asset pack.
+
+In order (each step has a check that fails when its output is stale):
+
+| Step | Task | Produces |
+|---|---|---|
+| 1 | `pixi run vendor-panda` | robosuite's Panda + gripper + mount as flat MJCF (`noeira/envs/robots/assets/panda_robosuite.xml`) |
+| 2 | `pixi run libero-arenas` | one styled, re-posed arena per problem class (`noeira/envs/libero/arenas/`) |
+| 3 | `pixi run libero-objects` | an attachable copy of every object XML (`noeira/envs/libero/objects/`) |
+| 4 | `pixi run libero-family libero_goal` (and `libero_object`, `libero_spatial`); `pixi run libero-family libero_10 libero_90 --by-scene` | `.family` + `.task` files |
+| 5 | `pixi run gen-family-scenes` | composed scenes (`noeira/envs/libero/scenes/`) |
+| 6 | `pixi run gen-libero-envs` | per-family contact budgets and the 20 scene families' batched model definitions (`noeira/envs/libero/models/`); runs `gen-dims` |
+| 7 | `pixi run gen-placement-tables` | device placement tables (`noeira/envs/libero/placement/`) |
+| 8 | `pixi run gen-dims` | `*_dims.mojo`, read off MuJoCo |
+
+The checks are `vendor-panda-check`, `libero-arenas-check`,
+`libero-objects-check`, `gen-family-scenes-check`, `gen-libero-envs-check`,
+`gen-placement-tables-check` and `gen-dims-check`; step 4 takes `--check` as
+an argument (`pixi run libero-family libero_goal --check`).
+
+## The controller: OSC_POSE
+
+LIBERO's actions are end-effector deltas for robosuite's operational-space
+controller: seven numbers — position and orientation deltas plus the gripper —
+scaled by 0.05 m and 0.5 rad. The port transcribes it:
+
+| Leg | File |
+|---|---|
+| Host | `noeira/physics3d/dynamics/osc_pose.mojo` |
+| Kernel | `noeira/physics3d/dynamics/osc_pose_gpu.mojo` |
+| Control stage (`set_goal` on substep 0 of 25, the torque law on all) | `noeira/physics3d/dynamics/osc_control.mojo` |
+| One batched config for all 23 families | `noeira/envs/libero/osc_config.mojo` |
+
+Gates: `pixi run osc-pose-test` (hold and track on the composed scene),
+`pixi run osc-pose-gpu-test` (the kernel over 8 lanes; add `-e apple` or
+`-e nvidia` for the device leg) and `pixi run osc-control-batched`. The
+decisive one replays a recorded demonstration's actions through our Panda and
+our controller and compares against the recording and against MuJoCo:
+`pixi run libero-replay` (needs the demonstrations).
+
+:::caution[The batched OSC env is NVIDIA-only for libero_goal]
+`libero_goal` has `nv = 37`, and Metal cannot build the kernel library at
+that size. `pixi run libero-osc-batched` and the stepping leg of
+`pixi run libero-osc-env` need an NVIDIA GPU. The CPU drivers
+(`libero-eval`, `libero-viewer`) run anywhere.
+:::
+
+## Demonstrations
+
+LIBERO's demonstration HDF5 files, from the Hugging Face dataset
+`yifengzhu-hf/LIBERO-datasets`, are read from `references/libero_demos/<suite>/`
+(`libero_goal`'s ten files are about 5.9 GB). The importer is native Mojo — no h5py, no
+MuJoCo — and remaps robosuite's joint order into ours by name.
+
+```bash
+pixi run libero-demo-import                          # recorded frames -> build/demos/<suite>.h5
+pixi run libero-demo-import --no-images              # low-dim store   -> build/demos/<suite>.lowdim.h5
+pixi run -e nvidia libero-demo-rerender              # every state through OUR cameras
+```
+
+The re-render puts every demonstration state through noeira's two cameras
+(`agentview`, `eye_in_hand`) at LIBERO's settings — 128×128, 4× MSAA — into
+`build/demos/<suite>.rendered.h5`. It exists because a policy evaluated in
+noeira's renderer should train on noeira's pixels, not on robosuite's OpenGL
+frames. On an RTX 5090: **127,456 frames in 145 s = 879 frames/s**, with PSNR
+against the recording of **28.16 dB** (agentview) and **26.79 dB**
+(eye-in-hand).
+
+`pixi run libero-demo-batched` replays demonstrations on the batched env, one
+task per lane, and checks the success word exactly against the host.
+
+## Evaluation
+
+LIBERO's own protocol (`lifelong/metric.py`): reset, write a frozen start state
+without re-anchoring the controller, five settle steps of zero action, then up
+to 600 policy steps; an episode succeeds if the goal holds at **any** step.
+
+| Driver | Where | Use |
+|---|---|---|
+| `pixi run libero-eval` | CPU, one env | the protocol, transcribed; the null-action rate per task must be 0 |
+| `pixi run libero-eval-batched` | GPU, one episode per lane | the benchmark number; `--policy CKPT` (BC) or `--act DIR` (ACT, both cameras rendered on the device every step) |
+| `pixi run libero-family-batched` | GPU | one family: device reset == host, success word exact, no contact saturation, physics against the CPU |
+
+**Frozen inits** are what make a number comparable. They are LIBERO's
+`.pruned_init` states, converted into our joint order and frozen into an
+[init table](/tasks/placement/#frozen-init-tables):
+
+```bash
+pixi run libero-init-dump --suite libero_goal
+pixi run libero-init-freeze
+```
+
+They exist for `libero_goal` today. For the other 22 families,
+`libero-eval-batched --sampled` resets lanes from the device sampler instead —
+a smoke mode that exercises the protocol and cannot be quoted as a benchmark
+number.
+
+The batched eval checks the device's success word against the host evaluator
+on a sample of lanes (`--check-lanes K`) and raises on any disagreement.
+`LANES` and `FAMILY` are compile-time constants in
+`examples/libero/libero_eval_batched.mojo`; edit them to change the build.
+
+## Viewer
+
+```bash
+pixi run build-imgui          # once
+pixi run libero-viewer
+pixi run mojo run -I . examples/libero/libero_viewer.mojo libero_goal put_the_bowl_on_the_plate 7
+pixi run mojo run -I . examples/libero/libero_viewer.mojo libero_goal --check
+```
+
+The arguments are the family, the task to open first and a seed. Every task of
+the family is in the sidebar and switching is a data reload, not a rebuild.
+The Panda is held by the real OSC_POSE controller at the benchmark's clocks,
+and the sidebar's drive buttons send delta actions the way a policy would, so
+you can walk the gripper to an object and watch the goal readout change.
+`--check` runs headless.
+
+## Results
+
+| Measurement | Result | Caveat |
+|---|---|---|
+| Goals vs LIBERO's demonstrations | 500/500 | `libero_goal` only |
+| Families on the batch | all 23 pass: device reset == host, success word exact, no contact saturation, finite state | five miss a 1e-3 batch-vs-CPU window over five null steps. On NVIDIA most of that gap is attributed to the blocked elliptic Newton kernel; the rest is read as float32-vs-float64 divergence at knife-edge contacts, not confirmed |
+| Batched throughput, `libero_goal` | 494 lane control steps/s at 1024 lanes | RTX 5090, demonstration replay with timing only, first measurement (14 Sep). Engine work since reached 1,130 lane control steps/s at 256 lanes on the same GPU — see `noeira/physics3d/PERFORMANCE.md` §13.53–13.54 |
+| Demo re-render | 879 frames/s; PSNR 28.16 / 26.79 dB | RTX 5090; agentview / eye-in-hand |
+| [ACT](/algorithms/imitation/act/) on `libero_goal` | 31/200 = 0.155 | temporal ensemble, frozen inits, 600 steps |
+| Vision-free control: kNN, k=5, on joints and their one-step difference | 144/200 = 0.72 | same protocol; no network, no camera |
+| [BC](/algorithms/imitation/bc/) MLP, low-dim observation | 13/200 = 0.065 | same protocol |
+
+The kNN control is there to be read beside ACT: a nearest-neighbour lookup on
+the robot's own joints, with no camera, solves 72% of episodes. So the physics,
+the controller and the goal language are solvable by matching demonstrations
+on LIBERO's own start states, and the ACT policy's gap is a policy problem, not
+a simulator one.
+
+:::caution[Not comparable to LIBERO's published tables]
+These rates come from a different simulator (noeira's engine, not MuJoCo under
+robosuite), a different renderer, and policies trained on our re-rendered
+pixels. The only decisive comparison would be LIBERO's own eval on LIBERO's
+own simulator from the same checkpoint; that has not been run.
+:::

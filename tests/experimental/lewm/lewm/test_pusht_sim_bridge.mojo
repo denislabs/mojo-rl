@@ -12,9 +12,9 @@ from std.memory import alloc
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.pusht.render import render_pusht_rgb_at
-from mojo_rl.experimental.lewm.pusht_sim_bridge import sim_frame_chw_norm
+from noeira.nn.constants import DT
+from noeira.envs.pusht.render import render_pusht_rgb_at
+from noeira.experimental.lewm.pusht_sim_bridge import sim_frame_chw_norm
 
 
 comptime OUT = 16

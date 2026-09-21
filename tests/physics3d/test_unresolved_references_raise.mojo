@@ -32,14 +32,14 @@ The check has to be on the NAME.
 ⚠ CAMERA `target=` IS DELIBERATELY EXEMPT: its resolution to -1 is documented
 degradation and MuJoCo accepts a model that names a missing target.
 
-⚠ VERIFIED NON-BREAKING BEFORE LANDING: 180 XML files across `mojo_rl/envs`
+⚠ VERIFIED NON-BREAKING BEFORE LANDING: 180 XML files across `noeira/envs`
 and `mujoco_menagerie` were parsed, and none hit a new raise. The strictness
 catches genuinely broken references, not a convention this tree relies on.
 
 Run: pixi run mojo run -I . tests/physics3d/test_unresolved_references_raise.mojo
 """
 
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.full_parser import parse_xml_full
 
 comptime _BODY = String(
     '<worldbody><geom name="floor" type="plane" size="5 5 0.1"/>'

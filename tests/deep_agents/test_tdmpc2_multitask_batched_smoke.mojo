@@ -25,10 +25,10 @@ from std.math import isfinite, abs
 from std.random import seed
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.config_mt import TDMPC2MultiTask
-from mojo_rl.deep_agents.training.batched_env import BatchedCpuEnv
-from mojo_rl.envs.pendulum import PendulumV2
+from noeira.nn.constants import DT
+from noeira.deep_agents.tdmpc2.config_mt import TDMPC2MultiTask
+from noeira.deep_agents.training.batched_env import BatchedCpuEnv
+from noeira.envs.pendulum import PendulumV2
 
 comptime MAX_OBS = 3
 comptime MAX_ACT = 1

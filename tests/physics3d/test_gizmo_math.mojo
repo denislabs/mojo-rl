@@ -43,22 +43,22 @@ Run: pixi run mojo run -I . tests/physics3d/test_gizmo_math.mojo
 
 from std.math import pi, sqrt
 
-from mojo_rl.math3d import Vec3 as Vec3G, Quat as QuatG, Mat4 as Mat4G
-from mojo_rl.render.gpu_types import mat4_to_gpu_f32
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.flat_model import FlatModelDef
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.math3d import Vec3 as Vec3G, Quat as QuatG, Mat4 as Mat4G
+from noeira.render.gpu_types import mat4_to_gpu_f32
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.flat_model import FlatModelDef
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.studio.remap import joint_qpos_adr
-from mojo_rl.physics3d.studio.gizmo import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.studio.remap import joint_qpos_adr
+from noeira.physics3d.studio.gizmo import (
     Frame, frame_to_cm, cm_to_frame, mat4_to_cm, parent_frame, local_frame,
     edit_frame, frame_drift, gizmo_edits, edits_from_frame,
     GIZMO_MOVE, GIZMO_TURN,
 )
-from mojo_rl.physics3d.studio.edit import (
+from noeira.physics3d.studio.edit import (
     Edit, apply_edit, apply_edit_to_document, field_name,
     TARGET_GEOM, TARGET_BODY,
     F_POS_X, F_POS_Y, F_POS_Z, F_QUAT_W, F_QUAT_X, F_QUAT_Y, F_QUAT_Z,
@@ -70,7 +70,7 @@ comptime Vec3 = Vec3G[DT]
 comptime Quat = QuatG[DT]
 comptime Mat4 = Mat4G[DT]
 
-comptime BASE = String("mojo_rl/envs/ant/assets")
+comptime BASE = String("noeira/envs/ant/assets")
 """Any directory with no meshes to resolve — the fixture references none."""
 
 # ⚠⚠ THE ROTATIONS ARE THE POINT. `root` is turned 30 degrees about Z and

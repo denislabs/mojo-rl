@@ -23,12 +23,12 @@ from std.testing import assert_true
 
 from layout import TileTensor, TensorLayout
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.planners.trajectory import (
+from noeira.nn.constants import DT as dtype
+from noeira.planners.trajectory import (
     CategoricalCEMOptimizer,
     ScorePlanCallback,
 )
-from mojo_rl.planners.testing import IdentityDynamics, GoalReachReward
+from noeira.planners.testing import IdentityDynamics, GoalReachReward
 
 
 # Comptime sizes for this test. The CEM optimizer's comptime params have to

@@ -17,35 +17,39 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_fields_mt_parity.mojo
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import (
+from noeira.physics3d.dynamics.subtree_com import (
     compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import (
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import (
     compute_mass_matrix,
 )
-from mojo_rl.physics3d.dynamics.ldl import (
+from noeira.physics3d.dynamics.ldl import (
     ldl_factor,
+    ldl_solve,
     compute_m_inv,
 )
-from mojo_rl.physics3d.dynamics.rne import (
+from noeira.physics3d.dynamics.rne import (
     compute_bias_forces_rne,
 )
-from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.integrator.rk4 import RK4Integrator
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
     METADATA_SIZE,
 )
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.physics3d.parser import ModelDefFromXML
+from noeira.physics3d.parser.xml_parser import parse_xml
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 
@@ -94,6 +98,62 @@ comptime MD_2 = Dims[
 ]
 comptime H_BATCH = 2
 
+
+
+# ── D's model: THREE KINEMATIC TREES, and nothing else in this file has any ──
+#
+# ⚠⚠ WHY THIS ARM EXISTS. `ldl_factor`'s two GPU kernels are DIFFERENT CODE:
+# the serial one calls `_ldl_factor_env` — the shared body
+# `tests/physics3d/test_ldl_blocked.mojo` gates bit-exact against the dense
+# path — while `_ldl_factor_fields_mt_kernel` carries its OWN transcription of
+# the block restriction (`ldl.mojo:240`, its own `_dof_block` walk).
+#
+# That transcription had NO multi-tree gate anywhere. Walker2D and Humanoid
+# above are SINGLE-TREE, so `_dof_block` returns one block spanning `[0, nv)`
+# and every restriction is a no-op — both legs would agree on a completely
+# broken partition. `test_ldl_blocked` covers the arithmetic but only on the
+# CPU body.
+#
+# Comparing the two GPU kernels HERE, on a model with three trees, is what
+# closes it: the serial leg is the gated body, so the `_mt` leg is being
+# checked against something already known correct.
+#
+# ⚠ A slider (2 dof) plus two free boxes = 3 trees, 14 nv, NO MESHES — the
+# same fixture `test_newton_freejoint_vs_cpu` uses, and cheap to compile.
+comptime TREES_XML = """
+<mujoco model="three trees">
+  <option cone="pyramidal" timestep="0.002"/>
+  <worldbody>
+    <geom name="ground" type="plane" pos="0 0 0" size="4 4 1"/>
+    <body name="slider" pos="0 0 0.30">
+      <joint name="sx" type="slide" axis="1 0 0"/>
+      <joint name="sz" type="slide" axis="0 0 1"/>
+      <geom name="gs" type="sphere" size="0.05"/>
+    </body>
+    <body name="boxA" pos="0.60 0 0.05">
+      <freejoint/>
+      <geom name="ga" type="box" size="0.05 0.05 0.05"/>
+    </body>
+    <body name="boxB" pos="0.69 0 0.05">
+      <freejoint/>
+      <geom name="gb" type="box" size="0.05 0.05 0.05"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+comptime _tp = parse_xml(TREES_XML)
+comptime TreesModel = ModelDefFromXML[
+    xml=TREES_XML,
+    nbody=_tp.NBODY, njoint=_tp.NJOINT, nq=_tp.NQ, nv=_tp.NV,
+    ngeom=_tp.NGEOM, nact=_tp.NACT, ntex=_tp.NTEX, nmat=_tp.NMAT,
+    nlight=_tp.NLIGHT, ncam=_tp.NCAM, nsite=_tp.NSITE,
+    cone_type=ConeType.PYRAMIDAL, max_contacts=8,
+    obs_dim_override=4, obs_qpos_skip=0, timestep=_tp.TIMESTEP,
+]
+comptime TMD = ModelDims[TreesModel]
+comptime TNQ = TreesModel.NQ
+comptime TNV = TreesModel.NV
+comptime TNBODY = TreesModel.NBODY
 
 
 def _cmp(
@@ -191,8 +251,8 @@ def test_walker2d_per_op() raises:
     _cmp("walker2d CRBA M", ss.M, sp.M, BATCH * NV * NV)
 
     # 6. LDL factor
-    ldl_factor["gpu", DTYPE, BATCH=BATCH](ss, ctx)
-    ldl_factor["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](sp, ctx)
+    ldl_factor["gpu", DTYPE, BATCH=BATCH](mf, ss, ctx)
+    ldl_factor["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](mf, sp, ctx)
     ss.L.download(ctx)
     ss.D.download(ctx)
     sp.L.download(ctx)
@@ -200,9 +260,25 @@ def test_walker2d_per_op() raises:
     _cmp("walker2d LDL L", ss.L, sp.L, BATCH * NV * NV)
     _cmp("walker2d LDL D", ss.D, sp.D, BATCH * NV)
 
+    # LDL solve (F1's launch shape, 2026-09-08): serial thread-per-env vs a
+    # block per env with a thread per kinematic tree. A deterministic,
+    # non-zero right-hand side on BOTH scratches; `qacc_ws` bit-exact.
+    for e in range(BATCH):
+        for i in range(NV):
+            var f_i = Scalar[DTYPE]((e * 7 + i * 5) % 11 - 5) / 3.0
+            ss.fnet.data[e * NV + i] = f_i
+            sp.fnet.data[e * NV + i] = f_i
+    ss.fnet.upload(ctx)
+    sp.fnet.upload(ctx)
+    ldl_solve["gpu", DTYPE, BATCH=BATCH](mf, ss, ctx)
+    ldl_solve["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](mf, sp, ctx)
+    ss.qacc_ws.download(ctx)
+    sp.qacc_ws.download(ctx)
+    _cmp("walker2d LDL solve x", ss.qacc_ws, sp.qacc_ws, BATCH * NV)
+
     # 7. M^-1 from LDL
-    compute_m_inv["gpu", DTYPE, BATCH=BATCH](ss, ctx)
-    compute_m_inv["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](
+    compute_m_inv["gpu", DTYPE, BATCH=BATCH](mf, ss, ctx)
+    compute_m_inv["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](mf, 
         sp, ctx
     )
     ss.m_inv.download(ctx)
@@ -215,6 +291,127 @@ def test_walker2d_per_op() raises:
     ss.bias.download(ctx)
     sp.bias.download(ctx)
     _cmp("walker2d RNE bias", ss.bias, sp.bias, BATCH * NV)
+
+
+def test_three_trees_ldl() raises:
+    """D. THREE TREES: the block-restricted LDL / M^-1, serial GPU vs _mt."""
+    print("--- D. ThreeTrees LDL/M^-1 _mt parity (the MULTI-TREE arm) ---")
+    var ctx = DeviceContext()
+
+    var mf = Model[DTYPE, TMD]()
+    TreesModel.init_fields[DTYPE](ctx, mf)
+
+    var ds = Data[DTYPE, TMD, BATCH]()
+    var dp = Data[DTYPE, TMD, BATCH]()
+    for e in range(BATCH):
+        for i in range(TNQ):
+            var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
+            ds.qpos.data[e * TNQ + i] = qp
+            dp.qpos.data[e * TNQ + i] = qp
+        # ⚠ THE FREE JOINTS NEED A UNIT QUATERNION. qpos for a free joint is
+        # (x, y, z, W, x, y, z) — W FIRST — and a zero quaternion is
+        # degenerate: FK normalises it into a NaN pose and the comparison
+        # below becomes NaN-vs-NaN, which is not "bit-exact", it is nothing.
+        for j in range(2):
+            var qadr = 2 + j * 7
+            ds.qpos.data[e * TNQ + qadr + 3] = Scalar[DTYPE](1)
+            dp.qpos.data[e * TNQ + qadr + 3] = Scalar[DTYPE](1)
+        for i in range(TNV):
+            var qv = Scalar[DTYPE]((e * 17 + i * 13) % 9 - 4) / 4.0
+            ds.qvel.data[e * TNV + i] = qv
+            dp.qvel.data[e * TNV + i] = qv
+    ds.upload_all(ctx)
+    dp.upload_all(ctx)
+
+    var ss = DynamicsScratch[DTYPE, TMD, BATCH]()
+    var sp = DynamicsScratch[DTYPE, TMD, BATCH]()
+    ss.upload_all(ctx)
+    sp.upload_all(ctx)
+
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](ds, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](dp, mf, ctx)
+    compute_body_velocities["gpu", DTYPE, BATCH=BATCH](ds, mf, ctx)
+    compute_body_velocities["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](dp, mf, ctx)
+    compute_subtree_com["gpu", DTYPE, BATCH=BATCH](ds, mf, ctx)
+    compute_subtree_com["gpu", DTYPE, BATCH=BATCH](dp, mf, ctx)
+    compute_cdof["gpu", DTYPE, BATCH=BATCH](ds, mf, ss, ctx)
+    compute_cdof["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](dp, mf, sp, ctx)
+    compute_mass_matrix["gpu", DTYPE, BATCH=BATCH](ds, mf, ss, ctx)
+    compute_mass_matrix["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](dp, mf, sp, ctx)
+    ss.M.download(ctx)
+    sp.M.download(ctx)
+    _cmp("trees CRBA M", ss.M, sp.M, BATCH * TNV * TNV)
+
+    # ⚠ THE POINT OF THE ARM. Serial calls `_ldl_factor_env`; `_mt` runs its
+    # own block walk. On a single-tree model these agree trivially.
+    ldl_factor["gpu", DTYPE, BATCH=BATCH](mf, ss, ctx)
+    ldl_factor["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](mf, sp, ctx)
+    ss.L.download(ctx)
+    ss.D.download(ctx)
+    sp.L.download(ctx)
+    sp.D.download(ctx)
+    _cmp("trees LDL L", ss.L, sp.L, BATCH * TNV * TNV)
+    _cmp("trees LDL D", ss.D, sp.D, BATCH * TNV)
+
+    # LDL solve (F1's launch shape, 2026-09-08): serial thread-per-env vs a
+    # block per env with a thread per kinematic tree. A deterministic,
+    # non-zero right-hand side on BOTH scratches; `qacc_ws` bit-exact.
+    for e in range(BATCH):
+        for i in range(TNV):
+            var f_i = Scalar[DTYPE]((e * 7 + i * 5) % 11 - 5) / 3.0
+            ss.fnet.data[e * TNV + i] = f_i
+            sp.fnet.data[e * TNV + i] = f_i
+    ss.fnet.upload(ctx)
+    sp.fnet.upload(ctx)
+    ldl_solve["gpu", DTYPE, BATCH=BATCH](mf, ss, ctx)
+    ldl_solve["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](mf, sp, ctx)
+    ss.qacc_ws.download(ctx)
+    sp.qacc_ws.download(ctx)
+    _cmp("trees LDL solve x", ss.qacc_ws, sp.qacc_ws, BATCH * TNV)
+
+    compute_m_inv["gpu", DTYPE, BATCH=BATCH](mf, ss, ctx)
+    compute_m_inv["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](mf, sp, ctx)
+    ss.m_inv.download(ctx)
+    sp.m_inv.download(ctx)
+    _cmp("trees M^-1", ss.m_inv, sp.m_inv, BATCH * TNV * TNV)
+
+    # RNE on the multi-tree model (§13.47): three bodies hang off the world,
+    # so the cooperative kernel's level-parallel backward pass has to skip
+    # body 0 as the serial pass does, and the free joints exercise the
+    # 6-dof branch of the forward pass under the shared body -> joint map.
+    compute_bias_forces_rne["gpu", DTYPE, BATCH=BATCH](ds, mf, ss, ctx)
+    compute_bias_forces_rne["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](dp, mf, sp, ctx)
+    ss.bias.download(ctx)
+    sp.bias.download(ctx)
+    _cmp("trees RNE bias", ss.bias, sp.bias, BATCH * TNV)
+
+    # ⚠⚠ NON-VACUITY: the model must actually HAVE more than one tree, or this
+    # whole arm is Walker2D again with different numbers. `M` must be BLOCK
+    # DIAGONAL — the slider's 2 dofs and the two boxes' 6 each never couple —
+    # so a cross-block entry being non-zero would mean the partition this arm
+    # exists to check does not describe the model.
+    var cross = 0
+    var nonzero_diag = 0
+    for i in range(TNV):
+        for j in range(TNV):
+            var v = ss.M.data[i * TNV + j]
+            var bi = 0 if i < 2 else (1 if i < 8 else 2)
+            var bj = 0 if j < 2 else (1 if j < 8 else 2)
+            if bi != bj:
+                if v != 0:
+                    cross += 1
+            elif i == j and v != 0:
+                nonzero_diag += 1
+    print("    M: ", nonzero_diag, "non-zero diagonal entries,", cross,
+          "cross-block non-zeros (must be 0)")
+    if cross != 0:
+        raise Error(
+            "trees: M has cross-block entries — the three trees are coupled,"
+            " so this arm is not testing a multi-tree partition at all."
+        )
+    if nonzero_diag < TNV:
+        raise Error("trees: M's diagonal has zeros — the model is degenerate")
+    print("  PASS: three independent tree blocks, both legs agree bit-exact")
 
 
 def _humanoid_qpos(e: Int, i: Int) -> Scalar[DTYPE]:
@@ -396,6 +593,7 @@ def test_rk4_integrator_parallel() raises:
 
 def main() raises:
     test_walker2d_per_op()
+    test_three_trees_ldl()
     test_humanoid_fk_bodyvel()
     test_rk4_integrator_parallel()
     print("test_fields_mt_parity: ALL PASS")

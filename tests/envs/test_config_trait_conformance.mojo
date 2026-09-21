@@ -35,58 +35,58 @@ matches the base-class list because 14 of the 51 declare their bases over more
 than one line, and a `^struct \\w+\\(...\\)$` regex misses every one of them.
 """
 
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.envs.ant.ant_config import AntConfig
-from mojo_rl.envs.dm_control.acrobot.acrobot_config import DMAcrobotConfig
-from mojo_rl.envs.dm_control.ball_in_cup.ball_in_cup_config import DMBallInCupConfig
-from mojo_rl.envs.dm_control.cartpole.cartpole_config import DMCartpoleConfig
-from mojo_rl.envs.dm_control.cheetah.cheetah_config import DMCheetahConfig
-from mojo_rl.envs.dm_control.dog.dog_config import DMDogMoveConfig, DMDogStandConfig
-from mojo_rl.envs.dm_control.dog.dog_fetch_config import DMDogFetchConfig
-from mojo_rl.envs.dm_control.finger.finger_config import DMFingerSpinConfig, DMFingerTurnConfig
-from mojo_rl.envs.dm_control.fish.fish_config import DMFishSwimConfig, DMFishUprightConfig
-from mojo_rl.envs.dm_control.hopper.hopper_config import DMHopperConfig
-from mojo_rl.envs.dm_control.humanoid.humanoid_config import DMHumanoidConfig
-from mojo_rl.envs.dm_control.humanoid_cmu.humanoid_cmu_config import DMHumanoidCMUConfig
-from mojo_rl.envs.dm_control.manipulation_lift_box_config import LiftLargeBoxConfig
-from mojo_rl.envs.dm_control.manipulation_lift_brick_config import LiftBrickConfig
-from mojo_rl.envs.dm_control.manipulation_place_brick_config import PlaceBrickConfig
-from mojo_rl.envs.dm_control.manipulation_place_cradle_config import PlaceCradleConfig
-from mojo_rl.envs.dm_control.manipulation_reach_config import ReachSiteFeaturesConfig
-from mojo_rl.envs.dm_control.manipulation_reach_duplo_config import ReachDuploConfig
-from mojo_rl.envs.dm_control.manipulation_reassemble3_config import Reassemble3Config
-from mojo_rl.envs.dm_control.manipulation_reassemble5_config import Reassemble5Config
-from mojo_rl.envs.dm_control.manipulation_stack2_config import Stack2BricksConfig
-from mojo_rl.envs.dm_control.manipulation_stack2of3_config import Stack2of3Config
-from mojo_rl.envs.dm_control.manipulation_stack3r_config import Stack3RandomConfig
-from mojo_rl.envs.dm_control.manipulation_stack_2_bricks_moveable_base_config import Stack2MoveableConfig
-from mojo_rl.envs.dm_control.manipulation_stack_3_bricks_config import Stack3BricksConfig
-from mojo_rl.envs.dm_control.manipulator.manipulator_config import DMManipulatorConfig
-from mojo_rl.envs.dm_control.pendulum.pendulum_config import DMPendulumConfig
-from mojo_rl.envs.dm_control.point_mass.point_mass_config import DMPointMassConfig
-from mojo_rl.envs.dm_control.point_mass.point_mass_hard_config import DMPointMassHardConfig
-from mojo_rl.envs.dm_control.quadruped.quadruped_config import DMQuadrupedConfig
-from mojo_rl.envs.dm_control.quadruped.quadruped_fetch_config import DMQuadrupedFetchConfig
-from mojo_rl.envs.dm_control.reacher.reacher_config import DMReacherConfig
-from mojo_rl.envs.dm_control.stacker.stacker_config import DMStackerConfig
-from mojo_rl.envs.dm_control.swimmer.swimmer_config import DMSwimmerConfig
-from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
-from mojo_rl.envs.dm_control.wide_reset import WALKER_ROOTZ_ADR, WideResetConfig
-from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
-from mojo_rl.envs.hopper.hopper_config import HopperConfig
-from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
-from mojo_rl.envs.humanoid_standup.humanoid_standup_config import HumanoidStandupConfig
-from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_config import InvertedDoublePendulumConfig
-from mojo_rl.envs.inverted_pendulum.inverted_pendulum_config import InvertedPendulumConfig
-from mojo_rl.envs.metaworld.sawyer_reach_config import SawyerReachConfig
-from mojo_rl.envs.pusher.pusher_config import PusherConfig
-from mojo_rl.envs.reacher.reacher_config import ReacherConfig
-from mojo_rl.envs.robots.so_arm100 import SoArm100ReachConfig
-from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
-from mojo_rl.envs.robots.so_arm_reach_config import SoArmReachConfig
-from mojo_rl.envs.swimmer.swimmer_config import SwimmerConfig
-from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.envs.ant.ant_config import AntConfig
+from noeira.envs.dm_control.acrobot.acrobot_config import DMAcrobotConfig
+from noeira.envs.dm_control.ball_in_cup.ball_in_cup_config import DMBallInCupConfig
+from noeira.envs.dm_control.cartpole.cartpole_config import DMCartpoleConfig
+from noeira.envs.dm_control.cheetah.cheetah_config import DMCheetahConfig
+from noeira.envs.dm_control.dog.dog_config import DMDogMoveConfig, DMDogStandConfig
+from noeira.envs.dm_control.dog.dog_fetch_config import DMDogFetchConfig
+from noeira.envs.dm_control.finger.finger_config import DMFingerSpinConfig, DMFingerTurnConfig
+from noeira.envs.dm_control.fish.fish_config import DMFishSwimConfig, DMFishUprightConfig
+from noeira.envs.dm_control.hopper.hopper_config import DMHopperConfig
+from noeira.envs.dm_control.humanoid.humanoid_config import DMHumanoidConfig
+from noeira.envs.dm_control.humanoid_cmu.humanoid_cmu_config import DMHumanoidCMUConfig
+from noeira.envs.dm_control.manipulation_lift_box_config import LiftLargeBoxConfig
+from noeira.envs.dm_control.manipulation_lift_brick_config import LiftBrickConfig
+from noeira.envs.dm_control.manipulation_place_brick_config import PlaceBrickConfig
+from noeira.envs.dm_control.manipulation_place_cradle_config import PlaceCradleConfig
+from noeira.envs.dm_control.manipulation_reach_config import ReachSiteFeaturesConfig
+from noeira.envs.dm_control.manipulation_reach_duplo_config import ReachDuploConfig
+from noeira.envs.dm_control.manipulation_reassemble3_config import Reassemble3Config
+from noeira.envs.dm_control.manipulation_reassemble5_config import Reassemble5Config
+from noeira.envs.dm_control.manipulation_stack2_config import Stack2BricksConfig
+from noeira.envs.dm_control.manipulation_stack2of3_config import Stack2of3Config
+from noeira.envs.dm_control.manipulation_stack3r_config import Stack3RandomConfig
+from noeira.envs.dm_control.manipulation_stack_2_bricks_moveable_base_config import Stack2MoveableConfig
+from noeira.envs.dm_control.manipulation_stack_3_bricks_config import Stack3BricksConfig
+from noeira.envs.dm_control.manipulator.manipulator_config import DMManipulatorConfig
+from noeira.envs.dm_control.pendulum.pendulum_config import DMPendulumConfig
+from noeira.envs.dm_control.point_mass.point_mass_config import DMPointMassConfig
+from noeira.envs.dm_control.point_mass.point_mass_hard_config import DMPointMassHardConfig
+from noeira.envs.dm_control.quadruped.quadruped_config import DMQuadrupedConfig
+from noeira.envs.dm_control.quadruped.quadruped_fetch_config import DMQuadrupedFetchConfig
+from noeira.envs.dm_control.reacher.reacher_config import DMReacherConfig
+from noeira.envs.dm_control.stacker.stacker_config import DMStackerConfig
+from noeira.envs.dm_control.swimmer.swimmer_config import DMSwimmerConfig
+from noeira.envs.dm_control.walker.walker_config import DMWalkerConfig
+from noeira.envs.dm_control.wide_reset import WALKER_ROOTZ_ADR, WideResetConfig
+from noeira.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from noeira.envs.hopper.hopper_config import HopperConfig
+from noeira.envs.humanoid.humanoid_config import HumanoidConfig
+from noeira.envs.humanoid_standup.humanoid_standup_config import HumanoidStandupConfig
+from noeira.envs.inverted_double_pendulum.inverted_double_pendulum_config import InvertedDoublePendulumConfig
+from noeira.envs.inverted_pendulum.inverted_pendulum_config import InvertedPendulumConfig
+from noeira.envs.metaworld.sawyer_reach_config import SawyerReachConfig
+from noeira.envs.pusher.pusher_config import PusherConfig
+from noeira.envs.reacher.reacher_config import ReacherConfig
+from noeira.envs.robots.so_arm100 import SoArm100ReachConfig
+from noeira.envs.robots.so_arm101 import SoArm101ReachConfig
+from noeira.envs.robots.so_arm_reach_config import SoArmReachConfig
+from noeira.envs.swimmer.swimmer_config import SwimmerConfig
+from noeira.envs.walker2d.walker2d_config import Walker2dConfig
 
 
 comptime N_CONFIGS: Int = 52

@@ -65,7 +65,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.humanoid_cmu import (
+from noeira.envs.dm_control.humanoid_cmu import (
     DMHumanoidCMUStand,
     DMHumanoidCMUWalk,
     DMHumanoidCMURun,
@@ -78,10 +78,10 @@ from mojo_rl.envs.dm_control.humanoid_cmu import (
     WALK_SPEED,
     RUN_SPEED,
 )
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.joint_types import JNT_FREE
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.joint_types import JNT_FREE
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_IPOS_X,
@@ -96,7 +96,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
 )
-from mojo_rl.physics3d.constants import (
+from noeira.physics3d.constants import (
     GEOM_PLANE,
     GEOM_SPHERE,
     GEOM_CAPSULE,
@@ -105,7 +105,7 @@ from mojo_rl.physics3d.constants import (
     GEOM_BOX,
     GEOM_MESH,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     ACT_IDX_GEAR,
     ACT_IDX_CTRL_MIN,
@@ -210,7 +210,7 @@ def _mj_from_our_xml() raises -> PythonObject:
     model; on its own it would compare our engine against our own parser.
     """
     var mujoco = Python.import_module("mujoco")
-    return mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/humanoid_cmu.xml")
+    return mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/humanoid_cmu.xml")
 
 
 def _build() raises -> Model[DType.float64, MD]:
@@ -244,7 +244,7 @@ def test_humanoid_cmu_xml_matches_reference() raises:
     var diff = Python.import_module("mjmodel_diff")
 
     var bad = refmod.compare_xml_to_reference(
-        "mojo_rl/envs/dm_control/assets/humanoid_cmu.xml"
+        "noeira/envs/dm_control/assets/humanoid_cmu.xml"
     )
     var n_bad = Int(py=Python.import_module("builtins").len(bad))
     if n_bad > 0:

@@ -13,10 +13,10 @@ Run (no GPU):
 
 from std.memory import Pointer
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.logger import CsvLogger
-from mojo_rl.deep_agents.muzero import MuZeroMLPConfig, MuZeroAgent
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.nn.constants import DT
+from noeira.core.logger import CsvLogger
+from noeira.deep_agents.muzero import MuZeroMLPConfig, MuZeroAgent
+from noeira.envs.cartpole import CartPoleEnv
 
 
 def main() raises:

@@ -20,8 +20,8 @@ from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random import random_float64, seed
 from std.time import perf_counter
 
-from mojo_rl.envs.bipedal_walker import BipedalWalker, BWConstants
-from mojo_rl.physics2d import dtype
+from noeira.envs.bipedal_walker import BipedalWalker, BWConstants
+from noeira.physics2d import dtype
 
 
 def main() raises:

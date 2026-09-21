@@ -14,8 +14,8 @@ Run:
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.craftax_classic import CraftaxClassicEnv
-from mojo_rl.envs.craftax_classic.constants import (
+from noeira.envs.craftax_classic import CraftaxClassicEnv
+from noeira.envs.craftax_classic.constants import (
     MAP_W,
     BLOCK_STONE,
     BLOCK_GRASS,
@@ -27,7 +27,7 @@ from mojo_rl.envs.craftax_classic.constants import (
     NUM_ACHIEVEMENTS,
     NUM_INTRINSICS,
 )
-from mojo_rl.envs.craftax_classic.state import (
+from noeira.envs.craftax_classic.state import (
     STATE_SIZE,
     S_MAP_BASE,
     S_PLAYER_POS,
@@ -38,7 +38,7 @@ from mojo_rl.envs.craftax_classic.state import (
     S_TIMESTEP,
     S_LIGHT_LEVEL,
 )
-from mojo_rl.nn.constants import DT as dtype
+from noeira.nn.constants import DT as dtype
 
 
 @always_inline

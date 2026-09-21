@@ -24,9 +24,9 @@ Run:
 
 from std.random import seed
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.walker2d import Walker2d
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac import SAC
+from noeira.envs.walker2d import Walker2d
 
 
 # =============================================================================

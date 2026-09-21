@@ -75,23 +75,23 @@ from std.python import Python
 from max.gpu.host import DeviceContext
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
     read_model_source,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.integrator.implicit import ImplicitIntegrator
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.collision.ccd_workspace import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.integrator.implicit import ImplicitIntegrator
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.collision.ccd_workspace import (
     MC_MAX_POLYVERT, MC_MAX_DEG,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_MESH_META_SIZE, MESH_META_IDX_POLYADR, MESH_META_IDX_POLYNUM,
     MODEL_MESH_POLY_SIZE, MESH_POLY_IDX_VERTNUM,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, CONTACT_SIZE,
     CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
     CONTACT_IDX_POS_X, CONTACT_IDX_POS_Y, CONTACT_IDX_POS_Z,

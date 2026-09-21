@@ -12,8 +12,8 @@ from std.random import seed
 
 from layout import Layout, LayoutTensor
 
-from mojo_rl.envs.lunar_lander import LunarLander
-from mojo_rl.physics2d import dtype
+from noeira.envs.lunar_lander import LunarLander
+from noeira.physics2d import dtype
 
 
 comptime BATCH_SIZE: Int = 8

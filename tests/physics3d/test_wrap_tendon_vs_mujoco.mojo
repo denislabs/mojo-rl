@@ -29,19 +29,19 @@ Run: pixi run mojo run -I . tests/physics3d/test_wrap_tendon_vs_mujoco.mojo
 """
 
 from layout import Layout, LayoutTensor
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.fields import (
     Data, Model, DynamicsScratch, DynDims, rl1, rl2, DYN1, DYN2,
 )
-from mojo_rl.physics3d.fields.scratch import Scratch
-from mojo_rl.physics3d.dynamics.tendon import spatial_tendon_length_jac
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields.scratch import Scratch
+from noeira.physics3d.dynamics.tendon import spatial_tendon_length_jac
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
     MODEL_SITE_SIZE,
     MODEL_GEOM_SIZE,
@@ -172,6 +172,37 @@ def _tendon_lengths(
             0, t, dims, ten_v, site_v, geom_v, body_v, joint_v, meta_v,
             stcom_v, cdof_v, xpos_v, xquat_v, J,
         )
+        # ⚠⚠ THE LENGTH-ONLY PATH MUST RETURN THE SAME NUMBER, BIT FOR BIT.
+        # `flg_jac=False` skips the two `_contact_jacobian_row` calls per
+        # sub-segment — and nothing else. It is the path
+        # `dynamics/tendon_lengths.compute_tendon_lengths` takes for the
+        # `<tendonpos>` sensor, and it is the reason that pass may hand in a
+        # STALE `cdof`: if the flag ever started changing the length, a
+        # sensor would silently report a tendon measured against last step's
+        # dof frames. Checked HERE rather than in the sensor gate because
+        # this file is the one that routes tendons round geoms — softfoot's
+        # five 39-waypoint tendons included — where the two paths have the
+        # most sub-segments to disagree over.
+        var Jf = Scratch[Scalar[DTYPE], 0](nv, fill=Scalar[DTYPE](0))
+        var Lf = spatial_tendon_length_jac[DTYPE, 0, 1](
+            0, t, dims, ten_v, site_v, geom_v, body_v, joint_v, meta_v,
+            stcom_v, cdof_v, xpos_v, xquat_v, Jf,
+            flg_jac=False,
+        )
+        if Lf != L:
+            raise Error(
+                "flg_jac=False changed tendon " + String(t) + "'s length: "
+                + String(Float64(Lf)) + " vs " + String(Float64(L))
+                + " — the length-only path is not the same walk"
+            )
+        # And it must leave the moment arm alone, or a caller that reused a
+        # scratch would pick up a half-built row.
+        for i in range(nv):
+            if Jf[i] != Scalar[DTYPE](0):
+                raise Error(
+                    "flg_jac=False wrote J_row[" + String(i) + "] = "
+                    + String(Float64(Jf[i])) + "; it must leave it zero"
+                )
         out.append(Float64(L))
 
 

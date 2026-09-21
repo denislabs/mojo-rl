@@ -1,0 +1,12 @@
+squares_x 5
+squares_y 7
+square_m 0.03
+marker_m 0.022
+dict_id 0
+views 11
+img_w 640
+img_h 480
+fx 600.0
+fy 600.0
+cx 320.0
+cy 240.0

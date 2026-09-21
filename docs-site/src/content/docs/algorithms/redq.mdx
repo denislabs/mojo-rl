@@ -14,8 +14,8 @@ import Papers from '~/components/Papers.astro';
 [SAC](/algorithms/sac/), at a real compute cost.
 
 ```mojo
-from mojo_rl.deep_agents.redq import REDQAgent
-from mojo_rl.deep_agents.redq_ofe import REDQOFEAgent
+from noeira.deep_agents.redq import REDQAgent
+from noeira.deep_agents.redq_ofe import REDQOFEAgent
 ```
 
 
@@ -83,7 +83,7 @@ of ground truth from the environment.
 | Compute per environment step | baseline | ~20× |
 
 REDQ wins when **environment steps are expensive** and compute is not — a real
-robot, a slow simulator, an expensive query. With mojo-rl's batched GPU
+robot, a slow simulator, an expensive query. With noeira's batched GPU
 environments, simulation is usually cheap, which weakens the case: SAC with 32
 parallel environments may reach a policy in less wall-clock time even though it
 uses more environment steps.
@@ -98,7 +98,7 @@ forward pass. `BlockLinear` — a block-diagonal layer — evaluates the whole
 ensemble in **one** kernel instead.
 
 ```mojo
-from mojo_rl.nn.primitives.block_linear import BlockLinear
+from noeira.nn.primitives.block_linear import BlockLinear
 ```
 
 This primitive exists because of REDQ, and it is what makes the ensemble
@@ -117,7 +117,7 @@ The `REDQ[...]` preset bakes in the paper-faithful ensemble configuration —
 hyperparameters, which are SAC's, remain to be passed:
 
 ```mojo
-from mojo_rl.deep_agents.redq import REDQ
+from noeira.deep_agents.redq import REDQ
 
 var agent = REDQ[
     "gpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN,

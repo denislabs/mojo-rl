@@ -11,21 +11,21 @@ Ant uses ELLIPTIC cone (default), RK4 integrator, NQ=15, NV=14.
 Free joint quaternion in qpos is stored as (w, x, y, z) matching MuJoCo.
 
 Run with:
-    cd mojo-rl && pixi run mojo run physics3d/tests/test_ant_fk_vs_mujoco.mojo
+    cd noeira && pixi run mojo run physics3d/tests/test_ant_fk_vs_mujoco.mojo
 """
 
 from std.testing import assert_true, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs
-from std.collections import InlineArray
+from std.collections import Array
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
-from mojo_rl.envs.ant.ant_xml import AntModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.envs.ant.ant_xml import AntModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 
 # =============================================================================
@@ -53,7 +53,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 
 def compare_fk(
     test_name: String,
-    qpos_values: InlineArray[Float64, NQ],
+    qpos_values: Array[Float64, NQ],
 ) raises:
     """Run FK in both engines with identical qpos, compare results."""
     print("--- Test:", test_name, "---")
@@ -199,10 +199,13 @@ def compare_fk(
 
 
 def test_fk_default_qpos() raises:
-    """FK at Ant's default init_qpos: torso at z=0.75, identity quaternion,
-    legs at their default angles from the XML custom/numeric init_qpos."""
-    # From XML: <numeric data="0.0 0.0 0.55 1.0 0.0 0.0 0.0 0.0 1.0 0.0 -1.0 0.0 -1.0 0.0 1.0" name="init_qpos"/>
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    """FK at the pose the XML's `<custom><numeric name="init_qpos">` names
+    (z=0.55, ankles at ±1 rad). ⚠ That numeric is NOT `qpos0` — MuJoCo
+    ignores it and since 2026-09-06 so does the parser (`test_qpos0_vs_mujoco`
+    is the gate for that); it stays here as a bent-ankle FK case, set
+    explicitly on both sides."""
+    # <numeric data="0.0 0.0 0.55 1.0 0.0 0.0 0.0 0.0 1.0 0.0 -1.0 0.0 -1.0 0.0 1.0" name="init_qpos"/>
+    var qpos = Array[Float64, NQ](fill=0.0)
     # Free joint: x=0, y=0, z=0.55, qw=1, qx=0, qy=0, qz=0 (identity quaternion)
     qpos[0] = 0.0  # x
     qpos[1] = 0.0  # y
@@ -220,12 +223,12 @@ def test_fk_default_qpos() raises:
     qpos[12] = -1.0  # ankle_3
     qpos[13] = 0.0  # hip_4
     qpos[14] = 1.0  # ankle_4
-    compare_fk("Default init_qpos (z=0.55, identity quat)", qpos)
+    compare_fk("Bent-ankle pose (z=0.55, identity quat)", qpos)
 
 
 def test_fk_zero_joints() raises:
     """FK with all hinge joints at 0, torso at default height."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[2] = 0.55  # z
     qpos[3] = 1.0  # qw (identity quaternion)
     compare_fk("All-zero joints, z=0.55", qpos)
@@ -233,7 +236,7 @@ def test_fk_zero_joints() raises:
 
 def test_fk_bent_legs() raises:
     """FK with legs bent symmetrically — exercises multi-level hinge chains."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[2] = 0.55  # z
     qpos[3] = 1.0  # qw
     # Hip joints at +15 deg (0.26 rad), ankle joints at +45 deg (0.79 rad)
@@ -251,7 +254,7 @@ def test_fk_bent_legs() raises:
 def test_fk_rotated_torso() raises:
     """FK with torso rotated 45 degrees around the z-axis.
     This exercises the full 3D quaternion propagation through the body tree."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[2] = 0.55  # z height
     # 45 deg rotation about z-axis: qw=cos(22.5°)=0.924, qz=sin(22.5°)=0.383
     qpos[3] = 0.9239  # qw
@@ -263,7 +266,7 @@ def test_fk_rotated_torso() raises:
 
 def test_fk_elevated_and_tilted() raises:
     """FK with elevated torso and small tilt — simulates mid-jump or landing."""
-    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    var qpos = Array[Float64, NQ](fill=0.0)
     qpos[0] = 2.0  # x displacement
     qpos[1] = 1.0  # y displacement
     qpos[2] = 1.5  # elevated z

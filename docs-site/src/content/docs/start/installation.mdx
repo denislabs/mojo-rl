@@ -1,23 +1,26 @@
 ---
 title: Installation
-description: Install pixi, fetch mojo-rl's dependencies, and pick the right environment for your GPU.
+description: Install pixi, fetch noeira's pinned toolchain, pick the environment for your hardware, and build the native shims the features you use need.
 ---
 
 import Maturity from '~/components/Maturity.astro';
 
 <Maturity level="stable" />
 
-mojo-rl uses [pixi](https://pixi.sh) for dependency management. pixi installs
-the Mojo toolchain, the MAX runtime, the Python packages used for reference
-comparisons, and the CUDA toolchain where relevant — you do not install Mojo
+noeira uses [pixi](https://pixi.sh) for dependency management. pixi installs
+the Mojo compiler, the MAX runtime, the native libraries the I/O layer links
+(libcurl, libhdf5, qhull, ffmpeg), the Python packages used as reference
+oracles, and the CUDA toolchain where relevant. You do not install Mojo
 separately.
 
 ## Requirements
 
 | | |
 |---|---|
-| Platforms | `linux-64` (CUDA 12) · `osx-arm64` (macOS 15.0+) |
-| GPU (optional) | NVIDIA via CUDA, Apple Silicon via Metal |
+| Platforms | `linux-64` (CUDA 12) · `linux-aarch64` (CUDA 12, Jetson Orin) · `osx-arm64` (macOS 15.0+) |
+| Toolchain | Mojo **1.1.0** and MAX **26.6.0**, pinned exactly in `pixi.toml` |
+| Python | 3.13 (the environments pin it; see below) |
+| GPU (optional) | NVIDIA via CUDA, Apple Silicon via Metal, Jetson Orin via JetPack's CUDA |
 | Rendering (optional) | SDL3 — not needed for training |
 
 ## 1. Install pixi
@@ -33,54 +36,128 @@ brew install pixi
 ## 2. Clone and install
 
 ```bash
-git clone https://github.com/denislabs/mojo-rl.git
-cd mojo-rl
+git clone https://github.com/noeira/noeira.git
+cd noeira
 pixi install
 ```
 
-This resolves the full dependency set on first run and takes a while. Subsequent
-commands reuse the cached environment.
+The first solve downloads the full dependency set and takes a while.
+Subsequent commands reuse the cached environment.
 
 ## 3. Run something
 
 Every command runs **from the repository root**, and the `-I .` flag puts the
-repository on Mojo's module search path. Without it, `import mojo_rl` fails.
+repository on Mojo's module search path. Without it, `import noeira` fails.
 
 ```bash
 pixi run mojo run -I . examples/solve_gridworld.mojo
 ```
 
-If that prints a Q-Learning training curve and a rendered grid, you are set. Walk
-through what it does in [Quickstart: tabular](/start/quickstart-tabular/).
+If that prints Q-Learning, SARSA and SARSA(λ) training progress and a rendered
+grid, you are set. Walk through what it does in
+[Quickstart: tabular](/start/quickstart-tabular/).
 
 ## Choosing an environment
 
-pixi defines four environments. Which one you want depends on your hardware:
+`pixi.toml` declares six named environments plus `default`. They differ in the
+packages they install and in their activation scripts, not in the Mojo source
+they build.
 
-| Environment | Use for | Command prefix |
+| Environment | For | What it adds |
 |---|---|---|
-| *(default)* | CPU work on any machine | `pixi run` |
-| `apple` | Apple Silicon GPU (Metal) | `pixi run -e apple` |
-| `nvidia` | NVIDIA GPU (CUDA) | `pixi run -e nvidia` |
-| `cpu` | CI / headless, no CUDA toolchain | `pixi run -e cpu` |
+| `default` | whatever `pixi run` picks with no `-e` | **the `nvidia` feature** — not a CPU-only environment |
+| `nvidia` | Linux x86-64 with an NVIDIA GPU | `cuda-toolkit` 12.9, `cudnn`, `cuda-gdb`, `nsight-compute`; points MAX at the system `ptxas` and preloads the CUDA interceptor |
+| `jetson` | Jetson Orin (`linux-aarch64`, sm_87) | no CUDA packages at all — uses the CUDA that JetPack installed in `/usr/local/cuda`; adds `run-jetson` / `build-jetson` |
+| `apple` | Apple Silicon (Metal) | nothing beyond the base set |
+| `amd` | AMD GPUs | nothing beyond the base set; no AMD-specific tasks exist yet |
+| `cpu` | CI and headless runs | the Python pin, without the CUDA toolchain |
+| `act-ref` | reference gates only | PyTorch, torchvision, `safetensors`, `transformers` |
 
-GPU code must name its environment explicitly, because the kernels compile per
-backend:
+Pick the environment with `-e`:
 
 ```bash
-pixi run -e apple  mojo run -I . examples/cartpole/cartpole_dqn_training.mojo
-pixi run -e nvidia mojo run -I . examples/cartpole/cartpole_dqn_training.mojo
+pixi run -e apple  mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo
 ```
 
-The `cpu` environment exists so CI runners avoid pulling gigabytes of
-`cuda-toolkit` and `cudnn` they will never use.
+A few things are worth knowing about these:
+
+- **`default` is `nvidia`.** On a Mac, pass `-e apple` for anything that
+  touches the GPU; plain `pixi run` still works for CPU examples.
+- **The `nvidia` environment expects a CUDA install at `/usr/local/cuda`.** Its
+  activation sets `MODULAR_NVPTX_COMPILER_PATH=/usr/local/cuda/bin/ptxas`,
+  bypassing the PTX compiler bundled with MAX (which is tied to CUDA 13 and a
+  driver ≥ 580). A CUDA 12.x or 13.x container on driver ≥ 570 works. The
+  activation also builds and preloads `noeira/cuda/cuda_intercept.c`, which the
+  legacy CUDA-graph path needs (see [CPU and GPU paths](/concepts/cpu-gpu/)).
+- **`cpu`** exists so CI runners do not pull gigabytes of `cuda-toolkit` and
+  `cudnn` they will never use.
+- **`act-ref`** is for dumping reference activations from PyTorch and
+  HuggingFace implementations. Nothing under `noeira/` imports torch; this
+  environment only exists so the ports can be checked against someone else's
+  code.
+
+### Python 3.13
+
+The base dependency set allows Python 3.12 or 3.13, but every environment's
+activation sets `MOJO_PYTHON_LIBRARY` to `libpython3.13` in the active
+environment, and the `nvidia`, `jetson` and `cpu` features pin
+`python >=3.13.14,<3.14` to match. The training path no longer imports Python —
+metrics go out over native HTTP — but the Gymnasium wrappers and a few
+reference tools still use Mojo's Python interop.
+
+### Jetson Orin
+
+The Orin needs `--target-accelerator sm_87` on every compile: MAX picks the
+kernel target by asking NVML, Tegra's NVML answers wrongly, and a binary built
+for the wrong target is refused by the driver at the first kernel load. The
+`jetson` environment wraps the flag in two tasks, and its activation preloads
+the same CUDA interceptor as `nvidia`, which on a Tegra board also answers
+NVML's device queries from CUDA so MAX can find the integrated GPU at all:
+
+```bash
+pixi run -e jetson run-jetson   examples/nn/mlp/mlp_mnist_training_storage_gpu.mojo
+pixi run -e jetson build-jetson -o /tmp/out examples/nn/mlp/mlp_mnist_training_storage_gpu.mojo
+```
+
+Board setup and deployment are covered on the [Jetson Orin](/robots/jetson/)
+page.
+
+## Native shims
+
+A few C libraries cannot be called directly from Mojo's FFI — mostly because
+their entry points are C-variadic (`ioctl`, `curl_easy_setopt`) or C++-only
+(OpenCV, Dear ImGui). Each is wrapped by a small shim you build once. None of
+the built libraries is tracked in git, so a fresh checkout has to build the ones
+its features use.
+
+| Task | Wraps | Needed for |
+|---|---|---|
+| `pixi run build-http` | libcurl (+ zlib) for `noeira/io/http.mojo` | every network call: `RemoteLogger`, noeira cloud (projects, datasets, asset packs), the HuggingFace downloader, the MNIST and TinyShakespeare loaders |
+| `pixi run build-qhull` | qhull for `noeira/physics3d/collision/` | any model with **mesh** geoms |
+| `pixi run build-serial` | `ioctl` for `noeira/io/serial/` | the SO-101 servo bus — anything under `noeira/robot/` |
+| `pixi run build-opencv` | OpenCV (C++) for `noeira/vision/opencv/` | camera capture |
+| `pixi run build-imgui` | Dear ImGui (cloned into `third_party/` on first run) | the ImGui viewers under `noeira/render/imgui/` |
+
+Tasks that need a shim declare it, so for those pixi builds it first. For
+example, `soarm-record` depends on `build-serial` and `build-opencv`,
+`camera-studio` on `build-imgui` and `build-opencv`, and `soarm-tower-viewer`
+on `build-imgui`. Nothing declares `build-http` or `build-qhull`: run those by
+hand before the first training run that logs remotely or the first mesh model.
+
+:::note[A missing HTTP shim does not stop training]
+`RemoteLogger` reports a missing shim once and drops metrics from then on — a
+dashboard that cannot be reached never takes a training run down with it. If
+your dashboard stays empty, check for that message first.
+:::
 
 ## Optional extras
 
-### SDL3 — for rendering and video capture
+### SDL3 — for on-screen rendering
 
-Required to visualize environments or record GIFs and MP4s. **Not** required for
-training.
+Required to open a window: environment renderers, the 3D viewer. **Not**
+required for training. Video encoding goes through `ffmpeg`, which pixi
+installs.
 
 ```bash
 brew install sdl3            # macOS
@@ -104,39 +181,55 @@ Breakout, Space Invaders) are independent of it and need no ROMs.
 
 ## Useful tasks
 
-pixi exposes a few shortcuts:
-
 ```bash
-pixi run build        # precompile the package → mojo_rl.mojoc
-pixi run test-smoke   # fast curated CPU test tier (what CI runs)
-pixi run test-cpu     # every non-GPU test — takes hours
+pixi run test-smoke          # fast curated CPU test tier (what CI runs)
+pixi run test-cpu            # every non-GPU test — takes hours
 pixi run -e apple test-gpu   # GPU tests on Metal
 pixi run -e nvidia test-gpu  # GPU tests on CUDA
 ```
 
-## Troubleshooting
+### Building against a precompiled package
 
-:::caution[Stale build artifacts]
-If a build picks up code you have already changed, delete the precompiled
-package and rebuild:
+Every `mojo run` from source pays a per-build import cost that grows with the
+symbols a driver references. When you are iterating on a driver, a config or an
+example rather than on `noeira/` itself, build the package once and compile
+against it:
 
 ```bash
-rm -f mojo_rl.mojoc
+pixi run build-pkg                               # precompile noeira into build/pkg/ (~3 min)
+pixi run run-pkg examples/cartpole/cartpole_dqn_training.mojo   # build against it, then run
+pixi run compile-pkg examples/cartpole/cartpole_dqn_training.mojo -o /tmp/dqn
 ```
 
-A stale `mojo_rl.mojoc` shadows the source tree, and the resulting errors point
-at code that no longer exists.
+On the SAC HalfCheetah driver this took a warm rebuild from 38 s to 8 s. The
+wrapper (`scripts/pkg.sh`) compiles from inside `build/pkg/`, because the
+source tree shadows the package whenever the working directory contains
+`noeira/`, and it runs the binary from the repository root so the shims and
+assets resolve. `run-pkg` warns when files under `noeira/` are newer than the
+package — rebuild it then.
+
+## Troubleshooting
+
+:::caution[A stale package at the repository root]
+The older `pixi run build` task precompiles to `noeira.mojoc` at the repository
+root. If that file exists and is older than your changes, errors point at code
+that no longer exists. Delete it, or use `build-pkg`, which keeps the package
+under `build/pkg/`:
+
+```bash
+rm -f noeira.mojoc
+```
 :::
 
-:::note[Mojo nightly]
-mojo-rl tracks **Mojo nightly**, so your editor's LSP may report warnings on
-perfectly valid code. Nightly syntax differs from stable in ways worth knowing:
-`mut` (not `inout`), `deinit` (not `owned`), `comptime` (not `alias`), and
-`ptr + n` (not `ptr.offset(n)`).
+:::note[Pinned toolchain]
+noeira pins Mojo 1.1.0 and MAX 26.6.0. If you read Mojo code written for older
+releases: parameters are `mut` (not `inout`), consuming arguments are `deinit`
+or `var` (not `owned`), compile-time constants are `comptime` (not `alias`),
+functions are `def`, and GPU APIs live under `max.gpu` (not `std.gpu`).
 :::
 
 ## Next
 
 - [Quickstart: tabular](/start/quickstart-tabular/) — train Q-Learning on GridWorld
-- [Quickstart: GPU training](/start/quickstart-gpu/) — DQN on CartPole
-- [The layered stack](/concepts/architecture/) — what you just installed
+- [Quickstart: GPU training](/start/quickstart-gpu/) — SAC on HalfCheetah
+- [The stack](/concepts/architecture/) — what you just installed

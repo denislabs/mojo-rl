@@ -12,7 +12,7 @@ Our elliptic solver carried exactly two of them until 2026-08-13 — `Jt1_c` and
 `condim="6"` geom under `cone="elliptic"` silently lost its torsional and
 rolling rows. `MAX_CONDIM` was already threaded all the way to the friction
 builder and consumed only by the PYRAMIDAL branch. See
-`mojo_rl/physics3d/solver/elliptic_cone.mojo`.
+`noeira/physics3d/solver/elliptic_cone.mojo`.
 
 WHY THIS MATTERS RATHER THAN BEING A COMPLETENESS ITEM. Every dm_control
 manipulation model declares `cone="elliptic"`, and Jaco's hand pads are
@@ -92,15 +92,15 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Model, Data, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.fields import Model, Data, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.integrator.euler import EulerIntegrator
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields.spec_fields import SpecFields
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.fields.spec_fields import SpecFields
+from noeira.physics3d.model.model_dims import ModelDims
 
 
 comptime DTYPE = DType.float64
@@ -227,8 +227,34 @@ comptime MIN_CONTROL_MISS: Float64 = 1e-3
 # Ours-vs-MuJoCo with the rows present. STEP 1 is the gate — see the module
 # docstring. Both numbers are printed by the test.
 comptime TOL_STEP1: Float64 = 1e-10
-comptime TOL_V: Float64 = 1e-6
-comptime TOL_Q: Float64 = 1e-7
+
+# ⚠⚠ THE ROLLOUT BOUNDS ARE SET FROM A MEASURED TRANSIENT, AND THE WINDOW
+# BOUND BELOW IS WHAT KEEPS THEM HONEST.
+#
+# Traced per step, both legs sit at round-off — `|dv| <= 7.2e-15`, i.e. a few
+# ULP — for TWENTY-FOUR of the thirty steps. At step 24 the residual jumps to
+# 3.7e-10 and by step 25 to 4.4e-06, peaking at 1.29e-05 (condim 4) and
+# 2.67e-06 (condim 6). `ncon` is 1 at every step of the rollout, before and
+# after, so nothing makes or breaks contact: what switches is the ACTIVE SET
+# inside the elliptic cone, the ball going from sliding to rolling. Which side
+# of that threshold a row lands on is decided at round-off, and past it the
+# two engines are integrating different-but-equally-valid trajectories.
+#
+# So the 30-step bounds are set from the measurement (1e-4 / 1e-6, roughly an
+# order over the worse leg) and they are NOT what gives this file its teeth.
+# Three other things do:
+#   * `TOL_STEP1` at 1e-10, measured 1.3e-15 / 2.7e-15;
+#   * `TOL_EARLY` over the whole pre-transition window, below;
+#   * the clamped-condim ablation, which runs 11-15 — six orders above the
+#     peak here, so the bounds can be loose and still discriminate.
+comptime TOL_V: Float64 = 1e-4
+comptime TOL_Q: Float64 = 1e-6
+
+# The rows must be MuJoCo's for a SUSTAINED window, not just on step 1. A
+# wrong `R` that only shows up under accumulation would clear a single-step
+# check; it cannot hold 24 steps at a few ULP. Measured max 7.2e-15 here.
+comptime EXACT_STEPS: Int = 20
+comptime TOL_EARLY: Float64 = 1e-12
 
 
 def _mj[XML: StaticString](condim: Int = -1) raises -> PythonObject:
@@ -365,12 +391,12 @@ def test_condim_rows_are_first_order_here() raises:
 def _rollout[
     MD: ModelDefLike
 ](mujoco: PythonObject, m: PythonObject, md: PythonObject) raises -> Tuple[
-    Float64, Float64, Int, Float64
+    Float64, Float64, Int, Float64, Float64
 ]:
     """Step `MD` and MuJoCo together from MuJoCo's current state.
 
     Returns `(worst |d qpos|, worst |d qvel|, contacting steps, |d qvel| after
-    step 1)`.
+    step 1, worst |d qvel| over the first `EXACT_STEPS` steps)`.
 
     ⚠ THE STEP-1 NUMBER IS THE DIAGNOSTIC ONE. Everything after it is a
     divergent rollout of a spinning impact, so the worst-over-30 number cannot
@@ -416,6 +442,7 @@ def _rollout[
     var worst_v = 0.0
     var contact_steps = 0
     var first_v = 0.0
+    var early_v = 0.0
     for _s in range(N_STEPS):
         for i in range(MD.NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)
@@ -435,7 +462,10 @@ def _rollout[
                 worst_v = e
             if _s == 0 and e > first_v:
                 first_v = e
-    return (worst_q, worst_v, contact_steps, first_v)
+            # ⚠ THE SUSTAINED WINDOW, not just step 1. See `EXACT_STEPS`.
+            if _s < EXACT_STEPS and e > early_v:
+                early_v = e
+    return (worst_q, worst_v, contact_steps, first_v, early_v)
 
 
 def _leg[
@@ -480,6 +510,17 @@ def _leg[
         " but are not MuJoCo's — check the per-row `R` first"
         " (`R[j]*friction[j]^2` is constant), since a shared D across rows"
         " reproduces exactly this",
+    )
+    print("  MAX_CONDIM", FULL.MAX_CONDIM, ": worst |d(qvel)| over the first",
+          EXACT_STEPS, "steps =", r_full[4], "  <- the sustained one")
+    assert_true(
+        r_full[4] < TOL_EARLY,
+        "our elliptic solve drifts from MuJoCo within the first "
+        + String(EXACT_STEPS) + " steps, before the sliding-to-rolling"
+        " transition that makes the 30-step bounds loose. This window is"
+        " supposed to hold at a few ULP (measured 7.2e-15), so a failure here"
+        " is a wrong row and not the discontinuity — check the per-row `R`"
+        " (`R[j]*friction[j]^2` is constant)",
     )
     assert_true(
         r_full[1] < TOL_V and r_full[0] < TOL_Q,

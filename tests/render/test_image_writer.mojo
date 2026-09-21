@@ -1,6 +1,6 @@
 """Smoke test for image_writer PPM output."""
 
-from mojo_rl.render.image_writer import (
+from noeira.render.image_writer import (
     save_ppm,
     save_reconstruction_grid,
     save_image_row,

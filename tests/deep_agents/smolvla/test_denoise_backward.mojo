@@ -1,0 +1,823 @@
+# +--------------------------------------------------------------------------+ #
+# | SmolVLADenoise.backward — every gradient against a central difference
+# +--------------------------------------------------------------------------+ #
+"""The gate that decides whether V2 can train anything at all.
+
+    pixi run mojo run -I . \\
+        tests/deep_agents/smolvla/test_denoise_backward.mojo
+
+A backward pass over sixteen alternating layers has roughly forty places to be
+subtly wrong, and not one of them raises. Wrong slot, wrong transpose, a
+gradient assigned where it should have been summed, an output-caching leaf
+differentiated at another layer's cache — each produces a finite,
+correctly-shaped gradient and a fine-tune that converges to somewhere else.
+There is no symptom until the robot is worse than the base checkpoint.
+
+So every gradient is compared against a central difference of the loss:
+
+    L(theta) = sum_t g_t * out_t(theta)          g fixed, arbitrary
+    dL/dtheta ~ [L(theta + h) - L(theta - h)] / 2h
+
+taken through the SAME `step` the backward claims to invert. Legs [5] and [6]
+then carry the result to the GPU, which is where training will actually run
+and which finite differences cannot reach — hundreds of cheap forwards is a
+CPU shape. That makes this a
+self-consistency gate rather than a parity gate — it cannot tell us the
+forward matches `lerobot` (that is `test_parity_vs_hf.mojo`), only that the
+backward differentiates the forward we have. That is exactly the property no
+amount of parity testing gives.
+
+⚠ **A shallow fixture, and deliberately not the checkpoint's.** 2 layers, not
+16 — but 2 is the smallest number that contains BOTH kinds, one self and one
+cross, and the two kinds differ in what feeds k/v (own stream vs the frozen
+cache) and in where q is rotated from. A 1-layer fixture would test half the
+driver. Everything else is small so that ~1,400 forward passes cost seconds.
+
+⚠ **h = 1e-2, and the band is 2e-2 relative**, which is loose. It has to be:
+the forward is fp32, so the difference of two losses loses precision as h
+shrinks while the O(h^2) truncation grows as h rises, and around 1e-2 the two
+meet at roughly 1e-3 relative. That is a real limit of differencing an fp32
+function, not a tolerance chosen to make a run pass — the ablation table below
+is what says the band is still tight enough to be worth having.
+
+## The traps this file exists to catch, all of them already sprung
+
+  * **`SwiGLU.vjp` ignores its `forward_input` and reads a leaf-owned cache.**
+    One instance drives all sixteen layers, so at backward time that cache
+    holds the LAST layer's values and every layer would be differentiated at
+    layer 15's point. `backward` re-runs `glu.forward` on the layer's own CAT
+    first. Found by reading the leaf, not by this gate — but this gate is what
+    would have caught it.
+  * **The forward wrote both layernorm outputs into one slot.** Split into
+    `H` and `H2` when recording, or every q/k/v weight gradient in every layer
+    is formed against the MLP norm's output.
+  * **The finite differences leave their own scratch perturbed.** `_loss`
+    writes into a shared `out`, and each probe ends on an evaluation at
+    `theta - h/2` and then restores `theta` WITHOUT re-running. Legs [5] and
+    [6] compare the GPU against `out`, and the first version of them reported
+    a 2e-2 disagreement that was entirely a stale CPU reference — the GPU and
+    CPU forwards actually agree to 8.8e-08. The unperturbed forward is
+    recomputed before the GPU legs, and `l1 == l0` asserts the restore was
+    exact, which is the check that would have said so immediately.
+  * **`Module.vjp` ASSIGNS `grad_inputs`.** `H` feeds q, k and v; `X` and `X2`
+    each feed a residual and a norm. Every one of those is an explicit sum
+    into a separate slab, because sharing a destination silently keeps the
+    last writer.
+
+## MEASURED — four defects introduced into `backward`, one at a time
+
+    defect                              grad_x ||err||/||fd||   what caught it
+    A1  no SwiGLU cache refill                 1.94e-01         leg [2], 24/24
+    A2  the MLP vjps read H, not H2            2.79e-05         leg [3] ONLY
+    A3  dH drops v's contribution              1.48e-01         leg [2], 24/24
+    A4  no cache-scratch rebuild               2.79e-05         NOTHING
+
+Three things that table says.
+
+**A2 is why leg [3] exists.** Reading the wrong layernorm output leaves
+`grad_x` BIT-IDENTICAL — 2.785314986565461e-05, the same digits as a clean
+run — because the error is confined to the weight gradients of the MLP
+projections, which `grad_x` never passes through. Only
+`self.mlp.gate.weight`'s norm moved. A gate that checked the input gradient
+alone, which is the cheap and obvious thing to check, would have shipped it.
+
+**A1 is the trap that motivated the design.** Removing four lines that look
+redundant — re-running a forward whose output is thrown away — corrupts every
+gradient in the network. `SwiGLU` is output-caching and there is one instance
+for all the layers.
+
+**A4 changed nothing at all, and that is reported rather than quietly fixed.**
+The rebuild of `[prefix; suffix]` before `RepeatKVHeads.vjp` is dead today:
+that leaf ignores its `forward_input` entirely. It stays because passing the
+last self layer's scratch as "this layer's forward input" is a false statement
+in the source, and making it true costs two slab copies per self layer against
+the GEMMs of a whole backward pass. If the leaf ever starts reading its input,
+this call is already right — and no gate would have told us.
+"""
+
+from std.math import abs, sqrt
+from std.testing import assert_true, assert_equal
+from max.gpu.host import DeviceContext
+
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Deterministic
+from noeira.deep_agents.smolvla.text import SMOLLM_THETA
+from noeira.deep_agents.smolvla.expert import SmolVLAExpert
+from noeira.deep_agents.smolvla.kv_cache import SmolVLAKVCache
+from noeira.deep_agents.smolvla.fused import SmolVLADenoise
+from noeira.deep_agents.smolvla.attn_mask import att_2d_mask, smolvla_ar
+
+comptime P = 6
+comptime S = 3
+comptime B = 1
+comptime L = 2           # ⚠ the smallest fixture holding BOTH layer kinds
+comptime EW = 8
+comptime EFF = 12
+comptime W = 8
+comptime HEADS = 2
+comptime NKV = 1
+comptime HD = 4
+comptime KVW = NKV * HD
+comptime XN = B * S * EW
+comptime PKV = B * P * KVW
+
+comptime Expert = SmolVLAExpert[L, EW, EFF, W, KVW, 2]
+comptime Cache = SmolVLAKVCache[L, P, S, NKV, HD, B]
+comptime Den = SmolVLADenoise[
+    P, S, B, L, EW, EFF, W, HEADS, NKV, HD, SMOLLM_THETA, 2, KVW, True
+]
+
+# ⚠ TWO step sizes, because the two groups are limited by OPPOSITE things.
+# Measured on this fixture, not guessed:
+#
+#   grad_x, as h shrinks          weights, as h shrinks
+#   4e-2/2e-2   worst 9.5e-02     8e-2/4e-2   ||err||/||fd|| 2.7e-05, 8/680
+#   2e-2/1e-2   worst 6.0e-03     4e-2/2e-2                  3.7e-05, 29/680
+#   1e-2/5e-3   worst 4.3e-04     2e-2/1e-2                  7.1e-05, 59/680
+#   5e-3/2.5e-3 worst 6.6e-04     1e-2/5e-3                       -- 82/680
+#
+# grad_x IMPROVES as h shrinks: it is truncation-limited, its components are
+# O(1..10), and the difference stands well clear of the fp32 floor. The weight
+# gradients get WORSE — a weight whose own contribution to L = 4.1 is ~1e-3
+# cannot be differenced accurately in fp32 at all, and shrinking h only
+# amplifies the cancellation. One h for both would mean choosing which group
+# to measure badly.
+#
+# ⚠ That the weight error scales as 1/h is also the EVIDENCE that it is the
+# reference and not the gradient. `cross.q.weight` — the smallest gradient
+# group here, |grad|max 0.030 against 1.47 for `self.o.weight` — reads
+# 2.6e-03, 1.1e-03, 5.8e-04 as h doubles: exactly proportional to 1/h. A wrong
+# gradient does not care what h is.
+comptime FD_HX = Scalar[DT](1.0e-2)
+comptime FD_HX2 = Scalar[DT](5.0e-3)
+comptime FD_HW = Scalar[DT](8.0e-2)
+comptime FD_HW2 = Scalar[DT](4.0e-2)
+comptime N_KINDS = 16
+comptime BAND = 3.0e-3
+"""Relative band, against a scale floored at 1e-3 of the group's own largest
+gradient. Flooring matters: a component that is 0.6 beside neighbours of 11
+is not meaningfully "22% wrong" when it is off by 0.1 — the difference is at
+the noise level of the vector it lives in, and a per-component ratio says
+otherwise."""
+comptime NORM_BAND = 2.0e-3
+comptime GPU_CPU_BAND = 1.0e-2
+"""⚠ A CROSS-PRECISION band, not a correctness one. On CUDA the GPU side runs
+TF32 (10 explicit mantissa bits) while the CPU side is fp32, so identical
+networks differ by ~1e-3. Metal measures 8.8e-08 and a 5090 1.25e-03. Set from
+the arithmetic rather than from either platform's number, and still tight
+enough that a real GPU defect — which moves this to 1e-1 or worse, as the
+ablations show — fails it."""
+
+
+def _pname(which: Int) -> String:
+    if which == 0: return String("self.q.weight")
+    if which == 1: return String("self.k.weight")
+    if which == 2: return String("self.v.weight")
+    if which == 3: return String("self.o.weight")
+    if which == 4: return String("self.mlp.gate.weight")
+    if which == 5: return String("self.mlp.down.weight")
+    if which == 6: return String("self.input_ln.gamma")
+    if which == 7: return String("self.post_ln.gamma")
+    if which == 8: return String("self.q.bias")
+    if which == 9: return String("cross.q.weight")
+    if which == 10: return String("cross.k.weight  <- reads the KV cache")
+    if which == 11: return String("cross.v.weight  <- reads the KV cache")
+    if which == 12: return String("cross.o.weight")
+    if which == 13: return String("cross.mlp.up.weight")
+    if which == 14: return String("cross.input_ln.gamma")
+    return String("expert.norm.gamma")
+
+
+def _psize(which: Int) -> Int:
+    if which == 0: return EW * W
+    if which == 1: return EW * KVW
+    if which == 2: return EW * KVW
+    if which == 3: return W * EW
+    if which == 4: return EW * EFF
+    if which == 5: return EFF * EW
+    if which == 6: return EW
+    if which == 7: return EW
+    if which == 8: return W
+    if which == 9: return EW * W
+    if which == 10: return KVW * KVW
+    if which == 11: return KVW * KVW
+    if which == 12: return W * EW
+    if which == 13: return EW * EFF
+    if which == 14: return EW
+    return EW
+
+
+def _pget(which: Int, t: Int, mut e: Expert) raises -> Scalar[DT]:
+    if which == 0: return e.self_layers[0].q.weight.val.data[t]
+    if which == 1: return e.self_layers[0].k.weight.val.data[t]
+    if which == 2: return e.self_layers[0].v.weight.val.data[t]
+    if which == 3: return e.self_layers[0].o.weight.val.data[t]
+    if which == 4: return e.self_layers[0].mlp.gate.weight.val.data[t]
+    if which == 5: return e.self_layers[0].mlp.down.weight.val.data[t]
+    if which == 6: return e.self_layers[0].input_layernorm.gamma.val.data[t]
+    if which == 7:
+        return e.self_layers[0].post_attention_layernorm.gamma.val.data[t]
+    if which == 8: return e.self_layers[0].q.bias.val.data[t]
+    if which == 9: return e.cross_layers[0].q.weight.val.data[t]
+    if which == 10: return e.cross_layers[0].k.weight.val.data[t]
+    if which == 11: return e.cross_layers[0].v.weight.val.data[t]
+    if which == 12: return e.cross_layers[0].o.weight.val.data[t]
+    if which == 13: return e.cross_layers[0].mlp.up.weight.val.data[t]
+    if which == 14: return e.cross_layers[0].input_layernorm.gamma.val.data[t]
+    return e.norm.gamma.val.data[t]
+
+
+def _pset(which: Int, t: Int, v: Scalar[DT], mut e: Expert) raises:
+    if which == 0: e.self_layers[0].q.weight.val.data[t] = v
+    elif which == 1: e.self_layers[0].k.weight.val.data[t] = v
+    elif which == 2: e.self_layers[0].v.weight.val.data[t] = v
+    elif which == 3: e.self_layers[0].o.weight.val.data[t] = v
+    elif which == 4: e.self_layers[0].mlp.gate.weight.val.data[t] = v
+    elif which == 5: e.self_layers[0].mlp.down.weight.val.data[t] = v
+    elif which == 6: e.self_layers[0].input_layernorm.gamma.val.data[t] = v
+    elif which == 7:
+        e.self_layers[0].post_attention_layernorm.gamma.val.data[t] = v
+    elif which == 8: e.self_layers[0].q.bias.val.data[t] = v
+    elif which == 9: e.cross_layers[0].q.weight.val.data[t] = v
+    elif which == 10: e.cross_layers[0].k.weight.val.data[t] = v
+    elif which == 11: e.cross_layers[0].v.weight.val.data[t] = v
+    elif which == 12: e.cross_layers[0].o.weight.val.data[t] = v
+    elif which == 13: e.cross_layers[0].mlp.up.weight.val.data[t] = v
+    elif which == 14: e.cross_layers[0].input_layernorm.gamma.val.data[t] = v
+    else: e.norm.gamma.val.data[t] = v
+
+
+def _pgrad(which: Int, t: Int, mut e: Expert) raises -> Scalar[DT]:
+    if which == 0: return e.self_layers[0].q.weight.grd.data[t]
+    if which == 1: return e.self_layers[0].k.weight.grd.data[t]
+    if which == 2: return e.self_layers[0].v.weight.grd.data[t]
+    if which == 3: return e.self_layers[0].o.weight.grd.data[t]
+    if which == 4: return e.self_layers[0].mlp.gate.weight.grd.data[t]
+    if which == 5: return e.self_layers[0].mlp.down.weight.grd.data[t]
+    if which == 6: return e.self_layers[0].input_layernorm.gamma.grd.data[t]
+    if which == 7:
+        return e.self_layers[0].post_attention_layernorm.gamma.grd.data[t]
+    if which == 8: return e.self_layers[0].q.bias.grd.data[t]
+    if which == 9: return e.cross_layers[0].q.weight.grd.data[t]
+    if which == 10: return e.cross_layers[0].k.weight.grd.data[t]
+    if which == 11: return e.cross_layers[0].v.weight.grd.data[t]
+    if which == 12: return e.cross_layers[0].o.weight.grd.data[t]
+    if which == 13: return e.cross_layers[0].mlp.up.weight.grd.data[t]
+    if which == 14: return e.cross_layers[0].input_layernorm.gamma.grd.data[t]
+    return e.norm.gamma.grd.data[t]
+
+
+def _pvdownload(which: Int, mut e: Expert, d: DeviceContext) raises:
+    """Bring one probed `.val` back from the device.
+
+    ⚠ `_pdownload`'s twin, for the WEIGHTS rather than their gradients. Leg
+    [5] needs to establish that the two experts ARE the same network, and
+    inferring that from agreeing forwards is exactly the inference that broke
+    on CUDA — where the forwards do NOT agree to fp32 and the weights are
+    nonetheless identical.
+    """
+    if which == 0: e.self_layers[0].q.weight.val.download(d)
+    elif which == 1: e.self_layers[0].k.weight.val.download(d)
+    elif which == 2: e.self_layers[0].v.weight.val.download(d)
+    elif which == 3: e.self_layers[0].o.weight.val.download(d)
+    elif which == 4: e.self_layers[0].mlp.gate.weight.val.download(d)
+    elif which == 5: e.self_layers[0].mlp.down.weight.val.download(d)
+    elif which == 6: e.self_layers[0].input_layernorm.gamma.val.download(d)
+    elif which == 7:
+        e.self_layers[0].post_attention_layernorm.gamma.val.download(d)
+    elif which == 8: e.self_layers[0].q.bias.val.download(d)
+    elif which == 9: e.cross_layers[0].q.weight.val.download(d)
+    elif which == 10: e.cross_layers[0].k.weight.val.download(d)
+    elif which == 11: e.cross_layers[0].v.weight.val.download(d)
+    elif which == 12: e.cross_layers[0].o.weight.val.download(d)
+    elif which == 13: e.cross_layers[0].mlp.up.weight.val.download(d)
+    elif which == 14: e.cross_layers[0].input_layernorm.gamma.val.download(d)
+    else: e.norm.gamma.val.download(d)
+
+
+def _pdownload(which: Int, mut e: Expert, d: DeviceContext) raises:
+    """Bring one probed `.grd` back from the device, so `_pgrad` can read it."""
+    if which == 0: e.self_layers[0].q.weight.grd.download(d)
+    elif which == 1: e.self_layers[0].k.weight.grd.download(d)
+    elif which == 2: e.self_layers[0].v.weight.grd.download(d)
+    elif which == 3: e.self_layers[0].o.weight.grd.download(d)
+    elif which == 4: e.self_layers[0].mlp.gate.weight.grd.download(d)
+    elif which == 5: e.self_layers[0].mlp.down.weight.grd.download(d)
+    elif which == 6: e.self_layers[0].input_layernorm.gamma.grd.download(d)
+    elif which == 7:
+        e.self_layers[0].post_attention_layernorm.gamma.grd.download(d)
+    elif which == 8: e.self_layers[0].q.bias.grd.download(d)
+    elif which == 9: e.cross_layers[0].q.weight.grd.download(d)
+    elif which == 10: e.cross_layers[0].k.weight.grd.download(d)
+    elif which == 11: e.cross_layers[0].v.weight.grd.download(d)
+    elif which == 12: e.cross_layers[0].o.weight.grd.download(d)
+    elif which == 13: e.cross_layers[0].mlp.up.weight.grd.download(d)
+    elif which == 14: e.cross_layers[0].input_layernorm.gamma.grd.download(d)
+    else: e.norm.gamma.grd.download(d)
+
+
+def _loss(
+    mut den: Den, mut e: Expert, mut c: Cache, mut x: Tensor,
+    ref g: List[Float64], mut out: Tensor,
+) raises -> Float64:
+    den.step["cpu"](e, c, x, out, None)
+    var acc = 0.0
+    for i in range(XN):
+        acc += Float64(out.data[i]) * g[i]
+    return acc
+
+
+def _richardson(d1: Float64, d2: Float64) -> Float64:
+    """Central differences at h and h/2, with the O(h^2) term removed.
+
+    D(h) = f' + c*h^2 + O(h^4), so (4*D(h/2) - D(h))/3 cancels c exactly. The
+    header records the measurement that says this is worth doing: the raw
+    error falls by 3.9-4.0x per halving, which is that c*h^2 and nothing else.
+    """
+    return (4.0 * d2 - d1) / 3.0
+
+
+def _fd_cache(
+    which: Int, t: Int, mut den: Den, mut e: Expert, mut c: Cache,
+    mut x: Tensor, ref g: List[Float64], mut out: Tensor,
+) raises -> Float64:
+    """Richardson central difference of the loss in one CACHED K or V slot.
+
+    ⚠ The cache is written by the prefill and read by every denoising step, so
+    perturbing it directly is how the expert's gradient INTO the VLM is
+    measured without a prefill in the loop.
+    """
+    var keep: Scalar[DT]
+    if which == 0:
+        keep = c.k.data[t]
+    else:
+        keep = c.v.data[t]
+
+    var vals = List[Float64]()
+    var hs = List[Float64]()
+    hs.append(Float64(FD_HW))
+    hs.append(Float64(FD_HW2))
+    for i in range(2):
+        var h = hs[i]
+        if which == 0:
+            c.k.data[t] = Scalar[DT](Float64(keep) + h)
+        else:
+            c.v.data[t] = Scalar[DT](Float64(keep) + h)
+        var ap = Float64(c.k.data[t]) if which == 0 else Float64(c.v.data[t])
+        var lp = _loss(den, e, c, x, g, out)
+        if which == 0:
+            c.k.data[t] = Scalar[DT](Float64(keep) - h)
+        else:
+            c.v.data[t] = Scalar[DT](Float64(keep) - h)
+        var am = Float64(c.k.data[t]) if which == 0 else Float64(c.v.data[t])
+        var lm = _loss(den, e, c, x, g, out)
+        vals.append((lp - lm) / (ap - am))
+    if which == 0:
+        c.k.data[t] = keep
+    else:
+        c.v.data[t] = keep
+    return _richardson(vals[0], vals[1])
+
+
+def _fd_weight(
+    which: Int, t: Int, mut den: Den, mut e: Expert, mut c: Cache,
+    mut x: Tensor, ref g: List[Float64], mut out: Tensor,
+) raises -> Float64:
+    var keep = _pget(which, t, e)
+    _pset(which, t, keep + FD_HW, e)
+    var lp = _loss(den, e, c, x, g, out)
+    _pset(which, t, keep - FD_HW, e)
+    var lm = _loss(den, e, c, x, g, out)
+    _pset(which, t, keep + FD_HW2, e)
+    var lp2 = _loss(den, e, c, x, g, out)
+    _pset(which, t, keep - FD_HW2, e)
+    var lm2 = _loss(den, e, c, x, g, out)
+    _pset(which, t, keep, e)
+    return _richardson(
+        (lp - lm) / (2.0 * Float64(FD_HW)),
+        (lp2 - lm2) / (2.0 * Float64(FD_HW2)),
+    )
+
+
+def _fd_input(
+    t: Int, mut den: Den, mut e: Expert, mut c: Cache, mut x: Tensor,
+    ref g: List[Float64], mut out: Tensor,
+) raises -> Float64:
+    var keep = x.data[t]
+    x.data[t] = keep + FD_HX
+    var lp = _loss(den, e, c, x, g, out)
+    x.data[t] = keep - FD_HX
+    var lm = _loss(den, e, c, x, g, out)
+    x.data[t] = keep + FD_HX2
+    var lp2 = _loss(den, e, c, x, g, out)
+    x.data[t] = keep - FD_HX2
+    var lm2 = _loss(den, e, c, x, g, out)
+    x.data[t] = keep
+    return _richardson(
+        (lp - lm) / (2.0 * Float64(FD_HX)),
+        (lp2 - lm2) / (2.0 * Float64(FD_HX2)),
+    )
+
+
+struct Cmp(Movable):
+    """Compared / differing, with the worst offender kept."""
+    var n: Int
+    var bad: Int
+    var worst: Float64
+    var at: Int
+    var floor: Float64
+    var num: Float64
+    var den: Float64
+
+    def __init__(out self):
+        self.n = 0
+        self.bad = 0
+        self.worst = 0.0
+        self.at = -1
+        self.floor = 1.0e-6
+        self.num = 0.0
+        self.den = 0.0
+
+    def __init__(out self, *, deinit move: Self):
+        self.n = move.n
+        self.bad = move.bad
+        self.worst = move.worst
+        self.at = move.at
+        self.floor = move.floor
+        self.num = move.num
+        self.den = move.den
+
+    def set_group(mut self, ref fd: List[Float64]):
+        """Floor the scale at 1e-3 of the group's own largest gradient."""
+        var mx = 0.0
+        for i in range(len(fd)):
+            if abs(fd[i]) > mx:
+                mx = abs(fd[i])
+        self.floor = mx * 1.0e-3
+        if self.floor < 1.0e-6:
+            self.floor = 1.0e-6
+
+    def add(mut self, got: Float64, want: Float64, idx: Int):
+        self.n += 1
+        var sc = abs(want)
+        if sc < self.floor:
+            sc = self.floor
+        var rel = abs(got - want) / sc
+        if rel > self.worst:
+            self.worst = rel
+            self.at = idx
+        if rel > BAND:
+            self.bad += 1
+        self.num += (got - want) * (got - want)
+        self.den += want * want
+
+    def rel_norm(self) -> Float64:
+        """||analytic - fd|| / ||fd|| over the group.
+
+        ⚠ THE load-bearing statistic here, not the per-component worst. The
+        reference is a difference of two fp32 losses, and for a weight whose
+        own contribution to L is 1e-3 of L that difference is near the fp32
+        floor — measured: shrinking h makes the per-component agreement WORSE
+        for weights while it makes it BETTER for inputs. A norm-relative error
+        is not fooled by a handful of components that are individually below
+        the reference's own noise, and a structural defect moves it to O(1)
+        anyway (see the ablation table).
+        """
+        if self.den <= 0.0:
+            return 0.0
+        return sqrt(self.num / self.den)
+
+
+def main() raises:
+    print("=" * 70)
+    print("SmolVLADenoise.backward vs central differences of its own forward")
+    print("=" * 70)
+    print("  P", P, " S", S, " layers", L, "(1 self + 1 cross)  EW", EW,
+          " W", W, " heads", HEADS, " kv", NKV)
+
+    var ar_full = smolvla_ar(3, 2, 1, S)
+    assert_equal(len(ar_full), P + S, "ar length")
+    var mask_self = att_2d_mask(ar_full, P, P + S, 0, P + S)
+    var mask_cross = att_2d_mask(ar_full, P, P + S, 0, P)
+
+    var e = Expert.make["cpu", Deterministic]()
+    var c = Cache.make["cpu"]()
+    var den = Den.make["cpu"](mask_self, mask_cross, None)
+
+    # A filled cache, written directly — no VLM needed to test the expert.
+    var kp = Tensor.alloc(PKV)
+    var vp = Tensor.alloc(PKV)
+    for l in range(L):
+        for i in range(PKV):
+            kp.data[i] = Scalar[DT](((i * 31 + l * 7) % 13) - 6) * 0.11
+            vp.data[i] = Scalar[DT](((i * 17 + l * 5) % 11) - 5) * 0.09
+        c.write_prefix["cpu"](l, kp, vp)
+
+    var x = Tensor.alloc(XN)
+    for i in range(XN):
+        x.data[i] = Scalar[DT](((i * 37) % 19) - 9) * 0.07
+    var g = List[Float64]()
+    for i in range(XN):
+        g.append(Float64(((i * 23) % 7) - 3) * 0.3)
+
+    # ── [1] one forward, one backward ────────────────────────────────────
+    var out = Tensor.alloc(XN)
+    var l0 = _loss(den, e, c, x, g, out)
+    var grad_out = Tensor.alloc(XN)
+    for i in range(XN):
+        grad_out.data[i] = Scalar[DT](g[i])
+    var grad_x = Tensor.alloc(XN)
+    var gck = Tensor.alloc(L * B * P * KVW)
+    var gcv = Tensor.alloc(L * B * P * KVW)
+    den.backward["cpu"](e, c, grad_out, grad_x, gck, gcv, None)
+    print("  [1] L =", l0, " backward ran")
+
+    # Snapshot every probed gradient BEFORE the finite differences re-run the
+    # forward — `step` overwrites the tape, and a `backward` afterwards would
+    # be reading a perturbed one.
+    var snap = List[Float64]()
+    for which in range(N_KINDS):
+        for t in range(_psize(which)):
+            snap.append(Float64(_pgrad(which, t, e)))
+    var gx = List[Float64]()
+    for t in range(XN):
+        gx.append(Float64(grad_x.data[t]))
+
+    # ── [2] dL/dx, every component ───────────────────────────────────────
+    var fdx = List[Float64]()
+    for t in range(XN):
+        fdx.append(_fd_input(t, den, e, c, x, g, out))
+    var cx = Cmp()
+    cx.set_group(fdx)
+    for t in range(XN):
+        cx.add(gx[t], fdx[t], t)
+    print("  [2] grad_x: compared", cx.n, " outside band", cx.bad,
+          " worst rel", cx.worst, " ||err||/||fd||", cx.rel_norm())
+    assert_equal(cx.n, XN, "every input component must be probed")
+    assert_true(
+        cx.rel_norm() < NORM_BAND,
+        "grad_x disagrees with a central difference in norm",
+    )
+    assert_true(cx.bad == 0, "a grad_x component is outside the band")
+
+    # ── [3] every weight of every distinct parameter kind ────────────────
+    print("  [3] weight gradients, all", N_KINDS, "parameter kinds"
+          " (per-component band is REPORTED, not asserted — see the header):")
+    var total = Cmp()
+    var k0 = 0
+    var nonzero_kinds = 0
+    for which in range(N_KINDS):
+        var fdw = List[Float64]()
+        for t in range(_psize(which)):
+            fdw.append(_fd_weight(which, t, den, e, c, x, g, out))
+        var ck = Cmp()
+        ck.set_group(fdw)
+        var mag = 0.0
+        for t in range(_psize(which)):
+            ck.add(snap[k0 + t], fdw[t], t)
+            total.add(snap[k0 + t], fdw[t], k0 + t)
+            if abs(snap[k0 + t]) > mag:
+                mag = abs(snap[k0 + t])
+        k0 += _psize(which)
+        if mag > 0.0:
+            nonzero_kinds += 1
+        print("      " + _pname(which) + ": " + String(ck.n)
+              + " compared, ||err||/||fd|| " + String(ck.rel_norm())
+              + ", outside band " + String(ck.bad)
+              + ", |grad|max " + String(mag))
+        assert_true(
+            ck.rel_norm() < NORM_BAND,
+            "gradient of " + _pname(which) + " disagrees with a central"
+            " difference in norm",
+        )
+    # ⚠ Anti-vacuity. A backward that wrote nothing leaves every `.grd` at the
+    # zero it was allocated with, and zero matches a central difference of a
+    # parameter the loss does not depend on. It depends on all sixteen.
+    print("  [4] parameter kinds with a nonzero gradient:", nonzero_kinds,
+          "of", N_KINDS)
+    assert_true(
+        nonzero_kinds == N_KINDS,
+        "a parameter kind came back with an all-zero gradient — the backward"
+        " never reached it",
+    )
+    print("      TOTAL: compared", total.n, " ||err||/||fd||", total.rel_norm(),
+          " outside band", total.bad, "worst rel", total.worst)
+    assert_true(
+        total.rel_norm() < NORM_BAND, "the weight gradients disagree in norm"
+    )
+
+    # ── [7] dL/d(the cached prefix K/V) — stage 7's whole path ───────────
+    # ⚠ This is the gradient that leaves the expert and enters the FROZEN VLM,
+    # and through it `state_proj`, which the shipped config trains. Under
+    # `train_state_proj = False` nothing consumes it, so it is exactly the
+    # kind of output that can be wrong for a long time without anyone
+    # noticing — which is why it is gated the moment it exists rather than
+    # when it is first used.
+    #
+    # A self layer's contribution is the PREFIX ROWS of its scratch gradient
+    # and a cross layer's is what its [320,320] projections push back. Those
+    # are different code paths reaching the same slab, and the fixture has one
+    # of each.
+    comptime CACHE_LAYER = B * P * KVW
+    var fdk = List[Float64]()
+    var fdv = List[Float64]()
+    for l in range(L):
+        for t in range(CACHE_LAYER):
+            fdk.append(_fd_cache(0, l * CACHE_LAYER + t, den, e, c, x, g, out))
+            fdv.append(_fd_cache(1, l * CACHE_LAYER + t, den, e, c, x, g, out))
+    var ck = Cmp()
+    ck.set_group(fdk)
+    var cvv = Cmp()
+    cvv.set_group(fdv)
+    var nzk = 0
+    for l in range(L):
+        for t in range(CACHE_LAYER):
+            var idx = l * CACHE_LAYER + t
+            ck.add(Float64(gck.data[idx]), fdk[idx], idx)
+            cvv.add(Float64(gcv.data[idx]), fdv[idx], idx)
+            if gck.data[idx] != Scalar[DT](0):
+                nzk += 1
+    print("  [7] dL/d(cache K): compared", ck.n, " ||err||/||fd||",
+          ck.rel_norm(), " | dL/d(cache V):", cvv.n, " ",
+          cvv.rel_norm())
+    assert_equal(
+        ck.n, L * CACHE_LAYER, "every cached K slot must be probed"
+    )
+    assert_true(
+        ck.rel_norm() < NORM_BAND,
+        "dL/d(cache K) disagrees with a central difference — the gradient"
+        " into the frozen VLM is wrong",
+    )
+    assert_true(
+        cvv.rel_norm() < NORM_BAND, "dL/d(cache V) disagrees"
+    )
+    # ⚠ and it must not be all zero, which would agree with nothing having
+    # been probed.
+    print("      nonzero dL/d(cache K) slots:", nzk, "of", L * CACHE_LAYER)
+    assert_true(
+        nzk * 2 > L * CACHE_LAYER,
+        "most of dL/d(cache K) is zero — the denoise backward is not writing"
+        " it",
+    )
+
+    # ── [5] the GPU path, which is where training will actually run ──────
+    # ⚠ Legs [2]-[4] are CPU-only — finite differences need hundreds of cheap
+    # forwards. So everything above says nothing whatever about the kernels in
+    # `grad_ops` or the GPU branches of `backward`, and those are the ones a
+    # training run uses. This leg is the bridge.
+    #
+    # The two experts are built from the same deterministic initialiser rather
+    # than copied. That is only sound if it really does produce identical
+    # weights, so the forward outputs are compared FIRST: if they agree, the
+    # weights agree, and any gradient difference is the backward's.
+    # ⚠ `out` currently holds the LAST finite-difference forward — legs [2]
+    # and [3] each end on a perturbed evaluation and restore the parameter
+    # without re-running. Recompute the unperturbed forward before comparing
+    # anything to it. (This cost an hour: the GPU leg reported a 2e-2
+    # disagreement that was entirely a stale CPU reference.)
+    var l1 = _loss(den, e, c, x, g, out)
+    assert_true(
+        abs(l1 - l0) < 1.0e-9,
+        "the finite differences did not restore every perturbed value",
+    )
+
+    var d = DeviceContext()
+    var eg = Expert.make["gpu", Deterministic](Optional(d))
+    var cg = Cache.make["gpu"](Optional(d))
+    var deng = Den.make["gpu"](mask_self, mask_cross, Optional(d))
+    var kg = Tensor.alloc(PKV)
+    var vg = Tensor.alloc(PKV)
+    for l in range(L):
+        for i in range(PKV):
+            kg.data[i] = Scalar[DT](((i * 31 + l * 7) % 13) - 6) * 0.11
+            vg.data[i] = Scalar[DT](((i * 17 + l * 5) % 11) - 5) * 0.09
+        kg.upload(d)
+        vg.upload(d)
+        cg.write_prefix["gpu"](l, kg, vg, Optional(d))
+
+    var xg = Tensor.alloc(XN)
+    var gog = Tensor.alloc(XN)
+    for i in range(XN):
+        xg.data[i] = x.data[i]
+        gog.data[i] = Scalar[DT](g[i])
+    xg.upload(d)
+    gog.upload(d)
+    var outg = Tensor.alloc(XN)
+    outg.upload(d)
+    deng.step["gpu"](eg, cg, xg, outg, Optional(d))
+    d.synchronize()
+    outg.download(d)
+
+    # ── [5] the two experts are the SAME NETWORK — checked, not inferred ──
+    # ⚠ This leg used to compare the two FORWARDS and conclude the weights
+    # matched. That inference is false on CUDA: MAX's multistage GEMM runs
+    # TF32 for fp32 outside SM100 (`use_tf32=False` is a comptime error
+    # there), so a GPU forward and a CPU forward of the IDENTICAL network
+    # differ by ~1e-3 — measured 1.25e-03 on a 5090 against 8.8e-08 on Metal,
+    # and the fp32-vs-TF32 gap this repo has recorded elsewhere is 1.1e-03 to
+    # 5.8e-03. The old 1e-4 band was a Metal number masquerading as a
+    # correctness threshold.
+    #
+    # So the precondition is now established DIRECTLY, bit for bit, and the
+    # cross-precision comparison below is banded for what it actually is.
+    var wdiff = 0
+    var wn = 0
+    for which in range(N_KINDS):
+        _pvdownload(which, eg, d)
+        for t in range(_psize(which)):
+            wn += 1
+            if _pget(which, t, eg) != _pget(which, t, e):
+                wdiff += 1
+    print("  [5] the two experts' weights: compared", wn, " differing",
+          wdiff)
+    assert_true(
+        wn > 0, "no weight was compared — leg [5] establishes nothing"
+    )
+    assert_true(
+        wdiff == 0,
+        "the CPU and GPU experts are different networks, so nothing below can"
+        " be attributed to the backward",
+    )
+
+    # And the GPU forward is DETERMINISTIC — which rules out the other way a
+    # cross-device difference could be real rather than arithmetic.
+    var out_a = Tensor.alloc(XN)
+    out_a.upload(d)
+    deng.step["gpu"](eg, cg, xg, out_a, Optional(d))
+    d.synchronize()
+    out_a.download(d)
+    var rerun = 0
+    for i in range(XN):
+        if out_a.data[i] != outg.data[i]:
+            rerun += 1
+    print("      the GPU forward re-run: compared", XN, " differing", rerun)
+    assert_true(
+        rerun == 0,
+        "the GPU forward is not deterministic — a race, not a precision"
+        " difference",
+    )
+
+    # With the network identical and the kernel deterministic, what is left is
+    # arithmetic. Reported against a band sized for TF32, not for Metal.
+    var fwd = Cmp()
+    var fl = List[Float64]()
+    for i in range(XN):
+        fl.append(Float64(out.data[i]))
+    fwd.set_group(fl)
+    for i in range(XN):
+        fwd.add(Float64(outg.data[i]), Float64(out.data[i]), i)
+    print("      GPU vs CPU forward: compared", fwd.n, " ||err||/||cpu||",
+          fwd.rel_norm(), "  (Metal 8.8e-08, CUDA ~1.3e-03: TF32)")
+    assert_true(
+        fwd.rel_norm() < GPU_CPU_BAND,
+        "the GPU forward differs from the CPU one by more than TF32 explains",
+    )
+
+    var gxg = Tensor.alloc(XN)
+    gxg.upload(d)
+    var gckg = Tensor.alloc(L * B * P * KVW)
+    var gcvg = Tensor.alloc(L * B * P * KVW)
+    gckg.upload(d)
+    gcvg.upload(d)
+    deng.backward["gpu"](eg, cg, gog, gxg, gckg, gcvg, Optional(d))
+    d.synchronize()
+    gxg.download(d)
+    gckg.download(d)
+    gcvg.download(d)
+
+    var gcmp = Cmp()
+    gcmp.set_group(gx)
+    for t in range(XN):
+        gcmp.add(Float64(gxg.data[t]), gx[t], t)
+    var k1 = 0
+    for which in range(N_KINDS):
+        _pdownload(which, eg, d)
+        for t in range(_psize(which)):
+            gcmp.add(Float64(_pgrad(which, t, eg)), snap[k1 + t],
+                     XN + k1 + t)
+        k1 += _psize(which)
+    # ⚠ including dL/d(cache), whose GPU path is `prefix_head`'s kernel and
+    # `_store_cache_grad`'s sub-buffer copy — neither of which legs [2]-[4]
+    # or [7] touch, since all of those are CPU.
+    for i in range(L * B * P * KVW):
+        gcmp.add(Float64(gckg.data[i]), Float64(gck.data[i]),
+                 XN + total.n + i)
+        gcmp.add(Float64(gcvg.data[i]), Float64(gcv.data[i]),
+                 XN + total.n + L * B * P * KVW + i)
+    print("  [6] GPU backward vs CPU: compared", gcmp.n, " ||err||/||fd||",
+          gcmp.rel_norm(), " outside band", gcmp.bad, " worst rel",
+          gcmp.worst)
+    assert_equal(
+        gcmp.n, XN + total.n + 2 * L * B * P * KVW,
+        "the GPU leg must compare every component, cache gradient included",
+    )
+    assert_true(
+        gcmp.rel_norm() < GPU_CPU_BAND,
+        "the GPU backward differs from the CPU one by more than TF32"
+        " explains",
+    )
+
+    print()
+    print("PASSED — " + String(total.n + cx.n) + " gradient components against"
+          " central differences, " + String(gcmp.n) + " against the GPU")

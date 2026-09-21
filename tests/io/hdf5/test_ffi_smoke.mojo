@@ -1,7 +1,7 @@
 """Smoke test: just confirm the libhdf5 FFI module imports and the
 declared constants/types exist. Does not open any file."""
 
-from mojo_rl.io.hdf5 import (
+from noeira.io.hdf5 import (
     H5File,
     H5Dataset,
     hid_t,

@@ -15,7 +15,7 @@ until now nothing but `test_dyn_dims_ldl` exercised at all.
 
 So this gate runs the SAME source lines twice:
 
-    static   M_CAP = NV*NV, V_CAP = NV   ->  Scratch picks InlineArray
+    static   M_CAP = NV*NV, V_CAP = NV   ->  Scratch picks Array
     dynamic  M_CAP = 0,     V_CAP = 0    ->  Scratch picks List
 
 and requires them to agree. A cap used as a stride collapses rows on the
@@ -38,8 +38,8 @@ Run: pixi run mojo run -I . tests/physics3d/test_cholesky_both_legs.mojo
 """
 
 from std.math import sqrt
-from mojo_rl.physics3d.fields.scratch import Scratch
-from mojo_rl.physics3d.solver.cholesky import (
+from noeira.physics3d.fields.scratch import Scratch
+from noeira.physics3d.solver.cholesky import (
     chol_factor_inline,
     chol_solve_inline,
     chol_rank1_update,
@@ -170,7 +170,7 @@ def residual(x: List[Float64], nv: Int, off: Int) -> Float64:
     return w
 
 
-def main():
+def main() raises:
     print("=== cholesky: static leg vs heap leg ===")
     var t = Tally()
     var tol = 1e-12
@@ -259,3 +259,5 @@ def main():
         print("test_cholesky_both_legs: ALL PASS")
     else:
         print("test_cholesky_both_legs: FAILED")
+        # AUD-51: `run_tests.sh` reads the EXIT CODE; a printed FAILED is a pass.
+        raise Error("test_cholesky_both_legs: FAILED — see the tally above")

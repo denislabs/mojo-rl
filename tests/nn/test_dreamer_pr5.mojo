@@ -15,17 +15,17 @@ Run: `pixi run mojo run -I . tests/nn/test_dreamer_pr5.mojo`
 from std.memory import alloc
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.deep_agents.dreamerv3.twohot import (
+from noeira.nn.constants import DT
+from noeira.nn.core.ptr import mptr
+from noeira.deep_agents.dreamerv3.twohot import (
     twohot_pred, twohot_loss, symexp_twohot_bins,
 )
-from mojo_rl.deep_agents.dreamerv3.dists import (
+from noeira.deep_agents.dreamerv3.dists import (
     bounded_mean, bounded_std, normal_logp, normal_entropy,
 )
-from mojo_rl.deep_agents.dreamerv3.imag_loss import imag_loss_cpu
-from mojo_rl.deep_agents.dreamerv3.repl_loss import repl_loss_cpu
-from mojo_rl.deep_agents.dreamerv3.normalize import PercentileNormalize
+from noeira.deep_agents.dreamerv3.imag_loss import imag_loss_cpu
+from noeira.deep_agents.dreamerv3.repl_loss import repl_loss_cpu
+from noeira.deep_agents.dreamerv3.normalize import PercentileNormalize
 
 
 comptime FIXTURE = "tests/nn/dreamerv3/fixtures/pr5_fixture.txt"

@@ -47,20 +47,20 @@ from max.gpu.host import DeviceContext
 from std.math import abs, sin
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.dm_control.fish import (
+from noeira.nn.constants import DT
+from noeira.core.cont_action import ContAction
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.dm_control.fish import (
     DMFishUprightModel,
     DMFishSwimModel,
     DMFishUprightConfig,
     DMFishSwimConfig,
     TARGET_BODY_IDX,
 )
-from mojo_rl.envs.dm_control.swimmer import (
+from noeira.envs.dm_control.swimmer import (
     DMSwimmer6Model,
     DMSwimmer15Model,
     DMSwimmerConfig,

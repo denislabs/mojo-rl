@@ -1,0 +1,21 @@
+# independent value samples read straight from the file
+# <name>\t<dtype>\t<shape>\t<row>\t<col>\t<f32 hex>\t<value>
+model.vlm_with_expert.lm_expert.layers.1.self_attn.k_proj.weight	F32	320,320	0	1	bcaff61d	-0.021479660645127296
+model.vlm_with_expert.lm_expert.layers.1.self_attn.k_proj.weight	F32	320,320	1	0	3a0add5b	0.0005297266761772335
+model.vlm_with_expert.lm_expert.layers.1.self_attn.k_proj.weight	F32	320,320	5	17	bc645c72	-0.01393805630505085
+model.vlm_with_expert.lm_expert.layers.1.self_attn.k_proj.weight	F32	320,320	319	0	3a8227f2	0.0009930117521435022
+model.vlm_with_expert.lm_expert.layers.1.self_attn.k_proj.weight	F32	320,320	0	319	bc91c4f2	-0.017794106155633926
+model.vlm_with_expert.vlm.model.text_model.layers.0.self_attn.k_proj.weight	BF16	320,960	0	1	3a4a0000	0.00077056884765625
+model.vlm_with_expert.vlm.model.text_model.layers.0.self_attn.k_proj.weight	BF16	320,960	1	0	bd640000	-0.0556640625
+model.vlm_with_expert.vlm.model.text_model.layers.0.self_attn.k_proj.weight	BF16	320,960	319	959	bc940000	-0.01806640625
+model.vlm_with_expert.vlm.model.text_model.layers.0.self_attn.k_proj.weight	BF16	320,960	7	123	3e000000	0.125
+model.vlm_with_expert.vlm.model.vision_model.encoder.layers.0.self_attn.q_proj.weight	BF16	768,768	0	1	bcf20000	-0.029541015625
+model.vlm_with_expert.vlm.model.vision_model.encoder.layers.0.self_attn.q_proj.weight	BF16	768,768	1	0	3d570000	0.052490234375
+model.vlm_with_expert.vlm.model.vision_model.encoder.layers.0.self_attn.q_proj.weight	BF16	768,768	767	0	bd150000	-0.036376953125
+model.vlm_with_expert.vlm.model.vision_model.encoder.layers.0.self_attn.q_proj.weight	BF16	768,768	0	767	bc020000	-0.0079345703125
+model.vlm_with_expert.vlm.model.vision_model.embeddings.patch_embedding.weight	BF16	768,3,16,16	0	0	3d140000	0.0361328125
+model.vlm_with_expert.vlm.model.vision_model.embeddings.patch_embedding.weight	BF16	768,3,16,16	0	5	3c5c0000	0.013427734375
+model.vlm_with_expert.vlm.model.vision_model.embeddings.patch_embedding.weight	BF16	768,3,16,16	17	3	bbc20000	-0.00592041015625
+model.state_proj.weight	F32	960,32	0	0	bcd677ff	-0.026180265471339226
+model.state_proj.weight	F32	960,32	1	2	bd9a0882	-0.0752115398645401
+model.state_proj.weight	F32	960,32	959	31	be0b9cf4	-0.1363409161567688

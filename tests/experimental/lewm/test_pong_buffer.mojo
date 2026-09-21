@@ -9,7 +9,7 @@ from std.memory import alloc
 from std.random import seed
 from std.os import os
 
-from mojo_rl.envs.arcade_games.pong.offline_buffer import (
+from noeira.envs.arcade_games.pong.offline_buffer import (
     PongOfflineBuffer,
     PONG_FRAME_BYTES,
     PONG_NUM_ACTIONS,

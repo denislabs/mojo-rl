@@ -16,15 +16,15 @@ from std.math import isnan, isinf
 from std.random import seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import Tanh
-from mojo_rl.deep_agents.primitives.gaussian_head import GaussianHead
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.ppo.actor_loss import PPOActorLoss
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import Tanh
+from noeira.deep_agents.primitives.gaussian_head import GaussianHead
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.core.initializer import Xavier
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.ppo.actor_loss import PPOActorLoss
 
 
 comptime OBS_DIM = 4

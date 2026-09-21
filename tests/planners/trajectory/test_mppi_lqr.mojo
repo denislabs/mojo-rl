@@ -27,8 +27,8 @@ from std.math import abs as math_abs
 from std.random import seed as _set_seed
 from std.testing import assert_true
 
-from mojo_rl.planners.trajectory import MPPICPU, RolloutCallbackCPU
-from mojo_rl.planners.testing import LinearQuadratic1D
+from noeira.planners.trajectory import MPPICPU, RolloutCallbackCPU
+from noeira.planners.testing import LinearQuadratic1D
 
 
 @fieldwise_init

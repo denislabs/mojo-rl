@@ -18,7 +18,7 @@ from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 
-from mojo_rl.nn.core.tensor import Tensor, TensorImpl
+from noeira.nn.core.tensor import Tensor, TensorImpl
 
 comptime BF16 = DType.bfloat16
 comptime K = 4096

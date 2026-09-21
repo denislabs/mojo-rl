@@ -33,8 +33,8 @@ checkpoint round-trips to the same number — a save that drops BatchNorm's
 running statistics reloads to a model that looks like it never trained.
 """
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.act.trainer import ACTTrainer
+from noeira.nn.constants import DT
+from noeira.deep_agents.act.trainer import ACTTrainer
 
 
 comptime QPOS = 6

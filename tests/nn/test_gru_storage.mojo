@@ -13,20 +13,20 @@ The GPU check is storage-only (GPU vs CPU consistency).
 
 The two inputs (x, h) live in a storage `TensorPack[2]` so the pair shares one
 origin (the §B0 constraint on `TensorRefs[2]`). Run both:
-  rm -f mojo_rl.mojoc && pixi run mojo run -I . tests/nn/test_gru_storage.mojo
-  rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . tests/nn/test_gru_storage.mojo
+  rm -f noeira.mojoc && pixi run mojo run -I . tests/nn/test_gru_storage.mojo
+  rm -f noeira.mojoc && pixi run -e apple mojo run -I . tests/nn/test_gru_storage.mojo
 """
 
 from std.math import abs as fabs
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.gru_cell import GRUCell
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.gru_cell import GRUCell
 
 
 comptime IN = 4

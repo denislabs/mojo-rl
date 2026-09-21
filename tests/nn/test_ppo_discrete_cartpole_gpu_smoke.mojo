@@ -16,13 +16,13 @@ from std.math import isnan, isinf
 from std.random import seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import Tanh
-from mojo_rl.deep_agents.ppo_discrete import PPODiscreteAgent
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import Tanh
+from noeira.deep_agents.ppo_discrete import PPODiscreteAgent
 
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.envs.cartpole import CartPoleEnv
 
 
 comptime OBS_DIM = 4

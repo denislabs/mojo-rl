@@ -31,38 +31,36 @@ would look fine and mean nothing. Checked explicitly below.
 Run (CPU: dm_control envs are CPU-only, gap G10):
     pixi run mojo run -I . examples/fb/fb_eval_walker.mojo
 
-⚠⚠ **THIS FILE HAS NEVER BEEN COMPILED.** It was written while
-`physics3d/model/model_renderer.mojo` had an uncommitted in-progress change
-calling `MODEL_DEF.render_skin(...)`, a method not yet declared on
-`ModelDefLike` — which breaks every build that touches `Phyics3dEnv`, and this
-script needs one to relabel rewards. Committed so the work is not lost, NOT
-because it is verified. Build it once that trait method lands, and expect the
-usual first-compile corrections before trusting a number out of it.
+⚠ **IT COMPILES (2026-09-21) BUT HAS NOT BEEN RUN END TO END.** It was
+written while `physics3d/model/model_renderer.mojo` called a
+`MODEL_DEF.render_skin(...)` not yet declared on `ModelDefLike`, which broke
+every build touching `Phyics3dEnv`; that has landed and the file now builds.
+Verify its numbers against `fb_eval_walker_online.mojo` before trusting one.
 """
 
 from std.math import abs, sqrt
 from std.random import random_float64, seed
 from std.sys import argv
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU, Tanh
-from mojo_rl.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU, Tanh
+from noeira.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
 
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.data.resident import ResidentColumn
-from mojo_rl.data.sampler import UniformSampler
+from noeira.data.store import TrajectoryStore
+from noeira.data.resident import ResidentColumn
+from noeira.data.sampler import UniformSampler
 
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
-from mojo_rl.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
 
-from mojo_rl.deep_agents.fb.trainer import FBTrainer
-from mojo_rl.deep_agents.fb import z_from_reward
-from mojo_rl.deep_agents.fb.obs_norm import ObsNorm
+from noeira.deep_agents.fb.trainer import FBTrainer
+from noeira.deep_agents.fb import z_from_reward
+from noeira.deep_agents.fb.obs_norm import ObsNorm
 
 
 comptime NQ: Int = 9
@@ -83,6 +81,12 @@ comptime BATCH: Int = 1024          # must match the trained checkpoint
 # That BNet carries gamma/beta Params this architecture does not have, so the
 # load either fails or silently skips them — and a silently-skipped norm layer
 # is exactly the failure this file's own BNet comment warns about.
+# ⚠⚠ THIS READS THE HISTORICAL LADDER IN `checkpoints/`, WHICH NEW RUNS NO LONGER
+# WRITE. Since 2026-09-09 (`docs/PROJECT_LAYER_PLAN.md` P0d) the FB trainers write
+# `runs/<id>/checkpoints/step_<n>.ckpt` instead — a unique directory per run, so
+# two arms at the same `--tag` cannot overwrite each other. The files this points
+# at still exist and still load; a ladder from a NEW run has to be named
+# explicitly.
 comptime CKPT: StaticString = "checkpoints/fb_walker_all_d128.ckpt.1200000"
 # ⚠ MUST be the store the checkpoint TRAINED on. §13 records an eval that
 # computed z from a local 10 k store while the checkpoint had trained on 1 M —

@@ -15,9 +15,9 @@ Run: pixi run mojo run -I . tests/deep_agents/test_sequence_replay_online.mojo
 from std.random import seed
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.data.sequence_replay import SequenceReplay
-from mojo_rl.nn.core.ptr import mptr
+from noeira.nn.constants import DT
+from noeira.deep_agents.data.sequence_replay import SequenceReplay
+from noeira.nn.core.ptr import mptr
 
 comptime OBS = 2
 comptime ACT = 1

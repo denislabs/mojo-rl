@@ -29,6 +29,75 @@ examples/solve_mountaincar.mojo
 examples/solve_pendulum.mojo
 examples/solve_taxi.mojo
 
+# ── the task-layer viewer ────────────────────────────────────────────
+# ⚠ COMPILE-PROBED HERE, not run: it opens an SDL3 window. Its HEADLESS half
+# is runnable and is the better smoke —
+#   pixi run mojo run -I . examples/tasks/task_viewer.mojo <task> --check
+# which loads the family, builds the model, resets from a sampled init,
+# evaluates the goal and steps once, with no display.
+examples/tasks/task_viewer.mojo
+
+# ⚠ THE SAME VIEWER WITH A TRAINED ACTOR IN IT. Compile-probed here (SDL3
+# window); its HEADLESS half is the better smoke and cross-checks the viewer
+# against the TRAINER:
+#   pixi run mojo run -I . examples/tasks/task_policy_viewer.mojo <task> --check
+# sweeps 12 lanes with the task's own checkpoint and reports met-at-any-step
+# and held-at-the-end. Measured against `sac_task_gpu.mojo`'s 32-lane GPU
+# rates: gather 0.333/0.250 vs 0.5625 (1.6 sigma at n=12), settle 1.0/1.0 vs
+# 1.0/0.969, lift 0.0 vs ~0. So GPU-trained weights reproduce on CPU physics.
+# ⚠ IT RAISES IF `so101_settle_brick` IS NOT 1.0 — that goal HOLDS AT RESET by
+# construction, so anything less is the viewer's wiring (observation layout,
+# action scale, an unwritten `meta` channel) and not the policy. Without that
+# leg a mis-wired viewer reads 0 everywhere, which is also what `lift`
+# legitimately reads.
+examples/tasks/task_policy_viewer.mojo
+
+# ⚠⚠ THESE THREE RUN ON APPLE. The note here said "not runnable on Apple at
+# all — nv=24, exactly where the P0 park probe died on Metal (Compute function
+# exceeds available stack space)". That was inferred from the park probe's
+# failure and never TRIED, and it is wrong: all three launch on Metal at
+# N_ENVS up to 1024 and produce numbers BIT-IDENTICAL to a 5090's — P3's
+# parked-slot drift to the last ulp, P4's `A vs C 4224 of 6912`. Believing it
+# cost a round trip through somebody else's hardware to learn that a gate's
+# threshold was wrong.
+#
+#   pixi run mojo run -I . examples/tasks/task_batched_gpu.mojo
+#   pixi run mojo run -I . examples/tasks/task_eval_frozen.mojo
+#   pixi run mojo run -I . # ⚠ WHAT THE SHAPED TERMS ACTUALLY MEASURE, under a random policy. The two
+# distances the reward charges for, against `SHAPE_CLIP` — because
+# `mean_reward` is their weighted SUM and neither can be recovered from it.
+# Measured on `gather`: goal 0.139 m, reach 0.120 m, 0 of 300 steps clipped.
+examples/tasks/task_shaping_probe.mojo
+examples/tasks/sac_task_gpu.mojo --steps 20000
+#
+# ⚠ THE NVIDIA LEG IS STILL THE ONE THAT MATTERS FOR THROUGHPUT, and a long
+# training run belongs there. What changed is that the GATES can be iterated
+# locally, which is where a wrong threshold gets found.
+#
+# P3: 1024 lanes, two tasks, one monomorphisation — GPU reward vs the host
+# evaluator, the per-lane tape, the active mask, and Gap D's repark.
+# P4: three runs — frozen table at two reset seeds (must agree bit for bit)
+# and a third that never applies the table (must differ).
+
+# ⚠ Needs `references/LIBERO-master` (gitignored); SKIPS LOUDLY without it,
+# and a skip is not a pass. Reports what LIBERO needs that we do not have.
+examples/libero/libero_survey.mojo
+examples/tasks/task_eval_frozen.mojo
+examples/tasks/task_batched_gpu.mojo
+
+# ⚠⚠ THE FIRST POLICY THIS LAYER HAS EVER CARRIED. SAC on `so101_lift_brick`
+# (`--task` takes any of them); every P1-P5 number before it was a harness
+# number. Runs on Apple; a LONG run belongs on NVIDIA.
+#   pixi run -e nvidia mojo run -I . examples/tasks/sac_task_gpu.mojo
+# ⚠ The reward is sparse and the episode TERMINATES on success, so a return
+# is 0 or 1 and `mean_return()` IS the success rate — no band table.
+# ⚠ THE MEASURED FLOORS ARE IN ITS HEADER and a rate has to be read against
+# them: `lift` and `gather` are 0.00 under random actions, an untrained greedy
+# actor AND every constant action, while `reach` is 0.25 random / 1.00 greedy
+# because a constant action SWEEPS the gripper through the region
+# (`task_null_action.mojo`). `settle` is the probe and is 1.00 by design.
+examples/tasks/sac_task_gpu.mojo
+
 # GPU device code — local-only probes (see note above):
 # examples/bipedal_walker_gpu_demo.mojo
 # examples/bipedal_walker_cpu_gpu_compare.mojo

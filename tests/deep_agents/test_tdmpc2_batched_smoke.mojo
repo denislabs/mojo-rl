@@ -23,11 +23,11 @@ from std.math import isfinite
 from std.random import seed
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.data.sequence_replay import SequenceReplay
-from mojo_rl.deep_agents.tdmpc2.agent import TDMPC2Agent
-from mojo_rl.deep_agents.training.batched_env import BatchedCpuEnv
-from mojo_rl.envs.pendulum import PendulumV2
+from noeira.nn.constants import DT
+from noeira.deep_agents.data.sequence_replay import SequenceReplay
+from noeira.deep_agents.tdmpc2.agent import TDMPC2Agent
+from noeira.deep_agents.training.batched_env import BatchedCpuEnv
+from noeira.envs.pendulum import PendulumV2
 
 comptime OBS = 3
 comptime ENC = 32

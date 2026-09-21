@@ -32,16 +32,16 @@ slow at this scale — NVIDIA is the intended target.
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.offline_buffer import OfflineBuffer
-from mojo_rl.experimental.lewm.trainer import LeWMTrainer
-from mojo_rl.experimental.lewm.pong_data import WindowSource
-from mojo_rl.envs.arcade_games.pong.offline_buffer import (
+from noeira.nn.constants import DT
+from noeira.core.offline_buffer import OfflineBuffer
+from noeira.experimental.lewm.trainer import LeWMTrainer
+from noeira.experimental.lewm.pong_data import WindowSource
+from noeira.envs.arcade_games.pong.offline_buffer import (
     PongOfflineBuffer,
     PONG_FRAME_BYTES,
     PONG_NUM_ACTIONS,
 )
-from mojo_rl.envs.arcade_games.pong.online_sampler import (
+from noeira.envs.arcade_games.pong.online_sampler import (
     OnlinePongSampler,
     ScriptedPongPolicy,
 )

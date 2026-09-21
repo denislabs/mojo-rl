@@ -14,16 +14,16 @@ cached value rather than storing it and the two branches differ.
 from std.math import abs
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.element_op import ElementOp
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
-from mojo_rl.nn.primitives.layer_norm_act import LayerNormAct
-from mojo_rl.nn.primitives.elementwise import Elementwise
-from mojo_rl.nn.primitives.ops.mish_op import MishOp
-from mojo_rl.nn.primitives.ops.tanh_op import TanhOp
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.element_op import ElementOp
+from noeira.nn.primitives.layer_norm import LayerNorm
+from noeira.nn.primitives.layer_norm_act import LayerNormAct
+from noeira.nn.primitives.elementwise import Elementwise
+from noeira.nn.primitives.ops.mish_op import MishOp
+from noeira.nn.primitives.ops.tanh_op import TanhOp
 
 
 def _cmp(name: String, a: Tensor, b: Tensor, n: Int, tol: Float64) raises:

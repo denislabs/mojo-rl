@@ -1,0 +1,639 @@
+# +--------------------------------------------------------------------------+ #
+# | ACT on the SO-ARM101 — short GPU run for nsys profiling
+# +--------------------------------------------------------------------------+ #
+"""Why does one ACT training step cost ~176 ms on a 5090?
+
+Same model, batch and data as `act_so101_train_gpu.mojo` — 60 steps instead of
+100,000, no validation, no checkpoints, no logger, so an nsys timeline is the
+training step and nothing else.
+
+    pixi run -e nvidia nsys profile --stats=true mojo run -I . \\
+        examples/so101/act_so101_profile_gpu.mojo
+
+⚠ Run from the project root: `noeira/io/hdf5` resolves libhdf5 relative to the
+working directory. `ACT_STORE` selects the dataset, as everywhere else.
+
+## What is already known, so nobody re-measures it
+
+    total step (RTX 5090, K=60 dim=256 ff=1024 enc=4 batch 16)   ~176 ms
+    sample_batch, host side, measured with no model in-process    ~19 ms
+
+`sample_batch` is single-threaded, serial with the device, and converts 7.4M
+uint8 to float32 one element at a time — the obvious suspect, and it is **11%**.
+The other ~90% is device compute. Do not start by optimizing the data path.
+
+## The knobs, and what each one isolates
+
+Each is a comptime flag; flip ONE and re-profile. The script prints a host-side
+breakdown at the end whatever nsys does, so a first pass needs no profiler at
+all.
+
+`SKIP_RESAMPLE` — reuse one batch for every step instead of drawing a new one.
+    The difference is `sample_batch` exactly: HDF5 row reads plus the
+    normalization. Confirms the 11% above on the box that matters, since that
+    number came from an M1 Pro.
+
+`STUB_BACKBONE` — swap ResNet18 (20 Conv2D + 20 BatchNorm2D) for five stride-2
+    convs that reproduce its 32x downsampling EXACTLY, so the transformer sees
+    an identical 162-token memory and the only thing that changes is the
+    convolution work. Splits the step into vision and everything-else. If the
+    remainder is still large, the transformer stacks and the optimizer are
+    where the time is; if it collapses, the backbone is, and
+    `project_conv2d_kernel_optimization` is the thread to pull (hand GEMMs lose
+    to `max_matmul`, and Apple's answer INVERTS NVIDIA's).
+
+    ⚠ A stub with the WRONG downsampling factor does not isolate anything. The
+    2-conv version from `test_act_gpu_vs_cpu.mojo` downsamples by 4, which at
+    240x320 is 9602 memory tokens instead of 162 and asks for **47.2 GB** of
+    attention scores — refused by Metal, and it would be refused by a 32 GB
+    5090 too. A startup check now raises before anything is allocated if the
+    stub's feature-map size ever stops matching ResNet18's.
+
+`CLIP_NORM` — non-zero re-enables gradient clipping, which walks every gradient
+    slab through the host (`trainer.mojo:_SumSq`): a device sync per parameter.
+    Training runs it at 0.0; this measures what that decision is worth.
+
+## What the host breakdown can and cannot tell you
+
+`eval_step` is forward-only and `train_step` is forward + backward + optimizer,
+on the same graph and the same batch. Their difference is therefore backward +
+optimizer, which is the one decomposition available without instrumenting the
+trainer. It is a HOST wall-clock difference over device-synchronous calls, so
+treat it as an attribution hint and let nsys settle the per-kernel truth.
+
+`GPU_DATA` (default ON) — draw and normalize the batch on the DEVICE
+    (`ACTDeviceDataset` + `train_step_device_accum`) instead of on the host,
+    and fold the logged scalars into device accumulators rather than
+    downloading them every step. This is
+    the A/B for tier 1 of `docs/ACT_GPU_DATA_PATH.md`; flip it to False for the
+    old path and compare the ITERATION TOTAL, because the split moves: under
+    GPU_DATA the draw happens inside `train_step`, so `sample_batch` reads ~0
+    and its cost lands in the train column.
+
+    ⚠ The two samplers cannot draw the same batches (Philox on the device, a
+    xorshift on the host), so the two settings are comparable in COST and not
+    in loss trajectory. `SKIP_RESAMPLE` is ignored when GPU_DATA is on.
+
+    ⚠ Startup pays a ~7.1 GB HDF5 read + H2D once, printed separately. On a
+    60-step run that is not amortised, which is exactly why it is printed and
+    not folded into the per-step mean.
+
+⚠ **`docs/GPU_STEP_PERF.md` already carries a full profile of this
+script and the three workstreams it found** — allocation churn (3.45 s, equal
+to all kernel time), the launch storm (85% of launches are sub-20 us kernels
+worth 16% of the work), and `naive_batched_matmul`. Read it before re-deriving
+any of that. What this script is still for: measuring a CHANGE against the
+table there, and the knobs below.
+
+Two performance gaps are already documented in `docs/ACT_PORT.md` and are worth
+looking for in the timeline before hunting anything new:
+
+  * **Adam's grouped arena is not engaged.** `opt.adopt` requires a `Module` and
+    a `ComputeGraph` is not one, so the optimizer walks `for_each_param` with
+    per-parameter kernels — hundreds of tiny launches per step.
+  * **Conv kernel shape on NVIDIA.**
+"""
+
+from std.os import getenv
+from std.os.path import exists
+from std.time import perf_counter_ns
+
+from max.gpu.host import DeviceContext
+
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.models.conv import Conv2DBatchNormReLU
+from noeira.nn.models.resnet18 import (
+    RESNET18_OUT_CH,
+    ResNet18Backbone,
+    ResNet18OutH,
+    ResNet18OutW,
+)
+from noeira.deep_agents.act.config import (
+    SO101_ADIM,
+    SO101_IMG_H,
+    SO101_IMG_W,
+    SO101_N_CAM,
+    SO101_QPOS,
+)
+from noeira.deep_agents.act.data import ACTDataset
+from noeira.deep_agents.act.data_gpu import ACTDeviceDataset
+from noeira.deep_agents.act.trainer import ACTTrainer
+
+
+# ─── Profiling knobs ──────────────────────────────────────────────────────
+comptime SKIP_RESAMPLE = False
+comptime STUB_BACKBONE = False
+comptime CLIP_NORM = 0.0
+
+# GPU_DATA — draw and normalize the batch ON THE DEVICE (`ACTDeviceDataset` +
+# `train_step_device_accum`) instead of on the host. Flip to False for the old
+# path; both are kept because this is the A/B, not a replacement.
+#
+# On: the whole store is uploaded once as uint8 (7.12 GB for 50 episodes) and
+# `sample_batch` / `_seed_inputs` are replaced by three kernels. That removes
+# 16.1 ms of host time with the GPU idle, two 29.5 MB element-by-element fills
+# into pinned memory, the 29.5 MB H2D, and four device synchronizations.
+#
+# It also uses the ACCUMULATING step, so the timed loop contains no D2H at all:
+# loss/l1/kl/grad-norm are reduced on device and drained once at the end. That
+# is what removes the last two device drains per step — and it is the shape a
+# CUDA graph would capture, so this is the step worth profiling.
+#
+# ⚠ It does NOT draw the same batches — Philox on the device against a xorshift
+# on the host — so the two settings are comparable in COST
+# and not in loss trajectory. `SKIP_RESAMPLE` is ignored when this is on: the
+# device sampler is the thing being measured.
+#
+# ⚠ Startup pays the upload: ~7.1 GB of HDF5 read + H2D before step 0. That is
+# once, not per step, but it is not free and it is why `sample_batch` going to
+# zero is not the whole story on a short run.
+comptime GPU_DATA = True
+
+
+# USE_CUDA_GRAPH — capture the per-step device kernel sequence and replay it
+# (NVIDIA only; a compile-time no-op elsewhere, where the step simply runs).
+#
+# ⚠ DEFAULT OFF AND MEASURED TO FAIL TODAY on the 5090 — capture BEGINS
+# (`cuStreamBeginCapture rc=0`) and then dies on an 18.75 MB allocation:
+# "graph capturing in progress, no driver fallback".
+#
+# ⚠ That is NOT out of memory — MAX's `mm:root` holds 113 GB free. While
+# capturing, MAX serves only from `graphFreeList`, which is empty, and
+# correctly refuses the driver (`cuMemAlloc` under capture is illegal). So ANY
+# per-call device allocation is fatal, whatever its size.
+#
+# ⚠ And it is probably NOT split-K: 18.75 MB is exactly 16*64*60*80 fp32 —
+# batch 16 at ResNet18's post-maxpool resolution — where a split-K workspace
+# is `P*M*N` over the dW shapes. Fixing split-K may not be enough.
+# `MODULAR_DEBUG=stack-trace-on-error` names the site; see
+# `docs/ACT_GPU_DATA_PATH.md`.
+#
+# What to look at when you do: `cuLaunchKernelEx` count should collapse (one
+# graph launch replaces ~700 launches per step) and the per-step wall should
+# drop by roughly the launch-issue time — 7.7 ms/iteration in the baseline
+# trace. If the step time does NOT move, the launches were already overlapped
+# with compute and capture bought nothing; that is a real possible outcome at
+# 88% GPU busy and it is why this is measured rather than assumed.
+comptime USE_CUDA_GRAPH = True
+# (the GPU_DATA requirement is asserted at the top of `main`)
+
+comptime WARMUP_STEPS = 5
+"""Enough to get past first-launch kernel compilation and the initial H2D, and
+few enough that the profile is dominated by steady state. The training example
+reported 1.38 s for its first 'step' precisely because it counted this."""
+comptime PROFILE_STEPS = 60
+
+# ─── Sizing (mirrors act_so101_train_gpu.mojo exactly) ────────────────────
+comptime QPOS = SO101_QPOS
+comptime ADIM = SO101_ADIM
+comptime N_CAM = SO101_N_CAM
+comptime IMG_H = SO101_IMG_H
+comptime IMG_W = SO101_IMG_W
+
+comptime K = 60
+comptime DIM = 256
+comptime HEADS = 8
+comptime FF = 1024
+comptime LATENT = 32
+comptime N_ENC = 4
+comptime N_DEC = 1
+comptime BATCH = 16
+comptime LR = 1e-4
+comptime KL_WEIGHT = 10.0
+
+comptime IMG_ELEMS = N_CAM * 3 * IMG_H * IMG_W
+
+# ⚠ THE STUB MUST PRESERVE THE TOKEN COUNT, or it does not isolate the
+# backbone — it changes the transformer underneath it.
+#
+# ResNet18 downsamples by 32: 240x320 -> 8x10, so 80 tokens per camera and 162
+# memory tokens. `test_act_gpu_vs_cpu.mojo`'s stub is TWO stride-2 convs, a
+# factor of 4, and it is correct there only because that gate runs at 64x64.
+# Reused here it gives 60x80 = 4800 tokens per camera, 9602 memory tokens, and
+# self-attention is O(N^2):
+#
+#     9602^2 x 8 heads x 16 batch x 4 B = 47.2 GB of attention scores
+#
+# which is exactly the allocation Metal refused. It would have refused on a
+# 32 GB 5090 too, one profiling session in.
+#
+# FIVE stride-2 convs reproduce ResNet18's factor of 32 exactly, so the
+# transformer sees an identical memory and the only thing the knob changes is
+# the convolution work. `main` checks that before allocating anything, so this
+# is enforced rather than merely written down.
+comptime STUB_CH = 8
+comptime _C[H: Int] = (H + 2 * 1 - 3) // 2 + 1
+comptime _C2[H: Int] = _C[_C[H]]
+comptime _C4[H: Int] = _C2[_C2[H]]
+comptime _C5[H: Int] = _C[_C4[H]]
+
+comptime Stub = Sequential[
+    Conv2DBatchNormReLU[3, STUB_CH, 3, 2, 1, IMG_H, IMG_W],
+    Conv2DBatchNormReLU[STUB_CH, STUB_CH, 3, 2, 1, _C[IMG_H], _C[IMG_W]],
+    Conv2DBatchNormReLU[STUB_CH, STUB_CH, 3, 2, 1, _C2[IMG_H], _C2[IMG_W]],
+    Conv2DBatchNormReLU[
+        STUB_CH, STUB_CH, 3, 2, 1, _C[_C2[IMG_H]], _C[_C2[IMG_W]]
+    ],
+    Conv2DBatchNormReLU[STUB_CH, STUB_CH, 3, 2, 1, _C4[IMG_H], _C4[IMG_W]],
+]
+
+comptime FEAT_CH = STUB_CH if STUB_BACKBONE else RESNET18_OUT_CH
+comptime OH = _C5[IMG_H] if STUB_BACKBONE else ResNet18OutH[IMG_H]
+comptime OW = _C5[IMG_W] if STUB_BACKBONE else ResNet18OutW[IMG_W]
+comptime BACKBONE = Stub if STUB_BACKBONE else ResNet18Backbone[3, IMG_H, IMG_W]
+
+comptime DDS = ACTDeviceDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W]
+
+comptime T = ACTTrainer[
+    QPOS,
+    ADIM,
+    N_CAM,
+    IMG_H,
+    IMG_W,
+    K,
+    DIM,
+    HEADS,
+    FF,
+    LATENT,
+    N_ENC,
+    N_DEC,
+    BATCH,
+    0.1,
+    "gpu",
+    FEAT_CH,
+    OH,
+    OW,
+    BACKBONE,
+]
+
+
+def store_path() raises -> String:
+    var env = getenv("ACT_STORE")
+    if env.byte_length() > 0:
+        return env^
+    var home = getenv("HOME")
+    if home == "":
+        raise Error("$HOME is unset; set ACT_STORE to the store path")
+    return (
+        home
+        + "/.cache/noeira/act_so101/"
+        + "DenisLabs__record-test_20260828_092736_"
+        + String(IMG_H)
+        + "x"
+        + String(IMG_W)
+        + ".h5"
+    )
+
+
+def main() raises:
+    comptime assert not USE_CUDA_GRAPH or GPU_DATA, (
+        "USE_CUDA_GRAPH requires GPU_DATA (a captured step cannot contain the"
+        " host sampler)"
+    )
+
+    var path = store_path()
+    if not exists(path):
+        print("MISSING STORE: " + path)
+        raise Error("store not found")
+
+    # Checked before anything is allocated. `constrained` does not exist in
+    # this Mojo, so this is a startup raise rather than a build failure — it
+    # still fires in the first millisecond, which is what matters for a knob
+    # whose failure mode is a 47 GB allocation.
+    comptime if STUB_BACKBONE:
+        if OH != ResNet18OutH[IMG_H] or OW != ResNet18OutW[IMG_W]:
+            raise Error(
+                "STUB_BACKBONE produces "
+                + String(OH)
+                + "x"
+                + String(OW)
+                + " but ResNet18 produces "
+                + String(ResNet18OutH[IMG_H])
+                + "x"
+                + String(ResNet18OutW[IMG_W])
+                + " — the knob would change the transformer's O(N^2) memory"
+                " instead of isolating the backbone. See the comment at `Stub`."
+            )
+
+    var ctx = DeviceContext()
+    print("=== ACT SO-ARM101 nsys profile ===")
+    print("  device            " + String(ctx.name()))
+    print(
+        "  model             K="
+        + String(K)
+        + " dim="
+        + String(DIM)
+        + " ff="
+        + String(FF)
+        + " enc="
+        + String(N_ENC)
+        + " dec="
+        + String(N_DEC)
+        + " batch="
+        + String(BATCH)
+    )
+    comptime if STUB_BACKBONE:
+        print(
+            "  backbone          STUB (5 strided convs, ResNet18 token count)"
+        )
+    else:
+        print("  backbone          ResNet18")
+    print("  SKIP_RESAMPLE     " + String(SKIP_RESAMPLE))
+    print("  CLIP_NORM         " + String(CLIP_NORM))
+    print(
+        "  steps             "
+        + String(PROFILE_STEPS)
+        + " after "
+        + String(WARMUP_STEPS)
+        + " warmup"
+    )
+
+    var ds = ACTDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W](String(path), seed=7)
+    print(
+        "  images            "
+        + ("resident" if ds.images_resident else "streamed from HDF5")
+    )
+    print(
+        "  data path         "
+        + (
+            "GPU (device sampler)" if GPU_DATA else "host (sample_batch + upload)"
+        )
+    )
+    print("")
+
+    var tr = T.make(
+        lr=Scalar[DT](LR),
+        kl_weight=Scalar[DT](KL_WEIGHT),
+        max_grad_norm=Scalar[DT](CLIP_NORM),
+        ctx=ctx,
+    )
+
+    var qpos = List[Scalar[DT]](unsafe_uninit_length=BATCH * QPOS)
+    var images = List[Scalar[DT]](unsafe_uninit_length=BATCH * IMG_ELEMS)
+    var actions = List[Scalar[DT]](unsafe_uninit_length=BATCH * K * ADIM)
+    var valid = List[Scalar[DT]](unsafe_uninit_length=BATCH * K)
+
+    # One batch drawn up front: under SKIP_RESAMPLE it is the only one, and
+    # otherwise it still gives the warmup something to run on.
+    ds.sample_batch[K, BATCH](False, qpos, images, actions, valid)
+
+    # The device copy. Timed and printed because ~7.1 GB of HDF5 + H2D at
+    # startup is a real cost that a per-step mean would hide entirely.
+    var dev_ds = DDS()
+    comptime if GPU_DATA:
+        var u0 = perf_counter_ns()
+        dev_ds = DDS.upload_from[BATCH](ds, ctx, seed=7)
+        var u1 = perf_counter_ns()
+        print(
+            "  device upload     "
+            + String(Float64(u1 - u0) / 1e9)
+            + " s  ("
+            + String(Float64(dev_ds.n_rows) * Float64(IMG_ELEMS) / 1e9)
+            + " GB uint8, once)"
+        )
+        print("")
+
+    # ⚠ The warmup must be EAGER even under capture: `maybe_capture_replay`
+    # settles the stream with one run of its own, which is not the same as
+    # settling every lazy device allocation the graph performs. An allocation
+    # that first happens on step 2 would land inside the capture region and
+    # abort it.
+    if USE_CUDA_GRAPH:
+        tr.prepare_device_capture()
+    for _ in range(WARMUP_STEPS):
+        comptime if GPU_DATA:
+            tr.train_step_device_accum(dev_ds)
+        else:
+            _ = tr.train_step(qpos, images, actions, valid)
+    # Discard the warmup window so the reported means cover the timed steps.
+    comptime if GPU_DATA:
+        _ = tr.train_metrics()
+        _ = tr.val_metrics()
+
+    # ── PASS A: pipelined. The number that is actually the step cost ─────
+    #
+    # ⚠ NO synchronization inside. That is the point and it is also why this
+    # pass cannot be broken down: with the device metrics folded rather than
+    # downloaded, `train_step_device_accum` and `eval_step_resident_accum`
+    # contain no sync at all, so a host timer around either one measures how
+    # long the ENQUEUE took, not how long the work took. The host runs ahead
+    # until the driver's queue fills and then blocks at whatever call happens
+    # to be next — which is why the old per-phase split produced a NEGATIVE
+    # "bwd + optimizer" once the syncs were removed. A forward is not slower
+    # than a forward-plus-backward; the split was attributing one phase's wait
+    # to the other.
+    #
+    # One drain before, one after, and divide. This is the steady-state cost
+    # of the whole iteration and it is the only number here that survived the
+    # sync removal unchanged.
+    ctx.synchronize()
+    var loop_t0 = perf_counter_ns()
+    for _ in range(PROFILE_STEPS):
+        comptime if not GPU_DATA and not SKIP_RESAMPLE:
+            ds.sample_batch[K, BATCH](False, qpos, images, actions, valid)
+        comptime if GPU_DATA:
+            # ⚠ RUNTIME `if` on a comptime flag: `comptime if` prunes, and a
+            # capture path that is never elaborated is not "one flag away", it
+            # is untested code. See the same note in the training example.
+            if USE_CUDA_GRAPH:
+                tr.train_step_device_captured(dev_ds)
+            else:
+                tr.train_step_device_accum(dev_ds)
+        else:
+            _ = tr.train_step(qpos, images, actions, valid)
+        comptime if GPU_DATA:
+            tr.eval_step_resident_accum()
+        else:
+            _ = tr.eval_step(qpos, images, actions, valid)
+    ctx.synchronize()
+    var loop_t1 = perf_counter_ns()
+    var iter_ms = Float64(loop_t1 - loop_t0) / 1e6 / Float64(PROFILE_STEPS)
+
+    # ── PASS B: synchronized. Attribution only ───────────────────────────
+    #
+    # A second run of the same work with a device drain at every phase
+    # boundary, so each host timer covers exactly its own phase.
+    #
+    # ⚠ THESE COLUMNS SUM TO MORE THAN PASS A, AND THAT IS NOT AN ERROR. Each
+    # drain empties a pipeline the real loop keeps full, so every phase pays
+    # its own latency instead of overlapping with its neighbours. Use pass A
+    # for "how fast is a step", pass B for "where does the work sit". Comparing
+    # a pass-B total against a pass-A total is comparing two different
+    # experiments.
+    var data_ns = 0
+    var train_ns = 0
+    var eval_ns = 0
+    ds.ns_img_io = 0
+    ds.ns_img_norm = 0
+    ctx.synchronize()
+    for _ in range(PROFILE_STEPS):
+        var t0 = perf_counter_ns()
+        comptime if not GPU_DATA and not SKIP_RESAMPLE:
+            ds.sample_batch[K, BATCH](False, qpos, images, actions, valid)
+        var t1 = perf_counter_ns()
+        comptime if GPU_DATA:
+            if USE_CUDA_GRAPH:
+                tr.train_step_device_captured(dev_ds)
+            else:
+                tr.train_step_device_accum(dev_ds)
+        else:
+            _ = tr.train_step(qpos, images, actions, valid)
+        ctx.synchronize()
+        var t2 = perf_counter_ns()
+        # Forward-only on the SAME batch, so the difference from `train_step`
+        # is backward + optimizer.
+        #
+        # ⚠ Under GPU_DATA this must NOT re-seed: `eval_step` would upload the
+        # four host lists again and pay their syncs, measuring a forward plus a
+        # data path the device run does not otherwise have. The batch the train
+        # step just drew is still in the graph's input slots.
+        comptime if GPU_DATA:
+            tr.eval_step_resident_accum()
+        else:
+            _ = tr.eval_step(qpos, images, actions, valid)
+        ctx.synchronize()
+        var t3 = perf_counter_ns()
+
+        data_ns += t1 - t0
+        train_ns += t2 - t1
+        eval_ns += t3 - t2
+
+    var n = Float64(PROFILE_STEPS)
+    var data_ms = Float64(data_ns) / 1e6 / n
+    var train_ms = Float64(train_ns) / 1e6 / n
+    var eval_ms = Float64(eval_ns) / 1e6 / n
+    var step_ms = data_ms + train_ms
+
+    if USE_CUDA_GRAPH:
+        # ⚠ 0 nodes means capture silently recorded nothing, and a profile of
+        # an empty graph replaying is very fast and completely meaningless.
+        print(
+            "  cuda graph        "
+            + (
+                "captured "
+                + String(tr.captured_graph_nodes())
+                + " nodes" if tr.has_captured_graph() else "NOT captured (disabled, or no stream) — steps ran directly"
+            )
+        )
+        print("")
+    print(
+        "  PIPELINED, mean over "
+        + String(PROFILE_STEPS)
+        + " iterations (one drain around the whole loop):"
+    )
+    print(
+        "    iteration       "
+        + String(iter_ms)
+        + " ms   <- THE step cost. train + eval, no syncs inside."
+    )
+    print("")
+    print(
+        "  SYNCHRONIZED, mean over "
+        + String(PROFILE_STEPS)
+        + " (a drain at every phase boundary):"
+    )
+    print(
+        "    ⚠ attribution only. Each drain empties a pipeline the real loop"
+        " keeps full,"
+    )
+    print(
+        "      so these sum to MORE than the iteration above. Different"
+        " experiment."
+    )
+    print(
+        "    sample_batch    "
+        + String(data_ms)
+        + " ms  ("
+        + String(Int(100.0 * data_ms / (step_ms + 1e-12)))
+        + "%)"
+    )
+    # ⚠ The split that decides whether the image path is worth moving to the
+    # GPU. `io` is the HDF5 row read and CANNOT move; `normalize` is 7.37M
+    # scalar uint8 -> float32 conversions that a kernel would do in ~0.04 ms,
+    # and moving it would also cut the H2D transfer 4x (upload uint8, not
+    # float32). Anything left over is qpos/actions plus the RNG.
+    var io_ms = Float64(ds.ns_img_io) / 1e6 / n
+    var nm_ms = Float64(ds.ns_img_norm) / 1e6 / n
+    print(
+        "      images io     "
+        + String(io_ms)
+        + " ms   (HDF5 read — cannot move to the GPU)"
+    )
+    print(
+        "      images norm   "
+        + String(nm_ms)
+        + " ms   (per-pixel convert — the GPU candidate)"
+    )
+    print(
+        "      other         "
+        + String(data_ms - io_ms - nm_ms)
+        + " ms   (qpos/actions/rng)"
+    )
+    print(
+        "    train_step      "
+        + String(train_ms)
+        + " ms  ("
+        + String(Int(100.0 * train_ms / (step_ms + 1e-12)))
+        + "%)"
+    )
+    print("    ---- step       " + String(step_ms) + " ms  (drained)")
+    print("")
+    print(
+        "    eval_step       "
+        + String(eval_ms)
+        + " ms   (forward only, same batch)"
+    )
+    print(
+        "    bwd + optimizer "
+        + String(train_ms - eval_ms)
+        + " ms   (train_step - eval_step, both drained)"
+    )
+    print(
+        "                     ⚠ A NEGATIVE value here means the drains are"
+        " not doing their job:"
+    )
+    print(
+        "                     a forward cannot cost more than a forward plus"
+        " a backward, so"
+    )
+    print(
+        "                     the split is attributing one phase's wait to"
+        " the other. Do not"
+    )
+    print("                     read the columns until it is positive.")
+    print("")
+    comptime if GPU_DATA:
+        # ONE drain for the whole run. Printed so a profile that got faster by
+        # not computing anything is visible — a step whose metrics are folded
+        # on device and never read is indistinguishable, from the wall clock,
+        # from a step that skipped the loss.
+        var tw = tr.train_metrics()
+        var vw = tr.val_metrics()
+        print(
+            "  device-accumulated over "
+            + String(tw.n)
+            + " train / "
+            + String(vw.n)
+            + " forward steps (ONE D2H, at the end):"
+        )
+        print(
+            "    train  loss "
+            + String(tw.loss)
+            + "  l1 "
+            + String(tw.l1)
+            + "  kl "
+            + String(tw.kl)
+            + "  |grad| "
+            + String(tw.grad_norm)
+        )
+        print(
+            "    fwd    loss "
+            + String(vw.loss)
+            + "  l1 "
+            + String(vw.l1)
+            + "  kl "
+            + String(vw.kl)
+        )
+        print("")
+    print("=== Done ===")

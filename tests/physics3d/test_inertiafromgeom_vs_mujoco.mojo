@@ -4,26 +4,26 @@ Compares our computed body mass/inertia/ipos/iquat (from inertiafromgeom)
 against MuJoCo Python output for HalfCheetah and Hopper models.
 
 Run with:
-    cd mojo-rl && pixi run mojo run physics3d/tests/test_inertiafromgeom_vs_mujoco.mojo
+    cd noeira && pixi run mojo run physics3d/tests/test_inertiafromgeom_vs_mujoco.mojo
 """
 
 from std.python import Python, PythonObject
 from std.math import abs
-from std.collections import InlineArray
+from std.collections import Array
 from std.testing import assert_true, TestSuite
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_IXX,
     BODY_IDX_IPOS_X,
 )
 
-from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
-from mojo_rl.envs.hopper.hopper_xml import HopperModel
+from noeira.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from noeira.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from noeira.envs.hopper.hopper_xml import HopperModel
 
 
 # =============================================================================

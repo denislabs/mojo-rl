@@ -1,6 +1,6 @@
 """ExternalNode in a ComputeGraph == owning the same node (CPU + GPU).
 
-`ExternalNode[NAME, M, *IN_NAMES]` (mojo_rl/nn/storage/combinators/graph_decl.mojo)
+`ExternalNode[NAME, M, *IN_NAMES]` (noeira/nn/storage/combinators/graph_decl.mojo)
 is a pure comptime node whose module is supplied at FORWARD TIME. The trainer
 (which owns the actor/critics) threads them as tracked `mut` ref args into
 `ComputeGraph.forward`/`vjp` (`mut *externals`); the graph dispatches each
@@ -27,14 +27,14 @@ Run:
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.combinators.graph_decl import InputSlot, Node, ExternalNode
-from mojo_rl.nn.core.initializer import Deterministic
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.nn.combinators.compute_graph import ComputeGraph
+from noeira.nn.combinators.graph_decl import InputSlot, Node, ExternalNode
+from noeira.nn.core.initializer import Deterministic
 
 
 comptime IN = 4

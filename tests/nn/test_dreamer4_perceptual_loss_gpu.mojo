@@ -14,16 +14,16 @@ from std.math import abs
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.core.checkpoint import save_params, load_params
-from mojo_rl.nn.models.cifar_feature_net import CifarBackbone
-from mojo_rl.deep_agents.dreamer4.perceptual_loss import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.core.checkpoint import save_params, load_params
+from noeira.nn.models.cifar_feature_net import CifarBackbone
+from noeira.deep_agents.dreamer4.perceptual_loss import (
     perceptual_feature_loss, perceptual_feature_loss_gpu,
 )
-from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao
+from noeira.deep_agents.dreamer4.shortcut_loss import _mao
 
 
 def main() raises:

@@ -19,14 +19,14 @@ Run with:
 from std.random import seed
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import Tanh
-from mojo_rl.deep_agents.ppo_discrete import PPODiscreteAgent
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import Tanh
+from noeira.deep_agents.ppo_discrete import PPODiscreteAgent
+from noeira.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
 
-from mojo_rl.envs.craftax_classic import CraftaxClassicEnv
+from noeira.envs.craftax_classic import CraftaxClassicEnv
 
 
 comptime OBS_DIM = CraftaxClassicEnv[DT].OBS_DIM       # 1345

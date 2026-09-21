@@ -1,0 +1,43 @@
+<mujoco model="rad_asset">
+  <!-- A radian model, to be attached into a scene that says nothing (degree).
+       Every angle-bearing attribute MuJoCo's compiler scales is here at least
+       once, and so is every way a joint can come by its TYPE: absent (hinge),
+       explicit, a class, a parent class, the enclosing body's childclass. -->
+  <compiler angle="radian"/>
+  <default>
+    <joint range="-0.5 0.5" ref="0.1" springref="0.05"/>
+    <geom euler="0.3 0 0"/>
+    <default class="slider">
+      <joint type="slide" range="-0.02 0.07"/>
+      <default class="slider_ref">
+        <joint ref="0.01" springref="0.02"/>
+      </default>
+    </default>
+    <default class="turn">
+      <joint type="hinge" range="-1.2 1.2" ref="-0.2"/>
+      <site euler="0 0.25 0"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="root" pos="0 0 0.1" euler="0 0.4 0">
+      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01" euler="0.1 0.2 0.3"/>
+      <joint name="h_root" axis="0 1 0"/>
+      <geom name="g_root" type="box" size="0.05 0.05 0.05"/>
+      <site name="s_root" pos="0.05 0 0" axisangle="0 0 1 0.7"/>
+      <site name="s_turn" class="turn" pos="0 0.05 0"/>
+      <camera name="c_root" pos="0 -1 0" euler="1.2 0 0" fovy="50"/>
+      <body name="link" pos="0.1 0 0" childclass="turn">
+        <joint name="h_link" axis="0 0 1"/>
+        <joint name="h_explicit" type="hinge" axis="1 0 0" range="-2 2" ref="0.3" springref="-0.1"/>
+        <geom name="g_link" type="capsule" fromto="0 0 0 0.1 0 0" size="0.02" euler="0 0 1.1"/>
+        <body name="tip" pos="0.1 0 0" axisangle="1 0 0 0.9">
+          <joint name="s_tip" class="slider" axis="1 0 0"/>
+          <joint name="s_tip2" class="slider_ref" axis="0 1 0"/>
+          <joint name="h_odd" type="hinge" class="slider" axis="0 0 1"/>
+          <joint name="b_tip" type="ball" range="0 0.6"/>
+          <geom name="g_tip" type="sphere" size="0.02" axisangle="0 1 0 0.5"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

@@ -19,9 +19,9 @@ from std.testing import assert_true
 from std.math import isnan, isinf
 from std.python import Python, PythonObject
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac.config import SAC
-from mojo_rl.envs.pendulum.pendulum_v1 import PendulumEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac.config import SAC
+from noeira.envs.pendulum.pendulum_v1 import PendulumEnv
 
 
 comptime OBS = 3

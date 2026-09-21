@@ -11,6 +11,7 @@
 
 # ── nn core: checkpoint format + optimizer state ──────────────────────
 tests/nn/test_checkpoint_v2_storage.mojo
+tests/nn/test_adam_visitor_ref.mojo
 tests/nn/test_checkpoint_adam_storage.mojo
 
 # ── deep_agents: shared blocks + one fast convergence gate per family ─
@@ -42,11 +43,303 @@ tests/physics3d/test_fk_fields.mojo
 # those strings in phase 1b.5 — there is no second copy left to drift.
 tests/physics3d/test_model_dims_vs_mujoco.mojo
 
+# ⚠ THE P1a GATE. `ModelDefFromXML.xml_text()` now runs `expand_mjcf`, so the
+# comptime leg and `runtime_load` agree on what a model IS. Its safety rests
+# on expansion being the IDENTITY on a flat model — this asserts that over
+# every shipped `.xml`, and asserts the converse on a composing fixture so the
+# identity half cannot pass vacuously. Pure CPU, no references/, no GPU.
+tests/physics3d/test_expand_identity.mojo
+
+# ── noeira/tasks: the .family / .task spec (P1b) ────────────────────
+# Pure text in, pure text out — no MuJoCo, no GPU, no assets. 18 of its 34
+# checks are REFUSAL arms: an unknown key, a missing goal, a reversed
+# rectangle, a task naming an object its family never declared. The happy
+# path alone would pass while accepting all of them.
+tests/tasks/test_spec_roundtrip.mojo
+
+# ── noeira/tasks: the so101-tower rig as a family (sim-to-real track) ──
+# CPU, MuJoCo-free: the config's restated numbers vs the .family and the
+# generated table, every tower task binds and is device-placeable; and our
+# composed camera poses vs the oracle numbers `tools/tasks/check_tower_cameras.py`
+# printed (MuJoCo), at two arm poses so the wrist camera's parent-body
+# composition cannot pass vacuously.
+tests/tasks/test_so101_tower_config.mojo
+tests/tasks/test_so101_tower_cameras.mojo
+
+# ── noeira/tasks: LIBERO's registry as data + the resolved import (L1) ──
+# The category table (38 corpus categories, 5 problem classes, the four
+# articulation directions QUOTED from LIBERO's Python), the `slot=` yaw
+# extension, and `resolve_family` against an inline fixture. No assets.
+tests/libero/test_libero_categories.mojo
+
+# ── noeira/envs/libero: libero_goal composes and our parser carries every slot (L2)
+# SKIPS LOUDLY without the pulled pack (`pixi run assets-pull libero`). The
+# oracle half is `tools/tasks/check_family.py` on the composed scene.
+tests/libero/test_libero_goal_compose.mojo
+# L3's gate: the ten libero_goal tasks bind with the L3 language (Joint,
+# On(obj, obj), box regions with a contact slot), three readers agree on
+# eleven simulated states, every goal shape flips, and — with an
+# accelerator — ten lanes in a kernel agree with the host at float32.
+# Skips (loudly) without the pack.
+tests/libero/test_libero_goal_eval.mojo
+# L4's unit gate: OSC_POSE (robosuite 1.4.0, transcribed) on the composed
+# libero_goal scene — algebra, gripper ramp, hold (2.5e-12 m over 1 s) and
+# track. The decisive gate is `tools/libero/libero_demo_replay.py` on a
+# recorded demo (needs the 426 MB HDF5; see its header).
+tests/libero/test_osc_pose.mojo
+# L4b: the SAME controller over eight lanes — bit-exact against one lane at
+# a time at float64 (the lane-indexing gate), and with an accelerator the
+# same eight inside a Metal/CUDA kernel at float32. The kernel keeps every
+# matrix in a global buffer; compiling it is half of what this proves.
+tests/libero/test_osc_pose_gpu.mojo
+tests/libero/test_osc_control_batched.mojo
+tests/libero/test_libero_osc_env.mojo
+tests/libero/test_libero_object.mojo
+tests/libero/test_libero_scenes.mojo
+tests/libero/test_libero_placement.mojo
+# The LIBERO viewer's HEADLESS path — reset, one policy step under the hold
+# action, and the goal read through the full L3 language. It is the only
+# check that runs the family's reset, the controller and the predicate in
+# one process the way the window does, and it needs no window.
+# ⚠ `--check` IS THE WHOLE ENTRY: without it this opens an SDL3 window and
+# blocks, which in CI is a hang and not a failure.
+examples/libero/libero_viewer.mojo --check
+# L5's hermetic half: the tracer's texture sampler, its four `settexture`
+# texgen cases and the OpenGL lighting terms, on values that are arithmetic.
+# The REAL L5 gate is `examples/libero/libero_camera_gate.mojo`, which needs
+# ~6 GB of demonstrations; this one needs nothing and still catches a
+# half-texel offset, a wrap off by a column or a box face picked by position.
+tests/physics3d/test_appearance.mojo
+
+# ── noeira/render: the .msh reader (L1) ─────────────────────────────
+# Hermetic: writes a .msh from the format's definition and reads it back;
+# header-checks all 88 corpus files when references/ is present.
+tests/render/test_msh_loader.mojo
+
+# ── noeira/tasks: a .family composes to a scene MuJoCo loads (P1c) ──
+# ⚠ THE MOJO HALF ONLY. The ORACLE half is `pixi run python
+# tools/tasks/check_family.py`, which loads the same file through MuJoCo and
+# sums every asset independently — it never reads our parser's answer, so the
+# two can only agree by both being right. Run it when the family changes.
+# ⚠ Also a STALENESS check: it fails if the .family composes to something
+# other than the checked-in scene. `pixi run gen-family-scenes` fixes that.
+tests/tasks/test_family_compose_vs_mujoco.mojo
+
+# ── noeira/tasks: the goal language (P2a) ──────────────────────────
+# ⚠ BINDS AGAINST THE REAL COMPOSED FAMILY, not a fixture — a goal's whole
+# job is to name things in a scene, so binding against invented names would
+# pass while every real task failed to resolve. Also asserts the POST-ORDER
+# invariant, which is what makes a stackless (GPU-shaped) evaluator legal.
+tests/tasks/test_goal_language.mojo
+
+# ── noeira/tasks: placement sampling (P2b) ─────────────────────────
+# ⚠ THE REJECTION BRANCH IS THE THING UNDER TEST. A sampler with the overlap
+# check deleted still returns poses, still lands them in the region and still
+# reproduces per seed — VERIFIED by ablation: 8 of the 13 checks still pass
+# without it. The two that do not are the crowded-region attempt counter and
+# the over-constrained raise. Do not "simplify" either away.
+tests/tasks/test_sampler.mojo
+
+# ── noeira/tasks: goal evaluation, three tasks one family (P2c) ────
+# ⚠ EVERY GOAL IS CHECKED IN A STATE WHERE IT MUST HOLD *AND* ONE WHERE IT
+# MUST NOT. A predicate that returns True unconditionally satisfies every
+# positive assertion, and `On` degenerating to XY-only containment would pass
+# all of them but the metre-above arm.
+tests/tasks/test_task_eval.mojo
+
+# ── noeira/tasks: the family RESET AND STEPPED (P2c) ───────────────
+# ⚠ THE ONLY GATE HERE THAT SIMULATES. Every other one constructs geometry or
+# counts records — which is how a static fixture ended up welded 50 m in the
+# air with its region on top and the sampler placing props into the sky, while
+# nq/nv/ngeom and every contact count stayed correct. This one builds the
+# model, resets from a sampled init, and checks the region is within reach.
+tests/tasks/test_task_reset_steps.mojo
+
+# ── noeira/tasks: the device tape vs the host evaluator (P3a) ──────
+# ⚠ THE SWEEP MUST MAKE EACH GOAL FLIP, and the gate asserts it does. Two
+# evaluators agreeing on states where every goal is False is what `return
+# False` also achieves; the per-task "N of 25 satisfy it" line is the check
+# that the agreement means something.
+tests/tasks/test_task_tape.mojo
+
+# ── noeira/tasks: the KERNEL loop vs the HOST loop (P3b) ───────────
+# ⚠ RUNS ON THE CPU AT float64 ON PURPOSE. `eval_tape_gpu` is generic over
+# dtype and origin, so the LOOP can be gated anywhere — separately from the
+# device-vs-host DTYPE question. A disagreement here is an indexing bug; one
+# in P3c's GPU gate is a rounding one, and keeping them apart is what makes
+# either diagnosable.
+# ⚠ TWO LANES CARRY DIFFERENT TASKS. ABLATED: making the loop read lane 0's
+# tape regardless of `env` drops it to 35 of 50 agreements. A single-lane
+# test would pass that.
+tests/tasks/test_tape_gpu_parity.mojo
+
+# ── noeira/tasks: the per-lane ACTIVE MASK and the obs (P3d) ───────
+# ⚠ RUNS THE REAL HOOK, ON THE CPU AT float64. `custom_extract_obs_gpu` is
+# generic over dtype and origin, so the gate instantiates the config's own
+# observation writer rather than a re-spelling of it.
+# ⚠⚠ IT ALSO CHECKS A RESTATEMENT. `So101TabletopConfig` restates the free
+# slots' qposadr/dofadr because a comptime type cannot read a runtime
+# `.family`; this resolves them out of the composed scene and asserts every
+# one. ABLATED three ways — lane-0 mask for every lane (3 of 16 fail, and the
+# negative leg is the only check that sees it), flag-without-zeroing (2), and
+# a drifted address table (3).
+# ⚠ ALSO GATES GAP D (the per-step repark) and, with it, a TRAIT CHANGE: the
+# env now calls only `pre_step_full_gpu`, so the fourteen configs that override
+# the narrow `pre_step_gpu` depend on its default forward. The gate calls the
+# WIDE hook on `HalfCheetahConfig` and asserts its META_IDX_PREV_X write lands
+# per lane — a broken forward is otherwise silent, because the stashed value
+# is not read until the reward and the reward merely goes stale. ABLATED:
+# pose-without-velocity (1 of 24), pinning every slot (1), skipping the
+# quaternion (1), dropping the forward (2 — and only the HalfCheetah leg sees
+# it).
+tests/tasks/test_active_mask.mojo
+
+# ── noeira/tasks: frozen init states — freeze, load, REFUSE (P4a) ──
+# ⚠ THE MECHANISM THAT MAKES A SUCCESS RATE COMPARABLE (plan §6.2). Rows
+# round-trip == and not almost_equal — a frozen init that came back to 1e-16
+# is a different episode. ABLATED four ways: apply() restoring only the free
+# slots (2 of 14 fail), a constant stored mask (1), a loader that ignores the
+# family key (1), and a sampler whose lane is ignored so every row is the same
+# state (1 — and ONLY the row-distinctness check sees that one).
+tests/tasks/test_init_table.mojo
+
+# ── noeira/tasks: per-task success, and what reaches the monitor (P4b) ──
+# ⚠⚠ `same_as` COMPARES LANES, NOT RATES, and the gate builds the pair that
+# separates them: two runs with identical per-task rates on disjoint lanes. A
+# rate comparison passes that, which is the whole reason the check exists.
+# ⚠ The metrics are read back OFF DISK through CsvLogger, episode counts
+# included — a rate with no denominator cannot be told from the same rate over
+# a third as many episodes. ABLATED: a rate-based `same_as` (1 of 16 fails), a
+# per-task denominator that logs the LANE count instead (2), and an
+# unrecorded lane counted as a failure (1). The two tasks deliberately get
+# UNEQUAL episode counts — at 5 and 5 the wrong denominator reads as right.
+tests/tasks/test_eval_report.mojo
+
+# ── noeira/tasks: LIBERO's .bddl, read (P5) ────────────────────────
+# ⚠⚠ THE FIXTURE IS ONE UPSTREAM FILE, VERBATIM (LIBERO, MIT). `references/`
+# is gitignored, so a corpus-reading gate tests nothing on a fresh clone — and
+# a fixture I wrote would gate the parser against my own idea of the format.
+# It carries every construct that broke the reader: a PDDL TYPED LIST
+# (`moka_pot_1 moka_pot_2 - moka_pot`, used by 40 of the 130 files), a region
+# with no :ranges, a three-term goal, and an articulation predicate.
+# ABLATED: typed list taking only the last name (3 of 23 fail), regions keyed
+# by BARE name (4 — the name is not unique in the corpus), the outer `And`
+# left wrapped (3), and an unranged region emitted with a 0,0,0,0 rect (2).
+# ⚠ The corpus-wide survey is `examples/libero/libero_survey.mojo`, which
+# SKIPS LOUDLY without the tree: 130/130 parse, 8/130 goals translate.
+tests/libero/test_bddl.mojo
+
+# ── noeira/tasks: is `reach` REACHABLE, and by how much ────────────
+# ⚠⚠ THE GATE NO OTHER TASK GATE CAN BE. Everything else here asks whether a
+# goal EVALUATES; this asks whether a policy could ever MEET it — the fraction
+# of the arm's configuration space inside `AtRegion(robot_gripperframe,
+# table_top)`, over 4096 uniform draws. A satisfiable-but-tiny target set and
+# a healthy one look identical to every other check, and the difference is a
+# task that trains against one that gives a flat curve read as an agent bug.
+# Measured: 3.2% of uniform poses; the floor it asserts is 0.5%.
+# ⚠ IT FOUND THE ANGLE-UNIT DEFECT. Before the composed scene restated
+# `<compiler angle="radian">` the hit rate was 0 and the arm's travel was
+# +-1.9 DEGREES — with nbody, njnt, nq, nv, ngeom and every contact count
+# correct. `test_family_compose_vs_mujoco` now holds that half open directly.
+# ABLATED: with the angle line removed the sweep's envelope collapses to
+# 0.07 m and the hit rate goes to 0 (the span control fires first).
+examples/tasks/task_reachability.mojo
+
+# ── noeira/tasks: the DEVICE sampler against the HOST one ──────────────
+# ⚠⚠ TWO IMPLEMENTATIONS OF ONE DISTRIBUTION. `sampler.sample_placements`
+# places props on the host (eval, viewer, init table); `So101TabletopConfig.
+# init_qpos_gpu` places them per lane at every GPU reset, because a reset in a
+# training run happens between kernel launches. If they disagree, a policy
+# trains on scenes the eval never shows it and nothing else looks wrong.
+# Compares every coordinate over 4 tasks x 8 lanes, and checks the config's
+# RESTATED region table against the .family + FK.
+# ABLATED: drawing Philox on the free-slot ordinal instead of the FAMILY SLOT
+# INDEX (the trap the hook's comment names) fails 168 of 168 coordinates.
+tests/tasks/test_device_placement.mojo
+
+# ── noeira/tasks: the shaped term's distance ───────────────────────────
+# ⚠⚠ THE SPARSE REWARD COULD NOT BE LEARNED, AND IT WAS MEASURED. `gather` on
+# a 5090: 125k env-steps, ~384 episodes, a rate indistinguishable from random.
+# At ~1.5% success that is ~6 rewarding transitions in 125,000 — 5e-05 of the
+# replay buffer, which a batch of 256 contains 1.4% of the time. So
+# `gpu_eval.tape_distance_gpu` derives a distance FROM THE TAPE (generic over
+# the goal language, not a `Near` special case in a family config) and the
+# config subtracts it.
+# Asserts: (1) the distance is ZERO exactly when `eval_tape_gpu` says the goal
+# holds — two separate switches over one tape, so a forgotten op shows up as a
+# disagreement instead of as a term with no gradient; (2) the total penalty
+# stays below 0.5, which is what keeps `reward > 0.5` meaning SOLVED in the
+# THREE files that read success that way; (3) the distance is monotone toward
+# the goal and reaches exactly zero.
+# ABLATED: a sign flip in the `Above` shortfall — the classic error, and one
+# that passes (2) and (3) perfectly — makes 108 of 432 states report distance
+# 0 while the goal is FALSE.
+tests/tasks/test_goal_distance.mojo
+# HIL-SERL: the pinned demo prefix (CPU leg here; `-e apple` adds the GPU leg),
+# the .demo file round trip, and the recorder's host reward against the goal words.
+tests/data/test_replay_demo_prefix.mojo
+tests/deep_agents/test_demo_file.mojo
+tests/deep_agents/test_demo_golden.mojo
+tests/deep_agents/test_demo_load.mojo
+tests/deep_agents/test_hil_serl_config.mojo
+tests/deep_agents/test_episode_recorder.mojo
+tests/tasks/test_tower_host_reward.mojo
+# The SAC actor loss's behaviour-cloning term (`set_bc`): λ 0 inert, loss = plain + λ·mean(mask·L1)
+# to 1e-9, 60 BC steps pull the actor onto the demo actions.
+tests/deep_agents/test_sac_bc_term.mojo
+
+# ── noeira/tasks: PER-LANE shaping, in `meta` and not `curriculum` ─────
+# ⚠⚠ THE WEIGHTS AND MARGINS ARE PER TASK, NOT PER RUN. They lived in
+# `curriculum`, which is ONE row for the whole batch — right for the region
+# table, wrong for shaping, because what a weight is WORTH depends on the
+# task's own distance scale. Measured at identical weights and margins:
+#   gather  Near   goal dist 0.139 -> goal term 0.011 -> reward 0.292
+#   lift    Above  goal dist 0.030 -> goal term 0.811 -> reward 1.171
+#   settle  On     goal dist 0.000 -> goal term 1.000 -> reward 1.360
+# A 4.7x spread in reward and 91x in the goal term. A two-task batch under one
+# pair hands its lanes a bimodal reward, which is how this family's critic is
+# destabilised.
+# ⚠ ZERO IS "NO SHAPING" and is what an untouched `meta` holds, so a driver
+# that forgets these gets the SPARSE reward rather than meaningless
+# parameters. `shaping_words` refuses a nonzero weight with a ZERO margin —
+# `tolerance` with margin 0 is a hard indicator, so the term goes sparse while
+# the run still looks shaped (verified: 2 of 2 refused).
+# The gate is in `examples/tasks/task_batched_gpu.mojo`, whose two task groups
+# now carry DIFFERENT weights and margins: the host recomputes each lane's
+# shaped value from that lane's own four words and agrees to 7.7e-08 over 1024
+# lanes. ABLATED by using lane 0's words for everyone: 512 of 1024 mismatch,
+# worst |error| 0.577.
+
+# ── noeira/tasks: is a task solved by a CONSTANT action ────────────────
+# ⚠⚠ THE DEGENERACY `test_task_reset_steps` CANNOT SEE. That gate asserts a
+# goal is false AT RESET and every task passes it; `so101_reach_brick` passed
+# it and an UNTRAINED greedy actor then met it on 64 of 64 episodes. A
+# constant action is what an untrained policy emits, so whatever it achieves
+# is the floor every curve starts from.
+# Records each task's category and fails when one MOVES between them:
+#   lift, gather        NEVER met  (real tasks)
+#   reach, reach_clear  SWEPT THROUGH — a constant +0.3 meets AtRegion for 77
+#                       consecutive steps, ending at step 97 of 300. An
+#                       instantaneous predicate over a CONTROLLED end effector
+#                       asks "did the gripper ever pass through here".
+#   settle              ALWAYS (the probe, by design)
+# ⚠ It prints the longest RUN, not the hit count: a count cannot tell a sweep
+# from an arrival, and only one of those is a task.
+examples/tasks/task_null_action.mojo
+
+# ── data: the manifest's task table, BYTE-EXACT ─────────────────────
+# ⚠ THE STRINGS ARE HOSTILE ON PURPOSE. The manifest is key=value LINES and
+# `parse_manifest` strips every value, so the two things that break it are a
+# LINE BREAK and EDGE WHITESPACE — and a per-byte `chr` corrupts anything
+# non-ASCII. A gate that only round-tripped "Grab the green cube" passes on an
+# escaper that handles none of them.
+tests/data/test_manifest_tasks.mojo
+
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
 #   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo
 
-# --- mojo_rl/robot: the SO-101 hardware stack, gated WITHOUT hardware ------
+# --- noeira/robot: the SO-101 hardware stack, gated WITHOUT hardware ------
 # The packet codec is pure bytes-to-bytes and its expected byte strings were
 # captured from the reference `scservo_sdk` (regenerate with
 # tools/soarm/dump_feetech_vectors.py), so it runs anywhere.
@@ -64,3 +357,150 @@ tests/utils/test_fmt.mojo
 # arms' calibration and so_arm101.xml. ⚠ ~25 s: it builds the SO-101 model to
 # read its ctrlrange rather than transcribing the limits.
 tests/robot/test_so101_sim_map.mojo
+# Ticks <-> lerobot units, against expressions EXTRACTED from lerobot's own
+# `MotorsBus._normalize`/`_unnormalize` rather than transcribed. This is the map
+# ACT deploys through; `test_so101_sim_map.mojo` above gates the DIFFERENT map
+# the reach policy uses, and swapping them feeds a network numbers it has never
+# seen while raising nothing. Self-contained: the fixture is committed.
+tests/robot/test_so101_lerobot_units.mojo
+
+# Screen recording and screenshots: the recorder's own output decoded back
+# through `noeira/io/video` and compared pixel-exactly on the lossless (PNG)
+# leg. Self-contained — `ffmpeg` is a declared pixi dependency, no display, no
+# GPU, ~2 s.
+tests/render/test_video_recorder.mojo
+
+# The same pipe's worker thread, with `cat` standing in for ffmpeg so the
+# back-pressure and drop tallies can be asserted against bytes on disk. Also
+# the SIGPIPE leg: a child that exits must not take the process with it.
+tests/io/test_frame_pipe_thread.mojo
+
+# safetensors, the format: the round trip, the f16/bf16 widenings, and a dozen
+# malformed headers that must each RAISE (a header length past the end of the
+# file, offsets that overlap or leave a gap, a span that does not match
+# shape x itemsize). Self-contained — every file is built by the test itself.
+tests/io/test_safetensors.mojo
+# safetensors, the walk: a model saved and reloaded by walked name, on CPU and
+# GPU, with BatchNorm statistics and with the destination proven DIFFERENT
+# before each load so a loader that matched nothing cannot pass. Also the
+# PyTorch-named walk (`SaveTorchNamed` / `LoadTorchNamed`) on a device model --
+# the ACT backbone path instantiates the loader for "gpu" but never the saver,
+# so this is the only place that branch is compiled. Its host mirror is poisoned
+# before the export, or a save that never downloaded would pass.
+tests/nn/test_safetensors_roundtrip.mojo
+# SHA-256 against 130 digests pinned from Python `hashlib`, covering every
+# length residue mod 64 (the padding boundary at 56 is where SHA-256
+# implementations actually break) plus the chunk-split invariance that
+# `sha256_file`'s 8 MiB streaming read depends on. Self-contained.
+# ── concurrency backbone: two SILENT-miscompile gates + the lifecycle ──
+# Threaded, but deterministic and fast. test_control_block catches a slab the
+# optimizer folds back to its initializer; test_ring catches an owner freed at
+# its last mention. Neither failure is visible in review.
+tests/concurrent/test_control_block.mojo
+tests/concurrent/test_ring.mojo
+tests/concurrent/test_worker.mojo
+
+tests/io/test_sha256.mojo
+tests/io/test_http_sink.mojo
+# The §7b heartbeat, against a RECORDING fixture rather than a status code:
+# the questions are WHEN and HOW OFTEN, which no status can express. The
+# decisive leg is that a BUSY run sends ZERO pings — a "did it fire?" check
+# passes just as happily for a worker that pings every millisecond, so the
+# interval has an upper bound too. Needs `pixi run build-http`.
+tests/io/test_http_sink_heartbeat.mojo
+# §7's ArtifactSink, against a fixture playing BOTH the monitor and R2. The
+# decisive legs need the fixture's SLOW-PUT mode: over loopback a transfer
+# finishes before the next offer is made, so a sink with no dedup at all — and
+# a close() that waits for nothing — both pass without it. Checks the received
+# bytes hash to the file on disk. Needs `pixi run build-http`.
+tests/io/test_artifact_sink.mojo
+# A SOURCE gate: 18 `trainer.save_state(checkpoint_path)` sites across four
+# drivers must each be followed by `announce_checkpoint(...)`, and no driver
+# may inline the offer. A site that saves and forgets shows NOTHING — the run
+# trains, the file is on disk, and only the box dying reveals the loss. Prints
+# sites-scanned beside violations, and pins the count at 18.
+tests/deep_agents/test_checkpoints_announce.mojo
+# A run's END is a signal it sends, and its START is not its first metric.
+# Offline like test_http_sink beside it: routes and payloads by value, plus the
+# idempotence latches and the inertness that a `close()` which now POSTs could
+# have broken. Mutation-checked — see the file's header.
+tests/core/test_run_lifecycle.mojo
+# The `key=value` writer, against the .task/.family files already in the tree:
+# parsed-form round trip + fixpoint, repeating keys in order, and the ten
+# refusals (a newline splits the record; leading/trailing whitespace does not
+# survive the reader's strip). Mutation-checked. Self-contained.
+tests/core/test_kv_write.mojo
+# RunContext: the era-based UTC clock against six known epochs (2000 IS a leap
+# year, 2100 is NOT), the derived run id separating on host/pid/start_ns,
+# run.kv on disk at t=0 saying `running`, the status transitions, and the
+# unknown-key REFUSAL on read. Writes under /tmp, never the repo's runs/.
+tests/core/test_run_context.mojo
+# The P0d retrofit, as a SOURCE gate: the four drivers open and close a run and
+# carry no legacy checkpoint constant in code. Three of them cannot be built on
+# a laptop (two NVIDIA-only, one dies in ld at HEAD), so this is the only check
+# that runs everywhere. Comment lines are excluded — the ⚠ notes keep the old
+# names deliberately.
+tests/core/test_drivers_use_runcontext.mojo
+# project.kv: the `ref=<kind>:<name>:<path>@<commit>` grammar (paths may carry
+# both a `:` and an `@`, so the splits are once-from-left then once-from-right),
+# the unknown-key refusal, drift against `git log -1 -- <path>` rather than HEAD,
+# and that a run falls back to the flat `runs/` root until its project exists.
+# Mutation-checked. Writes under /tmp.
+tests/core/test_project.mojo
+# Promotion (§8): the record round-trip, and the four properties the plan calls
+# load-bearing — HARD LINK not a symlink (checked by inode), the materialised
+# bytes hash to the run's checkpoint, `supersedes` records the previous holder,
+# and re-promoting REPOINTS the role rather than leaving old weights a deploy
+# would keep using. Plus the deploy-side resolver: a role resolves, an
+# unpromoted one falls back rather than raising. Mutation-checked.
+tests/core/test_policy.mojo
+tests/core/test_project_sync.mojo
+tests/core/test_policy_weights.mojo
+tests/deep_agents/act/test_act_norm_file.mojo
+# Asset packs (§9 infrastructure; NOTHING is migrated yet). The declaration
+# grammar and its eight refusals, the CREDENTIAL decision — which is the whole
+# reason `provider=` exists, since two https URLs can need different secrets or
+# none — and a real pull through a real archive against the loopback fixture:
+# byte-identical including a nested file, hard-linked not symlinked, a second
+# pull that makes no request, a corrupted cache repaired, and bytes that never
+# match refused with nothing materialised. Needs `pixi run build-http`.
+tests/assets/test_asset_packs.mojo
+# The JSON writer, byte-exact against output `json.loads` accepted, plus the
+# escapes, the \u fallback for control bytes, and the refusal of NaN /
+# Infinity. Self-contained; this is what replaced `json.dumps` in the logger.
+tests/io/test_json_write.mojo
+# The tar reader on three formats (ustar / pax / gnu — they disagree about
+# exactly the long-name case a naive reader gets wrong) plus the two archives
+# that must be REFUSED: a `../` member, and a type this reader does not
+# implement. Self-contained; fixtures come from Python's stdlib `tarfile`.
+tests/io/test_tar.mojo
+
+# The SO-101 calibration span guard, on numbers from a real session where a
+# joint lost 61 degrees of travel and the absolute "did it move" check let it
+# through. Pure function of two calibrations — no serial port, no arm. The
+# gate IMPORTS the rule from `robot/so101/calibration.mojo` rather than
+# restating it, so the two cannot drift apart.
+tests/soarm/test_span_guard.mojo
+tests/robot/test_so101_step_clamp.mojo
+
+# `_im2col_cpu` against an independent reference, at ResNet18's real shapes
+# plus seven chosen to break a bounds computation — including one DERIVED to
+# make the rewrite's zero-fill write past the end of its buffer, which a value
+# comparison cannot see and a canary can. Self-contained: no dataset, no
+# fixture, no GPU. It is 60% of ACT's CPU forward, so it is worth a gate that
+# runs on every tier.
+tests/nn/test_im2col_cpu.mojo
+
+# Gradient penalty (WGAN-GP / R1) at first order — docs/BFM_ZERO_SHOT_RL.md
+# §18.8. Two oracles (parameter central differences, a closed form on a
+# linear D) plus the apply-first linearity contract. ~15 s.
+tests/nn/test_grad_penalty.mojo
+# BCE-with-logits: closed form, cotangent vs finite difference, finite at |l|=60.
+tests/nn/test_bce_logits.mojo
+
+# `linear_sum_assignment` + `emd_uniform`: the native port of the last metric
+# on the G1 tracking-eval path that needed Python. Gated exactly against brute
+# force for n <= 7 (independent of scipy) and bit-identically against scipy at
+# the eval's real (100, 29) shape; the scipy leg skips loudly if it is absent.
+tests/core/test_assignment_emd.mojo
+tests/nn/test_checkpoint_finish.mojo

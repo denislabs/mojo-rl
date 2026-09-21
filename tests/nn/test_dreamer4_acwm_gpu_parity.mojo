@@ -21,13 +21,13 @@ from std.math import abs
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.initializer import Deterministic
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.initializer import Deterministic
 
-from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
-from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao
+from noeira.deep_agents.dreamer4.agent import Dreamer4Agent
+from noeira.deep_agents.dreamer4.shortcut_loss import _mao
 
 
 struct _GradCollect(ParamVisitor):

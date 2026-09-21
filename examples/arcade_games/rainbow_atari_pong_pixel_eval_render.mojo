@@ -33,15 +33,15 @@ Run with (GPU env):
 from std.memory import memcpy
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
-from mojo_rl.deep_agents.c51.config import RainbowCNNConfig, trainer_from_config
+from noeira.deep_agents.c51.config import RainbowCNNConfig, trainer_from_config
 
-from mojo_rl.envs.atari import AtariEnv
-from mojo_rl.envs.atari.games.registry import AtariGame
-from mojo_rl.envs.atari.flags import OBS_WIDTH, OBS_HEIGHT
-from mojo_rl.envs.atari.frame_render import FRAME_BUF_SIZE
-from mojo_rl.envs.atari.renderer import AtariRenderer
+from noeira.envs.atari import AtariEnv
+from noeira.envs.atari.games.registry import AtariGame
+from noeira.envs.atari.flags import OBS_WIDTH, OBS_HEIGHT
+from noeira.envs.atari.frame_render import FRAME_BUF_SIZE
+from noeira.envs.atari.renderer import AtariRenderer
 
 
 # =============================================================================

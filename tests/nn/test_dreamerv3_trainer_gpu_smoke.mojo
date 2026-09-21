@@ -13,8 +13,8 @@ from std.memory import alloc
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.dreamerv3.trainer import DreamerV3Trainer
+from noeira.nn.constants import DT
+from noeira.deep_agents.dreamerv3.trainer import DreamerV3Trainer
 
 comptime OBS = 3
 comptime ACT = 1

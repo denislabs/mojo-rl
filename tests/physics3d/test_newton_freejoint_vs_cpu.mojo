@@ -28,7 +28,7 @@ from std.sys import has_nvidia_gpu_accelerator
 from max.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.fields import (
     AsStatic,
     AsStatic,
     AsStatic,
@@ -38,9 +38,11 @@ from mojo_rl.physics3d.fields import (
     ContactScratch,
     Dims,
  DimsLike,)
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.integrator.euler import (
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.tasks.so101_tabletop_xml import So101TabletopModel
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.solver.je_budget import je_ws_size
+from noeira.physics3d.integrator.euler import (
     _armature_kernel,
     _fnet_passive_kernel,
     _qacc_writeback_kernel,
@@ -48,36 +50,40 @@ from mojo_rl.physics3d.integrator.euler import (
     _fnet_passive_env,
     _qacc_writeback_env,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import (
+from noeira.physics3d.dynamics.subtree_com import (
     compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import (
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import (
     compute_mass_matrix,
 )
-from mojo_rl.physics3d.dynamics.ldl import (
+from noeira.physics3d.dynamics.ldl import (
     ldl_factor,
     ldl_solve,
     compute_m_inv,
 )
-from mojo_rl.physics3d.dynamics.rne import (
+from noeira.physics3d.dynamics.rne import (
     compute_bias_forces_rne,
 )
-from mojo_rl.physics3d.collision.contact_detection import (
+from noeira.physics3d.collision.contact_detection import (
     detect_contacts,
 )
-from mojo_rl.physics3d.solver.newton_solve import solve_newton
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.solver.newton_solve import (
+    solve_newton, solve_newton_blocked,
+)
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
+    MODEL_META_IDX_NTREE,
     METADATA_SIZE,
     MODEL_JOINT_SIZE,
 )
-from mojo_rl.envs.ant.ant_xml import AntModel
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.envs.ant.ant_xml import AntModel
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
 
 comptime DTYPE = DType.float32
 comptime BATCH = 2
@@ -89,6 +95,51 @@ comptime CONE_T = ConeType.PYRAMIDAL  # forces the blocked branch on NVIDIA
 # comptime guard below excludes it entirely when False, so Apple compiles
 # (Ant-only). On NVIDIA the blocked-humanoid kernel is the production path.
 comptime INCLUDE_HUMANOID = False
+
+
+# ⚠⚠ A MULTI-TREE MODEL, AND WITHOUT ONE THIS FILE GATES NOTHING ABOUT THE
+# BLOCK WORK. `Ant`, `Humanoid` and `Walker2d` — every model any GPU solver
+# test uses — are SINGLE-TREE, so `build_dof_segments` returns one segment
+# spanning `[0, nv)` and every loop restriction PN2c/d/e and P2 added is a
+# NO-OP on them. They would all pass against a completely broken partition.
+#
+# Three trees here: a slider body and two free boxes. The XML places the boxes
+# on the floor and TOUCHING EACH OTHER, so a contact row spans two trees and
+# the segment MERGE path runs too, not just the trivial all-separate case.
+comptime TREES_XML = """
+<mujoco model="three trees">
+  <option cone="pyramidal" timestep="0.002"/>
+  <worldbody>
+    <geom name="ground" type="plane" pos="0 0 0" size="4 4 1"/>
+    <body name="slider" pos="0 0 0.30">
+      <joint name="sx" type="slide" axis="1 0 0"/>
+      <joint name="sz" type="slide" axis="0 0 1"/>
+      <geom name="gs" type="sphere" size="0.05"/>
+    </body>
+    <body name="boxA" pos="0.60 0 0.05">
+      <freejoint/>
+      <geom name="ga" type="box" size="0.05 0.05 0.05"/>
+    </body>
+    <body name="boxB" pos="0.69 0 0.05">
+      <freejoint/>
+      <geom name="gb" type="box" size="0.05 0.05 0.05"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+comptime _tp = parse_xml(TREES_XML)
+comptime ThreeTreesModel = ModelDefFromXML[
+    xml=TREES_XML,
+    nbody=_tp.NBODY, njoint=_tp.NJOINT, nq=_tp.NQ, nv=_tp.NV,
+    ngeom=_tp.NGEOM, nact=_tp.NACT, ntex=_tp.NTEX, nmat=_tp.NMAT,
+    nlight=_tp.NLIGHT, ncam=_tp.NCAM, nsite=_tp.NSITE,
+    cone_type=ConeType.PYRAMIDAL,
+    max_contacts=8,
+    obs_dim_override=4,
+    obs_qpos_skip=0,
+    timestep=_tp.TIMESTEP,
+]
 
 
 def _prep[target: StaticString, D: DimsLike](
@@ -114,8 +165,8 @@ def _prep[target: StaticString, D: DimsLike](
         var M_v = scratch.M.lt["cpu", L_M]()
         for e in range(BATCH):
             _armature_env[DTYPE](e, AsStatic[D](), joints_v, M_v)
-        ldl_factor["cpu", DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_m_inv["cpu", DTYPE, BATCH=BATCH](scratch, ctx)
+        ldl_factor["cpu", DTYPE, BATCH=BATCH](mf, scratch, ctx)
+        compute_m_inv["cpu", DTYPE, BATCH=BATCH](mf, scratch, ctx)
         compute_bias_forces_rne["cpu", DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
         var qvel_v = d.qvel.lt["cpu", L_NV]()
@@ -126,7 +177,7 @@ def _prep[target: StaticString, D: DimsLike](
             _fnet_passive_env[DTYPE](
                 e, AsStatic[D](), qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
             )
-        ldl_solve["cpu", DTYPE, BATCH=BATCH](scratch, ctx)
+        ldl_solve["cpu", DTYPE, BATCH=BATCH](mf, scratch, ctx)
         var qacc_ws_v = scratch.qacc_ws.lt["cpu", L_NV]()
         var qacc_v = d.qacc.lt["cpu", L_NV]()
         var qacc_c_v = scratch.qacc_constrained.lt["cpu", L_NV]()
@@ -141,8 +192,8 @@ def _prep[target: StaticString, D: DimsLike](
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_factor["gpu", DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_m_inv["gpu", DTYPE, BATCH=BATCH](scratch, ctx)
+        ldl_factor["gpu", DTYPE, BATCH=BATCH](mf, scratch, ctx)
+        compute_m_inv["gpu", DTYPE, BATCH=BATCH](mf, scratch, ctx)
         compute_bias_forces_rne["gpu", DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         ctx.value().enqueue_function[
             _fnet_passive_kernel[DTYPE, D.NQ, D.NV, D.NJOINT, BATCH]
@@ -156,7 +207,7 @@ def _prep[target: StaticString, D: DimsLike](
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_solve["gpu", DTYPE, BATCH=BATCH](scratch, ctx)
+        ldl_solve["gpu", DTYPE, BATCH=BATCH](mf, scratch, ctx)
         ctx.value().enqueue_function[_qacc_writeback_kernel[DTYPE, D.NV, BATCH]](
             scratch.qacc_ws.lt["gpu", L_NV](),
             d.qacc.lt["gpu", L_NV](),
@@ -168,10 +219,24 @@ def _prep[target: StaticString, D: DimsLike](
     detect_contacts[target, DTYPE, BATCH=BATCH](d, mf, ctx)
 
 
-def _validate[MODEL: ModelDefLike](
+def _validate[
+    MODEL: ModelDefLike,
+    # ⚠⚠ FORCE THE BLOCKED KERNEL, WHICH `solve_newton` WOULD NOT LAUNCH HERE.
+    # Its routing is `if has_nvidia_gpu_accelerator()` — a RUNTIME test, so the
+    # blocked kernel is COMPILED on Metal and simply never reached. That left a
+    # hole exactly where the block work lives: the only multi-tree model in the
+    # tree reached the blocked kernel on NVIDIA and nowhere else, so a change to
+    # its per-block code could only be gated on the 5090. Calling
+    # `solve_newton_blocked` directly closes it — Metal runs the same kernel.
+    FORCE_BLOCKED: Bool = False,
+    # Mesh-collision capacity. 0 for the hand-written fixtures; a real robot
+    # model needs its hull vertices or `init_fields` raises.
+    NMESH_VERTS: Int = 0,
+](
     ctx: DeviceContext,
     name: String,
     torso_z: Float64,
+    min_trees: Int = 1,
 ) raises -> Bool:
     """Returns True if GPU==CPU within tolerance (solver correct)."""
     # Dims as local comptime aliases OFF the model spec so the mf type
@@ -198,13 +263,28 @@ def _validate[MODEL: ModelDefLike](
         nequality=NEQ,
         ntendon=NTEN,
         nexclude=NEXCL,
-        nmesh_verts=0,
+        nmesh_verts=NMESH_VERTS,
     ]
     print("--- ", name, " (NV=", NV, ") gentle floor contact ---")
     # Offset-free build straight from the compile-time model spec — no slab,
     # no init_model_gpu / load_from_slab.
     var mf = Model[DTYPE, MD]()
     MODEL.init_fields[DTYPE](ctx, mf)
+
+    # ⚠⚠ THE ARM'S OWN PREMISE, CHECKED. `build_dof_segments` returns ONE
+    # segment on a single-tree model, so every loop restriction PN2c/d/e and P2
+    # added is a NO-OP there and this comparison would pass against a
+    # completely broken partition. Printing `ntree` tells a reader which arms
+    # actually exercise the block work; `min_trees` makes the multi-tree arm
+    # FAIL rather than quietly degrade if its XML ever collapses to one tree.
+    var ntree = Int(mf.meta.data[MODEL_META_IDX_NTREE])
+    print("    kinematic trees:", ntree,
+          "(1 = the block restriction is a no-op here)" if ntree <= 1 else
+          "(multi-tree: the block restriction is LIVE)")
+    if ntree < min_trees:
+        print("    FAIL:", name, "has", ntree, "trees, needs >=", min_trees,
+              "- this arm is VACUOUS for the block work")
+        return False
 
     # Gentle pose: torso lowered so feet lightly touch (not deep penetration).
     var d_g = Data[DTYPE, MD, BATCH]()
@@ -223,18 +303,31 @@ def _validate[MODEL: ModelDefLike](
             d_c.qfrc.data[e * NV + i] = qf
     d_g.upload_all(ctx)
 
+    # ⚠ SIZED FROM THE SPILL POLICY, AS THE INTEGRATORS DO. At the default
+    # `JE_WS = 0` a model whose `Je` spills has the blocked kernel writing
+    # its rows into a one-scalar buffer: SO101Tabletop read a relative error
+    # of 722 the day the budget moved to 16 KB. `solve_newton_blocked` now
+    # refuses the mismatch at compile time.
+    comptime JE_WS = je_ws_size[
+        DTYPE, MD.NV, MD.NJOINT, MD.NTENDON, MD.NEQUALITY, MD.MAX_CONTACTS, 3
+    ]()
     var sg = DynamicsScratch[DTYPE, MD, BATCH]()
-    var cg = ContactScratch[DTYPE, MD, BATCH]()
+    var cg = ContactScratch[DTYPE, MD, BATCH, JE_WS]()
     sg.upload_all(ctx)
     cg.upload_all(ctx)
     var sc = DynamicsScratch[DTYPE, MD, BATCH]()
-    var cc = ContactScratch[DTYPE, MD, BATCH]()
+    var cc = ContactScratch[DTYPE, MD, BATCH, JE_WS]()
 
     # GPU path (blocked on NVIDIA, per-env on Apple).
     _prep["gpu"](
         d_g, mf, sg, ctx
     )
-    solve_newton["gpu", DTYPE, CONE_TYPE=CONE_T, BATCH=BATCH](d_g, mf, sg, cg, ctx)
+    comptime if FORCE_BLOCKED:
+        solve_newton_blocked[
+            "gpu", DTYPE, CONE_TYPE=CONE_T, BATCH=BATCH, JE_WS=JE_WS
+        ](d_g, mf, sg, cg, ctx)
+    else:
+        solve_newton["gpu", DTYPE, CONE_TYPE=CONE_T, BATCH=BATCH](d_g, mf, sg, cg, ctx)
 
     # CPU oracle (per-env).
     _prep["cpu"](
@@ -247,8 +340,10 @@ def _validate[MODEL: ModelDefLike](
     var ncon = 0
     for e in range(BATCH):
         ncon += Int(d_g.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
-    print("    contacts:", ncon, "(", "NVIDIA=blocked" if
-          has_nvidia_gpu_accelerator() else "Apple=per-env", ")")
+    print("    contacts:", ncon, "(",
+          "FORCED blocked" if FORCE_BLOCKED else
+          ("NVIDIA=blocked" if has_nvidia_gpu_accelerator()
+           else "Apple=per-env"), ")")
     if ncon == 0:
         print("    WARNING: 0 contacts (vacuous). Lower this model's torso_z\n"
               "    arg in main() by ~0.05 and re-run until contacts > 0.")
@@ -278,6 +373,35 @@ def main() raises:
 
     # ── Ant (free joint, NV=14) ────────────────────────────────────────────
     all_ok = _validate[AntModel](ctx, "Ant", 0.28) and all_ok
+
+    # ── ⚠ THE MULTI-TREE ARM. Every other model here is single-tree, so
+    # without this one the file says nothing about the block restrictions.
+    # `torso_z` is 0: the XML already places the bodies.
+    all_ok = _validate[ThreeTreesModel](
+        ctx, "ThreeTrees", 0.0, min_trees=3
+    ) and all_ok
+
+    # ── ⚠⚠ THE SAME MULTI-TREE MODEL, THROUGH THE BLOCKED KERNEL ITSELF.
+    # The arm above runs per-env on Apple, so on this machine it gates the
+    # partition but NOT the blocked kernel's per-block code — and F3b made that
+    # code thread-parallel (one diagonal block per thread). With three trees
+    # this is the arm where three threads solve three systems concurrently;
+    # every other blocked model in the tree is single-tree, where the loop
+    # degenerates to "thread 0 does block 0" and would pass whatever the
+    # mapping did.
+    all_ok = _validate[ThreeTreesModel, FORCE_BLOCKED=True](
+        ctx, "ThreeTrees/blocked", 0.0, min_trees=3
+    ) and all_ok
+
+    # ── ⚠ AN INDEPENDENTLY-AUTHORED MULTI-TREE MODEL, and that is the point.
+    # ThreeTrees is mine, so it can only fail in ways I thought to build into
+    # it. This one comes from the task layer: 4 trees, real contacts against 30
+    # collision MESHES rather than box-on-box, and `max_contacts = 32` where
+    # ThreeTrees is 8 and the park scenes are 16 — so `ME = 4*MC + 2*NJOINT +
+    # NV` moves on both axes at once.
+    all_ok = _validate[
+        So101TabletopModel, FORCE_BLOCKED=True, NMESH_VERTS=30000
+    ](ctx, "SO101Tabletop/blocked", 0.0, min_trees=2) and all_ok
 
     # ── Humanoid (free joint, NV=23) — the production blocked model ─────────
     # On NVIDIA this exercises the exact blocked kernel humanoid training uses.

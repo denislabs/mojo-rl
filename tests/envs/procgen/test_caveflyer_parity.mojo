@@ -11,8 +11,8 @@ collisions, enemy reflect off cave walls) over a thrust+fire tape. Ground truth 
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import CaveflyerGame
-from mojo_rl.envs.procgen.games.caveflyer import (
+from noeira.envs.procgen.games import CaveflyerGame
+from noeira.envs.procgen.games.caveflyer import (
     DIST_EASY, DIST_HARD, CAVEWALL, OBSTACLE, TARGET, ENEMY,
 )
 

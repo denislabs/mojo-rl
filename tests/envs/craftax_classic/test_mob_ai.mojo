@@ -11,8 +11,8 @@ Run:
 
 from std.random.philox import Random as PhiloxRandom
 
-from mojo_rl.envs.craftax_classic import CraftaxClassicEnv
-from mojo_rl.envs.craftax_classic.constants import (
+from noeira.envs.craftax_classic import CraftaxClassicEnv
+from noeira.envs.craftax_classic.constants import (
     MAP_W,
     BLOCK_GRASS,
     BLOCK_PATH,
@@ -35,7 +35,7 @@ from mojo_rl.envs.craftax_classic.constants import (
     MAX_ARROWS,
     MOB_DESPAWN_DISTANCE,
 )
-from mojo_rl.envs.craftax_classic.state import (
+from noeira.envs.craftax_classic.state import (
     S_MAP_BASE,
     S_PLAYER_POS,
     S_INTRINSICS_BASE,
@@ -48,7 +48,7 @@ from mojo_rl.envs.craftax_classic.state import (
     S_LIGHT_LEVEL,
     STATE_SIZE,
 )
-from mojo_rl.nn.constants import DT as dtype
+from noeira.nn.constants import DT as dtype
 
 
 @always_inline

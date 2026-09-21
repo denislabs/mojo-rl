@@ -22,7 +22,7 @@ Run:
 from max.gpu.host import DeviceContext
 from std.testing import assert_equal, assert_true
 
-from mojo_rl.data import (
+from noeira.data import (
     ColumnSpec,
     IDX_DT,
     IndexBatch,
@@ -32,7 +32,7 @@ from mojo_rl.data import (
 )
 
 
-comptime OUT = "/tmp/mojo_rl_resident_gather.h5"
+comptime OUT = "/tmp/noeira_resident_gather.h5"
 
 comptime N_ROWS: Int = 40
 comptime QPOS: Int = 9

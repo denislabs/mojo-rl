@@ -68,7 +68,7 @@ imagination possible without observations.
 the actor maximises them plus an entropy bonus. No decoder is involved — imagined
 training never renders a pixel.
 
-## Building it in mojo-rl
+## Building it in noeira
 
 DreamerV3 has the largest parameter list in the framework, because the world
 model, encoder, decoder and both heads are all configured at compile time. From
@@ -161,7 +161,7 @@ An in-progress successor using a transformer world model with a tokenizer rather
 than an RSSM.
 
 ```mojo
-from mojo_rl.deep_agents.dreamer4 import Dreamer4Agent
+from noeira.deep_agents.dreamer4 import Dreamer4Agent
 ```
 
 :::caution[Experimental]

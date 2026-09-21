@@ -22,19 +22,19 @@ Reads checkpoints/rainbow_car_racing_pixel_hybrid.ckpt.
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.conv2d import Conv2D
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.primitives.flatten import Flatten
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.primitives.noisy_linear import NoisyLinear
-from mojo_rl.nn.primitives.dueling_head_c51 import DuelingHeadC51
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.conv2d import Conv2D
+from noeira.nn.primitives.activations import ReLU
+from noeira.nn.primitives.flatten import Flatten
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.nn.primitives.noisy_linear import NoisyLinear
+from noeira.nn.primitives.dueling_head_c51 import DuelingHeadC51
 
-from mojo_rl.deep_agents.c51.trainer import C51Trainer
-from mojo_rl.deep_agents.training.blocks import NStepSampleStep
-from mojo_rl.deep_agents.data.any_per_replay import AnyPerReplay
-from mojo_rl.envs.car_racing import CarRacingMB, CarRacingPixel
+from noeira.deep_agents.c51.trainer import C51Trainer
+from noeira.deep_agents.training.blocks import NStepSampleStep
+from noeira.deep_agents.data.any_per_replay import AnyPerReplay
+from noeira.envs.car_racing import CarRacingMB, CarRacingPixel
 
 
 # =============================================================================

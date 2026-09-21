@@ -20,10 +20,10 @@ Usage:
     pixi run -e apple mojo run -I . examples/arcade_games/diag_atari_breakout.mojo
 """
 
-from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
-from mojo_rl.envs.atari.cpu6502 import run_frame_video
-from mojo_rl.envs.atari.games.breakout import BreakoutDef
-from mojo_rl.envs.atari.flags import (
+from noeira.envs.atari.environment import AtariEnvironment, load_rom
+from noeira.envs.atari.cpu6502 import run_frame_video
+from noeira.envs.atari.games.breakout import BreakoutDef
+from noeira.envs.atari.flags import (
     ACTION_NOOP,
     ACTION_FIRE,
     ACTION_LEFT,
@@ -31,7 +31,7 @@ from mojo_rl.envs.atari.flags import (
     FRAME_WIDTH,
     FRAME_HEIGHT,
 )
-from mojo_rl.envs.atari.riot import set_action
+from noeira.envs.atari.riot import set_action
 from std.memory import alloc
 
 
@@ -128,7 +128,7 @@ def main() raises:
 
     comptime COLS = 18
     comptime ROWS = 6
-    var prev = InlineArray[Bool, COLS * ROWS](fill=False)
+    var prev = Array[Bool, COLS * ROWS](fill=False)
     var have_prev = False
 
     var phantom_count = 0
@@ -185,7 +185,7 @@ def main() raises:
     # (== FLAG_CON_RIGHT line); paddle position is driven DIRECTLY via paddle_pos
     # so the trigger and the knob are decoupled. We learn the sign of the
     # paddle_pos→screen-x mapping at runtime from observed motion.
-    from mojo_rl.envs.atari.flags import FLAG_CON_RIGHT
+    from noeira.envs.atari.flags import FLAG_CON_RIGHT
 
     var paddle_target: Int = 128  # paddle_pos we command
     var last_paddle_pos: Int = 128
@@ -263,7 +263,7 @@ def main() raises:
         prev_score = cur_score
 
         # Build current brick grid.
-        var cur = InlineArray[Bool, COLS * ROWS](fill=False)
+        var cur = Array[Bool, COLS * ROWS](fill=False)
         for r in range(ROWS):
             for c in range(COLS):
                 cur[r * COLS + c] = brick_cell(buf, c, r)

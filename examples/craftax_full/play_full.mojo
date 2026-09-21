@@ -32,8 +32,8 @@ Controls (mirrors the reference `play_craftax.py`):
 """
 
 from std.memory import alloc
-from mojo_rl.envs.craftax_full import CraftaxFullEnv
-from mojo_rl.envs.craftax_full.constants import (
+from noeira.envs.craftax_full import CraftaxFullEnv
+from noeira.envs.craftax_full.constants import (
     NUM_ACHIEVEMENTS,
     ACTION_NOOP,
     ACTION_LEFT,
@@ -79,9 +79,9 @@ from mojo_rl.envs.craftax_full.constants import (
     ACTION_DRINK_POTION_CYAN,
     ACTION_DRINK_POTION_YELLOW,
 )
-from mojo_rl.envs.craftax_full.state import S_ACHIEVEMENTS_BASE
-from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
-from mojo_rl.render.sdl.sdl_scancode import Scancode
+from noeira.envs.craftax_full.state import S_ACHIEVEMENTS_BASE
+from noeira.render.sdl.sdl_keyboard import get_keyboard_state
+from noeira.render.sdl.sdl_scancode import Scancode
 
 
 @always_inline

@@ -1,6 +1,6 @@
 ---
 title: Planners
-description: mojo_rl.planners — trajectory optimizers and tree search, written against callback traits rather than against any particular world model.
+description: noeira.planners — trajectory optimizers and tree search, written against callback traits rather than against any particular world model.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -12,12 +12,12 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 Most RL agents decide by evaluating a policy network. A few decide by **running
 an optimization at every step** — searching over action sequences, or over a
 tree of imagined futures, and executing the first action of whatever wins.
-`mojo_rl.planners` is where that search lives, separately from the agents that
+`noeira.planners` is where that search lives, separately from the agents that
 use it.
 
 ```mojo
-from mojo_rl.planners.trajectory import MPPIGPUBatched, ContinuousCEMOptimizer
-from mojo_rl.planners.tree_search import GenericCPUMCTS, GumbelGPUMCTS
+from noeira.planners.trajectory import MPPIGPUBatched, ContinuousCEMOptimizer
+from noeira.planners.tree_search import GenericCPUMCTS, GumbelGPUMCTS
 ```
 
 ## The contract
@@ -70,7 +70,7 @@ knowing which paths are load-bearing:
 | `MPPICPU` | TD-MPC2 evaluation, and the LQ property tests |
 | `GenericGPUMCTS`, `GumbelGPUMCTS` | [MuZero](/algorithms/muzero/), [AlphaZero](/algorithms/alphazero/) |
 | `SampledGumbelGPUMCTS` | [EfficientZero V2](/algorithms/efficient-zero-v2/), continuous actions |
-| `ContinuousCEMOptimizer` | LeWM, in `mojo_rl/experimental/` |
+| `ContinuousCEMOptimizer` | LeWM, in `noeira/experimental/` |
 | `CategoricalCEMOptimizer`, `CategoricalRandomShooter` | LeWM evaluation, model-quality diagnostics |
 | `ILQRCPU`, `ILQRGPUBatched` | **nothing yet** — tested, not adopted |
 
@@ -86,7 +86,7 @@ implements the derivative surface — see
 ## Package layout
 
 ```
-mojo_rl/planners/
+noeira/planners/
 ├── common/       value encoding, noise sampling, action bounds, MinMaxStats
 ├── trajectory/   CEM, random shooter, MPPI, iLQR + their callback traits
 ├── tree_search/  MCTS strategies, model traits, CPU and GPU orchestrators

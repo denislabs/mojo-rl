@@ -35,15 +35,15 @@ from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
-from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
-from mojo_rl.physics3d.collision.gjk import gjk_epa
-from mojo_rl.physics3d.constants import GEOM_BOX, GEOM_CYLINDER
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.fields import Model, Dims
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.collision.ccd_workspace import L_CCD_WS1
+from noeira.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
+from noeira.physics3d.collision.gjk import gjk_epa
+from noeira.physics3d.constants import GEOM_BOX, GEOM_CYLINDER
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     mesh_max_edge,
     MODEL_META_IDX_CCD_TOLERANCE,
     MODEL_META_IDX_CCD_ITERATIONS,
@@ -322,7 +322,7 @@ def test_epa_actually_consumes_the_tolerance() raises:
     var _ng = _no_graph_epa()
     var _ne = _no_edges_epa()
     var ws = ccd_ws_alloc[DTYPE]()
-    var out = InlineArray[Float64, 8](fill=0.0)
+    var out = Array[Float64, 8](fill=0.0)
     for i in range(2):
         var tol = 1e-6 if i == 0 else 2e-2
         # ⚠⚠ CYLINDER FIRST, AND THE MESH OPERAND MOVES WITH IT. `gjk_epa`

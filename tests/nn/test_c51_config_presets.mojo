@@ -10,15 +10,15 @@ test_c51_config_presets_gpu.mojo.
 from std.random import seed
 from std.testing import assert_equal, assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.c51 import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.c51 import (
     C51,
     DoubleC51,
     Rainbow,
     C51Config,
     RainbowConfig,
 )
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.envs.cartpole import CartPoleEnv
 
 
 comptime OBS = 4

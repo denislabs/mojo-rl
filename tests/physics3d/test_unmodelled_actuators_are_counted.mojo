@@ -47,9 +47,9 @@ zero-transmission count is the same idea for the actuators that do parse.
 from max.gpu.host import DeviceContext
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.runtime_load import read_model_source
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.runtime_load import read_model_source
 
 comptime FLYBODY = String(
     "references/mujoco_menagerie-main/flybody/scene.xml"

@@ -69,7 +69,7 @@ pixi run mojo run -I . tests/arcade_games/test_atari_env.mojo
 ```bash
 pixi run --list              # Show all available tasks
 pixi run setup-roms          # Setup Atari ROM symlinks
-pixi run build               # Precompile mojo_rl
+pixi run build               # Precompile noeira
 pixi run test                # Run tests
 pixi run format              # Format code
 pixi run compile-shaders     # Compile GLSL shaders

@@ -1,6 +1,6 @@
 ---
 title: Checkpoints
-description: Saving and restoring weights, optimizer state and module state — the storage-ckpt v3 format.
+description: Saving and restoring weights, optimizer state and module state — the storage-ckpt v3 format, and what each agent's checkpoint actually contains.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -8,12 +8,30 @@ import Maturity from '~/components/Maturity.astro';
 <Maturity level="stable" />
 
 Checkpointing walks a `Module`'s parameters and states and writes one named
-section per field. It captures enough for an **exact training resume**, not just
-inference: Adam's per-parameter moments ride along with the weights.
+section per field. The format can carry enough for an **exact training
+resume** — Adam's per-parameter moments ride along with the weights — but
+whether a given checkpoint does depends on who wrote it. The agents' own
+checkpoints mostly do not; see [what the agents save](#what-the-agents-save).
+
+## Saving and loading a module
+
+The generic entry points live in `noeira/nn/core/checkpoint.mojo`:
+
+```mojo
+from noeira.nn.core.checkpoint import save_params, load_params
+
+save_params["gpu"](model, "model.ckpt", ctx)                       # weights + moments
+save_params["gpu"](model, "model.ckpt", ctx, save_moments=False)   # weights only
+load_params["cpu"](model, "model.ckpt")
+```
+
+`save_params_multi` / `load_params_multi` pack several modules into one file
+(an actor and its critics, for instance), in a fixed order.
 
 ## Saving during training
 
-The batched drivers auto-checkpoint. Pass a cadence and a path:
+The batched drivers auto-checkpoint when the trainer implements `save_state`.
+Pass a cadence and a path:
 
 ```mojo
 _ = agent.train[BatchedEnvT, N_ENVS=N_ENVS](
@@ -23,12 +41,18 @@ _ = agent.train[BatchedEnvT, N_ENVS=N_ENVS](
 )
 ```
 
-Saves happen between driver iterations as a host-side device-to-host copy, which
-is safe alongside CUDA-graph capture. A final save runs at the end of training.
+Saves happen in host code between driver iterations, as a device-to-host copy
+of the live parameters, so they are safe alongside CUDA-graph capture (the
+graphs are per step, not the whole loop). A final save runs at the end of
+training. The replay buffer and episode tracker are never saved.
+
+Drivers built on the project layer take the path from their run instead —
+`run.checkpoint_path("best")` is `<run>/checkpoints/best.ckpt` — so two runs
+never overwrite each other. See [Projects and runs](/concepts/projects/).
 
 ## The format
 
-Current saves write **`storage-ckpt v3`**:
+`save_params` writes **`storage-ckpt v3`**:
 
 ```
 storage-ckpt v3
@@ -50,25 +74,43 @@ checked against the in-memory walk order. A mismatch raises rather than loading
 garbage, which catches topology drift between the architecture that saved and
 the one trying to load.
 
-**Writes are atomic.** The payload lands in `<path>.tmp` and is renamed over the
-target only once fully written. A crash mid-save cannot destroy the previous good
-checkpoint.
+**Writes are atomic.** The payload lands in a temporary file and is renamed over
+the target only once fully written. A crash mid-save cannot destroy the
+previous good checkpoint.
 
 **I/O is chunked at 1 GiB.** This is not incidental — see the v2 note below.
 
 ## Optimizer moments
 
-Adam's `m` and `v` are co-located on each `Param` and written into the same
-section when populated. That is what makes resume exact rather than approximate:
+Adam's `m` and `v` live on each `Param` and are written into the same section
+when `save_moments=True` (the default for `save_params`) and they are
+populated. That is what makes a resume exact rather than approximate:
 reloading weights without moments restarts Adam's bias correction and momentum
 from zero, which visibly perturbs training.
 
-For inference or evaluation you do not need them:
+For inference or evaluation you do not need them, and `save_moments=False`
+writes a smaller, model-only checkpoint.
 
-```mojo
-# model-only checkpoint — smaller, no exact resume
-save_moments=False
-```
+## What the agents save
+
+An agent facade's `save` and the drivers' auto-checkpoint both go through the
+trainer's `save_state`. These save **online weights only** — no optimizer
+moments and no replay buffer; where an agent has target networks, they are
+hard-copied from the online ones on load. A resumed run re-warms its
+optimizers.
+
+| Trainer | `save_state` writes |
+|---|---|
+| SAC | v3: actor + both online critics, in one file. The entropy temperature is not saved. |
+| DQN, C51, TD3, DDPG, PPO, PPO-discrete, REDQ, REDQ-OFE, MBPO | the **v2 text layout**, through a single plain `write` — not chunked and not atomic. DQN and C51 add their ε-schedule and step counter as `key=value` lines; MBPO adds its dynamics ensemble. |
+
+:::caution[Some trainers still write v2]
+The trainers in the second row have not moved to the binary writer. The
+2 GiB truncation described below only matters for very large networks, but
+even a small save is not atomic: a crash mid-save can leave a truncated file
+where the previous checkpoint was.
+Copy a checkpoint you care about before training over the same path again.
+:::
 
 ## GPU parameters
 
@@ -91,27 +133,29 @@ pixi run mojo run -I . examples/half_cheetah/sac_half_cheetah_nn_eval_cpu.mojo
 The architecture must match, because the parameter layout is derived from it —
 including the fused-versus-unfused choice. A network built from `LinearReLU`
 does not have the same walk order as one built from `Linear` plus `ReLU`, and the
-name validation will reject the mismatch. Where an example pair exists, both
-sides typically share a preset such as `SAC[...]` so the definitions cannot
-drift apart.
+name validation will reject the mismatch. The HalfCheetah pair avoids the
+problem by building both sides from the same `SAC[...]` preset, so the
+definitions cannot drift apart.
 
-Note that a GPU-trained checkpoint loads fine into a CPU evaluation script. The
-weights are device-agnostic.
+A GPU-trained checkpoint loads fine into a CPU evaluation script. The weights
+are device-agnostic.
 
 :::caution[v2 is readable but obsolete]
-Loaders dispatch on the header line, so legacy `storage-ckpt v2` files still
-load. Nothing should write them.
+Loaders dispatch on the header line, so `storage-ckpt v2` files still load —
+through `load_params`, and through SAC's `load_state` for checkpoints it wrote
+before the switch.
 
-v2 stored one ASCII float per line. At DreamerV3 200m scale that meant ~5 GB of
+v2 stores one ASCII float per line. At DreamerV3 200m scale that meant ~5 GB of
 text per save, which was **silently truncated** at the single-`write(2)` syscall
 cap of ~2 GiB — producing corrupt checkpoints with no error. v3's raw
 little-endian payloads are about 3× smaller, skip the `atof`/`String` churn
 entirely, and all I/O goes through explicit ≤1 GiB chunks.
 
-If you have old checkpoints from a large run, treat them as suspect.
+If you have v2 checkpoints from a large run, treat them as suspect.
 :::
 
 ## Next
 
+- [Projects and runs](/concepts/projects/) — where a run's checkpoints live, and how one becomes a deployable policy
 - [CPU and GPU paths](/concepts/cpu-gpu/) — where checkpoints fit in a device training loop
 - [Traits](/concepts/traits/) — `Module`, `Param` and the `Saveable` contract

@@ -14,8 +14,8 @@ from std.math import isfinite
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.agent import TDMPC2Agent
+from noeira.nn.constants import DT
+from noeira.deep_agents.tdmpc2.agent import TDMPC2Agent
 
 comptime OBS = 3
 comptime ENC = 32

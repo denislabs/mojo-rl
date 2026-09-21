@@ -12,19 +12,19 @@ Run: MODULAR_DEBUG=device-sync-mode pixi run -e nvidia mojo run -I . \
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
-from mojo_rl.physics3d.collision.broadphase_sap import (
+from noeira.physics3d.collision.broadphase_sap import (
     detect_contacts_auto,
 )
-from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.integrator.rk4 import RK4Integrator
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
 )
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
 
 comptime DTYPE = DType.float32  # match the gate (Metal is fragile on float64)
 comptime NQ = HumanoidModel.NQ  # 24

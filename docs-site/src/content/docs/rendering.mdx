@@ -1,6 +1,6 @@
 ---
 title: Rendering
-description: SDL3-backed rendering — a 2D CPU rasterizer, a GPU 3D renderer with shadows and reflections, and video capture.
+description: SDL3-backed rendering — a 2D CPU rasterizer, a GPU 3D renderer with shadows and reflections, ImGui viewers, and video capture. Camera observations for policies come from a separate GPU ray tracer.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -9,8 +9,16 @@ import DemoGrid from '~/components/DemoGrid.astro';
 
 <Maturity level="stable" note="Requires SDL3. Not needed for training." />
 
-`mojo_rl.render` draws environments — for watching a policy, for recording, and
+`noeira.render` draws environments — for watching a policy, for recording, and
 for playing them yourself. It is optional: training never touches it.
+
+:::note[Viewer pictures and observation pictures are different paths]
+Everything on this page is the **viewer**: an SDL3 window, rasterised. The
+pixels a policy trains on come from
+[`noeira.physics3d.raytrace`](/rendering/cameras/), a batched GPU ray tracer
+that needs no window and writes straight into a device buffer. MuJoCo keeps
+the same split.
+:::
 
 <DemoGrid min="15rem">
 	<Demo name="walker2d" caption="3D renderer" meta="shadows · reflections · skybox" />
@@ -38,7 +46,7 @@ Draws lines, filled and outlined polygons, circles and text into a pixel buffer
 that SDL3 presents.
 
 ```mojo
-from mojo_rl.render.renderer2d import Renderer2D
+from noeira.render.renderer2d import Renderer2D
 ```
 
 No GPU required, which makes it the reliable choice for a headless box or a
@@ -46,8 +54,9 @@ quick look at a policy.
 
 ### Renderer3D — GPU renderer
 
-The MuJoCo-style environments render through the SDL3 GPU API with Metal
-shaders. Six passes:
+The MuJoCo-style environments render through the SDL3 GPU API. The shader
+language is chosen at compile time: MSL on macOS (Metal), SPIR-V everywhere
+else (Vulkan). Six passes:
 
 | Pass | Output |
 |---|---|
@@ -59,11 +68,31 @@ shaders. Six passes:
 | text | HUD overlay |
 
 ```mojo
-from mojo_rl.render.renderer3d import Renderer3D
+from noeira.render.renderer3d import Renderer3D
 ```
 
 Meshes are cached and draw commands deferred, so a batch of similar geoms costs
 one submission rather than one per body.
+
+**Picture-in-picture.** `Renderer3D.set_pip_views` draws the scene again from
+other cameras into insets over the main view — each its own pass, sharing the
+shadow map, without reflections or HUD text. `ModelRenderer.set_pip_cameras`
+does it for a model's own cameras, posed from that frame's forward kinematics:
+a teleoperator's overhead and wrist views beside the free camera.
+`examples/so101/tower_demo_viewer.mojo` shows the tower's two cameras this
+way.
+
+### Shaders on Linux: SPIR-V
+
+The Metal shaders are embedded as strings in `gpu_shaders.mojo`. Their GLSL 450
+equivalents live in `noeira/render/shaders/` and are committed pre-compiled to
+`.spv`. After editing a `.glsl` file, rebuild them:
+
+```bash
+pixi run compile-shaders
+```
+
+This runs `glslc` from `shaderc`, a pixi dependency.
 
 ## Interactive controls
 
@@ -84,11 +113,18 @@ Mouse orbits, pans and zooms.
 ## Video capture
 
 ```mojo
-from mojo_rl.render.video_recorder import VideoRecorder
+from noeira.render.video_recorder import VideoRecorder
+
+var rec = VideoRecorder()
+rec.start("run.mp4", fps=30)
+rec.add_frame_bgra(pixel_addr, width, height)   # each frame
+rec.stop()
 ```
 
-Records MP4 or GIF through Python `imageio` (a pixi dependency, so nothing extra
-to install). Every demo GIF on this site came from it.
+Encodes MP4 or GIF (chosen by the file extension) by piping BGRA frames to
+`ffmpeg` from a worker thread — no Python in the path. `ffmpeg` is a declared
+pixi dependency, so there is nothing extra to install. `save_frame_bgra` writes
+a single frame as PNG, JPEG or WebP.
 
 ```bash
 pixi run mojo run -I . examples/export_env_gifs.mojo
@@ -112,11 +148,26 @@ to share, record MP4, or transcode afterwards with
 | `font_atlas` | bitmap text |
 | `shapes` · `shapes3d` | primitive geometry |
 | `transform` · `light` · `colors` | scene helpers |
-| `stl_loader` · `png_loader` | asset loading |
+| `stl_loader` · `obj_loader` · `msh_loader` | mesh loading — STL, Wavefront OBJ, MuJoCo's legacy `.msh` |
+| `skn_loader` · `skinning` | MuJoCo `.skn` skins and linear blend skinning |
+| `png_loader` | textures, decoded natively by `noeira.io.png` |
+| `ui` | small immediate-mode widgets drawn by `Renderer3D` itself |
+| `imgui/` | Dear ImGui bindings — see [viewers](/rendering/viewers/) |
 | `image_writer` | PNG / PPM output |
 
-Shader compilation goes through `shaderc` (GLSL → SPIR-V), also a pixi
-dependency.
+Mesh files are dispatched by extension inside `load_stl`, so the renderer, the
+mesh inertia and the convex hull all read OBJ and `.msh` through the same call.
+
+**Skins** are the deformable envelope MuJoCo draws over a model such as
+dm_control's dog: each vertex is weighted across several bodies, so the mesh is
+re-posed on the CPU every frame (`skin_pose`, transcribed from MuJoCo's
+`mjv_updateActiveSkin`) and re-uploaded.
+`examples/dm_control/dog_skin_view.mojo` shows one on its own.
+
+**Two UI toolkits, not interchangeable.** `ui.mojo` widgets record into the
+renderer's command buffer and are painted later; the ImGui bindings build their
+own draw list. Do not mix them in one panel — they hit-test against different
+notions of where the pointer is. New viewers use ImGui.
 
 ## Rendering an environment
 
@@ -155,5 +206,7 @@ tools. The 2D rasterizer is unaffected.
 
 ## Next
 
+- [Viewers and physics studio](/rendering/viewers/) — the ImGui viewers and the MJCF authoring tool
+- [Camera observations](/rendering/cameras/) — the batched GPU ray tracer policies see through
 - [Environments](/environments/) — what there is to render
 - [3D physics](/physics/physics3d/) — the models being drawn

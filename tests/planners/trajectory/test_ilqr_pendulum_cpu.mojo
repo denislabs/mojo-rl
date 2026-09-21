@@ -26,8 +26,8 @@ Test plan:
 from std.math import abs as math_abs, sin, cos
 from std.testing import assert_true
 
-from mojo_rl.planners.trajectory import ILQRCPU
-from mojo_rl.planners.testing import Pendulum2DILQRCallback
+from noeira.planners.trajectory import ILQRCPU
+from noeira.planners.testing import Pendulum2DILQRCallback
 
 
 comptime LATENT_DIM: Int = 2

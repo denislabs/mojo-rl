@@ -51,14 +51,14 @@ from max.gpu.host import DeviceContext
 
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
 
 comptime DT = DType.float64
 comptime N_STEP = 1500

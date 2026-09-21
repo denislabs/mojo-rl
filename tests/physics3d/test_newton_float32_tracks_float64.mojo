@@ -50,9 +50,9 @@ decides, and it reproduces run to run.
 from std.math import abs
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.envs.walker2d import Walker2d
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.core.cont_action import ContAction
+from noeira.envs.walker2d import Walker2d
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, CONTACT_SIZE,
 )
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the Dear ImGui shim that `mojo_rl/render/imgui/` binds to.
+# Build the Dear ImGui shim that `noeira/render/imgui/` binds to.
 #
 #   pixi run build-imgui          # clone ImGui if missing, then build if stale
 #   pixi run build-imgui --force  # rebuild unconditionally
@@ -8,9 +8,9 @@
 # committed. It is a build-time dependency of ONE optional viewer, and the
 # clone is a single shallow command that this script runs for you.
 #
-# ⚠ THE ARTIFACT IS NOT TRACKED. Anything importing `mojo_rl.render.imgui`
+# ⚠ THE ARTIFACT IS NOT TRACKED. Anything importing `noeira.render.imgui`
 # fails at RUNTIME (dlopen abort), not at compile time, if this has not been
-# run. That is the cost of an FFI dependency; `mrl_imgui_available()` in
+# run. That is the cost of an FFI dependency; `nra_imgui_available()` in
 # imgui.mojo exists so a caller can degrade instead of dying.
 set -euo pipefail
 
@@ -19,14 +19,14 @@ IMGUI_DIR="$ROOT/third_party/imgui"
 # ⚠ ImGuizmo IS A SECOND VENDORED LIBRARY IN THE SAME DYLIB. It is not a
 # separate artifact: it draws through ImGui's draw list and shares its
 # context, so linking it anywhere else would give it a SECOND ImGui context
-# and a gizmo that never sees the mouse. `mrl_gz_*` lives beside `mrl_ig_*`
+# and a gizmo that never sees the mouse. `nra_gz_*` lives beside `nra_ig_*`
 # in one shim for that reason.
 GZ_DIR="$ROOT/third_party/ImGuizmo"
-SRC="$ROOT/mojo_rl/render/imgui/imgui_shim.cpp"
+SRC="$ROOT/noeira/render/imgui/imgui_shim.cpp"
 
 case "$(uname -s)" in
-    Darwin) LIB="$ROOT/mojo_rl/render/imgui/libmojo_imgui.dylib" ;;
-    *)      LIB="$ROOT/mojo_rl/render/imgui/libmojo_imgui.so" ;;
+    Darwin) LIB="$ROOT/noeira/render/imgui/libmojo_imgui.dylib" ;;
+    *)      LIB="$ROOT/noeira/render/imgui/libmojo_imgui.so" ;;
 esac
 
 FORCE=0

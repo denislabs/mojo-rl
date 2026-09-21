@@ -1,6 +1,6 @@
 ---
 title: Data
-description: mojo_rl.data — one column-oriented trajectory store behind replay buffers, offline datasets and demonstrations, on a native HDF5 layer.
+description: noeira.data — one column-oriented trajectory store behind replay buffers, offline datasets and demonstrations, LeRobot v3 in both directions, on native HDF5, Parquet and video I/O.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -8,10 +8,11 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <Maturity level="stable" note="Transition buffers are migrated and gated. The sequence buffers (DreamerV3, Dreamer 4, zero-series) still have their own storage." />
 
-`mojo_rl.data` is the storage layer underneath training: the replay buffers the
+`noeira.data` is the storage layer underneath training: the replay buffers the
 off-policy agents sample from, the on-disk format offline datasets and
-demonstrations are written in, and the index policies that decide which rows a
-minibatch contains.
+demonstrations are written in, the index policies that decide which rows a
+minibatch contains, and the bridge to LeRobot v3 datasets, the format robot
+recordings are shared in.
 
 It exists because those three had drifted into separate implementations. Every
 buffer in the framework hardcoded the same five columns — `obs`, `action`,
@@ -29,18 +30,23 @@ new buffer rather than a new configuration.
 		episode index, streaming HDF5 writes, residency, and the four index
 		policies.
 	</Card>
+	<Card title="LeRobot datasets" icon="database">
+		[Import, write, push](/data/lerobot/) — LeRobot v3.0 into a trajectory
+		store, recorders writing v3.0 with per-episode checkpoints, and pushes to
+		the Hub or noeira cloud. No Python in the path.
+	</Card>
 	<Card title="Remote datasets" icon="cloud-download">
-		[Pull and push](/data/remote/) — a catalog client that resolves a dataset
-		name to bytes on disk, so a rented GPU box does not regenerate what it
-		could fetch.
+		[Pull and push](/data/remote/) — datasets, project recordings and asset
+		packs on noeira cloud, so a rented GPU box fetches what it would
+		otherwise regenerate.
 	</Card>
 </CardGrid>
 
 ## Three layers
 
 ```
-mojo_rl/io/       transport. HDF5 read + write, resumable HTTP. No RL semantics.
-mojo_rl/data/     the STORE: named columns, episode index, host/device residency.
+noeira/io/       transport. HDF5, Parquet, video, resumable HTTP. No RL semantics.
+noeira/data/     the STORE: named columns, episode index, host/device residency.
    └── samplers   index policies over a store: uniform, prioritized,
                   sequence-window, and the device Philox sampler.
 ```
@@ -82,7 +88,7 @@ holds*:
 So a store declares its columns rather than inheriting them:
 
 ```mojo
-from mojo_rl.data import ColumnSpec, TrajectoryStoreWriter
+from noeira.data import ColumnSpec, TrajectoryStoreWriter
 
 var cols = List[ColumnSpec]()
 cols.append(ColumnSpec(String("qpos"), DType.float32, 9))
@@ -128,11 +134,16 @@ not derived from these figures.
 ## Package map
 
 ```
-mojo_rl/io/
+noeira/io/
 ├── hdf5/          native libhdf5 FFI — reader.mojo, writer.mojo, per-API h5*.mojo
-└── fetch.mojo     resumable HTTP → local cache, sha256-verified
+├── parquet/       native Parquet reader and writer (Thrift, Snappy, RLE, PLAIN)
+├── video/         H.264 decode and encode by piping ffmpeg
+├── http.mojo      libcurl behind a small C shim (pixi run build-http)
+├── fetch.mojo     resumable HTTP → local cache, sha256-verified
+├── hf.mojo        Hugging Face Hub reads; hf_push.mojo, writes
+└── json.mojo, image.mojo, sha256.mojo, …
 
-mojo_rl/data/
+noeira/data/
 ├── column.mojo        ColumnSpec, dtype mapping
 ├── manifest.mojo      schema written into the file
 ├── episode_index.mojo ep_len / ep_offset + validation
@@ -144,12 +155,21 @@ mojo_rl/data/
 ├── replay_gpu.mojo    StoreReplayGpu (device ring)
 ├── quantize.mojo      uint8 observation quantise / dequantise
 ├── blocks.mojo        sample-block aliases
+├── lerobot.mojo       LeRobot v3.0 → TrajectoryStore, and Hub download
+├── lerobot_write.mojo LeRobotWriter — episodes → a v3.0 directory
+├── lerobot_push.mojo  a v3.0 directory → the Hugging Face Hub
+├── lerobot_rejected.mojo  meta/rejected_episodes.json
+├── recording_files.mojo   what is safe to upload from a recording in progress
+├── dataset_sync.mojo  a project recording ↔ noeira cloud
+├── project_sync.mojo  a project definition ↔ noeira cloud
+├── policy_weights.mojo  fetch a promoted policy's weights from its run
+├── lafan.mojo         LAFAN1 motion → store rows, for the Unitree G1
 └── remote.mojo        RemoteCatalog
 ```
 
 ## Supervised datasets live elsewhere, on purpose
 
-MNIST, CIFAR-10, TinyShakespeare and PushT stay in `mojo_rl/nn/datasets/` — see
+MNIST, CIFAR-10, TinyShakespeare and PushT stay in `noeira/nn/datasets/` — see
 [nn training](/nn/training/). Folding them in here was considered and rejected:
 they are images plus labels, or a token stream. No episodes, no actions, no
 rewards, no ragged row axis. Expressing them as a trajectory store would mean
@@ -162,7 +182,7 @@ trajectory store.
 ## What is not migrated
 
 The *sequence* buffers — `sequence_replay`, `gpu_sequence_replay`, and the
-zero-series MCTS variants under `mojo_rl/deep_agents/data/` — still own their
+zero-series MCTS variants under `noeira/deep_agents/data/` — still own their
 storage. They serve DreamerV3, Dreamer 4 and the AlphaZero/MuZero family, whose
 unit of sampling is a length-`T` window rather than a transition.
 `SequenceWindowSampler` already exists and is gated, so the index policy is in

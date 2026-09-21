@@ -9,12 +9,12 @@ Run:
     pixi run -e apple mojo run -I . examples/arcade_games/diag_atari_si.mojo
 """
 
-from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
-from mojo_rl.envs.atari.riot import set_action
-from mojo_rl.envs.atari.cpu6502 import _run_scanline
-from mojo_rl.envs.atari.tia import tia_read
-from mojo_rl.envs.atari.games.space_invaders import SpaceInvadersDef
-from mojo_rl.envs.atari.flags import (
+from noeira.envs.atari.environment import AtariEnvironment, load_rom
+from noeira.envs.atari.riot import set_action
+from noeira.envs.atari.cpu6502 import _run_scanline
+from noeira.envs.atari.tia import tia_read
+from noeira.envs.atari.games.space_invaders import SpaceInvadersDef
+from noeira.envs.atari.flags import (
     ACTION_NOOP,
     ACTION_FIRE,
     TOTAL_SCANLINES,

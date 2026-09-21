@@ -9,11 +9,11 @@ test_replay_buffer_trait_gpu.mojo + the existing C51 GPU smokes.
 from std.random import seed
 from std.testing import assert_equal, assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.training.replay_buffer import ReplayBuffer
-from mojo_rl.deep_agents.training.trainer_block import TrainerState
-from mojo_rl.data.replay import StoreReplay
-from mojo_rl.data.replay import StoreReplay
+from noeira.nn.constants import DT
+from noeira.deep_agents.training.replay_buffer import ReplayBuffer
+from noeira.deep_agents.training.trainer_block import TrainerState
+from noeira.data.replay import StoreReplay
+from noeira.data.replay import StoreReplay
 
 
 comptime OBS = 3

@@ -34,17 +34,17 @@ Run: pixi run mojo run -I . tests/physics3d/test_edit_reaches_the_document.mojo
      pixi run python scripts/check_structural_edits_vs_mujoco.py
 """
 
-from mojo_rl.physics3d.fields import Model, DynDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, DynDims
+from noeira.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE, MODEL_BODY_SIZE, BODY_IDX_MASS,
 )
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.flat_model import FlatModelDef
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.flat_model import FlatModelDef
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.studio.edit import (
+from noeira.physics3d.studio.edit import (
     Edit, apply_edit, apply_edit_to_document,
     TARGET_GEOM, TARGET_BODY,
     F_POS_X, F_POS_Z, F_SIZE_0, F_SIZE_1, F_FRICTION, F_RGBA_R, F_MASS,
@@ -52,8 +52,8 @@ from mojo_rl.physics3d.studio.edit import (
 
 
 comptime DT = DType.float64
-comptime MODEL = String("mojo_rl/envs/walker2d/assets/walker2d.xml")
-comptime BASE = String("mojo_rl/envs/walker2d/assets")
+comptime MODEL = String("noeira/envs/walker2d/assets/walker2d.xml")
+comptime BASE = String("noeira/envs/walker2d/assets")
 comptime OUT = String("/tmp/physics3d_structural/doc_edit.xml")
 comptime EXPECT = String("/tmp/physics3d_structural/doc_edit_expect.txt")
 
@@ -191,9 +191,9 @@ def main() raises:
     # make it addressable would be an edit the user never asked for, in a file
     # they may be reading.
     print("--- an UNNAMED geom, located by position ---")
-    var sw_base = String("mojo_rl/envs/swimmer/assets")
+    var sw_base = String("noeira/envs/swimmer/assets")
     var sw_src = expand_mjcf(
-        _read(String("mojo_rl/envs/swimmer/assets/swimmer.xml")), sw_base
+        _read(String("noeira/envs/swimmer/assets/swimmer.xml")), sw_base
     )
     var sw = parse_xml_full(sw_src, sw_base)
     var sw_named = 0

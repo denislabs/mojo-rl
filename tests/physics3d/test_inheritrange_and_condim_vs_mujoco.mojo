@@ -52,14 +52,14 @@ built, not a mechanism for changing it.
 from max.gpu.host import DeviceContext
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser import parse_xml
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, read_model_source,
 )
-from mojo_rl.physics3d.fields import Model, DynDims
-from mojo_rl.physics3d.gpu.constants import MODEL_META_IDX_MAX_CONDIM
+from noeira.physics3d.fields import Model, DynDims
+from noeira.physics3d.gpu.constants import MODEL_META_IDX_MAX_CONDIM
 
 comptime DT = DType.float64
 

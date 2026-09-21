@@ -26,12 +26,12 @@ Run (NVIDIA, after lewm_pusht_train_gpu_paper_cls.mojo):
 from max.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.experimental.lewm.trainer import LeWMTrainer
-from mojo_rl.experimental.lewm.encoder import LeWMEncoderCLS
-from mojo_rl.experimental.lewm.closedloop import run_lewm_closedloop
-from mojo_rl.experimental.lewm.pong_data import WindowSource
-from mojo_rl.envs.pusht import PushTOfflineSampler
+from noeira.nn.constants import DT
+from noeira.experimental.lewm.trainer import LeWMTrainer
+from noeira.experimental.lewm.encoder import LeWMEncoderCLS
+from noeira.experimental.lewm.closedloop import run_lewm_closedloop
+from noeira.experimental.lewm.pong_data import WindowSource
+from noeira.envs.pusht import PushTOfflineSampler
 
 
 # ── must match lewm_pusht_train_gpu_paper_cls.mojo ────────────────────

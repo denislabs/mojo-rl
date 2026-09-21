@@ -20,8 +20,8 @@ absent rather than going red on a checkout without it.
 from std.testing import assert_true, assert_equal, TestSuite
 from std.math import abs, sqrt
 
-from mojo_rl.render.skn_loader import load_skn
-from mojo_rl.render.skinning import (
+from noeira.render.skn_loader import load_skn
+from noeira.render.skinning import (
     resolve_skin_bones, skin_pose, bind_pose_transforms,
 )
 

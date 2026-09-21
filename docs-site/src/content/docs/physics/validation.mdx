@@ -1,6 +1,6 @@
 ---
 title: Validating the physics
-description: How the engines are checked against live MuJoCo, and what the reference implementations in the repo are for.
+description: How physics3d is checked against the live MuJoCo 3.12 runtime and dm_control — the test families, the tiers that run them, and the 3.12 feature audit.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -9,94 +9,127 @@ import Maturity from '~/components/Maturity.astro';
 
 A physics engine that is *nearly* right is worse than one that is obviously
 wrong, because the failure shows up as an agent that learns something slightly
-different. So `physics3d` is checked against **live MuJoCo** rather than against
-recorded fixtures.
+different. So `physics3d` is checked against **live MuJoCo** rather than
+against recorded fixtures.
 
 ## The approach
 
-Tests build the same model in both engines, step both from an identical state,
-and compare. Because `mujoco` is a pixi dependency, the reference runs in the
-same process — the tests call `mj_step` directly.
+Tests build the same model in both engines, put both in the same state, step
+both and compare. `mujoco` is a pixi dependency pinned at **3.12**, so the
+reference runs in the same process — the tests call `mj_step` through Python
+interop, and a failure can be localised by reading MuJoCo's own arrays next to
+ours.
 
 ```bash
 pixi run mojo run -I . tests/physics3d/test_euler_fields_vs_mujoco.mojo
 pixi run mojo run -I . tests/physics3d/test_humanoid_fk_vs_mujoco.mojo
-pixi run mojo run -I . tests/physics3d/test_hopper_fk_vs_mujoco.mojo
-pixi run mojo run -I . tests/physics3d/test_ant_fk_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_sensordata_vs_mujoco.mojo
 ```
 
-Twelve of the ~54 physics3d tests compare against MuJoCo directly. The rest
-check internal invariants: bit-exactness between code paths, solver convergence,
-contact detection, batched-versus-single-environment parity.
+`tests/physics3d/` holds 271 test files; 131 of them are `*_vs_mujoco` gates
+against the runtime. The rest check what MuJoCo cannot answer for us:
+bit-exactness between code paths, GPU against CPU, solver convergence,
+batched against single-environment parity, loader diagnostics.
+
+The environment ports carry their own layer on top.
+`tests/dm_control/` has 69 test files, 41 of them `*_vs_dm_control` gates that
+compare model, physics, observation and reward against the reference task, and
+the robot ports have `tests/robots/test_so_arm101_vs_mujoco.mojo` and
+`tests/robots/test_unitree_g1_vs_mujoco.mojo`.
 
 ## What is compared
 
-| Test family | Checks |
-|---|---|
-| `*_fk_vs_mujoco` | forward kinematics — body positions and orientations |
-| `test_euler_fields_vs_mujoco` | a full integration step |
-| `test_fluid_fields_vs_mujoco` | Swimmer's viscous forces |
-| `test_inertiafromgeom_vs_mujoco` | derived inertia from geometry |
-| `test_humanoid_limits_fields_vs_mujoco` | joint limit constraints |
-| `test_env_fields_mujoco_roundtrip` | model build → simulate → compare |
+| Family | Examples | Checks |
+|---|---|---|
+| Kinematics | `*_fk_vs_mujoco`, `test_inertiafromgeom_vs_mujoco` | body frames, derived inertia |
+| Integration | `test_euler_fields_vs_mujoco`, `test_implicitfast_free_body_vs_mujoco` | a full step per integrator |
+| Collision | `test_box_box_sweep`, `test_mesh_manifold_vs_mujoco`, `test_hfield_vs_mujoco`, `test_contact_order_is_mujocos` | contact sets, positions, depths, order |
+| Equality | `test_connect_equality_vs_mujoco`, `test_weld_rows_pyramidal_vs_mujoco`, `test_joint_equality_vs_mujoco` | connect, weld, joint rows |
+| Tendons | `test_spatial_tendon_transmission_vs_mujoco`, `test_wrap_tendon_vs_mujoco`, `test_fixed_tendon_limit_vs_mujoco` | lengths, Jacobians, wrapping, limits |
+| Friction and noslip | `test_elliptic_condim46_vs_mujoco`, `test_noslip_vs_mujoco`, `test_noslip_elliptic_vs_mujoco` | both cones at every condim; the noslip pass |
+| Composition | `test_attach_vs_mujoco`, `test_attach_angle_units_vs_mujoco` | `<attach>` expansion against MuJoCo's own flattening |
+| Sensors and rays | `test_sensor_table_vs_mujoco`, `test_frame_sensors_vs_mujoco`, `test_ray_model_vs_mujoco` | `sensordata` layout and values, `mj_ray` |
+| Loader | `test_validate_vs_mujoco`, `test_silent_attrs_are_loud` | what MuJoCo refuses, we refuse; what we cannot model, we say |
 
 Forward kinematics is checked first and separately, because everything else
 depends on it. If body frames are wrong, every downstream comparison is
 meaningless.
 
-## Reference sources in the repo
-
-```
-references/
-├── mujoco-3.3.6/     matches the pixi-pinned runtime
-├── mujoco-main/      MuJoCo 3.5.0, latest
-├── Gymnasium-main/   environment dynamics reference
-├── dm_control-main/  DeepMind Control Suite
-└── mujoco_warp-main/ MuJoCo Warp
-```
-
-:::tip[Compare against 3.3.6 first]
-When debugging a MuJoCo mismatch, read `references/mujoco-3.3.6/` — it matches
-the version pixi installs, so it is what the tests actually run against.
-`mujoco-main` is for checking what changed upstream.
-:::
-
-These are read-only reference material, not dependencies.
-
 ## Test tiers
 
 ```bash
-pixi run test-smoke              # fast curated CPU gates — what CI runs
-pixi run test-cpu                # every non-GPU test; hours
-pixi run -e apple  test-gpu      # GPU tests on Metal
-pixi run -e nvidia test-gpu      # GPU tests on CUDA
+pixi run test-smoke                      # fast curated CPU gates — what CI runs
+pixi run test-cpu                        # every non-GPU test; hours
+pixi run test-physics3d-mujoco           # the live 3.12 gates; ~2 h, local
+pixi run -e nvidia test-physics3d-gpu    # blocked-kernel gates vs the CPU oracles
+pixi run -e apple  test-gpu              # all *_gpu tests on Metal
+pixi run -e nvidia test-gpu              # all *_gpu tests on CUDA
 ```
 
-`test-smoke` is self-contained: no `references/`, no ROMs, no GPU.
+`test-physics3d-mujoco` runs the manifest in
+`tests/manifests/physics3d-mujoco.txt`: the audit's own gates plus the parser,
+collision, constraint, ray and sensor gates. Each file compiles for several
+minutes, so budget two hours. `test-physics3d-gpu`
+(`tests/manifests/physics3d-gpu.txt`) needs no MuJoCo at all: it holds the
+blocked NVIDIA kernels and the cooperative kernels against the CPU path, mostly
+bit for bit.
 
-:::caution[Some tests need MuJoCo, and some need CUDA]
-The `*_vs_mujoco` tests require `mujoco` in the active pixi environment.
-
-More importantly, a class of GPU behaviour is **only testable on NVIDIA**:
-CUDA-graph capture of the batched environment is a no-op on non-NVIDIA targets,
-so an Apple run proves nothing about it. Bit-exactness gates that pass on Metal
-should be re-run on CUDA before being trusted — different JIT, different
-floating-point corners.
+:::caution[A green Apple run says nothing about the blocked kernels]
+The blocked Newton kernel and the block collision kernel only launch on NVIDIA.
+On Metal the same manifest exercises the per-environment fallback, so it is
+meaningful for that path and blind for the blocked one. CUDA-graph capture is
+likewise NVIDIA-only. Run the GPU manifest on an NVIDIA box before trusting a
+change to solver code.
 :::
+
+## The MuJoCo 3.12 audit
+
+The engine was audited against the 3.12.0 sources subsystem by subsystem, each
+row confirmed against the runtime, and the loader was then taught to **count
+and print** every MJCF feature it does not serve. The measure of coverage is
+therefore not a feature list but a tally: load every model in the tree and
+count the prints.
+
+On 2026-09-13 that tally was **zero** across 83 Menagerie scenes and every
+dm_control asset, with `test_validate_vs_mujoco` passing on all of them.
+
+That zero is a statement about the models, not the engine. Features nothing in
+those trees declares are still unserved — flex, SDF geoms, several actuator
+types, 21 sensor kinds among them; see
+[3D physics](/physics/physics3d/#mjcf-loading).
+
+## Reference sources
+
+MuJoCo releases disagree on behaviour, not only on style: 3.12 widened the
+multi-contact alignment tolerances, rewrote the box-box collider and changed
+how mesh support points are seeded. When debugging a mismatch, read the source
+of the version the runtime actually is, and diff the routine across releases
+before transcribing it.
+
+```bash
+pixi run python -c "import mujoco; print(mujoco.__version__)"   # 3.12.0
+```
+
+The development tree keeps several releases' sources side by side in a
+local, untracked `references/` directory for that purpose. The same directory
+holds the reference model trees (MuJoCo Menagerie, dm_control), and many live
+gates read their XML from it — which is one reason those gates run locally and
+not in CI.
 
 ## Validating environments, not just physics
 
 The environments carry their own comparison path: the
 [Gymnasium wrappers](/environments/gymnasium/) run the Python original in the
 same process, so a native environment and its reference can be stepped side by
-side.
+side, and every [DeepMind Control](/environments/dm-control/) task has a parity
+gate against MuJoCo and the dm_control reference task.
 
 The [Atari 2600 emulator](/environments/atari/) plays the same role for the
 [native arcade engines](/environments/arcade/) — the emulator runs original
 ROMs, so the reimplementations are checked against real hardware behaviour
 rather than against a plausible-looking training curve.
 
-## Where the engines deliberately differ
+## Where the environments deliberately differ
 
 Not every divergence is a bug. Documented ones:
 
@@ -105,15 +138,14 @@ Not every divergence is a bug. Documented ones:
 | Humanoid observation | 45 dimensions, omitting contact forces and inertia (Gymnasium: 348–376) |
 | HalfCheetah angle penalty | `0.0`, matching dm_control, not the earlier `0.5` |
 | CarRacing friction | slip-based tire model, harder than Gymnasium's |
-| Sawyer contacts | elliptic cone; carries known drift from Metaworld |
 
 ## Debugging a mismatch
 
-A workable order, learned the hard way:
+A workable order:
 
 1. **Forward kinematics first.** If body frames differ, stop there.
-2. **Check the model build** — inertia, total mass, mesh hulls — before suspecting the solver.
-3. **Compare against 3.3.6**, not `main`.
+2. **Check the model build** — inertia, total mass, mesh hulls, the contact set at the start state — before suspecting the solver.
+3. **Check what the reference converged to.** A model that ships a low `<option iterations>` stops MuJoCo early; compare against MuJoCo run to convergence as well as MuJoCo as shipped.
 4. **Isolate the integrator.** Step once with contacts disabled.
 5. **Only then the solver.** Contact solving is the most likely place for a legitimate difference, since cone choice and iteration count both matter.
 
@@ -123,5 +155,5 @@ For gradient-level debugging elsewhere in the stack, finite differences need
 ## Next
 
 - [3D physics](/physics/physics3d/) — what is being validated
-- [2D physics](/physics/physics2d/) — the batched engine
-- [3D locomotion](/environments/3d-locomotion/) — the environments built on it
+- [Collision](/physics/collision/) and [Constraints and tendons](/physics/constraints/)
+- [DeepMind Control](/environments/dm-control/) — the parity-gated suite

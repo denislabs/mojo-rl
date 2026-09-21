@@ -46,13 +46,13 @@ from std.math import sqrt, cos, sin, abs
 from layout import Layout, LayoutTensor
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.collision.convex_hull import load_mesh_hull
-from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
-from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
-from mojo_rl.physics3d.collision.gjk import gjk_epa
-from mojo_rl.physics3d.constants import GEOM_MESH
-from mojo_rl.physics3d.gpu.constants import mesh_max_edge
-from mojo_rl.physics3d.model.mesh_inertia import MeshInertia
+from noeira.physics3d.collision.convex_hull import load_mesh_hull
+from noeira.physics3d.collision.ccd_workspace import L_CCD_WS1
+from noeira.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
+from noeira.physics3d.collision.gjk import gjk_epa
+from noeira.physics3d.constants import GEOM_MESH
+from noeira.physics3d.gpu.constants import mesh_max_edge
+from noeira.physics3d.model.mesh_inertia import MeshInertia
 
 comptime NV: Int = 8192
 comptime NE: Int = mesh_max_edge(NV)
@@ -91,7 +91,7 @@ def _sweep[D: DType]() raises -> List[Float64]:
     var mtriadr = List[Int]()
     var mtrinum = List[Int]()
     var mi = MeshInertia[D]()
-    var b = String("mojo_rl/envs/robots/assets/so_arm100/")
+    var b = String("noeira/envs/robots/assets/so_arm100/")
     _ = load_mesh_hull[D](
         b + "Fixed_Jaw_Collision_2.stl", mv, mva, mvn, nm, mpa, mpn, pv, pva,
         pvn, pn, pm, pma, pmn, ea, el, mtri, mtriadr, mtrinum, mi,
@@ -101,7 +101,7 @@ def _sweep[D: DType]() raises -> List[Float64]:
         pvn, pn, pm, pma, pmn, ea, el, mtri, mtriadr, mtrinum, mi,
     )
 
-    # ⚠ HEAP, NOT `InlineArray` — see `test_gjk_hillclimb_support.mojo`. The
+    # ⚠ HEAP, NOT `Array` — see `test_gjk_hillclimb_support.mojo`. The
     # `_ = buf^` lines below are load-bearing: Mojo destroys at LAST USE.
     var vbuf = List[Scalar[D]](length=NV * 3, fill=Scalar[D](0))
     var verts = LayoutTensor[D, Layout.row_major(NV, 3), MutAnyOrigin](

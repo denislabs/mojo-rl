@@ -1,7 +1,7 @@
 """Statistical quality tests for PhiloxRandom (CPU + GPU kernel).
 
 Motivated by EZ-V2 Pendulum convergence slowing down after
-`mojo_rl/envs/pendulum/pendulum_v2.mojo` switched its CPU reset RNG from
+`noeira/envs/pendulum/pendulum_v2.mojo` switched its CPU reset RNG from
 the global `std.random.random_float64` to per-env `PhiloxRandom`. Goal:
 rule out PhiloxRandom itself as the cause.
 
@@ -26,10 +26,10 @@ from std.math import sqrt, cos, sin, pi
 from std.random.philox import Random as PhiloxRandom
 from std.random import random_float64, seed as global_seed
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.physics2d import dtype, TPB
+from noeira.physics2d import dtype, TPB
 
 
 # ============================================================================
@@ -565,7 +565,6 @@ def test_gpu_kernel() raises:
 
     comptime BLOCKS = (GPU_BATCH + TPB - 1) // TPB
 
-    @parameter
     @always_inline
     def gen_kernel(
         dst: LayoutTensor[dtype, Layout.row_major(GPU_BATCH, 4), MutAnyOrigin],

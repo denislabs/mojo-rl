@@ -15,10 +15,10 @@ from std.random import random_float64
 from std.memory import alloc
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.deep_agents.dreamerv3.trainer import DreamerV3Trainer
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.param import ParamVisitor
+from noeira.deep_agents.dreamerv3.trainer import DreamerV3Trainer
 
 
 comptime OBS = 3

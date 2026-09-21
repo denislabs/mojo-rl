@@ -50,27 +50,27 @@ Run: pixi run mojo run -I . tests/physics3d/test_dispatchers_both_legs.mojo
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.fields import (
     Data,
     Model,
     DynamicsScratch,
     DimsLike,
     DynDims,
 )
-from mojo_rl.physics3d.fields.dims import DIM_POISON
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.fields.dims import DIM_POISON
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import compute_mass_matrix
-from mojo_rl.physics3d.dynamics.ldl import ldl_factor
-from mojo_rl.physics3d.dynamics.rne import compute_bias_forces_rne
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import compute_mass_matrix
+from noeira.physics3d.dynamics.ldl import ldl_factor
+from noeira.physics3d.dynamics.rne import compute_bias_forces_rne
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
     InvertedDoublePendulumModel,
 )
 
@@ -156,6 +156,21 @@ def copy_model[
         n_meta = len(dst.meta.data)
     for i in range(n_meta):
         dst.meta.data[i] = src.meta.data[i]
+    # ⚠ THE TOPOLOGY TABLES TOO. `meta` carries `MODEL_META_IDX_NTREE`, and
+    # the LDL dispatchers read it as "the parser built `trees` and
+    # `dof_parentid`"; copying the flag without the tables handed the dynamic
+    # arm a claimed table of all-roots and a factorisation that believed it —
+    # `ldl_factor: L` failed here the day the tree-ordered LDL landed.
+    var n_trees = len(src.trees.data)
+    if len(dst.trees.data) < n_trees:
+        n_trees = len(dst.trees.data)
+    for i in range(n_trees):
+        dst.trees.data[i] = src.trees.data[i]
+    var n_dofp = len(src.dof_parentid.data)
+    if len(dst.dof_parentid.data) < n_dofp:
+        n_dofp = len(dst.dof_parentid.data)
+    for i in range(n_dofp):
+        dst.dof_parentid.data[i] = src.dof_parentid.data[i]
     var n_geoms = len(src.geoms.data)
     if len(dst.geoms.data) < n_geoms:
         n_geoms = len(dst.geoms.data)
@@ -231,7 +246,7 @@ def run_chain[
     compute_subtree_com["cpu", DT, BATCH=BATCH](d, m, None)
     compute_cdof["cpu", DT, BATCH=BATCH](d, m, sc, None)
     compute_mass_matrix["cpu", DT, BATCH=BATCH](d, m, sc, None)
-    ldl_factor["cpu", DT, A, BATCH](sc, None)
+    ldl_factor["cpu", DT, A, BATCH](m, sc, None)
     compute_bias_forces_rne["cpu", DT, BATCH=BATCH](d, m, sc, None)
 
 

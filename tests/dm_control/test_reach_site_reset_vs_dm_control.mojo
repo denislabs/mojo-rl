@@ -47,8 +47,8 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.envs.dm_control.manipulation_reach import DMReachSiteFeatures
-from mojo_rl.envs.dm_control.manipulation_reach_config import (
+from noeira.envs.dm_control.manipulation_reach import DMReachSiteFeatures
+from noeira.envs.dm_control.manipulation_reach_config import (
     N_ARM,
     N_HAND,
     SITE_TARGET,
@@ -60,12 +60,12 @@ from mojo_rl.envs.dm_control.manipulation_reach_config import (
     TARGET_BBOX_UPPER_Y,
     TARGET_BBOX_UPPER_Z,
 )
-from mojo_rl.envs.dm_control.manipulation_reset import (
+from noeira.envs.dm_control.manipulation_reset import (
     BODY_ARM,
     BODY_HAND,
     BODY_FIXED,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_SITE_SIZE,
     SITE_IDX_POS_X,
     SITE_IDX_POS_Y,

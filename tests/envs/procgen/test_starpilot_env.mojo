@@ -11,14 +11,14 @@ Run from repo root:
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import (
+from noeira.envs.procgen.games import (
     StarpilotGame,
     StarpilotAssets,
     StarpilotEnv,
     StarpilotGymEnv,
 )
-from mojo_rl.envs.procgen.games.starpilot import DIST_HARD
-from mojo_rl.nn.constants import DT
+from noeira.envs.procgen.games.starpilot import DIST_HARD
+from noeira.nn.constants import DT
 
 comptime ASSET_ROOT = String("assets/procgen/")
 

@@ -1,0 +1,30 @@
+<mujoco model="so101_tower">
+  <compiler angle="radian" autolimits="true"/>
+  <option cone="elliptic" impratio="10"/>
+  <asset>
+    <model name="so_arm101_tower" file="../../envs/robots/assets/so_arm101_tower.xml"/>
+    <model name="so101_tower_stand" file="../assets/props/so101_tower_stand.xml"/>
+    <model name="desk_mat" file="../assets/props/desk_mat.xml"/>
+    <model name="bowl" file="../assets/props/bowl.xml"/>
+    <model name="brick" file="../assets/props/brick.xml"/>
+  </asset>
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1" directional="true"/>
+    <geom name="floor" type="plane" size="5 5 0.1"/>
+    <frame pos="0.0 0.0 0.005" quat="1.0 0.0 0.0 0.0">
+      <attach model="so_arm101_tower" prefix="robot_"/>
+    </frame>
+    <frame pos="-0.019 -0.077 0.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="so101_tower_stand" prefix="tower_"/>
+    </frame>
+    <frame pos="0.32 0.0 0.001" quat="1.0 0.0 0.0 0.0">
+      <attach model="desk_mat" prefix="desk_"/>
+    </frame>
+    <frame pos="11.0 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="bowl" prefix="bowl_"/>
+    </frame>
+    <frame pos="11.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="brick" prefix="brick_"/>
+    </frame>
+  </worldbody>
+</mujoco>

@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# Build the qhull shim for `mojo_rl/physics3d/collision/`.
+# Build the qhull shim for `noeira/physics3d/collision/`.
 #
 # The dylib is what the Mojo side dlopen's (`collision/qhull_native.mojo`).
-# ⚠ A DYLIB AND NOT AN OBJECT, for the reason `mojo_rl/io/serial/native.mojo`
+# ⚠ A DYLIB AND NOT AN OBJECT, for the reason `noeira/io/serial/native.mojo`
 # records: `mojo run`'s JIT does not honour `-Xlinker` at all, and every test
 # in this repo runs under `mojo run`. Resolving through `_get_dylib_function`
 # (the stdlib's own `dlsym`) is the only route that works in both.
 #
-# Not tracked in git. Re-run after editing native/mrl_qhull.c.
+# Not tracked in git. Re-run after editing native/nra_qhull.c.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$ROOT/mojo_rl/physics3d/collision/native/mrl_qhull.c"
-# ⚠ A SECOND TRANSLATION UNIT, AND IT IS C++ ON PURPOSE. `mrl_poly_order`
+SRC="$ROOT/noeira/physics3d/collision/native/nra_qhull.c"
+# ⚠ A SECOND TRANSLATION UNIT, AND IT IS C++ ON PURPOSE. `nra_poly_order`
 # reproduces `MakePolygons`' emission order by calling the SAME
-# `std::unordered_map` MuJoCo does — see native/mrl_polyorder.cc for why that
+# `std::unordered_map` MuJoCo does — see native/nra_polyorder.cc for why that
 # is a call rather than a reimplementation. It rides in this dylib because the
 # Mojo side already dlopen's exactly one library for mesh topology.
-SRC_CXX="$ROOT/mojo_rl/physics3d/collision/native/mrl_polyorder.cc"
-OUTDIR="$ROOT/mojo_rl/physics3d/collision"
+SRC_CXX="$ROOT/noeira/physics3d/collision/native/nra_polyorder.cc"
+OUTDIR="$ROOT/noeira/physics3d/collision"
 # ⚠ FIND THE PREFIX THAT ACTUALLY HAS THE HEADER, do not trust $CONDA_PREFIX.
 # Outside `pixi run` it points at the user's own miniforge, which has no
 # libqhull_r — the first version of this script took it and failed with a
@@ -39,8 +39,8 @@ fi
 echo "  qhull prefix: $PREFIX"
 
 case "$(uname -s)" in
-Darwin) LIB="$OUTDIR/libmrl_qhull.dylib" ;;
-Linux)  LIB="$OUTDIR/libmrl_qhull.so" ;;
+Darwin) LIB="$OUTDIR/libnra_qhull.dylib" ;;
+Linux)  LIB="$OUTDIR/libnra_qhull.so" ;;
 *) echo "build_qhull.sh: unsupported OS $(uname -s)" >&2; exit 1 ;;
 esac
 
@@ -54,11 +54,11 @@ CXX="${CXX:-c++}"
 echo "building qhull shim from $SRC + $SRC_CXX"
 TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
-"$CC"  -O2 -fPIC -c -I"$PREFIX/include" -o "$TMPD/mrl_qhull.o"     "$SRC"
-"$CXX" -O2 -fPIC -c -std=c++17          -o "$TMPD/mrl_polyorder.o" "$SRC_CXX"
+"$CC"  -O2 -fPIC -c -I"$PREFIX/include" -o "$TMPD/nra_qhull.o"     "$SRC"
+"$CXX" -O2 -fPIC -c -std=c++17          -o "$TMPD/nra_polyorder.o" "$SRC_CXX"
 # ⚠ LINK WITH THE C++ DRIVER — one object needs libc++, and it is the whole
 # point of that object that it is the SAME libc++ MuJoCo's map ran on.
 # ⚠ RPATH TO THE ENV, so the dylib finds libqhull_r wherever pixi put it.
-"$CXX" -O2 -fPIC -shared -o "$LIB" "$TMPD/mrl_qhull.o" "$TMPD/mrl_polyorder.o" \
+"$CXX" -O2 -fPIC -shared -o "$LIB" "$TMPD/nra_qhull.o" "$TMPD/nra_polyorder.o" \
       -L"$PREFIX/lib" -lqhull_r -Wl,-rpath,"$PREFIX/lib"
 echo "  $LIB"

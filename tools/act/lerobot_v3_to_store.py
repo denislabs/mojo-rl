@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # +--------------------------------------------------------------------------+ #
-# | LeRobot v3.0 dataset  ->  mojo_rl TrajectoryStore (.h5)
+# | LeRobot v3.0 dataset  ->  noeira TrajectoryStore (.h5)
 # +--------------------------------------------------------------------------+ #
 """Convert a LeRobot v3.0 HuggingFace dataset into one `TrajectoryStore` file.
 
 Run ONCE per (repo, resolution); everything after that is pure Mojo through
-`mojo_rl/io/hdf5` + `mojo_rl.data.TrajectoryStore`.
+`noeira/io/hdf5` + `noeira.data.TrajectoryStore`.
 
     pixi run python tools/act/lerobot_v3_to_store.py \
         --repo DenisLabs/record-test_20260825_094319 --height 240 --width 320
@@ -66,10 +66,57 @@ STD_FLOOR = 1e-2  # references/act-main/utils.py:96 `torch.clip(std, 1e-2, inf)`
 # ── manifest -----------------------------------------------------------------
 
 
-def encode_manifest(env_id, n_rows, n_episodes, seed, source_commit, columns):
+def escape_task_text(s: str) -> str:
+    """`manifest.escape_task_text`, in Python. Byte-exact and quoted.
+
+    ⚠ OPERATES ON BYTES, not on str characters. The Mojo side escapes five
+    BYTE values and copies the rest verbatim; doing this per-character would
+    diverge the moment a task string is non-ASCII, and the two writers would
+    disagree on exactly the input nobody tests.
+    """
+    b = s.encode("utf-8")
+    out = bytearray(b'"')
+    for c in b:
+        if c == 0x5C:
+            out += b"\\\\"
+        elif c == 0x22:
+            out += b'\\"'
+        elif c == 0x0A:
+            out += b"\\n"
+        elif c == 0x0D:
+            out += b"\\r"
+        elif c == 0x09:
+            out += b"\\t"
+        else:
+            out.append(c)
+    out += b'"'
+    return out.decode("utf-8", errors="surrogateescape")
+
+
+def read_task_table(root: Path):
+    """`meta/tasks.parquet` -> `[(task_index, text)]`, text unchanged."""
+    import pyarrow.parquet as pq
+
+    t = pq.read_table(root / "meta" / "tasks.parquet")
+    idx = [int(v) for v in t.column("task_index")]
+    txt = [str(v) for v in t.column("task")]
+    return list(zip(idx, txt))
+
+
+def encode_manifest(
+    env_id, n_rows, n_episodes, seed, source_commit, columns, tasks=()
+):
     """`data/manifest.mojo::Manifest.encode` — byte-for-byte the same format.
 
     `columns` is a list of `(name, dtype_name, trailing_shape_tuple)`.
+    `tasks` is `[(task_index, text)]` and is written AFTER the columns, in the
+    order given — the Mojo encoder does the same and the two must agree byte
+    for byte.
+
+    ⚠ THE TEXT IS QUOTED AND ESCAPED, mirroring `manifest.escape_task_text`.
+    The manifest is `key=value` LINES and its reader strips every value, so a
+    newline would split the record and edge whitespace would vanish. The text
+    must survive BYTE-EXACT because a consumer tokenises it.
     """
     lines = [
         f"schema_version={SCHEMA_VERSION}",
@@ -84,6 +131,8 @@ def encode_manifest(env_id, n_rows, n_episodes, seed, source_commit, columns):
         if shape:
             spec += ":" + ",".join(str(d) for d in shape)
         lines.append(f"column={spec}")
+    for index, text in tasks:
+        lines.append(f"task={index}\t{escape_task_text(text)}")
     return "\n".join(lines) + "\n"
 
 
@@ -139,6 +188,7 @@ def read_frames(root: Path):
         "action": fixed_list("action"),
         "qpos": fixed_list("observation.state"),
         "episode_index": np.asarray(t.column("episode_index"), dtype=np.int64),
+        "task_index": np.asarray(t.column("task_index"), dtype=np.int32),
         "n_rows": t.num_rows,
     }
 
@@ -187,9 +237,11 @@ def read_episodes(root: Path, cameras):
 
 
 def decode_camera(root, cam, video_map, lengths, from_index, fps, h, w, out):
-    """Decode one camera's mp4 files into `out[:, cam_slot]` as CHW uint8.
+    """Decode one camera's mp4 files, writing each frame as CHW uint8.
 
-    `out` is a preallocated `(N, 3, h, w)` uint8 view for this camera.
+    `out` takes `out[row] = chw_frame` and is a `_CamRows` view onto this
+    camera's slice of the on-disk images dataset — NOT a numpy array. Frames
+    go straight to the file: see `_CamRows` for why.
     """
     import imageio.v3 as iio
     from PIL import Image
@@ -242,6 +294,33 @@ def decode_camera(root, cam, video_map, lengths, from_index, fps, h, w, out):
         )
 
 
+class _CamRows:
+    """`out[row] = chw` onto ONE camera's slice of the flat images dataset.
+
+    ⚠ THIS EXISTS TO KEEP THE CONVERTER'S MEMORY BOUNDED. It used to decode
+    into `np.zeros((n_rows, n_cams, 3, h, w))` and hand that to h5py at the
+    end — **7.12 GB resident** for 50 episodes at 240x320, on top of the 7.12 GB
+    it then writes. That is a machine-killer on a 16 GB laptop and it scales
+    with the recording, so the next dataset would be worse. Decoding is already
+    strictly row-at-a-time; the array was pure accumulation.
+
+    The images dataset is chunked `(1, cam_elems)` rather than one chunk per
+    full row, so each write here lands on exactly ONE chunk. Chunked at the
+    full row, every camera write would be half a chunk and HDF5 would
+    read-modify-write it — twice the write traffic for no gain. A reader taking
+    a whole row now touches two chunks instead of one, and they are adjacent on
+    disk, which is why that side does not care.
+    """
+
+    def __init__(self, dset, slot, cam_elems):
+        self._d = dset
+        self._o = slot * cam_elems
+        self._n = cam_elems
+
+    def __setitem__(self, row, chw):
+        self._d[row, self._o : self._o + self._n] = chw.reshape(-1)
+
+
 # ── stats --------------------------------------------------------------------
 
 
@@ -257,7 +336,16 @@ def norm_stats(x: np.ndarray):
     only sqrt(N/(N-1)) — 1.00025 at N=1997, invisible in any single check — but
     it is a systematic offset that would sit under every sim-to-reference
     comparison afterwards, so it is matched rather than waved off.
+
+    ⚠ ACCUMULATE IN FLOAT64. The columns are float32 and `ndarray.mean` uses
+    the array's own dtype as the accumulator, so reducing them in place drifts
+    with the row count: at 1997 rows the mean was 2.4e-4 off the exact value,
+    at 15447 rows it was **2.3e-3** — and `ACTDataset._moments`, which sums in
+    Float64, was the side that was right. The gate that compares the two saw a
+    growing gap and had no way to say which implementation it was accusing.
+    The cast costs one temporary over a (N, 6) table.
     """
+    x = np.asarray(x, dtype=np.float64)
     mean = x.mean(axis=0)
     std = x.std(axis=0, ddof=1)
     return mean.astype(np.float32), np.clip(std, STD_FLOOR, np.inf).astype(
@@ -265,13 +353,69 @@ def norm_stats(x: np.ndarray):
     )
 
 
+def refresh_stats(out: Path) -> int:
+    """Recompute `norm_*` in place from the store's OWN qpos/action columns.
+
+    The statistics are four 6-vectors derived from two tiny columns, but they
+    live in a file whose bulk is a multi-GB image column that costs a download
+    and a full video decode to reproduce. When the definition of the statistic
+    changes — as it did when `norm_stats` moved to a float64 accumulator —
+    rebuilding the whole store to update 48 floats is the wrong trade. This
+    recomputes them from what the store already holds, so the refreshed values
+    are derived from exactly the rows the store serves.
+
+    The `.json` sidecar is patched key-by-key rather than rewritten, so a field
+    this function does not know about survives.
+    """
+    if not out.exists():
+        raise SystemExit(f"--refresh-stats: no store at {out}")
+    import h5py  # local, matching the write path below
+
+    with h5py.File(out, "r+") as f:
+        q_mean, q_std = norm_stats(f["qpos"][:])
+        a_mean, a_std = norm_stats(f["action"][:])
+        for name, val in (
+            ("norm_qpos_mean", q_mean),
+            ("norm_qpos_std", q_std),
+            ("norm_action_mean", a_mean),
+            ("norm_action_std", a_std),
+        ):
+            before = f[name][:]
+            f[name][...] = val
+            print(
+                f"  {name:18s} max|delta| ="
+                f" {np.abs(before - val).max():.3e}"
+            )
+    side = out.with_suffix(".json")
+    if side.exists():
+        meta = json.loads(side.read_text())
+        meta["qpos_mean"] = q_mean.tolist()
+        meta["qpos_std"] = q_std.tolist()
+        meta["action_mean"] = a_mean.tolist()
+        meta["action_std"] = a_std.tolist()
+        side.write_text(json.dumps(meta, indent=2))
+    print(f"refreshed norm_* in {out}")
+    return 0
+
+
 # ── main ---------------------------------------------------------------------
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--repo", required=True, help="HF dataset repo id")
+    ap.add_argument(
+        "--repo",
+        default=None,
+        help="HF dataset repo id (optional with --refresh-stats + --out)",
+    )
     ap.add_argument("--revision", default=None)
+    ap.add_argument(
+        "--root",
+        default=None,
+        help="a local v3.0 dataset directory, instead of downloading --repo."
+        " Used by tools/act/make_synthetic_lerobot_v3.py to produce the"
+        " reference store the Mojo importer is gated against",
+    )
     ap.add_argument("--height", type=int, default=240)
     ap.add_argument("--width", type=int, default=320)
     ap.add_argument(
@@ -281,25 +425,38 @@ def main():
     )
     ap.add_argument("--out", default=None, help="output .h5 (default: cache)")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument(
+        "--refresh-stats",
+        action="store_true",
+        help="recompute norm_* in an EXISTING store from its own qpos/action"
+        " columns and exit — no download, no video decode",
+    )
     args = ap.parse_args()
 
     h, w = args.height, args.width
 
-    slug = args.repo.replace("/", "__")
-    out = (
-        Path(args.out)
-        if args.out
-        else Path.home()
-        / ".cache/mojo_rl/act_so101"
-        / f"{slug}_{h}x{w}.h5"
-    )
+    if args.out:
+        out = Path(args.out)
+    elif args.repo:
+        slug = args.repo.replace("/", "__")
+        out = Path.home() / ".cache/noeira/act_so101" / f"{slug}_{h}x{w}.h5"
+    else:
+        raise SystemExit("need --repo (or --out with --refresh-stats)")
+    if args.refresh_stats:
+        return refresh_stats(out)
+    if not args.repo and not args.root:
+        raise SystemExit("--repo or --root is required to build a store")
     if out.exists() and not args.force:
         print(f"already present: {out}  (pass --force to rebuild)")
         return
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"[1/5] downloading {args.repo} ...")
-    root = snapshot(args.repo, args.revision)
+    if args.root:
+        print(f"[1/5] using local dataset {args.root} ...")
+        root = Path(args.root)
+    else:
+        print(f"[1/5] downloading {args.repo} ...")
+        root = snapshot(args.repo, args.revision)
     info = json.loads((root / "meta/info.json").read_text())
 
     version = info.get("codebase_version", "?")
@@ -351,51 +508,72 @@ def main():
         )
     print(f"      {n_rows} frames over {n_ep} episodes: {lengths.tolist()}")
 
-    print(f"[3/5] decoding video ({len(cams)} camera(s)) ...")
-    images = np.zeros((n_rows, len(cams), 3, h, w), dtype=np.uint8)
-    for slot, cam in enumerate(cams):
-        decode_camera(
-            root, cam, video_map, lengths, from_index, fps, h, w,
-            images[:, slot],
-        )
-
-    print("[4/5] computing norm stats ...")
-    q_mean, q_std = norm_stats(fr["qpos"])
-    a_mean, a_std = norm_stats(fr["action"])
-    print(f"      qpos   mean={np.round(q_mean, 3).tolist()}")
-    print(f"      qpos   std ={np.round(q_std, 3).tolist()}")
-    print(f"      action mean={np.round(a_mean, 3).tolist()}")
-    print(f"      action std ={np.round(a_std, 3).tolist()}")
-
-    print(f"[5/5] writing {out} ...")
     import h5py
 
     columns = [
         ("qpos", "float32", (s_dim,)),
         ("action", "float32", (a_dim,)),
+        # ⚠ int32, matching the Mojo importer: the parquet is i64 and this
+        # narrows deliberately — the column is per FRAME, so its width is paid
+        # on every row, and no dataset has 2^31 tasks.
+        #
+        # ⚠⚠ EMPTY SHAPE, NOT `(1,)`. `ColumnSpec.__init__(name, dtype,
+        # row_dim)` documents `row_dim=1` as a SCALAR COLUMN: it stores NO
+        # trailing shape, so the manifest reads `column=task_index:int32` and
+        # the dataset is RANK-1. Writing `(1,)` here produced
+        # `column=task_index:int32:1` and a `(N, 1)` dataset — a 2-byte
+        # manifest difference and a rank difference, both caught by the
+        # byte-identity gate. The FORMAT is defined by the Mojo writer; this
+        # file mirrors it.
+        ("task_index", "int32", ()),
         ("images", "uint8", (len(cams), 3, h, w)),
     ]
+    tasks = read_task_table(root)
     manifest = encode_manifest(
-        env_id=f"lerobot/{args.repo}",
+        env_id=f"lerobot/{args.repo}" if args.repo else f"lerobot/{root}",
         n_rows=n_rows,
         n_episodes=n_ep,
         seed=0,
         source_commit=args.revision or "",
         columns=columns,
+        tasks=tasks,
     )
 
+    # The output file is opened BEFORE the decode, so frames go straight into
+    # it — see `_CamRows`. `.h5.tmp` + `os.replace` at the end still means an
+    # interrupted run leaves no half-written store at the real path.
+    cam_elems = 3 * h * w
     tmp = out.with_suffix(".h5.tmp")
     with h5py.File(tmp, "w") as f:
         # Columns are rank-2 `[N, row_dim]`; the manifest carries the true
         # trailing shape (`TrajectoryStoreWriter._create_for`).
         f.create_dataset("qpos", data=fr["qpos"], dtype="f4")
         f.create_dataset("action", data=fr["action"], dtype="f4")
-        f.create_dataset(
+        # ⚠ RANK-1, matching a SCALAR column — see the ColumnSpec note above.
+        f.create_dataset("task_index", data=fr["task_index"], dtype="i4")
+        images = f.create_dataset(
             "images",
-            data=images.reshape(n_rows, -1),
+            shape=(n_rows, len(cams) * cam_elems),
             dtype="u1",
-            chunks=(1, len(cams) * 3 * h * w),
+            chunks=(1, cam_elems),
         )
+
+        print(f"[3/5] decoding video ({len(cams)} camera(s)) -> {tmp} ...")
+        for slot, cam in enumerate(cams):
+            decode_camera(
+                root, cam, video_map, lengths, from_index, fps, h, w,
+                _CamRows(images, slot, cam_elems),
+            )
+
+        print("[4/5] computing norm stats ...")
+        q_mean, q_std = norm_stats(fr["qpos"])
+        a_mean, a_std = norm_stats(fr["action"])
+        print(f"      qpos   mean={np.round(q_mean, 3).tolist()}")
+        print(f"      qpos   std ={np.round(q_std, 3).tolist()}")
+        print(f"      action mean={np.round(a_mean, 3).tolist()}")
+        print(f"      action std ={np.round(a_std, 3).tolist()}")
+
+        print(f"[5/5] finishing {out} ...")
         f.create_dataset("ep_len", data=lengths.astype(np.int64))
         f.create_dataset("ep_offset", data=from_index.astype(np.int64))
         f.create_dataset("norm_qpos_mean", data=q_mean)
@@ -408,7 +586,15 @@ def main():
         )
     os.replace(tmp, out)
 
-    sha = hashlib.sha256(out.read_bytes()).hexdigest()[:16]
+    # Hashed in blocks. `read_bytes()` pulls the WHOLE store into one bytes
+    # object — 7.12 GB for 50 episodes, and it was the last remaining place
+    # this converter's memory scaled with the recording. Measured: RSS is flat
+    # at 0.17 GB through the entire decode and spiked only here.
+    _h = hashlib.sha256()
+    with open(out, "rb") as _fh:
+        for _block in iter(lambda: _fh.read(8 << 20), b""):
+            _h.update(_block)
+    sha = _h.hexdigest()[:16]
     print(
         f"\nwrote {out}\n"
         f"  {out.stat().st_size / 1e9:.2f} GB   sha256:{sha}\n"

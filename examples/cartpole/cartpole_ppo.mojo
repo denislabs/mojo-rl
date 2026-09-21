@@ -25,8 +25,8 @@ Usage:
     pixi run mojo run -I . examples/cartpole_ppo.mojo
 """
 
-from mojo_rl.agents.ppo import PPOAgent, PPOAgentWithMinibatch
-from mojo_rl.envs import CartPoleEnv
+from noeira.agents.ppo import PPOAgent, PPOAgentWithMinibatch
+from noeira.envs import CartPoleEnv
 
 
 def main() raises:

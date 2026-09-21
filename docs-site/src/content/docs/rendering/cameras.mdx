@@ -1,0 +1,165 @@
+---
+title: Camera observations
+description: The batched GPU ray tracer that renders what a policy sees — RGB, depth and segmentation for every lane in one launch, gated against the same code on the CPU and against MuJoCo's own pictures.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" note="Used by LIBERO and the SO-101 tower family. One camera per launch." />
+
+A vision policy needs pictures of every environment in the batch, every step,
+already on the device. `noeira.physics3d.raytrace` produces them. It is a ray
+tracer, not a rasteriser: one GPU thread per `(env, pixel)`, reading the
+batched `Data` the physics has just written, and writing into `DeviceBuffer`s.
+There is no window, no swapchain and no draw command, so it runs the same on a
+headless cloud box as on a laptop.
+
+It does not replace the [SDL3 renderer](/rendering/). That one is the
+**viewer**; this is the **observation** path. MuJoCo Warp makes the same split,
+and for a single frame on screen the rasteriser is the cheaper of the two.
+
+## BatchedCameraRenderer
+
+```mojo
+from noeira.physics3d.raytrace import BatchedCameraRenderer
+
+comptime R = BatchedCameraRenderer[DType.float32, Dims, BATCH, 84, 84]
+var cam = R(ctx, model, cam=0)      # refuses a camera that would render wrong
+
+# each step, after the physics and forward kinematics:
+cam.render(ctx, data, model)        # one launch: every lane, every pixel
+```
+
+The parameters are `[DTYPE, D, BATCH, WIDTH, HEIGHT, SHADOWS=True,
+REFLECT=True, SAMPLES=1]`. Three buffers come out, one row per lane:
+
+| Buffer | Shape | Contents |
+|---|---|---|
+| `rgb` | `[BATCH, H·W·3]` | colour in `[0, 1]`, channels interleaved, row 0 at the **top** |
+| `depth` | `[BATCH, H·W]` | **planar** depth in metres; `0` means no hit |
+| `seg` | `[BATCH, H·W]` | geom id, or `-1` for background (stored as `DTYPE`) |
+
+Things worth knowing before wiring it into a training loop:
+
+- **The caller owns freshness.** `render` reads body poses as the device holds
+  them; it does not run forward kinematics. Render after the step's FK, or the
+  observation is one frame stale.
+- **One camera per launch.** `render(..., cam=k)` switches camera without a
+  second copy of the scene, but overwrites the previous camera's pictures —
+  copy `rgb` out between launches. LIBERO's `agentview` and `eye_in_hand`
+  share one renderer this way.
+- **Shadows and reflections are compile-time.** Each is a second full ray cast
+  per pixel. `SHADOWS=False` or `REFLECT=False` compiles a kernel that does not
+  contain the code at all, rather than branching around it.
+- **`SAMPLES=4` reproduces MuJoCo's multisampling.** MuJoCo's offscreen buffer
+  is 4× multisampled by default, and LIBERO records through it. Measured with
+  MuJoCo itself on the `libero_goal` demos, its own 4-sample render scores
+  43.1 dB against the recordings and a single sample 28.9 dB — so one ray per
+  pixel cannot match those pictures whatever the shading. Four samples cost up
+  to five traces a pixel, which is why it is not the default.
+- **RGB is float, not packed.** At 1024 lanes and 84×84 a frame is 87 MB at
+  float32 against 22 MB packed; the consumer is an `nn` module that wants
+  floats, so packing would be a kernel to compress followed by one to undo it.
+
+Camera modes follow MuJoCo's `mj_camlight`: fixed, track, trackcom,
+targetbody and targetbodycom.
+
+## Appearance
+
+The constructor builds a plain `VisualModel` from the `Model` alone: every
+visible geom in its own `rgba`, one directional light and the headlight. For a
+faithful picture, build one from the parse and install it:
+
+```mojo
+from noeira.physics3d.raytrace.visual import build_visual_model
+
+cam.set_visual(ctx, build_visual_model(flat_model_def, model, group_mask=1 << 1))
+```
+
+`build_visual_model` reads meshes and PNG textures and carries the scene *as
+drawn*, beside the solver's model. The lighting and texturing in
+`raytrace/appearance.mojo` are a term-by-term transcription of MuJoCo's classic
+OpenGL renderer: per-light ambient, diffuse and specular with attenuation,
+emission, shininess, 2D and cube textures with mip levels, and texture
+coordinate generation.
+
+:::caution[The geom group mask decides the picture]
+`group_mask` defaults to MuJoCo's viewer set (groups 0–2). LIBERO needs group 1
+only: its objects are visual meshes sitting over group-0 collision boxes, and
+the opaque boxes are in front. Measured with MuJoCo on LIBERO's scene, the
+default set scores 10.8 dB against the recording where group 1 alone scores
+43.9.
+:::
+
+## CPU and GPU parity
+
+`raytrace/` is one implementation over `LayoutTensor`, so the kernel and the
+host run the same `render_pixel`. `render_cpu` renders every lane on the host
+into plain `List`s, and `render_lane_cpu` renders one lane over a
+runtime-dimensioned model — the path the LIBERO gate and the tower preview use.
+
+The parity test runs both legs at float32 and compares all three channels —
+segmentation included, because a wrong hit can leave the distance untouched —
+and asserts on how many pixels it compared, so an empty frame cannot pass:
+
+```bash
+pixi run -e apple mojo run -I . tests/physics3d/test_camera_render_gpu_vs_cpu.mojo   # or -e nvidia
+```
+
+Without an accelerator the GPU legs are compiled out, so run it in a GPU
+environment for it to test anything. Metal has silently miscompiled
+per-thread arrays in this engine before; this gate is what says the camera
+code has not reintroduced one.
+
+Related gates:
+
+| Gate | Checks |
+|---|---|
+| `tests/physics3d/test_appearance.mojo` (`pixi run appearance-test`) | texture sampling, texgen and lighting on closed-form cases; no assets needed |
+| `tests/physics3d/test_ray_bvh_matches_linear.mojo` | the mesh BVH finds the same hits as a linear scan |
+| `tests/tasks/test_so101_tower_cameras.mojo` | the SO-101 tower's wrist and overhead camera poses against MuJoCo |
+| `pixi run libero-camera-gate` | our tracer against LIBERO's recorded pixels (needs `pixi run libero-camera-dump` first) |
+
+## Recording what the policy sees
+
+`frame_bgra(ctx, env, out, scale)` turns one lane's picture into BGRA bytes
+for [`VideoRecorder`](/rendering/#video-capture), upscaling by pixel
+replication so the video shows the agent's real pixels, bigger.
+`frame_bgra_from_cpu` does the same for a CPU render, so a clip can be made on
+a machine with no GPU.
+
+```bash
+# dm_control lift_brick at 84×84: the observation, and rgb | depth | segmentation panels
+pixi run -e apple mojo run -I . examples/dm_control/manipulation_camera_video.mojo
+
+# a LIBERO demo re-rendered by the tracer, side by side with the recording
+pixi run libero-camera-video put_the_bowl_on_the_plate --camera eye_in_hand
+
+# the SO-101 tower's two cameras at a recorded arm state, as PNGs
+pixi run soarm-tower-preview -- --state 24.4,-105.8,95.8,77.1,59.2,25.1 --out-dir /tmp/tower_preview
+```
+
+The same renderer feeds training data: `pixi run libero-demo-rerender`
+re-renders every LIBERO demonstration state through both cameras on the device
+into a store for [ACT](/algorithms/imitation/act/), and
+`pixi run libero-eval-batched -- --act DIR` renders both cameras every step
+during evaluation. See [LIBERO](/environments/libero/) and the
+[simulated SO-101](/robots/sim-twin/).
+
+## Cost
+
+Four benchmarks measure the tracer; each prints its own table:
+
+- `benchmarks/camera_tracer_cheetah.mojo` — one lane, a mesh-free scene
+- `benchmarks/camera_tracer_lift_brick.mojo` — one lane, a mesh-heavy scene, with and without shadows
+- `benchmarks/camera_tracer_batch_scaling.mojo` — how the cost amortises over lanes (read `us/lane/frame`)
+- `benchmarks/camera_tracer_lane_sweep.mojo` — lane scaling on the mesh-heavy scene, and whether the BVH's advantage holds at scale
+
+A single 84×84 frame is 7,056 threads, far too few to fill a GPU, so one-lane
+numbers are dominated by launch overhead and understate batched throughput.
+
+## Next
+
+- [Rendering](/rendering/) — the SDL3 viewer path
+- [Viewers and physics studio](/rendering/viewers/)
+- [3D physics](/physics/physics3d/) — the `Model` and `Data` the tracer reads

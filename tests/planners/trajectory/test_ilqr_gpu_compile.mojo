@@ -14,8 +14,8 @@ from std.sys import has_accelerator
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.planners.trajectory import (
+from noeira.nn.constants import DT as dtype
+from noeira.planners.trajectory import (
     ILQRGPUBatched,
     RolloutJacobianCallbackGPU,
 )

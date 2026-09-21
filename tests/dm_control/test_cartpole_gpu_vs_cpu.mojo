@@ -21,12 +21,12 @@ from max.gpu.host import DeviceContext
 from std.math import abs, cos, pi
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.dm_control.cartpole import (
+from noeira.nn.constants import DT
+from noeira.core.cont_action import ContAction
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.dm_control.cartpole import (
     DMCartpoleConfig,
     DMCartpole1Model,
     DMCartpole3Model,

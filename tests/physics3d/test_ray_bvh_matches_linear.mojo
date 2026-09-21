@@ -42,19 +42,19 @@ from std.sys import has_accelerator
 from max.gpu.host import DeviceContext
 from std.testing import assert_true, assert_equal, TestSuite
 
-from mojo_rl.physics3d.fields import Data, Model, Dims, init_hfield_data
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Data, Model, Dims, init_hfield_data
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.fields_build import build_model_fields_from_flat
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.gpu.constants import (
     MAX_GPU_MESHES,
     MODEL_MESH_META_SIZE,
     MESH_META_IDX_TRINUM,
     MESH_META_IDX_BVHADR,
     MESH_META_IDX_BVHNUM,
 )
-from mojo_rl.physics3d.raytrace import (
+from noeira.physics3d.raytrace import (
     BatchedCameraRenderer,
     RGB_CHANNELS,
     init_camera_reference,

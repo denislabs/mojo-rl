@@ -26,8 +26,8 @@ from max.gpu.host import DeviceContext
 from std.random import seed
 from std.testing import assert_almost_equal, assert_equal, assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.data import (
+from noeira.nn.constants import DT
+from noeira.data import (
     PrioritizedSampler,
     SequenceWindowSampler,
     UniformDeviceSampler,

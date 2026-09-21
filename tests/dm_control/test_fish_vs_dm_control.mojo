@@ -28,9 +28,9 @@ from std.python import Python, PythonObject
 from std.math import abs, sin, sqrt
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_POS_Y,
@@ -56,16 +56,16 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_DENSITY,
     MODEL_META_IDX_GRAVITY_Z,
 )
-from mojo_rl.physics3d.parser.flat_model import ACT_KIND_POSITION
+from noeira.physics3d.parser.flat_model import ACT_KIND_POSITION
 
-from mojo_rl.envs.dm_control.rewards import tolerance
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.envs.dm_control.fish.fish_config import (
+from noeira.envs.dm_control.rewards import tolerance
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.envs.dm_control.fish.fish_config import (
     DMFishUprightConfig,
     DMFishSwimConfig,
     SWIM_RADII,
 )
-from mojo_rl.envs.dm_control.fish.fish_xml import (
+from noeira.envs.dm_control.fish.fish_xml import (
     DMFishUprightModel,
     DMFishSwimModel,
     TORSO_BODY_IDX,
@@ -74,7 +74,7 @@ from mojo_rl.envs.dm_control.fish.fish_xml import (
     TARGET_GEOM_IDX,
     N_ROOT_QPOS,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     TENDON_MAX_WRAPS,
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
@@ -189,7 +189,7 @@ def test_fish_actuators_are_position_servos() raises:
     `gainprm = [kp, 0, 0]` and `biasprm = [0, -kp, -kv]`, which is what makes
     `force = kp*(ctrl - length) - kv*velocity` the right law.
 
-    ⚠ `M._acd` is a COMPTIME struct, and indexing its `InlineArray` fields with
+    ⚠ `M._acd` is a COMPTIME struct, and indexing its `Array` fields with
     a RUNTIME loop variable materializes garbage here (an `assert` on
     `Float64(sf.actuators.data[(i) * MODEL_ACTUATOR_SIZE + ACT_IDX_KP])` read 6.4e-314 while a `print` of the same expression
     read 0.0005). Every field is copied out through a `comptime for` — a

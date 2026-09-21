@@ -18,14 +18,14 @@ CPU-only machines).
 """
 
 from std.sys import has_accelerator
-from std.gpu import block_idx, thread_idx
+from max.gpu import block_idx, thread_idx
 from max.gpu.host import DeviceContext
 from std.math import abs as math_abs
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.planners.trajectory import (
+from noeira.nn.constants import DT as dtype
+from noeira.planners.trajectory import (
     ILQRGPUBatched,
     RolloutJacobianCallbackGPU,
 )

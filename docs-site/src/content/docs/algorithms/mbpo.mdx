@@ -14,7 +14,7 @@ import Papers from '~/components/Papers.astro';
 dynamics model that manufactures extra training data.
 
 ```mojo
-from mojo_rl.deep_agents.mbpo import MBPOAgent
+from noeira.deep_agents.mbpo import MBPOAgent
 ```
 
 
@@ -72,7 +72,7 @@ Each member predicts a **distribution** over the next state and reward, trained
 with `GaussianNLLLoss`:
 
 ```mojo
-from mojo_rl.nn.loss.gaussian_nll_loss import GaussianNLLLoss
+from noeira.nn.loss.gaussian_nll_loss import GaussianNLLLoss
 ```
 
 Two kinds of uncertainty come out of this, and both matter:
@@ -105,7 +105,7 @@ Q-values. Sampling a member independently for every transition averages that out
 ## Building it
 
 ```mojo
-from mojo_rl.deep_agents.mbpo import MBPOAgent
+from noeira.deep_agents.mbpo import MBPOAgent
 ```
 
 MBPO composes an SAC trainer with the ensemble and a synthetic replay buffer, so

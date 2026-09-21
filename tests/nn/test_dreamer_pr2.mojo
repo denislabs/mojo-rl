@@ -10,9 +10,9 @@ from std.memory import alloc
 from std.testing import assert_true
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.dreamerv3.onehot_kl import OneHotKL
-from mojo_rl.deep_agents.dreamerv3.normalize import PercentileNormalize
+from noeira.nn.constants import DT
+from noeira.deep_agents.dreamerv3.onehot_kl import OneHotKL
+from noeira.deep_agents.dreamerv3.normalize import PercentileNormalize
 
 
 comptime FIXTURE = "tests/nn/dreamerv3/fixtures/pr2_fixture.txt"

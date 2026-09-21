@@ -27,8 +27,8 @@ See [Traits](/concepts/traits/) for what each requires.
 ## 2. Define State and Action
 
 ```mojo
-from mojo_rl.core.state import State
-from mojo_rl.core.action import Action
+from noeira.core.state import State
+from noeira.core.action import Action
 
 
 struct MyState(State):
@@ -41,7 +41,7 @@ struct MyAction(Action):
 ```
 
 `State` requires `Copyable`, `ImplicitlyCopyable`, `Movable` and
-`ImplicitlyDeletable`; `Action` is a lighter marker trait. For standard shapes
+`Deinitable`, plus `__eq__`; `Action` is a lighter marker trait. For standard shapes
 the framework provides generics — `ObsState[N]` for an N-dimensional observation
 and `ContAction[N]` for an N-dimensional continuous action — so you often do not
 need your own.
@@ -51,7 +51,7 @@ need your own.
 A discrete example:
 
 ```mojo
-from mojo_rl.core.env_traits import DiscreteEnv
+from noeira.core.env_traits import DiscreteEnv
 
 
 struct MyEnv(DiscreteEnv):
@@ -68,7 +68,7 @@ struct MyEnv(DiscreteEnv):
         ...
 
     def reset(mut self) -> MyState: ...
-    def get_state(self) -> MyState: ...
+    def get_state(mut self) -> MyState: ...
     def close(mut self): ...
 
     def was_terminated(self) -> Bool:
@@ -128,7 +128,7 @@ and joints across the batch dimension.
 Once implemented, wrap it for the batched drivers:
 
 ```mojo
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
+from noeira.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
 
 comptime EnvT = BatchedGpuDiscreteEnv[MyEnv[DT], N_ENVS, OBS_DIM, 1]
 ```
@@ -137,17 +137,21 @@ comptime EnvT = BatchedGpuDiscreteEnv[MyEnv[DT], N_ENVS, OBS_DIM, 1]
 
 If your environment is a rigid-body system, you probably want `physics3d` rather
 than hand-written dynamics. Define the model in **MJCF XML** — the same format
-MuJoCo uses — and load it:
+MuJoCo uses — and wrap it as a compile-time model:
 
 ```mojo
-from mojo_rl.physics3d.parser import build_model_fields_from_flat
+from noeira.physics3d.parser import ModelDefFromXML
 ```
 
 Then implement a config struct (`Phyics3dEnvConfig`) supplying observation
 extraction, reward, termination and any pre-step hooks, and use
-`Phyics3dBatchedEnv[MyModel, MyConfig, N_ENVS]`. The
+`Phyics3dEnv[MyModel, MyConfig]` on the CPU or
+`Phyics3dBatchedEnv[MyModel, MyConfig, N_ENVS]` on the GPU. The
 [3D locomotion](/environments/3d-locomotion/) environments are all built this way
 and are the best templates — `hopper/` is the smallest complete one.
+
+For a manipulation task over a scene of props, write a family and a task file
+instead of a config: see [Writing a family](/tasks/writing-a-family/).
 
 ## Checklist
 

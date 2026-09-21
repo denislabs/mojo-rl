@@ -45,10 +45,10 @@ from std.math import abs, sin, sqrt
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
-from std.collections import InlineArray
+from std.collections import Array
 from layout import Layout, LayoutTensor
 
-from mojo_rl.envs.dm_control.ball_in_cup import (
+from noeira.envs.dm_control.ball_in_cup import (
     DMBallInCupCatch,
     DMBallInCupModel,
     BALL_BODY_IDX,
@@ -60,14 +60,14 @@ from mojo_rl.envs.dm_control.ball_in_cup import (
     TARGET_HALF_Z,
     BALL_RADIUS,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.tendon import spatial_tendon_length_jac
-from mojo_rl.physics3d.fields.scratch import Scratch
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.tendon import spatial_tendon_length_jac
+from noeira.physics3d.fields.scratch import Scratch
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     MODEL_META_SIZE,
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -297,7 +297,7 @@ def test_ball_in_cup_model_matches_mujoco() raises:
     print("  max |d(site_xpos)| =", worst_site)
     assert_true(worst_site <= 1e-14, "site_xpos differs from MuJoCo")
 
-    # ⚠ `Scratch`, not `InlineArray` — this call site had been stale since
+    # ⚠ `Scratch`, not `Array` — this call site had been stale since
     # `spatial_tendon_length_jac` took `Scratch` (the test tree is only
     # partially swept, `project_rc2_test_tree_compile_sweep`). Unrelated to
     # the wrap work; fixed here because it is one line and the file could not

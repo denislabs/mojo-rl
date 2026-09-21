@@ -17,10 +17,10 @@ Usage:
     pixi run -e apple mojo run -I . examples/arcade_games/atari_smoke_all.mojo
 """
 
-from mojo_rl.envs.atari.atari_env import AtariEnv
-from mojo_rl.envs.atari.games.registry import AtariGame
-from mojo_rl.envs.atari.cpu6502 import run_frame_video
-from mojo_rl.envs.atari.flags import FRAME_WIDTH, FRAME_HEIGHT
+from noeira.envs.atari.atari_env import AtariEnv
+from noeira.envs.atari.games.registry import AtariGame
+from noeira.envs.atari.cpu6502 import run_frame_video
+from noeira.envs.atari.flags import FRAME_WIDTH, FRAME_HEIGHT
 from std.memory import alloc
 
 

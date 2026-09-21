@@ -57,18 +57,18 @@ from max.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.nn.core.initializer import Zero, TruncNormalIn
-from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
-from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
+from noeira.nn.primitives.ops.swish_op import SwishOp
+from noeira.nn.core.initializer import Zero, TruncNormalIn
+from noeira.deep_agents.dreamerv3.agent import DreamerV3Agent
+from noeira.deep_agents.dreamerv3.nets_cnn import (
     DreamerEncoderCNNPool,
     DreamerDecoderCNNPool,
 )
-from mojo_rl.envs.atari import AtariEnv
-from mojo_rl.envs.atari.games.registry import AtariGame
+from noeira.envs.atari import AtariEnv
+from noeira.envs.atari.games.registry import AtariGame
 
 # =============================================================================
 # Architecture
@@ -189,10 +189,10 @@ def main() raises:
         # ─── Logger (remote; same KNOWN_GROUPS metrics as the other envs) ──
         var env_vars = load_dotenv()
         var logger = RemoteLogger(
-            server_url=env_vars.get("RL_MONITOR_URL", ""),
+            server_url=env_vars.get("NOEIRA_CLOUD_URL", ""),
             run_name="DreamerV3 Atari Pong PIXEL (GPU, discrete)",
             buffer_size=200,
-            api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+            api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
         )
         logger.set_config("algorithm", "DreamerV3")
         logger.set_config("env", "AtariPong")

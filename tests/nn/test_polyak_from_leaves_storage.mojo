@@ -16,10 +16,10 @@ Run:
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.noisy_linear import NoisyLinear
-from mojo_rl.nn.primitives.conv2d import Conv2D
-from mojo_rl.nn.core.initializer import Deterministic
+from noeira.nn.constants import DT
+from noeira.nn.primitives.noisy_linear import NoisyLinear
+from noeira.nn.primitives.conv2d import Conv2D
+from noeira.nn.core.initializer import Deterministic
 
 
 def test_noisy_linear[target: StaticString](ctx: Optional[DeviceContext]) raises:

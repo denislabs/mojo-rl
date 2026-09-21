@@ -34,17 +34,17 @@ the same shape: it returns a plausible number for the wrong surface.
 
 from std.math import abs, sqrt
 from std.sys import has_accelerator
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext
 from std.testing import assert_true, TestSuite
 from layout import Layout, LayoutTensor
 
-from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from mojo_rl.physics3d.fields import Data, Model, Dims, init_hfield_data
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
+from noeira.physics3d.fields import Data, Model, Dims, init_hfield_data
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.fields_build import build_model_fields_from_flat
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     MODEL_BODY_SIZE,
     MODEL_MESH_META_SIZE,
@@ -52,8 +52,8 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_HFIELD_META_SIZE,
     MAX_GPU_HFIELDS,
 )
-from mojo_rl.physics3d.ray import ray_model
-from mojo_rl.nn.core.tensor import TensorImpl
+from noeira.physics3d.ray import ray_model
+from noeira.nn.core.tensor import TensorImpl
 
 # ⚠ FLOAT32: Metal rejects `double`, so both legs run at float32 — see the
 # module docstring on why a float64 CPU baseline would be the wrong control.

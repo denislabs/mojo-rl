@@ -1,15 +1,14 @@
 /* ============================================================
    noeira design system — Starlight theme
-   Dark, technical "control-room at night" theme for mojo-rl.
+   Dark, technical "control-room at night" theme for noeira.
 
-   Naming: "noeira" is the design system / company brand; "mojo-rl"
-   is the product this site documents. Tokens stay noeira-prefixed;
-   user-facing copy says mojo-rl.
+   Naming: "noeira" is both the product this site documents and its
+   design system; tokens are noeira-prefixed.
 
    Dark mode is the faithful brand theme; light mode is a
    cool blue-cast derivation (the source system is dark-only).
 
-   Mirrors mojo-rl-monitor/client/src/index.css. Keep in sync.
+   Mirrors noeira-cloud/client/src/index.css. Keep in sync.
    ============================================================ */
 
 @import '@fontsource-variable/manrope/index.css';
@@ -449,7 +448,7 @@ mobile-starlight-toc a[aria-current='true'] {
 /* ============================================================
    Maturity marker (src/components/Maturity.astro)
 
-   mojo-rl is not uniformly mature, so stability is declared per
+   noeira is not uniformly mature, so stability is declared per
    page rather than with one sitewide banner.
    ============================================================ */
 

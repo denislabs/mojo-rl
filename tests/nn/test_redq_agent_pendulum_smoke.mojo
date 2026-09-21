@@ -17,9 +17,9 @@ R.4 raw-trainer smoke).
 from std.random import seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.redq import SmallREDQ
-from mojo_rl.envs.pendulum import PendulumEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.redq import SmallREDQ
+from noeira.envs.pendulum import PendulumEnv
 
 
 comptime OBS = 3

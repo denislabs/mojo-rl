@@ -6,8 +6,8 @@ observation and steps through the gym API. Full learning is exercised by
 """
 
 from std.testing import assert_equal, assert_true, TestSuite
-from mojo_rl.core.env_traits import BoxDiscreteActionEnv
-from mojo_rl.envs.procgen.games import MazeGymEnv
+from noeira.core.env_traits import BoxDiscreteActionEnv
+from noeira.envs.procgen.games import MazeGymEnv
 
 comptime ASSET_ROOT = String("assets/procgen/")
 

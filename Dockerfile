@@ -1,11 +1,11 @@
-# Custom image for mojo-rl — compatible RunPod (CUDA 13) and Vast.ai
+# Custom image for noeira — compatible RunPod (CUDA 13) and Vast.ai
 # SSH is pre-configured by the base image (no manual setup needed)
 #
 # Build for linux/amd64 from Mac M1:
-#   docker buildx build --platform linux/amd64 -t <dockerhub-user>/mojo-rl-runpod:latest --push .
+#   docker buildx build --platform linux/amd64 -t <dockerhub-user>/noeira-runpod:latest --push .
 #
 # RunPod template settings:
-#   Container Image : <dockerhub-user>/mojo-rl-runpod:latest
+#   Container Image : <dockerhub-user>/noeira-runpod:latest
 #   Container Disk  : 20 GB
 #   Volume Disk     : 50 GB  →  /workspace
 #   Expose TCP Ports: 22

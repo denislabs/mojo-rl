@@ -9,7 +9,7 @@ model builds" from every later question.
 
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.envs.dm_control.dog import (
+from noeira.envs.dm_control.dog import (
     DMDogFetchModel,
     DOG_FETCH_OBS_DIM,
 )

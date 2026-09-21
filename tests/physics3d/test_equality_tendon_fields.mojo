@@ -37,12 +37,12 @@ from std.math import abs
 from std.sys import has_nvidia_gpu_accelerator
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_NTENDON,
@@ -88,7 +88,7 @@ from mojo_rl.physics3d.gpu.constants import (
     EQ_IDX_SOLIMP_4,
     METADATA_SIZE,
 )
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
 
 comptime DTYPE = DType.float32
 comptime BATCH = 2
@@ -280,6 +280,14 @@ comptime GOLD_NCON_B = 6  # Part B equality: total contacts over the steps
 #
 # ⚠ STILL A REGRESSION PIN, NOT A CORRECTNESS STATEMENT — the number is a
 # self-golden and the remaining 1.2e-2 is unexplained-by-the-weld, not zero.
+# --- 2026-09-06: connect/weld rows carry MuJoCo 3.10's J̇·v reference term
+# (PERFORMANCE.md §13.29) and a <fixed> tendon's limit is a row at last.
+# Harvested on that tree: Part A -518630.5688 -> -518629.2910 (2.5e-6, the
+# injected tendons' limit rows) and Part B 23698.2240 -> 23708.3722 (4.3e-4,
+# the weld is MOVING and the term is centripetal). Both inside GOLD_RTOL, so
+# the pins are left where they were; the numbers are recorded here so the
+# next move is measured from the right baseline. The CPU-vs-GPU parity leg
+# below is what caught a heap `Scratch` inside the GPU kernel on the way.
 comptime GOLD_B = 23698.22404074709  # Part B final qpos/qvel/qacc/contacts checksum
 # Re-harvested 2026-08-03 (was 29033.456920214216, a +298.119 move) for the SAME
 # reason as GOLD_A: `CONTACT_SIZE` grew 23 -> 30 and this fingerprint sums

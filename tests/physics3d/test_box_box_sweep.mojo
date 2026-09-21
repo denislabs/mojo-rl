@@ -1,5 +1,11 @@
 """box/box narrow phase, swept over many poses (task #42).
 
+⚠ 2026-09-12: the manifold is MuJoCo 3.12's `mjc_BoxBox` (AUD-31). The
+narrative below about the 3.6.0 port (edge manifolds of 1..6 points, the `c1`
+quirk) describes the PREVIOUS algorithm; 3.12 emits exactly ONE point on an
+edge axis and every clipped vertex (<= 12) on a face axis. The gate compares
+against the runtime, so it is what decided the port was needed.
+
 WHAT THIS MEASURES, AND WHY IT COMES BEFORE THE FIX. `mjc_BoxBox` does two
 things: it picks a separating axis (its `code`, from 6 face axes on each box
 plus 9 edge-edge cross products), and it then builds a CONTACT MANIFOLD of up
@@ -48,17 +54,17 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.collision.collision_primitives import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.collision.collision_primitives import (
     box_box_manifold,
     BB_MAX_POINTS,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE,
     META_IDX_NUM_CONTACTS,
     CONTACT_IDX_BODY_A,
@@ -393,13 +399,13 @@ def test_box_box_manifold_vs_mujoco() raises:
         var mjn = Int(py=dat.ncon)
 
         var n_bb = 0
-        var bb_dist = InlineArray[Scalar[DTYPE], BB_MAX_POINTS](
+        var bb_dist = Array[Scalar[DTYPE], BB_MAX_POINTS](
             fill=Scalar[DTYPE](0)
         )
-        var bb_pos = InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS](
+        var bb_pos = Array[Scalar[DTYPE], 3 * BB_MAX_POINTS](
             fill=Scalar[DTYPE](0)
         )
-        var bb_n = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        var bb_n = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
         var code = box_box_manifold[DTYPE](
             Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
             Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
@@ -423,7 +429,7 @@ def test_box_box_manifold_vs_mujoco() raises:
             if mjn != 0:
                 n_count_bad += 1
             continue
-        if code >= 12:
+        if code >= 6:  # 3.12 codes: 0..5 face, >= 6 edge pair
             n_edge += 1
             n_edge_points += n_bb
         else:
@@ -478,10 +484,13 @@ def test_box_box_manifold_vs_mujoco() raises:
         String("the face path emitted ") + String(n_face_points)
         + " points over " + String(n_face) + " poses, i.e. no manifold at all",
     )
+    # 3.12: an edge axis yields EXACTLY one contact (engine_collision_box.c:620),
+    # so the edge count equals the pose count. The old 1..6-point edge manifold
+    # is what this assertion used to demand.
     assert_true(
-        n_edge_points > n_edge,
+        n_edge_points == n_edge,
         String("the edge-edge path emitted ") + String(n_edge_points)
-        + " points over " + String(n_edge) + " poses, i.e. no manifold at all",
+        + " points over " + String(n_edge) + " poses; 3.12 emits exactly one per pose",
     )
     assert_true(
         n_count_bad == 0,

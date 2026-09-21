@@ -1,0 +1,28 @@
+<mujoco model="libero_study_scene2">
+  <compiler angle="radian" inertiagrouprange="0 0" autolimits="true"/>
+  <option timestep="0.002" impratio="20" cone="elliptic" density="1.2" viscosity="0.00002" />
+  <asset>
+    <model name="panda_robosuite" file="../../robots/assets/panda_robosuite.xml"/>
+    <model name="libero_study_tabletop_manipulation_arena" file="../arenas/libero_study_tabletop_manipulation_arena.xml"/>
+    <model name="desk_caddy" file="../objects/desk_caddy.xml"/>
+    <model name="black_book_free" file="../objects/black_book_free.xml"/>
+    <model name="red_coffee_mug_free" file="../objects/red_coffee_mug_free.xml"/>
+  </asset>
+  <worldbody>
+    <frame pos="-0.75 0.0 0.912" quat="1.0 0.0 0.0 0.0">
+      <attach model="panda_robosuite" prefix="robot_"/>
+    </frame>
+    <frame pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="libero_study_tabletop_manipulation_arena" prefix="arena_"/>
+    </frame>
+    <frame pos="-0.4 -0.14 0.887" quat="6.123233995736766e-17 0.0 0.0 1.0">
+      <attach model="desk_caddy" prefix="desk_caddy_1_"/>
+    </frame>
+    <frame pos="11.0 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="black_book_free" prefix="black_book_1_"/>
+    </frame>
+    <frame pos="11.5 0.0 50.0" quat="1.0 0.0 0.0 0.0">
+      <attach model="red_coffee_mug_free" prefix="red_coffee_mug_1_"/>
+    </frame>
+  </worldbody>
+</mujoco>

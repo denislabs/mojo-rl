@@ -16,11 +16,11 @@ Run:
 
 from std.random import seed
 
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac import SAC
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac import SAC
 
-from mojo_rl.envs.pendulum import PendulumEnv
+from noeira.envs.pendulum import PendulumEnv
 
 
 comptime EnvT = PendulumEnv[DT]

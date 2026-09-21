@@ -44,7 +44,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.humanoid import (
+from noeira.envs.dm_control.humanoid import (
     DMHumanoidStand,
     DMHumanoidWalk,
     DMHumanoidRun,
@@ -59,8 +59,8 @@ from mojo_rl.envs.dm_control.humanoid import (
     WALK_SPEED,
     RUN_SPEED,
 )
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_IPOS_X,
@@ -73,8 +73,8 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_ARMATURE,
     JOINT_IDX_DAMPING,
 )
-from mojo_rl.physics3d.joint_types import JNT_FREE
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.joint_types import JNT_FREE
+from noeira.physics3d.model.model_dims import ModelDims
 comptime MD = ModelDims[DMHumanoidModel]
 
 

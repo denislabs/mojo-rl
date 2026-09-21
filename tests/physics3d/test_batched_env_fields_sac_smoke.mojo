@@ -14,10 +14,10 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_batched_env_fields_sac
 from std.random import seed
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.hopper import HopperModel, HopperConfig
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac import SAC
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.hopper import HopperModel, HopperConfig
 
 comptime N_ENVS = 4
 comptime EnvT = Phyics3dBatchedEnv[

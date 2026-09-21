@@ -10,8 +10,8 @@ from std.memory import alloc
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.experimental.lewm.pixel_convert import (
+from noeira.nn.constants import DT
+from noeira.experimental.lewm.pixel_convert import (
     u8_hwc_to_chw_norm,
     u8_to_fp32_norm,
 )

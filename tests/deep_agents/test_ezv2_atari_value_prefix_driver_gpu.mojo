@@ -18,19 +18,19 @@ from std.math import isnan, isinf
 from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT, LAYOUT_NCHW
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
-from mojo_rl.deep_agents.efficient_zero_v2.nets_atari import (
+from noeira.nn.constants import DT, LAYOUT_NCHW
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.optimizer.adam import Adam
+from noeira.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
+from noeira.deep_agents.efficient_zero_v2.nets_atari import (
     EZDynVPNetAtari, ez_atari_init_zero_pred, ez_atari_init_zero_reward,
     EZ_LSTM_HORIZON,
 )
-from mojo_rl.deep_agents.efficient_zero_v2.selfplay_gpu_vp import (
+from noeira.deep_agents.efficient_zero_v2.selfplay_gpu_vp import (
     run_ezv2_gumbel_selfplay_gpu_vp,
 )
-from mojo_rl.envs.atari import AtariEnv, load_rom
-from mojo_rl.envs.atari.games.registry import AtariGame
+from noeira.envs.atari import AtariEnv, load_rom
+from noeira.envs.atari.games.registry import AtariGame
 
 
 def main() raises:

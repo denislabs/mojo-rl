@@ -71,12 +71,12 @@ from std.random import seed
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.fmt import fit
-from mojo_rl.deep_agents.tdmpc2.config import TDMPC2
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.dm_control.walker.walker_xml import DMWalkerModel
-from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
+from noeira.nn.constants import DT
+from noeira.core.fmt import fit
+from noeira.deep_agents.tdmpc2.config import TDMPC2
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.dm_control.walker.walker_xml import DMWalkerModel
+from noeira.envs.dm_control.walker.walker_config import DMWalkerConfig
 
 
 # ─── Profiling knobs ──────────────────────────────────────────────────────

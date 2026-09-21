@@ -22,8 +22,8 @@ from std.time import perf_counter_ns
 from std.sys import has_accelerator
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.cheetah import DMCheetahRunBatched
-from mojo_rl.physics3d.raytrace import BatchedCameraRenderer
+from noeira.envs.dm_control.cheetah import DMCheetahRunBatched
+from noeira.physics3d.raytrace import BatchedCameraRenderer
 
 comptime DT = DType.float32
 comptime W = 84

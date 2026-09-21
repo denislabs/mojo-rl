@@ -35,17 +35,17 @@ from std.math import abs
 from std.random import random_float64, seed
 from std.testing import assert_true
 
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
 
-from mojo_rl.envs.dm_control.point_mass import (
+from noeira.envs.dm_control.point_mass import (
     DMPointMassModel,
     DMPointMassConfig,
 )
-from mojo_rl.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
-from mojo_rl.envs.dm_control.cheetah import DMCheetahModel, DMCheetahConfig
-from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
+from noeira.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
+from noeira.envs.dm_control.cheetah import DMCheetahModel, DMCheetahConfig
+from noeira.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 
 
 comptime N_STEPS: Int = 60

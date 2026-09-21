@@ -23,11 +23,11 @@ Run: pixi run mojo run -I . tests/physics3d/test_dims_provider.mojo
 
 from std.testing import assert_true
 
-from mojo_rl.physics3d.fields.dims import DimsLike, Dims
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.fields.dims import DimsLike, Dims
+from noeira.physics3d.model.model_dims import ModelDims
 
-from mojo_rl.envs.dm_control.dog.dog_xml import DMDogStandWalkModel
-from mojo_rl.envs.dm_control.dog.dog_dims import DM_DOG_STAND_WALK_DIMS
+from noeira.envs.dm_control.dog.dog_xml import DMDogStandWalkModel
+from noeira.envs.dm_control.dog.dog_dims import DM_DOG_STAND_WALK_DIMS
 
 
 comptime G = DM_DOG_STAND_WALK_DIMS          # <- MuJoCo, via the generator
@@ -162,6 +162,8 @@ def main() raises:
         njoint = DMDogStandWalkModel.NJOINT,
         ngeom = DMDogStandWalkModel.NGEOM,
         nsite = DMDogStandWalkModel.NSITE,
+        nsensor = DMDogStandWalkModel.NSENSOR,
+        nsensordata = DMDogStandWalkModel.NSENSORDATA,
         max_contacts = DMDogStandWalkModel.MAX_CONTACTS,
         nequality = DMDogStandWalkModel.MAX_EQUALITY,
         ntendon = DMDogStandWalkModel.MAX_TENDON,

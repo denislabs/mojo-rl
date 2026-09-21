@@ -17,29 +17,29 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_env_fields_mujoco_roun
 from std.math import sin, abs
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.env_traits import BoxContinuousActionEnv
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
-from mojo_rl.envs.ant import AntModel, AntConfig
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
+from noeira.nn.constants import DT
+from noeira.core.env_traits import BoxContinuousActionEnv
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
+from noeira.envs.ant import AntModel, AntConfig
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.walker2d.walker2d_config import Walker2dConfig
 
 # Swimmer (fluid drag) is now supported — fluid forces are applied inside the
 # fields integrator step (Stage A). Humanoid exercises tendons + sites on the
 # facade.
-from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
-from mojo_rl.envs.swimmer.swimmer_config import SwimmerConfig
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
-from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
-from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
+from noeira.envs.swimmer.swimmer_xml import SwimmerModel
+from noeira.envs.swimmer.swimmer_config import SwimmerConfig
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.envs.humanoid.humanoid_config import HumanoidConfig
+from noeira.envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
     InvertedDoublePendulumModel,
 )
-from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_config import (
+from noeira.envs.inverted_double_pendulum.inverted_double_pendulum_config import (
     InvertedDoublePendulumConfig,
 )
-from mojo_rl.envs.reacher.reacher_xml import ReacherModel
-from mojo_rl.envs.reacher.reacher_config import ReacherConfig
+from noeira.envs.reacher.reacher_xml import ReacherModel
+from noeira.envs.reacher.reacher_config import ReacherConfig
 
 comptime N_STEPS = 60
 

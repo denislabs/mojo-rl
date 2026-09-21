@@ -13,8 +13,8 @@ from std.memory import alloc
 from std.math import sin
 from layout import Layout, LayoutTensor
 
-from mojo_rl.experimental.pcn.pc_initializer import PCXavier
-from mojo_rl.experimental.pcn.pc_norm_block import NormPCBlock
+from noeira.experimental.pcn.pc_initializer import PCXavier
+from noeira.experimental.pcn.pc_norm_block import NormPCBlock
 
 comptime dtype = DType.float32
 comptime DIM = 12

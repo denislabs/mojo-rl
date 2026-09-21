@@ -18,6 +18,13 @@ construction:
       direction) strictly worse than a spread-out one. Checked as an ordering
       between two concrete `B`s rather than against a magic threshold.
 
+      ⚠ [2] and [4] are NECESSARY AND NOT SUFFICIENT, and the first G1 run is
+      the proof: both passed for months against an `L_ortho` whose minimiser
+      was a rank-d/2 collapse. [2] checks the gradient against the loss, and
+      the LOSS was the bug; [4] compares two hand-built points and never
+      visits the minimiser. Only following the gradient can see it, which is
+      `test_fb_ortho_fixed_point.mojo`.
+
 [1] and [2] are central finite differences of every input of both losses.
 
 Run:
@@ -27,9 +34,9 @@ Run:
 from std.math import abs, sqrt
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.fb.loss import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.fb.loss import (
     fb_measure_loss,
     fb_ortho_loss,
     pairwise_matrix,
@@ -56,40 +63,32 @@ def _mk(n: Int, a: Float64, b: Float64, c: Float64) raises -> Tensor:
 
 
 def _measure_only_loss(
-    ref f: Tensor, ref bsp: Tensor, ref bn: Tensor, ref mt: Tensor,
-    with_anchor: Bool,
+    ref f: Tensor, ref bg: Tensor, ref mt: Tensor, with_anchor: Bool,
 ) raises -> Float64:
     var gf = Tensor.alloc(BATCH * D)
-    var gsp = Tensor.alloc(BATCH * D)
-    var gbn = Tensor.alloc(BATCH * D)
-    return fb_measure_loss[D, BATCH](
-        f, bsp, bn, mt, gf, gsp, gbn, with_anchor
-    )
+    var gbg = Tensor.alloc(BATCH * D)
+    return fb_measure_loss[D, BATCH](f, bg, mt, gf, gbg, with_anchor)
 
 
 def test_measure_loss_gradients() raises:
     print("[1] fb_measure_loss vs central finite differences ...")
-    var f = _mk(BATCH * D, 0.21, -0.13, 0.4)
-    var bsp = _mk(BATCH * D, -0.17, 0.29, -0.2)
-    var bn = _mk(BATCH * D, 0.11, 0.07, 0.33)
-    var mt = _mk(BATCH * BATCH, 0.05, -0.09, 0.15)
-
+    var f = _mk(BATCH * D, 0.13, -0.21, 0.05)
+    var bg = _mk(BATCH * D, -0.17, 0.29, -0.2)
+    var mt = _mk(BATCH * BATCH, 0.07, 0.03, -0.1)
     var gf = Tensor.alloc(BATCH * D)
-    var gsp = Tensor.alloc(BATCH * D)
-    var gbn = Tensor.alloc(BATCH * D)
-    var base = fb_measure_loss[D, BATCH](f, bsp, bn, mt, gf, gsp, gbn, True)
+    var gbg = Tensor.alloc(BATCH * D)
+    var base = fb_measure_loss[D, BATCH](f, bg, mt, gf, gbg, True)
     print("      L_FB =", base)
 
     var worst_f = Float64(0)
-    var worst_sp = Float64(0)
-    var worst_bn = Float64(0)
+    var worst_b = Float64(0)
 
     for idx in range(BATCH * D):
         var keep = f.data[idx]
         f.data[idx] = Scalar[DT](Float64(keep) + EPS)
-        var lp = _measure_only_loss(f, bsp, bn, mt, True)
+        var lp = _measure_only_loss(f, bg, mt, True)
         f.data[idx] = Scalar[DT](Float64(keep) - EPS)
-        var lm = _measure_only_loss(f, bsp, bn, mt, True)
+        var lm = _measure_only_loss(f, bg, mt, True)
         f.data[idx] = keep
         var fd = (lp - lm) / (2.0 * EPS)
         var an = Float64(gf.data[idx])
@@ -98,86 +97,56 @@ def test_measure_loss_gradients() raises:
         if rel > worst_f:
             worst_f = rel
 
+    # ONE B tensor now, so a single perturbation moves the matrix, its
+    # diagonal and the anchor together — which is exactly the derivative the
+    # trainer applies.
     for idx in range(BATCH * D):
-        var keep = bsp.data[idx]
-        bsp.data[idx] = Scalar[DT](Float64(keep) + EPS)
-        var lp = _measure_only_loss(f, bsp, bn, mt, True)
-        bsp.data[idx] = Scalar[DT](Float64(keep) - EPS)
-        var lm = _measure_only_loss(f, bsp, bn, mt, True)
-        bsp.data[idx] = keep
+        var keep = bg.data[idx]
+        bg.data[idx] = Scalar[DT](Float64(keep) + EPS)
+        var lp = _measure_only_loss(f, bg, mt, True)
+        bg.data[idx] = Scalar[DT](Float64(keep) - EPS)
+        var lm = _measure_only_loss(f, bg, mt, True)
+        bg.data[idx] = keep
         var fd = (lp - lm) / (2.0 * EPS)
-        var an = Float64(gsp.data[idx])
+        var an = Float64(gbg.data[idx])
         var den = abs(an) if abs(an) > 0.1 else 0.1
         var rel = abs(fd - an) / den
-        if rel > worst_sp:
-            worst_sp = rel
+        if rel > worst_b:
+            worst_b = rel
 
-    for idx in range(BATCH * D):
-        var keep = bn.data[idx]
-        bn.data[idx] = Scalar[DT](Float64(keep) + EPS)
-        var lp = _measure_only_loss(f, bsp, bn, mt, True)
-        bn.data[idx] = Scalar[DT](Float64(keep) - EPS)
-        var lm = _measure_only_loss(f, bsp, bn, mt, True)
-        bn.data[idx] = keep
-        var fd = (lp - lm) / (2.0 * EPS)
-        var an = Float64(gbn.data[idx])
-        var den = abs(an) if abs(an) > 0.1 else 0.1
-        var rel = abs(fd - an) / den
-        if rel > worst_bn:
-            worst_bn = rel
-
-    print("      worst rel err: dF", worst_f, " dB(s+)", worst_sp,
-          " dB(s')", worst_bn)
+    print("      worst rel err: dF", worst_f, " dB(goal)", worst_b)
     assert_true(worst_f < FD_TOL, "dF: " + String(worst_f))
-    assert_true(worst_sp < FD_TOL, "dB(s+): " + String(worst_sp))
-    assert_true(worst_bn < FD_TOL, "dB(s'): " + String(worst_bn))
+    assert_true(worst_b < FD_TOL, "dB(goal): " + String(worst_b))
 
 
 def test_ortho_loss_gradients() raises:
     print("[2] fb_ortho_loss vs central finite differences ...")
-    var bs = _mk(BATCH * D, 0.19, -0.23, 0.31)
-    var bsp = _mk(BATCH * D, -0.27, 0.15, -0.11)
-    var gs = Tensor.alloc(BATCH * D)
-    var gsp = Tensor.alloc(BATCH * D)
-    var base = fb_ortho_loss[D, BATCH](bs, bsp, gs, gsp)
+    var b = _mk(BATCH * D, 0.19, -0.23, 0.31)
+    var g = Tensor.alloc(BATCH * D)
+    var base = fb_ortho_loss[D, BATCH](b, g)
     print("      L_ortho =", base)
 
-    var sink_a = Tensor.alloc(BATCH * D)
-    var sink_b = Tensor.alloc(BATCH * D)
-    var worst_s = Float64(0)
-    var worst_sp = Float64(0)
+    var sink = Tensor.alloc(BATCH * D)
+    var worst = Float64(0)
 
+    # `B` is both inputs of the pairwise dot, so a single perturbation moves
+    # BOTH sides — which is exactly the derivative the trainer needs.
     for idx in range(BATCH * D):
-        var keep = bs.data[idx]
-        bs.data[idx] = Scalar[DT](Float64(keep) + EPS)
-        var lp = fb_ortho_loss[D, BATCH](bs, bsp, sink_a, sink_b)
-        bs.data[idx] = Scalar[DT](Float64(keep) - EPS)
-        var lm = fb_ortho_loss[D, BATCH](bs, bsp, sink_a, sink_b)
-        bs.data[idx] = keep
+        var keep = b.data[idx]
+        b.data[idx] = Scalar[DT](Float64(keep) + EPS)
+        var lp = fb_ortho_loss[D, BATCH](b, sink)
+        b.data[idx] = Scalar[DT](Float64(keep) - EPS)
+        var lm = fb_ortho_loss[D, BATCH](b, sink)
+        b.data[idx] = keep
         var fd = (lp - lm) / (2.0 * EPS)
-        var an = Float64(gs.data[idx])
+        var an = Float64(g.data[idx])
         var den = abs(an) if abs(an) > 0.1 else 0.1
         var rel = abs(fd - an) / den
-        if rel > worst_s:
-            worst_s = rel
+        if rel > worst:
+            worst = rel
 
-    for idx in range(BATCH * D):
-        var keep = bsp.data[idx]
-        bsp.data[idx] = Scalar[DT](Float64(keep) + EPS)
-        var lp = fb_ortho_loss[D, BATCH](bs, bsp, sink_a, sink_b)
-        bsp.data[idx] = Scalar[DT](Float64(keep) - EPS)
-        var lm = fb_ortho_loss[D, BATCH](bs, bsp, sink_a, sink_b)
-        bsp.data[idx] = keep
-        var fd = (lp - lm) / (2.0 * EPS)
-        var an = Float64(gsp.data[idx])
-        var den = abs(an) if abs(an) > 0.1 else 0.1
-        var rel = abs(fd - an) / den
-        if rel > worst_sp:
-            worst_sp = rel
-
-    print("      worst rel err: dB(s)", worst_s, " dB(s+)", worst_sp)
-    assert_true(worst_s < FD_TOL, "dB(s): " + String(worst_s))
-    assert_true(worst_sp < FD_TOL, "dB(s+): " + String(worst_sp))
+    print("      worst rel err: dB(s+)", worst)
+    assert_true(worst < FD_TOL, "dB(s+): " + String(worst))
 
 
 def test_anchor_term_is_load_bearing() raises:
@@ -191,25 +160,18 @@ def test_anchor_term_is_load_bearing() raises:
     var f0 = Tensor.alloc(BATCH * D)          # F = 0
     for i in range(BATCH * D):
         f0.data[i] = Scalar[DT](0)
-    var bsp = _mk(BATCH * D, -0.17, 0.29, -0.2)
-    var bn = _mk(BATCH * D, 0.11, 0.07, 0.33)
+    var bg = _mk(BATCH * D, -0.17, 0.29, -0.2)
     var mt = Tensor.alloc(BATCH * BATCH)      # target also 0 (F=0 bootstrapped)
     for i in range(BATCH * BATCH):
         mt.data[i] = Scalar[DT](0)
 
     var gf_no = Tensor.alloc(BATCH * D)
-    var gsp_no = Tensor.alloc(BATCH * D)
-    var gbn_no = Tensor.alloc(BATCH * D)
-    var l_no = fb_measure_loss[D, BATCH](
-        f0, bsp, bn, mt, gf_no, gsp_no, gbn_no, False
-    )
+    var gbg_no = Tensor.alloc(BATCH * D)
+    var l_no = fb_measure_loss[D, BATCH](f0, bg, mt, gf_no, gbg_no, False)
 
     var gf_yes = Tensor.alloc(BATCH * D)
-    var gsp_yes = Tensor.alloc(BATCH * D)
-    var gbn_yes = Tensor.alloc(BATCH * D)
-    var l_yes = fb_measure_loss[D, BATCH](
-        f0, bsp, bn, mt, gf_yes, gsp_yes, gbn_yes, True
-    )
+    var gbg_yes = Tensor.alloc(BATCH * D)
+    var l_yes = fb_measure_loss[D, BATCH](f0, bg, mt, gf_yes, gbg_yes, True)
 
     var gn_no = Float64(0)
     var gn_yes = Float64(0)
@@ -238,17 +200,20 @@ def test_anchor_term_is_load_bearing() raises:
         " training will converge to the empty representation.",
     )
 
-    # And the gradient must point somewhere useful: dL/dF = -2/BATCH · B(s'),
-    # so a step against it increases F·B(s') — exactly the anchor's purpose.
+    # And the gradient must point somewhere useful. The anchor is now the
+    # DIAGONAL of the same matrix, `-2·mean_i(M_ii - Mt_ii)`, so at F = 0 with
+    # a zero target the off-diagonal residual contributes nothing and
+    # dL/dF_i = -2/BATCH · B(goal)_i exactly — a step against it increases
+    # F_i·B(goal)_i, which is the anchor's whole purpose.
     var worst = Float64(0)
     for i in range(BATCH * D):
-        var want = -2.0 / Float64(BATCH) * Float64(bn.data[i])
+        var want = -2.0 / Float64(BATCH) * Float64(bg.data[i])
         var e = abs(Float64(gf_yes.data[i]) - want)
         if e > worst:
             worst = e
     assert_true(
         worst < 1e-5,
-        "the anchor gradient at F=0 is not -2/BATCH·B(s'): worst "
+        "the anchor gradient at F=0 is not -2/BATCH·B(goal): worst "
         + String(worst),
     )
 
@@ -285,17 +250,8 @@ def test_ortho_penalises_collapse() raises:
     )
 
     var g1 = Tensor.alloc(BATCH * D)
-    var g2 = Tensor.alloc(BATCH * D)
-    # Distinct copies: the loss takes b_s and b_sp as separate `ref` args and
-    # Mojo forbids aliasing them, which is the right rule here — the two are an
-    # independent pair of draws by construction.
-    var collapsed2 = Tensor.alloc(BATCH * D)
-    var spread2 = Tensor.alloc(BATCH * D)
-    for i in range(BATCH * D):
-        collapsed2.data[i] = collapsed.data[i]
-        spread2.data[i] = spread.data[i]
-    var l_col = fb_ortho_loss[D, BATCH](collapsed, collapsed2, g1, g2)
-    var l_spr = fb_ortho_loss[D, BATCH](spread, spread2, g1, g2)
+    var l_col = fb_ortho_loss[D, BATCH](collapsed, g1)
+    var l_spr = fb_ortho_loss[D, BATCH](spread, g1)
     print("      L_ortho collapsed", l_col, " spread", l_spr)
     assert_true(
         l_col > l_spr + 1e-6,

@@ -1,5 +1,5 @@
 <!--
-  The wordmark carries the project name, so it stands in for an `# mojo-rl`
+  The wordmark carries the project name, so it stands in for an `# noeira`
   heading; `alt` keeps the accessible name. <picture> + prefers-color-scheme is
   supported by GitHub, so the logo follows the reader's theme: the light file is
   dark-on-transparent, the dark file light-on-transparent. PNG rather than SVG
@@ -7,406 +7,127 @@
 -->
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs-site/src/assets/mojo-rl-logo-transparent-dark-2x.png">
-    <img alt="mojo-rl" src="docs-site/src/assets/mojo-rl-logo-light-2x.png" width="420">
+    <source media="(prefers-color-scheme: dark)" srcset="docs-site/src/assets/noeira-logo-transparent-dark-nobaseline-2x.png">
+    <img alt="noeira" src="docs-site/src/assets/noeira-logo-light-nobaseline-2x.png" width="420">
   </picture>
 </p>
 
 <p align="center">
-  An end-to-end world‑model &amp; RL framework written in Mojo, featuring trait-based design,
-  40+ RL algorithms, GPU-accelerated deep RL, custom 2D/3D physics engines,
-  native arcade game engines, and SDL3 rendering.
+  <b>Dream in simulation. Act in the world.</b><br>
+  An end-to-end Physical AI stack in Mojo: physics, learning, perception and deployment, from simulator to robot.
 </p>
 
 <p align="center">
-  <b>📖 Documentation — <a href="https://mojo-rl.denislabs.com">mojo-rl.denislabs.com</a></b>
+  <b>📖 Documentation — <a href="https://noeira.ai/docs">noeira.ai/docs</a></b>
 </p>
 
-> **Note:** This is a beta version, not a production-grade library yet. While the tabular agents and core deep RL algorithms (DQN, PPO, SAC, TD3) are well-tested, the 3D physics engine, complex deep agents (DreamerV3, TD-MPC2, MuZero), and some advanced features are still experimental and may contain bugs. Contributions and bug reports are welcome!
+noeira builds the whole robot-learning loop in one language: a MuJoCo-parity
+physics engine and the task suites that run on it, reinforcement learning,
+world models, imitation and vision-language-action policies, the camera and
+servo-bus drivers of a real arm, and the runtime that deploys a policy on a
+Jetson. The policy that trains on a GPU box is the same Mojo code that drives
+the robot.
 
-## Features
+> **Status:** beta, developed in the open (Modular Community Grant, 2026).
+> The physics engine, the classic and MuJoCo-style environments, DQN / PPO /
+> SAC / TD3 and `noeira.nn` are stable and tested. The task layer, LIBERO,
+> ACT, recording to LeRobot and Jetson deployment are beta. SmolVLA on the
+> arm, HIL-SERL / DAgger, the world-model agents and DeepMind Control training
+> are experimental. Each docs page carries its own maturity marker.
 
-- **Trait-based architecture**: Generic interfaces for environments, agents, states, actions, models, optimizers, and physics
-- **40+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC, REDQ), deep RL (DQN family including Noisy DQN, C51, Rainbow; A2C, PPO), and model-based RL (MBPO, TD-MPC2, DreamerV3, MuZero)
-- **Deep learning framework** (`mojo_rl/nn/`): Module/Param neural networks with autodiff (each `Param` owns `val`+`grad` tensors), 20+ primitive layer types, SGD/Adam/AdamW optimizers, automatic compile-time fusion (MatMul+Bias+Act, Conv2D+Act), checkpoint v2, CPU/GPU support
-- **Composable models** (`mojo_rl/nn/`): Sequential/Residual/Parallel/Repeat combinators, pre-built architectures (ResNet, GPT, ViT, LSTM), and a ComputeGraph named-node DAG builder for complex loss graphs
-- **3D physics engine** (`mojo_rl/physics3d/`): MuJoCo-inspired generalized coordinates engine with CRBA, RNE, constraint solvers (PGS, Newton, CG), collision detection, MJCF XML parsing, CPU/GPU support
-- **2D physics engine** (`mojo_rl/physics2d/`): GPU-accelerated batched physics for LunarLander, BipedalWalker, CarRacing with impulse solving and tire friction
-- **25 native environments**: Tabular, classic control, 2D physics, MuJoCo-style 3D, and GPU-accelerated arcade games
-- **Arcade game engines** (`mojo_rl/envs/arcade_games/`): Native GPU-accelerated Pong, Breakout, Space Invaders with clean obs + pixel obs modes
-- **Atari 2600 emulator** (`mojo_rl/envs/atari/`): Full 6502 CPU, TIA, RIOT emulation for ROM-based training
-- **SDL3 rendering** (`mojo_rl/render/`): 2D CPU rasterizer + GPU-accelerated 3D renderer with Blinn-Phong lighting, shadows, skybox, interactive camera, video recording
-- **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
-- **GPU training**: All deep agents (DQN, C51, Rainbow, DDPG, TD3, SAC, REDQ, PPO, MBPO, TD-MPC2, DreamerV3, MuZero) support GPU-accelerated training
+## What's inside
 
-## Acknowledgments
+**Simulation**
+- **3D physics** (`noeira/physics3d/`) — MuJoCo's generalized coordinates, MJCF loading (Menagerie, DeepMind Control, `<attach>`), PGS / Newton / CG solvers, elliptic cones, tendons, equality constraints, meshes, sensors, ray-traced cameras; checked against live MuJoCo 3.12, CPU and batched GPU
+- **2D physics** (`noeira/physics2d/`) — GPU-batched impulse engine (LunarLander, BipedalWalker, CarRacing)
+- **Environments** (`noeira/envs/`) — classic control, MuJoCo-style locomotion and manipulation, DeepMind Control, LIBERO, Menagerie robots (Panda, SO-101, Unitree G1), arcade engines, an Atari 2600 emulator, Procgen and Craftax
+- **Task layer** (`noeira/tasks/`) — declarative families, goals and placements; many tasks batched in one scene
 
-This project uses [Gymnasium](https://github.com/Farama-Foundation/Gymnasium) as a reference for environment physics. Native Mojo environments are faithful ports ensuring compatibility. MuJoCo-style environments reference [MuJoCo](https://mujoco.org/) for physics and model definitions.
+**Learning**
+- **Reinforcement learning** — tabular and linear methods, DQN / C51 / Rainbow, A2C / PPO, DDPG / TD3 / SAC / REDQ
+- **World models and planning** — MBPO, TD-MPC2, DreamerV3, Dreamer 4, AlphaZero / MuZero / EfficientZero V2, MPPI / CEM / iLQR
+- **Imitation and VLAs** — ACT, SmolVLA, behaviour cloning
+- **From demonstrations** — HIL-SERL (RLPD + BC) with DAgger-style interventions
+- **Zero-shot RL** — Forward-Backward representations (BFM-Zero on the Unitree G1)
 
-## Quick Start
+**Robots**
+- **SO-101** (`noeira/robot/`) — the Feetech servo bus, calibration, teleoperation, opt-in arming
+- **Vision** (`noeira/vision/`) — threaded camera capture, ChArUco intrinsics, camera-to-base extrinsics
+- **Datasets** — recording to LeRobot v3 (Parquet + H.264), pushing to the Hugging Face Hub, importing back — no Python in the data path
+- **Deployment** — ACT's closed loop at 30 Hz on a Jetson Orin NX
 
-This project uses **pixi** for dependency management.
+**Infrastructure**
+- **`noeira.nn`** — Module / Param networks with autodiff, 70+ primitives, fused and flash attention, AMP, CUDA graphs
+- **Data and I/O** — trajectory store (HDF5), replay buffers, Parquet, video, safetensors, HTTP
+- **Projects and runs** — runs recorded on disk and mirrored to [noeira cloud](https://cloud.noeira.ai)
+- **Rendering** — SDL3 renderers, ImGui viewers, a physics studio, video export
 
-### Installing pixi
+## Quick start
 
-```bash
-# macOS/Linux
-curl -fsSL https://pixi.sh/install.sh | bash
-
-# Or with Homebrew
-brew install pixi
-```
-
-### Installing SDL3 (optional, for rendering)
-
-SDL3 is required for environment visualization and video recording. It is **not** needed for training.
-
-```bash
-# macOS (Homebrew)
-brew install sdl3
-
-# Ubuntu/Debian
-sudo apt install libsdl3-dev
-
-# Fedora
-sudo dnf install SDL3-devel
-
-# From source (all platforms): https://github.com/libsdl-org/SDL/releases
-```
-
-### Install dependencies and run
+This project uses [pixi](https://pixi.sh) (`curl -fsSL https://pixi.sh/install.sh | bash`, or `brew install pixi`). SDL3 is only needed for the viewers and video (`brew install sdl3`, `apt install libsdl3-dev`).
 
 ```bash
-# Install all dependencies (Mojo, Python packages, etc.)
 pixi install
 
-# Run an example (note: -I . is required for module resolution)
+# A first example on the CPU (-I . puts the package on the module path)
 pixi run mojo run -I . examples/solve_gridworld.mojo
 
-# Run a test
-pixi run mojo run -I . tests/physics3d/test_half_cheetah_match.mojo
+# Train SAC on HalfCheetah on the GPU
+pixi run -e apple  mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo   # Apple Silicon
+pixi run -e nvidia mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo   # NVIDIA
+
+# A task-family run: SAC on the SO-101 tower scene
+pixi run -e nvidia mojo run -I . examples/tasks/sac_tower_gpu.mojo so101_tower_reach_clear
+
+# The real arm: a read-only check of both SO-101 arms, then record teleop
+pixi run soarm-diag
+pixi run soarm-record -- --out <dataset-dir> --task "pick the cube"     # add --arm to move the follower
 ```
 
-### GPU Support
-
-GPU-accelerated code requires specifying the target environment with the `-e` flag:
-
-```bash
-# Apple Silicon (Metal)
-pixi run -e apple mojo run -I . examples/half_cheetah/ppo_half_cheetah_training_gpu.mojo
-
-# NVIDIA GPUs (CUDA)
-pixi run -e nvidia mojo run -I . examples/half_cheetah/ppo_half_cheetah_training_gpu.mojo
-```
+Platforms: `osx-arm64` (Metal), `linux-64` (CUDA 12), and `linux-aarch64` for the Jetson Orin (`pixi run -e jetson …`). The toolchain is pinned: Mojo 1.1.0, MAX 26.6.0. Start with [Installation](https://noeira.ai/docs/start/installation/).
 
 ## Documentation
 
-Full documentation lives at **[mojo-rl.denislabs.com](https://mojo-rl.denislabs.com)** — this README is the summary.
+Full documentation lives at **[noeira.ai/docs](https://noeira.ai/docs)** — this README is the summary.
 
 | | |
 |---|---|
-| [Why mojo-rl](https://mojo-rl.denislabs.com/start/why/) | what the framework is for, and what it is not |
-| [Installation](https://mojo-rl.denislabs.com/start/installation/) · [Tabular quickstart](https://mojo-rl.denislabs.com/start/quickstart-tabular/) · [GPU quickstart](https://mojo-rl.denislabs.com/start/quickstart-gpu/) | first run, CPU then GPU |
-| [RL in five minutes](https://mojo-rl.denislabs.com/start/rl-in-five-minutes/) | the vocabulary the rest of the docs assume |
-| [The layered stack](https://mojo-rl.denislabs.com/concepts/architecture/) · [Traits](https://mojo-rl.denislabs.com/concepts/traits/) · [Compile-time composition](https://mojo-rl.denislabs.com/concepts/compile-time-composition/) | how the pieces fit together |
-| [Environments](https://mojo-rl.denislabs.com/environments/) | all 25, with observation and action shapes |
-| [Algorithms](https://mojo-rl.denislabs.com/algorithms/) | 20 pages by family, from tabular to the zero-series |
-| [Neural networks](https://mojo-rl.denislabs.com/nn/) | `Module`/`Param`, primitives, optimizers, training |
-| [3D physics](https://mojo-rl.denislabs.com/physics/physics3d/) · [2D physics](https://mojo-rl.denislabs.com/physics/physics2d/) · [Validation](https://mojo-rl.denislabs.com/physics/validation/) | both engines and how they are checked against MuJoCo |
-| [Rendering](https://mojo-rl.denislabs.com/rendering/) · [Tooling](https://mojo-rl.denislabs.com/tooling/logging/) | SDL3 renderers, logging, the training monitor |
-| [Contributing](https://mojo-rl.denislabs.com/project/contributing/) · [Testing](https://mojo-rl.denislabs.com/project/testing/) | working on the framework itself |
+| [Why noeira](https://noeira.ai/docs/start/why/) · [Installation](https://noeira.ai/docs/start/installation/) · [GPU quickstart](https://noeira.ai/docs/start/quickstart-gpu/) | what it is for, and a first run |
+| [The stack](https://noeira.ai/docs/concepts/architecture/) · [Projects and runs](https://noeira.ai/docs/concepts/projects/) | how the pieces fit together |
+| [3D physics](https://noeira.ai/docs/physics/physics3d/) · [Validation](https://noeira.ai/docs/physics/validation/) · [Environments](https://noeira.ai/docs/environments/) | the simulator and what runs on it |
+| [The task layer](https://noeira.ai/docs/tasks/) · [LIBERO](https://noeira.ai/docs/environments/libero/) · [DeepMind Control](https://noeira.ai/docs/environments/dm-control/) | tasks and benchmarks |
+| [Algorithms](https://noeira.ai/docs/algorithms/) · [Imitation and VLAs](https://noeira.ai/docs/algorithms/imitation/) | RL, world models, ACT, SmolVLA, HIL-SERL |
+| [Robots](https://noeira.ai/docs/robots/) · [Jetson Orin](https://noeira.ai/docs/robots/jetson/) | the SO-101, cameras, recording, deployment |
+| [Neural networks](https://noeira.ai/docs/nn/) · [LeRobot datasets](https://noeira.ai/docs/data/lerobot/) · [noeira cloud](https://noeira.ai/docs/tooling/monitor/) | the infrastructure |
+| [Toolchain](https://noeira.ai/docs/project/toolchain/) · [Testing](https://noeira.ai/docs/project/testing/) · [Contributing](https://noeira.ai/docs/project/contributing/) | working on noeira itself |
 
-Pages carry a maturity marker (stable / beta / experimental) so the state of each
-component is explicit, and every algorithm page links the paper it implements.
+The site is built from `docs-site/`.
 
-The site is built from `docs-site/` — see its README to run it locally.
-
-## Project Structure
+## Project structure
 
 ```
-mojo-rl/
-├── mojo_rl/                     # Main Mojo package
-│   ├── core/                    #   Core RL abstractions (traits, replay buffers, tile coding)
-│   ├── agents/                  #   Tabular & linear RL algorithms (20+ agents)
-│   ├── deep_agents/             #   Deep RL agents (per-algorithm facade packages)
-│   │   ├── dqn/ c51/            #     Value-based (DQN, target net; C51/Rainbow distributional)
-│   │   ├── ddpg/ td3/ sac/      #     Off-policy continuous (twin critics, max-entropy)
-│   │   ├── redq/ mbpo/          #     Ensemble / model-based continuous
-│   │   ├── ppo/ ppo_discrete/ a2c/ #  On-policy (clipped surrogate, GAE)
-│   │   ├── tdmpc2/              #     TD-MPC2 (world model + MPPI planning)
-│   │   ├── dreamerv3/ dreamer4/ #     Latent world models (RSSM / transformer)
-│   │   ├── alphazero/ muzero/ efficient_zero_v2/ zero/ #  Zero-series (MCTS planning)
-│   │   ├── core/               #     Module/Trainer/agent traits + shared infra
-│   │   ├── training/           #     Off/on-policy CPU/GPU drivers + BatchedEnv wrappers
-│   │   └── primitives/ loss/ data/ #  GaussianHead/rsample, losses, replay buffers
-│   ├── nn/                      #   Deep learning framework (Module + Param)
-│   │   ├── core/                #     Module trait + Param (val+grad tensors), checkpoint v2
-│   │   ├── primitives/          #     20+ leaves: Linear, Conv2D, NoisyLinear, LSTMCell, attention
-│   │   ├── combinators/         #     Sequential, Residual, Parallel, Repeat, ...
-│   │   ├── models/              #     Pre-built architectures (ResNet, GPT, ViT, ...)
-│   │   ├── optimizer/           #     SGD, Adam, AdamW (+ grouped multi-tensor apply)
-│   │   ├── loss/                #     MSE, Huber, CrossEntropy, SoftCrossEntropy, TwoHot
-│   │   ├── initializer/         #     Xavier, Kaiming, LeCun, Normal, ...
-│   │   ├── training/            #     Supervised Trainer (AMP / CUDA-graph capable)
-│   │   ├── datasets/            #     MNIST, CIFAR10, TinyShakespeare, lewm_pusht loaders
-│   │   └── random/              #     Host RNG (box_muller, gaussian_noise)
-│   ├── physics3d/               #   3D MuJoCo-inspired physics engine
-│   │   ├── model/               #     Compile-time model specs (BodySpec, JointSpec, GeomSpec)
-│   │   ├── dynamics/            #     Mass matrix (CRBA), bias forces (RNE), Jacobians
-│   │   ├── integrator/          #     Euler, ImplicitFast, Implicit, RK4
-│   │   ├── solver/              #     PGS, Newton, CG, Island-based solvers
-│   │   ├── collision/           #     Narrow-phase + Sweep-and-Prune broadphase
-│   │   ├── constraints/         #     Constraint building + solving
-│   │   ├── kinematics/          #     Forward kinematics + quaternion math
-│   │   └── parser/              #     MJCF XML model loading
-│   ├── physics2d/               #   GPU-accelerated 2D physics engine
-│   │   ├── integrators/         #     Semi-implicit Euler
-│   │   ├── collision/           #     Flat/edge terrain detection
-│   │   ├── solvers/             #     Impulse + unified constraint solver
-│   │   ├── joints/              #     Revolute joint solver
-│   │   ├── articulated/         #     Multi-body chain support
-│   │   ├── car/                 #     CarRacing slip-based tire physics
-│   │   └── lidar/               #     Distance sensing
-│   ├── math3d/                  #   3D math library (Vec3, Quat, Mat3, Mat4)
-│   ├── render/                  #   SDL3 rendering infrastructure
-│   │   ├── renderer2d.mojo      #     2D CPU rasterizer
-│   │   ├── renderer3d.mojo      #     GPU-accelerated 3D renderer (Metal shaders)
-│   │   ├── gpu_shaders.mojo     #     MSL shaders (solid, shadow, skybox, text)
-│   │   ├── video_recorder.mojo  #     MP4/GIF recording
-│   │   └── sdl/                 #     SDL3 FFI bindings (38 files)
-│   └── envs/                    #   Environment implementations
-│       ├── gridworld.mojo       #     Tabular environments
-│       ├── cartpole.mojo        #     Classic control (GPU-capable)
-│       ├── lunar_lander/        #     Custom 2D physics (GPU batch)
-│       ├── bipedal_walker/      #     Custom 2D physics (GPU batch)
-│       ├── car_racing/          #     Tire slip physics (GPU batch)
-│       ├── half_cheetah/        #     MuJoCo-style (physics3d)
-│       ├── hopper/              #     MuJoCo-style (physics3d)
-│       ├── ant/                 #     MuJoCo-style (physics3d)
-│       ├── walker2d/            #     MuJoCo-style (physics3d)
-│       ├── humanoid/            #     MuJoCo-style (physics3d)
-│       ├── arcade_games/        #     Native GPU game engines (Pong, Breakout, Space Invaders)
-│       ├── atari/               #     Atari 2600 emulator (6502 CPU, TIA, RIOT)
-│       └── gymnasium/           #     Python Gymnasium wrappers
-├── tests/                       # Test suite (166+ files)
-│   ├── physics3d/               #   Physics engine validation tests (73 files)
-│   ├── nn/                      #   Neural network + autodiff tests
-│   ├── deep_agents/             #   Deep RL agent tests
-│   └── arcade_games/            #   Arcade/Atari environment tests (6 files)
-├── examples/                    # Demo scripts organized by environment
-│   ├── cartpole/                #   CartPole demos and benchmarks
-│   ├── half_cheetah/            #   HalfCheetah training (PPO, SAC, TD3, TD-MPC2)
-│   ├── hopper/                  #   Hopper training (PPO)
-│   ├── ant/                     #   Ant training (PPO)
-│   ├── acrobot/                 #   Acrobot demos
-│   ├── arcade_games/            #   Pong/Breakout/SpaceInvaders (DQN, PPO, playable)
-│   └── *.mojo                   #   Various environment demos
-├── benchmarks/                  # Performance benchmarks
-├── docs-site/                   # Documentation site (Astro + Starlight)
-└── pixi.toml                    # Dependency management
+noeira/          the Mojo package
+├── physics3d/ physics2d/ envs/ tasks/     simulation and tasks
+├── nn/ data/ io/                           networks, datasets, native I/O
+├── agents/ deep_agents/ planners/          learning
+├── robot/ vision/                          the real world
+├── core/ render/ math3d/ cuda/             traits and runs, rendering, math, CUDA
+└── experimental/                           research code — APIs may break
+examples/        runnable drivers, by environment or robot
+tests/           the test suite (tests/manifests/ holds the curated tiers)
+tools/           generators, reference dumps, hardware tools
+docs-site/       the documentation site
 ```
 
-## Algorithms
+## Acknowledgments
 
-### Tabular & Linear Methods
+noeira leans on reference implementations throughout, as correctness oracles:
+[MuJoCo](https://mujoco.org/) and the [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) for physics and robot models,
+[Gymnasium](https://github.com/Farama-Foundation/Gymnasium) and [DeepMind Control](https://github.com/google-deepmind/dm_control) for environments,
+[LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO) and [robosuite](https://github.com/ARISE-Initiative/robosuite) for the manipulation benchmark,
+[LeRobot](https://github.com/huggingface/lerobot) for datasets, ACT and SmolVLA,
+and [HIL-SERL](https://github.com/rail-berkeley/hil-serl) for learning from interventions.
 
-| Category | Algorithms |
-|----------|-----------|
-| **TD Methods** | Q-Learning, SARSA, Expected SARSA, Double Q-Learning |
-| **Multi-step** | N-step SARSA, SARSA(lambda), Monte Carlo |
-| **Model-based** | Dyna-Q, Priority Sweeping |
-| **With Replay** | Q-Learning + Replay, Q-Learning + PER |
-| **Tile Coding** | Tiled Q-Learning, Tiled SARSA, Tiled SARSA(lambda) |
-| **Linear FA** | Linear Q-Learning, Linear SARSA, Linear SARSA(lambda) |
-| **Policy Gradient** | REINFORCE, Actor-Critic, Actor-Critic(lambda), A2C, PPO |
-| **Continuous (Linear)** | DDPG, TD3, SAC |
+## License
 
-### Deep RL (Neural Networks)
-
-| Algorithm | Actions | GPU | Description |
-|-----------|---------|-----|-------------|
-| **DQN** | Discrete | Yes | Double DQN, target network, epsilon-greedy |
-| **DQN + PER** | Discrete | Yes | Prioritized replay with sum-tree |
-| **Dueling DQN** | Discrete | Yes | V(s) + A(s,a) architecture |
-| **Noisy DQN** | Discrete | Yes | NoisyLinear layers, no epsilon-greedy |
-| **DQN CNN** | Discrete | Yes | NatureDQN CNN for pixel observations |
-| **C51** | Discrete | Yes | Categorical distributional (51 atoms) |
-| **Rainbow** | Discrete | Yes | C51 + Double + PER + Dueling + Noisy + N-step |
-| **DDPG** | Continuous | Yes | Deterministic actor, Gaussian noise |
-| **TD3** | Continuous | Yes | Twin critics, delayed policy, target smoothing |
-| **SAC** | Continuous | Yes | Max entropy, stochastic policy, auto alpha |
-| **REDQ** | Continuous | Yes | N critic ensemble, subset-min target, high UTD (~20), LayerNorm variant |
-| **A2C** | Discrete | CPU | GAE, softmax policy |
-| **PPO** | Both | Yes | Clipped surrogate, GAE, multi-epoch, CNN variant |
-| **MBPO** | Continuous | Yes | SAC + probabilistic dynamics ensemble + synthetic rollouts |
-| **TD-MPC2** | Continuous | Yes | World model, MPPI planning, distributional RL |
-| **DreamerV3** | Continuous | Yes | RSSM world model, imagination rollouts |
-| **MuZero** | Discrete | Yes | Learned model, MCTS planning, distributional |
-
-## Environments
-
-### Native Mojo Environments
-
-| Environment | Obs Dim | Actions | Physics Engine | GPU Batch |
-|-------------|---------|---------|----------------|-----------|
-| GridWorld | 25 | 4 (discrete) | Grid | No |
-| FrozenLake | 16 | 4 (discrete) | Grid | No |
-| CliffWalking | 48 | 4 (discrete) | Grid | No |
-| Taxi | 500 | 6 (discrete) | Grid | No |
-| CartPole | 4 | 2 (discrete) | Gymnasium-matching | Yes |
-| MountainCar | 2 | 3 (discrete) | Gymnasium-matching | No |
-| Acrobot | 6 | 3 (discrete) | RK4 | No |
-| Pendulum | 3 | 1 (continuous) | Direct | Yes |
-| LunarLander | 8 | 4 / continuous | physics2d (impulse) | Yes |
-| BipedalWalker | 24 | 4 (continuous) | physics2d (impulse + joints) | Yes |
-| CarRacing | 12 | 3 (continuous) | physics2d (tire slip) | Yes |
-| HalfCheetah | 17 | 6 (continuous) | physics3d (GC) | Yes |
-| Hopper | 11 | 3 (continuous) | physics3d (GC) | Yes |
-| Ant | 27 | 8 (continuous) | physics3d (GC) | Yes |
-| Walker2d | 17 | 6 (continuous) | physics3d (GC) | Yes |
-| Swimmer | 8 | 2 (continuous) | physics3d (GC) | Yes |
-| Humanoid | 376 | 17 (continuous) | physics3d (GC) | Yes |
-| HumanoidStandup | 376 | 17 (continuous) | physics3d (GC) | Yes |
-| InvertedPendulum | 4 | 1 (continuous) | physics3d (GC) | Yes |
-| InvDoublePendulum | 9 | 1 (continuous) | physics3d (GC) | Yes |
-| Pong | 6 / 4x84x84 | 3 (discrete) | Native GPU engine | Yes |
-| Breakout | 7 / 4x84x84 | 4 (discrete) | Native GPU engine | Yes |
-| Space Invaders | 10 / 4x84x84 | 4 (discrete) | Native GPU engine | Yes |
-
-### Atari 2600 Emulator
-
-Full 6502 CPU + TIA + RIOT emulation. CPU-only (Pong, Breakout, Space Invaders ROMs). Used for validation against native GPU engines.
-
-### Gymnasium Wrappers
-
-- **Classic Control**: CartPole, MountainCar, Pendulum, Acrobot
-- **Box2D**: LunarLander, BipedalWalker, CarRacing
-- **Toy Text**: FrozenLake, Taxi, Blackjack, CliffWalking
-- **MuJoCo**: HalfCheetah, Ant, Humanoid, Walker2d, Hopper, Swimmer, and more
-
-## Usage Examples
-
-### Tabular RL
-
-```mojo
-from mojo_rl.agents import QLearningAgent
-from mojo_rl.envs import GridWorldEnv
-
-def main():
-    var env = GridWorldEnv(width=5, height=5)
-    var agent = QLearningAgent(num_states=25, num_actions=4)
-    _ = agent.train(env, num_episodes=500, verbose=True)
-```
-
-### Deep RL with GPU Training
-
-```mojo
-from std.gpu.host import DeviceContext
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
-
-comptime OBS_DIM = HalfCheetahConfig.OBS_DIM      # 17
-comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM   #  6
-comptime HIDDEN = 256
-comptime N_ENVS = 32
-
-# Networks are nn Modules passed as compile-time params to the agent facade.
-comptime ActorNet = StochasticActor[
-    OBS_DIM, ACT_DIM,
-    LinearReLU[OBS_DIM, HIDDEN], LinearReLU[HIDDEN, HIDDEN],
-]
-comptime CriticNet = Sequential[
-    LinearReLU[OBS_DIM + ACT_DIM, HIDDEN], LinearReLU[HIDDEN, HIDDEN], Linear[HIDDEN, 1],
-]
-comptime EnvT = BatchedGpuEnv[HalfCheetah[DT], N_ENVS, OBS_DIM, ACT_DIM]
-
-def main() raises:
-    with DeviceContext() as ctx:
-        var agent = SACAgent[
-            "gpu",
-            UniformSampleGpuStep[OBS_DIM, ACT_DIM, 256, 1_000_000],  # OBS, ACT, BATCH, CAPACITY
-            ActorNet,
-            CriticNet,
-        ](ctx=ctx, actor_lr=3e-4, critic_lr=3e-4, gamma=0.99, tau=0.005)
-
-        # One batched GPU off-policy driver call (CUDA-graph capture on by default).
-        _ = agent.train[EnvT, N_ENVS=N_ENVS](
-            EnvT(ctx), 600_000, updates_per_step=N_ENVS, verbose=True,
-        )
-```
-
-See [`examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`](examples/half_cheetah/sac_half_cheetah_training_gpu.mojo) for the full GPU training script (with logging), and [`examples/half_cheetah/sac_half_cheetah_training.mojo`](examples/half_cheetah/sac_half_cheetah_training.mojo) for the single-process CPU version.
-
-### Neural Network GPU Training
-
-```mojo
-from std.gpu.host import DeviceContext
-from mojo_rl.nn.datasets import MNIST
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.combinators import Sequential
-from mojo_rl.nn.loss import CrossEntropyLoss
-from mojo_rl.nn.optimizer import Adam
-from mojo_rl.nn.training import Trainer
-from mojo_rl.nn.initializer import Kaiming
-
-# Model at compile time: 784 -> 128 (ReLU) -> 128 (ReLU) -> 10
-comptime Net = Sequential[
-    Linear[784, 128], ReLU[128],
-    Linear[128, 128], ReLU[128],
-    Linear[128, 10],
-]
-
-def main() raises:
-    var ds = MNIST()
-    with DeviceContext() as ctx:
-        # The Trainer owns the Module's Params (each a val+grad tensor),
-        # the optimizer state, and the loss — make() runs the initializer.
-        var trainer = Trainer[Net, Adam, CrossEntropyLoss].make[INIT=Kaiming](ctx)
-        # ... upload MNIST into device tensors, then run the whole-dataset loop:
-        var result = trainer.train_gpu[MNIST.N_TRAIN, MNIST.N_TEST](
-            ctx, train_x, train_y, test_x, test_y, epochs=20, print_every=1,
-        )
-        print("Final loss:", result.final_loss)
-```
-
-See [`examples/nn/mlp/mlp_mnist_training_gpu.mojo`](examples/nn/mlp/mlp_mnist_training_gpu.mojo) for the full working example.
-
-## Extending the Framework
-
-The sketches below are the shape of it. For the full walkthroughs — trait choice,
-GPU batching, and the mistakes that cost the most time — see
-[Writing your own environment](https://mojo-rl.denislabs.com/environments/custom/)
-and [Writing your own algorithm](https://mojo-rl.denislabs.com/algorithms/custom/).
-
-### Adding a New Environment
-
-```mojo
-struct MyEnv(DiscreteEnv):
-    comptime StateType = MyState
-    comptime ActionType = MyAction
-
-    def step(mut self, action: MyAction) -> Tuple[MyState, Float64, Bool]: ...
-    def reset(mut self) -> MyState: ...
-    def state_to_index(self, state: MyState) -> Int: ...
-    def action_from_index(self, idx: Int) -> MyAction: ...
-```
-
-### Adding a New Agent
-
-```mojo
-struct MyAgent(TabularAgent):
-    def select_action(self, state_idx: Int) -> Int: ...
-    def update(mut self, state: Int, action: Int, reward: Float64,
-              next_state: Int, done: Bool): ...
-    def get_best_action(self, state_idx: Int) -> Int: ...
-    def decay_epsilon(mut self): ...
-    def get_epsilon(self) -> Float64: ...
-```
+MIT — see [LICENSE](LICENSE).

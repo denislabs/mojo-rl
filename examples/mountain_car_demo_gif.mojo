@@ -7,9 +7,9 @@ Run with:
     pixi run mojo run -I . examples/mountain_car_demo_gif.mojo
 """
 
-from mojo_rl.envs import MountainCarEnv
-from mojo_rl.agents.tiled_qlearning import TiledQLearningAgent
-from mojo_rl.core.fmt import fit
+from noeira.envs import MountainCarEnv
+from noeira.agents.tiled_qlearning import TiledQLearningAgent
+from noeira.core.fmt import fit
 
 
 def main() raises:

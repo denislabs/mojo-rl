@@ -56,7 +56,7 @@ from std.utils import IndexList
 from layout import Layout, LayoutTensor, RuntimeLayout
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.fields import (
     Data,
     Model,
     DynamicsScratch,
@@ -67,40 +67,41 @@ from mojo_rl.physics3d.fields import (
     AsStatic,
     Scratch,
 )
-from mojo_rl.physics3d.fields.dims import DIM_POISON
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.solver.newton_solve import _newton_solve_env
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.fields.dims import DIM_POISON
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.solver.newton_solve import _newton_solve_env
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import compute_mass_matrix
-from mojo_rl.physics3d.dynamics.ldl import ldl_factor, ldl_solve, compute_m_inv
-from mojo_rl.physics3d.dynamics.rne import compute_bias_forces_rne
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.integrator.euler import (
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import compute_mass_matrix
+from noeira.physics3d.dynamics.ldl import ldl_factor, ldl_solve, compute_m_inv
+from noeira.physics3d.dynamics.rne import compute_bias_forces_rne
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.integrator.euler import (
     _armature_env,
     _fnet_passive_env,
     _qacc_writeback_env,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE,
     METADATA_SIZE,
     META_IDX_NUM_CONTACTS,
     MODEL_JOINT_SIZE,
     MODEL_BODY_SIZE,
     MODEL_META_SIZE,
+    MODEL_TREE_SIZE,
     MODEL_EQ_SIZE,
     MODEL_TENDON_SIZE,
     MODEL_SITE_SIZE,
     MODEL_GEOM_SIZE,
 )
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.hopper.hopper_xml import HopperModel
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.hopper.hopper_xml import HopperModel
 
 comptime DT = DType.float64
 comptime BATCH = 2
@@ -200,8 +201,8 @@ def prep[
     var M_v = sc.M.lt["cpu", L_M]()
     for e in range(BATCH):
         _armature_env[DT](e, AsStatic[MD](), joints_v, M_v)
-    ldl_factor["cpu", DT, BATCH=BATCH](sc, ctx)
-    compute_m_inv["cpu", DT, BATCH=BATCH](sc, ctx)
+    ldl_factor["cpu", DT, BATCH=BATCH](mf, sc, ctx)
+    compute_m_inv["cpu", DT, BATCH=BATCH](mf, sc, ctx)
     compute_bias_forces_rne["cpu", DT, BATCH=BATCH](d, mf, sc, ctx)
 
     var qpos_v = d.qpos.lt["cpu", L_QPOS]()
@@ -213,7 +214,7 @@ def prep[
         _fnet_passive_env[DT](
             e, AsStatic[MD](), qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
         )
-    ldl_solve["cpu", DT, BATCH=BATCH](sc, ctx)
+    ldl_solve["cpu", DT, BATCH=BATCH](mf, sc, ctx)
     var qacc_ws_v = sc.qacc_ws.lt["cpu", L_NV]()
     var qacc_v = d.qacc.lt["cpu", L_NV]()
     var qacc_c_v = sc.qacc_constrained.lt["cpu", L_NV]()
@@ -241,6 +242,7 @@ def solve_static[
     comptime L_JOINT = Layout.row_major(MD.NJOINT, MODEL_JOINT_SIZE)
     comptime L_BODY = Layout.row_major(MD.NBODY, MODEL_BODY_SIZE)
     comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
+    comptime L_TREES = Layout.row_major(MD.NV * MODEL_TREE_SIZE)
     comptime L_EQ = Layout.row_major(MD.NEQUALITY, MODEL_EQ_SIZE)
     comptime L_TEN = Layout.row_major(MD.NTENDON, MODEL_TENDON_SIZE)
     comptime L_SITE = Layout.row_major(MD.NSITE, MODEL_SITE_SIZE)
@@ -250,6 +252,8 @@ def solve_static[
     comptime L_CDOF = Layout.row_major(BATCH, MD.NV * 6)
     comptime L_M = Layout.row_major(BATCH, MD.NV * MD.NV)
     comptime L_SOLVER = Layout.row_major(BATCH, SOLVER_WS)
+    # ⚠ See the dynamic leg's twin below: `d.efc_eq_force` (AUD-48).
+    comptime L_EQF = Layout.row_major(BATCH, 6 * MD.NEQUALITY)
 
     for e in range(BATCH):
         _newton_solve_env[DT, CONE, BATCH, SOLVER_WS](
@@ -275,6 +279,7 @@ def solve_static[
             mf.joints.lt["cpu", L_JOINT](),
             mf.bodies.lt["cpu", L_BODY](),
             mf.meta.lt["cpu", L_MMETA](),
+            mf.trees.lt["cpu", L_TREES](),
             mf.equality.lt["cpu", L_EQ](),
             mf.tendons.lt["cpu", L_TEN](),
             mf.sites.lt["cpu", L_SITE](),
@@ -284,9 +289,13 @@ def solve_static[
             sc.cdof.lt["cpu", L_CDOF](),
             sc.M.lt["cpu", L_M](),
             sc.m_inv.lt["cpu", L_M](),
+            sc.L.lt["cpu", L_M](),
+            sc.D.lt["cpu", L_NV](),
+            mf.dof_parentid.lt["cpu", L_DW](),
             sc.qacc_constrained.lt["cpu", L_NV](),
             d.qacc_warmstart.lt["cpu", L_NV](),
             cs.solver.lt["cpu", L_SOLVER](),
+            d.efc_eq_force.lt["cpu", L_EQF](),
         )
 
 
@@ -338,6 +347,9 @@ def solve_dynamic[
         IndexList[2](nbody, MODEL_BODY_SIZE)
     )
     var rl_mmeta = RuntimeLayout[DYN1].row_major(IndexList[1](MODEL_META_SIZE))
+    var rl_trees = RuntimeLayout[DYN1].row_major(
+        IndexList[1](nv * MODEL_TREE_SIZE)
+    )
     var rl_eq = RuntimeLayout[DYN2].row_major(
         IndexList[2](nequality, MODEL_EQ_SIZE)
     )
@@ -355,6 +367,14 @@ def solve_dynamic[
     var rl_cdof = RuntimeLayout[DYN2].row_major(IndexList[2](BATCH, nv * 6))
     var rl_m = RuntimeLayout[DYN2].row_major(IndexList[2](BATCH, nv * nv))
     var rl_solver = RuntimeLayout[DYN2].row_major(IndexList[2](BATCH, SOLVER_WS))
+    # ⚠ `d.efc_eq_force` — the connect/weld equality row forces the solver
+    # retains for `mj_rnePostConstraint` (AUD-48). Added to
+    # `_newton_solve_env` in `254816cc` and NOT added here, which left this
+    # file failing to COMPILE at HEAD until 2026-09-13. It is the only
+    # caller that spells the argument list out by hand.
+    var rl_eqf = RuntimeLayout[DYN2].row_major(
+        IndexList[2](BATCH, 6 * nequality)
+    )
 
     var dims = DynDims(
         nq=nq,
@@ -381,6 +401,7 @@ def solve_dynamic[
             mf.joints.lt_dyn["cpu", DYN2](rl_joint),
             mf.bodies.lt_dyn["cpu", DYN2](rl_body),
             mf.meta.lt_dyn["cpu", DYN1](rl_mmeta),
+            mf.trees.lt_dyn["cpu", DYN1](rl_trees),
             mf.equality.lt_dyn["cpu", DYN2](rl_eq),
             mf.tendons.lt_dyn["cpu", DYN2](rl_ten),
             mf.sites.lt_dyn["cpu", DYN2](rl_site),
@@ -390,9 +411,13 @@ def solve_dynamic[
             sc.cdof.lt_dyn["cpu", DYN2](rl_cdof),
             sc.M.lt_dyn["cpu", DYN2](rl_m),
             sc.m_inv.lt_dyn["cpu", DYN2](rl_m),
+            sc.L.lt_dyn["cpu", DYN2](rl_m),
+            sc.D.lt_dyn["cpu", DYN2](rl_nv),
+            mf.dof_parentid.lt_dyn["cpu", DYN1](rl_dw),
             sc.qacc_constrained.lt_dyn["cpu", DYN2](rl_nv),
             d.qacc_warmstart.lt_dyn["cpu", DYN2](rl_nv),
             cs.solver.lt_dyn["cpu", DYN2](rl_solver),
+            d.efc_eq_force.lt_dyn["cpu", DYN2](rl_eqf),
         )
 
 

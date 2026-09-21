@@ -11,8 +11,8 @@ Requires the reference asset dir; run from repo root:
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import MazeGame, MazeEnv
-from mojo_rl.envs.procgen.core.object_ids import WALL_OBJ
+from noeira.envs.procgen.games import MazeGame, MazeEnv
+from noeira.envs.procgen.core.object_ids import WALL_OBJ
 
 comptime ASSET_ROOT = String("assets/procgen/")
 comptime GOAL = 2

@@ -14,15 +14,15 @@ Run:
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac.actor_loss import SACActorLoss
+from noeira.nn.constants import DT
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Xavier
+from noeira.nn.optimizer.adam import Adam
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.sac.actor_loss import SACActorLoss
 
 
 comptime OBS = 3
@@ -48,6 +48,12 @@ def _run[target: StaticString](ctx: Optional[DeviceContext]) raises:
         mb_s.data[i] = Scalar[DT]((i % 7) - 3) * 0.2
     comptime if target == "gpu":
         mb_s.upload(ctx.value())
+    # the batch's actions — read by the BC term, inert at weight 0
+    var mb_a = Tensor.alloc(BATCH * ACT)
+    for i in range(BATCH * ACT):
+        mb_a.data[i] = Scalar[DT]((i % 5) - 2) * 0.3
+    comptime if target == "gpu":
+        mb_a.upload(ctx.value())
 
     comptime STEPS = 200
     comptime WIN = 25
@@ -57,7 +63,7 @@ def _run[target: StaticString](ctx: Optional[DeviceContext]) raises:
         c1.zero_grad[target](ctx)  # critics frozen — clear actor-loss pollution
         c2.zero_grad[target](ctx)
         var out = blk.forward_backward[target](
-            actor, opt, c1, c2, mb_s, ALPHA, ctx
+            actor, opt, c1, c2, mb_s, mb_a, ALPHA, ctx
         )
         if step < WIN: first_sum += out.loss
         if step >= STEPS - WIN: last_sum += out.loss

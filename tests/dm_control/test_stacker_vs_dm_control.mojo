@@ -44,7 +44,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.stacker import (
+from noeira.envs.dm_control.stacker import (
     DMStacker2Model as M2,
     DMStacker4Model as M4,
     DMStacker2Config as CFG2,
@@ -58,11 +58,11 @@ from mojo_rl.envs.dm_control.stacker import (
     BOX_QADR_0,
     BOX_SIZE,
 )
-from mojo_rl.envs.dm_control.planar_arm import arm_joint_obs_order
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.envs.dm_control.planar_arm import arm_joint_obs_order
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
@@ -87,7 +87,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
     TENDON_IDX_INVWEIGHT0,
 )
-from mojo_rl.physics3d.constants import (
+from noeira.physics3d.constants import (
     GEOM_PLANE,
     GEOM_SPHERE,
     GEOM_CAPSULE,
@@ -751,7 +751,7 @@ def _mj_at2(
     MOCAP id, not body id — hence `body_mocapid`.
     """
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/stacker_2.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/stacker_2.xml")
     var dat = mujoco.MjData(m)
     for i in range(NQ2):
         dat.qpos[i] = state[i]
@@ -772,7 +772,7 @@ def _mj_at4(
     tx: Float64, tz: Float64,
 ) raises -> Tuple[PythonObject, PythonObject, PythonObject]:
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/stacker_4.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/stacker_4.xml")
     var dat = mujoco.MjData(m)
     for i in range(NQ4):
         dat.qpos[i] = state[i]
@@ -1295,7 +1295,7 @@ def test_stacker_observation_matches_mujoco() raises:
     var ref_obs = builder.observation(mj[1], mj[2], 2)
 
     var obs = List[Scalar[DTYPE]]()
-    _ = CFG2.custom_extract_obs_cpu[DTYPE, NQ2, NV2, NBODY2, MAXC2, NSITE2](
+    _ = CFG2.custom_extract_obs_cpu[DTYPE](
         d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
         List[Scalar[DTYPE]](), obs,
     )
@@ -1394,7 +1394,7 @@ def test_stacker4_observation_matches_mujoco() raises:
     var ref_obs = builder.observation(mj[1], mj[2], 4)
 
     var obs = List[Scalar[DTYPE]]()
-    _ = CFG4.custom_extract_obs_cpu[DTYPE, NQ4, NV4, NBODY4, MAXC4, NSITE4](
+    _ = CFG4.custom_extract_obs_cpu[DTYPE](
         d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
         List[Scalar[DTYPE]](), obs,
     )
@@ -1499,9 +1499,7 @@ def test_stacker_reward_matches_mujoco() raises:
                            txs[k], tzs[k])
         var mj = _mj_at2(states[k], _zero_ctrl(NACT2), txs[k], tzs[k])
         var ref_r = Float64(py=builder.reward(mj[1], mj[2], 2))
-        var got = CFG2.compute_reward_and_done_cpu[
-            DTYPE, NQ2, NV2, NBODY2, MAXC2, NSITE2
-        ](
+        var got = CFG2.compute_reward_and_done_cpu[DTYPE](
             d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
             Scalar[DTYPE](0), _zero_ctrl(NACT2), 0, 1,
         )
@@ -1539,9 +1537,7 @@ def test_stacker_reward_matches_mujoco() raises:
     _set_state_and_fk4(d4, mf4, integ4, s4, _zero_ctrl(NACT4), 0.2, 0.022)
     var mj4 = _mj_at4(s4, _zero_ctrl(NACT4), 0.2, 0.022)
     var ref_r4 = Float64(py=builder.reward(mj4[1], mj4[2], 4))
-    var got4 = CFG4.compute_reward_and_done_cpu[
-        DTYPE, NQ4, NV4, NBODY4, MAXC4, NSITE4
-    ](
+    var got4 = CFG4.compute_reward_and_done_cpu[DTYPE](
         d4, mf4.bodies.data, mf4.joints.data, mf4.geoms.data, mf4.sites.data,
         Scalar[DTYPE](0), _zero_ctrl(NACT4), 0, 1,
     )

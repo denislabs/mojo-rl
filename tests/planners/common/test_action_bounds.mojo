@@ -7,7 +7,7 @@ Usage:
 from std.math import abs as math_abs, tanh as math_tanh
 from std.testing import assert_equal, assert_true
 
-from mojo_rl.planners.common import (
+from noeira.planners.common import (
     clip, tanh_squash, scale_to_range, clip_inplace,
 )
 

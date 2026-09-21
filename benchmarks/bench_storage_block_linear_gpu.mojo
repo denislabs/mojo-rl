@@ -7,7 +7,7 @@ A/B. DreamerV3 block-diagonal shapes (IN=DETER, OUT=3·DETER, BLOCKS=8).
 Run (NVIDIA): pixi run -e nvidia mojo run -I . benchmarks/bench_storage_block_linear_gpu.mojo
 """
 
-from std.gpu import global_idx, thread_idx, block_idx
+from max.gpu import global_idx, thread_idx, block_idx
 from max.gpu.primitives import block
 from max.gpu.host import DeviceContext
 from std.time import perf_counter_ns

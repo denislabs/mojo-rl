@@ -45,14 +45,14 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.dog import (
+from noeira.envs.dm_control.dog import (
     DMDogStandWalkModel,
 )
-from mojo_rl.physics3d.fields import Model, Data, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, Data, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_CONDIM,
     CONTACT_IDX_FORCE_N,
@@ -146,7 +146,7 @@ def test_dog_step_stages_vs_mujoco() raises:
     var sf = M.make_spec_fields[DTYPE]()
     print("=== dog: staged single-substep probe ===")
     var mujoco = Python.import_module("mujoco")
-    var mm = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
+    var mm = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_stand_walk.xml")
     var dat = mujoco.MjData(mm)
 
     mujoco.mj_resetData(mm, dat)
@@ -343,7 +343,7 @@ def test_dog_step_stages_vs_mujoco() raises:
     forward_kinematics["cpu"](d0, mf)
     integ.step["cpu", CONTACTS=False](d0, mf)
 
-    var mm0 = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
+    var mm0 = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_stand_walk.xml")
     mm0.opt.disableflags = Int(py=mm0.opt.disableflags) | 16  # mjDSBL_CONTACT
     var dat0 = mujoco.MjData(mm0)
     for i in range(NQ):
@@ -503,8 +503,8 @@ def test_dog_noslip_ab() raises:
     var mujoco = Python.import_module("mujoco")
 
     # Two MuJoCo models differing ONLY in `noslip_iterations`.
-    var mm4 = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
-    var mm0 = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
+    var mm4 = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_stand_walk.xml")
+    var mm0 = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_stand_walk.xml")
     mm0.opt.noslip_iterations = 0
     var dat4 = mujoco.MjData(mm4)
 
@@ -659,7 +659,7 @@ def test_dog_contact_forces_vs_mujoco() raises:
     print("=== dog: per-contact forces vs MuJoCo ===")
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
-    var mm = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
+    var mm = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_stand_walk.xml")
     var dat = mujoco.MjData(mm)
     mujoco.mj_resetData(mm, dat)
     for _ in range(N_SETTLE):
@@ -752,7 +752,7 @@ def test_dog_contact_params_vs_mujoco() raises:
     var sf = M.make_spec_fields[DTYPE]()
     print("=== dog: mixed contact PARAMETERS vs MuJoCo ===")
     var mujoco = Python.import_module("mujoco")
-    var mm = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
+    var mm = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_stand_walk.xml")
     var dat = mujoco.MjData(mm)
     mujoco.mj_resetData(mm, dat)
     for _ in range(N_SETTLE):
@@ -903,7 +903,7 @@ def test_dog_applied_force_vs_mujoco() raises:
     var sf = M.make_spec_fields[DTYPE]()
     print("=== dog: applied force through the solve ===")
     var mujoco = Python.import_module("mujoco")
-    var mm = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
+    var mm = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_stand_walk.xml")
     var dat = mujoco.MjData(mm)
     mujoco.mj_resetData(mm, dat)
     for _ in range(N_SETTLE):

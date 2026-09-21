@@ -43,7 +43,7 @@ asserted separately for exactly that reason.
 Run: pixi run mojo run -I . tests/physics3d/test_model_names_vs_mujoco.mojo
 """
 
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, read_model_source,
 )
 
@@ -420,17 +420,17 @@ def main() raises:
     var g = golden()
     print("=== FlatModelDef name tables vs MuJoCo mj_id2name ===")
     print("   ", len(g), "golden rows")
-    check(t, g, "walker2d", "mojo_rl/envs/walker2d/assets/walker2d.xml")
-    check(t, g, "humanoid", "mojo_rl/envs/humanoid/assets/humanoid.xml")
-    check(t, g, "ant", "mojo_rl/envs/ant/assets/ant.xml")
-    check(t, g, "so_arm100", "mojo_rl/envs/robots/assets/so_arm100.xml")
+    check(t, g, "walker2d", "noeira/envs/walker2d/assets/walker2d.xml")
+    check(t, g, "humanoid", "noeira/envs/humanoid/assets/humanoid.xml")
+    check(t, g, "ant", "noeira/envs/ant/assets/ant.xml")
+    check(t, g, "so_arm100", "noeira/envs/robots/assets/so_arm100.xml")
     # ⚠ THE ONE THAT ACTUALLY TESTS SITES — 29 of them, and its `workspace`
     # site is declared on the WORLDBODY, so it must land at index 2 (body 0)
     # rather than wherever the text puts it. The other four models have no
     # sites at all, which the `family` arm reports rather than passing
     # quietly.
     check(t, g, "quadruped_walk",
-          "mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
+          "noeira/envs/dm_control/assets/quadruped_walk.xml")
     print("===", t.checks - t.fails, "/", t.checks, "passed ===")
     if t.fails != 0:
         raise Error(

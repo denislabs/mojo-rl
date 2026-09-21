@@ -1,27 +1,29 @@
 ---
 title: Contributing
-description: Development workflow, Mojo nightly syntax, the compiler traps worth knowing, and where the project is going.
+description: Development workflow, Mojo 1.1 syntax, the build traps worth knowing, and where the project is going.
 ---
 
 import Maturity from '~/components/Maturity.astro';
 
 <Maturity level="stable" />
 
-mojo-rl is developed in the open and was selected for a **Modular Community
+noeira is developed in the open and was selected for a **Modular Community
 Grant** in 2026. Bug reports and contributions are welcome — the
 [project status](/) is honest about which parts are settled and which are not.
 
 ## Setup
 
 ```bash
-git clone https://github.com/denislabs/mojo-rl.git
-cd mojo-rl
+git clone https://github.com/noeira/noeira.git
+cd noeira
 pixi install
 pixi run install-pre-commit
 ```
 
 See [Installation](/start/installation/) for GPU environments and optional
-dependencies.
+dependencies, and [Toolchain](/project/toolchain/) for the pinned versions and
+the native shims (`pixi run build-http`, `build-qhull`, …) that some code paths
+need at run time.
 
 ## Workflow
 
@@ -33,21 +35,26 @@ pixi run examples-compile        # catch example rot
 
 Formatting is 80 columns via `mojo format`, enforced by pre-commit.
 
-## Mojo nightly
+## Mojo 1.1
 
-The project tracks **Mojo nightly**, which differs from stable in ways your
-editor may not know about. The LSP will report false warnings on valid code.
+The project is pinned to **Mojo 1.1.0 / MAX 26.6.0** — exact versions, not
+nightly. Code written against older Mojo, or against examples on the web,
+often uses spellings the pinned compiler rejects:
 
-| Stable | Nightly |
+| Older | Mojo 1.1 |
 |---|---|
+| `fn` | `def` — the only function keyword; a function that can raise says `raises` |
 | `inout` | `mut` |
-| `owned` / `var` (transfer) | `deinit` |
+| `owned` (argument) | `var` |
 | `alias` | `comptime` |
-| `ptr.offset(n)` | `ptr + n` |
-| `enqueue_function_unchecked` | `enqueue_function` |
+| `from std.gpu… import …` | `from max.gpu… import …` |
+| `Atomic[DType.int64]` | `Atomic[Int64]` |
+| `@parameter` closure + `parallelize[f](n)` | `def f(i: Int) {imm}:` + `parallelize(f, n)` |
 
-Pointers also split into safe and unsafe forms — `p[unsafe_offset=i]`,
-`.unsafe_load/store/offset/bitcast`.
+The last three came with the 1.1 upgrade; [Toolchain](/project/toolchain/#the-mojo-11-migration)
+has the details and what is still pending. Your editor's language server may
+lag the pinned compiler and report false warnings on valid code — the compiler
+is the authority.
 
 ## Compiler traps worth knowing
 
@@ -63,6 +70,10 @@ emission when you only want to know whether it type-checks.
 
 Note also that `mojo precompile` skips generic instantiation, so a green
 package build can still hide real errors in generic code.
+
+When the link itself is the goal, large drivers on macOS need the classic
+linker: `-Xlinker -ld_classic`. See
+[the symbol-length assertion](/project/toolchain/#the-macos-linkers-symbol-length-assertion).
 :::
 
 :::caution[Instantiation depth can hang the compiler]
@@ -73,12 +84,27 @@ by extracting the body into a helper function.
 If a build stops making progress rather than failing, suspect depth first.
 :::
 
-:::caution[Stale `mojo_rl.mojoc` shadows the source tree]
+:::caution[Stale `noeira.mojoc` shadows the source tree]
 ```bash
-rm -f mojo_rl.mojoc
+rm -f noeira.mojoc
 ```
 A stale precompiled package produces errors pointing at code that no longer
 exists.
+:::
+
+:::caution[The precompiled package has its own traps]
+`pixi run build-pkg` / `run-pkg` cut a large driver's warm rebuild (38 s to 8 s on
+the SAC HalfCheetah driver), but the source tree shadows the package whenever `noeira/`
+is in the working directory, and a package older than your edits builds
+against the old library. Use the tasks rather than calling `mojo` against
+`build/pkg/` by hand — see
+[the precompiled package](/project/toolchain/#the-precompiled-package).
+:::
+
+:::caution[A missing shim fails at run time]
+The C shims are not in git. Code that needs one compiles cleanly and then
+aborts at the first call. Build the shim once per machine (`pixi run
+build-http`, `build-serial`, `build-qhull`, `build-opencv`, `build-imgui`).
 :::
 
 **Intra-package imports** should name the module: `from .mod import X`, not
@@ -98,26 +124,16 @@ If you are looking for something to work on, these are known and documented:
 | Elliptic contacts | Drift vs. MuJoCo; affects Sawyer |
 | CarRacing | Reward shaping unfinished |
 | Env CUDA-graph capture | Blocked by the cooperative blocked-Newton kernel |
-| nn Trainer capture | Blocked by `linalg.matmul`'s per-call split-K workspace |
+| nn Trainer capture | The dW GEMMs of `Linear`, `Conv2D` and their relatives now run split-K on a workspace they own (`noeira/nn/core/splitk_gemm.mojo`, on sm_80 / sm_89 / sm_120), but the supervised `Trainer`'s `USE_TRAIN_CUDA_GRAPH` still defaults to off |
 | NHWC conv | End-to-end migration designed but not landed |
-| Documentation | README, CLAUDE.md and package READMEs have drifted — see below |
+| Documentation | README and package READMEs have drifted from the code |
 
 ## Documentation drift
 
-Building this site surfaced a number of places where the repository's own docs
-no longer match the code. Corrections are welcome:
-
-- `README.md`'s nn `Trainer` example does not compile — the signature is
-  `Trainer[MODEL, NC, IN, BATCH, target, …]`, with no loss parameter
-- Several cited example paths do not exist
-- `CLAUDE.md` names an `nn/initializer/` and `nn/autodiff/` package; neither exists
-- `mojo_rl/physics3d/README.md` predates the field-layout migration
-- Published observation dimensions disagree with the source in five places — Humanoid is 45, not 376
-- `INSTALL.md` is a scratch file of profiling commands, not an install guide
-- Checkpoints are `storage-ckpt v3`; the prose says v2
-
-This documentation site is generated from the source, and its build fails on a
-broken repository path — see `docs-site/scripts/check-refs.mjs`.
+The repository's READMEs are written by hand and drift from the code;
+corrections are welcome. This site is checked instead: its build fails on any
+repository path a page cites that does not exist — see
+`docs-site/scripts/check-refs.mjs`.
 
 ## Adding things
 
@@ -152,7 +168,7 @@ debugging it. The production build is authoritative.
 
 ## Roadmap
 
-From the project's own [roadmap](https://github.com/denislabs/mojo-rl/blob/main/ROADMAP.md):
+From the project's own [roadmap](https://github.com/noeira/noeira/blob/main/ROADMAP.md):
 
 **Stabilize and harden** — battle-test the 3D physics engine and the complex
 agents for community use.

@@ -28,8 +28,10 @@ That exchange repeats. The agent acts, observes the consequence, and adjusts its
 policy to collect more reward over time. Millions of iterations later, the
 adjustments amount to a skill.
 
-Building an RL framework means building **both sides of this loop**, plus
-everything that makes the adjusting work.
+noeira builds **both sides of this loop** — the simulated (or real) world and
+the learner — plus everything that makes the adjusting work. Imitation
+learning keeps the same loop but learns the policy from demonstrations first;
+the vocabulary below carries over.
 
 ## The vocabulary
 
@@ -64,11 +66,11 @@ acting greedily with respect to it.
 versus one that hit a step limit. These must be handled differently: a
 time-limit cutoff should still bootstrap from the final state, a real
 termination should not. Getting this wrong silently degrades learning, which is
-why `Env` in mojo-rl exposes `was_terminated()` separately from `done`.
+why `Env` in noeira exposes `was_terminated()` separately from `done`.
 
 ## The families of algorithm
 
-mojo-rl's algorithms span the full range, and understanding the axis they vary
+noeira's algorithms span the full range, and understanding the axis they vary
 along makes the [algorithm index](/concepts/architecture/) legible.
 
 **Tabular** — store one value per state-action pair in a table. Q-Learning,
@@ -103,13 +105,13 @@ away. Simple and stable; needs a lot of environment interaction.
 buffer. SAC samples a random minibatch from the last million transitions on
 every update. Far more sample-efficient; more ways to become unstable.
 
-mojo-rl reflects this in its training drivers: `run_onpolicy_*` for the first
+noeira reflects this in its training drivers: `run_onpolicy_*` for the first
 family, `run_offpolicy_*` for the second, each with CPU and GPU, single-env and
 batched variants.
 
 ## What "batched" means here
 
-A single environment stepping on a GPU wastes it. Instead, mojo-rl runs many
+A single environment stepping on a GPU wastes it. Instead, noeira runs many
 copies of an environment simultaneously — `N_ENVS = 32` in the quickstart — as
 one wide tensor operation. The physics engines are written for this: state is
 laid out as `[BATCH, STATE_SIZE]`, and one kernel launch advances every
@@ -121,5 +123,5 @@ runtime loop, and why observations reach the agent as batches.
 ## Next
 
 - [Quickstart: tabular](/start/quickstart-tabular/) — see the loop run
-- [The layered stack](/concepts/architecture/) — how mojo-rl organises all of this
+- [The layered stack](/concepts/architecture/) — how noeira organises all of this
 - [Traits](/concepts/traits/) — the interfaces the vocabulary above maps onto

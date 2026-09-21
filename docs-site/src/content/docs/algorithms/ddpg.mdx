@@ -15,7 +15,7 @@ continuous-control family. A deterministic actor, a single critic, and Gaussian
 noise for exploration.
 
 ```mojo
-from mojo_rl.deep_agents.ddpg import DDPGAgent
+from noeira.deep_agents.ddpg import DDPGAgent
 ```
 
 
@@ -96,8 +96,8 @@ later shown to work as well or better, and is what this implementation uses —
 ## Building it
 
 ```mojo
-from mojo_rl.deep_agents.ddpg import DDPGAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
+from noeira.deep_agents.ddpg import DDPGAgent
+from noeira.deep_agents.training.blocks import UniformSampleGpuStep
 
 var agent = DDPGAgent[
     "gpu",

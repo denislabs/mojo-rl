@@ -7,7 +7,7 @@ and dumping draw sequences + maze grids. See `docs/PROCGEN_PORT.md` §6.
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.core import MT19937, RandGen, MazeGen
+from noeira.envs.procgen.core import MT19937, RandGen, MazeGen
 
 
 def test_mt19937_standard_checkpoint() raises:

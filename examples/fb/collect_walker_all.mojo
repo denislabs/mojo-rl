@@ -71,13 +71,13 @@ Run:
 
 from std.random import random_float64, seed
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.data.column import ColumnSpec
-from mojo_rl.data.store import TrajectoryStoreWriter
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
-from mojo_rl.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
+from noeira.nn.constants import DT
+from noeira.data.column import ColumnSpec
+from noeira.data.store import TrajectoryStoreWriter
+from noeira.deep_agents.sac import SAC
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
 
 from max.gpu.host import DeviceContext
 

@@ -6,7 +6,7 @@ in each slot we populated.
 """
 
 from std.memory import alloc
-from mojo_rl.envs.craftax_classic.craftax_classic_sprites import (
+from noeira.envs.craftax_classic.craftax_classic_sprites import (
     build_sprite_sheet,
     SPRITE_SIZE,
     NUM_SPRITES,
@@ -39,7 +39,7 @@ def main() raises:
     print("=" * 50)
 
     var sheet = build_sprite_sheet(
-        String("mojo_rl/envs/craftax_classic/assets")
+        String("noeira/envs/craftax_classic/assets")
     )
     print("Sheet allocated:", SHEET_WIDTH, "x", SHEET_HEIGHT, "px (",
           NUM_SPRITES, "sprites)")

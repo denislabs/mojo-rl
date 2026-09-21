@@ -14,7 +14,7 @@ Multi-arity inputs/grad_inputs live in a storage `TensorPack[N]` so that all
 elements share the ONE wildcard origin `TensorRefs[N]` requires (independent
 `var Tensor`s have distinct origins and cannot be packed — the §B0 rule).
 
-Run: rm -f mojo_rl.mojoc && \
+Run: rm -f noeira.mojoc && \
      pixi run -e apple mojo run -I . tests/nn/test_rssm_ops_storage.mojo
 """
 
@@ -22,11 +22,11 @@ from std.math import exp
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.deep_agents.dreamerv3.rssm_ops import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.deep_agents.dreamerv3.rssm_ops import (
     ActionSquash,
     BlockGroupAssemble,
     GRUGate,

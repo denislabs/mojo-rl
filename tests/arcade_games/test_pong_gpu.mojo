@@ -1,6 +1,6 @@
 """Test native Pong environment — GPU path."""
 
-from mojo_rl.envs.arcade_games.pong import PongEnv
+from noeira.envs.arcade_games.pong import PongEnv
 from max.gpu.host import DeviceContext
 
 comptime dtype = DType.float32

@@ -1,10 +1,15 @@
 """MuJoCo per-phase cost + work counts — the reference side of PERFORMANCE.md.
 
-    pixi run python benchmarks/physics3d_mujoco_phases.py <scene.xml> [N] [key]
+    pixi run python benchmarks/physics3d_mujoco_phases.py <scene.xml> [N] [key] [bvactive] [warmup] [pose] [ctrl] [nativeccd]
+
+`pose` is a file written by `benchmarks/physics3d_cpu/harness.mojo`'s
+`write_pose` (the task reset our side starts from; the `TASK_POSE` rows of
+`scripts/physics3d_cpu_vs_mujoco.sh`), applied after the reset so both sides
+step the same scene.
 
 Answers: of MuJoCo's step, how much is collision (broad / mid / narrow) vs
 constraint build vs solve vs dynamics, and how much WORK it does getting there
-(ncon, nefc, solver iterations). `mojo_rl/physics3d/PERFORMANCE.md` compares
+(ncon, nefc, solver iterations). `noeira/physics3d/PERFORMANCE.md` compares
 our own phase profile against the output of this script.
 
 ⚠ THE TIMER UNIT IS CALIBRATED, NOT ASSUMED. `mjTimerStat.duration` is
@@ -27,14 +32,40 @@ import mujoco
 
 XML = sys.argv[1]
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 20000
-KEY = sys.argv[3] if len(sys.argv) > 3 else None
+KEY = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
 
 m = mujoco.MjModel.from_xml_path(XML)
+# The pose file's BODY records place the jointless bodies the task reset moved
+# (the bricks); like `physics3d_cpu_vs_mujoco.py`, that goes into the MODEL
+# before the data exists.
+POSE = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else None
+_pose = None
+if POSE is not None:
+    sys.path.insert(0, "benchmarks")
+    from physics3d_cpu_vs_mujoco_pose import load_pose, apply_pose
+    _pose = load_pose(POSE)
+    for b, p, q in _pose["bodies"]:
+        if 0 < b < m.nbody and m.body_jntnum[b] == 0:
+            m.body_pos[b] = p
+            m.body_quat[b] = q
 d = mujoco.MjData(m)
 if KEY is not None:
     mujoco.mj_resetDataKeyframe(m, d, m.key(KEY).id)
 else:
     mujoco.mj_resetData(m, d)
+if _pose is not None:
+    apply_pose(m, d, _pose)
+# `ctrl` on every actuator (the twin scripts step with 0.1 so the arm moves;
+# the default here stays 0 so the §10 numbers are reproducible).
+CTRL = float(sys.argv[7]) if len(sys.argv) > 7 else 0.0
+d.ctrl[:] = CTRL
+# `nativeccd=1` clears `mjDSBL_NATIVECCD` (the dm_control manipulation XMLs set
+# `nativeccd="disable"`, i.e. libccd's MPR with one contact per convex pair);
+# our narrow phase is the native GJK+EPA with multi-contact manifolds, so the
+# like-for-like reference is the native path.
+NATIVE = int(sys.argv[8]) if len(sys.argv) > 8 else 0
+if NATIVE:
+    m.opt.disableflags &= ~int(mujoco.mjtDisableBit.mjDSBL_NATIVECCD)
 
 print(f"model  nq={m.nq} nv={m.nv} nbody={m.nbody} ngeom={m.ngeom} "
       f"nmesh={m.nmesh} nmeshvert={m.nmeshvert}")
@@ -55,6 +86,9 @@ print(f"opt    solver={mujoco.mjtSolver(m.opt.solver).name} "
 # ⚠ EVERY MuJoCo NUMBER PUBLISHED IN `PERFORMANCE.md` BEFORE 2026-08-14 HAD
 # THIS ON, which flattered our ratios -- badly on so101 (1.78x -> 4.16x).
 BVACTIVE = int(sys.argv[4]) if len(sys.argv) > 4 else 0
+# Optional: a shorter warmup / counting loop for a scene that changes character
+# after a known step (the SO-101 park scenes drop their props at step 1596).
+WARMUP = int(sys.argv[5]) if len(sys.argv) > 5 else 2000
 m.vis.global_.bvactive = BVACTIVE
 print(f"vis    bvactive={BVACTIVE}  nbvh={m.nbvh} "
       f"({m.nbvh/1e3:.0f} kB memset/step if on)")
@@ -63,7 +97,7 @@ print(f"vis    bvactive={BVACTIVE}  nbvh={m.nbvh} "
 d.ctrl[:] = 0.1
 
 # Warm up (page faults, first-touch, any lazily built tables).
-for _ in range(2000):
+for _ in range(WARMUP):
     mujoco.mj_step(m, d)
 
 TIMERS = {n: t.value for n, t in mujoco.mjtTimer.__members__.items()
@@ -74,7 +108,7 @@ TIMERS = {n: t.value for n, t in mujoco.mjtTimer.__members__.items()
 ncon = []
 nefc = []
 niter = []
-for _ in range(min(N, 2000)):
+for _ in range(min(N, WARMUP)):
     mujoco.mj_step(m, d)
     ncon.append(d.ncon)
     nefc.append(d.nefc)

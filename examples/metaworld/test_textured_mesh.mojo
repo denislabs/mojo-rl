@@ -1,8 +1,8 @@
 """Test: STL mesh with PNG texture."""
 
-from mojo_rl.render import Renderer3D, Camera3D, Color
-from mojo_rl.render.light import Light
-from mojo_rl.math3d import Vec3 as V3, Quat as Q4
+from noeira.render import Renderer3D, Camera3D, Color
+from noeira.render.light import Light
+from noeira.math3d import Vec3 as V3, Quat as Q4
 
 comptime Vec3 = V3[DType.float64]
 comptime Quat = Q4[DType.float64]
@@ -47,10 +47,10 @@ def main() raises:
     print("Renderer open. Close window to exit.")
 
     # Debug: load STL and check UVs
-    from mojo_rl.render.stl_loader import load_stl
+    from noeira.render.stl_loader import load_stl
 
     var debug_mesh = load_stl(
-        "mojo_rl/envs/metaworld/assets/meshes/table/tablebody.stl"
+        "noeira/envs/metaworld/assets/meshes/table/tablebody.stl"
     )
     print("Mesh vertices:", debug_mesh.vertices.byte_length())
     for i in range(min(6, debug_mesh.vertices.byte_length())):
@@ -65,7 +65,7 @@ def main() raises:
         renderer.draw_mesh(
             name="tablebody",
             file_path=(
-                "mojo_rl/envs/metaworld/assets/meshes/table/tablebody.stl"
+                "noeira/envs/metaworld/assets/meshes/table/tablebody.stl"
             ),
             center=Vec3(0.0, 0.6, -0.65),
             orientation=Quat(0.0, 0.0, 0.0, 1.0),
@@ -73,7 +73,7 @@ def main() raises:
                 255, 255, 255, 255
             ),  # White base — texture provides color
             texture_name="wood2",
-            texture_path="mojo_rl/envs/metaworld/assets/textures/wood2.png",
+            texture_path="noeira/envs/metaworld/assets/textures/wood2.png",
         )
 
         # Table top with wood texture

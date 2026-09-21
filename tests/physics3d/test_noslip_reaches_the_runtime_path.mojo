@@ -53,16 +53,16 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, assert_equal, TestSuite
 
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.studio.stepping import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.studio.stepping import (
     StudioIntegEll, studio_cone_of, studio_integrator_of,
 )
-from mojo_rl.physics3d.types import ConeType, IntegratorType
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.types import ConeType, IntegratorType
+from noeira.physics3d.gpu.constants import (
     MODEL_META_IDX_NOSLIP_ITERATIONS, META_IDX_NUM_CONTACTS,
 )
 

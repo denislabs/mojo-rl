@@ -1,6 +1,6 @@
 """Test Chess environment — basic rules, moves, check, checkmate, stalemate."""
 
-from mojo_rl.envs.board_games.chess import ChessEnv
+from noeira.envs.board_games.chess import ChessEnv
 
 
 def test_reset() raises:

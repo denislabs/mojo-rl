@@ -24,7 +24,7 @@ answer has to come from the implementation that defines it.
 Run: pixi run mojo run -I . tests/physics3d/test_repeated_sections.mojo
 """
 
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.full_parser import parse_xml_full
 
 comptime XML = String(
     '<mujoco model="repeat">'

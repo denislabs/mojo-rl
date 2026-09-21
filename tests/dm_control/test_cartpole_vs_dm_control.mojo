@@ -23,22 +23,22 @@ from std.math import abs, sin, pi
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.envs.dm_control.cartpole import (
+from noeira.envs.dm_control.cartpole import (
     DMCartpoleSwingup,
     DMCartpoleSwingupSparse,
     DMCartpole1Model,
     DMCartpole2Model,
     DMCartpole3Model,
 )
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_IPOS_X,
     BODY_IDX_IXX,
 )
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_dims import ModelDims
 comptime MD_2 = ModelDims[DMCartpole3Model]
 comptime MD = ModelDims[DMCartpole2Model]
 
@@ -254,7 +254,7 @@ def test_cartpole_multipole_models_match_mujoco() raises:
     var worst = 0.0
 
     # --- 2 poles ---
-    var m2 = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/cartpole2.xml")
+    var m2 = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/cartpole2.xml")
     assert_true(
         Int(py=m2.nbody) == DMCartpole2Model.NBODY,
         "2-pole nbody mismatch",
@@ -266,7 +266,7 @@ def test_cartpole_multipole_models_match_mujoco() raises:
     worst = _cmp_bodies(mf2.bodies.data, m2, DMCartpole2Model.NBODY, worst)
 
     # --- 3 poles ---
-    var m3 = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/cartpole3.xml")
+    var m3 = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/cartpole3.xml")
     assert_true(
         Int(py=m3.nbody) == DMCartpole3Model.NBODY,
         "3-pole nbody mismatch",

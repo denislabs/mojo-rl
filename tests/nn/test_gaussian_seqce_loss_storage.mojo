@@ -10,22 +10,22 @@ Standalone storage test (no legacy oracle — converted from the former
   - storage GPU-vs-CPU forward + grad TOL ~2e-5.
 
 Run:
-  rm -f mojo_rl.mojoc && pixi run mojo run -I . \
+  rm -f noeira.mojoc && pixi run mojo run -I . \
       tests/nn/test_gaussian_seqce_loss_storage.mojo
-  rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . \
+  rm -f noeira.mojoc && pixi run -e apple mojo run -I . \
       tests/nn/test_gaussian_seqce_loss_storage.mojo
 """
 
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
 
-from mojo_rl.nn.loss.gaussian_nll_loss import (
+from noeira.nn.loss.gaussian_nll_loss import (
     GaussianNLLLoss as StorGNLL,
 )
-from mojo_rl.nn.loss.sequence_cross_entropy import (
+from noeira.nn.loss.sequence_cross_entropy import (
     SequenceCrossEntropyLoss as StorSeqCE,
 )
 

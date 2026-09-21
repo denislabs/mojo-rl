@@ -22,22 +22,22 @@ from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT, LAYOUT_NCHW
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
-from mojo_rl.deep_agents.efficient_zero_v2.nets_atari import (
+from noeira.nn.constants import DT, LAYOUT_NCHW
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.optimizer.adam import Adam
+from noeira.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
+from noeira.deep_agents.efficient_zero_v2.nets_atari import (
     EZDynVPNetAtari, ez_atari_init_zero_pred, ez_atari_init_zero_reward,
     EZ_LSTM_HIDDEN, EZ_LSTM_HORIZON,
 )
-from mojo_rl.deep_agents.efficient_zero_v2.blocks import (
+from noeira.deep_agents.efficient_zero_v2.blocks import (
     ezv2_unroll_train_step_gpu_vp,
 )
-from mojo_rl.deep_agents.zero import value_prefix_from_rewards
-from mojo_rl.deep_agents.zero.mcts_adapters_mz import (
+from noeira.deep_agents.zero import value_prefix_from_rewards
+from noeira.deep_agents.zero.mcts_adapters_mz import (
     MZRepGPU, MZDynGPU, MZPredGPU,
 )
-from mojo_rl.planners.tree_search import GumbelGPUMCTS, SinglePlayer
+from noeira.planners.tree_search import GumbelGPUMCTS, SinglePlayer
 
 
 def main() raises:

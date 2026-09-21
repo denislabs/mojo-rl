@@ -9,7 +9,7 @@ import DemoGrid from '~/components/DemoGrid.astro';
 
 <Maturity level="stable" note="CarRacing's reward shaping is still being tuned." />
 
-Three environments on `mojo_rl.physics2d`, a custom impulse-based engine written
+Three environments on `noeira.physics2d`, a custom impulse-based engine written
 for batched GPU simulation. State is laid out strided as `[BATCH, STATE_SIZE]`,
 so one kernel launch steps hundreds of environments at once.
 
@@ -50,7 +50,7 @@ engines.
 Both action spaces are available from the same physics:
 
 ```mojo
-from mojo_rl.envs import LunarLander
+from noeira.envs import LunarLander
 ```
 
 - **Discrete** (4): do nothing, fire left, fire main, fire right
@@ -71,9 +71,9 @@ readings** that let the agent see the ground ahead.
 
 Four continuous actions — torques for both hip and knee joints.
 
-Two modes: normal terrain, and **hardcore** with stumps, pits and stairs. The
-hardcore variant is a genuinely hard exploration problem; the normal one is a
-reasonable SAC/TD3 benchmark.
+The native environment implements the normal terrain, a reasonable SAC/TD3
+benchmark. Gymnasium's hardcore variant (stumps, pits and stairs) is reachable
+only through the [Gymnasium wrapper](/environments/gymnasium/).
 
 The interesting engine feature here is the articulated chain — the legs are a
 connected multi-body system solved with revolute joint constraints, not
@@ -110,7 +110,7 @@ All three implement `GPUDiscreteEnv` or `GPUContinuousEnv` and wrap into a
 batched driver:
 
 ```mojo
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
+from noeira.deep_agents.training.batched_env import BatchedGpuEnv
 
 comptime N_ENVS = 64
 comptime EnvT = BatchedGpuEnv[LunarLander[DT], N_ENVS, OBS_DIM, ACT_DIM]

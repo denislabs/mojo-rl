@@ -4,9 +4,9 @@ Dreamer 4). Runs a few episodes and reports return + tiles visited.
 Run: pixi run mojo run -I . examples/car_racing/scripted_driver_eval.mojo
 """
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.car_racing.car_racing_mb import CarRacingMB
-from mojo_rl.envs.car_racing.scripted_driver import scripted_car_racing_action
+from noeira.nn.constants import DT
+from noeira.envs.car_racing.car_racing_mb import CarRacingMB
+from noeira.envs.car_racing.scripted_driver import scripted_car_racing_action
 
 
 def main() raises:

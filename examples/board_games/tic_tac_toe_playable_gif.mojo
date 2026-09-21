@@ -13,11 +13,11 @@ Run with:
 """
 
 from std.memory import alloc
-from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
-from mojo_rl.render import Renderer2D, SDL_Color
-from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
-from mojo_rl.render.sdl.sdl_scancode import Scancode
-from mojo_rl.render.sdl.sdl_mouse import get_mouse_state, MouseButtonFlags
+from noeira.envs.board_games.tic_tac_toe import TicTacToeEnv
+from noeira.render import Renderer2D, SDL_Color
+from noeira.render.sdl.sdl_keyboard import get_keyboard_state
+from noeira.render.sdl.sdl_scancode import Scancode
+from noeira.render.sdl.sdl_mouse import get_mouse_state, MouseButtonFlags
 
 
 def main() raises:

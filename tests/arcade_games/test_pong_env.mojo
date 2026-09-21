@@ -1,6 +1,6 @@
 """Test native Pong environment — CPU path."""
 
-from mojo_rl.envs.arcade_games.pong import PongEnv
+from noeira.envs.arcade_games.pong import PongEnv
 
 
 def main() raises:

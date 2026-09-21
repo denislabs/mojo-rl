@@ -13,14 +13,14 @@ Run with: pixi run mojo run -I . examples/lunar_lander/lunar_lander_dqn_training
 
 from std.random import seed
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.deep_agents.dqn import DQNAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.deep_agents.dqn import DQNAgent
+from noeira.deep_agents.training.blocks import UniformSampleCpuStep
 
-from mojo_rl.envs.lunar_lander import LunarLander
+from noeira.envs.lunar_lander import LunarLander
 
 
 comptime OBS_DIM = 8

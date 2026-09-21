@@ -1,0 +1,254 @@
+---
+title: Teleop and recording
+description: Drive the follower from the leader and record every tick into a LeRobot v3 dataset, paced by the camera, checkpointed per episode, and pushed to the Hub or the platform.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" />
+
+Recording is the Mojo equivalent of `lerobot-record`. The leader arm drives
+the follower, and each 30 Hz tick writes the follower's measured pose, the
+leader's command and every camera frame into a
+[LeRobot v3.0 dataset](/data/lerobot/). The output is the directory tree
+LeRobot itself produces. It is pushed to the Hugging Face Hub byte for byte
+and imported for training without Python.
+
+Before you start, finish [SO-101 setup](/robots/so101-setup/) and read the
+[safety rules](/robots/#safety-rules).
+
+## Plain teleop
+
+```bash
+pixi run build-serial
+pixi run mojo run -I . examples/so101/teleop.mojo          # dry run: reads both arms, prints the goals
+pixi run mojo run -I . examples/so101/teleop.mojo --arm    # the follower moves
+```
+
+`examples/so101/teleop.mojo` is the smallest program that proves the stack.
+It reads the leader and commands the follower at 50 Hz for 30 s, and records
+nothing. Its ports come from the environment or the platform default
+(see [ports](/robots/so101-setup/#2-tell-noeira-which-port-is-which-arm)).
+
+:::caution[With `--arm`, the follower moves]
+Without `--arm`, `teleop.mojo` reads both arms and prints the goals it would
+command, and never enables torque. With it, the follower's goal is first
+parked on its own pose, then torque comes on and it follows the leader —
+hold the leader before you arm.
+:::
+
+## The recorders
+
+Two programs share the same record loop and the same guards:
+
+| Task | Program | Use |
+|---|---|---|
+| `soarm-record` | `examples/so101/record.mojo` | Terminal only. Blocks on a prompt between episodes. |
+| `soarm-record-ui` | `examples/so101/record_ui.mojo` | Live camera views, joint bars, buttons, and health counters (bus skips, camera drops, worst tick). Also needs `pixi run build-imgui`. |
+
+Both depend on `build-serial` and `build-opencv`.
+
+```bash
+# safe: records the leader and the cameras, never energises the follower
+pixi run soarm-record-ui -- --project so101-tower --dataset trial-01 \
+    --task "Grab the green cube"
+
+# --arm is what moves the robot
+pixi run soarm-record-ui -- --arm --project so101-tower --dataset trial-01 \
+    --task "Grab the green cube" \
+    --devices 0,1 --cameras observation.images.overhead,observation.images.wrist
+```
+
+Without `--arm`, nothing is energised. The leader and the cameras are
+recorded, and `observation.state` is the follower's measured pose, which does
+not follow the leader.
+
+### Flags
+
+| Flag | Meaning |
+|---|---|
+| `--arm` | Energise and drive the follower. Without it, nothing moves. |
+| `--project P --dataset D` | Record into `projects/P/datasets/D/`. The project must exist (see [projects](/concepts/projects/)). |
+| `--out DIR` | Record into any directory instead. Give either this or `--project`/`--dataset`, not both. |
+| `--task "…"` | Required. The language instruction, written to `meta/tasks.parquet`. Every word up to the next flag is kept. |
+| `--episodes N` | Episodes to record (terminal recorder, default 5) |
+| `--seconds S` | Length of each episode (default 20) |
+| `--devices 0,1` | Cameras, as indices, device paths, or a mix. Comma-separated, no spaces. |
+| `--cameras a,b` | Feature key per device. The default is `observation.images.front,observation.images.side`. |
+| `--fourcc MJPG` | Pixel format to request from a path-opened V4L2 camera. On Linux the default is MJPEG, and `none` keeps the device's own default. |
+| `--resume` | Continue an existing dataset |
+
+:::caution[Name the cameras the way you will deploy them]
+The camera feature keys become part of the policy. The ACT deployment feeds
+`--devices` entry *i* to camera slot *i*, and the slots follow the policy's
+camera list, which is sorted alphabetically by feature key. It prints the
+mapping (`camera slot 0 = observation.images.… <- device`) before arming. If
+the keys chosen at recording time do not match the devices you pass at
+deployment, the policy sees each camera in the other's slot. Choose the keys
+once, before the first session.
+:::
+
+### During a session
+
+**Terminal recorder.** Before each episode, position the arms and press Enter
+(`q` finishes early). After each episode it asks `keep this episode?`. Press
+Enter to keep, `r` to discard and redo, or `q` to quit. Anything typed during
+an episode is flushed before the prompt, so a stray keystroke cannot answer
+it. With `--arm`, torque stays on from the first episode to the end, and the
+follower **holds** its last pose between episodes. It is released once, after
+a prompt that tells you to support the arm.
+
+**UI recorder.** "Engage follower" turns torque on once. From then on the
+follower follows the leader continuously, between episodes too, so you can
+bring it to a start pose. Only "release follower" turns torque off, and
+`finish` is refused until you have released it. Closing the window or an
+error still releases torque in the `finally`. "Stop and discard" and "discard
+last" reject an episode.
+
+A discarded episode stays on disk. It is listed in
+`meta/rejected_episodes.json`, which the importer and the statistics skip.
+
+### Guards
+
+Both recorders use the teleop guards. The goal is parked on the follower's
+present pose before torque goes on. Every goal is clamped to the calibrated
+range and to the step limit: 80 ticks (about 7°) while the follower catches
+up, then 512 ticks (about 45°) once every joint is within about 5° of the
+leader. With a single 80-tick clamp, the follower lagged the leader by
+300 ms. `SO101Arm` also writes the servo `Acceleration` register (254), as
+LeRobot does on every connect.
+
+## The tick is paced by the camera
+
+The loop does not sleep until a clock tick. It blocks on the **first camera's
+next frame**, so there is exactly one tick per frame. The other cameras are
+read straight after, within a frame of it. A loop clocked at 30 Hz
+separately from the camera lost 22 frames in 8 s, because the camera runs at
+its own rate and any surplus overflows the frame ring.
+
+Two kinds of thread take the waiting and the encoding off the control thread:
+
+- **One thread per camera** (`noeira/vision/camera_thread.mojo`). A blocking
+  read is mostly waiting, about 17 ms of a 33.3 ms frame period. Two cameras
+  read one after the other pay two independent waits and blow the budget on
+  the mean alone. On its own thread, each camera also converts BGR to RGB,
+  which cost 9.8 ms worst-case when it ran inline.
+- **One encoder thread per camera** (`VideoEncoderThread` in
+  `noeira/io/video/`). Frames go to an `ffmpeg` process through a pipe, and the
+  pipe could stall the tick for about 60 ms.
+
+Measured with `tools/soarm/record_budget.mojo` (two cameras, 640×480, 30 Hz,
+240 ticks per layer):
+
+| Tick | Mean | Worst | Over the 33.3 ms budget |
+|---|---|---|---|
+| Serial cameras, inline encode | 34.10 ms | 98.30 ms | 113/240 |
+| Threaded cameras, inline encode | 4.52 ms | 61.26 ms | 1/240 |
+| **Cameras and encoders threaded** | **3.45 ms** | **5.43 ms** | **0/240** |
+
+Frames are handed over through a FIFO ring. If the loop falls behind, new
+frames are **dropped and counted** rather than stalling the camera. A skipped
+servo read skips that tick's *write*, but the frame is still consumed, so
+video and data stay aligned. The writer checks that alignment again when it
+closes and refuses to write a dataset that fails it.
+
+The recorders print each camera's negotiated format and frame rate. They warn
+if a camera negotiated less than 30 fps, because timestamps built on a rate
+the camera never delivered cannot be repaired later.
+
+## What gets written
+
+`noeira/data/lerobot_write.mojo` writes the v3.0 layout:
+
+```
+meta/info.json
+meta/tasks.parquet
+meta/stats.json
+meta/episodes/chunk-000/file-000.parquet
+meta/mojo_rl_writer_stats.json     # noeira only: per-episode stats for --resume
+meta/rejected_episodes.json        # only if an episode was discarded
+data/chunk-000/file-000.parquet
+videos/<camera>/chunk-000/file-000.mp4, file-001.mp4, …
+```
+
+- State and action are the six `*.pos` joints in LeRobot units: degrees for
+  the body joints, 0–100 for the gripper.
+- Per-episode statistics fill most of the 107 columns of
+  `meta/episodes/*.parquet`. Image statistics use a 256-bin histogram per
+  channel over every fourth pixel in each axis, which is the same sampling
+  LeRobot uses. They are normalised to [0, 1], as in LeRobot.
+- The recorders write **one mp4 per episode per camera** and rewrite every
+  metadata file when an episode ends. The directory is a complete, importable
+  dataset after every episode, so a crash loses only the episode in progress.
+
+Against a real LeRobot recording, the writer's output matched the schema
+exactly: `meta/episodes` has 107 of 107 leaf columns, with none missing and
+none extra.
+
+### Resuming
+
+```bash
+pixi run soarm-record-ui -- --arm --resume --project so101-tower --dataset trial-01 \
+    --task "Grab the green cube"
+```
+
+`--resume` continues a dataset after a crash, or adds episodes to a finished
+one. Rows, episode indices and tasks are read back through the importer.
+Per-episode statistics come from `meta/mojo_rl_writer_stats.json`, because
+they cannot be recomputed without decoding the videos. Without `--resume`, an
+existing dataset is refused, never overwritten.
+
+## Pushing
+
+### To the Hugging Face Hub
+
+```bash
+pixi run hf-push-dataset -- --root projects/so101-tower/datasets/trial-01 \
+    --repo YOUR_ORG/so101-trial-01
+```
+
+| Flag | Meaning |
+|---|---|
+| `--root DIR` | The dataset directory (required) |
+| `--repo ORG/NAME` | The dataset repo (required) |
+| `--message TEXT` | Commit message |
+| `--public` | Create the repo public. **The default is private**: a robot recording shows someone's room. |
+
+The token comes from `HF_TOKEN` in the environment, or from `.env`. The tool
+refuses a directory without `meta/info.json`. Uploads are content-addressed,
+so pushing again after changing one episode uploads only the files that
+changed. `--public` has no effect on a repo that already exists, so this tool
+never un-publishes anything.
+
+### To the platform
+
+```bash
+pixi run dataset-push -- --project so101-tower --dataset trial-01
+pixi run dataset-push -- --project so101-tower --dataset trial-01 --watch
+pixi run dataset-pull -- --project so101-tower --dataset trial-01
+pixi run dataset-list -- --project so101-tower
+```
+
+`--watch` pushes again every `--every` seconds (default 60) until the
+recorder has finished and everything is sent. Run it in a second terminal
+during a session. It only reads the dataset, so stopping it at any time is
+safe. The dataset lives at `projects/<project>/datasets/<dataset>/` on both
+machines.
+
+## Measured
+
+| What | Result |
+|---|---|
+| First armed recording | 3 episodes, 1,800 frames, at 30.0–30.1 Hz: 0 bus skips, 0 refused writes, 0 camera drops. Imports cleanly (3 × 600). |
+| Record tick, cameras and encoders threaded | 3.45 ms mean, 5.43 ms worst, against 33.3 ms |
+| Write → Hub → download → import | `tools/hf/dataset_roundtrip.mojo`: 258,118 values identical, every image byte for byte |
+| Schema | 107/107 `meta/episodes` columns against a real LeRobot recording |
+
+The round trip needs the network and a write token, so it is a manual check
+rather than a CI gate.
+
+## Next
+
+- [Importing a LeRobot dataset](/data/lerobot/) for training
+- [ACT](/algorithms/imitation/act/) and [SmolVLA](/algorithms/imitation/smolvla/)
+- [Deployment](/robots/deployment/)

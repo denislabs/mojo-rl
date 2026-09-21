@@ -52,11 +52,11 @@ Run with:
 """
 
 from std.math import abs, min
-from std.collections import InlineArray
+from std.collections import Array
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.envs.dm_control.dog.dog_xml import (
+from noeira.envs.dm_control.dog.dog_xml import (
     DMDogStandWalkModel,
     DOG_OBS_DIM,
     DOG_N_HINGE,
@@ -71,8 +71,8 @@ from mojo_rl.envs.dm_control.dog.dog_xml import (
     DOG_FRAME_SKIP,
     dsp,
 )
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_IPOS_X,
@@ -89,10 +89,14 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_CONDIM,
     GEOM_IDX_PRIORITY,
+    MODEL_SENSOR_SIZE,
+    SENSOR_IDX_SERVED,
+    SENSOR_IDX_TYPE,
 )
-from mojo_rl.physics3d.joint_types import JNT_FREE
+from noeira.physics3d.joint_types import JNT_FREE
+from noeira.physics3d.constants import SENS_SUBTREEANGMOM
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_dims import ModelDims
 comptime MD = ModelDims[DMDogStandWalkModel]
 
 
@@ -126,7 +130,7 @@ def _mj_from_our_xml() raises -> PythonObject:
     model; on its own it would compare our engine against our own parser.
     """
     var mujoco = Python.import_module("mujoco")
-    return mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
+    return mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_stand_walk.xml")
 
 
 def _build() raises -> Model[DType.float64, MD]:
@@ -279,9 +283,9 @@ def test_dog_xml_matches_reference() raises:
     # ⚠ PATHS, NOT XML TEXT — dog's skin texture is model-file-relative,
     # so `compare_xml_to_reference` loads by path (§10.5 decision 1).
     var xmls = [
-        String("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml"),
-        String("mojo_rl/envs/dm_control/assets/dog_trot.xml"),
-        String("mojo_rl/envs/dm_control/assets/dog_run.xml"),
+        String("noeira/envs/dm_control/assets/dog_stand_walk.xml"),
+        String("noeira/envs/dm_control/assets/dog_trot.xml"),
+        String("noeira/envs/dm_control/assets/dog_run.xml"),
     ]
     for t in range(3):
         var bad = refmod.compare_xml_to_reference(xmls[t], floors[t])
@@ -308,8 +312,8 @@ def test_dog_xml_matches_reference() raises:
 
     # The three floors must actually DIFFER, or the loop above compared one
     # model to itself three times.
-    var m_walk = Python.import_module("mujoco").MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
-    var m_run = Python.import_module("mujoco").MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_run.xml")
+    var m_walk = Python.import_module("mujoco").MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_stand_walk.xml")
+    var m_run = Python.import_module("mujoco").MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_run.xml")
     var floor_walk = Float64(py=m_walk.geom_size[0][0])
     var floor_run = Float64(py=m_run.geom_size[0][0])
     print("  floor half-extent: stand/walk", floor_walk, " run", floor_run)
@@ -320,25 +324,22 @@ def test_dog_xml_matches_reference() raises:
     )
 
 
-def test_dog_subtreeangmom_is_declared_and_unread() raises:
-    """The one sensor dog declares that this engine does not implement.
+def test_dog_subtreeangmom_is_declared_and_now_served() raises:
+    """`<subtreeangmom name="torso_angmom" body="torso"/>` — SERVED as of
+    2026-09-13, and this test now says so.
 
-    `<subtreeangmom name="torso_angmom" body="torso"/>` is in the model — the
-    port keeps it so the layer-1 sensor tables diff clean — but the engine has
-    no angular-momentum sensor, only `subtreelinvel`.
+    It was the last AUD-23 kind a model this tree ships an env for declared
+    and the engine did not compute: six declarations, all dog. The value is
+    gated against MuJoCo in `tests/physics3d/test_subtreeangmom_vs_mujoco.mojo`
+    at 4.4e-16; what stays here is the DECLARATION half, which is dog's own.
 
-    That is safe here for a reason worth stating rather than assuming: NO dog
-    observation and NO dog reward reads it. `Physics.inertial_sensors` reads
-    accelerometer/velocimeter/gyro and `center_of_mass_velocity` reads
-    `torso_linvel`; nothing reads `torso_angmom`. Our configs also read the
-    underlying fields directly rather than a packed `sensordata` array, so an
-    unimplemented sensor cannot shift the offset of any sensor after it — the
-    usual way this kind of gap does damage.
-
-    ⚠ IF A LATER TASK READS IT, THIS TEST IS THE PLACE THAT FINDS OUT. It fails
-    the moment the reference's dog.py mentions the sensor name.
+    ⚠ THE "READ BY NOTHING" ARM IS KEPT, AND IT IS NO LONGER LOAD-BEARING.
+    It was the reason the gap was safe: no dog observation and no dog reward
+    read `torso_angmom`. That is now a fact about the reference rather than a
+    condition on us, so the assertion is inverted in meaning but not in form
+    — if dog.py starts reading it, the sensor is there.
     """
-    print("--- dog: subtreeangmom declared, and read by nothing ---")
+    print("--- dog: subtreeangmom declared, and served since 2026-09-13 ---")
     var builtins = Python.import_module("builtins")
     var mujoco = Python.import_module("mujoco")
     var m = _mj_from_our_xml()
@@ -349,9 +350,33 @@ def test_dog_subtreeangmom_is_declared_and_unread() raises:
     assert_true(
         sid >= 0,
         "torso_angmom is missing from our XML — the port keeps it for model"
-        " fidelity even though nothing computes it",
+        " fidelity, and the engine computes it as of 2026-09-13",
     )
     print("  torso_angmom is sensor", sid, "of", Int(py=m.nsensor))
+
+    # ⚠ THE HALF THAT ACTUALLY MOVED. Our sensor table is in declaration
+    # order (`test_sensor_table_vs_mujoco` pins that against MuJoCo's own
+    # `sensor_adr`), so MuJoCo's index addresses our row. The row must be
+    # SENS_SUBTREEANGMOM and it must be SERVED — unserved, its `sensordata`
+    # slot holds `Data`'s NaN and reading it by name raises.
+    var mf = _build()
+    var o = sid * MODEL_SENSOR_SIZE
+    var kind = Int(mf.sensors.data[o + SENSOR_IDX_TYPE])
+    var served = Int(mf.sensors.data[o + SENSOR_IDX_SERVED])
+    print("  our row", sid, ": type", kind, " served", served)
+    assert_true(
+        kind == SENS_SUBTREEANGMOM,
+        "our sensor row " + String(sid) + " is type " + String(kind)
+        + ", not subtreeangmom (" + String(SENS_SUBTREEANGMOM) + ") — the"
+        " two tables are not in the same order and this arm is addressing"
+        " the wrong row",
+    )
+    assert_true(
+        served == 1,
+        "dog's torso_angmom row is NOT served. Its sensordata slot then holds"
+        " NaN while the table claims a value, which is the one failure the"
+        " served flag exists to exclude",
+    )
 
     # The load-bearing half: the reference must not read it.
     var os = Python.import_module("os")
@@ -362,9 +387,9 @@ def test_dog_subtreeangmom_is_declared_and_unread() raises:
     var src = String(py=builtins.open(path).read())
     assert_true(
         "torso_angmom" not in src,
-        "dog.py now mentions torso_angmom — a task reads the one sensor this"
-        " engine does not implement; subtreeangmom must be built before that"
-        " task is ported",
+        "dog.py now mentions torso_angmom. That is no longer a gap —"
+        " subtreeangmom is served — but it does mean this arm has stopped"
+        " describing the reference, so update it rather than deleting it",
     )
     assert_true(
         "torso_linvel" in src,
@@ -836,8 +861,8 @@ def test_dog_priority_and_condim_reach_our_model() raises:
     # ORDER differs" — and a three-body control model gets condim, priority
     # AND invweight exactly right, so the failure is specific to this model
     # and the shape of it is the whole question.
-    var hist_ours = InlineArray[Int, 8](fill=0)
-    var hist_ref = InlineArray[Int, 8](fill=0)
+    var hist_ours = Array[Int, 8](fill=0)
+    var hist_ref = Array[Int, 8](fill=0)
     for g in range(NGEOM):
         var oc = Int(mf.geoms.data[g * MODEL_GEOM_SIZE + GEOM_IDX_CONDIM])
         var rc = Int(py=m.geom_condim[g])

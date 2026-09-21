@@ -14,13 +14,13 @@ apple GPU should overfit. Run on NVIDIA to compare.
 
 from std.memory import Pointer
 from max.gpu.host import DeviceContext
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.deep_agents.muzero.nets_spatial import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.optimizer.adam import Adam
+from noeira.deep_agents.muzero.nets_spatial import (
     MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
 )
-from mojo_rl.deep_agents.muzero.blocks import (
+from noeira.deep_agents.muzero.blocks import (
     mz_unroll_train_step_gpu, MZScratch,
 )
 

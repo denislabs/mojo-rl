@@ -24,11 +24,11 @@ from std.math import isnan, isinf
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.experimental.lewm.trainer import LeWMTrainer
-from mojo_rl.experimental.lewm.encoder import LeWMEncoderCLS
-from mojo_rl.experimental.lewm.paper_protocol import run_lewm_paper_protocol
-from mojo_rl.envs.pusht import PushTEnv, PushTAction
+from noeira.nn.constants import DT
+from noeira.experimental.lewm.trainer import LeWMTrainer
+from noeira.experimental.lewm.encoder import LeWMEncoderCLS
+from noeira.experimental.lewm.paper_protocol import run_lewm_paper_protocol
+from noeira.envs.pusht import PushTEnv, PushTAction
 
 
 # toy WM (RGB, tiny) — same as test_paper_protocol.mojo

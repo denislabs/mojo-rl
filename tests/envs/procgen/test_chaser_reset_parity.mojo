@@ -11,7 +11,7 @@ Asset-free (reset builds no sprites) so this runs in milliseconds.
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import (
+from noeira.envs.procgen.games import (
     ChaserGame,
     DIST_EASY,
     DIST_HARD,
@@ -21,7 +21,7 @@ from mojo_rl.envs.procgen.games import (
     MAZE_WALL,
     ORB,
 )
-from mojo_rl.envs.procgen.core.object_ids import SPACE
+from noeira.envs.procgen.core.object_ids import SPACE
 
 
 @fieldwise_init

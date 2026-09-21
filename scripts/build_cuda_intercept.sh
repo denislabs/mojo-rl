@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the CUDA dlsym interceptor if not already built or if source is newer
-SO="$PIXI_PROJECT_ROOT/mojo_rl/cuda/libcuda_intercept.so"
-SRC="$PIXI_PROJECT_ROOT/mojo_rl/cuda/cuda_intercept.c"
+SO="$PIXI_PROJECT_ROOT/noeira/cuda/libcuda_intercept.so"
+SRC="$PIXI_PROJECT_ROOT/noeira/cuda/cuda_intercept.c"
 
 if [ ! -f "$SRC" ]; then
     exit 0  # source doesn't exist, skip silently

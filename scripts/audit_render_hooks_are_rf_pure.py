@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / (
-    "mojo_rl/physics3d/parser/model_def_from_xml.mojo"
+    "noeira/physics3d/parser/model_def_from_xml.mojo"
 )
 
 # Every static method that takes `rf` is a render hook by definition — the

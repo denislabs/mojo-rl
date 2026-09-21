@@ -29,26 +29,26 @@ Run: pixi run mojo run -I . tests/physics3d/test_undo_history.mojo
      pixi run python scripts/check_undo_history_vs_mujoco.py
 """
 
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.studio.history import (
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.studio.history import (
     History, HISTORY_CAP, edit_key,
 )
-from mojo_rl.physics3d.studio.scene import SceneDoc, scene_from_base
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.studio.scene import SceneDoc, scene_from_base
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.studio.remap import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.studio.remap import (
     remap_state, pose_snapshot, apply_pose_snapshot, joint_qpos_adr,
 )
-from mojo_rl.physics3d.studio.structure import (
+from noeira.physics3d.studio.structure import (
     delete_body, delete_geom, rename_element, add_body, reparent_body,
 )
 
 comptime DT = DType.float64
 comptime ZOO = "tests/physics3d/assets/structural_edit_zoo.xml"
-comptime CHEETAH = "mojo_rl/envs/half_cheetah/assets/half_cheetah.xml"
+comptime CHEETAH = "noeira/envs/half_cheetah/assets/half_cheetah.xml"
 comptime DUMP = "/tmp/undo_history"
 
 
@@ -337,8 +337,8 @@ def main() raises:
     # the ones the joints were deleted at or three zeros written confidently.
     # This compares the NUMBERS.
     print("--- the deleted subtree comes back where it was ---")
-    var pb = String("mojo_rl/envs/ant/assets")
-    var asrc = expand_mjcf(read_file(String("mojo_rl/envs/ant/assets/ant.xml")),
+    var pb = String("noeira/envs/ant/assets")
+    var asrc = expand_mjcf(read_file(String("noeira/envs/ant/assets/ant.xml")),
                            pb)
     var afmd = parse_xml_full(asrc, pb)
     var adims = dims_from_flat(afmd)

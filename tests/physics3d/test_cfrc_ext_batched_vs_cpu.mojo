@@ -31,15 +31,15 @@ from std.math import abs
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, Dims, AsStatic
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.gpu import compute_cfrc_ext
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
+from noeira.physics3d.fields import Data, Model, Dims, AsStatic
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.gpu import compute_cfrc_ext
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.envs.dm_control.quadruped.quadruped_xml import (
     DMQuadrupedWalkModel as Mdl,
 )
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from noeira.physics3d.model.model_dims import ModelDims
 
 
 comptime DTYPE = DType.float32

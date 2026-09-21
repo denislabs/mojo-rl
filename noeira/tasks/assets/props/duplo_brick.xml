@@ -1,0 +1,39 @@
+<mujoco model="duplo_brick">
+  <!-- THE "CUBE" OF THE `cube-in-bowl` RECORDINGS — a FREE slot.
+
+       ⚠ NOT WHAT `so101_tower.family` USES ANY MORE: the family carries the
+       PRINTED 25 mm cube (`props/brick.xml`, generated with its print file by
+       `tools/soarm/gen_tower_props.py`). This stays as the recorded object,
+       a one-line swap in the family for a policy meant to run on the Duplo.
+
+       The recorded object is a green 2x2 DUPLO-size brick: 31.8 x 31.8 mm,
+       19.2 mm tall without the studs (the wrist frames show the four
+       studs). Modelled as the plain box; the studs are 4.5 mm knobs the
+       jaws do not close on.
+
+       ⚠⚠ 3.2 cm IS ABOVE WHAT `cube.xml` SAYS THE SIM JAW CAN HOLD.
+       `examples/tasks/task_grasp_feasibility.mojo` measured that a
+       commanded-closed grasp holds a 2.4 cm cube and NOT a 3 cm one on the
+       stock jaw. The real arm holds this brick in 50 recorded episodes —
+       the hollow underside and the studs give the jaws something the sim's
+       smooth box does not. RUN THE FEASIBILITY PROBE ON THIS FAMILY BEFORE
+       TRAINING ON `so101_tower_cube_in_bowl`; if it holds at 0 placements,
+       the sim object is the gap, not the policy
+       (`_the_task_was_not_feasible_and_the_curve_could_not_say_so`), and
+       the fix is a thinner brick or a jaw-pad geom, decided by measurement.
+
+       ⚠ `slot_geom=` IN THE FAMILY MUST MATCH: bottom_z -0.0096, top_z
+       0.0096, h_radius 0.0226 (the half-diagonal, so two bricks never
+       overlap at any yaw).
+
+       density 600: a hollow Duplo brick is ~12 g over 19.5 cm³. NO
+       `<inertial>` — derived, see cube.xml. -->
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="brick">
+      <freejoint name="free"/>
+      <geom name="geom" type="box" size="0.0159 0.0159 0.0096" density="600"
+            rgba="0.55 0.85 0.20 1"/>
+    </body>
+  </worldbody>
+</mujoco>

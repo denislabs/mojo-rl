@@ -1,6 +1,6 @@
 ---
 title: DQN
-description: Value-based control for discrete actions — the Q-network, replay buffer and target network, and how they compose in mojo-rl.
+description: Value-based control for discrete actions — the Q-network, replay buffer and target network, and how they compose in noeira.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -78,16 +78,16 @@ transition contribute to many updates.
 network rather than the network being trained. Without it, the target moves
 every time the weights move, and the regression chases itself.
 
-## Building it in mojo-rl
+## Building it in noeira
 
 ```mojo
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.deep_agents.dqn import DQNAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.deep_agents.dqn import DQNAgent
+from noeira.deep_agents.training.blocks import UniformSampleCpuStep
+from noeira.envs.cartpole import CartPoleEnv
 
 comptime OBS_DIM = 4
 comptime NUM_ACTIONS = 2
@@ -162,9 +162,9 @@ put the network in a bad basin before real data arrives.
 Swap the target string, the sample block, and add a `DeviceContext`:
 
 ```mojo
-from std.gpu.host import DeviceContext
-from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
+from max.gpu.host import DeviceContext
+from noeira.deep_agents.training.blocks import UniformSampleGpuStep
+from noeira.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
 
 comptime N_ENVS = 64
 comptime EnvT = BatchedGpuDiscreteEnv[CartPole[DT], N_ENVS, OBS_DIM, 1]
@@ -195,7 +195,7 @@ Every variant shares this core; each changes one piece.
 | **Rainbow** | all of the above at once |
 
 ```mojo
-from mojo_rl.deep_agents.c51 import C51Agent   # C51 and Rainbow
+from noeira.deep_agents.c51 import C51Agent   # C51 and Rainbow
 ```
 
 :::caution[C51 and Rainbow: set the support range to your reward scale]
@@ -211,7 +211,7 @@ common default of `[-10, 10]` does not. This was precisely the difference betwee
 ## Watch out for
 
 **Terminal versus truncated.** The bootstrap must be masked on genuine
-termination but *not* on a time-limit cutoff. mojo-rl exposes `was_terminated()`
+termination but *not* on a time-limit cutoff. noeira exposes `was_terminated()`
 separately from `done` for this reason — see [Traits](/concepts/traits/).
 
 **Replay gather at pixel scale.** With 4×84×84 observations, sampling minibatches

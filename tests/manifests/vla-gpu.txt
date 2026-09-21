@@ -1,0 +1,147 @@
+# SmolVLA manifest (GPU) — `pixi run -e apple test-vla-gpu` (or -e nvidia)
+#
+# The companion to `vla.txt`: a name map over a module tree that cannot execute
+# proves very little, so these construct the real shapes and run them.
+
+# Step 2 — the vision tower forward + vjp at 512x512 -> 1024 x 768.
+tests/deep_agents/smolvla/test_vision_forward_smoke.mojo
+
+# The deploy's `fused_attention` switch reaches the CrossAttention leaf through
+# the SigLIP wrapper and the graph: a fused forward refuses a vjp, off again it
+# runs. A swallowed attr would make the deploy's "fused" a silent two-pass run.
+tests/deep_agents/smolvla/test_vision_fused_toggle.mojo
+
+# Step 3 — the RoPE leaf vs MAX's shipped `rope_ragged`, the adjoint identity,
+# and our own CPU/GPU parity. Needs a GPU because the reference kernel is one.
+tests/nn/test_rope_vs_max_kernel.mojo
+
+# Step 4 — PixelShuffle (1024x768 -> 64x12288) vs an independent re-derivation
+# of the reference's five view/permute steps, plus bijection and adjoint.
+tests/nn/test_pixel_shuffle.mojo
+
+# Step 6 — the static prefix KV cache: per-layer isolation, [prefix; suffix]
+# scratch, the prefix surviving ten denoising steps unchanged, the unfilled-read
+# guard, and GPU/CPU parity of the sub-buffer copies.
+tests/deep_agents/smolvla/test_kv_cache.mojo
+
+# Step 6 — the prefill pass: 16 layers filling the KV cache. Checks the cache
+# CONTENTS (all layers written, all distinct, post-RoPE and pre-broadcast), not
+# just that it ran — every interesting failure here produces finite output.
+tests/deep_agents/smolvla/test_prefill.mojo
+
+# Step 6 — the static-mask attention the denoising step needs, gated against the
+# torch-validated CrossAttention on the unmasked case.
+tests/deep_agents/smolvla/test_block_attention.mojo
+
+# V2 — that leaf's BACKWARD, against central differences of the definition in
+# Float64. Every one of the 1,472 input components is probed, not a sample,
+# because a wrong attention gradient is finite, correctly shaped and silent:
+# it shows up as a fine-tune that learns worse, months later. The file records
+# four measured ablations, including one that dV alone would have missed.
+tests/deep_agents/smolvla/test_block_attention_vjp.mojo
+
+# Step 6 — one denoising step and then ten, over a prefilled cache. Asserts the
+# cache is bit-identical after ten steps and that repeated steps do not drift:
+# the crop bug does not crash, it quietly changes the chunk.
+tests/deep_agents/smolvla/test_denoise.mojo
+
+# V2 — the same driver with RECORD on: one pool per layer instead of one pool.
+# Demands the output be BIT-identical to the non-recording run (the tape must
+# be a passive observer) and, separately, that the tape is not empty — a
+# recording that saved nothing would pass the first check perfectly. Carries a
+# measured ablation that does exactly that.
+tests/deep_agents/smolvla/test_denoise_tape.mojo
+
+# Step 7 — the flow-matching Euler schedule, pinned analytically: with a constant
+# velocity the integral is exactly -c, which catches a flipped dt, a wrong step
+# count and a wrong magnitude at once. Plus the per-token concat.
+tests/deep_agents/smolvla/test_flow.mojo
+
+# Step 7 — the whole V1 inference path: prefill, then ten Euler steps to an
+# action chunk. Asserts the output MOVED off the noise, that ten steps differ
+# from one, and that a rerun reproduces exactly (no state mutated between calls).
+tests/deep_agents/smolvla/test_sample_actions.mojo
+
+# Step 7 — prefix assembly: the segments land where the mask expects, and only
+# image+language carry the sqrt(960) scale (the state must not).
+tests/deep_agents/smolvla/test_prefix_embed.mojo
+
+# The assembled policy: every component in one object, raw frames + a pose to
+# a chunk of joint angles. Gates the WIRING, which no component gate can see —
+# `P` derived once and handed to the cache and all three masks, the dataset
+# scale applied per dimension (checked by doubling only action_std, since
+# "the values look big" does not decide), and above all that the KV cache
+# belongs to ONE observation: a new scene must give a new chunk, and a
+# repeated one must reproduce exactly. Seeded weights, no download.
+# ⚠ ~4 min, nearly all compile — one instantiation of all 44 layers.
+tests/deep_agents/smolvla/test_policy.mojo
+
+# The fine-tune's vision cache: the prefix built from a cached image segment
+# (through a real file, closed and reopened) is BIT-IDENTICAL to the prefix
+# built from the frames — prefix buffer and prefill output both — and a
+# perturbed row is seen. Plus the file's contract: wrong row count refused,
+# resume point, unwritten rows unreadable. Same shallow fixture as above.
+tests/deep_agents/smolvla/test_vision_cache.mojo
+
+# The batched training step: B = 4 observations in one forward reproduce
+# four B = 1 steps — prefill per row (bit-identical), loss (3e-7), and every
+# trainable gradient within 10x the path's own measured one-ulp sensitivity
+# and under 1e-3 outright; a perturbed row moves only its own prefill row.
+# Two shallow policies. ⚠ ~5 min, nearly all compile.
+tests/deep_agents/smolvla/test_train_step_batched.mojo
+
+# V2 — the backward driver, every gradient against Richardson-extrapolated
+# central differences of its OWN forward: 704 components, 16 parameter kinds,
+# total ||err||/||fd|| 2.7e-05. Self-consistency, not parity — it says the
+# backward differentiates the forward we have, which is the one property no
+# amount of parity testing gives. Carries four measured ablations, one of
+# which is invisible to the input-gradient leg and one of which changes
+# nothing (and says so).
+# Legs [5]-[6] then carry it to the GPU, where training will run and where
+# finite differences cannot go: 704 components, 1.5e-07 norm-relative.
+# ⚠ ~1,400 CPU forward passes. Seconds at these dims, but not instant.
+tests/deep_agents/smolvla/test_denoise_backward.mojo
+
+# V2 — the training objective: the Beta(1.5,1) time law (empirical CDF against
+# x^1.5, and a uniform draw REJECTED by 25x the band), both endpoints of the
+# interpolant exactly, dL/dv against central differences of a Float64
+# reference, and the property that matters most — the 26 padded action columns
+# get EXACTLY zero gradient, with a control proving the real ones do not,
+# and the same for timesteps past the end of an episode — including that
+# they leave the DENOMINATOR too, which is the half that silently varies
+# the effective learning rate with distance from an episode boundary.
+tests/deep_agents/smolvla/test_flow_loss.mojo
+
+# V2 — one whole training step: loss -> action_out -> the expert's sixteen
+# layers -> the time MLP -> action_in, with every head gradient against
+# Richardson central differences of the step itself (318 components,
+# 3.0e-05 norm-relative) and then against the GPU (2.5e-07). Gates the SEAMS
+# between the two drivers, which is where a chain like this actually breaks.
+# Carries four measured ablations, including one that was invisible until the
+# GPU leg existed.
+tests/deep_agents/smolvla/test_train_step.mojo
+
+# V2 — the first gate that asks for a RESULT rather than a derivative: 120
+# Adam steps over one frozen batch, loss 0.938 -> 0.00080 (1,167x). Plus the
+# three checks a loss curve cannot make — every parameter group actually
+# moved (a run that skips action_in entirely reaches the SAME loss),
+# zero_trainable_grads really zeroes all of them, and a control at lr=0 that
+# must not move at all. Leg [6] runs the loop on GPU (1e-06 per step).
+tests/deep_agents/smolvla/test_finetune_overfit.mojo
+
+# V2 — the last join between training and deployment, running actual weights:
+# the whole prefix (SigLIP, PixelShuffle, connector, language, state_proj,
+# then the VLM layers into the KV cache) from a store row and from the
+# equivalent camera capture, demanded BIT-IDENTICAL. The pixel gates say the
+# images agree; only this says the artefact the denoising step reads agrees,
+# because the prefix also folds in the state and the language tokens.
+tests/deep_agents/smolvla/test_store_prefix.mojo
+
+# V2 — the grouped arena and the GLOBAL grad clip, against the two ways they
+# fail quietly. `Adam.adopt` says "call ONCE" and resets the arena, so calling
+# it per component leaves only the LAST one adopted WHILE `adopted` reads
+# True — the grouped step then trains a fifth of the model in silence. Leg [1]
+# is a count against all five walks. And clipping each component to 10 is not
+# clipping their joint norm to 10, which is why the arena is what unlocks the
+# clip rather than merely being faster.
+tests/deep_agents/smolvla/test_finetune_arena.mojo

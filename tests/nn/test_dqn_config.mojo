@@ -12,9 +12,9 @@ Mirrors the structure of `c51/config.mojo`'s presets. Run:
 from std.random import seed
 from std.testing import assert_equal, assert_true
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
-from mojo_rl.deep_agents.dqn import (
+from noeira.deep_agents.dqn import (
     DQNAgent,
     DQNConfig,
     DoubleDQNConfig,
@@ -29,10 +29,10 @@ from mojo_rl.deep_agents.dqn import (
     DQNPER,
     RainbowDQN,
 )
-from mojo_rl.deep_agents.training.blocks import ReplaySampleStep
-from mojo_rl.deep_agents.data.any_replay import AnyReplay
+from noeira.deep_agents.training.blocks import ReplaySampleStep
+from noeira.deep_agents.data.any_replay import AnyReplay
 
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.envs.cartpole import CartPoleEnv
 
 
 comptime OBS_DIM = 4

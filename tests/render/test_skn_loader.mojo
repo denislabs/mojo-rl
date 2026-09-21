@@ -16,7 +16,7 @@ otherwise it would go red on any checkout that did not clone the references.
 from std.testing import assert_true, assert_equal, TestSuite
 from std.math import abs
 
-from mojo_rl.render.skn_loader import load_skn
+from noeira.render.skn_loader import load_skn
 
 
 comptime SKN_PATH = String(

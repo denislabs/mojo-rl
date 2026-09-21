@@ -21,14 +21,14 @@ saturation note where the servo could not hold.
 from std.random import seed
 from std.math import abs
 from max.gpu.host import DeviceContext
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
-from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
-from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
-from mojo_rl.robot.so101 import joint_name
-from mojo_rl.utils.fmt import col, fixed, pad_right
+from noeira.nn.constants import DT
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.robots.so_arm101_xml import SoArm101Model
+from noeira.envs.robots.so_arm101 import SoArm101ReachConfig
+from noeira.physics3d.fields import actuator_column
+from noeira.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
+from noeira.robot.so101 import joint_name
+from noeira.utils.fmt import col, fixed, pad_right
 
 comptime EnvT = Phyics3dEnv[
     SoArm101Model, SoArm101ReachConfig, DT, TERMINATE_ON_UNHEALTHY=False

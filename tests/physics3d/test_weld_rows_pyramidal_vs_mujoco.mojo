@@ -43,9 +43,9 @@ from std.python import Python
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.parser.xml_parser import merge_mjcf
+from noeira.physics3d.fields import (
     AsStatic,
     Model,
     Data,
@@ -55,36 +55,36 @@ from mojo_rl.physics3d.fields import (
     Scratch,
     cap,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.integrator.euler import (
+from noeira.physics3d.integrator.euler import (
     EulerIntegrator,
     _armature_env,
     _fnet_passive_env,
     _qacc_writeback_env,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import compute_mass_matrix
-from mojo_rl.physics3d.dynamics.ldl import (
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import compute_mass_matrix
+from noeira.physics3d.dynamics.ldl import (
     ldl_factor,
     ldl_solve,
     compute_m_inv,
 )
-from mojo_rl.physics3d.dynamics.rne import compute_bias_forces_rne
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.solver.newton_solve import (
+from noeira.physics3d.dynamics.rne import compute_bias_forces_rne
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.solver.newton_solve import (
     solve_newton,
     solve_newton_blocked,
 )
-from mojo_rl.physics3d.constraints.equality_tendon import (
+from noeira.physics3d.constraints.equality_tendon import (
     build_weld_equality_rows,
 )
-from mojo_rl.physics3d.types import _max_one
-from mojo_rl.physics3d.dynamics.ldl import compute_m_inv as _compute_m_inv
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.types import _max_one
+from noeira.physics3d.dynamics.ldl import compute_m_inv as _compute_m_inv
+from noeira.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
@@ -99,9 +99,10 @@ from mojo_rl.physics3d.gpu.constants import (
     EQ_IDX_RELPOSE_Z,
     EQ_IDX_RELPOSE_W,
 )
-from mojo_rl.physics3d.types import ConeType
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.solver.je_budget import je_ws_size
 from layout import Layout
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 comptime NSTEPS = 600
@@ -399,8 +400,8 @@ def _prep(
     _armature_env[DTYPE](
         0, AsStatic[MD](), joints_v, sc.M.lt["cpu", L_M]()
     )
-    ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
-    compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
+    ldl_factor["cpu", DTYPE, BATCH=1](mf, sc, None)
+    compute_m_inv["cpu", DTYPE, BATCH=1](mf, sc, None)
     compute_bias_forces_rne["cpu"](d, mf, sc, None)
     _fnet_passive_env[DTYPE](
         0,
@@ -412,7 +413,7 @@ def _prep(
         sc.bias.lt["cpu", L_NV](),
         sc.fnet.lt["cpu", L_NV](),
     )
-    ldl_solve["cpu", DTYPE, BATCH=1](sc, None)
+    ldl_solve["cpu", DTYPE, BATCH=1](mf, sc, None)
     _qacc_writeback_env[DTYPE](
         0,
         AsStatic[MD](),
@@ -459,8 +460,9 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
 
     var sb = DynamicsScratch[DTYPE, MD, 1]()
     var sp = DynamicsScratch[DTYPE, MD, 1]()
-    var cb = ContactScratch[DTYPE, MD, 1]()
-    var cp = ContactScratch[DTYPE, MD, 1]()
+    comptime JE_WS = je_ws_size[DTYPE, MD.NV, MD.NJOINT, MD.NTENDON, MD.NEQUALITY, MD.MAX_CONTACTS, 3]()
+    var cb = ContactScratch[DTYPE, MD, 1, JE_WS]()
+    var cp = ContactScratch[DTYPE, MD, 1, JE_WS]()
     _prep(db, mf, sb)
     _prep(dp, mf, sp)
 
@@ -473,8 +475,8 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
         " agree, so this comparison would pass with the bug present",
     )
 
-    solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=1](db, mf, sb, cb, None)
-    solve_newton["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=1](dp, mf, sp, cp, None)
+    solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=1, JE_WS=JE_WS](db, mf, sb, cb, None)
+    solve_newton["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=1, JE_WS=JE_WS](dp, mf, sp, cp, None)
 
     var worst = Float64(0)
     for i in range(M.NV):
@@ -660,8 +662,8 @@ def test_weld_orientation_rows_match_mujoco() raises:
     compute_subtree_com["cpu"](d, mf, None)
     compute_cdof["cpu"](d, mf, sc, None)
     compute_mass_matrix["cpu"](d, mf, sc, None)
-    ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
-    _compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
+    ldl_factor["cpu", DTYPE, BATCH=1](mf, sc, None)
+    _compute_m_inv["cpu", DTYPE, BATCH=1](mf, sc, None)
 
     comptime WR = 6 * cap[MTQ1.MAX_EQUALITY]()
     comptime WJ = 6 * cap[MTQ1.MAX_EQUALITY]() * cap[MTQ1.NV]()
@@ -805,8 +807,8 @@ def test_weld_torquescale_matches_mujoco() raises:
     compute_subtree_com["cpu"](d, mf, None)
     compute_cdof["cpu"](d, mf, sc, None)
     compute_mass_matrix["cpu"](d, mf, sc, None)
-    ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
-    _compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
+    ldl_factor["cpu", DTYPE, BATCH=1](mf, sc, None)
+    _compute_m_inv["cpu", DTYPE, BATCH=1](mf, sc, None)
 
     comptime WR = 6 * cap[MTQ5.MAX_EQUALITY]()
     comptime WJ = 6 * cap[MTQ5.MAX_EQUALITY]() * cap[MTQ5.NV]()

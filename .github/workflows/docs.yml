@@ -38,7 +38,7 @@ jobs:
         working-directory: docs-site
     steps:
       # Full checkout: check-refs resolves cited paths against the repository
-      # root, so examples/, tests/ and mojo_rl/ must be present.
+      # root, so examples/, tests/ and noeira/ must be present.
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4

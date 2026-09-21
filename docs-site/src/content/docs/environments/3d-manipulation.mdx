@@ -1,6 +1,6 @@
 ---
 title: 3D manipulation
-description: Reacher, Pusher and the Metaworld-style Sawyer arm — goal-directed manipulation on physics3d.
+description: Arms that reach, push, lift and place on physics3d — the Gymnasium-style Reacher and Pusher, the Sawyer testbed, and where the Panda, SO-101 and dm_control manipulation tasks live.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -9,12 +9,15 @@ import Papers from '~/components/Papers.astro';
 import Demo from '~/components/Demo.astro';
 import DemoGrid from '~/components/DemoGrid.astro';
 
-<Maturity level="beta" note="Sawyer diverges from Metaworld's reference physics — see the caveat below." />
+<Maturity level="beta" note="Reacher and Pusher are stable. The Sawyer port is an engine testbed, not a Metaworld reproduction." />
 
 Goal-directed arm tasks on the same `physics3d` engine as the
 [locomotion environments](/environments/3d-locomotion/). Where locomotion rewards
 forward velocity, these reward reducing a distance to a target — which makes them
 useful for testing algorithms on sparse-ish, goal-conditioned reward.
+
+This page covers the three single-task arms. Most manipulation in noeira now
+lives in larger families, listed [below](#beyond-single-task-arms).
 
 <DemoGrid min="15rem">
 	<Demo name="reacher" caption="Reacher" meta="10 obs · 2 act" />
@@ -26,8 +29,7 @@ useful for testing algorithms on sparse-ish, goal-conditioned reward.
 |---|---|---|---|
 | Reacher | 10 | 2 | 2 |
 | Pusher | 23 | 7 | 5 |
-| Sawyer | varies by task | 4 | 5 |
-
+| Sawyer reach | 10 | 4 | 5 |
 
 <Papers label="Reference">
 	<Paper
@@ -69,33 +71,22 @@ it, so reward depends on a **contact interaction** rather than just arm
 kinematics. There is a genuine exploration gap — until the arm touches the puck,
 the object-to-goal term never changes.
 
-:::note[Pusher is 23-dimensional]
-The project slide deck quotes 22. The source layout above sums to 23
-(`7 + 7 + 3 + 3 + 3`), matching Gymnasium's `Pusher-v5`.
-:::
-
-Pusher pins the goal position in a custom reset hook. That hook was dormant for a
-while due to a signature mismatch — it silently did nothing — and now runs, so
-current behaviour matches Gymnasium and older recorded results do not.
+The goal is pinned at its XML position by a custom reset hook
+(`custom_reset_cpu` in the config), matching Gymnasium's `Pusher-v5`.
 
 ## Sawyer
 
-A Metaworld-style Sawyer arm, currently exercising the reach task. Its value to
-the project is less the task than the **engine features it forced**:
+A Metaworld-style Sawyer arm on the reach task. Its value to the project is less
+the task than the **engine features it forced**:
 
 - **Mocap bodies** — a motion-captured target the arm tracks, which required
-  extending the model layout with a dedicated mocap body index and skipping it in
-  forward kinematics
+  a mocap body index in the model layout and skipping it in forward kinematics
 - **Weld constraints** — rigidly attaching the end-effector to the mocap frame
+- **Collidable meshes** under an **elliptic** friction cone
 
-Those are general capabilities now, not Sawyer-specific.
-
-:::caution[Physics diverges from Metaworld]
-Sawyer is configured with an **elliptic** friction cone, and that exposed a
-pre-existing drift in elliptic-contact handling. Trajectories do not match
-Metaworld's reference closely enough for benchmark comparison. The task runs and
-trains; treat it as an engine testbed rather than a Metaworld reproduction.
-:::
+Those are general capabilities now, not Sawyer-specific. The port covers one
+Metaworld task, so treat it as an engine testbed rather than a Metaworld
+reproduction.
 
 ## Running them
 
@@ -107,11 +98,25 @@ Reacher and Pusher wrap into the batched GPU driver like any physics3d
 environment:
 
 ```mojo
-from mojo_rl.envs.reacher import ReacherModel, ReacherConfig
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.reacher import ReacherModel, ReacherConfig
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 
 comptime BatchedEnvT = Phyics3dBatchedEnv[ReacherModel, ReacherConfig, N_ENVS]
 ```
+
+## Beyond single-task arms
+
+| Where | What | Page |
+|---|---|---|
+| DeepMind Control manipulation | the Jaco arm and hand: reach, lift, place, stack and reassemble bricks — 13 tasks, 250 steps each | [DeepMind Control](/environments/dm-control/) |
+| dm_control suite | `manipulator` (bring and insert a ball or peg) and `stacker` on a planar arm | [DeepMind Control](/environments/dm-control/) |
+| Franka Panda + LIBERO | robosuite's Panda under the OSC controller, in LIBERO's kitchen, living-room and study scenes | [LIBERO](/environments/libero/) |
+| SO-101 task families | the arm on the desk, with bricks and a bowl: reach, settle, lift, gather, cube-in-bowl | [Tasks](/tasks/), [Sim twin](/robots/sim-twin/) |
+| Robot ports | SO-ARM100, SO-ARM101 reach | [Robots](/environments/robots/) |
+
+The LIBERO and SO-101 scenes are built with the [task layer](/tasks/): a scene
+is a **family** of slots, and a task is a goal over them, so a new task is a
+text file rather than a new environment.
 
 ## What to use them for
 
@@ -126,7 +131,15 @@ discover the object–goal coupling will plateau at "arm hovers near puck".
 **Short horizons** — Reacher episodes are brief, so iteration is fast when
 debugging an actor-critic implementation.
 
+## Adding a task
+
+For a new manipulation task, write a family and a task file rather than a new
+environment config: [Writing a family](/tasks/writing-a-family/) walks through
+it. A new *robot or scene* that the task layer cannot express is a
+`Phyics3dEnvConfig` — see [Writing your own environment](/environments/custom/).
+
 ## Next
 
+- [LIBERO](/environments/libero/) — the Panda benchmark suite
+- [Tasks](/tasks/) — families, goals, placement
 - [3D locomotion](/environments/3d-locomotion/) — the larger physics3d family
-- [Writing your own environment](/environments/custom/) — adding a task

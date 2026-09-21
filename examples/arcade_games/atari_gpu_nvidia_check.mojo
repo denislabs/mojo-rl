@@ -29,14 +29,14 @@ Requires roms/pong.bin.
 from std.sys import has_accelerator
 from std.sys.info import size_of
 from std.time import perf_counter_ns
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
-from mojo_rl.envs.atari.atari_state import AtariState
-from mojo_rl.envs.atari.cpu6502 import run_frame, run_frame_cycle_accurate
-from mojo_rl.envs.atari.opcodes import OpcodeEntry, OPCODE_TABLE
-from mojo_rl.envs.atari.riot import set_action
+from noeira.envs.atari.environment import AtariEnvironment, load_rom
+from noeira.envs.atari.atari_state import AtariState
+from noeira.envs.atari.cpu6502 import run_frame, run_frame_cycle_accurate
+from noeira.envs.atari.opcodes import OpcodeEntry, OPCODE_TABLE
+from noeira.envs.atari.riot import set_action
 
 
 comptime F = 4  # ALE frame_skip (frames per step)
@@ -78,7 +78,7 @@ def atari_frames_kernel[
     if i < Int(n_envs):
         var st = states[i].copy()
         var act = actions[i]
-        var dummy = InlineArray[UInt8, 4](fill=0)
+        var dummy = Array[UInt8, 4](fill=0)
         for _ in range(Int(n_frames)):
             set_action(st, act)
             run_frame_cycle_accurate[RENDER=False, UNIFORM=UNIFORM](
@@ -157,7 +157,7 @@ def cpu_step[
 ):
     """One frame on CPU via the chosen runner variant (for self-check)."""
     var optab = materialize[OPCODE_TABLE]()
-    var dummy = InlineArray[UInt8, 4](fill=0)
+    var dummy = Array[UInt8, 4](fill=0)
     set_action(st, action)
     run_frame_cycle_accurate[RENDER=False, UNIFORM=UNIFORM](
         st, rom, rom_size, dummy.unsafe_ptr(), optab.unsafe_ptr()

@@ -1,6 +1,6 @@
 """`OwnedDLHandle.get_function` takes the RETURN type — guard the spelling.
 
-`mojo_rl/cuda/graph.mojo` resolves eleven interceptor symbols. Before Mojo 1.0
+`noeira/cuda/graph.mojo` resolves eleven interceptor symbols. Before Mojo 1.0
 the idiom was
 
     var f = lib.get_function[def (A, B) thin -> R](name)()   # trailing () unwraps

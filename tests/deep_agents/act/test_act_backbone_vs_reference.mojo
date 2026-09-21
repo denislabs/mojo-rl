@@ -25,22 +25,22 @@ separate walks and loading only the first would leave BN's statistics at their
 init while every weight matched, which reads as a small numerical disagreement.
 """
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.models.resnet18 import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.models.resnet18 import (
     RESNET18_OUT_CH,
     ResNet18Backbone,
     ResNet18OutH,
     ResNet18OutW,
 )
-from mojo_rl.nn.primitives.sinusoidal_pos_tokens import (
+from noeira.nn.primitives.sinusoidal_pos_tokens import (
     SinusoidalPos1DTokens,
     SinusoidalPos2DTokens,
 )
-from mojo_rl.deep_agents.act.refload import ListParams, LoadRefParams, RefDump
+from noeira.deep_agents.act.refload import ListParams, LoadRefParams, RefDump
 
 
 comptime REF_DIR = "/tmp/act_ref"

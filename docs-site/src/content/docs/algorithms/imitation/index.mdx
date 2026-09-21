@@ -1,0 +1,116 @@
+---
+title: Imitation learning
+description: Policies fitted to demonstrations — the shared loop from recording to a deployed policy, where demonstrations come from, and what the results are so far.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" note="Every piece of the loop runs end to end. No imitation policy has a measured success rate on the real arm yet." />
+
+Imitation learning fits a policy to recorded behaviour. There is no reward: the
+training signal is the action a demonstrator took in each observed state. It is
+the fastest route from "a person can do this task" to "the robot does
+something like it", and its failure mode is well known — a policy that has
+only seen the demonstrator's states has no data for the states its own errors
+lead to.
+
+noeira has three imitation learners and one hybrid:
+
+| Page | What it learns from | Observation | Status |
+|---|---|---|---|
+| [Behaviour cloning](/algorithms/imitation/bc/) | a store or a `.demo` file | low-dimensional state | beta |
+| [ACT](/algorithms/imitation/act/) | a LeRobot v3 dataset or a LIBERO store | two cameras + joints | beta |
+| [SmolVLA](/algorithms/imitation/smolvla/) | a LeRobot v3 dataset + a language instruction | two cameras + joints + text | experimental |
+| [HIL-SERL and DAgger](/algorithms/imitation/hil-serl/) | `.demo` files + reward, in simulation | low-dimensional state | beta |
+
+## The loop
+
+Every imitation pipeline here has the same five stages. The pages for each
+learner fill in the commands.
+
+**1. Record.** Demonstrations are captured as observation–action pairs at the
+control rate. On the real SO-101 the leader arm drives the follower and
+`examples/so101/record.mojo` writes a LeRobot v3 dataset; in simulation the
+recorders write the `.demo` format. See [Teleoperation and recording](/robots/teleop-recording/).
+
+**2. Import.** Training reads a [TrajectoryStore](/data/trajectory-store/), not
+the raw dataset. A LeRobot v3 dataset — local, from the Hugging Face Hub, or
+pulled from a project — is converted in pure Mojo (needs `curl` and `ffmpeg` on
+`PATH`; see [LeRobot datasets](/data/lerobot/)):
+
+```bash
+pixi run mojo run -I . examples/so101/act_so101_import_dataset.mojo \
+    --repo DenisLabs/record-test_20260828_092736 --height 240 --width 320
+```
+
+The image size is the learner's: ACT trains at 240×320, SmolVLA at 480×640
+because it does its own resize to 512×512.
+
+**3. Train.** Each learner holds out whole episodes, never individual rows —
+consecutive frames of one demonstration are nearly identical, so a row-wise
+split reports a validation error that means nothing. Each also prints
+baselines beside its validation number: predicting zero, the training mean, or
+(for ACT on the arm) holding the current pose. A fit that does not beat them
+has learned nothing the robot can use.
+
+**4. Evaluate.** Two different questions, answered separately:
+
+- *Open loop* — does the policy predict the recorded action from the recorded
+  observation? Cheap and hardware-free, but blind to compounding error.
+- *Closed loop* — does the task succeed when the policy's own actions choose
+  the next observation? In simulation this is a success rate
+  (`examples/libero/libero_eval_batched.mojo` on LIBERO,
+  `examples/so101/tower_policy_probe.mojo` on the SO-101 tower); on hardware it
+  needs the arm.
+
+**5. Deploy.** A checkpoint plus its normalisation file runs on the robot.
+Every deployment script is safe by default — it reads the arm and cameras and
+prints the commands it would send — and moves the follower only with `--arm`.
+See [Deployment](/robots/deployment/) and [Jetson](/robots/jetson/).
+
+:::caution[Normalisation is part of the policy]
+Every learner here standardises its inputs with statistics from the training
+data, and a checkpoint does not work without them. ACT writes `norm.json`, BC
+writes a `.norm` sidecar, SmolVLA reads the dataset's `meta/stats.json`. The
+loaders refuse a file whose widths do not match the checkpoint, because a
+policy fed unnormalised inputs produces plausible actions and a wrong result.
+:::
+
+## Where demonstrations come from
+
+| Source | Tool | Output | Used by |
+|---|---|---|---|
+| Real teleoperation, leader → follower | `examples/so101/record.mojo` (`pixi run soarm-record`) | LeRobot v3 dataset | ACT, SmolVLA |
+| Teleoperation in simulation, leader → sim arm | `examples/so101/tower_teleop_record.mojo` (`pixi run soarm-tower-record`) | `.demo` | HIL-SERL, BC |
+| Scripted IK expert in simulation | `examples/so101/tower_expert_record.mojo` (`pixi run soarm-tower-expert`) | `.demo` | HIL-SERL, BC |
+| A policy corrected by an expert or a human (DAgger) | either tower recorder with `--policy CKPT` | `.demo`, rows flagged `INTERVENED` | HIL-SERL |
+| Published LeRobot datasets | `examples/so101/act_so101_import_dataset.mojo --repo …` | TrajectoryStore | ACT, SmolVLA |
+| LIBERO's demonstrations | `pixi run libero-demo-import`, `pixi run libero-demo-rerender` | TrajectoryStore | BC, ACT |
+
+The `.demo` format and the recorders are described on the
+[HIL-SERL and DAgger](/algorithms/imitation/hil-serl/) page; the shared code is
+`noeira/deep_agents/demos/`.
+
+## Results so far
+
+These are the measured numbers, with the conditions that bound them. None of
+them is a real-arm success rate: the one real-arm success is a single
+observed episode.
+
+| What | Result | Caveat |
+|---|---|---|
+| ACT vs LeRobot's ACT, same 50 SO-101 episodes, same 40/10 split | val L1 0.3941 (≈0.414 in LeRobot's units) vs LeRobot's best 0.3726 | both plateau near the data's ceiling (≈0.38); LeRobot used 52M parameters at 480×640 |
+| ACT deployed on a Jetson Orin NX | closed loop at 30.0 Hz — 27.6 ms forward, 33.2 ms per query | a latency result; no success rate measured |
+| ACT on LIBERO `libero_goal`, 10 tasks × 20 frozen inits | 31/200 | a vision-free kNN over the same proprio words scores 144/200; not comparable to LIBERO's published tables |
+| BC MLP on LIBERO `libero_goal` | 13/200 | a low-dimensional baseline |
+| SmolVLA fine-tune | held-out flow loss 0.5509 → 0.2170 (RTX 5090, 2000 steps) | a loss, not a success rate |
+| SmolVLA on the real arm | first grasp-and-place on 20 Sep 2026: cube picked up and dropped into the bowl | roughly 20% of attempts by informal count — not a measured rate; more and better data needed |
+| SmolVLA control loop on the arm | query 2329 → 491 ms, 17.4 → 27.2 Hz, handover jump 63.6° → 15.1° | latency and smoothness, not success |
+| HIL-SERL on the simulated SO-101 tower (`lift`) | lifts 6 of 8 fresh placements at 25k steps | simulation only; one run |
+
+## Next
+
+- [Behaviour cloning](/algorithms/imitation/bc/) — the baseline every other learner has to beat
+- [ACT](/algorithms/imitation/act/) — the image policy that runs on the arm
+- [HIL-SERL and DAgger](/algorithms/imitation/hil-serl/) — when imitation alone parks short of the goal
+- [Robots](/robots/) — the SO-101 rig these policies are for

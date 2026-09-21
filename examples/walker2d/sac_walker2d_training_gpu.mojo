@@ -40,13 +40,13 @@ from max.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac import SAC
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.walker2d.walker2d_config import Walker2dConfig
 
 
 # =============================================================================
@@ -105,8 +105,8 @@ def main() raises:
     with DeviceContext() as ctx:
         # ─── Logger (remote) ─────────────────────────────────────────────
         var env_vars = load_dotenv()
-        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-        var url = env_vars.get("RL_MONITOR_URL", "")
+        var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+        var url = env_vars.get("NOEIRA_CLOUD_URL", "")
 
         var logger = RemoteLogger(
             server_url=url,
@@ -178,7 +178,7 @@ def main() raises:
             # only stalls the GPU pipeline ~1/32 as often (returns are drained
             # exactly at every print/diag boundary, so logged values are fresh).
             episode_sync_every=32,
-            # Auto-save the SAC weights+optimizers every CHECKPOINT_EVERY
+            # Auto-save the SAC weights (no optimizer state) every CHECKPOINT_EVERY
             # env-steps (and once more at the end). Safe alongside the
             # CUDA-graph capture above — the save is host-side D2H between
             # iterations. Resume/eval later via `agent.load(CHECKPOINT_PATH)`.

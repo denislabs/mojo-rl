@@ -12,14 +12,14 @@ Run: pixi run mojo run -I . tests/nn/test_slice_concat_add_bf16_smoke.mojo
 
 from std.math import isnan, abs
 from std.testing import assert_true
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.tensor import Tensor, TensorImpl
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.primitives.slice import Slice
-from mojo_rl.nn.primitives.concat import Concat
-from mojo_rl.nn.primitives.add import Add
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.tensor import Tensor, TensorImpl
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.primitives.slice import Slice
+from noeira.nn.primitives.concat import Concat
+from noeira.nn.primitives.add import Add
 
 comptime BF16 = DType.bfloat16
 

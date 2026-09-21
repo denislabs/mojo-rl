@@ -26,8 +26,8 @@ MODELS = [
     "references/mujoco_menagerie-main/franka_fr3_v2/scene.xml",
     "references/mujoco_menagerie-main/aloha/scene.xml",
     "references/mujoco_menagerie-main/unitree_go2/scene.xml",
-    "mojo_rl/envs/ant/assets/ant.xml",
-    "mojo_rl/envs/humanoid/assets/humanoid.xml",
+    "noeira/envs/ant/assets/ant.xml",
+    "noeira/envs/humanoid/assets/humanoid.xml",
 ]
 
 

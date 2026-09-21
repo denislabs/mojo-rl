@@ -15,10 +15,10 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_dreamerv3_wm_graph_storage.mo
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.deep_agents.dreamerv3.wm import WMLossGraph
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Deterministic
+from noeira.deep_agents.dreamerv3.wm import WMLossGraph
 
 
 comptime DETER = 8

@@ -22,9 +22,9 @@ Run:
 from std.math import abs
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.envs.atari import AtariEnv, load_rom
-from mojo_rl.envs.atari.games.registry import AtariGame
-from mojo_rl.nn.constants import LAYOUT_NHWC
+from noeira.envs.atari import AtariEnv, load_rom
+from noeira.envs.atari.games.registry import AtariGame
+from noeira.nn.constants import LAYOUT_NHWC
 
 
 comptime DT = DType.float32

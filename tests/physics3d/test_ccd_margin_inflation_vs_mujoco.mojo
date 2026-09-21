@@ -62,16 +62,16 @@ noted because the arms below would not catch it.
 Run: pixi run mojo run -I . tests/physics3d/test_ccd_margin_inflation_vs_mujoco.mojo
 """
 
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_auto
-from mojo_rl.physics3d.studio.stepping import STUDIO_DT
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.broadphase_sap import detect_contacts_auto
+from noeira.physics3d.studio.stepping import STUDIO_DT
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE, CONTACT_IDX_DIST, CONTACT_IDX_NY, CONTACT_IDX_POS_Y,
     META_IDX_NUM_CONTACTS,
 )

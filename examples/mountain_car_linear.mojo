@@ -23,17 +23,17 @@ Linear function approximation:
 where φ(s) is the feature vector extracted from state s.
 """
 
-from mojo_rl.core.linear_fa import (
+from noeira.core.linear_fa import (
     PolynomialFeatures,
     RBFFeatures,
     make_grid_rbf_centers,
     make_mountain_car_poly_features,
 )
-from mojo_rl.agents.linear_qlearning import (
+from noeira.agents.linear_qlearning import (
     LinearQLearningAgent,
     LinearSARSALambdaAgent,
 )
-from mojo_rl.envs import MountainCarEnv
+from noeira.envs import MountainCarEnv
 
 
 def train_mountain_car_poly(

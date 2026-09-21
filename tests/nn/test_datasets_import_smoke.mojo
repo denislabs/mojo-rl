@@ -1,7 +1,7 @@
 """nn.datasets move smoke — import-surface compile check.
 
-Validates that `mojo_rl/nn/datasets/` parses + type-checks end to end after
-the move from `mojo_rl/nn/datasets/`: all four loaders (MNIST, CIFAR10,
+Validates that `noeira/nn/datasets/` parses + type-checks end to end after
+the move from `noeira/nn/datasets/`: all four loaders (MNIST, CIFAR10,
 TinyShakespeare, LeWM-PushT) plus the `CIFAR10CropFlipAugmenter` re-export
 (which actually lives in `nn.training.augmenter`). No data is loaded — the
 import + a trivial `to_one_hot` instantiation is enough to force compilation of
@@ -10,7 +10,7 @@ the package without needing MNIST/CIFAR assets on disk.
 Run:  pixi run mojo run -I . tests/nn/test_datasets_import_smoke.mojo
 """
 
-from mojo_rl.nn.datasets import (
+from noeira.nn.datasets import (
     MNIST,
     CIFAR10,
     CIFAR10CropFlipAugmenter,

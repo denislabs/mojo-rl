@@ -16,14 +16,14 @@ from std.sys.info import size_of
 from std.math import abs
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.training.atari_gpu_env import AtariGpuBatchedEnv
-from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
-from mojo_rl.envs.atari.atari_state import AtariState
-from mojo_rl.envs.atari.cpu6502 import run_frame_cycle_accurate
-from mojo_rl.envs.atari.opcodes import OpcodeEntry, OPCODE_TABLE
-from mojo_rl.envs.atari.riot import set_action
-from mojo_rl.envs.atari.games import PongDef
+from noeira.nn.constants import DT
+from noeira.deep_agents.training.atari_gpu_env import AtariGpuBatchedEnv
+from noeira.envs.atari.environment import AtariEnvironment, load_rom
+from noeira.envs.atari.atari_state import AtariState
+from noeira.envs.atari.cpu6502 import run_frame_cycle_accurate
+from noeira.envs.atari.opcodes import OpcodeEntry, OPCODE_TABLE
+from noeira.envs.atari.riot import set_action
+from noeira.envs.atari.games import PongDef
 
 
 comptime N = 64
@@ -42,7 +42,7 @@ def cpu_step(
     """One env step on CPU (mirrors the GPU step kernel). Returns (reward, done)."""
     var ale = PongDef.map_action(action_idx)
     var prev = Int(st.score)
-    var dummy = InlineArray[UInt8, 4](fill=0)
+    var dummy = Array[UInt8, 4](fill=0)
     for _ in range(FRAME_SKIP):
         set_action(st, ale)
         run_frame_cycle_accurate[RENDER=False](

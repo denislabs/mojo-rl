@@ -1,0 +1,42 @@
+# physics3d live-oracle gates — `pixi run test-physics3d-mujoco`.
+#
+# Every file here imports the pixi `mujoco` (3.12.0) or dm_control and
+# compares against it AT RUN TIME; none is in `smoke.txt` because CI has no
+# `references/`. Run it locally after touching physics3d. ~7 min compile per
+# file: budget two hours. (AUD-50: before this manifest no task ran any
+# `*_vs_mujoco` gate.)
+#
+# The audit's own gates (docs/PHYSICS3D_MUJOCO_312_AUDIT.md §3):
+tests/physics3d/test_silent_attrs_are_loud.mojo
+tests/physics3d/test_joint_margin_and_direct_solref_vs_mujoco.mojo
+tests/physics3d/test_equality_active_pair_class_frame_vs_mujoco.mojo
+tests/physics3d/test_weld_root_and_mesh_margin_vs_mujoco.mojo
+tests/physics3d/test_hfield_margin_vs_mujoco.mojo
+tests/physics3d/test_ball_spring_and_tendon_damping_vs_mujoco.mojo
+tests/physics3d/test_implicitfast_free_body_vs_mujoco.mojo
+tests/physics3d/test_sensor_table_vs_mujoco.mojo
+# Parser
+tests/physics3d/test_limit_solref_per_joint.mojo
+tests/physics3d/test_attach_vs_mujoco.mojo
+tests/physics3d/test_unmodelled_actuators_are_counted.mojo
+tests/physics3d/test_ctrllimited_vs_mujoco.mojo
+# Collision
+tests/physics3d/test_box_box_sweep.mojo
+tests/physics3d/test_box_box_degenerate_stack.mojo
+tests/physics3d/test_contact_pair_vs_mujoco.mojo
+tests/physics3d/test_mesh_manifold_vs_mujoco.mojo
+tests/physics3d/test_capsule_capsule_manifold_vs_mujoco.mojo
+# Constraints / solver / integrators
+tests/physics3d/test_connect_equality_vs_mujoco.mojo
+tests/physics3d/test_weld_rows_pyramidal_vs_mujoco.mojo
+tests/physics3d/test_fixed_tendon_limit_vs_mujoco.mojo
+tests/physics3d/test_spatial_tendon_transmission_vs_mujoco.mojo
+tests/physics3d/test_humanoid_limits_fields_vs_mujoco.mojo
+tests/physics3d/test_ball_joint_vs_mujoco.mojo
+tests/physics3d/test_newton_warmstart_vs_mujoco.mojo
+# Ray + sensors
+tests/physics3d/test_ray_model_vs_mujoco.mojo
+tests/physics3d/test_rangefinder_vs_mujoco.mojo
+tests/physics3d/test_touch_zone_types_vs_mujoco.mojo
+tests/physics3d/test_sensordata_vs_mujoco.mojo
+tests/physics3d/test_env_site_literals_match_sensors.mojo

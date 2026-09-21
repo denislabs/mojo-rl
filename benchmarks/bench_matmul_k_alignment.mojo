@@ -22,7 +22,7 @@ width of TD-MPC2's dynamics trunk, reward trunk and every Q head. Any
 
 Padding K costs something when it does not help: a copy kernel and a padded
 weight slab per `Linear` whose `IN_ % 16 != 0`. So the padding policy in
-`mojo_rl/nn/primitives/linear.mojo` should be keyed on a MEASUREMENT, not on a
+`noeira/nn/primitives/linear.mojo` should be keyed on a MEASUREMENT, not on a
 guess, and not on the platform. **The number that decides it is the RATIO**
 (unaligned time / padded time) — it is backend-independent, unlike GFLOPS,
 which needs a per-device peak to interpret.

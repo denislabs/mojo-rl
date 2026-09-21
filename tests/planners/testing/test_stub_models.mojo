@@ -10,7 +10,7 @@ Usage:
 from std.math import abs as math_abs
 from std.testing import assert_equal, assert_true
 
-from mojo_rl.planners.testing import (
+from noeira.planners.testing import (
     IdentityDynamics,
     GoalReachReward,
     LinearQuadratic1D,

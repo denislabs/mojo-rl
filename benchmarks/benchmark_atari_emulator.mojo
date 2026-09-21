@@ -13,8 +13,8 @@ Requires roms/pong.bin.
 
 from std.time import perf_counter_ns
 
-from mojo_rl.envs.atari import AtariEnv, load_rom
-from mojo_rl.envs.atari.games.registry import AtariGame
+from noeira.envs.atari import AtariEnv, load_rom
+from noeira.envs.atari.games.registry import AtariGame
 
 
 comptime RAM_STEPS = 2_000

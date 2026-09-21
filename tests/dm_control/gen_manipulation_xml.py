@@ -9,7 +9,7 @@ warnings.filterwarnings('ignore')
 sys.path.insert(0, 'tests/dm_control')
 import manipulation_ref as ref
 
-ASSET_DIR = 'mojo_rl/envs/dm_control/assets/jaco/'
+ASSET_DIR = 'noeira/envs/dm_control/assets/jaco/'
 
 
 def emit(task, var_name, out_path, title):
@@ -36,7 +36,7 @@ is the source of truth. Regenerate with the generator that produced it; do not
 hand-edit.
 
 One edit is applied to the export, and only one:
-  * `file="<hash>.stl"` -> `file="mojo_rl/envs/dm_control/assets/jaco/<hash>.stl"`,
+  * `file="<hash>.stl"` -> `file="noeira/envs/dm_control/assets/jaco/<hash>.stl"`,
     because a comptime model is loaded from the repo root rather than from the
     export directory. The content-hashed basenames are PyMJCF's own.
 

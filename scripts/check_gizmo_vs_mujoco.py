@@ -50,16 +50,16 @@ DUMPER = "tests/physics3d/dump_gizmo_frames.mojo"
 # orientations as `euler`; so_arm101 is meshes on rotated bodies (the model
 # the outline bug was found on); humanoid mixes all three.
 MODELS = [
-    "mojo_rl/envs/ant/assets/ant.xml",
-    "mojo_rl/envs/swimmer/assets/swimmer.xml",
-    "mojo_rl/envs/half_cheetah/assets/half_cheetah.xml",
-    "mojo_rl/envs/walker2d/assets/walker2d.xml",
-    "mojo_rl/envs/hopper/assets/hopper.xml",
-    "mojo_rl/envs/humanoid/assets/humanoid.xml",
-    "mojo_rl/envs/reacher/assets/reacher.xml",
-    "mojo_rl/envs/robots/assets/so_arm101.xml",
-    "mojo_rl/envs/dm_control/assets/cheetah.xml",
-    "mojo_rl/envs/dm_control/assets/finger.xml",
+    "noeira/envs/ant/assets/ant.xml",
+    "noeira/envs/swimmer/assets/swimmer.xml",
+    "noeira/envs/half_cheetah/assets/half_cheetah.xml",
+    "noeira/envs/walker2d/assets/walker2d.xml",
+    "noeira/envs/hopper/assets/hopper.xml",
+    "noeira/envs/humanoid/assets/humanoid.xml",
+    "noeira/envs/reacher/assets/reacher.xml",
+    "noeira/envs/robots/assets/so_arm101.xml",
+    "noeira/envs/dm_control/assets/cheetah.xml",
+    "noeira/envs/dm_control/assets/finger.xml",
 ]
 
 POS_TOL = 2e-6   # the gizmo matrix crosses the FFI as float32
@@ -140,7 +140,7 @@ def main():
     os.chdir(ROOT)
 
     exe = os.path.join(
-        os.environ.get("TMPDIR", "/tmp"), "mrl_dump_gizmo_frames"
+        os.environ.get("TMPDIR", "/tmp"), "nra_dump_gizmo_frames"
     )
     print("building the dumper once ...")
     build = subprocess.run(

@@ -39,21 +39,21 @@ Run:
 from std.math import abs, sqrt
 from std.random import random_float64, seed
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU, Tanh
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU, Tanh
 
-from mojo_rl.data.column import ColumnSpec
-from mojo_rl.data.store import TrajectoryStore, TrajectoryStoreWriter
-from mojo_rl.data.resident import ResidentColumn
-from mojo_rl.data.sampler import UniformSampler
+from noeira.data.column import ColumnSpec
+from noeira.data.store import TrajectoryStore, TrajectoryStoreWriter
+from noeira.data.resident import ResidentColumn
+from noeira.data.sampler import UniformSampler
 
-from mojo_rl.envs.dm_control.point_mass import DMPointMassEasy
+from noeira.envs.dm_control.point_mass import DMPointMassEasy
 
-from mojo_rl.deep_agents.fb.trainer import FBTrainer
-from mojo_rl.deep_agents.fb import sample_z, z_from_reward
+from noeira.deep_agents.fb.trainer import FBTrainer
+from noeira.deep_agents.fb import sample_z, z_from_reward
 
 
 comptime NQ: Int = 2
@@ -73,7 +73,7 @@ comptime EVAL_LEN: Int = 200
 comptime SEED: Int = 20260805
 
 comptime STORE_PATH: StaticString = (
-    "/tmp/mojo_rl_fb_point_mass_milestone1.h5"
+    "/tmp/noeira_fb_point_mass_milestone1.h5"
 )
 
 comptime F_IN = OBS + NACT + D

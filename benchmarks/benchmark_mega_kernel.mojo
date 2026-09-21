@@ -19,12 +19,12 @@ from std.time import perf_counter_ns
 from std.math import sqrt
 from std.random import random_float64, seed
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
-from mojo_rl.core.fmt import fit
+from noeira.core.fmt import fit
 
 
 # =============================================================================
@@ -107,8 +107,8 @@ def fused_dqn_train_kernel[
     # =========================================================================
 
     # Hidden layer: h = ReLU(obs @ W1 + b1)
-    var h_pre = InlineArray[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0))
-    var h = InlineArray[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0))
+    var h_pre = Array[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0))
+    var h = Array[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0))
 
     for hid in range(HIDDEN_DIM):
         var sum_val = rebind[Scalar[dtype]](b1[hid])
@@ -122,7 +122,7 @@ def fused_dqn_train_kernel[
         )  # ReLU
 
     # Output layer: Q = h @ W2 + b2
-    var Q = InlineArray[Scalar[dtype], OUT_DIM](fill=Scalar[dtype](0))
+    var Q = Array[Scalar[dtype], OUT_DIM](fill=Scalar[dtype](0))
     for j in range(OUT_DIM):
         var sum_val = rebind[Scalar[dtype]](b2[j])
         for k in range(HIDDEN_DIM):
@@ -133,7 +133,7 @@ def fused_dqn_train_kernel[
     # Step 2: Forward pass for next observation -> Q(s') (for target)
     # =========================================================================
 
-    var h_next = InlineArray[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0))
+    var h_next = Array[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0))
 
     for hid in range(HIDDEN_DIM):
         var sum_val = rebind[Scalar[dtype]](b1[hid])
@@ -193,12 +193,12 @@ def fused_dqn_train_kernel[
     )  # Scale by batch
 
     # dL/dh[k] = sum_j dL/dQ[j] * W2[k,j] = dL_dQ * W2[k, action]
-    var dL_dh = InlineArray[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0))
+    var dL_dh = Array[Scalar[dtype], HIDDEN_DIM](fill=Scalar[dtype](0))
     for k in range(HIDDEN_DIM):
         dL_dh[k] = dL_dQ * rebind[Scalar[dtype]](W2[k * OUT_DIM + action])
 
     # ReLU backward: dL/dh_pre[k] = dL/dh[k] if h_pre[k] > 0 else 0
-    var dL_dh_pre = InlineArray[Scalar[dtype], HIDDEN_DIM](
+    var dL_dh_pre = Array[Scalar[dtype], HIDDEN_DIM](
         fill=Scalar[dtype](0)
     )
     for k in range(HIDDEN_DIM):

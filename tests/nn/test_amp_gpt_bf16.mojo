@@ -20,14 +20,14 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_amp_gpt_bf16.mojo
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.datasets import CharTokenizer, train_val_split
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.models.gpt import (
+from noeira.nn.datasets import CharTokenizer, train_val_split
+from noeira.nn.constants import DT
+from noeira.nn.models.gpt import (
     GPTDropTied, gpt_scale_residual_proj, gpt_wire_tie,
 )
-from mojo_rl.nn.optimizer.adam import AdamW
-from mojo_rl.nn.training.autoregressive_trainer import AutoregressiveTrainer
-from mojo_rl.nn.core.initializer import Normal
+from noeira.nn.optimizer.adam import AdamW
+from noeira.nn.training.autoregressive_trainer import AutoregressiveTrainer
+from noeira.nn.core.initializer import Normal
 
 
 comptime VOCAB = 4  # "abcd"

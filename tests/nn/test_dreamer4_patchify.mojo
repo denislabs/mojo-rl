@@ -8,8 +8,8 @@ from std.memory import alloc
 from std.math import abs
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.dreamer4.patchify import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.dreamer4.patchify import (
     temporal_patchify, temporal_unpatchify,
 )
 

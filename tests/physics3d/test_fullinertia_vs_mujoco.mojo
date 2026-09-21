@@ -52,12 +52,12 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.fields.model import Model
-from mojo_rl.physics3d.fields.dims import Dims
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.fields.model import Model
+from noeira.physics3d.fields.dims import Dims
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_IXX,
@@ -247,7 +247,7 @@ def test_fullinertia_matches_mujoco() raises:
             worst_val_body = b
 
         # MuJoCo stores (w, x, y, z); we store (x, y, z, w).
-        var mj_q = InlineArray[Float64, 4](fill=0.0)
+        var mj_q = Array[Float64, 4](fill=0.0)
         mj_q[0] = Float64(py=m.body_iquat[b][1])
         mj_q[1] = Float64(py=m.body_iquat[b][2])
         mj_q[2] = Float64(py=m.body_iquat[b][3])
@@ -323,7 +323,7 @@ def test_diagonal_path_is_not_sorted() raises:
     var mf = _build_model()
     var base = bd * MODEL_BODY_SIZE
 
-    var ours = InlineArray[Float64, 3](fill=0.0)
+    var ours = Array[Float64, 3](fill=0.0)
     for k in range(3):
         ours[k] = mf.bodies.data[base + BODY_IDX_IXX + k]
 

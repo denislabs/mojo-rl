@@ -3,7 +3,7 @@ Python reference ``lewm_pusht_python_ref.py`` (which replicates
 ``stable_worldmodel.data.dataset.Dataset.__getitem__`` using only
 ``h5py`` + ``numpy``).
 
-Uses the synthetic fixture at ``/tmp/mojo_rl_hdf5_fixture.h5`` so we do
+Uses the synthetic fixture at ``/tmp/noeira_hdf5_fixture.h5`` so we do
 not have to download 13 GB to validate equivalence. The fixture shares
 the same on-disk schema as the real ``pusht_expert_train.h5``.
 
@@ -14,10 +14,10 @@ Setup:
 
 from std.python import Python, PythonObject
 from std.testing import assert_equal, assert_true
-from mojo_rl.nn.datasets import LewmPushTExpert, LewmPushTWindow
+from noeira.nn.datasets import LewmPushTExpert, LewmPushTWindow
 
 
-comptime FIXTURE_PATH = "/tmp/mojo_rl_hdf5_fixture.h5"
+comptime FIXTURE_PATH = "/tmp/noeira_hdf5_fixture.h5"
 
 
 def _import_ref() raises -> PythonObject:

@@ -15,22 +15,22 @@ Usage:
     pixi run -e nvidia mojo run -I . examples/board_games/tictactoe_alphazero_v2.mojo
     pixi run -e apple  mojo run -I . examples/board_games/tictactoe_alphazero_v2.mojo
 
-With no `RL_MONITOR_URL` in the environment the RemoteLogger is a silent no-op,
+With no `NOEIRA_CLOUD_URL` in the environment the RemoteLogger is a silent no-op,
 so this runs anywhere; the per-report lines still print to stdout.
 """
 
 from std.memory import Pointer
 from max.gpu.host import DeviceContext
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
-from mojo_rl.deep_agents.alphazero.agent import AlphaZeroAgent
-from mojo_rl.deep_agents.zero.symmetries import D4SquareAugmenter
-from mojo_rl.deep_agents.zero.evaluators import (
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.deep_agents.alphazero.nets import AZMLPNet
+from noeira.deep_agents.alphazero.agent import AlphaZeroAgent
+from noeira.deep_agents.zero.symmetries import D4SquareAugmenter
+from noeira.deep_agents.zero.evaluators import (
     RandomOpponent, GPUMinimaxTicTacToe,
 )
-from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
+from noeira.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
 
 
 def main() raises:
@@ -39,8 +39,8 @@ def main() raises:
 
     # ── Logger setup ────────────────────────────────────────────
     var env_vars = load_dotenv()
-    var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-    var url = env_vars.get("RL_MONITOR_URL", "")
+    var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+    var url = env_vars.get("NOEIRA_CLOUD_URL", "")
 
     var logger = RemoteLogger(
         server_url=url,

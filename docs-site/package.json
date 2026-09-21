@@ -1,15 +1,16 @@
 {
-  "name": "mojo-rl-docs",
+  "name": "noeira-docs",
   "type": "module",
   "version": "0.0.1",
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
-    "build": "pnpm run check:refs && astro build && pnpm run check:og",
+    "build": "pnpm run check:refs && astro build && cp root/* dist/ && pnpm run check:og",
     "preview": "astro preview",
     "check:refs": "node scripts/check-refs.mjs",
     "astro": "astro",
     "deploy": "pnpm run build && wrangler deploy",
+    "deploy:redirect": "wrangler deploy --config redirect/wrangler.jsonc",
     "preview:worker": "pnpm run build && wrangler dev",
     "check:og": "node scripts/check-og.mjs"
   },

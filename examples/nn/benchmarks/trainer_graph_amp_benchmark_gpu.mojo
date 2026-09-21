@@ -2,7 +2,7 @@
 
 Measures per-step train throughput of the storage `nn` `Trainer` and how the AMP
 policy (`NoAMP` = all fp32 vs `Bf16Compute` = bf16 matmul compute, fp32 master
-weights / accumulators — `mojo_rl/nn/storage/core/amp.mojo`) pays off as the
+weights / accumulators — `noeira/nn/storage/core/amp.mojo`) pays off as the
 matmuls grow.
 
 Two sweeps, all on one fixed MNIST mini-batch (uploaded into the trainer's
@@ -39,19 +39,19 @@ from std.random import seed
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.datasets import MNIST
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.amp import AMPPolicy, NoAMP, Bf16Compute
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.primitives.conv2d import Conv2D
-from mojo_rl.nn.primitives.flatten import Flatten
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.training.trainer import Trainer
-from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
+from noeira.nn.datasets import MNIST
+from noeira.nn.constants import DT
+from noeira.nn.core.module import Module
+from noeira.nn.core.amp import AMPPolicy, NoAMP, Bf16Compute
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.nn.primitives.conv2d import Conv2D
+from noeira.nn.primitives.flatten import Flatten
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.training.trainer import Trainer
+from noeira.cuda import CUDAGraph, maybe_capture_replay
 
 
 comptime IN_DIM = 784

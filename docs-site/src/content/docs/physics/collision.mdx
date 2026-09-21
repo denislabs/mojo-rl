@@ -1,0 +1,164 @@
+---
+title: Collision
+description: How physics3d finds contacts — broadphase, filtering, analytic pairs, MuJoCo 3.12's box-box, native GJK/EPA, multi-contact manifolds, mesh hulls and heightfields.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" note="Box and mesh pairs with a nonzero margin keep one contact where MuJoCo perturbs for more. SDF and flex collision are not modelled." />
+
+Collision decides which contacts exist and where, before the constraint solver
+sees any of them. Every narrow-phase routine is written once and shared by the
+CPU path and both GPU kernels. The reference is MuJoCo 3.12.0's
+`engine_collision_*.c`, and the choice of algorithm follows it pair by pair:
+where MuJoCo uses a closed form, so does this engine; where MuJoCo runs its
+native convex solver, so does this one.
+
+## The stages
+
+| Stage | What happens | Where |
+|---|---|---|
+| Broadphase | sweep-and-prune over geom bounds once a model has 16 or more geoms (`SAP_THRESHOLD`), all pairs below that | `collision/broadphase_sap.mojo` |
+| Filtering | `contype` / `conaffinity`, `<exclude>`, `<pair>` bypass, the same-body and weld-parent rules, `<flag filterparent>`, a bounding-sphere reject | `collision/contact_detection.mojo` |
+| Narrow phase | the pair table below | `collision/collision_primitives.mojo`, `collision/gjk.mojo` |
+| Contact parameters | priority, max condim, max friction, solref / solimp mixing, `margin` and `gap` summed, detection at `margin + gap` and force at `margin` | `collision/contact_detection.mojo` |
+| Ordering | contacts sorted by body pair as MuJoCo orders them | `collision/contact_order.mojo` |
+
+## The pair table
+
+| Pair | Method | Contacts |
+|---|---|---|
+| plane × sphere, capsule, cylinder, box, ellipsoid | analytic | as in MuJoCo |
+| plane × mesh | the hull vertices below the plane | up to 3 |
+| sphere / capsule × sphere, capsule, box | analytic | parallel capsules and capsule × box give 2 |
+| **box × box** | a port of MuJoCo 3.12's `mjc_BoxBox` — the separating-axis rewrite, not the older ODE-derived collider | a manifold |
+| anything × ellipsoid | native GJK/EPA with MuJoCo's ellipsoid support function | 1 |
+| capsule or cylinder × cylinder or mesh; cylinder × box | GJK/EPA, then **multiccd** perturbation | up to 5 |
+| box × mesh, mesh × mesh | GJK/EPA, then the **polygon-clip manifold** | up to 4 |
+| heightfield × any convex | one triangular prism per half-cell, each collided as a convex | up to 50 |
+
+Primitive pairs have closed-form tests; everything else goes through the
+native convex path.
+
+## GJK, EPA and multi-contact
+
+`collision/gjk.mojo` and `collision/epa.mojo` port MuJoCo's native CCD
+(`engine_collision_gjk.c`): GJK for distance and intersection, EPA's polytope
+with the candidate-list face selection and horizon walk MuJoCo uses, and the
+shrink-and-inflate treatment of spheres and capsules. The older libccd path is
+not implemented.
+
+A convex solver returns one point, and one point cannot hold a flat face at
+rest — the body pivots about it. MuJoCo has two answers and both are here:
+
+- **Perturbation** (`collision/multi_ccd.mojo`) — rerun the query with the two
+  geoms tilted by ±1e-3 rad about the axes perpendicular to the first normal,
+  keeping the new points that are distinct. Used for the cylinder pairs
+  and for capsules against meshes.
+- **Polygon clip** (`collision/native_multicontact.mojo`) — read which face of
+  each geom the EPA witness came from, recover that face as a polygon, and clip
+  one against the other. Used for box and mesh against mesh when the pair's
+  margin is zero. The face and edge alignment tolerances are 3.12's, which are
+  wider than 3.10's.
+
+`<flag multiccd>` is read and honoured.
+
+## Meshes
+
+A mesh collides through its **convex hull**. At load the parser deduplicates
+the vertices, builds the hull, merges coplanar triangles into polygons and
+builds the vertex adjacency the support function hill-climbs.
+
+| Piece | File |
+|---|---|
+| Exact incremental hull, robust orientation predicates | `collision/convex_hull.mojo`, `collision/robust_predicates.mojo` |
+| MuJoCo's facet order, from qhull | `collision/qhull_native.mojo` |
+| Triangles merged into polygons (`MakePolygons`) | `collision/mesh_polygons.mojo` |
+| On-disk cache of the whole mesh build | `collision/hull_cache.mojo` |
+
+**The qhull shim.** MuJoCo does not compute hulls itself: it calls qhull and
+walks the facets in qhull's order, and that order decides every merged
+polygon's normal. Reproducing the vertex set is not enough — the normals then
+land outside the tolerance multi-contact tests against. So the faithful port is
+a call into qhull, through a small C shim loaded at run time:
+
+```bash
+pixi run build-qhull
+```
+
+Any model with a collidable mesh needs it. A binary built with `mojo build`
+needs `libnra_qhull.dylib` (`.so` on Linux) beside it, or `NOEIRA_QHULL_LIB`
+pointing at it.
+
+**The hull cache.** Building mesh collision geometry is the slowest part of a
+model load — about 19 s for SO-ARM101's thirteen meshes. The result is cached
+under `.cache/physics3d_hulls`, keyed by the mesh file's content hash, the mesh
+frame and the float type. `PHYSICS3D_HULL_CACHE=0` disables it;
+`PHYSICS3D_HULL_CACHE_DIR` moves it. A bad or stale entry falls back to a
+rebuild, so the cache affects load time only.
+
+:::caution[`NMESH_VERTS = 0` means meshes do not collide]
+An environment config's `NMESH_VERTS` is the hull-vertex capacity compiled into
+the collision kernel. It is not a size hint: at zero, mesh geoms produce no
+contacts. The default is zero because most models' meshes are visual only
+(`contype=0 conaffinity=0`). Set it for a model whose meshes collide; the
+builder raises with the number it needs if the value is too small.
+:::
+
+The **mesh BVH** built at load (`parser/mesh_bvh_build.mojo`) serves ray
+casting, not collision: contact queries go through the hull.
+
+## Heightfields
+
+`collision/hfield_convex.mojo` ports `mjc_ConvexHField`. The other geom is
+moved into the field's frame, its bounding box there selects a sub-rectangle of
+the grid, and one triangular prism per half-cell is collided against it with
+the ordinary convex query, sliding a six-vertex window across the row as MuJoCo
+does. Heightfields load from files or inline grids. The dm_control
+`quadruped_escape` task rewrites its heightfield at every reset.
+
+## CPU and GPU
+
+| Path | Where it runs |
+|---|---|
+| Per-environment collision | CPU, and one thread per environment on Metal and CUDA |
+| Block collision kernel | NVIDIA: 32 threads per environment, candidates grouped by pair type so a warp runs one routine. Models with a heightfield, and environments with a pair of eight or more points, go to the serial kernel. |
+| Mesh hull build, qhull, cache | host, once per load |
+
+The block kernel is bit-identical to the serial one on its benchmark
+(`benchmarks/physics3d_gpu/bench_g1_collision.mojo`). On Metal the serial
+kernel is the production path.
+
+## Known differences from MuJoCo 3.12
+
+| Item | Difference |
+|---|---|
+| Box or mesh against mesh with `margin + gap > 0` | one contact; MuJoCo runs the perturbation loop for up to five |
+| Per-pair contact caps | one global `MAX_CONTACTS` budget per model rather than `mj_maxContact` per pair |
+| `<flag nativeccd="disable">` | printed at load; the native solver is still used |
+| SDF and flex geoms | not modelled; an SDF geom is loaded as a sphere, with a printed warning |
+| `geom adhesion`, `surfacevel` | counted and printed at load, not applied |
+
+## Gates
+
+The collision gates compare against the live MuJoCo runtime:
+
+```bash
+pixi run mojo run -I . tests/physics3d/test_box_box_sweep.mojo
+pixi run mojo run -I . tests/physics3d/test_mesh_manifold_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_contact_pair_vs_mujoco.mojo
+pixi run mojo run -I . tests/physics3d/test_hfield_vs_mujoco.mojo
+```
+
+GPU parity for the same routines is held by
+`tests/physics3d/test_mesh_manifold_gpu_parity.mojo`,
+`tests/physics3d/test_box_box_sap_gpu_parity.mojo` and
+`tests/physics3d/test_contact_pair_gpu_parity.mojo`. The qhull shim has its own
+smoke test, `tests/physics3d/test_qhull_shim.mojo`, and the cache is held by
+`tests/physics3d/test_hull_cache.mojo`.
+
+## Next
+
+- [Constraints and tendons](/physics/constraints/) — what the solver does with the contacts
+- [3D physics](/physics/physics3d/) — the rest of the pipeline
+- [Validation](/physics/validation/) — how the gates are organised

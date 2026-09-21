@@ -16,19 +16,19 @@ logits (grad_inputs[0]). This test is the critical correctness check.
   2. CPU vs GPU parity (forward + vjp), max abs diff < 1e-4.
 
 Run:
-  rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . tests/nn/test_onehot_kl_storage.mojo
+  rm -f noeira.mojoc && pixi run -e apple mojo run -I . tests/nn/test_onehot_kl_storage.mojo
 """
 
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Zero
-from mojo_rl.deep_agents.dreamerv3.onehot_kl import OneHotKLLoss
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Zero
+from noeira.deep_agents.dreamerv3.onehot_kl import OneHotKLLoss
 
 
 comptime STOCH = 3

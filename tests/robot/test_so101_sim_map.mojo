@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | Real SO-101 joints -> simulated SO-101 joints
 # +--------------------------------------------------------------------------+ #
-"""Gate for `mojo_rl/robot/so101/sim_map.mojo`, with no arm on the desk.
+"""Gate for `noeira/robot/so101/sim_map.mojo`, with no arm on the desk.
 
 The calibration below is the REAL one, read off this follower's servo EEPROM
 on 2026-08-25 (`pixi run soarm-diag`), so the numbers under test are the ones
@@ -25,15 +25,15 @@ Run: pixi run mojo run -I . tests/robot/test_so101_sim_map.mojo
 from std.math import abs
 from std.testing import assert_almost_equal, assert_equal, assert_true, assert_false, TestSuite
 
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
-from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
-from mojo_rl.robot.so101.arm import GRIPPER, SO101Calibration, SO101_N
-from mojo_rl.robot.so101.sim_map import SimJointMap
+from noeira.envs.robots.so_arm101_xml import SoArm101Model
+from noeira.physics3d.fields import actuator_column
+from noeira.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
+from noeira.robot.so101.arm import GRIPPER, SO101Calibration, SO101_N
+from noeira.robot.so101.sim_map import SimJointMap
 
 # Measured on the follower, 2026-08-25. `ofs` is sign-magnitude-decoded, which
 # is why four of the six are negative.
-# Functions, not `comptime` arrays: a comptime `InlineArray` is not
+# Functions, not `comptime` arrays: a comptime `Array` is not
 # `ImplicitlyCopyable` and cannot be materialised at runtime.
 def CAL_OFS(i: Int) -> Int:
     var v: List[Int] = [-430, 563, 382, -51, -353, -485]
@@ -51,9 +51,9 @@ def CAL_HI(i: Int) -> Int:
 
 
 def _cal() raises -> SO101Calibration:
-    var ofs = InlineArray[Int32, SO101_N](fill=0)
-    var lo = InlineArray[Int32, SO101_N](fill=0)
-    var hi = InlineArray[Int32, SO101_N](fill=0)
+    var ofs = Array[Int32, SO101_N](fill=0)
+    var lo = Array[Int32, SO101_N](fill=0)
+    var hi = Array[Int32, SO101_N](fill=0)
     for i in range(SO101_N):
         ofs[i] = Int32(CAL_OFS(i))
         lo[i] = Int32(CAL_LO(i))
@@ -66,8 +66,8 @@ def _map() raises -> SimJointMap:
     var sf = SoArm101Model.make_spec_fields[DType.float64]()
     var lo_col = actuator_column(sf, ACT_IDX_CTRL_MIN, SO101_N)
     var hi_col = actuator_column(sf, ACT_IDX_CTRL_MAX, SO101_N)
-    var lo = InlineArray[Float64, SO101_N](fill=0.0)
-    var hi = InlineArray[Float64, SO101_N](fill=0.0)
+    var lo = Array[Float64, SO101_N](fill=0.0)
+    var hi = Array[Float64, SO101_N](fill=0.0)
     for i in range(SO101_N):
         lo[i] = Float64(lo_col[i])
         hi[i] = Float64(hi_col[i])

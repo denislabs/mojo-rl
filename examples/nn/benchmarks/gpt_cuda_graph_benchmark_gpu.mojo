@@ -26,12 +26,12 @@ from std.random import seed
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.datasets import CharTokenizer, load_text, train_val_split
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.models.gpt import GPTDropTied, gpt_scale_residual_proj, gpt_wire_tie
-from mojo_rl.nn.optimizer.adam import AdamW
-from mojo_rl.nn.training.autoregressive_trainer import AutoregressiveTrainer
-from mojo_rl.nn.core.initializer import Normal
+from noeira.nn.datasets import CharTokenizer, load_text, train_val_split
+from noeira.nn.constants import DT
+from noeira.nn.models.gpt import GPTDropTied, gpt_scale_residual_proj, gpt_wire_tie
+from noeira.nn.optimizer.adam import AdamW
+from noeira.nn.training.autoregressive_trainer import AutoregressiveTrainer
+from noeira.nn.core.initializer import Normal
 
 
 # Same nanoGPT-class config as the training example.

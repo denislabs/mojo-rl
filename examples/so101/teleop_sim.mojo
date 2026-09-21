@@ -19,7 +19,7 @@ pulls it back, because the reset hook is static and cannot see the leader.
 **WHAT THIS IS FOR — and it is not a demo.** `docs/SO101_SERIAL_LAYER.md` §4
 proves our servo ticks equal lerobot's ticks. It proves nothing about whether
 a servo angle means the right thing in `so_arm101.xml`. Three unknowns sit
-between the two, and `mojo_rl/robot/so101/sim_map.mojo` documents all three:
+between the two, and `noeira/robot/so101/sim_map.mojo` documents all three:
 per-joint **zero**, per-joint **sign**, and a **range** disagreement that is
 already measurable. Moving the real arm by hand makes a sign error obvious in
 one second, where a numeric gate would need you to know the answer first.
@@ -41,24 +41,24 @@ SO-101 is the slow one to compile — 33 280 hull vertices.
 
 from std.random import seed
 
-from mojo_rl.envs.dm_control.viewer_core import (
+from noeira.envs.dm_control.viewer_core import (
     ActionSource,
     DRIVE_POLICY,
     ViewerState,
     run_view,
 )
-from mojo_rl.envs.robots.so_arm101 import SoArm101TeleopConfig
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model, SO_ARM101_OBS_DIM
-from mojo_rl.nn.constants import DT
-from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
-from mojo_rl.render.imgui import imgui_shim_available
-from mojo_rl.render.renderer3d import Renderer3D
-from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
-from mojo_rl.robot.so101.sim_map import SimJointMap
-from mojo_rl.utils.fmt import col, fixed
+from noeira.envs.robots.so_arm101 import SoArm101TeleopConfig
+from noeira.envs.robots.so_arm101_xml import SoArm101Model, SO_ARM101_OBS_DIM
+from noeira.nn.constants import DT
+from noeira.physics3d.fields import actuator_column
+from noeira.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
+from noeira.render.imgui import imgui_shim_available
+from noeira.render.renderer3d import Renderer3D
+from noeira.robot.so101 import SO101Arm, SO101_N, joint_name
+from noeira.robot.so101.ports import leader_port, port_refusal
+from noeira.robot.so101.sim_map import SimJointMap
+from noeira.utils.fmt import col, fixed
 
-comptime LEADER_PORT = "/dev/cu.usbmodem5B910455171"
 comptime SEED: Int = 0
 
 
@@ -72,9 +72,9 @@ struct LeaderArmSource(ActionSource, Movable):
 
     var arm: SO101Arm
     var map: SimJointMap
-    var _raw: InlineArray[Int32, SO101_N]
+    var _raw: Array[Int32, SO101_N]
     var _last_ok: Int
-    var _clamped: InlineArray[Float64, SO101_N]
+    var _clamped: Array[Float64, SO101_N]
 
     def __init__(out self, var port: String) raises:
         # max_step_ticks=0: nothing here ever writes a goal, so the step clamp
@@ -86,19 +86,19 @@ struct LeaderArmSource(ActionSource, Movable):
         var sf = SoArm101Model.make_spec_fields[DType.float64]()
         var lo_col = actuator_column(sf, ACT_IDX_CTRL_MIN, SO101_N)
         var hi_col = actuator_column(sf, ACT_IDX_CTRL_MAX, SO101_N)
-        var lo = InlineArray[Float64, SO101_N](fill=0.0)
-        var hi = InlineArray[Float64, SO101_N](fill=0.0)
+        var lo = Array[Float64, SO101_N](fill=0.0)
+        var hi = Array[Float64, SO101_N](fill=0.0)
         for i in range(SO101_N):
             lo[i] = Float64(lo_col[i])
             hi[i] = Float64(hi_col[i])
         self.map = SimJointMap.identity(lo^, hi^)
 
-        self._raw = InlineArray[Int32, SO101_N](fill=0)
+        self._raw = Array[Int32, SO101_N](fill=0)
         # -1, not 0: `run_view` prints `status()` ONCE before the first `act`,
         # and "0 of 6 motors answered" there reads as a dead bus when it only
         # means "not read yet".
         self._last_ok = -1
-        self._clamped = InlineArray[Float64, SO101_N](fill=0.0)
+        self._clamped = Array[Float64, SO101_N](fill=0.0)
 
     # ── ActionSource ───────────────────────────────────────────────────────
 
@@ -172,8 +172,12 @@ def main() raises:
         print("Dear ImGui shim not built.  Run:  pixi run build-imgui")
         return
 
-    print("opening leader:", LEADER_PORT)
-    var src = LeaderArmSource(String(LEADER_PORT))
+    var l_port = leader_port()
+    var why_l = port_refusal(l_port, String("leader"))
+    if why_l.byte_length() > 0:
+        raise Error("teleop_sim: " + why_l)
+    print("opening leader:", l_port)
+    var src = LeaderArmSource(l_port)
 
     print("\n" + src.map.range_report(src.arm.cal))
     print(src.map.describe())

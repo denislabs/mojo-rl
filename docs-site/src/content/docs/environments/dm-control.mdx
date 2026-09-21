@@ -1,0 +1,203 @@
+---
+title: DeepMind Control
+description: The dm_control suite and its manipulation tasks, ported to physics3d — 18 domains, 49 suite tasks and 13 manipulation tasks, each gated against MuJoCo and the reference task code.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="experimental" note="Every task is parity-gated against MuJoCo and the reference task. None has a documented training result yet." />
+
+`noeira.envs.dm_control` ports the DeepMind Control Suite onto
+[`physics3d`](/physics/physics3d/): the suite's own MJCF files, its reward
+functions and its reset logic, transcribed from `dm_control/suite/<domain>.py`
+and the `manipulation` package. The point of the port is the physics — dog,
+humanoid_CMU and the brick-stacking scenes are among the hardest models in the
+tree — and a benchmark whose returns compare across tasks.
+
+<Papers label="Papers">
+	<Paper
+		title="DeepMind Control Suite"
+		authors="Tassa et al."
+		year="2018"
+		arxiv="1801.00690"
+		note="The suite and its conventions."
+	/>
+	<Paper
+		title="dm_control: Software and Tasks for Continuous Control"
+		authors="Tunyasuvunakool et al."
+		year="2020"
+		arxiv="2006.12983"
+		venue="Software Impacts"
+		note="The manipulation tasks and the dog."
+	/>
+</Papers>
+
+## The suite's rules
+
+Every suite task follows the same three invariants, and the ports keep them:
+
+- exactly **1000 control steps** per episode, so the maximum return is 1000;
+- per-step reward in **[0, 1]**, shaped with `rewards.tolerance`;
+- **no early termination** — only truncation at the step limit.
+
+That is what makes a return of 800 mean the same thing on `walker-run` as on
+`cartpole-swingup`. The `*Batched` aliases bake `TERMINATE_ON_UNHEALTHY=False`
+in rather than exposing it as a knob.
+
+`tolerance` is ported bit-for-bit (`noeira/envs/dm_control/rewards.mojo`,
+gated against the reference `rewards.py` over a dense grid). The sigmoid and
+`value_at_margin` are compile-time parameters:
+
+```mojo
+from noeira.envs.dm_control import tolerance, SIGMOID_LINEAR
+
+# walker's move reward: 1 above MOVE_SPEED, linear down to 0.5 at half of it
+var move = tolerance[SIGMOID_LINEAR, 0.5](vx, MOVE_SPEED, inf[DType.float64](), MOVE_SPEED / 2.0)
+```
+
+## The suite
+
+| Domain | Tasks | GPU batch | What it exercises |
+|---|---|---|---|
+| `acrobot` | swingup, swingup_sparse | yes | underactuated swing-up |
+| `ball_in_cup` | catch | yes | a tendon limit as the string |
+| `cartpole` | balance, balance_sparse, swingup, swingup_sparse, two_poles, three_poles | yes | three model variants |
+| `cheetah` | run | yes | planar runner |
+| `dog` | stand, walk, trot, run, fetch | stand/walk/trot/run | 223-D observation, sensors, noslip; the largest model |
+| `finger` | spin, turn_easy, turn_hard | — | dry friction, contact with a hinged spinner |
+| `fish` | upright, swim | yes | a free body in a dense fluid |
+| `hopper` | stand, hop | yes | touch sensors |
+| `humanoid` | stand, walk, run, run_pure_state | yes | the suite humanoid |
+| `humanoid_cmu` | stand, walk, run | yes | the CMU humanoid |
+| `manipulator` | bring_ball, bring_peg, insert_ball, insert_peg | — | planar arm with a gripper, elliptic cone |
+| `pendulum` | swingup | yes | the smallest task |
+| `point_mass` | easy, hard | yes | fixed tendons |
+| `quadruped` | walk, run, escape, fetch | walk/run/escape | `escape` rewrites a heightfield every reset |
+| `reacher` | easy, hard | yes | a mocap target |
+| `stacker` | stack_2, stack_4 | — | planar arm stacking boxes |
+| `swimmer` | swimmer6, swimmer15 | yes | viscous fluid, 6 or 15 links |
+| `walker` | stand, walk, run | yes | the same body under target speeds 0, 1 and 8 |
+
+Each task is a type alias — `DMWalkerWalk`, `DMDogTrot`, `DMQuadrupedEscape` —
+and a GPU-batched twin where the domain has one (`DMWalkerWalkBatched`).
+
+## Manipulation
+
+The `manipulation` package's `_features` tasks: a Jaco arm with a three-finger
+hand (9 actuators), Duplo bricks and props, **250 control steps** per episode.
+Their resets are the interesting part — a rejection-sampled arm pose solved by
+dm_control's own site IK, props placed and settled under gravity, and for
+`reassemble` a stack assembled by lining up studs.
+
+| dm_control task | Alias |
+|---|---|
+| `reach_site_features` | `DMReachSiteFeatures` |
+| `reach_duplo_features` | `DMReachDuplo` |
+| `lift_brick_features` | `DMLiftBrick` |
+| `lift_large_box` | `DMLiftLargeBox` |
+| `place_brick_features` | `DMPlaceBrick` |
+| `place_cradle_features` | `DMPlaceCradle` |
+| `stack_2_bricks_features` | `DMStack2Bricks` |
+| `stack_2_bricks_moveable_base_features` | `DMStack2Moveable` |
+| `stack_3_bricks_features` | `DMStack3Bricks` |
+| `stack_2_of_3_bricks_random_order_features` | `DMStack2of3` |
+| `stack_3_bricks_random_order_features` | `DMStack3Random` |
+| `reassemble_3_bricks_fixed_order_features` | `DMReassemble3` |
+| `reassemble_5_bricks_random_order_features` | `DMReassemble5` |
+
+The manipulation tasks are CPU environments; none has a batched alias.
+
+## Using one
+
+```mojo
+from noeira.envs.dm_control.walker import DMWalkerWalk, DMWalkerWalkBatched
+
+var env = DMWalkerWalk()                        # CPU, float64
+var batch = DMWalkerWalkBatched[N_ENVS=64](ctx) # GPU, float32
+```
+
+```mojo
+from noeira.envs.dm_control.manipulation_reach import DMReachSiteFeatures
+
+var env = DMReachSiteFeatures[DType.float64]()
+```
+
+The CPU aliases are `Phyics3dEnv`, the batched ones `Phyics3dBatchedEnv`, so
+anything that trains on a [3D locomotion](/environments/3d-locomotion/)
+environment accepts them. They read the dimensions from the model
+(`DMWalkerModel`), and the reward is the task's, not Gymnasium's — dm_control's
+walker observes 24 values where Gymnasium's Walker2d observes 17.
+
+## Parity gates
+
+Each domain and each manipulation task has a
+`tests/dm_control/*_vs_dm_control.mojo` gate — 41 files. A gate works through
+the layers, innermost first, against MuJoCo stepping the same XML and against
+the reference task code:
+
+1. **model** — the built model's masses, inertias and frames;
+2. **physics** — `qpos` / `qvel` trajectories from identical states under identical actions;
+3. **observation** — the task's `get_observation`;
+4. **reward** — the task's `get_reward`, through the ported `tolerance`.
+
+```bash
+pixi run mojo run -I . tests/dm_control/test_walker_vs_dm_control.mojo
+pixi run mojo run -I . tests/dm_control/test_dog_vs_dm_control.mojo
+pixi run mojo run -I . tests/dm_control/test_stack_3_bricks_vs_dm_control.mojo
+```
+
+The batched aliases are gated separately against the CPU path
+(`tests/dm_control/test_locomotion_gpu_vs_cpu.mojo`,
+`tests/dm_control/test_dog_gpu_vs_cpu.mojo` and siblings). Sixteen of the 41
+parity gates read reference XML or task code from a local, untracked
+dm_control checkout, so they run on a development machine rather than in CI.
+
+:::caution[Gated, not yet shown to train]
+Parity means the physics, observations and rewards match the reference. It
+does not mean an agent learns on them here. Training scripts exist for
+`walker` — SAC and single- and multi-task TD-MPC2 — but no dm_control training
+result is documented in these pages yet. The SAC script says so in its own
+header.
+:::
+
+## Examples
+
+```bash
+# SAC on walker-walk, GPU-batched
+pixi run -e nvidia mojo run -I . examples/dm_control/sac_dm_walker_walk_gpu.mojo
+
+# TD-MPC2: one agent on stand + walk + run
+pixi run -e nvidia mojo run -I . examples/dm_control/tdmpc2_dm_walker_multitask_gpu.mojo
+```
+
+`examples/dm_control/sac_dm_walker_training_gpu.mojo` is the longer SAC run
+over all three walker tasks, and `examples/dm_control/tdmpc2_dm_walker_gpu.mojo`
+the single-task TD-MPC2 baseline.
+
+## Viewers
+
+```bash
+pixi run build-imgui                                             # once
+pixi run mojo run -I . examples/dm_control/dm_viewer_imgui.mojo walker_run random 0.4
+pixi run mojo run -I . examples/dm_control/manipulation_viewer_imgui.mojo stack_3_bricks
+```
+
+Tasks are selectable in the window; the argument only picks the first one. The
+suite viewer leaves out dog `fetch` and quadruped `fetch`.
+The optional second and third arguments are the drive mode
+(`zero`, `random`, `sweep`) and the action scale. The manipulation viewer
+starts at `zero` because the reset is what is worth looking at — a sweep
+knocks the stack over within a second. `examples/dm_control/dm_viewer.mojo` is
+the same idea without the ImGui dependency. The viewers run CPU physics and
+open an SDL3 window, and each bakes every task into one binary, so the first
+build takes several minutes.
+
+See [Viewers and studio](/rendering/viewers/) for the controls.
+
+## Next
+
+- [Validation](/physics/validation/) — how the physics under these tasks is checked
+- [3D locomotion](/environments/3d-locomotion/) — the Gymnasium versions of these bodies
+- [TD-MPC2](/algorithms/tdmpc2/) — the model-based agent the walker scripts use

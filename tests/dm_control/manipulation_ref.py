@@ -133,9 +133,21 @@ def _generate_mjbindings():
     Writes `constants.py` / `enums.py` / `sizes.py` into the reference tree,
     which is gitignored in its entirety, so this leaves no tracked footprint.
     """
-    if os.path.exists(os.path.join(_MJBINDINGS, 'constants.py')):
-        return
     import mujoco
+    # ⚠ REGENERATE WHEN THE RUNTIME MOVES. The generated `sizes.py` lists
+    # every `mjData` field of the headers it was made from; 3.11 removed
+    # `qM`, so a table generated under 3.10 makes dm_control's wrapper touch
+    # an attribute the 3.12 runtime no longer has ('MjData' object has no
+    # attribute 'qM') and every manipulation gate dies before its first
+    # step. The stamp file pins the bindings to the runtime version.
+    stamp = os.path.join(_MJBINDINGS, 'generated_for_mujoco.txt')
+    if os.path.exists(os.path.join(_MJBINDINGS, 'constants.py')):
+        try:
+            with open(stamp) as f:
+                if f.read().strip() == mujoco.__version__:
+                    return
+        except OSError:
+            pass
     headers = []
     for fn in _HEADER_FILENAMES:
         p = os.path.join(mujoco.HEADERS_DIR, fn)
@@ -153,6 +165,8 @@ def _generate_mjbindings():
          '--header_paths={}'.format(' '.join(headers)),
          '--output_dir={}'.format(_MJBINDINGS)],
         env=env)
+    with open(stamp, 'w') as f:
+        f.write(mujoco.__version__)
 
 
 def _bootstrap():

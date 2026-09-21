@@ -10,9 +10,9 @@ from std.math import isfinite
 from std.random import random_float64
 from std.memory import alloc
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.dreamerv3.trainer import DreamerV3Trainer
-from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
+from noeira.nn.constants import DT
+from noeira.deep_agents.dreamerv3.trainer import DreamerV3Trainer
+from noeira.deep_agents.dreamerv3.agent import DreamerV3Agent
 
 
 comptime OBS = 3

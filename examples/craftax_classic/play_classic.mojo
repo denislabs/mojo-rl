@@ -21,8 +21,8 @@ Controls:
 """
 
 from std.memory import alloc
-from mojo_rl.envs.craftax_classic import CraftaxClassicEnv
-from mojo_rl.envs.craftax_classic.constants import (
+from noeira.envs.craftax_classic import CraftaxClassicEnv
+from noeira.envs.craftax_classic.constants import (
     ACTION_NOOP,
     ACTION_LEFT,
     ACTION_RIGHT,
@@ -42,9 +42,9 @@ from mojo_rl.envs.craftax_classic.constants import (
     ACTION_MAKE_IRON_SWORD,
     NUM_ACHIEVEMENTS,
 )
-from mojo_rl.envs.craftax_classic.state import S_ACHIEVEMENTS_BASE
-from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
-from mojo_rl.render.sdl.sdl_scancode import Scancode
+from noeira.envs.craftax_classic.state import S_ACHIEVEMENTS_BASE
+from noeira.render.sdl.sdl_keyboard import get_keyboard_state
+from noeira.render.sdl.sdl_scancode import Scancode
 
 
 @always_inline

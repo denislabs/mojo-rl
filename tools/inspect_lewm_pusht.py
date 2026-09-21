@@ -23,7 +23,7 @@ import zstandard
 
 HF_REPO = "quentinll/lewm-pusht"
 HF_FILE = "pusht_expert_train.h5.zst"
-CACHE_DIR = pathlib.Path.home() / ".cache/mojo_rl/lewm_pusht"
+CACHE_DIR = pathlib.Path.home() / ".cache/noeira/lewm_pusht"
 
 
 def ensure_cached() -> pathlib.Path:

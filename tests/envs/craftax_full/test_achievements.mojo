@@ -14,12 +14,12 @@ Run:
   pixi run mojo run -I . tests/envs/craftax_full/test_achievements.mojo
 """
 
-from mojo_rl.envs.craftax_full import (
+from noeira.envs.craftax_full import (
     CraftaxFullEnv,
     CraftaxFullAction,
 )
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.envs.craftax_full.constants import (
+from noeira.nn.constants import DT as dtype
+from noeira.envs.craftax_full.constants import (
     MAP_W,
     NUM_ACHIEVEMENTS,
     NUM_FLOORS,
@@ -145,7 +145,7 @@ from mojo_rl.envs.craftax_full.constants import (
     SPELL_FIREBALL,
     SPELL_ICEBALL,
 )
-from mojo_rl.envs.craftax_full.state import (
+from noeira.envs.craftax_full.state import (
     STATE_SIZE,
     S_PLAYER_POS,
     S_PLAYER_LEVEL,

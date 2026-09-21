@@ -22,7 +22,7 @@ than one sorted by something you did not pick.
 Run: pixi run mojo run -I . tests/physics3d/test_browser_sort.mojo
 """
 
-from mojo_rl.physics3d.studio.panel import (
+from noeira.physics3d.studio.panel import (
     _Entry, _sort_entries, _fmt_time, _fmt_size, _fold,
     SORT_NAME, SORT_SIZE, SORT_TIME,
 )

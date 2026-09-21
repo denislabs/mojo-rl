@@ -14,14 +14,14 @@ from std.math import sqrt as fsqrt
 from std.random import random_float64, seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import Swish
-from mojo_rl.nn.combinators.sequential import Sequential
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import Swish
+from noeira.nn.combinators.sequential import Sequential
 
-from mojo_rl.deep_agents.mbpo.dynamics_ensemble_block import (
+from noeira.deep_agents.mbpo.dynamics_ensemble_block import (
     DynamicsEnsembleBlock,
 )
 

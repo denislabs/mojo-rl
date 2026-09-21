@@ -18,13 +18,13 @@ from std.memory import alloc
 from std.random import seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.experimental.lewm.pong_data import WindowSource
-from mojo_rl.envs.arcade_games.pong.offline_buffer import (
+from noeira.nn.constants import DT
+from noeira.experimental.lewm.pong_data import WindowSource
+from noeira.envs.arcade_games.pong.offline_buffer import (
     PONG_FRAME_BYTES,
     PONG_NUM_ACTIONS,
 )
-from mojo_rl.envs.arcade_games.pong.online_sampler import (
+from noeira.envs.arcade_games.pong.online_sampler import (
     OnlinePongSampler,
     ScriptedPongPolicy,
 )

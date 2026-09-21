@@ -19,13 +19,13 @@ quit (ESC / window close) or after EVAL_EPISODES games.
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
-from mojo_rl.deep_agents.c51.trainer import C51Trainer
-from mojo_rl.deep_agents.c51.config import RainbowNet
-from mojo_rl.deep_agents.training.blocks import NStepSampleStep
-from mojo_rl.deep_agents.data.any_per_replay import AnyPerReplay
-from mojo_rl.envs.arcade_games.pong import PongEnv
+from noeira.deep_agents.c51.trainer import C51Trainer
+from noeira.deep_agents.c51.config import RainbowNet
+from noeira.deep_agents.training.blocks import NStepSampleStep
+from noeira.deep_agents.data.any_per_replay import AnyPerReplay
+from noeira.envs.arcade_games.pong import PongEnv
 
 
 # =============================================================================

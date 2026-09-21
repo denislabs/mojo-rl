@@ -40,18 +40,18 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
-from std.collections import InlineArray
+from std.collections import Array
 from layout import Layout
 
-from mojo_rl.envs.dm_control.dog import (
+from noeira.envs.dm_control.dog import (
     DMDogStandWalkModel,
 )
-from mojo_rl.physics3d.fields import Model, Data, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.dynamics.jac_contact_row import _contact_jacobian_row
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, Data, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.dynamics.jac_contact_row import _contact_jacobian_row
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
@@ -84,7 +84,7 @@ def test_dog_contact_jacobian_matches_mujoco() raises:
     var sf = M.make_spec_fields[DTYPE]()
     print("--- dog: contact Jacobian rows vs MuJoCo efc_J ---")
     var mujoco = Python.import_module("mujoco")
-    var mm = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
+    var mm = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_stand_walk.xml")
     # ⚠ See the module docstring: AUTO would give a SPARSE efc_J here.
     mm.opt.jacobian = 0  # mjJAC_DENSE
     var dat = mujoco.MjData(mm)
@@ -182,7 +182,7 @@ def test_dog_contact_jacobian_matches_mujoco() raises:
                 )
 
         # Ours, built by the same helper the solver uses.
-        var jn_ours = InlineArray[Scalar[DTYPE], NV](fill=Scalar[DTYPE](0))
+        var jn_ours = Array[Scalar[DTYPE], NV](fill=Scalar[DTYPE](0))
         _contact_jacobian_row[DTYPE, NV](
             0,
             subtree_v,

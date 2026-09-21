@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | Fixed-width formatting — the short-value cases that crashed a live arm
 # +--------------------------------------------------------------------------+ #
-"""Regression gate for `mojo_rl/utils/fmt.mojo`.
+"""Regression gate for `noeira/utils/fmt.mojo`.
 
 Every case below is a value whose FORMATTED WIDTH is short. That is the whole
 point: `String(x)[byte=0:6]` aborted a running SO-101 teleop loop mid-motion
@@ -14,7 +14,7 @@ Run: pixi run mojo run -I . tests/utils/test_fmt.mojo
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
+from noeira.utils.fmt import col, fixed, pad_left, pad_right
 
 
 def test_short_values_do_not_truncate_or_crash() raises:

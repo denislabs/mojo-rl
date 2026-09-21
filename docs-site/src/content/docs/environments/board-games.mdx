@@ -45,7 +45,7 @@ trait GPUTwoPlayerDiscreteEnv     # batched self-play on device
 ```
 
 ```mojo
-from mojo_rl.envs import TicTacToeEnv, ConnectFourEnv, GoEnv, ChessEnv
+from noeira.envs import TicTacToeEnv, ConnectFourEnv, GoEnv, ChessEnv
 ```
 
 ## Self-play training
@@ -78,7 +78,7 @@ signal; the cause is stale normalization state.
 ## GPU MCTS
 
 Tree search runs on-device through
-[`mojo_rl.planners.tree_search`](/planners/tree-search/), with `GenericGPUMCTS`
+[`noeira.planners.tree_search`](/planners/tree-search/), with `GenericGPUMCTS`
 and `GumbelGPUMCTS` implementations. Search batches across **games** — one tree
 each, advanced together — rather than running them one after another.
 

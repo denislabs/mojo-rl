@@ -25,14 +25,14 @@ easier to judge a mesh by.
 from std.random import seed
 from std.sys import argv
 
-from mojo_rl.envs.dm_control.viewer_core import (
+from noeira.envs.dm_control.viewer_core import (
     ViewerState, run_view, parse_drive, DRIVE_SWEEP,
 )
-from mojo_rl.render.imgui import imgui_shim_available
-from mojo_rl.render.renderer3d import Renderer3D
+from noeira.render.imgui import imgui_shim_available
+from noeira.render.renderer3d import Renderer3D
 
-from mojo_rl.envs.dm_control.dog.dog_xml import DMDogStandWalkModel
-from mojo_rl.envs.dm_control.dog.dog_config import DMDogStandConfig
+from noeira.envs.dm_control.dog.dog_xml import DMDogStandWalkModel
+from noeira.envs.dm_control.dog.dog_config import DMDogStandConfig
 
 comptime SEED: Int = 0
 

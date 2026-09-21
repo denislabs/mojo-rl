@@ -1,0 +1,107 @@
+<mujoco model="so101_tower_stand">
+  <!-- THE OVERHEAD CAMERA STAND OF THE `so101-tower` RIG — a STATIC slot.
+
+       The four printed parts of the SO-ARM100 repo's
+       `Optional/Overhead_Cam_Mount_32x32_UVC_Module` (arm_base,
+       cam_mount_bottom, cam_mount_middle, cam_mount_top), assembled, with
+       the IMX335 camera at the far end of `cam_mount_top`. The follower arm
+       is bolted onto the `arm_base` plate, which is what fixes the
+       arm-to-overhead-camera transform by construction
+       (`docs/camera-rig.md` §1, §5).
+
+       ⚠⚠ THE ASSEMBLY IS DERIVED FROM THE STLs, NOT MEASURED ON THE RIG.
+       The parts are authored in ONE assembly frame two at a time:
+       `cam_mount_middle` (y 35..198 mm) and `cam_mount_top` (y 190..372)
+       overlap by the 8 mm push-fit and share a frame; `cam_mount_bottom`
+       (y 0..231) is its own, its top 8 mm (y 223..231) already the middle's
+       25.4 x 36.6 section centred at x 18.7, z 36.5. So middle/top sit in
+       the bottom's frame at (+18.7, +188, +36.5) mm. `arm_base` CHAINS ONTO
+       THE FOOT END TO END, along z: both parts end in a 37.4 mm-wide,
+       10 mm finger-joint tab (the foot at z -10..0 and 75..83, the plate at
+       z -133..-120 and 15..26 — a bimanual rig chains plate, foot, plate),
+       so the plate keeps the foot's orientation and its z = 26 tongue meets
+       the foot's z = 0: translation (+94, 0, -26) mm, the plate at x 0..90,
+       z -159..0. The first two versions had it behind the tower (its
+       x = -4.3 lip read as a tab) and then rotated 90° along the forward
+       axis — the rig's owner corrected both against the real rig. Every
+       one of those is a       few-mm assumption a push-fit can move, which is why
+       `camera-rig.md` §5 says: CALIBRATE (§7), and treat these as the
+       starting values. `projects/so101-tower/calibration/` is where the
+       calibrated pose goes.
+
+       ⚠⚠ THE PLATE NORMAL IS IN THE TOWER'S x-y PLANE, NOT y-z. The doc's §5
+       wrote the top plate's normal as (0, -0.4242, 0.9056) — the WRIST
+       plate's convention. Recomputed from `cam_mount_top.stl`, the two
+       largest faces of the bent head are (0.42, -0.91, 0) at (28.9, 362.0, 0)
+       and (-0.42, 0.91, 0) at (28.1, 364.9, 0), 3.0 mm apart: the camera
+       plate faces DOWN and FORWARD along the bend, 65° below horizontal.
+       That is what an overhead camera at 54 cm sees the workspace with —
+       the optical axis meets the desk ~30 cm in front of the tower — and it
+       is what the recorded overhead frames show (the tower's foot at the
+       bottom edge of the image, the bowl near the centre). The doc's
+       numbers would have looked 25° below horizontal at the far wall.
+
+       FRAMES. The STLs are y-up, mm; this body is z-up, m. Every mesh geom
+       carries `quat="0.7071068 0.7071068 0 0"` (+90° about x: part y -> z,
+       part z -> -y) and `scale="0.001 0.001 0.001"`. Body +x is the head's
+       bend direction = the arm's forward (+x); body +y is the arm's left.
+
+       THE ARM SITS AT body (+0.019, +0.077, +0.005): the plate's hole
+       pattern (x -88..-18, z -22..-80 in its frame) lands at body x 6..76,
+       y 48..106, and the SO-101 base body origin sits 22 mm behind its
+       footprint centre, facing +x; on top of the 5 mm plate. So the arm is
+       IN LINE with the foot (its origin 0.3 mm off the foot's centre line)
+       and 7.7 cm to the tower's left (the arm's +y). The family places this
+       slot at the negation of that so the
+       robot stays at the world origin.
+
+       THE OVERHEAD CAMERA: plate face centre (28.94, 361.98, 0) in the top's
+       frame, outward normal (0.4243, -0.9055, 0); entrance pupil 15.6 mm
+       along it (adapter 3 + standoffs 5 + PCB 1.6 + ~6 to the pupil, §4);
+       plus the (18.7, 188, 36.5) frame offset; y-up -> z-up. Image-up is
+       FORWARD (the far edge of the desk at the top of the recorded frames),
+       image-right is the robot's right (-y). `fovy` is the virtual pinhole
+       the fisheye frames are undistorted to — 90° horizontal at 4:3, see
+       `tools/soarm/bake_so_arm101_tower.py`.
+
+       COLLISION is four boxes: the foot, the post, the head and the base
+       plate. ⚠ THE POST IS INSIDE THE ARM'S SWING — it stands 10..13 cm to
+       the arm's right, in line with its base — and it is a real stop on the rig (the tutorial's
+       F8: the calibration span guard flagged `shoulder_pan` on ONE side,
+       the tower's). Do not remove it to make a task easier. -->
+  <compiler angle="radian" meshdir="so101_tower_stand"/>
+  <asset>
+    <mesh name="arm_base" file="arm_base.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="cam_mount_bottom" file="cam_mount_bottom.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="cam_mount_middle" file="cam_mount_middle.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="cam_mount_top" file="cam_mount_top.stl" scale="0.001 0.001 0.001"/>
+    <material name="stand_pla" rgba="0.20 0.45 0.85 1"/>
+  </asset>
+  <worldbody>
+    <body name="stand">
+      <!-- visual: the four prints, in the bottom part's frame -->
+      <!-- arm_base: the foot's orientation, chained onto its z = 0 end; the
+           plate spans body x 0..90, y 0..159 -->
+      <geom type="mesh" mesh="arm_base" material="stand_pla" contype="0" conaffinity="0" group="2"
+            pos="0.094 0.026 0.005" quat="0.7071068 0.7071068 0 0"/>
+      <geom type="mesh" mesh="cam_mount_bottom" material="stand_pla" contype="0" conaffinity="0" group="2"
+            pos="0 0 0" quat="0.7071068 0.7071068 0 0"/>
+      <geom type="mesh" mesh="cam_mount_middle" material="stand_pla" contype="0" conaffinity="0" group="2"
+            pos="0.0187 -0.0365 0.188" quat="0.7071068 0.7071068 0 0"/>
+      <geom type="mesh" mesh="cam_mount_top" material="stand_pla" contype="0" conaffinity="0" group="2"
+            pos="0.0187 -0.0365 0.188" quat="0.7071068 0.7071068 0 0"/>
+      <!-- collision: foot, post, head, base plate -->
+      <geom name="foot" type="box" pos="0.0187 -0.0365 0.005" size="0.0187 0.0465 0.005"
+            rgba="0.20 0.45 0.85 0.3" group="3"/>
+      <geom name="post" type="box" pos="0.0187 -0.0365 0.277" size="0.0127 0.0183 0.265"
+            rgba="0.20 0.45 0.85 0.3" group="3"/>
+      <geom name="head" type="box" pos="0.0517 -0.0365 0.551" size="0.012 0.0175 0.009"
+            rgba="0.20 0.45 0.85 0.3" group="3"/>
+      <geom name="plate" type="box" pos="0.045 0.0795 0.0025" size="0.045 0.0795 0.0025"
+            rgba="0.20 0.45 0.85 0.3" group="3"/>
+      <!-- the overhead IMX335, see the header -->
+      <camera name="overhead_cam" pos="0.05426 -0.0365 0.53585"
+              xyaxes="0 -1 0  0.9055 0 0.4243" fovy="73.7398"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -6,8 +6,8 @@ dataset is uploaded once, the sampler writes indices on device, and the batch is
 assembled by the gather/pack kernels. Nothing crosses PCIe in the training loop
 except the occasional logged loss.
 
-Prerequisite: run `examples/fb/collect_dm_control.mojo` first. This reads the
-store it writes.
+Prerequisite: run `examples/fb/collect_walker_all.mojo` first. This reads the
+store it writes (`STORE_PATH`, `fb_walker_all_sac.h5`).
 
     pixi run -e nvidia mojo run -I . examples/fb/fb_train_gpu.mojo
 
@@ -18,7 +18,7 @@ so an arm costs a process launch rather than a rebuild (~90 s each, which is
 most of a 17-minute arm):
 
     --steps N      --ortho X     --lr-b X     --bc X
-    --obs-norm 0|1 --tag NAME
+    --obs-norm 0|1 --tag NAME    --seed N
 
 `--tag` is the one that matters for bookkeeping: it renames the checkpoint, the
 CSV and the remote run together, so two arms cannot overwrite each other's
@@ -50,29 +50,33 @@ from std.random import random_float64, seed
 from std.sys import argv
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU, Tanh
-from mojo_rl.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
-from mojo_rl.nn.random.box_muller import box_muller_normal_gpu
+from noeira.nn.constants import DT, TPB
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.ptr import mptr
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU, Tanh
+from noeira.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
+from noeira.nn.random.box_muller import box_muller_normal_gpu
 
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.data.resident import ResidentColumn, IDX_DT
-from mojo_rl.data.sampler import UniformDeviceSampler
+from noeira.data.store import TrajectoryStore
+from noeira.data.resident import ResidentColumn, IDX_DT
+from noeira.data.sampler import UniformDeviceSampler
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import CsvLogger, RemoteLogger, CompositeLogger
-from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
-from mojo_rl.deep_agents.fb.trainer import FBTrainer, FBLosses
-from mojo_rl.deep_agents.fb.obs_norm import ObsNorm
-from mojo_rl.deep_agents.fb.kernels import (
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import CsvLogger, RemoteLogger, CompositeLogger
+from noeira.core.run import RunContext, register_run
+from noeira.cuda import CUDAGraph, maybe_capture_replay
+from noeira.deep_agents.fb.trainer import FBTrainer, FBLosses
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
+from noeira.deep_agents.fb.obs_norm import ObsNorm
+from noeira.deep_agents.fb.kernels import (
     gather_rows_kernel,
     gather_idx_kernel,
     z_mixture_kernel,
     project_sphere_kernel,
+    uniform01_kernel,
     ensure_t,
     _blocks,
 )
@@ -83,7 +87,24 @@ comptime STORE_PATH: StaticString = "fb_walker_all_sac.h5"
 comptime NQ: Int = 9
 comptime NV: Int = 9
 comptime NACT: Int = 6
-comptime OBS: Int = NQ + NV
+# ⚠ THE OBSERVATION REPRESENTATION IS A COMPTIME SWITCH — rebuild to change.
+# False: `[qpos | qvel]` (18-D), every §13 / A2 number. True: dm_control's
+# 24-D vector rebuilt through `obs_at`, the representation the ONLINE agent
+# trains on. Tag and checkpoint names get an `_envobs` suffix so the two
+# cannot be confused, and a 24-D checkpoint is scored by
+# `fb_eval_walker_online.mojo` (`fb_eval_walker.mojo` expects 18-D).
+#
+# ⚠⚠ MEASURED 2026-09-08 (§18.7.5), the pair at 300 k on the same store:
+#     18-D, two seeds   stand 1.51  walk 1.82  run 1.44
+#     24-D, one seed    stand 1.62  walk 2.32  run 1.72   (walk t 5-8, all rungs)
+# The env's own observation is the BETTER representation for FB on walker,
+# by the widest margin any knob has moved walk. It is the default from here;
+# a second seed is queued in `fb_sweep.sh`.
+comptime ENV_OBS: Bool = True
+comptime OBS: Int = DMWalkerModel.OBS_DIM if ENV_OBS else NQ + NV
+comptime ScorerEnv = Phyics3dEnv[
+    DMWalkerModel, DMWalkerConfig[1.0], DType.float64, False
+]
 # ⚠ There is deliberately NO `EP_LEN` here. It used to be one, and it was a
 # silent correctness bug: `next_row` marked a boundary at every multiple of a
 # COMPTIME 250 while the collected store runs 1000-step episodes, so 3 of every
@@ -99,7 +120,9 @@ comptime HID: Int = 1024
 comptime TRAIN_STEPS: Int = 2_000_000
 comptime LOG_EVERY: Int = 2000  # see the want_loss note in the header
 comptime CKPT_EVERY: Int = 50_000
-comptime CKPT_PATH: StaticString = "fb_walker_all_d128.ckpt"
+# ⚠ THERE IS NO `CKPT_PATH` CONSTANT ANY MORE, AND THAT IS THE POINT. Every
+# path this driver writes comes from `RunContext` in `main`, so a second run
+# cannot overwrite the first one's checkpoints. See `core/run.mojo`.
 
 # ⚠⚠ Global grad-norm clip. FB's measure loss scales as (||F||·sqrt(d))^2 and
 # was measured spiking to +2559 on walker at 1 M rows; the gradients spike with
@@ -121,18 +144,22 @@ comptime MAX_GRAD_NORM: Float64 = 1.0
 # rather than against the loss.
 comptime BC_WEIGHT: Float64 = 1.0
 
-# ⚠⚠ **BFM-Zero ships `ortho_coef = 100`; this has always run 1.0.**
-# `docs/BFM_ZERO_SHOT_RL.md` §16.3 — arXiv 2511.04131 Table 1 AND the released
-# `fb_cpr/configs.py` both carry 100, a factor of 100 above `FBTrainer.make`'s
-# default, which is what every §13 measurement was taken at. It is left at 1.0
-# here so the existing numbers stay comparable; `--ortho 100` is the arm.
-comptime ORTHO_WEIGHT: Float64 = 1.0
+# ⚠⚠ **`ortho_coef = 100` AND `lr_B = 1e-5`, TOGETHER — measured, not copied.**
+# `docs/BFM_ZERO_SHOT_RL.md` §18.6: on the fixed mixture, `ortho100` alone was
+# null (+0.07 / +0.19 vs base and ended in an excursion), `lr_b 1e-5` alone
+# was null in round 1, and the PAIR — the reference's own setting — scored
+# stand 1.57 / walk 1.92 / run 1.63x random with every rung SIGNAL
+# (t 4.5–11.4). The training side says why: with B held orthonormal AND
+# moving 30x slower, |F| plateaus at ~153 by 100 k and the measure loss and
+# F's gradient norm are FLAT from there, which no other arm managed. Every
+# §13 number and A2 round 1 ran at 1.0 / -1; `base_u` is the reference for
+# anything trained from now on.
+comptime ORTHO_WEIGHT: Float64 = 100.0
 
-# ⚠ **B's learning rate, SEPARATE from F's.** The reference trains B at 1e-5
-# against F's 3e-4 — B is the shared representation and F chases it, so a B
-# moving at F's rate is a target that will not sit still. -1 inherits `lr`,
-# which is what this script did implicitly before the flag existed.
-comptime LR_B: Float64 = -1.0
+# ⚠ **B's learning rate, SEPARATE from F's** — 1e-5 against F's 3e-4, the
+# reference's value, and the half of the winning pair above that makes the
+# other half work. -1 inherits `lr` (what every §13 run did).
+comptime LR_B: Float64 = 1e-5
 
 # ⚠⚠ **Observation standardisation.** BFM-Zero normalises every observation
 # entering F, B and the actor (`BatchNorm1d(affine=False)`); we fed raw
@@ -161,8 +188,12 @@ comptime USE_TRAIN_CUDA_GRAPH: Bool = True
 # output was lost mid-arc and the interesting window went with it, because the
 # only record was a terminal scrollback. The CSV survives a dropped ssh session,
 # a killed monitor, and a laptop reboot.
-comptime CSV_PATH: StaticString = "fb_walker_all_d128_metrics.csv"
-comptime RUN_NAME: StaticString = "FB walker all-tasks d128"
+#
+# ⚠ BOTH DESTINATIONS ARE NAMED BY THE RUN, not by a constant. The CSV is
+# `run.metrics_path()` and the dashboard name is `run.name()`, so the local
+# file, the remote row and the checkpoints all carry one identifier.
+# `--seed` overrides it: a replicate arm at a second seed is the only way to
+# put an error bar on a 3-rung mean (§18.6.1 — the winner is ONE run).
 comptime SEED: Int = 20260805
 
 comptime F_IN = OBS + NACT + D
@@ -251,16 +282,35 @@ def main() raises:
     var obs_norm_on = atol(_flag(String("--obs-norm"),
                                  String(Int(OBS_NORM)))) != 0
     var tag = _flag(String("--tag"), String(""))
-    var ckpt_path = String(CKPT_PATH)
-    var csv_path = String(CSV_PATH)
-    var run_name = String(RUN_NAME)
-    if tag.byte_length() > 0:
-        ckpt_path = "fb_walker_" + tag + ".ckpt"
-        csv_path = "fb_walker_" + tag + "_metrics.csv"
-        run_name = String(RUN_NAME) + " [" + tag + "]"
+    var seed_v = atol(_flag(String("--seed"), String(SEED)))
+    comptime if ENV_OBS:
+        tag = tag + "_envobs" if tag.byte_length() > 0 else String("envobs")
+
+    # ⚠⚠ THIS BLOCK USED TO DERIVE THREE PATHS BY HAND, AND `RunContext` IS
+    # THAT GENERALISED. It was written here first because the pain is real —
+    # one identifier deriving the checkpoint path, the CSV path and the
+    # dashboard name together, so the three cannot drift apart. What it could
+    # not carry is what a directory listing of `checkpoints/` shows: no status,
+    # no outcome, no commit, no seed in the name, and a `--tag` a human had to
+    # remember to pass AND to vary. 26 `fb_walker_*` files accumulated there,
+    # including a step ladder `.100000 … .1200000` — one run's history flattened
+    # into a shared namespace with no record of which rung was the good one.
+    #
+    # ⚠ THE TAG SURVIVES AS THE SLUG, deliberately. Sweep arms have to stay
+    # legible in a directory listing, which is what the block above was for;
+    # uniqueness now comes from the id instead of from the human.
+    var run = RunContext(
+        project=String("fb"),
+        driver=String("examples/fb/fb_train_gpu.mojo"),
+        slug=String("fb-walker") + ("-" + tag if tag.byte_length() > 0 else ""),
+        env=String("builtin:dm_control/walker-all"),
+        dataset=String(STORE_PATH),
+        seed=seed_v,
+    )
+    run.set_tag(tag)
     print(
         "[0] arm: steps", train_steps, " ortho", ortho_w, " lr_b", lr_b,
-        " bc", bc_w, " obs_norm", obs_norm_on, " tag '", tag, "'",
+        " bc", bc_w, " obs_norm", obs_norm_on, " seed", seed_v, " tag '", tag, "'",
     )
 
     var ctx = DeviceContext()
@@ -313,15 +363,46 @@ def main() raises:
     # obs = [qpos | qvel], built on the host because it is a one-off.
     var obs_host = Tensor()
     obs_host.ensure(n_rows * OBS)
-    for r in range(n_rows):
-        for k in range(NQ):
-            obs_host.data[r * OBS + k] = Scalar[DT](
-                Float64(qpos.host[r * NQ + k])
-            )
-        for k in range(NV):
-            obs_host.data[r * OBS + NQ + k] = Scalar[DT](
-                Float64(qvel.host[r * NV + k])
-            )
+    comptime if ENV_OBS:
+        # The env's own 24-D vector for every row, through `obs_at` — the
+        # same producer the online run script and its eval use.
+        var scorer = ScorerEnv()
+        _ = scorer.reset()
+        var q = List[Float64](length=NQ, fill=0.0)
+        var v = List[Float64](length=NV, fill=0.0)
+        for r in range(n_rows):
+            for k in range(NQ):
+                q[k] = Float64(qpos.host[r * NQ + k])
+            for k in range(NV):
+                v[k] = Float64(qvel.host[r * NV + k])
+            var o = scorer.obs_at(q, v)
+            for k in range(OBS):
+                obs_host.data[r * OBS + k] = Scalar[DT](Float64(o.data[k]))
+        var moving = 0
+        for k in range(OBS):
+            var mn = Float64(1e30)
+            var mx = Float64(-1e30)
+            for r in range(n_rows):
+                var x = Float64(obs_host.data[r * OBS + k])
+                if x < mn:
+                    mn = x
+                if x > mx:
+                    mx = x
+            if mx - mn > 1e-6:
+                moving += 1
+        print("       ENV_OBS: 24-D env observation via obs_at;", moving, "/", OBS, "dims vary")
+        if moving < OBS - 2:
+            raise Error("ENV_OBS obs table: too few varying dims")
+    else:
+        for r in range(n_rows):
+            for k in range(NQ):
+                obs_host.data[r * OBS + k] = Scalar[DT](
+                    Float64(qpos.host[r * NQ + k])
+                )
+            for k in range(NV):
+                obs_host.data[r * OBS + NQ + k] = Scalar[DT](
+                    Float64(qvel.host[r * NV + k])
+                )
     # ⚠⚠ Standardise BEFORE the upload, so every consumer on device — the
     # gather kernels, B, F, the actor — sees one representation. Normalising
     # after upload, or in only some of the three gathers, is the kind of split
@@ -388,8 +469,8 @@ def main() raises:
     var idx_s = ctx.enqueue_create_buffer[IDX_DT](BATCH)
     var idx_sn = ctx.enqueue_create_buffer[IDX_DT](BATCH)
     var idx_sp = ctx.enqueue_create_buffer[IDX_DT](BATCH)
-    var samp_a = UniformDeviceSampler(n_rows, seed=UInt64(SEED))
-    var samp_b = UniformDeviceSampler(n_rows, seed=UInt64(SEED) + 977)
+    var samp_a = UniformDeviceSampler(n_rows, seed=UInt64(seed_v))
+    var samp_b = UniformDeviceSampler(n_rows, seed=UInt64(seed_v) + 977)
 
     var t = Trainer.make(
         lr=3e-4,
@@ -397,7 +478,7 @@ def main() raises:
         tau=0.01,
         ortho_weight=ortho_w,
         ctx=ctx,
-        seed=UInt64(SEED) + 13,
+        seed=UInt64(seed_v) + 13,
         max_grad_norm=MAX_GRAD_NORM,
         bc_weight=bc_w,
         lr_b=lr_b,
@@ -414,12 +495,13 @@ def main() raises:
     # ─── logging ─────────────────────────────────────────────────────────
     var env_vars = load_dotenv()
     var logger = CompositeLogger(
-        CsvLogger(csv_path, buffer_size=64),
+        CsvLogger(run.metrics_path(), buffer_size=64),
         RemoteLogger(
-            server_url=env_vars.get("RL_MONITOR_URL", ""),
-            run_name=run_name,
+            server_url=env_vars.get("NOEIRA_CLOUD_URL", ""),
+            run_name=run.name(),
+            run_id=run.id,
             buffer_size=64,
-            api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+            api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
         ),
     )
     logger.set_config("algorithm", "FB")
@@ -438,9 +520,15 @@ def main() raises:
     logger.set_config("ortho_weight", String(ortho_w))
     logger.set_config("lr_b", String(lr_b if lr_b >= 0.0 else 3e-4))
     logger.set_config("obs_norm", String(obs_norm_on))
+    logger.set_config("env_obs", String(ENV_OBS))
     logger.set_config("tag", tag)
+    logger.set_config("seed", String(seed_v))
     logger.set_config("cuda_graph", String(USE_TRAIN_CUDA_GRAPH))
     logger.set_config("epochs_over_dataset", String(epochs))
+    # ⚠ AFTER the config, and before step 0 — see `core/run.register_run`. The
+    # `/runs` payload carries the config, and a run that dies before its first
+    # metric batch would otherwise never appear on the dashboard at all.
+    register_run(run, logger)
 
     # Lazily captured on the first non-logging step; replayed thereafter.
     var train_graph = Optional[CUDAGraph](None)
@@ -501,13 +589,19 @@ def main() raises:
         # policy that emits plausible garbage and reports nothing.
         t.embed_sp()
         box_muller_normal_gpu[BATCH * D](
-            ctx, mptr(gauss.dev.value().unsafe_ptr()), UInt64(SEED), rng_off
+            ctx, mptr(gauss.dev.value().unsafe_ptr()), UInt64(seed_v), rng_off
         )
         rng_off += UInt64(BATCH * D)
-        box_muller_normal_gpu[BATCH * 2](
-            ctx, mptr(pick.dev.value().unsafe_ptr()), UInt64(SEED) + 31, rng_off
+        # ⚠⚠ UNIFORMS, not Gaussians. Until 2026-09-07 this was a second
+        # `box_muller_normal_gpu` call: `z_mixture_kernel` then took the uniform
+        # branch 69 % of the time and clamped half its B(s+) picks to row 0.
+        # See `kernels.uniform01_kernel`. Every §13 number and the A2 sweep
+        # trained under the old draw; re-run `base` before comparing across it.
+        ctx.enqueue_function[uniform01_kernel[BATCH * 2]](
+            mptr(pick.dev.value().unsafe_ptr()), UInt64(seed_v) + 31, rng_off,
+            grid_dim=_blocks(BATCH * 2), block_dim=TPB,
         )
-        rng_off += UInt64(BATCH * 2)
+        rng_off += UInt64(2 * BATCH * 2)
         ctx.enqueue_function[z_mixture_kernel[D, BATCH]](
             t.bz.dev.value().unsafe_ptr(),
             gauss.dev.value().unsafe_ptr(),
@@ -629,7 +723,7 @@ def main() raises:
             # ends holding its WORST state and the good early one is gone. That
             # happened: a stable 50 k checkpoint was replaced by a 100 k one
             # from the oscillating phase before it could be evaluated.
-            var p = ckpt_path + "." + String(step)
+            var p = run.checkpoint_path(String("step_") + String(step))
             t.save_state(p)
             # ⚠⚠ The normalisation statistics travel WITH the checkpoint, one
             # sidecar per rung. `fb_eval_walker` loads `<ckpt>.norm` and applies
@@ -638,7 +732,7 @@ def main() raises:
             if obs_norm_on:
                 onorm.save(p + ".norm")
             print("      checkpoint ->", p)
-    var pf = ckpt_path + ".final"
+    var pf = run.checkpoint_path(String("final"))
     t.save_state(pf)
     if obs_norm_on:
         onorm.save(pf + ".norm")
@@ -646,5 +740,7 @@ def main() raises:
     # `buffer_size`, so up to 63 entries (the most recent ones) would never
     # reach disk on a clean exit.
     logger.close()
+    run.close()
     print("[3] done. final checkpoint ->", pf)
-    print("      metrics CSV ->", csv_path)
+    print("      metrics CSV ->", run.metrics_path())
+    print("      run record   ->", run.kv_path())

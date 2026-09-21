@@ -32,21 +32,21 @@ naming the family, instead of drawing 71 of its 72 geoms.
 Run: pixi run mojo run -I . tests/physics3d/test_render_counts_are_in_render_fields.mojo
 """
 
-from mojo_rl.physics3d.parser.render_fields import (
+from noeira.physics3d.parser.render_fields import (
     RenderFields, build_render_fields,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.full_parser import parse_xml_full
 
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.hopper.hopper_xml import HopperModel
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
-from mojo_rl.envs.ant.ant_xml import AntModel
-from mojo_rl.envs.pusher.pusher_xml import PusherModel
-from mojo_rl.envs.robots.so_arm100_xml import SoArm100Model
-from mojo_rl.envs.dm_control.quadruped.quadruped_xml import DMQuadrupedWalkModel
-from mojo_rl.envs.dm_control.point_mass.point_mass_xml import DMPointMassModel
-from mojo_rl.envs.dm_control.cheetah.cheetah_xml import DMCheetahModel
-from mojo_rl.envs.dm_control.cartpole.cartpole_xml import DMCartpole1Model
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.hopper.hopper_xml import HopperModel
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.envs.ant.ant_xml import AntModel
+from noeira.envs.pusher.pusher_xml import PusherModel
+from noeira.envs.robots.so_arm100_xml import SoArm100Model
+from noeira.envs.dm_control.quadruped.quadruped_xml import DMQuadrupedWalkModel
+from noeira.envs.dm_control.point_mass.point_mass_xml import DMPointMassModel
+from noeira.envs.dm_control.cheetah.cheetah_xml import DMCheetahModel
+from noeira.envs.dm_control.cartpole.cartpole_xml import DMCartpole1Model
 
 
 struct Tally:

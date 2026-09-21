@@ -7,7 +7,7 @@ is checked for bit-parity against the CPU path.
 
 This file is ALSO a Metal-compilability probe. The opcode-dispatch divergence
 historically crashed the Metal backend; the §1 outlining + the prereq-3 direct
-opcode-table index may have moved that wall. It is kept OUT of the mojo_rl
+opcode-table index may have moved that wall. It is kept OUT of the noeira
 package so a backend crash here cannot break other Atari imports.
 
     pixi run -e apple  mojo run -I . examples/arcade_games/atari_gpu_spike.mojo
@@ -18,14 +18,14 @@ Requires roms/pong.bin.
 
 from std.sys import has_accelerator
 from std.sys.info import size_of
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
-from mojo_rl.envs.atari.atari_state import AtariState
-from mojo_rl.envs.atari.cpu6502 import run_frame, run_frame_cycle_accurate
-from mojo_rl.envs.atari.opcodes import OpcodeEntry, OPCODE_TABLE
-from mojo_rl.envs.atari.riot import set_action
+from noeira.envs.atari.environment import AtariEnvironment, load_rom
+from noeira.envs.atari.atari_state import AtariState
+from noeira.envs.atari.cpu6502 import run_frame, run_frame_cycle_accurate
+from noeira.envs.atari.opcodes import OpcodeEntry, OPCODE_TABLE
+from noeira.envs.atari.riot import set_action
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ def atari_frames_kernel(
         # Headless runner directly (NOT run_frame, which materializes the
         # comptime OPCODE_TABLE global — unavailable in the device module). The
         # opcode table is uploaded by the host and passed in via `op_table`.
-        var dummy = InlineArray[UInt8, 4](fill=0)
+        var dummy = Array[UInt8, 4](fill=0)
         for _ in range(n_frames):
             set_action(st, act)
             run_frame_cycle_accurate[RENDER=False](

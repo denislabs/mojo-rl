@@ -14,11 +14,11 @@ Run (after training):
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.experimental.lewm.trainer import LeWMTrainer
-from mojo_rl.experimental.lewm.pong_data import WindowSource
-from mojo_rl.experimental.lewm.eval import lewm_shuffled_eval
-from mojo_rl.envs.pusht import PushTOfflineSampler
+from noeira.nn.constants import DT
+from noeira.experimental.lewm.trainer import LeWMTrainer
+from noeira.experimental.lewm.pong_data import WindowSource
+from noeira.experimental.lewm.eval import lewm_shuffled_eval
+from noeira.envs.pusht import PushTOfflineSampler
 
 
 # ── must match training ────────────────────────────────────────────────

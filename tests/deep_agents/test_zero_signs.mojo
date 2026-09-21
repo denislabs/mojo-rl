@@ -9,7 +9,7 @@ Run:
 
 from std.testing import assert_equal, TestSuite
 
-from mojo_rl.deep_agents.zero.signs import (
+from noeira.deep_agents.zero.signs import (
     az_value_target,
     zero_sum_sign,
     flip_for_perspective,

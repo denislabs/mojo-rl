@@ -27,13 +27,13 @@ Run with:
 Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 """
 
-from mojo_rl.envs import CartPoleEnv
-from mojo_rl.agents.tiled_qlearning import (
+from noeira.envs import CartPoleEnv
+from noeira.agents.tiled_qlearning import (
     TiledQLearningAgent,
     TiledSARSALambdaAgent,
 )
-from mojo_rl.render import Renderer2D
-from mojo_rl.core.fmt import fit
+from noeira.render import Renderer2D
+from noeira.core.fmt import fit
 
 
 def main() raises:

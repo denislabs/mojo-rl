@@ -14,11 +14,11 @@ Run:
 
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
-from mojo_rl.deep_agents.muzero.blocks import mz_unroll_train_step_cpu
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.optimizer.adam import Adam
+from noeira.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
+from noeira.deep_agents.muzero.blocks import mz_unroll_train_step_cpu
 
 
 def main() raises:

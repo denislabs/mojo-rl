@@ -55,17 +55,17 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.collision.multi_ccd import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.collision.broadphase_sap import detect_contacts_sap
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.collision.multi_ccd import (
     MULTICCD_PERTURBATION_ANGLE,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE,
     METADATA_SIZE,
     META_IDX_NUM_CONTACTS,
@@ -759,7 +759,7 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
     #     column 8 (DIST) CPU -0.004999961704015732     GPU -0.0035994164645671844
     # ✅ DEFECT 27 — FIXED 2026-08-12. It was a METAL PER-THREAD ARRAY
     # MISCOMPUTE, not a collision-algorithm bug. `_capsule_box_second_pos`
-    # held `s`/`hax`/`pos`/`axis` as `InlineArray[Scalar, 3]` and indexed them
+    # held `s`/`hax`/`pos`/`axis` as `Array[Scalar, 3]` and indexed them
     # by a runtime axis; on Metal the value arrived correctly and read back
     # WRONG. Measured from the live GPU run with the parameter and the array
     # element smuggled out side by side through this very record:

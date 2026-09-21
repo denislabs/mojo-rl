@@ -29,8 +29,8 @@ Run with:
 Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 """
 
-from mojo_rl.envs import MountainCarEnv
-from mojo_rl.agents.tiled_qlearning import (
+from noeira.envs import MountainCarEnv
+from noeira.agents.tiled_qlearning import (
     TiledQLearningAgent,
     TiledSARSALambdaAgent,
 )
@@ -190,4 +190,4 @@ def main() raises:
     print("Demo complete!")
     print("=" * 60)
 
-from mojo_rl.core.fmt import fit
+from noeira.core.fmt import fit

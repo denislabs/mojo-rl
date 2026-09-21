@@ -1,0 +1,41 @@
+<mujoco model="deg_asset">
+  <!-- The same shape as rad_asset.xml, written in DEGREES, to be attached
+       into a radian scene. -->
+  <compiler angle="degree"/>
+  <default>
+    <joint range="-30 30" ref="6" springref="3"/>
+    <geom euler="17 0 0"/>
+    <default class="slider">
+      <joint type="slide" range="-0.02 0.07"/>
+      <default class="slider_ref">
+        <joint ref="0.01" springref="0.02"/>
+      </default>
+    </default>
+    <default class="turn">
+      <joint type="hinge" range="-70 70" ref="-11"/>
+      <site euler="0 14 0"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="root" pos="0 0 0.1" euler="0 23 0">
+      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01" euler="6 11 17"/>
+      <joint name="h_root" axis="0 1 0"/>
+      <geom name="g_root" type="box" size="0.05 0.05 0.05"/>
+      <site name="s_root" pos="0.05 0 0" axisangle="0 0 1 40"/>
+      <site name="s_turn" class="turn" pos="0 0.05 0"/>
+      <camera name="c_root" pos="0 -1 0" euler="69 0 0" fovy="50"/>
+      <body name="link" pos="0.1 0 0" childclass="turn">
+        <joint name="h_link" axis="0 0 1"/>
+        <joint name="h_explicit" type="hinge" axis="1 0 0" range="-115 115" ref="17" springref="-6"/>
+        <geom name="g_link" type="capsule" fromto="0 0 0 0.1 0 0" size="0.02" euler="0 0 63"/>
+        <body name="tip" pos="0.1 0 0" axisangle="1 0 0 52">
+          <joint name="s_tip" class="slider" axis="1 0 0"/>
+          <joint name="s_tip2" class="slider_ref" axis="0 1 0"/>
+          <joint name="h_odd" type="hinge" class="slider" axis="0 0 1"/>
+          <joint name="b_tip" type="ball" range="0 34"/>
+          <geom name="g_tip" type="sphere" size="0.02" axisangle="0 1 0 29"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

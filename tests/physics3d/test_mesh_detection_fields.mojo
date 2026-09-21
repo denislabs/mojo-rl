@@ -38,15 +38,15 @@ from std.math import abs
 from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
-from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
-from mojo_rl.physics3d.collision.contact_detection import (
+from noeira.physics3d.collision.contact_detection import (
     detect_contacts,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_SOLREF_0,
     CONTACT_IDX_DIST,
@@ -67,7 +67,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MAX_GPU_MESHES,
     METADATA_SIZE,
 )
-from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
+from noeira.envs.metaworld.sawyer_reach_xml import SawyerReachModel
 
 comptime DTYPE = DType.float32
 comptime NQ = SawyerReachModel.NQ

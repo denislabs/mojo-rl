@@ -17,9 +17,9 @@ Run (Apple Metal): pixi run -e apple mojo run -I . \
 from std.testing import assert_true
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.zero.gpu_example_replay import GpuMCTSExampleReplay
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.zero.gpu_example_replay import GpuMCTSExampleReplay
 
 
 def _fill(ctx: DeviceContext, mut buf: DeviceBuffer[DT], vals: List[Float64]) raises:

@@ -36,9 +36,9 @@ Run with:
     pixi run mojo run -I . examples/solve_taxi.mojo
 """
 
-from mojo_rl.envs import TaxiEnv
-from mojo_rl.agents import QLearningAgent, DoubleQLearningAgent, DynaQAgent
-from mojo_rl.core.fmt import fit
+from noeira.envs import TaxiEnv
+from noeira.agents import QLearningAgent, DoubleQLearningAgent, DynaQAgent
+from noeira.core.fmt import fit
 
 
 def main() raises:

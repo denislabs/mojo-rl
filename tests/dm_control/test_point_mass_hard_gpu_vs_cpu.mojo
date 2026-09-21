@@ -44,17 +44,17 @@ from max.gpu.host import DeviceContext
 from std.math import abs, sin, sqrt
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.constants import DT
+from noeira.core.cont_action import ContAction
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
     TENDON_IDX_COEF_0,
     META_IDX_TASK_PARAM_0,
     METADATA_SIZE,
 )
-from mojo_rl.envs.dm_control.point_mass import (
+from noeira.envs.dm_control.point_mass import (
     DMPointMassModel,
     DMPointMassHardConfig,
 )

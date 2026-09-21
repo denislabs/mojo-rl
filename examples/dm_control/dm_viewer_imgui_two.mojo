@@ -27,16 +27,16 @@ blocks on it.
 from std.random import seed
 from std.sys import argv
 
-from mojo_rl.envs.dm_control.viewer_core import (
+from noeira.envs.dm_control.viewer_core import (
     ViewerState, run_view, task_index, parse_drive, DRIVE_SWEEP,
 )
-from mojo_rl.render.imgui import imgui_shim_available
-from mojo_rl.render.renderer3d import Renderer3D
+from noeira.render.imgui import imgui_shim_available
+from noeira.render.renderer3d import Renderer3D
 
-from mojo_rl.envs.dm_control.cheetah.cheetah_xml import DMCheetahModel
-from mojo_rl.envs.dm_control.cheetah.cheetah_config import DMCheetahConfig
-from mojo_rl.envs.dm_control.walker.walker_xml import DMWalkerModel
-from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
+from noeira.envs.dm_control.cheetah.cheetah_xml import DMCheetahModel
+from noeira.envs.dm_control.cheetah.cheetah_config import DMCheetahConfig
+from noeira.envs.dm_control.walker.walker_xml import DMWalkerModel
+from noeira.envs.dm_control.walker.walker_config import DMWalkerConfig
 
 comptime SEED: Int = 0
 

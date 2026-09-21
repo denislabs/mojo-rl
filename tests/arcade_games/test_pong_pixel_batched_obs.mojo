@@ -18,9 +18,9 @@ Run:
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
-from mojo_rl.envs.arcade_games.pong import PongPixelEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.training import BatchedGpuDiscreteEnv
+from noeira.envs.arcade_games.pong import PongPixelEnv
 
 comptime N_ENVS = 4
 comptime OBS_DIM = PongPixelEnv[DType.float64].OBS_DIM  # 4×84×84 = 28224

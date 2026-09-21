@@ -38,8 +38,8 @@ from std.math import abs as math_abs
 from std.python import Python
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.model.mesh_inertia import mesh_inertia_from_file
-from mojo_rl.render.obj_loader import load_obj
+from noeira.physics3d.model.mesh_inertia import mesh_inertia_from_file
+from noeira.render.obj_loader import load_obj
 
 comptime DTYPE = DType.float64
 

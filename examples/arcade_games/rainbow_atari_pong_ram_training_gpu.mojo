@@ -27,15 +27,15 @@ from std.memory import Pointer
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
 
-from mojo_rl.deep_agents.c51.config import Rainbow
-from mojo_rl.deep_agents.training.atari_gpu_env import AtariGpuBatchedEnv
-from mojo_rl.envs.atari.environment import load_rom
-from mojo_rl.envs.atari.games import PongDef
-from mojo_rl.core.fmt import fit
+from noeira.deep_agents.c51.config import Rainbow
+from noeira.deep_agents.training.atari_gpu_env import AtariGpuBatchedEnv
+from noeira.envs.atari.environment import load_rom
+from noeira.envs.atari.games import PongDef
+from noeira.core.fmt import fit
 
 
 # RAM-mode Atari Pong: 128-byte RAM obs, 6 actions (ALE minimal set).
@@ -112,10 +112,10 @@ def main() raises:
 
         var env_vars = load_dotenv()
         var logger = RemoteLogger(
-            server_url=env_vars.get("RL_MONITOR_URL", ""),
+            server_url=env_vars.get("NOEIRA_CLOUD_URL", ""),
             run_name="Rainbow Atari Pong RAM (GPU)",
             buffer_size=64,
-            api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+            api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
         )
         logger.set_config("agent", "Rainbow DQN (deep_agents)")
         logger.set_config("env", "Atari Pong RAM (GPU emulator)")

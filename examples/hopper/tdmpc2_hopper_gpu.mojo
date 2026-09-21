@@ -25,12 +25,12 @@ from std.random import random_float64, seed
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.tdmpc2.agent import TDMPC2Agent
-from mojo_rl.deep_agents.tdmpc2.config import TDMPC2
-from mojo_rl.envs.hopper import Hopper, HopperConfig
+from noeira.nn.constants import DT
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.deep_agents.tdmpc2.agent import TDMPC2Agent
+from noeira.deep_agents.tdmpc2.config import TDMPC2
+from noeira.envs.hopper import Hopper, HopperConfig
 
 comptime TARGET = "gpu"
 comptime OBS = HopperConfig.OBS_DIM        # 11
@@ -106,18 +106,18 @@ def main() raises:
 
     var env_vars = load_dotenv()
     var logger = RemoteLogger(
-        server_url=env_vars.get("RL_MONITOR_URL", ""),
+        server_url=env_vars.get("NOEIRA_CLOUD_URL", ""),
         run_name="TD-MPC2 Hopper",
         buffer_size=64,
-        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+        api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
     )
     logger.set_config("algorithm", "TD-MPC2")
     logger.set_config("env", "Hopper")
     var logger_ptr = Pointer(to=logger).as_unsafe_any_origin()
-    if env_vars.get("RL_MONITOR_URL", "").byte_length() > 0:
+    if env_vars.get("NOEIRA_CLOUD_URL", "").byte_length() > 0:
         print("  logger: ENABLED → streaming each", DIAG_EVERY, "steps")
     else:
-        print("  logger: DISABLED — RL_MONITOR_URL not in .env")
+        print("  logger: DISABLED — NOEIRA_CLOUD_URL not in .env")
 
     var obs = env.reset_obs_list()
     var obsbuf = alloc[Scalar[DT]](OBS)

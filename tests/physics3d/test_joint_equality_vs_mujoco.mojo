@@ -36,24 +36,24 @@ from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
-from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.parser.xml_parser import merge_mjcf
+from noeira.physics3d.fields import Model, Data, DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import compute_mass_matrix
-from mojo_rl.physics3d.dynamics.ldl import ldl_factor
-from mojo_rl.physics3d.dynamics.ldl import compute_m_inv as _compute_m_inv
-from mojo_rl.physics3d.constraints.equality_tendon import (
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import compute_mass_matrix
+from noeira.physics3d.dynamics.ldl import ldl_factor
+from noeira.physics3d.dynamics.ldl import compute_m_inv as _compute_m_inv
+from noeira.physics3d.constraints.equality_tendon import (
     build_weld_equality_rows,
 )
-from mojo_rl.physics3d.types import _max_one, ConeType
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.types import _max_one, ConeType
+from noeira.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_EQ_SIZE,
     MODEL_BODY_SIZE,
@@ -281,8 +281,8 @@ def _check_rows[M: ModelDefFromXML](
     compute_subtree_com["cpu"](d, mf, None)
     compute_cdof["cpu"](d, mf, sc, None)
     compute_mass_matrix["cpu"](d, mf, sc, None)
-    ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
-    _compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
+    ldl_factor["cpu", DTYPE, BATCH=1](mf, sc, None)
+    _compute_m_inv["cpu", DTYPE, BATCH=1](mf, sc, None)
 
     comptime WR = 6 * cap[M.MAX_EQUALITY]()
     comptime WJ = 6 * cap[M.MAX_EQUALITY]() * cap[M.NV]()

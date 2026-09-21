@@ -16,11 +16,11 @@ from std.memory import alloc
 from std.math import sin
 from layout import Layout, LayoutTensor
 
-from mojo_rl.experimental.pcn.pc_initializer import PCXavier
-from mojo_rl.experimental.pcn.pc_conv_transpose_block import (
+from noeira.experimental.pcn.pc_initializer import PCXavier
+from noeira.experimental.pcn.pc_conv_transpose_block import (
     ConvTransposePCBlock,
 )
-from mojo_rl.experimental.pcn import PCIdentity
+from noeira.experimental.pcn import PCIdentity
 
 comptime dtype = DType.float32
 

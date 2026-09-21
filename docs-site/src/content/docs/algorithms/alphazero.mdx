@@ -17,7 +17,7 @@ supplies a policy prior and a value estimate. No dynamics model is learned —
 the rules are given.
 
 ```mojo
-from mojo_rl.deep_agents.alphazero import AlphaZeroAgent
+from noeira.deep_agents.alphazero import AlphaZeroAgent
 ```
 
 <DemoGrid min="14rem">
@@ -144,7 +144,7 @@ model can only approximate a simulator you already have exactly.
 ## Building it
 
 ```mojo
-from mojo_rl.deep_agents.alphazero import AlphaZeroAgent
+from noeira.deep_agents.alphazero import AlphaZeroAgent
 
 var agent = AlphaZeroAgent[
     "gpu", Env, Net,

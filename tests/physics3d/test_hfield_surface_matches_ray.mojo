@@ -34,17 +34,17 @@ from std.testing import assert_true, TestSuite
 
 from layout import Layout, LayoutTensor
 
-from mojo_rl.math3d import Vec3 as Vec3Generic
-from mojo_rl.envs.dm_control.quadruped import DMQuadrupedEscape
-from mojo_rl.envs.dm_control.quadruped.quadruped_escape_config import (
+from noeira.math3d import Vec3 as Vec3Generic
+from noeira.envs.dm_control.quadruped import DMQuadrupedEscape
+from noeira.envs.dm_control.quadruped.quadruped_escape_config import (
     ESCAPE_TERRAIN_GEOM,
 )
-from mojo_rl.physics3d.model.hfield_surface import (
+from noeira.physics3d.model.hfield_surface import (
     hfield_node_x, hfield_node_y, hfield_node_z,
 )
-from mojo_rl.physics3d.ray.model import ray_model
-from mojo_rl.physics3d.fields import DYN1, DYN2, rl1, rl2
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.ray.model import ray_model
+from noeira.physics3d.fields import DYN1, DYN2, rl1, rl2
+from noeira.physics3d.gpu.constants import (
     MODEL_HFIELD_META_SIZE,
     MAX_GPU_HFIELDS,
     MAX_GPU_MESHES,

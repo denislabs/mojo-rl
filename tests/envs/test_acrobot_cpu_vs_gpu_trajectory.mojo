@@ -19,7 +19,7 @@ from std.math import abs
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.acrobot import AcrobotEnv, AcrobotAction
+from noeira.envs.acrobot import AcrobotEnv, AcrobotAction
 
 comptime F = DType.float32
 comptime STATE_SIZE = 5  # theta1, theta2, theta1_dot, theta2_dot, steps

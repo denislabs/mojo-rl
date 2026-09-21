@@ -11,16 +11,16 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_fluid_wire_fields.mojo
 from std.math import abs
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.integrator.implicit import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.integrator.implicit import (
     ImplicitIntegrator,
 )
-from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
-from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.integrator.rk4 import RK4Integrator
+from noeira.envs.swimmer.swimmer_xml import SwimmerModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DT = DType.float32
 comptime NQ = SwimmerModel.NQ

@@ -13,16 +13,16 @@ from std.math import sin
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.experimental.pcn.pc_initializer import PCXavier
-from mojo_rl.experimental.pcn import (
+from noeira.nn.constants import DT as dtype
+from noeira.experimental.pcn.pc_initializer import PCXavier
+from noeira.experimental.pcn import (
     PCBlock,
     PCSequential,
     PCIdentity,
     PCReLU,
     PCTrainer,
 )
-from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
+from noeira.experimental.pcn.pc_conv_block import ConvPCBlock
 
 comptime BATCH = 8
 comptime T_INFER = 20

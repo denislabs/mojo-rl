@@ -15,13 +15,13 @@ Run with:
 from std.time import perf_counter_ns
 from std.random import seed, random_float64
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import LayoutTensor, Layout
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.core.fmt import fit
+from noeira.nn.constants import DT as dtype
+from noeira.core.fmt import fit
 
 comptime TILE = 16
 

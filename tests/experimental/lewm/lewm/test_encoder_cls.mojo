@@ -10,9 +10,9 @@ Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/lewm/test_encoder_
 from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn import Tensor, TensorRefs, Kaiming
-from mojo_rl.experimental.lewm.encoder import LeWMEncoderCLS
+from noeira.nn.constants import DT
+from noeira.nn import Tensor, TensorRefs, Kaiming
+from noeira.experimental.lewm.encoder import LeWMEncoderCLS
 
 
 comptime IN_CH = 3

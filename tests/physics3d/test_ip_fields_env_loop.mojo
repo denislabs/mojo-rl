@@ -22,12 +22,12 @@ from std.math import abs
 from std.sys import has_nvidia_gpu_accelerator
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.envs.phyics3d_obs import extract_obs_qpos_qvel
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.envs.inverted_pendulum.inverted_pendulum_xml import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.envs.phyics3d_obs import extract_obs_qpos_qvel
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.envs.inverted_pendulum.inverted_pendulum_xml import (
     InvertedPendulumModel,
 )
 
@@ -60,7 +60,7 @@ comptime GOLD_OBS = 0.10425555426627398  # checksum of the final obs across both
 
 
 @always_inline
-def _controller(obs: InlineArray[Float64, OBS_DIM]) -> Float64:
+def _controller(obs: Array[Float64, OBS_DIM]) -> Float64:
     """Deterministic PD balancing controller on [x, theta, xd, thd]."""
     var u = 0.3 * obs[0] + 0.8 * obs[2] + 6.0 * obs[1] + 1.5 * obs[3]
     if u > CTRL_MAX:
@@ -100,7 +100,7 @@ def main() raises:
         extract_obs_qpos_qvel["gpu", DTYPE, OBS_QPOS_SKIP=0, BATCH=BATCH](d, obs_t, ctx)
         obs_t.download(ctx)
         for e in range(BATCH):
-            var obs_arr = InlineArray[Float64, OBS_DIM](uninitialized=True)
+            var obs_arr = Array[Float64, OBS_DIM](uninitialized=True)
             for i in range(OBS_DIM):
                 obs_arr[i] = Float64(obs_t.data[e * OBS_DIM + i])
             var u = _controller(obs_arr)
@@ -159,7 +159,7 @@ def main() raises:
     for _ in range(N_CTRL_STEPS):
         extract_obs_qpos_qvel["cpu", DTYPE, OBS_QPOS_SKIP=0, BATCH=BATCH](dc, obs_c)
         for e in range(BATCH):
-            var obs_arr = InlineArray[Float64, OBS_DIM](uninitialized=True)
+            var obs_arr = Array[Float64, OBS_DIM](uninitialized=True)
             for i in range(OBS_DIM):
                 obs_arr[i] = Float64(obs_c.data[e * OBS_DIM + i])
             var u = _controller(obs_arr)

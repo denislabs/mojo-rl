@@ -32,8 +32,8 @@ Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_mt_net_dims.mojo`
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.deep_agents.tdmpc2.nets import TDMPC2Dynamics, TDMPC2Encoder
-from mojo_rl.deep_agents.tdmpc2.nets_mt import (
+from noeira.deep_agents.tdmpc2.nets import TDMPC2Dynamics, TDMPC2Encoder
+from noeira.deep_agents.tdmpc2.nets_mt import (
     TDMPC2DynamicsMT, TDMPC2EncoderMT, TDMPC2RewardMT, TDMPC2QNetMT,
     TDMPC2TerminationMT, TDMPC2PolicyMT,
 )

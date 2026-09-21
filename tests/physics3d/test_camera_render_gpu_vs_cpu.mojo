@@ -31,25 +31,26 @@ from max.gpu.host import DeviceContext
 from std.testing import assert_true, assert_almost_equal, TestSuite
 from layout import Layout
 
-from mojo_rl.math3d import Vec3 as Vec3Generic
-from mojo_rl.physics3d.fields import Data, Model, Dims, init_hfield_data
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.math3d import Vec3 as Vec3Generic
+from noeira.physics3d.fields import Data, Model, Dims, init_hfield_data
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.fields_build import build_model_fields_from_flat
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.gpu.constants import (
     MODEL_CAM_SIZE,
     CAM_IDX_ACTIVE,
     CAM_IDX_BODY,
     CAM_IDX_MODE,
     CAM_IDX_REF_SET,
 )
-from mojo_rl.physics3d.raytrace import (
+from noeira.physics3d.raytrace import (
     BatchedCameraRenderer,
     RGB_CHANNELS,
     camera_world_frame,
     init_camera_reference,
 )
+from noeira.physics3d.raytrace.visual import build_visual_model, SiteCondition
 
 comptime GT = DType.float32
 comptime BATCH = 2
@@ -79,6 +80,9 @@ comptime GD = Dims[
 ]
 
 comptime Renderer = BatchedCameraRenderer[GT, GD, BATCH, W, H]
+comptime Renderer4 = BatchedCameraRenderer[GT, GD, BATCH, W, H, True, True, 4]
+"""4x MSAA — LIBERO's `offsamples`. A separate kernel instantiation: the
+sample loop and its sub-pixel rays only exist in this one."""
 
 # ⚠ EVERY GEOM TYPE IS IN FRAME ON PURPOSE. The tracer's inner call is a
 # DISPATCH, and a dispatch is only tested by the branch it gets wrong; a camera
@@ -124,8 +128,73 @@ comptime CAM_BODY = 1
 comptime CAM_COM = 2
 
 
+def _textured_scene() raises -> String:
+    """`SCENE` with textures on four geoms — derived from it, not a copy.
+
+    ⚠ `visual_model_from_model` NEVER CARRIES A TEXTURE: the `Model` has no
+    material table, so every test above renders flat colours and the whole
+    texel path (mip chain, level of detail, trilinear) was never on the GPU.
+    This is the scene that puts it there. Each mapping is a different branch:
+    the infinite plane's object-linear UVs with a repeat, a CUBE texture on a
+    box (face select, clamp) and on a cylinder (a face SWITCH inside one
+    surface, the derivative guard), and a 2D texture on a sphere (the
+    fallback texgen). The grazing floor reaches the far mip levels."""
+    var xml = String(SCENE)
+    xml = xml.replace(
+        "<asset>",
+        "<asset>\n"
+        + '    <texture name="chk" type="2d" builtin="checker" width="64" height="64" rgb1=".1 .2 .3" rgb2=".9 .85 .7"/>\n'
+        + '    <texture name="cub" type="cube" builtin="checker" width="32" height="32" rgb1=".8 .2 .2" rgb2=".2 .8 .3"/>\n'
+        + '    <material name="floor_m" texture="chk" texrepeat="6 6"/>\n'
+        + '    <material name="cube_m" texture="cub"/>\n'
+        + '    <material name="ball_m" texture="chk" texrepeat="2 2"/>',
+    )
+    xml = xml.replace(
+        'size="0 0 0.05" pos="0 0 -0.6" rgba="0.35 0.4 0.32 1"',
+        'size="0 0 0.05" pos="0 0 -0.6" material="floor_m"',
+    )
+    xml = xml.replace(
+        'euler="20 -35 15" rgba="0.2 0.4 0.85 1"',
+        'euler="20 -35 15" material="cube_m"',
+    )
+    xml = xml.replace(
+        'euler="-25 40 5" rgba="0.15 0.75 0.45 1"',
+        'euler="-25 40 5" material="cube_m"',
+    )
+    xml = xml.replace(
+        'pos="0 0 0" rgba="0.85 0.2 0.2 1"',
+        'pos="0 0 0" material="ball_m"',
+    )
+    # A CONDITIONAL SITE on the rider, gated on its free joint's x — which the
+    # two lanes set differently (0.0 and 0.30), so a kernel reading the wrong
+    # lane's `qpos` shows it in the wrong picture.
+    # A TRANSLUCENT geom, so the compositing loop (and its back-face step
+    # out of a closed shape) runs in the kernel.
+    xml = xml.replace(
+        'euler="10 25 -40" rgba="0.7 0.3 0.8 1"',
+        'euler="10 25 -40" rgba="0.7 0.3 0.8 0.4"',
+    )
+    xml = xml.replace("<freejoint/>", '<freejoint name="rider_free"/>')
+    xml = xml.replace(
+        '<geom name="rider_geom"',
+        '<site name="beacon" type="box" size="0.07 0.07 0.07" pos="0 0 0.16" rgba="1 0.9 0 1"/>\n      <geom name="rider_geom"',
+    )
+    var c1 = xml.find('material="cube_m"')
+    var c2 = xml.find('material="cube_m"', c1 + 1) if c1 >= 0 else -1
+    if xml.find('material="floor_m"') < 0 or c2 < 0 \
+            or xml.find('material="ball_m"') < 0 \
+            or xml.find('name="beacon"') < 0 or xml.find('"rider_free"') < 0 \
+            or xml.find('rgba="0.7 0.3 0.8 0.4"') < 0:
+        raise Error(
+            "_textured_scene: a replacement did not land — SCENE's geom lines"
+            " changed and this test would render an untextured scene"
+        )
+    return xml^
+
+
 def _build(
-    mut m: Model[GT, GD], mut d: Data[GT, GD, BATCH]
+    mut m: Model[GT, GD], mut d: Data[GT, GD, BATCH],
+    xml: String = String(SCENE),
 ) raises:
     """Parse, build, place the two lanes DIFFERENTLY, and run FK + subtree CoM.
 
@@ -138,7 +207,7 @@ def _build(
     ⚠ `mut` OUT-PARAMETERS AND NOT A RETURNED TUPLE: `Model`/`Data` own their
     slabs and are deliberately not `ImplicitlyCopyable`.
     """
-    var fmd = parse_xml_full(SCENE, String("."))
+    var fmd = parse_xml_full(xml, String("."))
     build_model_fields_from_flat[GT](fmd, m)
     init_hfield_data(d, m)
     # freejoint qpos: (x, y, z, qw, qx, qy, qz)
@@ -444,6 +513,95 @@ def test_camera_render_gpu_matches_cpu() raises:
             String("camera ") + String(cam) + ": worst colour difference "
             + String(worst_rgb),
         )
+
+
+def test_textured_render_gpu_matches_cpu() raises:
+    """The appearance paths — mip chain and trilinear, a conditional site, a
+    translucent geom, and 4x MSAA — GPU vs CPU.
+
+    ⚠ ANTI-VACUITY FIRST: the textured picture must DIFFER from the flat one
+    on the CPU, or the textures never reached the sampler and agreeing with
+    the GPU would prove nothing about it.
+    """
+    comptime if not has_accelerator():
+        print("  SKIP — no accelerator on this machine")
+        return
+
+    var ctx = DeviceContext()
+    var xml = _textured_scene()
+    var m = Model[GT, GD]()
+    var d = Data[GT, GD, BATCH]()
+    _build(m, d, xml)
+    _upload(ctx, m, d)
+    var fmd = parse_xml_full(xml, String("."))
+
+    var r = Renderer4(ctx, m, CAM_WORLD)
+    var flat = List[Scalar[GT]]()
+    var fd = List[Scalar[GT]]()
+    var fs = List[Scalar[GT]]()
+    r.render_cpu(d, m, flat, fd, fs)
+
+    var conds = List[SiteCondition]()
+    conds.append(SiteCondition(String("beacon"), String("rider_free"), 0.15))
+    r.set_visual(
+        ctx, build_visual_model[GT, GD](fmd, m, conditions=conds)
+    )
+    assert_true(r.vis.ntex == 2, String("expected 2 textures, got ") + String(r.vis.ntex))
+    assert_true(r.vis.ncond == 1, "the beacon site was not added")
+    var rgb_c = List[Scalar[GT]]()
+    var dep_c = List[Scalar[GT]]()
+    var seg_c = List[Scalar[GT]]()
+    r.render_cpu(d, m, rgb_c, dep_c, seg_c)
+
+    var n = BATCH * NPIX
+    var changed = 0
+    for i in range(n):
+        var dc = abs(Float64(rgb_c[i * RGB_CHANNELS]) - Float64(flat[i * RGB_CHANNELS]))
+        if dc > 0.02:
+            changed += 1
+    print("  textured vs flat (CPU): ", changed, " of ", n, " pixels changed")
+    # The beacon's row is `ngeom`; it must be seen in lane 1 and NOT lane 0.
+    var beacon = r.vis.ngeom
+    var seen = List[Int](length=BATCH, fill=0)
+    for i in range(n):
+        if Int(seg_c[i]) == beacon:
+            seen[i // NPIX] += 1
+    print("  beacon pixels per lane (CPU): ", seen[0], " ", seen[1])
+    assert_true(seen[0] == 0, "the beacon shows in lane 0, whose knob is off")
+    assert_true(seen[1] > 0, "the beacon is missing from lane 1, whose knob is on")
+    assert_true(
+        changed > n // 5,
+        "the textured scene renders like the flat one — the textures did not"
+        " reach the sampler, so the GPU comparison below would be vacuous",
+    )
+
+    r.render(ctx, d, m)
+    ctx.synchronize()
+    var h_rgb = ctx.enqueue_create_host_buffer[GT](n * RGB_CHANNELS)
+    var h_seg = ctx.enqueue_create_host_buffer[GT](n)
+    ctx.enqueue_copy(h_rgb, r.rgb)
+    ctx.enqueue_copy(h_seg, r.seg)
+    ctx.synchronize()
+    var seg_bad = 0
+    var worst_rgb = 0.0
+    for i in range(n):
+        if Int(h_seg[i]) != Int(seg_c[i]):
+            seg_bad += 1
+        for c in range(RGB_CHANNELS):
+            var dc = abs(
+                Float64(h_rgb[i * RGB_CHANNELS + c])
+                - Float64(rgb_c[i * RGB_CHANNELS + c])
+            )
+            if dc > worst_rgb:
+                worst_rgb = dc
+    print(
+        "  textured: seg mismatches ", seg_bad, ", worst |d rgb| ", worst_rgb
+    )
+    assert_true(seg_bad == 0, String(seg_bad) + " pixels hit a different geom")
+    assert_true(
+        worst_rgb < 2e-3,
+        String("textured worst colour difference ") + String(worst_rgb),
+    )
 
 
 def test_a_trackcom_camera_without_a_reference_is_refused() raises:

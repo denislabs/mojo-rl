@@ -13,11 +13,11 @@ import Papers from '~/components/Papers.astro';
 
 [AlphaZero](/algorithms/alphazero/), [MuZero](/algorithms/muzero/) and
 [EfficientZero V2](/algorithms/efficient-zero-v2/) differ in what they learn.
-They barely differ in how they search. `mojo_rl.planners.tree_search` is the
+They barely differ in how they search. `noeira.planners.tree_search` is the
 search, factored out of all three.
 
 ```mojo
-from mojo_rl.planners.tree_search import (
+from noeira.planners.tree_search import (
     GenericCPUMCTS, GenericGPUMCTS, GumbelGPUMCTS, SampledGumbelGPUMCTS,
 )
 ```
@@ -171,7 +171,7 @@ then carry true game-state payloads and expansion calls the environment's
 
 ## Testing a search
 
-The two stub models in `mojo_rl/planners/testing/` are what make the search
+The two stub models in `noeira/planners/testing/` are what make the search
 testable in isolation:
 
 ```bash

@@ -1,0 +1,5 @@
+dict_id 0
+marker_id 7
+marker_m 0.04
+rvec np.float64(-2.8446989144250203) np.float64(-0.14459224155206993) np.float64(-0.5060728454322454)
+tvec 0.045 -0.03 0.35

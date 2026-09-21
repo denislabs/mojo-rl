@@ -14,15 +14,15 @@ from std.math import isnan, isinf
 from std.random import random_float64, seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.training.driver_offpolicy_discrete import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.training.driver_offpolicy_discrete import (
     OffPolicyDiscreteAgent,
     run_offpolicy_discrete_train,
     run_offpolicy_discrete_eval,
 )
-from mojo_rl.deep_agents.training.episode_tracker import EpisodeTracker
+from noeira.deep_agents.training.episode_tracker import EpisodeTracker
 
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.envs.cartpole import CartPoleEnv
 
 
 comptime OBS_DIM = 4

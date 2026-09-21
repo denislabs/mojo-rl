@@ -1,9 +1,9 @@
 """Smoke test for AtariEnv — BoxDiscreteActionEnv conformance."""
 
-from mojo_rl.envs.atari.atari_env import AtariEnv, AtariEnvState, AtariAction
-from mojo_rl.envs.atari.environment import load_rom
-from mojo_rl.envs.atari.games.registry import AtariGame
-from mojo_rl.envs.atari.flags import RAM_SIZE, OBS_WIDTH, OBS_HEIGHT
+from noeira.envs.atari.atari_env import AtariEnv, AtariEnvState, AtariAction
+from noeira.envs.atari.environment import load_rom
+from noeira.envs.atari.games.registry import AtariGame
+from noeira.envs.atari.flags import RAM_SIZE, OBS_WIDTH, OBS_HEIGHT
 
 
 def test_ram_mode() raises:

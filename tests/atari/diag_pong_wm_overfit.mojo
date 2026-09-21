@@ -26,15 +26,15 @@ from std.memory import alloc
 from std.random import seed, random_float64
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
-from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
+from noeira.nn.constants import DT
+from noeira.nn.primitives.ops.swish_op import SwishOp
+from noeira.deep_agents.dreamerv3.agent import DreamerV3Agent
+from noeira.deep_agents.dreamerv3.nets_cnn import (
     DreamerEncoderCNN,
     DreamerDecoderCNN,
 )
-from mojo_rl.envs.atari import AtariEnv
-from mojo_rl.envs.atari.games.registry import AtariGame
+from noeira.envs.atari import AtariEnv
+from noeira.envs.atari.games.registry import AtariGame
 
 # ── tiny model (real CNN pixel path; small so 1500 steps run in minutes) ──
 comptime C = 1

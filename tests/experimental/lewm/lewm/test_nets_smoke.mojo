@@ -11,9 +11,9 @@ from std.math import isnan, isinf
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn import Tensor, TensorRefs, TensorPack, ParamVisitor, Kaiming
-from mojo_rl.experimental.lewm.encoder import (
+from noeira.nn.constants import DT
+from noeira.nn import Tensor, TensorRefs, TensorPack, ParamVisitor, Kaiming
+from noeira.experimental.lewm.encoder import (
     LeWMEncoder, ActionEmbedder, ARPredictor, PredProj,
 )
 

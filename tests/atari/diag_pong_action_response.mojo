@@ -11,9 +11,9 @@ path, not the WM. If actions move it up/down, the control loop is fine.
 Run: pixi run -e apple mojo run -I . tests/atari/diag_pong_action_response.mojo
 """
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.atari import AtariEnv
-from mojo_rl.envs.atari.games.registry import AtariGame
+from noeira.nn.constants import DT
+from noeira.envs.atari import AtariEnv
+from noeira.envs.atari.games.registry import AtariGame
 
 comptime IMG = 96
 comptime OBS = IMG * IMG

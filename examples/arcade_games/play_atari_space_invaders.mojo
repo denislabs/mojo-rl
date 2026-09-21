@@ -17,12 +17,12 @@ this exercises the joystick/fire input path of the emulator.
 Requires ROM files in 'roms/' (symlink to ale_py/roms/).
 """
 
-from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
-from mojo_rl.envs.atari.renderer import AtariRenderer
-from mojo_rl.envs.atari.riot import set_action
-from mojo_rl.envs.atari.cpu6502 import run_frame_video
-from mojo_rl.envs.atari.games.space_invaders import SpaceInvadersDef
-from mojo_rl.envs.atari.flags import ACTION_NOOP, ACTION_RESET
+from noeira.envs.atari.environment import AtariEnvironment, load_rom
+from noeira.envs.atari.renderer import AtariRenderer
+from noeira.envs.atari.riot import set_action
+from noeira.envs.atari.cpu6502 import run_frame_video
+from noeira.envs.atari.games.space_invaders import SpaceInvadersDef
+from noeira.envs.atari.flags import ACTION_NOOP, ACTION_RESET
 
 
 def main() raises:

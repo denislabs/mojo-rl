@@ -9,9 +9,9 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_mse_loss_storage.mojo
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.loss.mse_loss import MSELoss
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.loss.mse_loss import MSELoss
 
 
 comptime B = 4

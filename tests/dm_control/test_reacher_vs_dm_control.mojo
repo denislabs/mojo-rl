@@ -33,7 +33,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.reacher import (
+from noeira.envs.dm_control.reacher import (
     DMReacherEasy,
     DMReacherHard,
     DMReacherModel,
@@ -46,12 +46,12 @@ from mojo_rl.envs.dm_control.reacher import (
     FINGER_SIZE,
     TARGET_Z,
 )
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.physics3d.model import ModelDefLike
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.kinematics.geom_xpos import geom_xpos
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.physics3d.model import ModelDefLike
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.kinematics.geom_xpos import geom_xpos
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_MOCAP,

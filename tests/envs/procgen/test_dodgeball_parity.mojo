@@ -11,8 +11,8 @@ collisions/kills, ball edge-erase) over a fire tape. Ground truth =
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import DodgeballGame
-from mojo_rl.envs.procgen.games.dodgeball import DIST_EASY, DIST_HARD, LAVA_WALL, ENEMY
+from noeira.envs.procgen.games import DodgeballGame
+from noeira.envs.procgen.games.dodgeball import DIST_EASY, DIST_HARD, LAVA_WALL, ENEMY
 
 
 comptime STEPS = 200

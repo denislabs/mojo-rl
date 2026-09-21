@@ -42,7 +42,7 @@ doesn't compile.
 
 from layout import TileTensor, TensorLayout, row_major
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
 
 def main() raises:

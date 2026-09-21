@@ -22,8 +22,8 @@ every tendon that should have run straight.
 Run: pixi run mojo run -I . tests/physics3d/test_mju_wrap_vs_mujoco.mojo
 """
 
-from mojo_rl.physics3d.dynamics.wrap import mju_wrap, WrapOut
-from mojo_rl.physics3d.gpu.constants import WRAP_SPHERE, WRAP_CYLINDER
+from noeira.physics3d.dynamics.wrap import mju_wrap, WrapOut
+from noeira.physics3d.gpu.constants import WRAP_SPHERE, WRAP_CYLINDER
 from tests.physics3d.wrap_goldens import wrap_goldens, wrap_case_labels, WRAP_COLS
 
 

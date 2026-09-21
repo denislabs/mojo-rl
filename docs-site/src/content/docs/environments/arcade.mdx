@@ -95,8 +95,8 @@ was the difference between "does not learn" and "solves it" in this repo.
 All three implement `GPUDiscreteEnv`:
 
 ```mojo
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
-from mojo_rl.envs.arcade_games.pong import Pong, PongConfig
+from noeira.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
+from noeira.envs.arcade_games.pong import Pong, PongConfig
 
 comptime N_ENVS = 64
 comptime EnvT = BatchedGpuDiscreteEnv[Pong[DT], N_ENVS, PongConfig.OBS_DIM, 1]

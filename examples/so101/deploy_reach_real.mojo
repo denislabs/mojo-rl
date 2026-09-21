@@ -48,7 +48,11 @@ calibrated range; clamp the step to `present +/- max_step_ticks`):
 3. the commanded angle is clamped to the MODEL's `ctrlrange` before it is ever
    mapped back to ticks — the policy trained inside those limits and has no
    reason to be trusted outside them;
-4. torque is released in a `finally`.
+4. the run ends through `robot/so101/deploy_shutdown.return_and_release`, from
+   a `finally`: the follower ramps back to the pose it started from, and torque
+   is released there, on the operator's word — not wherever the policy left
+   the arm (the ACT deployment's arm FELL that way). If the ramp does not
+   arrive, torque is LEFT ON.
 
 ⚠⚠ A `finally` does NOT run on an abort or a signal. If this dies hard, the
 follower is left holding its pose — run `pixi run soarm-torque-off`. That is
@@ -61,24 +65,47 @@ from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
-from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
-from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
-from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
-from mojo_rl.robot.so101.sim_map import SimJointMap
-from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac import SAC
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.robots.so_arm101_xml import SoArm101Model
+from noeira.envs.robots.so_arm101 import SoArm101ReachConfig
+from noeira.physics3d.fields import actuator_column
+from noeira.physics3d.gpu.constants import (
+    ACT_IDX_CTRL_MAX,
+    ACT_IDX_CTRL_MIN,
+    META_IDX_TASK_PARAM_6,
+)
+from noeira.robot.so101 import SO101Arm, SO101_N, joint_name
+from noeira.robot.so101.ports import follower_port, port_refusal
+from noeira.robot.so101.sim_map import SimJointMap
+from noeira.robot.so101.deploy_shutdown import return_and_release
+from noeira.io.fileio import StdinReader, stdin_is_tty
+from noeira.utils.fmt import col, fixed, pad_left, pad_right
+from noeira.core.policy import describe_policy, resolve_policy
 
-comptime FOLLOWER_PORT = "/dev/cu.usbmodem5B8E1139971"
-comptime CHECKPOINT_PATH = "sac_so_arm101_reach.ckpt"
+comptime POLICY_PROJECT = "so101"
+comptime POLICY_ROLE = "reach"
+comptime CHECKPOINT_FALLBACK = "sac_so_arm101_reach.ckpt"
+"""⚠⚠ THE DEPLOY PATH NAMES A ROLE, NOT A RUN — §8, decision 2.
+
+`resolve_policy` returns `projects/so101/policies/reach.ckpt` when a checkpoint
+has been promoted into that role, so a better one is a `project-promote` away
+and NOTHING HERE IS EDITED, rebuilt or re-flashed.
+
+⚠ It falls back to the old flat constant when no policy exists. A deploy path
+is the one place where failing closed is worse than failing open: an arm that
+will not start because the project layer is not set up yet is a regression for
+someone who only wanted to run what worked yesterday.
+
+⚠ AND THE ARM PRINTS WHICH ONE IT GOT, BEFORE IT MOVES. Silently loading
+different weights than the operator expects is precisely the failure this layer
+exists to prevent."""
 
 comptime EnvT = Phyics3dEnv[
     SoArm101Model, SoArm101ReachConfig, DT, TERMINATE_ON_UNHEALTHY=False
 ]
-comptime OBS_DIM = EnvT.OBS_DIM  # 21
+comptime OBS_DIM = EnvT.OBS_DIM  # 27 (incl. the previous action)
 comptime ACT_DIM = EnvT.ACTION_DIM  #  6
 comptime HIDDEN = 256
 comptime BATCH = 256
@@ -187,7 +214,8 @@ def _sleep_until(deadline_ns: Int):
 
 
 def main() raises:
-    # ⚠⚠ THE ARM MOVES ONLY WITH AN EXPLICIT `--live`. Everything else — the
+    # ⚠⚠ THE ARM MOVES ONLY WITH AN EXPLICIT `--arm` (`--live`, its old name,
+    # is kept as an alias — it always meant "arm"). Everything else — the
     # bus, the observation, the forward kinematics, the policy, the joint
     # mapping, the clamps, the filter and the loop rate — runs identically in
     # DRY RUN, which never arms torque and never writes a goal. A first
@@ -197,7 +225,7 @@ def main() raises:
     # ⚠ RUNTIME, NOT COMPTIME, for `seconds` and `step`. Hardware bring-up is
     # a sweep — the first live run showed the arm rate-limited by the clamp for
     # its whole duration, and answering "how long does it need" or "how much
-    # clamp is enough" should not cost a two-minute rebuild each time. `--live`
+    # clamp is enough" should not cost a two-minute rebuild each time. `--arm`
     # stays a flag rather than a default for the reason it always was.
     var live = False
     var seconds = SECONDS
@@ -206,7 +234,7 @@ def main() raises:
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
-        if a == "--live":
+        if a == "--arm" or a == "--live":
             live = True
         elif a == "--seconds" and i + 1 < len(args):
             seconds = Int(String(args[i + 1]))
@@ -219,20 +247,33 @@ def main() raises:
         print("SO-ARM101 reach — SIM-TRAINED POLICY ON THE REAL ARM  [LIVE]")
     else:
         print("SO-ARM101 reach — DRY RUN (no torque, no goals written)")
-        print("  pass --live to actually move the arm")
+        print("  pass --arm to actually move the arm")
     print("=" * 70)
 
     # ── the policy ────────────────────────────────────────────────────────
     var agent = SAC["cpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN](
         action_scale=ACTION_SCALE,
     )
+    var ckpt_path = resolve_policy(
+        String(POLICY_PROJECT), String(POLICY_ROLE), String(CHECKPOINT_FALLBACK)
+    )
     try:
-        agent.load(CHECKPOINT_PATH)
+        agent.load(ckpt_path)
     except e:
-        print("ERROR loading", CHECKPOINT_PATH, "-", e)
+        print("ERROR loading", ckpt_path, "-", e)
         print("Train first: examples/so101/sac_so_arm101_reach_training_gpu.mojo")
+        print("Or promote one: pixi run project-promote <run_id> best --as reach")
         return
-    print("  policy          =", CHECKPOINT_PATH)
+    print("  policy          =", ckpt_path)
+    # ⚠ WHICH RUN, AND WHAT THE HUMAN SAID ABOUT IT — before the arm moves.
+    var provenance = describe_policy(String(POLICY_PROJECT), String(POLICY_ROLE))
+    if provenance:
+        print("  promoted from   =", provenance)
+    else:
+        print(
+            "  promoted from   = (none — this is the flat fallback"
+            " constant, not a promoted policy)"
+        )
 
     # ── the kinematics oracle ─────────────────────────────────────────────
     # A full env, used for FK only. It is never stepped: `set_state` runs the
@@ -244,23 +285,34 @@ def main() raises:
     var sf = SoArm101Model.make_spec_fields[DType.float64]()
     var lo_col = actuator_column(sf, ACT_IDX_CTRL_MIN, SO101_N)
     var hi_col = actuator_column(sf, ACT_IDX_CTRL_MAX, SO101_N)
-    var lo = InlineArray[Float64, SO101_N](fill=0.0)
-    var hi = InlineArray[Float64, SO101_N](fill=0.0)
+    var lo = Array[Float64, SO101_N](fill=0.0)
+    var hi = Array[Float64, SO101_N](fill=0.0)
     for i in range(SO101_N):
         lo[i] = Float64(lo_col[i])
         hi[i] = Float64(hi_col[i])
     var jmap = SimJointMap.identity(lo^, hi^)
 
     # ── the arm ───────────────────────────────────────────────────────────
-    print("  opening         =", FOLLOWER_PORT)
-    var arm = SO101Arm(String(FOLLOWER_PORT), max_step_ticks=step_ticks)
+    var f_port = follower_port()
+    var why_f = port_refusal(f_port, String("follower"))
+    if why_f.byte_length() > 0:
+        raise Error("deploy_reach: " + why_f)
+    print("  opening         =", f_port)
+    var arm = SO101Arm(f_port, max_step_ticks=step_ticks)
     arm.bus.timeout_ms = 20
     print("  target          = (", TARGET_X, TARGET_Y, TARGET_Z, ")")
     print("=" * 70)
 
-    var raw = InlineArray[Int32, SO101_N](fill=0)
+    var raw = Array[Int32, SO101_N](fill=0)
     if arm.read_positions(Span(raw)) != SO101_N:
         raise Error("deploy: follower did not report 6 positions — not arming")
+    # The one pose known to be safe: the arm rested here, unpowered, before
+    # anything was armed. The shutdown ramps back to it.
+    var start_pose = List[Int32](length=SO101_N, fill=0)
+    for i in range(SO101_N):
+        start_pose[i] = raw[i]
+    var stdin = StdinReader()
+    var interactive = stdin_is_tty()
 
     # ── the mapping self-check ────────────────────────────────────────────
     #
@@ -275,56 +327,76 @@ def main() raises:
     # convention wrong in both directions round-trips perfectly — `to_sim` is
     # what pins that, and it is separately gated), but it is proof the two are
     # consistent, which is the failure this file could introduce on its own.
-    var worst = 0
-    var n_outside = 0
+    # ⚠⚠ THE MAP IS TESTED AT KNOWN-INTERIOR POINTS, NOT AT THE ARM'S POSE.
+    # The first version round-tripped each joint's MEASURED position and
+    # refused to arm when it did not come back — which conflates two entirely
+    # different things, because `to_sim` CLAMPS. A joint parked outside its
+    # range cannot round-trip by construction, so the check fired on a healthy
+    # arm twice: `shoulder_lift` 72 ticks past the MODEL range, then the
+    # gripper 11 ticks past its CALIBRATED range. Neither was a mapping fault.
+    #
+    # What the check is actually for is a SIGN or OFFSET error in `from_sim`,
+    # the one link nothing else exercises, whose failure on hardware is a
+    # MIRRORED POSE AT FULL SLEW. That is a property of the MAP and can be
+    # tested at points chosen to be interior — where no clamp can fire —
+    # independently of where the arm happens to be sitting.
+    var worst = 0.0
     for i in range(SO101_N):
-        # ⚠⚠ A CLAMPED JOINT CANNOT ROUND-TRIP, AND THAT IS NOT A DEFECT.
-        # `to_sim` clamps to the MODEL's `ctrlrange`, and three of these
-        # joints have calibrated travel that EXCEEDS it (the `gap` column in
-        # `SimJointMap.range_report`, and a faithful port of the upstream
-        # ranges — see `teleop_sim.mojo`). Sitting outside the model's range,
-        # `from_sim(to_sim(raw))` returns the LIMIT, not `raw`, by
-        # construction. Asserting on it would block a live run for a condition
-        # the mapping is documented to have — the first version of this check
-        # did exactly that, on `shoulder_lift`, 68 ticks out.
-        var over = jmap.clamped_by(arm.cal, i, raw[i])
-        var rad = jmap.to_sim(arm.cal, i, raw[i])
-        var back = jmap.from_sim(arm.cal, i, rad)
-        var err = Int(back) - Int(raw[i])
-        if err < 0:
-            err = -err
-        var note = String("")
-        if over > 0.0:
-            n_outside += 1
-            note = " ⚠ OUTSIDE the model range by " + fixed(over, 3) + " rad"
-        elif err > worst:
-            worst = err
-        print(
-            "  " + col_name(i), "raw", pad_left(String(Int(raw[i])), 6),
-            "-> rad", col(rad, 7, 3),
-            "-> raw", pad_left(String(Int(back)), 6),
-            "  (err " + String(err) + ")" + note,
-        )
-    if worst > 2:
+        for k in range(3):
+            var frac = 0.25 + 0.25 * Float64(k)
+            var v = jmap.sim_lo[i] + frac * (jmap.sim_hi[i] - jmap.sim_lo[i])
+            var back = jmap.to_sim(arm.cal, i, jmap.from_sim(arm.cal, i, v))
+            var e = back - v
+            if e < 0.0:
+                e = -e
+            if e > worst:
+                worst = e
+    if worst > 0.02:
         raise Error(
-            "deploy: to_sim/from_sim do not round-trip inside the model range"
-            " (worst " + String(worst) + " ticks) — NOT arming. A sign or"
+            "deploy: to_sim/from_sim do not round-trip at INTERIOR points"
+            " (worst " + fixed(worst, 4) + " rad) — NOT arming. A sign or"
             " offset in the joint mapping is inconsistent, and the failure it"
             " produces on hardware is a MIRRORED pose at full slew."
         )
     print(
-        "  mapping round-trips inside the model range, worst", worst, "ticks"
+        "  map round-trips at interior points, worst",
+        fixed(worst, 4), "rad (tick quantisation is ~0.0015)",
     )
-    if n_outside > 0:
-        # Not fatal, and worth saying out loud: until the arm moves back
-        # inside, the policy's observation carries a CLAMPED angle rather than
-        # the arm's true one, so its first action is taken on a pose that is
-        # off by that much. Every command it issues is clamped INTO the range,
-        # so the first motion fixes it.
+
+    # ── where the arm is parked, reported and never fatal ──────────────────
+    # Two different "outside"s, and they are not the same fault:
+    #   MODEL   — past the `ctrlrange` the policy trained in. Common: three
+    #             joints have calibrated travel that exceeds the model's.
+    #   CALIB   — past `lerobot-calibrate`'s own recorded endpoints. Means the
+    #             arm was moved beyond where it was calibrated, or drifted.
+    # Either way the first command clamps back inside, so neither blocks a run.
+    var n_model = 0
+    var n_calib = 0
+    for i in range(SO101_N):
+        var over = jmap.clamped_by(arm.cal, i, raw[i])
+        var note = String("")
+        if over > 0.0:
+            n_model += 1
+            note += " ⚠ past the MODEL range by " + fixed(over, 3) + " rad"
+        if raw[i] < arm.cal.range_min[i]:
+            n_calib += 1
+            note += " ⚠ " + String(Int(arm.cal.range_min[i] - raw[i])) + (
+                " ticks BELOW the calibrated minimum"
+            )
+        elif raw[i] > arm.cal.range_max[i]:
+            n_calib += 1
+            note += " ⚠ " + String(Int(raw[i] - arm.cal.range_max[i])) + (
+                " ticks ABOVE the calibrated maximum"
+            )
         print(
-            "  ⚠", n_outside, "joint(s) are parked outside the model's range."
-            " The policy's first\n     observation is clamped there; its"
-            " first command moves them back inside."
+            "  " + col_name(i), "raw", pad_left(String(Int(raw[i])), 6),
+            "-> rad", col(jmap.to_sim(arm.cal, i, raw[i]), 7, 3), note,
+        )
+    if n_model > 0 or n_calib > 0:
+        print(
+            "  ⚠", n_model, "joint(s) past the model range,", n_calib,
+            "past calibration. The policy's first\n     observation is"
+            " clamped there; its first command moves them back inside."
         )
     print()
 
@@ -356,8 +428,8 @@ def main() raises:
         qp.append(0.0)
         qv.append(0.0)
 
-    var vraw = InlineArray[Int32, SO101_N](fill=0)
-    var goals = InlineArray[Int32, SO101_N](fill=0)
+    var vraw = Array[Int32, SO101_N](fill=0)
+    var goals = Array[Int32, SO101_N](fill=0)
     # ⚠ SEEDED FROM THE ARM'S OWN POSE, not from zero. A filter starting at
     # zero would spend its first ticks sweeping the arm from wherever it is
     # toward the folded pose — a large unwanted motion, produced by the very
@@ -414,6 +486,23 @@ def main() raises:
                 Scalar[DT](TARGET_Z)
             )
             env.set_state(qp, qv)
+            # ⚠⚠ THE PREVIOUS ACTION, WRITTEN BY HAND. The observation's last
+            # six entries are it (`SoArmReachConfig.RECORD_PREV_ACTION`), and
+            # the ENV fills them at action-application time inside `step` —
+            # which this program never calls. It drives the simulator purely
+            # as a kinematics oracle through `set_state`, so nothing would
+            # write those slots and the policy would read six zeros forever:
+            # a policy trained to see its own last command, deployed blind to
+            # it, with no error anywhere.
+            #
+            # `action` still holds the PREVIOUS tick's output at this point —
+            # it is overwritten by `select_greedy_action` below — which is
+            # exactly the value the env would have recorded. On the first tick
+            # it is zero, matching a fresh reset.
+            for i in range(SO101_N):
+                env.d.meta.data[META_IDX_TASK_PARAM_6 + i] = Scalar[DT](
+                    action[i]
+                )
 
             var st = env.get_state()
             for i in range(OBS_DIM):
@@ -485,10 +574,18 @@ def main() raises:
                 )
             _sleep_until(t0 + period_ns)
     finally:
-        # Unconditional, dry run included: it costs one packet and it is the
-        # net under every path that could have armed something.
-        arm.set_torque(False)
-        print("\nfollower torque OFF")
+        # Home first, then release — on a dry run this is the unconditional
+        # one-packet release, the net under every path that could have armed.
+        var released = return_and_release(
+            arm, start_pose, live, True, stdin, interactive
+        )
+        if released:
+            print("\nfollower torque OFF")
+        else:
+            print(
+                "⚠ the follower is STILL ENERGISED — the return did not"
+                " arrive; run `pixi run soarm-torque-off` once it is safe."
+            )
 
     print("=" * 70)
     print("TRANSFER RESULT — sim-trained reach on hardware")
@@ -555,7 +652,7 @@ def main() raises:
             "\n     before reading the distance as the policy's fault.",
         )
     if not live:
-        print("  ⚠ DRY RUN — nothing was written to the arm. Add --live.")
+        print("  ⚠ DRY RUN — nothing was written to the arm. Add --arm.")
     # ⚠ The error is FK-derived, not measured with a ruler: it is where the
     # model says the jaw is given the servo angles. A systematic kinematic
     # error is invisible to it. The sim task's own success radius is 20 mm.

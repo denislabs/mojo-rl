@@ -7,8 +7,11 @@ The Mojo equivalent of `lerobot-teleoperate`, and the smallest program that
 proves the whole stack: libc tty -> Feetech packets -> calibrated units ->
 a real arm moving.
 
-⚠ **THIS MOVES THE FOLLOWER.** Read `docs/SO101_SERIAL_LAYER.md` §safety
-before the first run. Three guards, in order of what they catch:
+⚠ **WITH `--arm`, THIS MOVES THE FOLLOWER.** Arming is opt-in, as in every
+SO-101 tool: without `--arm` the program reads both arms and prints the goals
+it WOULD command, and never enables torque or writes a goal. Read
+`docs/SO101_SERIAL_LAYER.md` §safety before the first armed run. Three guards,
+in order of what they catch:
 
 1. the follower's goal is set to its OWN present position *before* torque is
    enabled, so arming does not snap it to a stale `Goal_Position`;
@@ -26,7 +29,8 @@ as the safety mechanism; the safety mechanism is the recovery tool and the
 power switch.
 
     pixi run build-serial
-    pixi run mojo run -I . examples/so101/teleop.mojo
+    pixi run mojo run -I . examples/so101/teleop.mojo          # dry run: reads, prints, never moves
+    pixi run mojo run -I . examples/so101/teleop.mojo --arm    # the follower moves
 
 Ports are the two SO-101 boards on this desk; pass different ones by editing
 the comptimes below (a proper CLI belongs with the rest of the tooling, not
@@ -34,13 +38,13 @@ in the first example).
 """
 
 from std.ffi import external_call
+from std.sys import argv
 from std.time import perf_counter_ns
 
-from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
-from mojo_rl.utils.fmt import col, fixed
+from noeira.robot.so101 import SO101Arm, SO101_N, joint_name
+from noeira.robot.so101.ports import follower_port, leader_port, port_refusal
+from noeira.utils.fmt import col, fixed
 
-comptime FOLLOWER_PORT = "/dev/cu.usbmodem5B8E1139971"
-comptime LEADER_PORT = "/dev/cu.usbmodem5B910455171"
 
 comptime HZ = 50
 comptime SECONDS = 30
@@ -49,6 +53,12 @@ comptime MAX_STEP_TICKS = 80
 """~7 degrees per 20 ms tick. This does not cap the servo's SPEED — it caps
 how far ahead of the arm the goal may sit, which is what turns a large
 leader/follower mismatch into a ramp. Tighter is smoother and laggier."""
+
+comptime TRACK_STEP_TICKS = 512
+"""~45 degrees: the clamp once the follower has caught up with the leader.
+See `SO101Arm.track_step_ticks` — one 80-tick clamp made the follower lag the
+leader by 300 ms."""
+
 
 
 def _sleep_until(deadline_ns: Int):
@@ -78,12 +88,32 @@ def _sleep_until(deadline_ns: Int):
 
 
 def main() raises:
-    print("opening follower:", FOLLOWER_PORT)
+    # ⚠⚠ ARMING IS OPT-IN. This script used to arm on start — the one SO-101
+    # tool that did — so a run meant to check the bus moved the arm.
+    var arm = False
+    var args = argv()
+    for i in range(1, len(args)):
+        var a = String(args[i])
+        if a == "--arm":
+            arm = True
+        else:
+            raise Error(
+                "teleop: unknown argument '" + a + "' (the only flag is --arm)"
+            )
+    var f_port = follower_port()
+    var l_port = leader_port()
+    for pair in [(f_port, String("follower")), (l_port, String("leader"))]:
+        var why = port_refusal(pair[0], pair[1])
+        if why.byte_length() > 0:
+            raise Error("teleop: " + why)
+    print("opening follower:", f_port)
     var follower = SO101Arm(
-        String(FOLLOWER_PORT), max_step_ticks=MAX_STEP_TICKS
+        f_port,
+        max_step_ticks=MAX_STEP_TICKS,
+        track_step_ticks=TRACK_STEP_TICKS,
     )
-    print("opening leader:  ", LEADER_PORT)
-    var leader = SO101Arm(String(LEADER_PORT), max_step_ticks=0)
+    print("opening leader:  ", l_port)
+    var leader = SO101Arm(l_port, max_step_ticks=0)
 
     # A control loop drops a tick rather than stalling one, so the 50 ms
     # default (lerobot's patched single-transaction timeout, right for setup)
@@ -101,7 +131,7 @@ def main() raises:
     # The leader is backdriven by hand: it must NOT hold position.
     leader.set_torque(False)
 
-    var present = InlineArray[Int32, SO101_N](fill=0)
+    var present = Array[Int32, SO101_N](fill=0)
     var got = follower.read_positions(Span(present))
     if got != SO101_N:
         raise Error(
@@ -112,19 +142,25 @@ def main() raises:
             + " positions — refusing to arm torque"
         )
 
-    # Guard 1: park the goal on the CURRENT pose before arming, so enabling
-    # torque holds the arm where it stands instead of driving it to whatever
-    # Goal_Position the last session left behind.
-    follower.set_position_mode()
-    var hold = follower.max_step_ticks
-    follower.max_step_ticks = 0  # goals == present; the ramp clamp is moot
-    follower.write_goals(Span(present))
-    follower.max_step_ticks = hold
-    follower.set_torque(True)
-    print("follower torque ON — hold the leader, then move it\n")
+    if arm:
+        # Guard 1: park the goal on the CURRENT pose before arming, so
+        # enabling torque holds the arm where it stands instead of driving it
+        # to whatever Goal_Position the last session left behind.
+        follower.set_position_mode()
+        var hold = follower.max_step_ticks
+        follower.max_step_ticks = 0  # goals == present; the ramp clamp is moot
+        follower.write_goals(Span(present))
+        follower.max_step_ticks = hold
+        follower.set_torque(True)
+        print("follower torque ON — hold the leader, then move it\n")
+    else:
+        print(
+            "DRY RUN — the follower is NOT armed: reading both arms and"
+            " printing the goals it would get. Pass --arm to move it.\n"
+        )
 
-    var lead_raw = InlineArray[Int32, SO101_N](fill=0)
-    var goals = InlineArray[Int32, SO101_N](fill=0)
+    var lead_raw = Array[Int32, SO101_N](fill=0)
+    var goals = Array[Int32, SO101_N](fill=0)
     var period_ns = 1_000_000_000 // HZ
     var ticks = HZ * SECONDS
     var dropped = 0
@@ -154,7 +190,8 @@ def main() raises:
                     i, leader.cal.degrees(i, lead_raw[i])
                 )
             try:
-                follower.write_goals(Span(goals))
+                if arm:
+                    follower.write_goals(Span(goals))
             except e:
                 # `write_goals` refuses a partial follower read rather than
                 # commanding a half-updated pose. In a loop that is a dropped
@@ -180,8 +217,11 @@ def main() raises:
     finally:
         # Release torque on ANY exit, including an exception. A follower left
         # holding a pose after a crash is both a safety and a thermal problem.
+        # Released on a dry run too: harmless, and it covers a follower an
+        # earlier session left holding a pose.
         follower.set_torque(False)
-        print("\nfollower torque OFF")
+        if arm:
+            print("\nfollower torque OFF")
 
     var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
     print(

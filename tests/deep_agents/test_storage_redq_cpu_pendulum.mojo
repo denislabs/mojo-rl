@@ -17,9 +17,9 @@ Run: pixi run mojo run -I . tests/deep_agents/test_storage_redq_cpu_pendulum.moj
 from std.random import seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.redq.config import SmallREDQ
-from mojo_rl.envs.pendulum.pendulum_v1 import PendulumEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.redq.config import SmallREDQ
+from noeira.envs.pendulum.pendulum_v1 import PendulumEnv
 
 
 comptime OBS = 3

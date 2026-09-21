@@ -95,13 +95,13 @@ from std.random import seed
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.tdmpc2.config_mt import TDMPC2MultiTask
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.dm_control.walker.walker_xml import DMWalkerModel
-from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
+from noeira.nn.constants import DT
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.deep_agents.tdmpc2.config_mt import TDMPC2MultiTask
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.dm_control.walker.walker_xml import DMWalkerModel
+from noeira.envs.dm_control.walker.walker_config import DMWalkerConfig
 
 comptime TARGET = "gpu"
 
@@ -308,10 +308,10 @@ def main() raises:
 
     var env_vars = load_dotenv()
     var logger = RemoteLogger(
-        server_url=env_vars.get("RL_MONITOR_URL", ""),
+        server_url=env_vars.get("NOEIRA_CLOUD_URL", ""),
         run_name="TD-MPC2 dm_control walker MULTI-TASK",
         buffer_size=64,
-        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+        api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
     )
     logger.set_config("algorithm", "TD-MPC2-MT")
     logger.set_config("env", "dm_control/walker-stand+walk+run")
@@ -324,10 +324,10 @@ def main() raises:
         "per_task_pi_scale", String("1") if PER_TASK_PI_SCALE else String("0")
     )
     var lg = Pointer(to=logger).as_unsafe_any_origin()
-    if env_vars.get("RL_MONITOR_URL", "").byte_length() > 0:
+    if env_vars.get("NOEIRA_CLOUD_URL", "").byte_length() > 0:
         print("  logger: ENABLED → eval/<task> + avg_reward/<task>")
     else:
-        print("  logger: DISABLED — RL_MONITOR_URL not in .env")
+        print("  logger: DISABLED — NOEIRA_CLOUD_URL not in .env")
 
     print("Starting multi-task training ...")
     print("-" * 70)

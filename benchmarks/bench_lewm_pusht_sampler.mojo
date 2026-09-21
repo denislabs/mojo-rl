@@ -14,7 +14,7 @@ Run (Apple, no GPU env needed since we don't import any kernel):
 from std.time import perf_counter_ns
 from std.memory import alloc
 
-from mojo_rl.envs.pusht.offline_sampler import PushTOfflineSampler
+from noeira.envs.pusht.offline_sampler import PushTOfflineSampler
 
 
 def insertion_sort_u64(

@@ -33,7 +33,7 @@ exactly one comment, so a count difference can only come from the comment.
 from std.python import Python
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import merge_mjcf
+from noeira.physics3d.parser import merge_mjcf
 
 # A robot with all four sections a comment could poison. Each variant injects
 # ONE comment INSIDE the named section.

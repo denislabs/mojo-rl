@@ -22,17 +22,17 @@ from std.random import seed
 from std.time import perf_counter_ns
 from std.memory import Pointer
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
 
-from mojo_rl.deep_agents.c51.trainer import C51Trainer
-from mojo_rl.deep_agents.c51.config import RainbowNet
-from mojo_rl.deep_agents.training.blocks import NStepSampleStep
-from mojo_rl.deep_agents.data.any_per_replay import AnyPerReplay
-from mojo_rl.deep_agents.training import run_offpolicy_discrete_train
-from mojo_rl.envs.arcade_games.pong import PongEnv
-from mojo_rl.core.fmt import fit
+from noeira.deep_agents.c51.trainer import C51Trainer
+from noeira.deep_agents.c51.config import RainbowNet
+from noeira.deep_agents.training.blocks import NStepSampleStep
+from noeira.deep_agents.data.any_per_replay import AnyPerReplay
+from noeira.deep_agents.training import run_offpolicy_discrete_train
+from noeira.envs.arcade_games.pong import PongEnv
+from noeira.core.fmt import fit
 
 
 # =============================================================================
@@ -126,8 +126,8 @@ def main() raises:
     # =========================================================================
 
     var env_vars = load_dotenv()
-    var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-    var url = env_vars.get("RL_MONITOR_URL", "")
+    var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+    var url = env_vars.get("NOEIRA_CLOUD_URL", "")
 
     var logger = RemoteLogger(
         server_url=url,

@@ -14,8 +14,8 @@ Run:
 
 from std.math import abs
 from std.testing import assert_true
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.zero import value_prefix_from_rewards
+from noeira.nn.constants import DT
+from noeira.deep_agents.zero import value_prefix_from_rewards
 
 
 def _close(a: Scalar[DT], b: Scalar[DT]) -> Bool:

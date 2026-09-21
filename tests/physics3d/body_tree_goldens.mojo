@@ -25,9 +25,9 @@ def tree_path(i: Int) -> String:
     if i == 4:
         return String("references/mujoco_menagerie-main/unitree_go2/scene.xml")
     if i == 5:
-        return String("mojo_rl/envs/ant/assets/ant.xml")
+        return String("noeira/envs/ant/assets/ant.xml")
     if i == 6:
-        return String("mojo_rl/envs/humanoid/assets/humanoid.xml")
+        return String("noeira/envs/humanoid/assets/humanoid.xml")
     return String("")
 
 

@@ -40,14 +40,14 @@ validate is byte-identical to the text MuJoCo judged.
 Run: pixi run mojo run -I . tests/physics3d/test_validate_vs_mujoco.mojo
 """
 
-from mojo_rl.physics3d.parser.flat_model import FlatModelDef
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.flat_model import FlatModelDef
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.fields import Model, DynDims
-from mojo_rl.physics3d.studio.validate import (
+from noeira.physics3d.fields import Model, DynDims
+from noeira.physics3d.studio.validate import (
     Diagnostic, validate_document, validate_model, worst_severity, count_at,
     format_diagnostic, SEV_ERROR, SEV_WARN,
 )
@@ -67,11 +67,11 @@ def scale_models() -> List[String]:
     footgun `scene._prop_mjcf_type` names.
     """
     var v = List[String]()
-    v.append(String("mojo_rl/envs/ant/assets/ant.xml"))
-    v.append(String("mojo_rl/envs/humanoid/assets/humanoid.xml"))
-    v.append(String("mojo_rl/envs/half_cheetah/assets/half_cheetah.xml"))
-    v.append(String("mojo_rl/envs/walker2d/assets/walker2d.xml"))
-    v.append(String("mojo_rl/envs/hopper/assets/hopper.xml"))
+    v.append(String("noeira/envs/ant/assets/ant.xml"))
+    v.append(String("noeira/envs/humanoid/assets/humanoid.xml"))
+    v.append(String("noeira/envs/half_cheetah/assets/half_cheetah.xml"))
+    v.append(String("noeira/envs/walker2d/assets/walker2d.xml"))
+    v.append(String("noeira/envs/hopper/assets/hopper.xml"))
     v.append(String("references/mujoco_menagerie-main/agility_cassie/scene.xml"))
     v.append(String("references/mujoco_menagerie-main/aloha/scene.xml"))
     v.append(String("references/mujoco_menagerie-main/unitree_go2/scene.xml"))

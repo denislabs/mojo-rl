@@ -24,18 +24,18 @@ Dropout is off on both sides (reference `.eval()`, ours
 `set_attr["training"](0)`) — the layers are compared as functions.
 """
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.deep_agents.act.layers import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.primitives.linear import Linear
+from noeira.deep_agents.act.layers import (
     DETRDecoderLayer,
     DETREncoderLayer,
     DETREncoderLayerMasked,
 )
-from mojo_rl.deep_agents.act.refload import ListParams, LoadRefParams, RefDump
+from noeira.deep_agents.act.refload import ListParams, LoadRefParams, RefDump
 
 
 comptime REF_DIR = "/tmp/act_ref"

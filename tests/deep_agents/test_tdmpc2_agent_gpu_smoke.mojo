@@ -13,9 +13,9 @@ from std.math import isfinite
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.agent import TDMPC2Agent
-from mojo_rl.envs.pendulum import PendulumV2
+from noeira.nn.constants import DT
+from noeira.deep_agents.tdmpc2.agent import TDMPC2Agent
+from noeira.envs.pendulum import PendulumV2
 
 comptime OBS = 3
 comptime ENC = 64

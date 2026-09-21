@@ -65,7 +65,7 @@ Two things the table says out loud:
   `deep_agents` (4/143) and `pcn` (0/64) have not. Those three directories are
   421 files — the entire migration, essentially.
 * **`pcn` is the outlier on gating**: 21 of its 64 files assert nothing at all.
-  It is experimental code (`mojo_rl/experimental/pcn`), and it is the first
+  It is experimental code (`noeira/experimental/pcn`), and it is the first
   place to ask whether files should be repaired or removed.
 
 ### Commands behind the table

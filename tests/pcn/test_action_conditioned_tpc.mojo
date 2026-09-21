@@ -29,10 +29,10 @@ from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.experimental.pcn.pc_initializer import PCXavier
-from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
-from mojo_rl.experimental.pcn import (
+from noeira.nn.constants import DT as dtype
+from noeira.experimental.pcn.pc_initializer import PCXavier
+from noeira.experimental.pcn.pc_optimizer import PCAdam
+from noeira.experimental.pcn import (
     PCBlock,
     PCSequential,
     PCTanh,
@@ -275,7 +275,7 @@ def main() raises:
         for b in range(BATCH):
             x_in_buf[b * AUG_DIM + HIDDEN] = actions_buf[b * SEQ_LEN + (t - 1)]
 
-from mojo_rl.core.fmt import fit
+from noeira.core.fmt import fit
         # 1) Predict without settle: z_pred = block_0(x_in); s_pred = block_1(z_pred).
         NET.block_types[0].predict[BATCH, dtype](x_in, params_b0, z_pred, a_z_pred)
         NET.block_types[1].predict[BATCH, dtype](z_pred, params_b1, s_pred, a_s_pred)

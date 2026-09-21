@@ -18,13 +18,13 @@ from std.testing import assert_true
 from max.gpu.host import DeviceContext
 from std.math import isnan, isinf
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor, TensorImpl
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.primitives.linear_act import LinearAct
-from mojo_rl.nn.primitives.ops.tanh_op import TanhOp
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor, TensorImpl
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.nn.primitives.linear_act import LinearAct
+from noeira.nn.primitives.ops.tanh_op import TanhOp
 
 
 comptime BF16 = DType.bfloat16

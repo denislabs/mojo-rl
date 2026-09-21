@@ -13,10 +13,15 @@
 #   bash scripts/run_tests.sh --discover tests --cpu-only
 #   bash scripts/run_tests.sh --discover tests --gpu-only
 #
-# Each entry is one `mojo run -I . <file>` (compile + run), or with
+# Each entry is one `mojo run -I . <file> [args...]` (compile + run), or with
 # `--compile-only` one `mojo build -I . <file>` (compile probe — for
 # examples that would train for hours if executed). Lines starting with `#`
-# and blank lines in a manifest are skipped. Output of failing tests is
+# and blank lines in a manifest are skipped.
+#
+# ⚠ A MANIFEST ENTRY MAY CARRY ARGUMENTS after the file, and some entries
+# NEED them: a viewer's headless path is `<viewer>.mojo --check`, and
+# without the flag it opens an SDL3 window and blocks — which in CI is a
+# hang, not a failure. Only the first token is checked for existence. Output of failing tests is
 # echoed (last 40 lines); a summary table always prints. Exit code is the
 # number of failures (0 = green).
 
@@ -50,13 +55,16 @@ if [[ "$MODE" == "manifest" ]]; then
         line="${line%%#*}"
         line="$(echo "$line" | xargs)"  # trim
         [[ -z "$line" ]] && continue
-        FILES+=("$line")
+        FILES+=("$line")   # may be "<file> <args...>"; split at use
     done < "$TARGET"
 else
     while IFS= read -r f; do
         case "$FILTER" in
-            --gpu-only) [[ "$f" == *_gpu.mojo ]] || continue ;;
-            --cpu-only) [[ "$f" == *_gpu.mojo ]] && continue ;;
+            # GPU tests end in `_gpu.mojo`, `_gpu_vs_cpu.mojo` or `_gpu_parity.mojo`
+            # (AUD-50: the first pattern alone matched 1 of 20 parity files and
+            # `--cpu-only` then ran the other 19 on CPU hosts).
+            --gpu-only) [[ "$f" == *_gpu.mojo || "$f" == *_gpu_vs_cpu.mojo || "$f" == *_gpu_parity.mojo ]] || continue ;;
+            --cpu-only) [[ "$f" == *_gpu.mojo || "$f" == *_gpu_vs_cpu.mojo || "$f" == *_gpu_parity.mojo ]] && continue ;;
         esac
         FILES+=("$f")
     done < <(find "$TARGET" -name "test_*.mojo" | sort)
@@ -68,7 +76,7 @@ if [[ "$TOTAL" -eq 0 ]]; then
     exit 2
 fi
 
-LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mojo-rl-tests.XXXXXX")"
+LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/noeira-tests.XXXXXX")"
 echo "running $TOTAL test file(s)  (logs: $LOG_DIR)"
 echo "----------------------------------------------------------------------"
 
@@ -78,18 +86,26 @@ declare -a FAILED=()
 SUITE_T0=$SECONDS
 
 for f in "${FILES[@]}"; do
-    if [[ ! -f "$f" ]]; then
-        printf "MISSING  %-60s\n" "$f"
+    # ⚠ SPLIT ON WHITESPACE: an entry may be "<file> --check". `read -r -a`
+    # is the split, and `entry[0]` is the only part that names a file.
+    read -r -a entry <<< "$f"
+    src="${entry[0]}"
+    args=("${entry[@]:1}")
+    if [[ ! -f "$src" ]]; then
+        printf "MISSING  %-60s\n" "$src"
         FAIL=$((FAIL + 1))
-        FAILED+=("$f (file not found)")
+        FAILED+=("$src (file not found)")
         continue
     fi
-    log="$LOG_DIR/$(echo "$f" | tr '/' '_').log"
+    log="$LOG_DIR/$(echo "$f" | tr '/ ' '__').log"
     t0=$SECONDS
     if [[ "$COMPILE_ONLY" == 1 ]]; then
-        cmd=(mojo build -I . "$f" -o "$LOG_DIR/probe.bin")
+        cmd=(mojo build -I . "$src" -o "$LOG_DIR/probe.bin")
     else
-        cmd=(mojo run -I . "$f")
+        # ⚠ `${a[@]+"${a[@]}"}` AND NOT `"${a[@]}"`. Under `set -u`, macOS's
+        # bash 3.2 calls an EMPTY array an unbound variable, so every
+        # argument-less entry — which is all but one — would die here.
+        cmd=(mojo run -I . "$src" ${args[@]+"${args[@]}"})
     fi
     if "${cmd[@]}" >"$log" 2>&1; then
         printf "PASS  %4ss  %s\n" "$((SECONDS - t0))" "$f"

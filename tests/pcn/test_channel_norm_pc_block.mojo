@@ -12,7 +12,7 @@ from std.memory import alloc
 from std.math import sin
 from layout import Layout, LayoutTensor
 
-from mojo_rl.experimental.pcn.pc_channel_norm_block import ChannelNormPCBlock
+from noeira.experimental.pcn.pc_channel_norm_block import ChannelNormPCBlock
 
 comptime dtype = DType.float32
 comptime C = 2

@@ -35,7 +35,7 @@ for.
 Absent either one, the corresponding arm SKIPS with a message rather than
 passing quietly — a gate that silently checks nothing is worse than a red one.
 
-⚠ MESH PATHS ARE REPO-ROOT-RELATIVE (`mojo_rl/envs/robots/assets/...`), so this
+⚠ MESH PATHS ARE REPO-ROOT-RELATIVE (`noeira/envs/robots/assets/...`), so this
 must run FROM THE REPO ROOT. It chdir's there itself so a stray cwd cannot turn
 into a mesh-not-found that reads as a model difference.
 """

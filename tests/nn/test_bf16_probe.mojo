@@ -13,7 +13,7 @@ Steps:
 """
 
 from std.math import abs as fabs
-from std.gpu import global_idx
+from max.gpu import global_idx
 from max.gpu.host import DeviceContext
 from std.testing import assert_true
 from layout import Layout, LayoutTensor

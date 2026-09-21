@@ -1,0 +1,222 @@
+---
+title: Deployment
+description: Run a trained ACT or SmolVLA policy on the SO-101 from the live cameras, with the checks that run before arming, the 30 Hz action grid, and the shutdown that brings the arm home.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="experimental" note="Closed loops run on the real arm, but no success rate has been measured for either policy." />
+
+A deployment reads the follower and the two cameras, runs the policy, and
+commands the follower. Both deployments are **safe by default**. Without
+`--arm`, they do everything except energise the arm, and print every command
+they would have sent. Read the [safety rules](/robots/#safety-rules) before the
+first armed run, and keep a hand on the power switch.
+
+## Where things stand
+
+| | ACT | SmolVLA |
+|---|---|---|
+| Closed loop on the arm | Yes, 30.0 Hz on the Orin NX | Yes, on the Orin NX |
+| Result on the arm | The closed loop runs at the recording's cadence. No success rate measured. | First successful grasp-and-place on 20 Sep 2026: the cube was picked up and dropped into the bowl. No success rate measured. |
+| Program | `examples/so101/act_so101_deploy_real.mojo` | `examples/so101/smolvla_so101_deploy_real.mojo` |
+
+A single successful episode shows that the whole path works. It does not
+measure how reliable the policy is. Neither policy has been evaluated over
+many runs on the real arm.
+
+## ACT: import, train, deploy
+
+### 1. Import the recording
+
+```bash
+pixi run mojo run -I . examples/so101/act_so101_import_dataset.mojo \
+    --project so101-tower --dataset cube-in-bowl
+```
+
+This turns a LeRobot v3 recording into a trajectory store at 240×320, which
+is ACT's default, under `~/.cache/noeira/act_so101/`. `--repo ORG/NAME`
+imports from the Hub instead. The import is pure Mojo and needs only `curl`
+and `ffmpeg`. See [LeRobot datasets](/data/lerobot/).
+
+### 2. Train
+
+```bash
+export ACT_PROJECT=so101-tower
+export ACT_STORE=~/.cache/noeira/act_so101/so101-tower__cube-in-bowl_240x320.h5
+pixi run -e nvidia mojo build -I . -o /tmp/act_train_gpu \
+    examples/so101/act_so101_train_gpu.mojo
+/tmp/act_train_gpu
+```
+
+Run it from the repository root. The run writes
+`runs/<id>/checkpoints/{best,last}.ckpt` and a `norm.json` holding the
+normalisation statistics. See [ACT](/algorithms/imitation/act/) for the model,
+the environment variables and the ImageNet backbone.
+
+### 3. Promote the checkpoint to a role
+
+```bash
+pixi run project-promote <run_id> best --as act --note "cube-in-bowl, 50 episodes"
+```
+
+Promotion copies the checkpoint to `projects/<project>/policies/act.ckpt`
+and its statistics to `policies/act.norm.json`. The deployment names a
+**role**, not a run, so shipping a better checkpoint is one promotion. Nothing
+is edited or rebuilt. On another machine, `pixi run project-pull <project>
+--weights` fetches the promoted weights and checks their SHA-256 against the
+one recorded at promotion. See [projects](/concepts/projects/).
+
+### 4. Deploy
+
+```bash
+# macOS: build, then run. Safe by default: nothing is energised.
+pixi run soarm-act-deploy -- --project so101-tower --role act --devices 0,1
+
+# --arm moves the robot. Be at the desk.
+pixi run soarm-act-deploy -- --project so101-tower --role act --devices 0,1 \
+    --arm --seconds 30
+```
+
+`soarm-act-deploy` builds a binary first (`mojo build` with
+`-Xlinker -ld_classic` on macOS) and then runs it. The compile takes a few
+minutes and is its own visible step, so it does not happen in front of an
+armed robot. On the Jetson, use `act-deploy-jetson`; see
+[Jetson Orin](/robots/jetson/).
+
+| Flag | Meaning |
+|---|---|
+| `--arm` (or `--live`) | Energise and drive the follower |
+| `--project P --role R` | Load `projects/P/policies/R.ckpt` and its `R.norm.json` |
+| `--ckpt FILE` | Load a checkpoint directly. Its statistics come from `norm.json` in the same directory. |
+| `--norm FILE` | Use a different statistics file |
+| `--store FILE.h5` | Optional: the store the policy was trained on. Enables the held-out replay check and `--snap`. |
+| `--snap DIR` | Save each camera next to the store's frames, to check that device *i* really is slot *i* |
+| `--devices a,b` | Cameras, as indices or device paths |
+| `--fourcc` | Pixel format for path-opened V4L2 cameras |
+| `--port` | Follower port. Defaults to `$SOARM_FOLLOWER_PORT`, then the platform default. |
+| `--seconds S` | Length of the run (default 30) |
+| `--step N` | Step clamp in ticks |
+| `--no-return` | Release torque where the arm stands instead of returning home. Only for a run you are standing over. |
+
+:::caution[The statistics are part of the policy]
+The normalisation statistics are not stored in the checkpoint. With the wrong
+statistics, nothing fails: every command comes out shifted and scaled, on a
+real arm. The deployment reads `norm.json` next to the weights. If you give
+both `--norm` and `--store`, they must agree.
+:::
+
+## What happens before arming
+
+1. **Warm-up.** Five throwaway forward passes. The first one compiles kernels,
+   which took 9.9 s on a cold cache on the Orin. The binary prints
+   `forward N ms warm (first M ms, …)`, and that line is the device's
+   measurement. It warns if a forward costs more than six 30 Hz steps.
+2. **Checkpoint against store**, when `--store` is given. A held-out episode is
+   replayed through the policy and compared with `hold` and `mean`
+   baselines. If the policy does worse than the constant mean, the program
+   refuses to arm. `--force` overrides this.
+3. **Pose within the demonstrations.** The dataset's per-joint range is
+   printed next to the follower's present pose. A joint outside it means the
+   policy's first command is an extrapolation.
+4. **Camera mapping.** `camera slot 0 = observation.images.… <- device` is
+   printed for each camera. The slots follow the policy's camera list, which
+   is sorted alphabetically by feature key. A swap feeds the policy a world it
+   has never seen, so check this line.
+
+Once armed, three more guards apply. Every commanded action is clamped to the
+per-joint range the demonstrations covered. The step clamp catches up at 80
+ticks, then tracks at 512. A partial servo read skips that tick's write. The
+report counts how often the action clamp fired. If it fires constantly, the
+deployment is off-distribution; that does not mean the clamp is working well.
+
+## The 30 Hz action grid
+
+The policy was trained on 30 fps demonstrations, so the entries of a chunk are
+1/30 s apart. The deployment keeps a wall-clock 30 Hz grid. An observation
+captured at grid step `t_obs` is queried, and its chunk goes into the temporal
+ensemble indexed at `t_obs`. When the forward pass returns, the loop commands
+the ensemble's action for the grid step that is **now**. Inference latency is
+therefore accounted for by the index, not hidden.
+
+On the Orin, the loop is saturated at the camera rate. The mean per query is
+cameras 2.2 ms, preprocess 3.4 ms and forward 27.6 ms, for 33.2 ms against a
+33.3 ms frame period: 30.0 Hz. The temporal ensemble is nearly full at that
+rate. On a slower machine, the arm gets a waypoint every few grid steps and
+the servo interpolates between them. The motion still plays at the right
+speed, because the grid follows the wall clock.
+
+On a Mac the ACT deployment builds for the CPU. At batch size 1, the forward
+pass on Metal was slower than on the M1 Pro's own CPU. The choice of device is
+made at build time (`-DACT_GPU=1`), so each binary prints its own number.
+
+## SmolVLA
+
+SmolVLA's loop has a different shape. One query takes hundreds of
+milliseconds, and one chunk is 50 steps at 30 Hz, or **1.667 s of motion**.
+The deployment therefore queries once, executes the chunk on the 30 Hz grid,
+and queries again before the chunk runs out. Grid steps that elapse during
+inference are skipped, not replayed late.
+
+### Measure the query first
+
+```bash
+pixi run -e jetson smolvla-probe-jetson
+```
+
+`examples/so101/smolvla_so101_latency_probe.mojo` times one `select_action`
+on the published `lerobot/smolvla_base` weights. Run it before deploying. The
+whole loop design depends on comparing that number against the 1.667 s a
+chunk buys. The weights take 3.2 GB, on the host and on the device, so each
+binary is built for one target only.
+
+### Deploy
+
+```bash
+pixi run -e jetson smolvla-deploy-jetson -- --project so101-tower \
+    --devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist \
+    --stats <meta/stats.json from the fine-tune>
+```
+
+| Flag | Meaning |
+|---|---|
+| `--arm` (or `--live`) | Energise and drive the follower |
+| `--ckpt FILE` | Fine-tuned weights. Otherwise `$SMOLVLA_CKPT`, then `projects/<project>/policies/smolvla.ckpt`. |
+| `--project P` | Where to look for the promoted `smolvla.ckpt` (default `so101-tower`) |
+| `--stats FILE` | **Required** (or `$SMOLVLA_STATS`): the `meta/stats.json` the fine-tune used |
+| `--tasks FILE`, `--task-index K` | The pre-tokenised instruction table and the row to use |
+| `--exec-steps N` | Steps executed per chunk, 1–50 (default 50). Fewer means fresher pixels and more queries. |
+| `--threaded` | Run the query on its own thread |
+| `--sync` | Query only when the chunk is used up and hold meanwhile, as LeRobot does |
+| `--ensemble`, `--smooth N` | Blend overlapping chunks, smooth the handover |
+| `--seconds`, `--step`, `--port`, `--fourcc`, `--no-return`, `--force` | As for ACT |
+
+The deployment refuses to run without fine-tuned weights. The base checkpoint
+has never seen this robot. It also refuses to run without the statistics file:
+LeRobot's population standard deviation and a sample standard deviation
+differ by `sqrt(N/(N-1))`, which becomes a silent scale error on every joint.
+
+The best configuration measured on the arm is `--threaded --smooth 9
+--ensemble` with 4 denoising steps (`STEPS` is a compile-time constant in the
+deploy file; the default is 10). Query latency dropped from 2,329 ms to 491 ms,
+and the control rate rose from 17.4 Hz to 27.2 Hz. The fine-tune itself is on
+the [SmolVLA](/algorithms/imitation/smolvla/) page.
+
+## Shutdown
+
+Both deployments end the same way, through `return_and_release` in
+`noeira/robot/so101/deploy_shutdown.mojo`. The follower ramps back to the pose
+it started from, at no more than 20 ticks per write, and must arrive within
+25 ticks within 8 s. It then holds until you press Enter, and only then
+releases torque. If it does not arrive, **torque stays on** and the program
+tells you. Support the arm, then run `pixi run soarm-torque-off`.
+
+If the process is killed or crashes, none of this runs, and the follower keeps
+holding its last pose. `soarm-torque-off` and the power switch are the
+recovery.
+
+## Next
+
+- [Jetson Orin](/robots/jetson/): running both deployments on the robot's own computer
+- [Projects](/concepts/projects/): runs, roles and promotion
+- [Imitation learning](/algorithms/imitation/)

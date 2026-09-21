@@ -22,7 +22,7 @@ work across them.
 from max.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
 
 def binary_sub[DTP: DType, ELEMS: Int](

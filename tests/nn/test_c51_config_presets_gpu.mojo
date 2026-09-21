@@ -9,9 +9,9 @@ from std.random import seed
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.c51 import C51, Rainbow
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.c51 import C51, Rainbow
+from noeira.envs.cartpole import CartPoleEnv
 
 
 comptime OBS = 4

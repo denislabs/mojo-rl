@@ -13,16 +13,16 @@ Run:
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.call import call_forward, call_vjp
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.models.vit import ViT
-from mojo_rl.nn.models.resnet import ResBlockConv2DBN
-from mojo_rl.nn.models.conv import Conv2DBatchNormReLU
-from mojo_rl.nn.models.transformer import TransformerBlock
+from noeira.nn.constants import DT
+from noeira.nn.core.call import call_forward, call_vjp
+from noeira.nn.core.module import Module
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.models.vit import ViT
+from noeira.nn.models.resnet import ResBlockConv2DBN
+from noeira.nn.models.conv import Conv2DBatchNormReLU
+from noeira.nn.models.transformer import TransformerBlock
 
 
 comptime B = 2

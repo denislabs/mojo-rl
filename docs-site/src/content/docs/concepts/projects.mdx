@@ -1,0 +1,340 @@
+---
+title: Projects and runs
+description: How noeira files training runs, promotes a checkpoint to a named role a robot deploys, and moves a project between machines through noeira cloud.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" note="The layer is in daily use on the SO-101 work; not every driver is on it yet." />
+
+A training script used to write its checkpoint to a constant path. Every run of
+that script overwrote the previous run's weights, and nothing on disk said
+whether the run that wrote them had been any good. The project layer fixes that
+with two objects:
+
+- a **run** — one execution of a training driver, as a directory with a record
+  (`run.kv`), its metrics and its checkpoints, all derived from one identifier;
+- a **project** — a directory that holds runs, the definition they were made
+  under, and the policies promoted out of them.
+
+It lives in `noeira/core/`: `project.mojo` (the definition),
+`run.mojo` (`RunContext`), `policy.mojo` (promotion) and
+`project_sync.mojo` (what moves between machines). The command-line side is
+`tools/project/project_cli.mojo`, exposed as pixi tasks.
+
+Everything except push and pull works on one machine with no account.
+
+## A project on disk
+
+```
+projects/<name>/
+├── project.kv          the definition: name, created, description, ref=, dataset=, policy=
+├── calibration/        e.g. the arms' servo calibration
+├── policies/
+│   ├── reach.kv        who fills the role "reach", and why
+│   ├── reach.ckpt      its weights (a hard link or a copy, never a symlink)
+│   └── reach.norm.json normalization statistics promoted with it, if the run had them
+├── runs/
+│   └── 2026-09-02_act-reach_a3f21c8b/
+│       ├── run.kv
+│       ├── metrics.csv
+│       ├── checkpoints/   best.ckpt, last.ckpt, ...
+│       └── eval/
+├── datasets/           recordings (LeRobot v3 layout)
+├── demos/              .demo files
+└── .sync.kv            what this box last synced with noeira cloud
+```
+
+Only `project.kv`, `runs/` and `policies/` are created by `project-init`; the
+rest appears as tools write into it.
+
+**Projects are not in git.** `projects/` is in `.gitignore`, definition
+included: a project is private, and creating one must not mean touching the
+repository. A project reaches another machine through
+[noeira cloud](#moving-a-project-between-machines) instead.
+
+**Where the root is.** `projects_root()` reads `NOEIRA_PROJECTS` from the
+environment, then from `.env` at the repository root, and falls back to
+`projects/`. Every tool resolves the root the same way, so setting it in `.env`
+is enough.
+
+## The definition: `project.kv`
+
+```
+schema_version=1
+name=so101
+created=2026-09-01T09:00:00Z
+description=SO-101 tabletop manipulation
+ref=family:so101_tabletop:noeira/tasks/families/so101_tabletop.family@081b53c0
+ref=task:so101_reach_brick:noeira/tasks/tasks/so101_reach_brick.task@081b53c0
+policy=reach
+```
+
+A project **references** task-layer files; it never copies them. A copy would
+fork the definition, and the fork would stay invisible until two runs disagreed
+about what a task was. Each `ref=` line is `<kind>:<name>:<path>@<commit>`,
+and the commit is the point: an unpinned reference resolves against whatever
+the working tree holds today, so a `.family` file that drifted would make every
+old `run.kv` a lie about what was trained.
+
+The pin is **checked, not enforced**. `project-show` compares each ref's commit
+with `git log -1 -- <path>` and reports drift; it does not refuse to run. A box
+at a different commit is the normal case during development.
+
+## Runs
+
+A driver creates a `RunContext` before it trains:
+
+```mojo
+from noeira.core.run import RunContext, register_run
+
+var run = RunContext(
+    project="so101",
+    driver="examples/so101/act_so101_train_gpu.mojo",
+    slug="act-reach",
+    env="family:so101_tabletop",
+    task="so101_reach_brick",
+    seed=12345,
+)
+var logger = CompositeLogger(CsvLogger(run.metrics_path()), remote)
+register_run(run, logger)                  # seeds the dashboard config, announces the run
+...
+agent.save(run.checkpoint_path("best"))    # <run>/checkpoints/best.ckpt
+run.set_outcome("success_rate=" + String(sr))
+run.close()                                # status=done, finished=<now>
+```
+
+Every path the run writes — checkpoints, `metrics.csv`, `eval/`, the dashboard
+name — derives from one id, so they cannot drift apart.
+
+**The id is `<date>_<slug>_<hash8>`**, where the hash is the first eight hex
+digits of `sha256(host|pid|start_ns)`. It is derived, not random: two runs on
+one box differ in process id and start time, two boxes in the same second
+differ in host name, and the question "which box wrote this?" keeps an answer.
+
+**Without the project, runs fall back to `runs/`.** If the named project does
+not exist on this box, the run lands in the flat `runs/` root at the repository
+root instead. A driver does not need to know which case it is in; the layer
+becomes active for it the moment someone runs `project-init`.
+
+Drivers on `RunContext` today include the task-layer SAC entries
+(`noeira/tasks/sac_family_driver.mojo`), ACT on the SO-101 and on LIBERO, the
+Forward-Backward trainers and the BFM-Zero G1 trainer. Benchmarks, probes and
+diagnostics are deliberately not runs.
+
+### `run.kv`
+
+```
+schema_version=1
+run_id=2026-09-02_act-reach_a3f21c8b
+project=so101
+driver=examples/so101/act_so101_train_gpu.mojo
+env=family:so101_tabletop
+task=so101_reach_brick
+dataset=
+source_commit=081b53c0
+dirty=0
+seed=12345
+host=...
+device=gpu
+started=2026-09-02T12:05:41Z
+finished=
+status=running
+outcome=
+tag=
+resumed_from=
+```
+
+Plus repeated `config=<key>:<value>` lines, and `artifact=` lines for files the
+run recorded with `add_artifact`, each with its sha256, size and whether it is
+still only on this box (`:local`).
+
+Two rules make the record trustworthy:
+
+- **It is written at t=0**, before any training, and rewritten atomically on
+  every change. A run that registered itself only on success would leave
+  exactly the orphan checkpoint this layer exists to remove.
+- **`status` and `outcome` are written, never inferred.** `close()` writes
+  `finished` and `status=done` (or a status the driver passes). A process the
+  kernel killed never reaches `close()`, so a `run.kv` that still says
+  `running` long after `started` **is** the record of a crashed run —
+  information no directory listing carried before.
+
+`outcome` holds the run's own best numbers, as the driver chooses to state
+them. `tag` is free text written by a person, and it is what makes runs
+searchable:
+
+```bash
+pixi run run-tag 2026-09-02_act-reach_a3f21c8b "best reach so far"
+grep -l 'tag=.*reach' projects/*/runs/*/run.kv
+```
+
+## Promoting a checkpoint to a role
+
+Deployment never names a run. It names a **role** — `reach`, `act` — and a
+person records which run's checkpoint fills that role, with a sentence saying
+why:
+
+```bash
+pixi run project-promote 2026-09-02_act-reach_a3f21c8b best --as reach --note "8/10 on the real arm, gripper ok"
+```
+
+This writes `policies/reach.ckpt` and `policies/reach.kv`:
+
+```
+schema_version=1
+name=reach
+run=2026-09-02_act-reach_a3f21c8b
+checkpoint=best
+sha256=9f1c...
+bytes=...
+promoted=2026-09-02T14:40:00Z
+note=8/10 on the real arm, gripper ok
+supersedes=2026-08-30_act-reach_91b0f2aa
+```
+
+- The weights are **hard-linked, falling back to a copy** on another
+  filesystem — never symlinked. A symlink into `runs/` would dangle after
+  `project-prune`, and would not survive a pull onto another machine.
+- The sha256 is computed on the materialised file, not the source.
+- A re-promotion records the previous holder in `supersedes=`, so each role
+  carries its own history.
+- The `note` is the only field no metric can supply ("8/10 on the real arm").
+- The promotion is also recorded on noeira cloud unless you pass `--no-push`.
+  That post comes last and cannot fail the promotion: the local files are the
+  record.
+
+A deploy script resolves the role with `resolve_policy(project, role,
+fallback)`, which returns `policies/<role>.ckpt` if it exists and the script's
+old default path otherwise — a deploy path fails open rather than refusing to
+start because the project layer is not set up. It must print which one it got.
+The ACT deployment takes the project and role on its command line:
+
+```bash
+pixi run soarm-act-deploy -- --project so101 --role reach
+pixi run -e jetson act-deploy-jetson -- --project so101 --role reach --devices /dev/soarm_cam_overhead,/dev/soarm_cam_wrist
+```
+
+Neither moves the arm without `--arm`. See [Deployment](/robots/deployment/).
+
+## Pruning
+
+```bash
+pixi run project-prune so101 --older-than 30           # dry run: lists what would go
+pixi run project-prune so101 --older-than 30 --apply
+```
+
+It is a dry run unless `--apply` is given, and it never deletes a run that is
+`status=running` (it may be live), that has a non-empty `tag=` (a person marked
+it), or that holds an artifact still marked `:local` (the only copy of those
+bytes).
+
+## Moving a project between machines
+
+`project-push` and `project-pull` move a project through
+[noeira cloud](/tooling/monitor/). They need `NOEIRA_CLOUD_URL` and
+`NOEIRA_CLOUD_API_KEY` (in the environment or `.env`) and the HTTP shim
+(`pixi run build-http`).
+
+```bash
+pixi run project-push so101                   # the definition, then every run's recorded artifacts
+pixi run project-push so101 <run_id>          # one run's artifacts only
+pixi run project-push so101 --definition-only
+pixi run project-pull so101                   # recreate the definition on a fresh box
+pixi run project-pull so101 --weights         # ... plus the promoted policies' weights
+pixi run project-pull so101 <run_id>          # bring one run's artifacts back
+pixi run project-list --remote
+```
+
+Put flags after the positional arguments. `--kind` filters artifacts by kind
+(push defaults to `checkpoint`). `--force` picks a side in a conflict: on a
+push, this box's copy wins; on a pull, the platform's does.
+
+What counts as the definition:
+
+| Path | Synced by `project-push` / `project-pull` |
+|---|---|
+| `project.kv`, `calibration/`, `policies/<role>.kv` and other files | yes, within the platform's size cap |
+| `policies/<role>.ckpt` and other bulk files (`.ckpt`, `.h5`, `.safetensors`, `.mp4`, …) | no — promoted weights come with `project-pull --weights` |
+| `runs/` | no — run files travel as artifacts, per run |
+| `datasets/` | no — see below |
+| `.sync.kv` and other hidden files | no — `.sync.kv` is this box's own sync record |
+
+A file is also skipped if its name uses characters the platform refuses
+(anything outside `[A-Za-z0-9._-]`). Every skipped file is printed with the
+reason, so a calibration file that never reached the training box shows up in
+the push output rather than as a surprise later.
+
+**A sync never erases an edit silently.** Each file carries three digests: the
+local file now, the platform's current copy, and what this box last synced
+(from `.sync.kv`). Two digests cannot tell "I edited it" from "they edited it";
+three can. A file both sides changed is reported as a conflict and nothing moves
+without `--force`. There is no merging, and no deletion across boxes: a file
+removed locally is not removed on the platform, and a pull does not resurrect
+it. Transfers are resumable — a file already present with the right digest is
+skipped.
+
+The usual flow on a rented GPU box is: `project-pull <name>`, train, then
+`project-push <name> <run_id>` to send the run's checkpoints home. See
+[Cloud GPU boxes](/project/cloud-gpu/).
+
+## Datasets
+
+Recordings live at `<projects root>/<project>/datasets/<dataset>/`. The
+recorders and the dataset tools resolve that path through
+`project_dataset_dir`, which refuses a project that does not exist on the box —
+so a typo in `--project` cannot create a stray directory holding an hour of
+demonstrations. They are not part of the synced definition; they move with the
+dataset tasks below.
+
+```bash
+pixi run dataset-push -- --project so101 --dataset pick-cube
+pixi run dataset-push -- --project so101 --dataset pick-cube --watch   # re-sync every 60 s
+pixi run dataset-pull -- --project so101 --dataset pick-cube
+pixi run dataset-list -- --project so101
+```
+
+`--watch` only reads the dataset, so it can run in a second terminal during a
+recording session and be stopped at any moment. Publishing to the HuggingFace
+Hub is separate (`hf-push-dataset`). See
+[Teleoperation and recording](/robots/teleop-recording/) and
+[LeRobot datasets](/data/lerobot/).
+
+## Asset packs
+
+Environment assets can be declared as packs in an `assets.kv` beside the
+environment and fetched before a run starts, rather than discovered missing
+forty minutes into training. Today only LIBERO declares one
+(`noeira/envs/libero/assets.kv`); the other environments' meshes and textures
+are still tracked in git.
+
+```bash
+pixi run assets-status          # which packs are on this box
+pixi run assets-pull            # fetch every declared pack
+pixi run assets-pull libero     # just one environment's packs
+pixi run assets-where           # where a pack would come from, and with which credential
+```
+
+Packs are cached under `~/.cache/noeira/assets`, or under `$NOEIRA_CACHE/assets`
+if `NOEIRA_CACHE` is set.
+
+## Task reference
+
+| Task | Does |
+|---|---|
+| `project-init <name> [--description "..."]` | create `projects/<name>/` and its `project.kv`; refuses to overwrite |
+| `project-list [--remote]` | every project with its run count (or the platform's list) |
+| `project-show <name>` | pinned refs and their drift, and every run's status, outcome and tag |
+| `run-tag <run_id> "text"` | set a run's `tag=` (searches `runs/` and every project) |
+| `project-prune <name> [--older-than DAYS] [--apply]` | delete old runs nothing holds on to — dry run by default |
+| `project-promote <run_id> [best\|last\|step_N] --as <role> [--note "..."] [--no-push]` | make a checkpoint the role a deploy loads |
+| `project-push <name> [<run_id>] [--kind K] [--force] [--definition-only]` | send the definition and run artifacts to noeira cloud |
+| `project-pull <name> [<run_id>] [--weights] [--kind K] [--force]` | bring them back |
+| `dataset-push` / `dataset-pull` / `dataset-list` | mirror a project's recordings |
+| `assets-status` / `assets-pull` / `assets-where` | environment asset packs |
+
+## Next
+
+- [Checkpoints](/concepts/checkpoints/) — what is inside the files a run writes
+- [noeira cloud](/tooling/monitor/) — the dashboard runs register with, and where projects sync
+- [Deployment](/robots/deployment/) — loading a promoted role on the robot

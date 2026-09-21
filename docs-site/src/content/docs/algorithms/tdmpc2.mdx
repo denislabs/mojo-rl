@@ -15,7 +15,7 @@ import Papers from '~/components/Papers.astro';
 them online.
 
 ```mojo
-from mojo_rl.deep_agents.tdmpc2 import TDMPC2Agent
+from noeira.deep_agents.tdmpc2 import TDMPC2Agent
 ```
 
 
@@ -74,7 +74,7 @@ counting once. That gradient inside the elite set is the whole difference from
 CEM, and it is what makes the refit harder for a single lucky sample to capture.
 
 The planner itself lives in
-[`mojo_rl.planners`](/planners/trajectory/#mppi) and knows nothing about this
+[`noeira.planners`](/planners/trajectory/#mppi) and knows nothing about this
 agent — TD-MPC2 supplies a rollout callback and the planner supplies the search.
 
 The advantage over [MBPO](/algorithms/mbpo/) is that planning can correct model
@@ -113,7 +113,7 @@ The `TDMPC2[...]` preset applies the reference-tuned defaults and takes the
 architecture and planning budget as compile-time parameters:
 
 ```mojo
-from mojo_rl.deep_agents.tdmpc2.config import TDMPC2
+from noeira.deep_agents.tdmpc2.config import TDMPC2
 
 var ag = TDMPC2[
     "gpu", OBS, ACT, BATCH, REPLAY_CAPACITY,

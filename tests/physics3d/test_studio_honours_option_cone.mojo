@@ -28,12 +28,12 @@ swapped.
 Run: pixi run mojo run -I . tests/physics3d/test_studio_honours_option_cone.mojo
 """
 
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.studio.stepping import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.studio.stepping import (
     StudioIntegPyr, StudioIntegEll, studio_cone_of, studio_solver_warning,
     STUDIO_DT,
 )
@@ -53,7 +53,7 @@ comptime ELLIPTIC_MODEL = String(
     "references/mujoco_menagerie-main/aloha/scene.xml"
 )
 # Contacts from the first step, which is what makes the cone observable at all.
-comptime CONTACT_MODEL = String("mojo_rl/envs/ant/assets/ant.xml")
+comptime CONTACT_MODEL = String("noeira/envs/ant/assets/ant.xml")
 
 
 struct Tally:

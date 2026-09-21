@@ -18,16 +18,16 @@ from std.time import perf_counter_ns
 from std.memory import Pointer, ArcPointer
 from max.gpu.host import DeviceContext
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
 
-from mojo_rl.deep_agents.c51.config import RainbowCNN
-from mojo_rl.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
+from noeira.deep_agents.c51.config import RainbowCNN
+from noeira.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
 
-from mojo_rl.envs.procgen.games import HeistGymEnv, HeistAssets
-from mojo_rl.envs.procgen.games.heist import DIST_EASY
-from mojo_rl.core.fmt import fit
+from noeira.envs.procgen.games import HeistGymEnv, HeistAssets
+from noeira.envs.procgen.games.heist import DIST_EASY
+from noeira.core.fmt import fit
 
 comptime ASSET_ROOT = String("assets/procgen/")
 
@@ -130,8 +130,8 @@ def main() raises:
         print()
 
         var env_vars = load_dotenv()
-        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-        var url = env_vars.get("RL_MONITOR_URL", "")
+        var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+        var url = env_vars.get("NOEIRA_CLOUD_URL", "")
         var logger = RemoteLogger(
             server_url=url,
             run_name="Rainbow Procgen Heist Pixel GPU",

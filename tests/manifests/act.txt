@@ -9,8 +9,13 @@
 # Prerequisites:
 #
 #   pixi run -e act-ref python tools/act/dump_act_reference.py --out /tmp/act_ref
+#   pixi run -e act-ref python tools/act/dump_resnet18_imagenet.py \
+#       --out ~/.cache/noeira/act_so101/resnet18_imagenet
 #   pixi run python tools/act/lerobot_v3_to_store.py \
-#       --repo DenisLabs/record-test_20260825_094319 --height 240 --width 320
+#       --repo DenisLabs/record-test_20260828_092736 --height 240 --width 320
+#
+# The dataset gate takes ANY store at 240x320 — `$ACT_STORE` if set, else the
+# newest one in the cache. It pins no row or episode count; see its header.
 #
 # ⚠ These run under `mojo run` (JIT), which never invokes ld. Building them with
 # `mojo build` needs `-Xlinker -ld_classic`: the fully-expanded ResNet18 / graph
@@ -21,6 +26,11 @@
 tests/nn/test_cross_attention_vs_torch.mojo
 # M2 — DETR encoder / masked encoder / decoder layers (vs the reference's own)
 tests/deep_agents/act/test_act_layers_vs_reference.mojo
+# The ImageNet weights the Hub serves vs the ones torchvision does — see
+# `tests/manifests/interop.txt`, which is where this and the safetensors format
+# gates live. Listed here too because `load_backbone_safetensors` is an ACT
+# training path and this is what says it loads the same weights as the dump.
+tests/nn/test_safetensors_resnet18_torch.mojo
 # M3 — ResNet18 + both position tables (vs torchvision / PositionEmbeddingSine)
 tests/deep_agents/act/test_act_backbone_vs_reference.mojo
 # M4 — reparameterize / KL / masked L1 (vs policy.py)
@@ -31,5 +41,17 @@ tests/deep_agents/act/test_act_forward_vs_reference.mojo
 tests/deep_agents/act/test_act_overfit_one_batch.mojo
 # M7 — temporal ensembling (vs imitate_episodes.py's buffer scheme)
 tests/deep_agents/act/test_act_temporal_ensemble.mojo
+# M3b — ImageNet weights land in the right slots (needs the resnet18 dump)
+tests/deep_agents/act/test_act_pretrained_backbone.mojo
+# Wiring: does `freeze_backbone_norm` REACH the backbone's BatchNorms?
+# Self-contained (stub backbone, no reference dump, seconds).
+tests/deep_agents/act/test_act_freeze_backbone_norm.mojo
 # M0 — the dataset path (needs the converted store)
 tests/deep_agents/act/test_act_dataset.mojo
+
+# The Hub backbone file itself — a pinned SHA-256 plus every tensor
+# `resnet18_torch_map` asks for, at the right shape. ⚠ Needs the NETWORK on
+# its first run (then cached) and needs NO PyTorch: it is the only backbone
+# check that can run on the box the `hub` route exists for. A red gate here
+# means UPSTREAM RE-UPLOADED — read its header before touching the hash.
+tests/nn/test_resnet18_hub_weights.mojo

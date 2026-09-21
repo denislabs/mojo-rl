@@ -13,10 +13,10 @@ from max.gpu.host import DeviceContext
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
-from mojo_rl.deep_agents.zero.mcts_adapters import AZPredGPU
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.deep_agents.alphazero.nets import AZMLPNet
+from noeira.deep_agents.zero.mcts_adapters import AZPredGPU
 
 
 def main() raises:

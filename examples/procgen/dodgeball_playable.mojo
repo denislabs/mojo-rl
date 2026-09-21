@@ -12,11 +12,11 @@ See `docs/PROCGEN_DODGEBALL_SCOPE.md`.
 """
 
 from std.memory import alloc
-from mojo_rl.envs.procgen.games import DodgeballEnv
-from mojo_rl.envs.procgen.games.dodgeball import DIST_HARD
-from mojo_rl.envs.procgen.core.pixel_window import PixelWindow
-from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
-from mojo_rl.render.sdl.sdl_scancode import Scancode
+from noeira.envs.procgen.games import DodgeballEnv
+from noeira.envs.procgen.games.dodgeball import DIST_HARD
+from noeira.envs.procgen.core.pixel_window import PixelWindow
+from noeira.render.sdl.sdl_keyboard import get_keyboard_state
+from noeira.render.sdl.sdl_scancode import Scancode
 
 comptime ASSET_ROOT = String("assets/procgen/")
 comptime WIN = 512

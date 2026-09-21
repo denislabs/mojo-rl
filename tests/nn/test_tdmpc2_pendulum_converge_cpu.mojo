@@ -11,9 +11,9 @@ Run:
 
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.agent import TDMPC2Agent
-from mojo_rl.envs.pendulum import PendulumEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.tdmpc2.agent import TDMPC2Agent
+from noeira.envs.pendulum import PendulumEnv
 
 
 comptime OBS = 3

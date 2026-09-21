@@ -17,9 +17,9 @@ from std.math import isnan, isinf
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn import Tensor, ParamVisitor, Kaiming
-from mojo_rl.experimental.lewm.loss_graph import LeWMLossGraph
+from noeira.nn.constants import DT
+from noeira.nn import Tensor, ParamVisitor, Kaiming
+from noeira.experimental.lewm.loss_graph import LeWMLossGraph
 
 
 # toy config

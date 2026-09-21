@@ -39,27 +39,27 @@ buffer unlocks, and the prerequisite for imagination RL on a real env.
 
 from std.math import sqrt, log, cos, abs
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Xavier
+from noeira.nn.optimizer.adam import Adam
 
-from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
-from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
-from mojo_rl.deep_agents.dreamer4.pong_reward_buffer import (
+from noeira.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
+from noeira.deep_agents.dreamer4.agent import Dreamer4Agent
+from noeira.deep_agents.dreamer4.pong_reward_buffer import (
     Dreamer4PongRewardBuffer,
 )
-from mojo_rl.deep_agents.dreamer4.recon_loss import (
+from noeira.deep_agents.dreamer4.recon_loss import (
     masked_recon_loss, full_recon_psnr,
 )
-from mojo_rl.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
-from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao
-from mojo_rl.deep_agents.dreamer4.imag_rl_loss import (
+from noeira.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
+from noeira.deep_agents.dreamer4.shortcut_loss import _mao
+from noeira.deep_agents.dreamer4.imag_rl_loss import (
     continue_pred, continue_bce_loss, continue_bce_backward,
 )
-from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_argmax
-from mojo_rl.deep_agents.dreamerv3.twohot import symexp_twohot_bins, twohot_pred
+from noeira.deep_agents.dreamerv3.dists_discrete import cat_argmax
+from noeira.deep_agents.dreamerv3.twohot import symexp_twohot_bins, twohot_pred
 
 
 # deterministic RNG (xorshift64* + Box-Muller)

@@ -17,12 +17,12 @@ from std.random import seed, random_float64
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.training.trainer import Trainer
-from mojo_rl.nn.training.augmenter import CIFAR10CropFlipAugmenter
-from mojo_rl.nn.optimizer.lr_scheduler import WarmupCosineSchedule
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.training.trainer import Trainer
+from noeira.nn.training.augmenter import CIFAR10CropFlipAugmenter
+from noeira.nn.optimizer.lr_scheduler import WarmupCosineSchedule
 
 
 comptime IN = 3 * 32 * 32  # 3072 (required by CIFAR augmenter)

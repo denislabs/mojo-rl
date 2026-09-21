@@ -12,19 +12,19 @@ Run:
     pixi run -e nvidia mojo run -I . tests/pcn/test_stochastic_tpc_gpu.mojo
 """
 
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from std.math import sqrt, log, cos, pi
 from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.experimental.pcn.pc_constants import TPB
-from mojo_rl.experimental.pcn.pc_initializer import PCXavier
-from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
-from mojo_rl.nn.datasets.mnist import MNIST
-from mojo_rl.experimental.pcn import (
+from noeira.nn.constants import DT as dtype
+from noeira.experimental.pcn.pc_constants import TPB
+from noeira.experimental.pcn.pc_initializer import PCXavier
+from noeira.experimental.pcn.pc_optimizer import PCAdam
+from noeira.nn.datasets.mnist import MNIST
+from noeira.experimental.pcn import (
     PCBlock,
     PCSequential,
     PCTanh,
@@ -473,4 +473,4 @@ def main() raises:
 
     print("=== Done ===")
 
-from mojo_rl.core.fmt import fit
+from noeira.core.fmt import fit

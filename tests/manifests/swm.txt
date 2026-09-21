@@ -1,0 +1,272 @@
+# SWM manifest — `pixi run test-swm`
+#
+# Sheaf World Model with holonomy as an observable (SWM-H).
+# Design: docs/SHEAF_WORLD_MODELS_V2.md   Plan + gates: docs/SWM_IMPLEMENTATION_PLAN.md
+#
+# Phases 1-7. They are CPU-only, float64, and self-contained
+# apart from the pinned oracle, which is checked in under
+# tests/experimental/swm/reference/ and regenerated with:
+#
+#   pixi run python tools/swm/dump_mobius_reference.py
+#
+# Every gate here carries an explicit NEGATIVE CONTROL leg and prints the
+# number of cases compared, because on this line of work "nothing detected"
+# and "nothing tested" have the same signature.
+
+# G1 — the O(D) generators and the polar Procrustes factor. Includes the exact
+# closed forms exp(skew(t)) = rot(t) and cayley(skew(t)) = rot(-2 atan t): the
+# only legs that pin the VALUE rather than mere membership in O(D). An
+# orthogonality-only version of this gate was measured to MISS a mutant that
+# dropped the scaling-and-squaring, because exp(S/2^k) is still orthogonal.
+tests/experimental/swm/test_so_d_ops.mojo
+# G2 + G3 — ring holonomy and the sheaf-Laplacian spectrum. Pins the claim that
+# decides which observable the runtime reads: ||H - I||_F = 2 at every ring
+# length, while the spectral gap lambda_2 = 2(1 - cos(pi/N)) decays as 1/N^2.
+# The orientable ring is the negative control on both.
+tests/experimental/swm/test_holonomy_ring.mojo
+# G4 — the per-edge O(2) fit against the pinned numpy oracle, on the EXACT
+# pairs numpy saw. numpy fits by SVD, this tree fits by Newton polar
+# decomposition, so a shared bug cannot make it pass. Also reproduces the
+# translation ablation's 7-10x odd/even parity gap as a negative control on the
+# closure-error metric itself.
+tests/experimental/swm/test_procrustes_vs_oracle.mojo
+# G5 — the Mobius corridor (Phase 2). Welds the environment to Phase 1: both
+# the PLANTED transports and transports RECOVERED by Procrustes from noisy
+# observed pairs must give det H = -1, with the orientable twin as the control
+# on both. Also enforces what makes E1 a test rather than a tautology — a
+# per-cell texture that identifies the cell, is bit-identical at both lap
+# parities, and is NOT transported, mixed overcompletely with the landmark so
+# the frame subspace has to be learned rather than read off a coordinate.
+tests/experimental/swm/test_mobius_ring_env.mojo
+# G6 — PHASE 3, THE DECISION POINT (P1). Does det H = -1 survive learned
+# encoders? Runs Mobius and its orientable twin ON THE SAME BINARY, because a
+# learned encoder with an unstable gauge manufactures obstructions: measured
+# during development, det H = -1 came out in 2/6 Mobius seeds AND 2/6
+# orientable seeds before the per-place anti-collapse term existed. Also gates
+# the frame channel as VALID (not collapsed, not a place-indexed constant)
+# before reading det H from it at all. ~21s.
+tests/experimental/swm/test_swmh_e1_det_h.mojo
+# G6b — how far P1 reaches. G6 answers it under a LINEAR mixing, where the
+# split hypothesis 4.0 asks for exists exactly and is linearly recoverable —
+# the friendliest possible observation model. This runs
+# obs = tanh(gain * mix @ latent) and measures the saturation so "survives a
+# nonlinearity" cannot be claimed where tanh is still nearly linear. Survives
+# to 16% saturation; breaks at 39%, where the channel is destroying the
+# landmark rather than entangling it. Crucially it fails GRACEFULLY: even
+# where the frame channel cannot recover the landmark, zero false
+# obstructions. ~18s.
+tests/experimental/swm/test_swmh_nonlinear_obs.mojo
+# G7 — the orientation bit, which carries the entire Z/2 signal (det H is
+# exactly the product of the bits). Control: with flips disabled the
+# obstruction is unreachable, 0/8. Records an honest NEGATIVE on a mechanism
+# this plan proposed: margin + min-count hysteresis is INERT on E1. ~21s.
+tests/experimental/swm/test_swmh_bit_stability.mojo
+# G8 — the v1 ablations (P2). The inert half is EXACT algebra, not a trend:
+# L = 4 - 2 tr H is constant on the det = -1 component, so the cocycle loss has
+# exactly zero TANGENT gradient there (measured 6.7e-16 against a raw gradient
+# of 13.9), while a continuously frustrated orientable ring gives a tangent
+# gradient of 7.6 — the control that makes the zero a measurement. Then the
+# arms on learned encodings: free morphisms collapse (det H -1 -> -0.02), and
+# orthogonal ones are bit-identical to plain Procrustes. ~5s.
+tests/experimental/swm/test_swmh_ablations.mojo
+# G10 + G11 — PHASE 4. G10 pins that inference is descent: monotone energy, and
+# the iterate lands on a dense solve of the stationary equations to 1e-12.
+# G11 is the one that earns its place — it MEASURES the claim that a non-trivial
+# identification must be removed from the energy, as a 2x2 in which only one
+# cell may move. Mobius with the contradictory identification collapses the
+# frame toward the cycle's 1-D fixed subspace (anisotropy 0.09 at weak anchors);
+# the orientable twin with a CONSISTENT identification does not move at all, so
+# the collapse is caused by the contradiction and not by adding a constraint.
+# The beta dependence is the doc's §4.4 mechanism made visible. ~5s.
+tests/experimental/swm/test_sheaf_inference.mojo
+# G9 — the fault confusion matrix, with counts (P4 / E3). Defends the asymmetry
+# the whole method rests on: an obstruction is a fact to RECORD, a broken sensor
+# is an edge to DOWN-WEIGHT, and a constant BIAS is neither — it must come out
+# UNDECIDED and must NEVER be filed as an obstruction (zero tolerance, not a
+# rate). 40 trials x 4 worlds, 40/40 in every cell. ~5s.
+tests/experimental/swm/test_swmh_faults.mojo
+# G12 — the classification loop is closed (verdict -> in_energy -> what is
+# learned -> holonomy -> verdict), so a bare threshold chatters. The latch cuts
+# churn 141 -> 29 on a boundary-hovering stream while still settling on the
+# truth, and is a NO-OP on an unambiguous one — the leg that stops the churn
+# metric being gamed by a latch that simply never moves. <1s.
+tests/experimental/swm/test_swmh_latch.mojo
+# G13 + G14 — PHASE 5, planning through the seam. Goal-conditioned so the task
+# is GAUGE-FREE ("reach a state that looks like this" needs no name for
+# "left"). PARITY accuracy is the headline, not raw goal success: parity is
+# exactly what the double cover buys, and a parity-blind model can only guess
+# it. Planning is exhaustive over monotone walks rather than CEM, to separate
+# MODEL error from SEARCH error — the CEM step penalty is a path-length prior
+# that trades near goals against far ones, which is a property of the search.
+# G14: applying the monodromy twice computes H^2 = I and drives parity BELOW
+# chance while leaving cell tracking intact — asymmetric damage is the
+# signature. ~6s.
+tests/experimental/swm/test_swmh_planner.mojo
+# G15 — PHASE 6a, the content channel. Answers the deficit G13 measured (9/10
+# planner failures were right-parity/wrong-cell). It localises (cell accuracy
+# 0.55 -> 0.998) and does NOT contaminate the frame (nuisance R^2 stays ~0.005,
+# det H = -1 survives). But rolled forward it HURTS planning, and the reason is
+# measured: the frame rollout is FLAT (0.092 -> 0.107 over 12 steps, because an
+# isometry rotates error instead of amplifying it) while the content rollout
+# DRIFTS 11x (0.41 -> 4.40). The orthogonal constraint is usually justified by
+# what it does for the holonomy; this says it also buys the only channel still
+# trustworthy after a long imagined rollout. The negative is GATED so it cannot
+# silently reverse. ~18s.
+tests/experimental/swm/test_swmh_content.mojo
+# G16 — PHASE 6b, many cycles at once. Every earlier gate read exactly ONE
+# holonomy because a ring has one cycle. A torus grid with a reflecting x-seam
+# (a non-orientable O(2) bundle, w1 != 0 — the structure that makes a Klein
+# bottle non-orientable) gives 31 fundamental cycles: 5 orientation-reversing,
+# 8 non-trivial rotations, 18 trivial. First real exercise of
+# confirm_by_independent_cycles, which was previously gated only on synthetic
+# edge lists — 4 edge-disjoint pairs exist here. Also gates dim ker(H - I),
+# which det H under-reports above 2D: the doc's own example, O(3) H = -I has
+# det -1 and fixes NOTHING, while an O(3) reflection fixes a plane. ~4s.
+tests/experimental/swm/test_klein_multicycle.mojo
+# G17 — PHASE 6c, removing the last oracle. Confirms the design doc's predicted
+# failure with the landmark held fixed so mirroring is the ONLY difference:
+# naive whole-latent recognition is 240/240 at parity 0 and 118/240 at parity 1,
+# while content-only is 240/240 at both. Then the finding that matters: under
+# texture aliasing, a FALSE identification manufactures det H = -1 just as a
+# true one does (93/95 vs 115/353) -- the holonomy depends on the graph span,
+# not on whether the places match, so det H inherits place recognition's
+# reliability wholesale. PCM defends, but the textbook "composition = I"
+# criterion assumes a global frame and rejects the mixed-parity pairs; the
+# group-aware form, composed in ROOT GAUGE (the tree is flat, so the
+# composition is the product of the two holonomies), accepts 100% of true
+# pairs. An earlier version composed across gauges and read 73%. ~6s.
+tests/experimental/swm/test_place_recognition.mojo
+# G18 — PHASE 7, which identifications to believe. The maximal Z/2 clique with
+# the group BOOTSTRAPPED from the closures (no lap length, no oracle M) keeps
+# 353/353 true closures and 10/95 false ones — the gauge-coincident residual.
+# The control 6c lacked: on an ORIENTABLE aliased twin zero closures read
+# det = -1, so a false identification cannot invent a reflection, only
+# mis-attribute one. And the oracle leak closed: with transports indexed by the
+# TEXTURE label the merged entries show a residual 2-9x the floor (below the
+# ABERRANT threshold, the encoder co-adapts) and the seam becomes
+# unrepresentable — the obstruction is LOST, never manufactured. ~7s in the suite, ~90s standalone.
+tests/experimental/swm/test_swmh_clique.mojo
+# G19 — PHASE 7 in two dimensions, on a FLAT non-orientable bundle (the seam as
+# a deck transformation; 6b's bundle is curved along its seam and is the
+# control). The Z/2 clique is exact on the flat bundle (2166/2166, M within
+# 0.003 of the seam) and keeps only 18% of true closures on the curved one —
+# the flatness assumption, gated. Gauge coincidence is NOT resolved by the
+# second dimension (41% of false closures survive vs 10% on the ring; the
+# driver is the angular spread of frames between aliased places). What refutes
+# a LOCAL false identification is the graph: successor-label conflicts, the
+# signal a clone-splitting rule runs on; a GLOBAL symmetry has none. ~10s.
+tests/experimental/swm/test_klein_recognition.mojo
+# G20 — E3 as the doc claims it: faults THROUGH the learned encoder. Same four
+# worlds as G9, same asymmetry, zero false obstructions. The encoder COMPRESSES
+# the fault: 30x sensor noise gives a residual 4.7x the median (920x at frame
+# level), clean worlds 1.5-1.7x, so the outlier factor is 3 and gated from both
+# sides. ~5s in the suite.
+tests/experimental/swm/test_swmh_faults_encoder.mojo
+# G21 — the content channel as a PLACE CODE. Naive replanning is recorded as
+# the wrong design (rolled content: cell 103; frame-only loop oscillates: 28).
+# A centroid lookup along the rollout, plus one observation at arrival, is
+# what turns 6a's localisation into cells (120/120). ~4s in the suite.
+tests/experimental/swm/test_swmh_replan.mojo
+# G22 — the verdict carries dim ker(H - I): O(3) reflection fixes a plane, -I
+# fixes nothing, both det = -1 OBSTRUCTIONs that det-only classification cannot
+# tell apart (shown). <1s.
+tests/experimental/swm/test_fixed_subspace_classify.mojo
+# G23 — PHASE 8a, learned encoders on the 2D bundle. The training loop is now
+# written once over the SwmWorld trait (ring and grid both conform). On the
+# flat Klein world the learned transports reproduce the planted Z/2 class on
+# 31/31 fundamental cycles in every seed (5 reversing), the flat torus reads
+# 0 reversing, landmark R^2 >= 0.98, content cell accuracy 1.0. ~2 min.
+tests/experimental/swm/test_klein_learned.mojo
+# G24 — PHASE 8b, a map with no oracle in it. Online labels from the content
+# channel, successor conflicts on exactly the merged labels, clones by
+# context splitting (30 clones, purity 1.0, 5 reversing on the clone graph
+# with re-fitted transports). The orientable twin's labeller UNDER-segments
+# (26 labels) and the graph rule repairs it. A GLOBAL symmetry: 15 labels, 0
+# conflicts, nothing to split — a consistent quotient, recorded. ~1.5 min.
+tests/experimental/swm/test_klein_map_builder.mojo
+# G25 — PHASE 8c, the P5 comparison against a CSCG learned by EM on the SAME
+# label and action sequences. NOT confirmed: level — aliasing resolved at 121
+# visits, the exact map at 242, for both. What separates them is stability — fixed-budget EM fragments places
+# into extra pure clones as data grows (30 -> 56) while the context rule stays
+# at 30. Recorded and gated. ~1 min.
+tests/experimental/swm/test_cscg_comparison.mojo
+# G26 — PHASE 8d, the end-to-end task with no oracle in the loop. The agent
+# explores, labels visits with its own content channel, clones the labels
+# the graph contradicts, fits transports per clone, is shown one goal
+# observation and plans on its own map through the DOUBLE COVER (BFS over
+# (clone, u)). Goal = cell AND parity: 75/80 on the learned map, 75/80 with
+# oracle vertices (the map costs nothing), constant sheaf 34/80 (chance).
+# With the goal SET on the aliased pair the content offers 2 goal clones and
+# the frame picks cell and parity 80/80. ~1 min.
+tests/experimental/swm/test_klein_task.mojo
+# G27 — PHASE 9, THE TRANSFER TEST: a physical world (Pendulum), not built
+# for the method. What transfers: the split is found through an overcomplete
+# mixing (landmark R^2 0.990, speed leak 0.013) and det H = +1 everywhere, so
+# no obstruction is manufactured on a physical world. What does not: the frame
+# rollout is NOT flat (0.083 -> 0.520 over 24 steps vs E1's 0.092 -> 0.107).
+# Quantization of the velocity bottleneck is REFUTED as the cause (4x wider
+# bins cut the per-step angle error 4x and change nothing). And the MATCHED
+# control — same channel, same slots, orthogonality lifted — says the isometry
+# buys nothing here (ratio 0.85 at 12 bins, 1.06 at 48), because the
+# unconstrained fit is already nearly an isometry (|M^T M - I| = 0.13). On E1
+# the free arm was pushed off the manifold by a cocycle loss; least squares
+# applies no such force. ~4 min.
+tests/experimental/swm/test_pendulum_transfer.mojo
+# G28 — PHASE 10, the matched control on E1, where 6a's claim was made. Same
+# channel, same edges, orthogonality LIFTED (per-edge least squares, no
+# cocycle), fitted and rolled on disjoint episodes. The constraint buys
+# accuracy at the LOOP CLOSURE and only there: 1 step 0.105 vs 0.092 (the free
+# fit is BETTER), 12 steps level, 24 steps (TWO LAPS) 0.040 vs 0.119. The
+# mechanism is exact and measured — two laps of the constrained transports
+# compose to the identity to 6.1e-16 (a reflection squared) while the free
+# product sits 0.095 away. That reconciles G27: Pendulum closes no loop in 24
+# steps, so its matched control correctly found nothing. Leg B: the free fits'
+# det sign still carries the Z/2 class (4/4, 4/4) but |det| erodes to 0.85 —
+# the constraint is what makes the class exact rather than usually right. ~90s.
+tests/experimental/swm/test_swmh_matched_control.mojo
+# G29 — PHASE 11, refuting a GLOBAL symmetry, which the graph provably cannot.
+# Under (x,y) ~ (x+W/2,y) the label graph has ZERO successor conflicts: the
+# quotient is a consistent world. The residual NORM cannot help either, and
+# not for want of measuring — under a compromise fit both places' residuals
+# are (R_a - R)u and (R_b - R)u, LINEAR in u, hence zero-mean and equal in
+# magnitude. The signal is in the joint (u, eps), so it needs a mixture over
+# MAPS: k-means whose centres are O(2) transports. Result: residual drop 0.52
+# and assignment purity 0.92 against the true place, vs a drop of 0.22 on a
+# world with nothing to split (the control that stops a richer model from
+# always "finding" two places). RECORDED GAP: detection is not yet a map —
+# component indices are arbitrary per slot, so per-slot splits do not compose
+# (27 clones at 0.75 purity); the fix is the flat bundle's commuting-square
+# constraint and it is not built. ~2 min.
+tests/experimental/swm/test_swmh_global_symmetry.mojo
+# G30 — PHASE 11, gauge coincidence against the FIBRE's dimension. G19 refuted
+# the base dimension as a remedy; this measures the fibre, and needs no
+# learning. Planted O(D) ring, every non-returning walk enumerated as a
+# candidate false closure: 59% land within tolerance of {I, M} at D=2, 9% at
+# D=3, 0% at D=4 and D=6, while every TRUE closure is still accepted (36/36 at
+# every D — the control that stops a falling rate meaning "rejects
+# everything"). The first version summed generators to cancel, which is an
+# ABELIAN trick: in O(D>2) the BCH residue left 0/36 true closures accepted,
+# and the control caught it. Built with a frame per cell instead, which
+# telescopes exactly. <1s.
+tests/experimental/swm/test_gauge_coincidence_dim.mojo
+# G31 — PHASE 12, a LEARNED 4-dimensional frame. G30 showed on planted
+# transports that gauge coincidence is a 2D artefact; this asks whether a
+# learned wide frame is still a frame, and whether the payoff survives
+# training. Both worlds on the same binary at d = 2 and d = 4: the Z/2 class
+# comes out 4/4 and 4/4 with zero false obstructions at BOTH widths, and gauge
+# coincidence among false closures collapses 51.5% -> 0.4% with every true
+# closure still accepted (144/144). The PRICE is real and gated: on the same
+# data the wider frame is a looser frame — landmark R^2 0.989 -> 0.841, texture
+# leak 0.054 -> 0.105, anisotropy 0.752 -> 0.468. Whether a longer schedule
+# closes that is untested. ~4 min.
+tests/experimental/swm/test_swmh_wide_frame.mojo
+# G32 — PHASE 13, is the wide frame's looser split a DATA problem? Phase 12
+# recorded d=4 as a trade-off; this scales the budget and finds it was
+# UNDER-TRAINING, not incapacity: 85% of the landmark gap closes by 4x epochs
+# (R^2 0.891 -> 0.975 against the d=2 reference's 0.989) and the texture leak
+# ends up BETTER than the narrow frame's (0.014 vs 0.054). Which is what the
+# parameter count suggested — d(d-1)/2 per transport entry, 1 at d=2 and 6 at
+# d=4. So width is close to free given data, and the recommendation is to take
+# the wider frame: the gauge-coincidence residue goes with it. Anisotropy is
+# NOT monotone in budget and is gated as a floor, not a trend. ~6 min.
+tests/experimental/swm/test_swmh_width_budget.mojo

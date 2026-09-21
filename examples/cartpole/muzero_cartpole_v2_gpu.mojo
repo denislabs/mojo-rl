@@ -16,14 +16,14 @@ Run (GPU env required):
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
-from mojo_rl.deep_agents.muzero.selfplay_gpu_device import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.optimizer.adam import Adam
+from noeira.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
+from noeira.deep_agents.muzero.selfplay_gpu_device import (
     run_muzero_selfplay_gpu_device,
 )
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.envs.cartpole import CartPoleEnv
 
 
 def main() raises:

@@ -13,8 +13,8 @@ exit handling — with RNG consumed in the reference order. See
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import HeistGame
-from mojo_rl.envs.procgen.games.heist import DIST_EASY, DIST_HARD
+from noeira.envs.procgen.games import HeistGame
+from noeira.envs.procgen.games.heist import DIST_EASY, DIST_HARD
 
 comptime STEPS = 150
 

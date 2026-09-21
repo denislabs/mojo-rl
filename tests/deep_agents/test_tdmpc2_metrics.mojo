@@ -13,9 +13,9 @@ from std.math import isfinite, abs
 from std.random import random_float64, seed
 from std.testing import assert_true, assert_almost_equal, TestSuite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.logger import NoOpLogger
-from mojo_rl.deep_agents.tdmpc2.agent import TDMPC2Agent
+from noeira.nn.constants import DT
+from noeira.core.logger import NoOpLogger
+from noeira.deep_agents.tdmpc2.agent import TDMPC2Agent
 
 comptime OBS = 3
 comptime ENC = 32

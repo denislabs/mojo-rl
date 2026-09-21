@@ -1,6 +1,6 @@
 ---
 title: CPU and GPU paths
-description: How the same code targets CPU, CUDA and Metal — batched environments, on-device training loops, and CUDA-graph capture.
+description: How the same code targets CPU, CUDA, Metal and the Jetson Orin — batched environments, on-device training loops, and CUDA graphs.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -8,7 +8,7 @@ import DeviceResidency from '~/components/diagrams/DeviceResidency.astro';
 
 <Maturity level="stable" />
 
-Most components in mojo-rl have two implementations: a CPU path and a GPU one.
+Most components in noeira have two implementations: a CPU path and a GPU one.
 Which you get is a compile-time choice, made with a target string and a
 `DeviceContext`.
 
@@ -35,16 +35,36 @@ backend supports.
 
 ## Picking the pixi environment
 
-GPU kernels compile per backend, so the environment must be named on the command
-line:
+The GPU kernels are written once, in Mojo, and compiled for the accelerator the
+compiler finds. The pixi environment supplies the toolchain around that
+compile — CUDA packages, the `ptxas` it should use, the preloaded CUDA
+interceptor — so name it on the command line:
+
+| Hardware | Command | Notes |
+|---|---|---|
+| Apple Silicon (Metal) | `pixi run -e apple mojo run -I . <script>` | correctness target; see the platform notes below |
+| NVIDIA (CUDA) | `pixi run -e nvidia mojo run -I . <script>` | also what plain `pixi run` resolves to — `default` is the `nvidia` feature |
+| Jetson Orin (CUDA, sm_87) | `pixi run -e jetson run-jetson <script>` | the task adds `--target-accelerator sm_87` |
+| AMD | `pixi run -e amd mojo run -I . <script>` | declared; no AMD-specific tasks or gates exist yet |
+| CPU only | `pixi run -e cpu mojo run -I . <script>` | CI; no CUDA toolchain installed |
+
+**The Orin needs its target spelled out.** MAX picks the kernel target by
+asking NVML, and Tegra's NVML does not answer that question correctly. With the
+wrong target the kernels compile without complaint and the driver refuses the
+image at the first kernel load with `CUDA_ERROR_INVALID_SOURCE`. MAX reads no
+environment variable for the target, so the flag goes on the command — which is
+what `run-jetson` and `build-jetson` add:
 
 ```bash
-pixi run -e apple  mojo run -I . <script>   # Metal
-pixi run -e nvidia mojo run -I . <script>   # CUDA
+pixi run -e jetson run-jetson   <script>                  # mojo run   --target-accelerator sm_87
+pixi run -e jetson build-jetson -o /tmp/out <script>      # mojo build --target-accelerator sm_87
 ```
 
-The same source builds for both. There is no separate Metal backend to maintain —
-the kernels are written once in Mojo.
+The `jetson` environment also preloads the CUDA interceptor, which on a Tegra
+board answers NVML's PCI-location and compute-capability queries with CUDA's
+own values. MAX 26.6 matches NVML and CUDA devices by PCI location, and on the
+Orin's integrated GPU the two disagree, so without the interceptor
+`DeviceContext()` cannot find the GPU at all. See [Jetson Orin](/robots/jetson/).
 
 ## Batched environments
 
@@ -102,33 +122,80 @@ stream. Nothing round-trips to the host inside the loop.
 This only works because one language owns every stage. A stack that reached out
 to an external physics library would have to copy at that boundary, every step.
 
-## CUDA-graph capture
+## CUDA graphs
 
-On NVIDIA, the training step can be captured once as a CUDA graph and replayed,
-collapsing per-launch overhead. It is on by default for the batched drivers:
+On NVIDIA, a training step can be recorded once as a CUDA graph and replayed,
+collapsing hundreds of kernel launches into one. The batched off-policy drivers
+expose it as two compile-time flags:
 
 ```mojo
 _ = agent.train[
     BatchedEnvT,
     N_ENVS=N_ENVS,
-    USE_TRAIN_CUDA_GRAPH=True,    # capture the gradient update
+    USE_TRAIN_CUDA_GRAPH=True,    # record the gradient update
     USE_ENV_CUDA_GRAPH=False,     # step the environment eagerly
 ](env, NUM_STEPS, ...)
 ```
 
-Worth roughly **1.4×** on the SAC pipeline.
+Defaults differ per facade: `SACAgent.train` turns **both** on, `DQNAgent.train_gpu_batched`
+turns on the train-step graph, `TD3Agent` and `DDPGAgent` the environment
+graph, and the shared off-policy driver itself defaults both to `False`. Check
+the facade you use, and set the flags explicitly in a script you care about.
+The flags do nothing on non-NVIDIA targets.
 
 :::caution[Environment capture is not always safe]
 `USE_ENV_CUDA_GRAPH` is separate from `USE_TRAIN_CUDA_GRAPH` for a reason. The
 physics3d path solves pyramidal contacts with a one-environment-per-block
 blocked Newton kernel that uses cooperative shared memory; capturing and
-replaying it hits illegal addresses on replay. The HalfCheetah and Humanoid GPU
-examples therefore set `USE_ENV_CUDA_GRAPH=False`. Eager environment stepping is
-correct — only the per-step launch collapse is lost.
+replaying it hits illegal addresses on replay. The HalfCheetah and Humanoid SAC
+examples therefore override SAC's default with `USE_ENV_CUDA_GRAPH=False`.
+Eager environment stepping is correct — only the per-step launch collapse is
+lost.
 :::
 
-Capture is also only meaningful on NVIDIA: on non-NVIDIA targets these flags are
-no-ops.
+### Two mechanisms
+
+`noeira/cuda/` carries two implementations of record-and-replay:
+
+| | `graph` — `CUDAGraph`, `maybe_capture_replay` | `device_graph` — `GraphSlot`, `maybe_record_replay` |
+|---|---|---|
+| How | stream capture (`cuStreamBeginCapture`) on MAX's stream, found through an `LD_PRELOAD` interceptor | MAX's own `DeviceGraph` recording context; no interceptor |
+| Off NVIDIA | compiles to a no-op | links everywhere and **raises** off CUDA/HIP; the first failure is latched and the step runs eagerly from then on |
+| Status | the default | the package's preferred mechanism, opt-in: `NOEIRA_GRAPH_BACKEND=device` |
+
+The legacy path's interceptor (`noeira/cuda/cuda_intercept.c`) is built and
+preloaded by the `nvidia` and `jetson` environments' activation. **The preload
+belongs to the process, not the binary**: `pixi run -e nvidia mojo run …` has
+it, but a binary you `mojo build` and then invoke directly does not, and
+capture silently disables itself. Set `LD_PRELOAD` yourself in that case.
+
+The off-policy driver reads `NOEIRA_GRAPH_BACKEND` once, before the loop
+(`stream` by default). `device` needs the agent to implement
+`train_device_kernels_on`, which threads the recording context down to every
+kernel launch; SAC does, and the others raise rather than record half a step.
+`NOEIRA_DEVICE_GRAPH=0` turns recording off without a rebuild.
+
+:::caution[Why `DeviceGraph` is not the default yet]
+Recording a step that contains a GEMM whose workspace MAX allocates is unsafe.
+The workspace is allocated and freed around the call while the recorded node
+keeps its raw pointer:
+
+- A recorded **split-K** GEMM replays with the right answer while silently
+  writing over whatever the allocator hands that block to next — an unrelated
+  live tensor. Nothing raises.
+- A GEMM on MAX's **vendor BLAS** path (32 MB of scratch per call) faults with
+  `CUDA_ERROR_ILLEGAL_ADDRESS` on the first replay.
+
+MAX sends a `Linear` to the vendor path unless its input width is at least 128
+and a multiple of 32 and its output width a multiple of 128 — so the first and
+last layer of nearly every actor and critic go there. Stream capture refuses
+the same allocations instead of recording them, which is why it stays the
+default. To check a step before recording it, build with
+`-D LOGGING_LEVEL=INFO` and count lines matching `K partitions: [2-9]` and
+`Executing: vendor BLAS`; both must be zero. noeira's own split-K kernel in
+`noeira/nn/core/splitk_gemm.mojo` takes a caller-owned workspace and is safe to
+record.
+:::
 
 ## Platform differences worth knowing
 
@@ -144,6 +211,10 @@ say so.
 
 **Long training belongs on NVIDIA.** The Apple path exists for development and
 parity checking. Real runs go to a CUDA box and checkpoint.
+
+**The Orin is used as a deployment target.** It runs the same kernels (with
+`--target-accelerator sm_87`); its tasks in `pixi.toml` are policy deployment
+and inference benchmarks.
 
 **The Atari 2600 emulator is CPU-only.** Its 6502 opcode dispatch diverges too
 heavily for the Metal compiler. The native arcade engines — Pong, Breakout,

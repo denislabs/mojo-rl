@@ -1,7 +1,7 @@
 """Verify SIMD gains hold when using `LayoutTensor` (production access pattern).
 
 The pointer-only bench (`benchmark_vectorize_cpu.mojo`) showed 3-12× speedups
-from explicit SIMD. But mojo_rl/nn/ uses `LayoutTensor[dtype, Layout.row_major(BATCH, DIM)]`
+from explicit SIMD. But noeira/nn/ uses `LayoutTensor[dtype, Layout.row_major(BATCH, DIM)]`
 for indexing, not raw pointers. Two questions:
 
   Q1. Does the scalar `output[b, i] = ...` pattern in `ReLUOp.eval` already
@@ -27,7 +27,7 @@ from std.sys import simd_width_of
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
+from noeira.nn.constants import DT as dtype
 
 
 comptime SIMD_WIDTH = simd_width_of[dtype]()
@@ -36,7 +36,7 @@ comptime DIM = 256
 
 
 # =============================================================================
-# A. LayoutTensor scalar — mirror of mojo_rl/nn/autodiff/primitives/activations.mojo
+# A. LayoutTensor scalar — mirror of noeira/nn/autodiff/primitives/activations.mojo
 # =============================================================================
 
 

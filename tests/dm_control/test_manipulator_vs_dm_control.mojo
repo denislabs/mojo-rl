@@ -39,15 +39,15 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulator import (
+from noeira.envs.dm_control.manipulator import (
     DMManipulatorBringBallModel as M,
     DMManipulatorBringBallConfig,
     TARGET_BODY_IDX,
 )
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
     MODEL_GEOM_SIZE,
@@ -82,7 +82,7 @@ from mojo_rl.physics3d.gpu.constants import (
     TENDON_IDX_INVWEIGHT0,
     META_IDX_NUM_CONTACTS,
 )
-from mojo_rl.physics3d.constants import (
+from noeira.physics3d.constants import (
     GEOM_PLANE,
     GEOM_SPHERE,
     GEOM_CAPSULE,
@@ -735,7 +735,7 @@ def _mj_at(
     state: List[Float64], ctrl: List[Float64]
 ) raises -> Tuple[PythonObject, PythonObject, PythonObject]:
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/manipulator_bring_ball.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/manipulator_bring_ball.xml")
     var dat = mujoco.MjData(m)
     for i in range(NQ):
         dat.qpos[i] = state[i]

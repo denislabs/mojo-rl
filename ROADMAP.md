@@ -1,6 +1,38 @@
-# mojo-rl Roadmap
+# noeira Roadmap
 
-## Completed
+noeira started as a reinforcement-learning framework and grew into an
+end-to-end Physical AI stack: simulation, learning, perception and deployment,
+from simulator to robot. The first section is what that growth added; the
+rest is the RL and infrastructure history it was built on.
+
+## Completed — Physical AI (2026-08 → 2026-09)
+
+### Robots and data
+- [x] SO-101 over its Feetech servo bus (`robot/`): diagnostics, calibration (EEPROM writes opt-in), torque control, opt-in arming
+- [x] Cameras (`vision/`): threaded capture, ChArUco intrinsics, camera-to-base extrinsics, the OpenCV shim
+- [x] Teleoperation recorded to LeRobot v3 datasets (Parquet + H.264), checkpointed and resumable; pushed to the Hugging Face Hub; imported back natively
+- [x] Jetson Orin NX deployment (`-e jetson`, sm_87): ACT's closed loop at 30.0 Hz on the arm
+- [x] Projects and runs (`RunContext`, policy promotion, push / pull) and noeira cloud at cloud.noeira.ai
+
+### Imitation, VLAs and learning from demonstrations
+- [x] ACT (LeRobot parity; trained on SO-101 datasets and LIBERO; deployed on the arm)
+- [x] SmolVLA — inference and fine-tuning in Mojo; running on the arm at 27 Hz; first grasp-and-place on the arm on 2026-09-20 (cube picked and dropped into the bowl), roughly one attempt in five by informal count [experimental — needs more and better data]
+- [x] Behaviour cloning (`deep_agents/bc/`)
+- [x] HIL-SERL (RLPD demo prefix + BC term) and DAgger-style interventions (`deep_agents/demos/`, `deep_agents/hil_serl/`) [experimental — first lift in simulation]
+- [x] Forward-Backward zero-shot RL; BFM-Zero reproduced on the Unitree G1
+
+### Simulation and tasks
+- [x] MuJoCo 3.12 parity audit: no unserved feature across 83 Menagerie models and DeepMind Control
+- [x] DeepMind Control suite, every task parity-gated against MuJoCo [training not yet shown]
+- [x] The task layer (`tasks/`): families, goals, placement, batched multi-task evaluation
+- [x] LIBERO (`envs/libero/`): 23 families, 129 tasks, demos imported and re-rendered, batched OSC_POSE evaluation
+- [x] Ray-traced batched cameras, ImGui viewers, the physics studio
+
+### Toolchain
+- [x] Mojo 1.1.0 / MAX 26.6.0, pinned; `linux-aarch64` for the Jetson
+- [x] MAX flash attention routed for the fused cross-attention on NVIDIA
+
+## Completed — RL and infrastructure
 
 ### Environments - Native Mojo (Tabular)
 
@@ -246,10 +278,18 @@
 
 ## In Progress / Next Steps
 
+### Physical AI
+- [ ] A measured success rate for ACT on the real arm
+- [ ] SmolVLA on the arm: a measured success rate, and more / better demonstrations to raise it (≈20% by informal count, 2026-09-20)
+- [ ] HIL-SERL and DAgger on the real arm, from the simulation recipe
+- [ ] LIBERO success rates beyond the current baselines (ACT 31/200 vs a vision-free kNN 144/200 on libero_goal)
+- [ ] Training results on DeepMind Control
+
 ### GPU Optimization
 
 - [ ] MMA tensor core matmul for all platforms (currently Apple Silicon optimized)
-- [ ] Mixed precision training (fp16/bf16)
+- [x] Mixed precision (AMP) in the supervised `Trainer`
+- [ ] Mixed precision across the RL trainers
 - [ ] Multi-GPU support
 
 ### Infrastructure Improvements
@@ -263,7 +303,6 @@
 ### Environments
 
 - [ ] More arcade games (Freeway, Enduro, Qbert, Asteroids)
-- [ ] Reacher, Pusher (MuJoCo-style manipulation envs, Phase 3)
 - [ ] Custom environment builder
 - [ ] POMDP benchmark environments
 
@@ -304,8 +343,7 @@ For sparse reward and hard exploration problems.
 
 For partial observability and memory-dependent tasks.
 
-- [ ] **LSTM layer** in nn Model trait
-- [ ] **GRU layer** - Simpler recurrent alternative
+- [x] **LSTM / GRU cells** in `nn` (LSTMCell, GRUCell, LSTM sequence)
 - [ ] **R2D2** - Recurrent DQN with burn-in and stored hidden states
 
 ### Multi-Agent RL
@@ -320,13 +358,13 @@ Cooperative and competitive multi-agent settings.
 ### Model-Based Deep RL (Beyond TD-MPC2)
 
 - [x] **DreamerV3** - RSSM world model, actor-critic in imagination, categorical latent states [experimental — performance tuning in progress]
-- [ ] **MBPO (Model-Based Policy Optimization)** - Short rollouts from learned model
+- [x] **MBPO (Model-Based Policy Optimization)** - Short rollouts from learned model
 - [ ] **World Models** - VAE + MDN-RNN for latent dynamics
 
 ### Architecture Extensions
 
-- [ ] Transformer blocks for sequence modeling
-- [ ] Imitation learning (Behavioral Cloning, DAgger)
+- [x] Transformer blocks for sequence modeling (GPT, ViT, cross-attention)
+- [x] Imitation learning (behaviour cloning, DAgger-style interventions, ACT, SmolVLA)
 
 ### Quick Wins
 
@@ -373,3 +411,10 @@ Cooperative and competitive multi-agent settings.
 | TD-MPC2 | Model-Based RL | World model + MPPI + distributional |
 | DreamerV3 | Model-Based RL | RSSM + imagination + categorical latents |
 | MuZero | Model-Based RL | Learned model + MCTS + distributional |
+| Dreamer 4 | Model-Based RL | Shortcut-forcing world model + imagination training |
+| MBPO | Model-Based RL | Short branched rollouts from a model ensemble |
+| Behaviour cloning | Imitation | MLP regression on demonstrations, normalised inputs |
+| ACT | Imitation | CVAE + action chunking + temporal ensemble |
+| SmolVLA | VLA | Vision-language backbone + flow-matching action expert |
+| HIL-SERL | From demonstrations | RLPD pinned demo prefix + BC term, interventions |
+| Forward-Backward | Zero-shot RL | Successor-measure factorisation, task inferred from reward |

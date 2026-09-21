@@ -37,19 +37,19 @@ from std.math import abs as math_abs, sqrt
 from std.python import Python
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.studio.stepping import StudioIntegPyr
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.studio.stepping import StudioIntegPyr
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, CONTACT_SIZE,
     CONTACT_IDX_POS_X, CONTACT_IDX_POS_Y, CONTACT_IDX_POS_Z,
     CONTACT_IDX_NX, CONTACT_IDX_NY, CONTACT_IDX_NZ, CONTACT_IDX_DIST,
 )
-from mojo_rl.physics3d.collision.collision_primitives import (
+from noeira.physics3d.collision.collision_primitives import (
     capsule_capsule_manifold, CC_MAX_POINTS,
 )
 
@@ -211,9 +211,9 @@ def test_the_manifold_primitive_directly() raises:
     own value there is -4.163e-17 and ours is +0.0. The two points and their
     positions are not in doubt, and those are what this checks.
     """
-    var d1 = InlineArray[Scalar[DT], CC_MAX_POINTS](fill=Scalar[DT](0))
-    var p1 = InlineArray[Scalar[DT], 3 * CC_MAX_POINTS](fill=Scalar[DT](0))
-    var n1 = InlineArray[Scalar[DT], 3 * CC_MAX_POINTS](fill=Scalar[DT](0))
+    var d1 = Array[Scalar[DT], CC_MAX_POINTS](fill=Scalar[DT](0))
+    var p1 = Array[Scalar[DT], 3 * CC_MAX_POINTS](fill=Scalar[DT](0))
+    var n1 = Array[Scalar[DT], 3 * CC_MAX_POINTS](fill=Scalar[DT](0))
     # yam's z axis (-0.7241379..., 0, 0.6896551...) as a rotation about -y.
     var c = Float64(0.689655172413793)
     var qw = sqrt((1.0 + c) * 0.5)

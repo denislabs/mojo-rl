@@ -37,7 +37,7 @@ Regenerate: pixi run python scripts/dump_mujoco_body_tree.py
 Run: pixi run mojo run -I . tests/physics3d/test_body_tree_vs_mujoco.mojo
 """
 
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
 from tests.physics3d.body_tree_goldens import (
     tree_case_count, tree_path, tree_nbody, tree_ngeom, tree_parents,
     tree_geom_bodies,

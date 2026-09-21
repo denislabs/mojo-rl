@@ -21,9 +21,9 @@ Gates the user-facing surface:
 from std.random import seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
-from mojo_rl.deep_agents.redq_ofe import (
+from noeira.deep_agents.redq_ofe import (
     REDQOFE6, REDQOFE8,
     LargeREDQOFE6, LargeREDQOFE8,
     REDQOFE6Config, REDQOFE8Config,
@@ -31,7 +31,7 @@ from mojo_rl.deep_agents.redq_ofe import (
     agent_from_config_ofe,
 )
 
-from mojo_rl.envs.pendulum import PendulumEnv
+from noeira.envs.pendulum import PendulumEnv
 
 
 comptime OBS = 3

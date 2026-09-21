@@ -44,10 +44,10 @@ from std.math import sqrt, cos, sin, pi, acos
 from layout import Layout, LayoutTensor
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.collision.convex_hull import load_mesh_hull
-from mojo_rl.physics3d.collision.gjk import _support_mesh
-from mojo_rl.physics3d.gpu.constants import mesh_max_edge
-from mojo_rl.physics3d.model.mesh_inertia import MeshInertia
+from noeira.physics3d.collision.convex_hull import load_mesh_hull
+from noeira.physics3d.collision.gjk import _support_mesh
+from noeira.physics3d.gpu.constants import mesh_max_edge
+from noeira.physics3d.model.mesh_inertia import MeshInertia
 
 comptime D = DType.float64
 # Big enough for the largest fixture below; the tensors are comptime-shaped.
@@ -102,7 +102,7 @@ def _check(name: String, path: String) raises:
     )
 
     # Pack into the tensors `_support_mesh` reads.
-    # ⚠ HEAP, NOT `InlineArray`. NV*3 float64 is ~200 KB and the edge buffer
+    # ⚠ HEAP, NOT `Array`. NV*3 float64 is ~200 KB and the edge buffer
     # more; on the stack that is an overflow, not a slow test.
     # ⚠⚠ THE LISTS MUST OUTLIVE THE TENSORS — Mojo destroys at LAST USE, so the
     # `_ = ...` at the end of this function is load-bearing, not tidy-up.
@@ -383,7 +383,7 @@ def test_small_collision_hull() raises:
     """
     _check(
         "Fixed_Jaw_Collision_2",
-        "mojo_rl/envs/robots/assets/so_arm100/Fixed_Jaw_Collision_2.stl",
+        "noeira/envs/robots/assets/so_arm100/Fixed_Jaw_Collision_2.stl",
     )
 
 
@@ -391,7 +391,7 @@ def test_scanned_hull() raises:
     """A full scanned part — the shape GJK actually walks in the viewer."""
     _check(
         "Wrist_Pitch_Roll  ",
-        "mojo_rl/envs/robots/assets/so_arm100/Wrist_Pitch_Roll.stl",
+        "noeira/envs/robots/assets/so_arm100/Wrist_Pitch_Roll.stl",
     )
 
 
@@ -401,7 +401,7 @@ def test_long_thin_hull() raises:
     the fixture that would expose it."""
     _check(
         "under_arm_so101_v1",
-        "mojo_rl/envs/robots/assets/so_arm101/under_arm_so101_v1.stl",
+        "noeira/envs/robots/assets/so_arm101/under_arm_so101_v1.stl",
     )
 
 
@@ -466,7 +466,7 @@ def test_below_hillclimb_min_uses_the_scan() raises:
     """Under `_HILLCLIMB_MIN = 10` vertices MuJoCo keeps the scan, and so do
     we. Pins that the threshold branch does not change the answer — a mesh in
     that range must give the same point either way."""
-    # ⚠ HEAP, NOT `InlineArray`. NV*3 float64 is ~200 KB and the edge buffer
+    # ⚠ HEAP, NOT `Array`. NV*3 float64 is ~200 KB and the edge buffer
     # more; on the stack that is an overflow, not a slow test.
     # ⚠⚠ THE LISTS MUST OUTLIVE THE TENSORS — Mojo destroys at LAST USE, so the
     # `_ = ...` at the end of this function is load-bearing, not tidy-up.

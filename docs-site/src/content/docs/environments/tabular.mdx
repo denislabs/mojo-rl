@@ -20,7 +20,7 @@ finite set.
 | Taxi | 500 | 6 | +20 dropoff, −10 illegal | compositional |
 
 ```mojo
-from mojo_rl.envs import GridWorldEnv, FrozenLakeEnv, CliffWalkingEnv, TaxiEnv
+from noeira.envs import GridWorldEnv, FrozenLakeEnv, CliffWalkingEnv, TaxiEnv
 ```
 
 ## GridWorld
@@ -95,10 +95,10 @@ one line by line.
 
 ## What works with them
 
-Everything in `mojo_rl.agents` that takes integer states:
+Everything in `noeira.agents` that takes integer states:
 
 ```mojo
-from mojo_rl.agents import (
+from noeira.agents import (
     QLearningAgent, SARSAAgent, ExpectedSARSAAgent, DoubleQLearningAgent,
     NStepSARSAAgent, SARSALambdaAgent, MonteCarloAgent,
     DynaQAgent, PrioritySweepingAgent,

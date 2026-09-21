@@ -1,0 +1,162 @@
+---
+title: Placement
+description: Regions, start distributions, the host sampler, generated device placement tables and frozen init states.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" />
+
+Where things start is part of a task. A `.task` does not give poses; it gives
+**distributions** — "the brick starts somewhere in this region" — and every
+reset draws from them. Writing a fixed pose would make every episode
+identical, which surfaces much later as a policy that memorised one layout.
+
+## Regions
+
+A region is declared in the `.family` against a **site**, so it moves with
+whatever the site is attached to:
+
+```ini
+# region=<name>:site:<site>[:xmin,ymin,xmax,ymax[:half_height]]
+region=table_top:site:table_surface:-0.10,-0.10,0.10,0.10:0.03
+
+# region=<name>:box:<site>:xmin,ymin,xmax,ymax:half_height[:<contact slot>]
+region=flat_stove_1_cook_region:box:flat_stove_1_cook_region:-0.075,-0.075,0.075,0.075:0.0025:flat_stove_1
+```
+
+| Kind | Geometry | Used for |
+|---|---|---|
+| `site` | An xy rectangle in the site's frame, plus a z half-band centred on the site (default 0.12 m if omitted) | Table zones, start regions, `In` / `On` / `AtRegion` goals |
+| `box` | The site's own box (`size` read off the asset by the LIBERO importer); optional contact slot | LIBERO's fixture regions — drawers, burners, racks — with LIBERO's `in_box` / `under` semantics |
+
+With no rectangle, a `site` region is the site's own extent. A region used by
+a goal must be among the first 16 the family declares (the device region
+table's size); regions used only by `init=` are sampled on the host and have
+no such limit.
+
+## `init=` — where a free slot starts
+
+```ini
+init=brick@table_left                                    # draw inside a region
+init=akita_black_bowl_1@main_table_akita_black_bowl_region
+init=akita_black_bowl_1@cookies_1                        # stack on another slot
+```
+
+- **`<slot>@<region>`** draws a position inside the region by rejection
+  sampling against the other placed objects.
+- **`<slot>@<slot>`** stacks: the object is placed directly on the reference
+  object at the reference's x/y, as LIBERO's `ObjectBasedSampler` does. The
+  reference is walked first.
+- **`:in`** after the target marks a placement that LIBERO spells `In` rather
+  than `On`. The two differ by one line in LIBERO — `On` adds the fixture's
+  `top_site` height, `In` does not — and treating them the same put a bowl
+  4.5 cm into the stove. The generated LIBERO tasks carry `:in` where the
+  `.bddl` says `In`.
+
+A free slot the task does not list under `active=` is parked. The resting height and
+the clash radius come from the asset when the family gives a `slot_geom=` line
+(`slot_geom=<slot>:bottom_z,top_z,h_radius`, read from robosuite's
+`bottom_site`, `top_site` and `horizontal_radius_site`); otherwise the caller
+supplies a radius.
+
+## `jinit=` — where a joint starts
+
+```ini
+jinit=wooden_cabinet_1_top_level@-0.16,-0.14
+```
+
+A uniform draw per reset in `[lo, hi]`, for articulated fixtures: a drawer
+that starts part-open, a microwave door. It is a range because LIBERO's own
+`OpenCloseSampler` is a uniform draw — a single value would make every episode
+start the drawer at the same opening. The range belongs to the task; the joint
+belongs to the family. At most two per task.
+
+## The host sampler
+
+`noeira/tasks/sampler.mojo` `sample_placements` is the reference
+implementation:
+
+- **Deterministic** given `(task, seed, lane)`. Draws are counter-based
+  (Philox seeded per draw from seed, lane, slot and attempt), so lane 7's
+  layout does not depend on how many attempts lanes 0–6 needed.
+- **Independent of the arm's reset noise.** The seed is salted away from the
+  env's joint-noise stream; sharing it would correlate every lane's object
+  layout with its starting arm pose.
+- **Pure geometry.** It takes region frames and slot geometry as numbers and
+  never touches `Data` or the model, so the same rules can run in a kernel.
+- **Raises on exhaustion** rather than returning an overlapping scene.
+
+`noeira/tasks/reset.mojo` writes the sampled poses into `qpos` / `qvel` and
+parks the inactive slots.
+
+## Device placement tables
+
+The GPU reset places props per lane, inside `init_qpos_gpu`, with
+`noeira/tasks/placement/table.mojo` `place_free_slots` — the device twin of
+the host sampler. A kernel cannot read a `.family`, so it reads the family's
+geometry through a comptime **`PlacementTable`**: park poses, slot addresses,
+slot geometry and each region's site frame at rest.
+
+The tables are **generated** for every family whose free slots all carry
+`slot_geom=` — the 23 LIBERO families and `so101_tower` — into
+`<task root>/placement/`:
+
+```bash
+pixi run gen-placement-tables          # write the tables
+pixi run gen-placement-tables-check    # fail if any is stale (CI)
+```
+
+The generator uses the same inputs as the host sampler: the loaded spec, the
+free-slot addresses, and region frames from forward kinematics on the composed
+scene. Every float is written as a decimal that round-trips to the same bits,
+so a table can be checked for exact drift. `so101_tabletop` has no
+`slot_geom=` and keeps a hand-written table
+(`So101TabletopPlacement` in `noeira/tasks/family_config.mojo`).
+
+Each lane's start regions reach the kernel as one `meta` word per free slot
+(`META_IDX_INIT_REGION_0` onward, up to 13), plus `jinit=` draws in
+`META_IDX_JINIT_0` onward. The encoding is biased so that **zero means "not
+placed"** — the value an untouched, zero-filled `meta` holds — which keeps a
+driver that forgets to write them from silently placing every prop.
+
+Where host and device cannot agree, the difference is visible: the host raises
+on exhaustion, a kernel cannot, so the kernel leaves that slot at its park pose
+and every goal naming it is false. Spec-level problems are refused before any
+word is written, by `require_device_placement` in
+`noeira/tasks/placement/check.mojo`.
+
+The gate is `pixi run device-placement`: the device reset against the host
+sampler on `so101_tabletop` and every LIBERO task, exactly, with a count of how
+many of the kernel's rules the corpus exercises.
+
+## Frozen init tables
+
+A success rate over start states a run drew for itself is not comparable with
+another run's. `noeira/tasks/init_table.mojo` freezes start states into a
+[`TrajectoryStore`](/data/trajectory-store/), one row per episode:
+
+| Column | Type | Content |
+|---|---|---|
+| `init_state` | float64 `[1 + nq + nv]` | time, `qpos`, `qvel` — LIBERO's `.pruned_init` layout |
+| `task_index` | int32 | which task the episode runs |
+| `active_mask` | float64 | which slots that task activates |
+
+The mask is stored, not derived: an eval run months later must not change its
+answer because someone edited an `active=` line. The **goal** still comes from
+the `.task`, because the goal is the benchmark's definition and belongs under
+version control. A table carries its family's `nq` / `nv` in the row shape, and
+loading it against a different family raises.
+
+For LIBERO, the frozen table is converted from LIBERO's own `.pruned_init`
+files (`pixi run libero-init-dump`, then `pixi run libero-init-freeze`), and
+currently exists for `libero_goal` — see [LIBERO](/environments/libero/).
+
+## Posed reset on the host
+
+Viewers and host envs need one lane's episode without a GPU.
+`noeira/tasks/posed_reset.mojo` provides it from the same placement table:
+`posed_qpos` returns the sampled `qpos` (the host sampler at seed 0, lane 0),
+and `task_meta_words` returns the tape, mask, init words and shaping words at
+the `meta` indices the hooks read. The SO-101 tower viewers call these, so a
+viewer cannot pose a scene the trainer would not.

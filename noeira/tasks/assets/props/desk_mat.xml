@@ -1,0 +1,56 @@
+<mujoco model="desk_mat">
+  <!-- THE WORK SURFACE OF THE `so101-tower` RIG — a STATIC slot, the desk.
+
+       On the rig the arm, the tower and the props all stand on ONE white
+       desk, about 65 x 65 cm (measured 2026-09-20). This is that desk: a
+       65 x 65 cm white slab whose TOP face is at z = 0.002, carrying the
+       site every region hangs off. The tower's foot and the arm's base
+       plate stand ON it (they sit at the floor plane z = 0, i.e. 2 mm into
+       the slab — static geoms, no contact, and the plate hides the seam);
+       the props rest on it at 0.002.
+
+       ⚠ THE SLAB IS OFFSET FROM ITS BODY. The body — and the `surface` site
+       the regions are drawn in — stays at world (0.32, 0, 0.001), where the
+       first version of this mat put it, so every region rectangle and every
+       recorded placement keeps its meaning. The geom is shifted 5.5 cm back
+       so the slab spans world x -0.06..0.59, y -0.325..0.325: the arm and
+       the tower stand AT THE BACK EDGE of the desk, as on the rig (the arm
+       base reaches x -0.056, the tower foot x -0.032..0.071, y -0.16..0.08),
+       and the desk extends 59 cm in front of the arm. The earlier 48 x 50
+       cm mat started 8 cm IN FRONT of the arm, which is not the rig.
+
+       ⚠ WHY A MAT AND NOT `fixture.xml`. Two reasons the tabletop family's
+       2 cm slab does not serve here: (1) the props must rest at the SAME
+       height as the arm's base, because that is the geometry the real
+       recordings have — a 2 cm platform would move every grasp height;
+       (2) the tracer draws it, and the recorded frames show a white desk,
+       not a brown slab. `rgba` is the desk's colour for that reason.
+
+       ⚠⚠ 2 cm THICK, EXTENDING BELOW THE FLOOR PLANE, WITH ITS TOP STILL AT
+       z = 0.002. It was a 2 mm slab, and the printed bowl FELL THROUGH IT
+       (2026-09-20, in MuJoCo and in ours alike): a box-box contact's normal
+       points from the slab's centre toward the other box's centre, and the
+       bowl's collision floor is a 4 mm box whose centre sits 2 mm above the
+       bowl's base — so once the falling bowl had sunk 3 mm into a soft
+       contact the normal FLIPPED, the mat pushed it down onto the ground
+       plane, and it rested with its cavity floor coplanar with the mat's
+       top, which is what "the bottom of the bowl is white" was. A slab
+       thicker than any resting box's half-height cannot flip; 1 cm below
+       the floor plane costs nothing (the plane and a static geom never
+       contact) and the props still rest at 0.002. The brick never showed
+       it: its box centre is 12.5 mm above its base.
+
+       ⚠ `solref`/`solimp` AS ON THE PROPS (`gen_tower_props.CONTACT`): a
+       pair's softness is the AVERAGE of its two geoms', so a stiff brick on
+       a default desk is only half stiff. -->
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="mat">
+      <geom name="geom" type="box" pos="-0.055 0 -0.009" size="0.325 0.325 0.010" density="800"
+            rgba="0.93 0.93 0.91 1" solref="0.01 1" solimp="0.998 0.998 0.001"/>
+      <!-- THE SITE THE REGIONS ATTACH TO, on the top face — see
+           `fixture.xml` for why it is site-relative and `group="3"`. -->
+      <site name="surface" pos="0 0 0.001" size="0.005" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>

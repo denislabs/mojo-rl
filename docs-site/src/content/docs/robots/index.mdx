@@ -1,0 +1,156 @@
+---
+title: Robots
+description: The real-world half of noeira — an SO-101 arm over its Feetech bus, UVC cameras, and a Jetson Orin — and the safety rules every program that touches it follows.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" note="Proven on one SO-101 rig. No real-arm success rate has been measured for any learned policy yet." />
+
+noeira drives a real robot arm with the same code that trains in simulation.
+The servo bus, the camera pipeline, the dataset writer and the policy runtime
+are all Mojo, so nothing sits between a trained checkpoint and the arm except
+the program that loads it.
+
+## The loop
+
+| Step | What happens | Page |
+|---|---|---|
+| 1. Sim twin | The rig as a task family, with the same two cameras and the same 30 Hz cadence | [Sim twin](/robots/sim-twin/) |
+| 2. Set up | Build the serial shim, check the bus, calibrate each arm | [SO-101 setup](/robots/so101-setup/) |
+| 3. Cameras | Intrinsics with a ChArUco board, then the camera-to-base transform | [Cameras](/robots/cameras/) |
+| 4. Record | The leader drives the follower; every tick goes into a LeRobot v3 dataset | [Teleop and recording](/robots/teleop-recording/) |
+| 5. Train | Import the dataset and train ACT or fine-tune SmolVLA | [Imitation learning](/algorithms/imitation/) |
+| 6. Deploy | The policy drives the follower from the live cameras | [Deployment](/robots/deployment/) |
+| 7. On the robot | The same programs on a Jetson Orin NX, policy on its GPU | [Jetson Orin](/robots/jetson/) |
+
+## Supported hardware
+
+| | |
+|---|---|
+| Arm | SO-101 (SO-ARM101): a **follower** and a **leader**, six Feetech STS3215 servos each, ids 1–6 (`shoulder_pan`, `shoulder_lift`, `elbow_flex`, `wrist_flex`, `wrist_roll`, `gripper`), 1 Mbaud |
+| Cameras | UVC cameras through OpenCV. The reference rig has two: `overhead` on a fixed tower and `wrist` on the wrist-roll part, both at 640×480, 30 fps |
+| Computer | macOS (Apple Silicon) or Linux, and the Jetson Orin NX 16 GB (`sm_87`) |
+
+The leader and the follower are the same hardware and the same driver
+(`SO101Arm` in `noeira/robot/so101/arm.mojo`). Nothing ever writes goals to the
+leader: its torque is off and you move it by hand.
+
+## Safety rules
+
+Read this section before you power a follower. Each rule comes from
+something that went wrong on the reference rig.
+
+### 1. Arming is opt-in: `--arm`
+
+The recorders and the deployments never energise the follower unless you pass
+`--arm`. Without it they read the arms and the cameras, run everything else,
+and print what they *would* have commanded. `--dry-run` is still accepted and
+ignored, so an old command line cannot turn into an armed one.
+
+This became the default after `record.mojo` started with a `--dry-run` flag
+instead. On 2026-08-31 someone forgot the flag with nobody at the desk. The
+follower armed, ramped about 22° on `shoulder_pan` and 30° on `wrist_roll` to
+reach the leader's pose, and held.
+
+:::note[Every program follows the rule]
+`examples/so101/teleop.mojo` and `examples/so101/deploy_reach_real.mojo` were
+the two exceptions until 2026-09-21: the first armed on start, the second used
+`--live`. Both now take `--arm`; the deployments keep `--live` as an alias for
+it.
+:::
+
+### 2. EEPROM writes are opt-in: `--write`
+
+`soarm-calibrate` only sweeps and prints unless you pass `--write`. A wrong
+calibration value raises no error. Every joint angle is derived from it, so
+every recording and every policy is silently offset. Always pass
+`--backup FILE` with `--write`. See [SO-101 setup](/robots/so101-setup/#4-calibrate).
+
+### 3. The recovery tool is `soarm-torque-off`
+
+```bash
+pixi run soarm-torque-off
+```
+
+This command turns off torque on every servo of both arms, clears `Lock`, and
+reports the torque state it found. It releases each arm on its own, so an
+unplugged leader cannot stop it from releasing the follower. Run it whenever a
+control loop ends in any way other than a clean exit. A follower that stays
+energised resists being moved, and its servos heat up under a static load.
+
+:::caution[A `finally` does not cover an abort or a signal]
+Every program releases torque in a `finally`. That runs when an `Error` is
+raised, but not on a `kill`, a crash, or a failed `debug_assert`. Each of those
+has left the follower armed on the reference rig. Treat the `finally` as
+tidying up. The real safety mechanisms are `soarm-torque-off` and the power
+switch.
+:::
+
+### 4. Guards on every goal
+
+`SO101Arm.write_goals` and the programs built on it apply these checks:
+
+1. Before torque goes on, the follower's goal is set to its own present
+   position. Arming then holds the current pose instead of snapping to a stale
+   `Goal_Position`.
+2. Every goal is clamped to the joint's calibrated `[range_min, range_max]`.
+3. Every goal is clamped to `present ± max_step_ticks`, so a distant target is
+   reached by a ramp, not a lunge. `SO101Arm` defaults to 200 ticks (about
+   17°). The recorders and deployments catch up at 80 ticks and, once every
+   joint is within about 5°, track at 512.
+4. If fewer than six servos answer a `sync_read`, that tick's write is
+   skipped. The program never commands a half-updated pose.
+
+The deployments add one more clamp. Every commanded action is limited to the
+per-joint range the demonstrations covered.
+
+### 5. Deployments return home before releasing
+
+Releasing torque hands the arm to gravity. The first armed ACT run cut torque
+mid-reach, and the arm dropped. Every deployment that energises the follower
+now ends through `return_and_release` in
+`noeira/robot/so101/deploy_shutdown.mojo`:
+
+1. It ramps back to the pose the run **started** from, at no more than 20 ticks
+   per write (about 52°/s at 30 Hz). That pose is known to be safe because the
+   arm was resting there, unpowered, before arming.
+2. It waits until every joint is within 25 ticks (about 2°) of that pose, for
+   at most 8 s.
+3. It holds the pose until you press Enter. Take hold of the arm first if you
+   want to move it.
+4. Only then does it release torque.
+
+**If the arm does not get home, torque stays on.** The program says so. Support
+the arm, then run `pixi run soarm-torque-off`. `--no-return` restores the old
+behaviour of dropping the arm where it stands. Only use it when you are
+standing over the arm.
+
+### 6. Warm up before arming
+
+The first forward pass of a policy compiles GPU kernels. On the Orin, ACT's
+first forward took 9.9 s on a cold kernel cache. If that happened inside the
+control loop, one command would arrive seconds late with the arm already
+energised. Both deployments run warm-up queries at start-up, before anything
+is armed: five for ACT, two for SmolVLA. Each binary prints its warm forward
+time next to the first one.
+
+### 7. Record and deploy with the same camera format
+
+A policy deployed on a different pixel format than it was recorded with gets
+slightly shifted pixels, and the result looks like poor transfer. Both
+recorders and both deployments print the negotiated format and frame rate. On
+Linux they request MJPEG by default. See [Cameras](/robots/cameras/).
+
+## Where the code lives
+
+| Path | What |
+|---|---|
+| `noeira/robot/feetech/bus.mojo` | `FeetechBus`: request/reply over the half-duplex servo bus |
+| `noeira/robot/so101/arm.mojo` | `SO101Arm`: calibrated units, the step clamp, torque |
+| `noeira/robot/so101/ports.mojo` | Which serial port is which arm |
+| `noeira/robot/so101/sim_map.mojo` | Real joint angles to the MJCF model's joints |
+| `noeira/robot/so101/deploy_shutdown.mojo` | The shared return-and-release shutdown |
+| `noeira/vision/camera_thread.mojo` | One OS thread per camera |
+| `noeira/data/lerobot_write.mojo` | The LeRobot v3 dataset writer |
+| `examples/so101/` | Recorders, deployments, the sim-twin tools |

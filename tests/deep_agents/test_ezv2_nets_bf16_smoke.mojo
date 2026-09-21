@@ -14,8 +14,8 @@ now carry `ADT: DType = DT`. The reward LSTM (EZRewardLSTMAtari) stays fp32
 Run: pixi run mojo run -I . tests/deep_agents/test_ezv2_nets_bf16_smoke.mojo
 """
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.efficient_zero_v2.nets_atari import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.efficient_zero_v2.nets_atari import (
     EZRepNetResNetAtari, EZPredNetAtari, EZActionPlane, EZDynZGraph,
     EZDynZNetAtari,
 )

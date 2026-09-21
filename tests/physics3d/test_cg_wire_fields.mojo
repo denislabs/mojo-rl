@@ -18,16 +18,16 @@ from std.math import abs
 from std.sys import has_nvidia_gpu_accelerator
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.integrator.implicit import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.integrator.implicit import (
     ImplicitIntegrator,
 )
-from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.integrator.rk4 import RK4Integrator
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DT = DType.float32
 comptime NQ = Walker2dModel.NQ

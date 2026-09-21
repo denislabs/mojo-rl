@@ -14,16 +14,16 @@ Run:
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.call import call_forward, call_vjp
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.flatten import Flatten
-from mojo_rl.nn.primitives.avg_pool_2d import AvgPool2D
-from mojo_rl.nn.models.resnet import ResBlockConv2DBN
-from mojo_rl.nn.models.conv import Conv2DBatchNormReLU
+from noeira.nn.constants import DT
+from noeira.nn.core.call import call_forward, call_vjp
+from noeira.nn.core.module import Module
+from noeira.nn.core.tensor import TensorImpl
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.flatten import Flatten
+from noeira.nn.primitives.avg_pool_2d import AvgPool2D
+from noeira.nn.models.resnet import ResBlockConv2DBN
+from noeira.nn.models.conv import Conv2DBatchNormReLU
 
 
 comptime BF = DType.bfloat16

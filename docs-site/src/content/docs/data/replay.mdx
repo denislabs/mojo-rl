@@ -9,7 +9,7 @@ import Papers from '~/components/Papers.astro';
 
 <Maturity level="stable" />
 
-Off-policy agents sample past transitions from a replay buffer. In mojo-rl there
+Off-policy agents sample past transitions from a replay buffer. In noeira there
 are two of them — one per backend — and each covers both the uniform and the
 prioritized policy through a compile-time flag:
 
@@ -48,12 +48,12 @@ picks the buffer by naming an alias — nothing inside SAC, TD3, DQN, C51 or DDP
 changes:
 
 ```mojo
-from mojo_rl.data.blocks import StoreUniformSampleCpuStep
+from noeira.data.blocks import StoreUniformSampleCpuStep
 # or
-from mojo_rl.data.blocks import StoreUniformSampleGpuStep
+from noeira.data.blocks import StoreUniformSampleGpuStep
 ```
 
-Four aliases exist in `mojo_rl/data/blocks.mojo`, each taking
+Four aliases exist in `noeira/data/blocks.mojo`, each taking
 `[OBS, ACT, BATCH, CAP]` in that order — deliberately the same order as the
 names they replaced, so a swap is a one-token edit:
 
@@ -64,7 +64,7 @@ names they replaced, so a swap is a one-token edit:
 | `StoreUniformSampleGpuStep` | GPU | uniform (+ ERE) |
 | `StorePerSampleGpuStep` | GPU | prioritized — takes a fifth optional `SDT` for uint8 obs |
 
-The older names in `mojo_rl/deep_agents/training/blocks/block_aliases.mojo`
+The older names in `noeira/deep_agents/training/blocks/block_aliases.mojo`
 (`UniformSampleCpuStep`, `PerSampleGpuStep`, and the four `NStep…` variants)
 still work and now resolve to the same types, so existing code needs no edit.
 
@@ -146,10 +146,48 @@ MBPO additionally needs minibatches in raw device buffers rather than a
 restricts the draw to a row range, which is how the dynamics model gets a fixed
 train/holdout split.
 
+## Demonstrations: a pinned prefix
+
+RLPD and HIL-SERL keep demonstrations in a second buffer and draw half of every
+minibatch from it. Here the two buffers are one storage: the demonstrations are
+added first, and `pin_demo_prefix` declares them a prefix the ring never
+overwrites.
+
+```mojo
+# after setup, after adding every demo row, before the first online transition
+blk.pin_demo_prefix(n_demo_rows, ctx=ctx)
+```
+
+After the call:
+
+- online writes wrap inside `[n, CAP)`, so rows `[0, n)` survive any amount of
+  training;
+- every minibatch draws `BATCH/2` rows uniformly from the prefix and `BATCH/2`
+  from the online rows. Until an online row exists, every lane draws from the
+  prefix, so the batch is always full;
+- on the GPU, the prefix size is a device word like `size`, so sampling stays
+  CUDA-graph capturable.
+
+Both `StoreReplay` and `StoreReplayGpu` implement it, and the call is refused
+rather than bent to fit when:
+
+| Refused when | Why |
+|---|---|
+| `n` is not exactly the number of rows added so far | the prefix is what was added, nothing else |
+| the buffer is prioritized, or (GPU) ERE is on | their index kernels know one region |
+| the prefix leaves no room for the online rows | on the GPU, fewer than one minibatch of online rows must remain |
+
+The usual caller is `load_demos_into_replay` in
+`noeira/deep_agents/demos/load.mojo`. It reads `.demo` files, applies a filter
+(for example, successful episodes only), adds the rows through the sample
+block, and pins them. The block is used rather than the trainer's `record` so
+the demonstrations never count as episodes this run played. See
+[HIL-SERL](/algorithms/imitation/hil-serl/) for the recipe that uses it.
+
 ## n-step is an accumulator, not a sampler
 
 `NStepBuffer` and `GPUNStepBuffer` in
-`mojo_rl/deep_agents/data/n_step_replay.mojo` hold N pending transitions and
+`noeira/deep_agents/data/n_step_replay.mojo` hold N pending transitions and
 emit one aggregated transition carrying a discounted return. Nothing about them
 samples — they sit at *write* time, in front of any of the buffers above. That
 is why n-step is a decorator block (`NStepSampleStep`) rather than a fifth
@@ -163,6 +201,7 @@ index policy.
 | `tests/data/test_replay_seam.mojo` | CPU minibatches through the real sample block, including ring wraparound and a post-priority-update draw |
 | `tests/data/test_replay_gpu_seam.mojo` | Device uniform, ERE recency and anneal, the device sum-tree, uint8 exactness, and the batched store path |
 | `tests/data/test_resident_gather.mojo` | Device gather bit-exact against host on identical indices |
+| `tests/data/test_replay_demo_prefix.mojo` | The demo prefix survives three wraps of the online ring; half of each batch is demo and half online; no online row means an all-demo batch; a wrong count is refused (CPU leg; GPU leg with `-e apple` or `-e nvidia`) |
 | `tests/data/test_dqn_on_store_replay.mojo` | DQN trains end to end on it |
 
 The minibatch itself is asserted **bit-identical**, element by element, rather

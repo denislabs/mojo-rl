@@ -121,16 +121,16 @@ from std.time import perf_counter_ns
 from std.sys import has_accelerator
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_lift_brick import DMLiftBrick
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.fields import Data
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.envs.dm_control.manipulation_lift_brick import DMLiftBrick
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.fields import Data
+from noeira.physics3d.gpu.constants import (
     MAX_GPU_MESHES,
     MODEL_MESH_META_SIZE,
     MESH_META_IDX_TRINUM,
     MESH_META_IDX_BVHNUM,
 )
-from mojo_rl.physics3d.raytrace import (
+from noeira.physics3d.raytrace import (
     BatchedCameraRenderer,
     init_camera_reference,
 )

@@ -13,14 +13,14 @@ Run: pixi run mojo run -I . tests/nn/test_dreamerv3_batched_continuous_smoke.moj
 
 from std.math import isfinite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
-from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
+from noeira.nn.constants import DT
+from noeira.nn.primitives.ops.swish_op import SwishOp
+from noeira.deep_agents.dreamerv3.agent import DreamerV3Agent
+from noeira.deep_agents.dreamerv3.nets_cnn import (
     DreamerEncoderCNN,
     DreamerDecoderCNN,
 )
-from mojo_rl.envs.car_racing.car_racing_mb import CarRacingMB
+from noeira.envs.car_racing.car_racing_mb import CarRacingMB
 
 comptime C = 4
 comptime IMG = 96

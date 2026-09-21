@@ -15,14 +15,14 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_dreamer4_storage_gpu.mojo
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
 
-from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
-from mojo_rl.deep_agents.dreamer4.dynamics import Dreamer4Dynamics
-from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao
+from noeira.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
+from noeira.deep_agents.dreamer4.dynamics import Dreamer4Dynamics
+from noeira.deep_agents.dreamer4.shortcut_loss import _mao
 
 
 def _absdiff(a: List[Scalar[DT]], b: List[Scalar[DT]], n: Int) -> Float64:

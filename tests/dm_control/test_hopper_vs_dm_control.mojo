@@ -51,7 +51,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.hopper import (
+from noeira.envs.dm_control.hopper import (
     DMHopperStand,
     DMHopperHop,
     DMHopperModel,
@@ -62,11 +62,11 @@ from mojo_rl.envs.dm_control.hopper import (
     STAND_HEIGHT,
     HOP_SPEED,
 )
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.sensors.touch import touch_sphere_site
-from mojo_rl.physics3d.constants import GEOM_SPHERE
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.sensors.touch import touch_sphere_site
+from noeira.physics3d.constants import GEOM_SPHERE
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_IPOS_X,
@@ -145,7 +145,7 @@ def test_hopper_model_matches_mujoco() raises:
     var sys = Python.import_module("sys")
     sys.path.insert(0, REF_PATH)
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/hopper.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/hopper.xml")
 
     assert_true(Int(py=m.nbody) == DMHopperModel.NBODY, "nbody mismatch")
     assert_true(Int(py=m.njnt) == DMHopperModel.NJOINT, "njnt mismatch")

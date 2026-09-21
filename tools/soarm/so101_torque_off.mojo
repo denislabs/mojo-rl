@@ -9,17 +9,22 @@ safety problem (it resists being moved) and a thermal one (the servos heat up
 under a static load).
 
     pixi run soarm-torque-off
+
+⚠ EACH ARM IS RELEASED INDEPENDENTLY. A recovery tool that gives up because
+the OTHER arm is unplugged leaves the energised one energised, which is the
+exact situation this exists for.
 """
 
-from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
-from mojo_rl.robot.feetech.control_table import (
+from noeira.robot.so101 import SO101Arm, SO101_N, joint_name
+from noeira.robot.so101.ports import (
+    follower_port, leader_port, port_refusal,
+)
+from noeira.robot.feetech.control_table import (
     SIZE_1,
     STS_PRESENT_TEMPERATURE,
     STS_TORQUE_ENABLE,
 )
 
-comptime FOLLOWER = "/dev/cu.usbmodem5B8E1139971"
-comptime LEADER = "/dev/cu.usbmodem5B910455171"
 
 
 def release(var path: String, label: String) raises:
@@ -55,5 +60,25 @@ def release(var path: String, label: String) raises:
 
 
 def main() raises:
-    release(String(FOLLOWER), String("FOLLOWER"))
-    release(String(LEADER), String("LEADER"))
+    var failures = 0
+    for pair in [
+        (follower_port(), String("FOLLOWER"), String("follower")),
+        (leader_port(), String("LEADER"), String("leader")),
+    ]:
+        var why = port_refusal(pair[0], pair[2])
+        if why.byte_length() > 0:
+            print(pair[1] + ": skipped — " + why)
+            failures += 1
+            continue
+        try:
+            release(pair[0], pair[1])
+        except e:
+            # ⚠ REPORTED, NOT RAISED: see the header. The other arm still has
+            # to be released.
+            print(pair[1] + ": FAILED — " + String(e))
+            failures += 1
+    if failures == 2:
+        raise Error(
+            "soarm-torque-off: neither arm could be released — nothing was"
+            " disarmed. Check the cables and the power switch."
+        )

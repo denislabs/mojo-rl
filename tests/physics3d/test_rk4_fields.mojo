@@ -23,19 +23,19 @@ from std.math import abs
 from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.integrator.rk4 import RK4Integrator
+from noeira.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_RANGE_MIN,
     JOINT_IDX_RANGE_MAX,
 )
-from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = Walker2dModel.NQ

@@ -16,11 +16,11 @@ from std.memory import alloc
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.experimental.lewm.trainer import LeWMTrainer
-from mojo_rl.experimental.lewm.mpc import lewm_mpc_eval
-from mojo_rl.experimental.lewm.pixel_convert import u8_to_fp32_norm
-from mojo_rl.envs.arcade_games.pong.offline_buffer import (
+from noeira.nn.constants import DT
+from noeira.experimental.lewm.trainer import LeWMTrainer
+from noeira.experimental.lewm.mpc import lewm_mpc_eval
+from noeira.experimental.lewm.pixel_convert import u8_to_fp32_norm
+from noeira.envs.arcade_games.pong.offline_buffer import (
     PongOfflineBuffer,
     PONG_FRAME_BYTES,
     PONG_NUM_ACTIONS,

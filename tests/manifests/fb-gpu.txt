@@ -1,0 +1,65 @@
+# FB GPU manifest — `pixi run -e nvidia test-fb-gpu` (or -e apple).
+#
+# The device path is gated against the CPU path, which carries the
+# finite-difference checks in fb.txt. Tolerances were set FROM the measured
+# parity (measure 7.1e-08, ortho 2.1e-07, actor 8.5e-08 on Apple), not
+# defensively — see docs/BFM_ZERO_SHOT_RL.md §13 M2.
+#
+# ⚠ A GPU-vs-CPU band written on Metal is a TF32 trap on CUDA: compare weights
+# bit-for-bit first if a 5090 run lands outside it.
+
+# PairwiseDot / RowDot: M = F·B^T and its vjp (dA = G·B, dB = G^T·A) on device.
+tests/nn/test_pairwise_dot.mojo
+
+# One FBTrainer step, CPU vs GPU: losses, B(s), and smooth_action_t bit-exact.
+tests/deep_agents/test_fb_trainer_gpu_parity.mojo
+
+# One FBCPRTrainer step, CPU vs GPU (gp 0, sigma 0): the BCE halves, the
+# style critic, the actor hook, D's logits and the expert encoding agree;
+# then the full device sequence at gp 10 runs (measured 1e-7 on Apple).
+tests/deep_agents/test_fb_cpr_gpu_parity.mojo
+
+# FB-CPR ONLINE (the reference's setting) on the batched Pendulum: the driver
+# runs through the CPR agent; D's negatives are the STORED z of the sampled
+# ring rows (0.0) while the FB batch is relabelled; expert windows match the
+# store row for row; two device steps move D; FB file + .cpr sidecar. ~4 min.
+tests/deep_agents/test_fb_cpr_online_smoke.mojo
+
+# The captured train step allocates nothing per call — any per-call alloc is a
+# capture blocker, and the capture abort names only the FIRST one.
+tests/deep_agents/test_fb_cuda_graph_safety.mojo
+
+# The replay ring derives `s'` instead of storing it (§12.23): the successor
+# is `r_obs[(row + LANES) % CAP]`. Decodes every gathered row back to the
+# (step, lane) that wrote it, so a wrong lane or a wrong step is visible; the
+# "no pair straddles a reset" leg carries an all-zero-`r_bnd` POSITIVE CONTROL,
+# because without one it would pass on a kernel that has no remap at all.
+tests/deep_agents/test_fb_ring_derived_next.mojo
+
+# The ONLINE agent (§18.3 A3) on a batched GPU Pendulum: lane z on the sphere
+# and resampled, replay ring wraps, relabel_ratio keeps what it says, the
+# driver runs end to end, two device steps advance the counters, and the
+# checkpoint loads into the CPU FBTrainer the eval scripts build. ~5 min.
+tests/deep_agents/test_fb_online_smoke.mojo
+
+# The batched GPU walker raises `done` at MAX_STEPS on every lane — the env
+# side of the `episodes 0` symptom of the first online run (§18.7). ~2 min.
+tests/dm_control/test_walker_batched_truncation_gpu.mojo
+
+# G3.2: the CPR agent with BFM-Zero's residual towers at the G1's dimensions
+# (obs 527 / act 29 / d 256) driven on random rows — instantiates, trains
+# finite, lane z on the sphere, normaliser moving. ⚠ On macOS the nested
+# generics exceed Apple's ld symbol-name limit: build it by hand with
+# `-Xlinker -ld_classic` (see its header). Links as is on Linux.
+tests/fb/test_bfm_agent_g1_dims_smoke.mojo
+
+# The misaligned-GEMM launch failure that killed the G1 actor on the 5090
+# (§12.5): ParamArena packed param slices at element granularity, so obs 527's
+# odd-width norms left `Linear[1024,512]`'s weight 8 bytes off a 16-byte
+# boundary and every float4 tile load in `multistage_gemm` faulted. Cheap.
+tests/nn/test_arena_slice_alignment_gpu.mojo
+
+# The capture blocker after the alignment fix (§12.8): `StopGradParams` built a
+# FRESH grad stash per backward, so B-net's `RMSNorm[256]` gamma was a 1 KB
+# device alloc+free on every vjp — illegal inside a CUDA-graph capture. Cheap.
+tests/nn/test_stop_grad_params_reuse_gpu.mojo

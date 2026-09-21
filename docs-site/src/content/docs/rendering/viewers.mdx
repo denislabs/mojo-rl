@@ -1,0 +1,146 @@
+---
+title: Viewers and physics studio
+description: The Dear ImGui viewers for DeepMind Control, manipulation, the SO-ARM and the task layer, and the physics studio — open any MJCF, pick, move, edit, validate and export it.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" note="Needs a display and SDL3. The ImGui shim is built separately." />
+
+The viewers are for looking at a model, a task or a policy with the physics
+live: a 3D view from [`Renderer3D`](/rendering/), and a Dear ImGui sidebar for
+switching tasks, choosing how the actuators are driven, and reading state. They
+run on the CPU, one environment at 60 Hz, and open an SDL3 window — run them on
+a machine with a display, not a headless box.
+
+## The ImGui shim
+
+Mojo cannot call C++, so `noeira.render.imgui` binds to a flat C API in
+`noeira/render/imgui/imgui_shim.cpp`, which wraps Dear ImGui, its SDL3 and
+SDL GPU backends, and ImGuizmo (the transform gizmo) in one library. Build it
+once:
+
+```bash
+pixi run build-imgui           # clones ImGui + ImGuizmo into third_party/, builds if stale
+pixi run build-imgui --force   # rebuild unconditionally
+```
+
+Neither the clone nor the built library is tracked by git, so every fresh
+checkout needs this step.
+
+:::caution[A missing shim fails at run time, not at compile time]
+The library is loaded with `dlopen` on the first call. Without it a viewer
+compiles fine and then aborts. The viewers call `imgui_shim_available()` up
+front and print what to do instead.
+:::
+
+`noeira/render/ui.mojo` is an older set of immediate-mode widgets drawn by the
+renderer itself. It is still used by `examples/dm_control/dm_viewer.mojo`; the
+two toolkits must not be mixed in one panel.
+
+## The viewers
+
+Each takes an optional first argument, the task that opens first; every task in
+its table is selectable from the sidebar. Most take a drive mode as the second
+argument — `zero` (no torque), `random`, or `sweep` (a slow out-of-phase sine
+per actuator) — and an action scale as the third.
+
+| Viewer | What it shows |
+|---|---|
+| `examples/dm_control/dm_viewer_imgui.mojo` | the [DeepMind Control](/environments/dm-control/) suite, every registered task |
+| `examples/dm_control/dm_viewer_imgui_two.mojo` | the same viewer over two tasks — the fast build to iterate on |
+| `examples/dm_control/manipulation_viewer_imgui.mojo` | dm_control's `manipulation` tasks (Jaco arm and props); opens on `zero` to show the reset |
+| `examples/dm_control/dog_skin_view.mojo` | dm_control's dog alone, to look at its skin |
+| `examples/dm_control/dm_walker_policy_viewer.mojo` | dm_control's three walker tasks, with trained SAC policies as a fourth drive mode |
+| `examples/robots/so_arm_viewer_imgui.mojo` | the SO-100 and SO-101 arms; drive modes command joint angles in radians |
+| `examples/tasks/task_viewer.mojo` | any `.task` from the [task layer](/tasks/) — switching tasks reloads data, not the model |
+| `examples/tasks/task_policy_viewer.mojo` | the same, driven by the SAC checkpoint trained on each task |
+| `examples/so101/tower_viewer_imgui.mojo` (`pixi run soarm-tower-viewer`) | the SO-101 tower and tabletop families, with both cameras |
+| `examples/libero/libero_viewer.mojo` (`pixi run libero-viewer`) | a [LIBERO](/environments/libero/) task, driven with OSC_POSE from the sidebar |
+
+```bash
+pixi run build-imgui
+pixi run mojo run -I . examples/dm_control/dm_viewer_imgui.mojo walker_run random 0.4
+pixi run mojo run -I . examples/robots/so_arm_viewer_imgui.mojo so_arm101_reach
+pixi run mojo run -I . examples/tasks/task_viewer.mojo so101_lift_brick 7
+```
+
+Run them from the repository root: some models reference their meshes by
+repo-relative path, and a stray working directory gives an arm with no
+collision geometry and a warning that is easy to miss.
+
+:::note[Build time grows with the task table]
+Each task in a viewer's table is a distinct compile-time environment type, so
+the full dm_control and `manipulation` viewers take minutes to build. That is
+why `dm_viewer_imgui_two.mojo` exists: the same code over a two-entry table.
+Work on viewer behaviour there, and build the full one to confirm. The shared
+code is `noeira/envs/dm_control/viewer_core.mojo`; nothing in it may name a
+concrete task.
+:::
+
+The task viewers open on the free camera: `so_arm101.xml` ships a single
+camera bolted to the wrist, and a body-attached camera is re-aimed every frame,
+so dragging cannot move it.
+
+The recording and calibration front ends for the real arm — `record_ui`,
+`tower_teleop_record`, `calibrate_camera_extrinsics` — use the same ImGui
+bindings; see [teleoperation and recording](/robots/teleop-recording/).
+
+## Physics studio
+
+`examples/physics3d/physics_studio.mojo` opens **any** MJCF file, simulates it
+at 60 Hz, and lets you open another without relaunching. The UI follows
+MuJoCo's `simulate`: a menu bar, an Options panel on the left, and Explorer and
+Inspector tabs on the right.
+
+```bash
+pixi run build-imgui
+pixi run mojo build -I . -o /tmp/studio examples/physics3d/physics_studio.mojo
+/tmp/studio                                                  # then File > Open
+/tmp/studio noeira/envs/humanoid/assets/humanoid.xml sweep 0.4
+```
+
+Build once and run the binary: `mojo run` would recompile every time. The build
+time does not grow with the number of models it can open. `Model` and `Data`
+are dimensioned at run time, so a model swap is an assignment rather than a new
+type — the feature a compile-time viewer cannot have.
+
+What it does, and where the logic lives (`noeira/physics3d/studio/`):
+
+| Feature | Module | Notes |
+|---|---|---|
+| Click to select | `pick.mojo` · `outline.mojo` | ray-picks the geoms the renderer *draws*, not the solver's; the selection is outlined |
+| Move and rotate | `gizmo.mojo` | ImGuizmo in world space, converted to the element's local `pos` / `quat` |
+| Edit values | `edit.mojo` | position, size, colour, friction, mass; fast edits skip a rebuild |
+| Edit structure | `structure.mojo` | add or delete a body, geom or joint; rename; reparent. Deleting prunes what referenced it |
+| Undo and redo | `history.mojo` | a stack of document snapshots, so structural edits undo too |
+| Validate | `validate.mojo` | problems appear as markers in the panel instead of aborting, so a model can pass through an invalid state while you fix it |
+| Compose scenes | `scene.mojo` | the scene document is plain MJCF — a base model plus `<attach>`ed instances — so MuJoCo loads it unchanged |
+| Export | `writer.mojo` | `File > Export flattened MJCF` writes the model as simulated, edits included |
+
+The `File` menu has `Save scene`, `Save edited model` and
+`Export flattened MJCF`. Export serialises the built model, not the source
+document, because value edits live in the model. It writes `<compiler>`,
+`<option>`, the asset table, the body tree with its joints, geoms and sites,
+and `<actuator>`, with names. It does not yet write tendons, equalities,
+`<contact>`, keyframes, sensors or `<default>` classes — and it refuses a
+model that has any of them rather than writing a file that is quietly less
+than the model.
+
+The studio is CPU-only and not built on the RL environment trait: a scene is
+not a task, and has no observation or reward to invent. The contact budget is
+shown as a high-water-mark bar in the Options panel, because too small a budget
+drops contacts silently.
+
+Headless gates for the studio's logic:
+
+- `tests/physics3d/test_studio_ray_pick.mojo` — picking
+- `tests/physics3d/test_studio_edit_roundtrip.mojo` — a value edit leaves the live model and its record agreeing
+- `tests/physics3d/test_edit_reaches_the_document.mojo` — the same edit reaches the scene document too
+- `tests/physics3d/test_studio_honours_option_cone.mojo`, `tests/physics3d/test_studio_honours_option_rk4.mojo` — the studio steps with the friction cone and integrator the model's `<option>` declares
+
+## Next
+
+- [Rendering](/rendering/) — the renderer under the viewers
+- [Camera observations](/rendering/cameras/) — pictures for policies rather than people
+- [3D physics](/physics/physics3d/) — what the studio is simulating

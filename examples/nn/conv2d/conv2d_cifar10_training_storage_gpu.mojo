@@ -13,16 +13,16 @@ from std.random import seed
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.datasets import CIFAR10
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.models.conv import Conv2DBatchNormReLU
-from mojo_rl.nn.primitives.max_pool_2d import MaxPool2D
-from mojo_rl.nn.primitives.flatten import Flatten
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.training.trainer import Trainer
+from noeira.nn.datasets import CIFAR10
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.models.conv import Conv2DBatchNormReLU
+from noeira.nn.primitives.max_pool_2d import MaxPool2D
+from noeira.nn.primitives.flatten import Flatten
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.training.trainer import Trainer
 
 
 def main() raises:

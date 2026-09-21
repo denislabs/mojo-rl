@@ -13,7 +13,7 @@ Two shapes, chosen so the polygon builder is exercised in both regimes:
               passes on cube). The hexagon merges SIX coplanar triangles, not
               two, so the merge is exercised beyond a single pair as well.
 
-Both are written as BINARY STL because `mojo_rl/render/stl_loader.mojo` reads
+Both are written as BINARY STL because `noeira/render/stl_loader.mojo` reads
 binary only. The facet normals STL stores are IGNORED by our loader (it keeps
 positions and rebuilds the hull), so they are written correctly but nothing
 depends on them.

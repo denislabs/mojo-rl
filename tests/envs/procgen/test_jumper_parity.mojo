@@ -11,8 +11,8 @@ See `docs/PROCGEN_JUMPER_SCOPE.md`.
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import JumperGame
-from mojo_rl.envs.procgen.games.jumper import DIST_EASY, DIST_HARD, CAVEWALL, CAVEWALL_TOP
+from noeira.envs.procgen.games import JumperGame
+from noeira.envs.procgen.games.jumper import DIST_EASY, DIST_HARD, CAVEWALL, CAVEWALL_TOP
 
 
 comptime STEPS = 200

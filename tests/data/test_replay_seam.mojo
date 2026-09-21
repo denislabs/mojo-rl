@@ -25,15 +25,15 @@ Run:
 from std.random import seed
 from std.testing import assert_almost_equal, assert_equal, assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.data.replay import StoreReplay
-from mojo_rl.deep_agents.training.blocks.replay_sample_step import (
+from noeira.nn.constants import DT
+from noeira.data.replay import StoreReplay
+from noeira.deep_agents.training.blocks.replay_sample_step import (
     ReplaySampleStep,
 )
-from mojo_rl.deep_agents.training.blocks.n_step_sample_step import (
+from noeira.deep_agents.training.blocks.n_step_sample_step import (
     NStepSampleStep,
 )
-from mojo_rl.deep_agents.training.trainer_block import TrainerState
+from noeira.deep_agents.training.trainer_block import TrainerState
 
 
 comptime OBS: Int = 3

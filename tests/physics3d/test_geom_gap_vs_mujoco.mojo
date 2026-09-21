@@ -55,17 +55,17 @@ FOUR ARMS:
 Run: pixi run mojo run -I . tests/physics3d/test_geom_gap_vs_mujoco.mojo
 """
 
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
     read_model_source,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_auto
-from mojo_rl.physics3d.studio.stepping import StudioIntegPyr, STUDIO_DT
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.broadphase_sap import detect_contacts_auto
+from noeira.physics3d.studio.stepping import StudioIntegPyr, STUDIO_DT
+from noeira.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE, GEOM_IDX_MARGIN, GEOM_IDX_GAP,
     CONTACT_SIZE, CONTACT_IDX_DIST, CONTACT_IDX_INCLUDEMARGIN,
     METADATA_SIZE, META_IDX_NUM_CONTACTS, KEY_IDX_NQPOS,

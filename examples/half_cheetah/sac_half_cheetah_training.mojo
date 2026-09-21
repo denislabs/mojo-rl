@@ -9,7 +9,7 @@ the legacy `deep_agents.core.agents.DeepSACAgent`). Uses the new
     hyperparams as `sac_pendulum_v2_training_cpu.mojo:71-72`.
   * `RemoteLogger` — streams metrics to a dashboard at every chunk
     boundary AND at the driver's `print_every` cadence. Config (server
-    URL + API key) read from a `.env` via `mojo_rl.core.dotenv`.
+    URL + API key) read from a `.env` via `noeira.core.dotenv`.
   * Single-file checkpointing — `agent.save(CHECKPOINT_PATH)` writes
     ONE `.ckpt` file (overwritten each chunk) under a single
     `nn-ckpt v2` envelope containing actor + twin critics + their
@@ -40,17 +40,17 @@ from std.random import seed
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.sac import SACAgent
+from noeira.deep_agents.training.blocks import UniformSampleCpuStep
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 
 
 # =============================================================================
@@ -116,8 +116,8 @@ def main() raises:
     # ─── Logger (remote) ───────────────────────────────────
 
     var env_vars = load_dotenv()
-    var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-    var url = env_vars.get("RL_MONITOR_URL", "")
+    var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+    var url = env_vars.get("NOEIRA_CLOUD_URL", "")
 
     # `buffer_size` controls how many `log_scalar` calls accumulate
     # before the logger does a synchronous HTTP POST. Larger buffer =

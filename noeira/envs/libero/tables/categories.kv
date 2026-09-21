@@ -1,0 +1,408 @@
+# LIBERO's object registry, as data — L1 of docs/LIBERO_PORT_ASSESSMENT_2026_09_13.md
+#
+# A `.bddl` names a CATEGORY (`akita_black_bowl - akita_black_bowl`); the asset
+# file, the reset-rotation range and the articulation thresholds live in
+# LIBERO's Python (`envs/objects/*.py`, `@register_object`). This file is that
+# registry transcribed, so the importer can emit a real path instead of
+# `TODO:<category>`.
+#
+# ⚠ EVERY NUMBER HERE WAS READ OUT OF LIBERO-master ON 2026-09-13 AND IS
+# QUOTED, NOT CHOSEN. `rotation=` is `self.rotation` (radians, uniform range
+# sampled at reset about `axis=`); the articulation lines are the `is_open` /
+# `is_close` / `turn_on` / `turn_off` comparisons VERBATIM, direction included:
+#
+#     WoodenCabinet.is_open : qpos <  max([-0.16, -0.14])  ->  open=lt:-0.14
+#     WoodenCabinet.is_close: qpos >  min([0.0, 0.005])    ->  close=gt:0.0
+#     Microwave.is_open     : qpos <  max([-2.094, -1.3])  ->  open=lt:-1.3
+#     Microwave.is_close    : qpos >  min([-0.005, 0.0])   ->  close=gt:-0.005
+#     FlatStove.turn_on     : qpos >= min([0.5, 2.1])      ->  on=ge:0.5
+#     FlatStove.turn_off    : qpos <  max([-0.005, 0.0])   ->  off=lt:0.0
+#
+# ⚠⚠ `*_range=` IS THE *_ranges LIST ITSELF, NOT THE THRESHOLD DERIVED FROM IT.
+# The two answer different questions and both are needed:
+#
+#     open=lt:-0.14        is the drawer OPEN?   (`is_open`, a PREDICATE)
+#     open_range=-0.16,-0.14  where does an episode START it?  (a DRAW)
+#
+# `bddl_base_domain._reset_internal` builds an `OpenCloseSampler` from
+# `default_open_ranges` and calls `np.random.uniform(low, high)` on it, so a
+# `(Open X)` in a `:init` is a UNIFORM DRAW over the range, not a jump to the
+# threshold. 28 of the corpus' 130 tasks carry one. Deriving the range from the
+# threshold would be a guess in the one direction the data does not determine:
+# `open=lt:-0.14` says nothing about -0.16.
+#
+# ⚠⚠ THE DIRECTION IS PER CLASS AND IS NOT THE SIGN OF THE RANGE. `ShortCabinet`
+# (unused by any task, kept as the counter-example) opens POSITIVE:
+# `qpos > min([0.10, 0.16])`. A reader that inferred `<` from a negative range
+# would be right on the two cabinets that matter and wrong on that one.
+#
+# `asset=` is relative to the pack root (the LIBERO `assets/` directory).
+# `kind=workspace` marks the arena's own table/floor: it is the BASE scene, not
+# a slot, and carries no asset. The `problem=` records map a `.bddl`'s
+# `(problem NAME)` onto its arena, workspace offset and z offset
+# (`envs/problems/*.py`), which is what a fixture's static pose is computed
+# from: x,y = rect centre + offset, z = z_offset + offset_z - bottom_site_z.
+schema_version=1
+
+# ── problem classes (5 of LIBERO's 6 appear in the 130 files) ─────────────
+# floor_texture / wall_texture are the RESOLVED filenames from
+# envs/arenas/style.py, applied to the arena's `texplane` / `tex-wall` at load.
+#
+# base_pos= is where the Panda's ROOT body goes: robosuite's `set_base_xpos`
+# writes `xpos - bottom_offset`, with xpos from `base_xpos_offset[<arena>]`
+# (table/kitchen: -0.16 - L/2; study: -0.25 - L/2; floor ("empty"): -0.6) and
+# bottom_offset = mount.bottom_offset - mount.top_offset = -0.922 - (-0.01)
+# = -0.912, so z = 0.912 — for `robot=mounted` (MountedPanda: tabletop,
+# kitchen, study). ⚠ LIVING ROOM AND FLOOR USE `OnTheGroundPanda`
+# (`robot=on_the_ground`): NO mount, bottom_offset 0, so the root goes
+# exactly to `base_xpos_offset`: living_room_table `(-0.16 - L/2, 0, 0.42)`
+# with L = 0.70 = (-0.51, 0, 0.42); floor ("empty") = (-0.6, 0, 0). The
+# vendoring tool writes both variants from the same three source XMLs.
+#
+# table_size= / table_friction= exist only where LIBERO's arena class calls
+# `configure_location` (TableArena, KitchenTableArena): the table body is
+# re-posed to `workspace_offset - (0,0,h/2)`, its box to the half size, the
+# `table_top` site to (0,0,h/2), the legs to the corners. The study arena
+# DEFINES configure_location and never calls it; living room and floor have
+# none. Those three keep the table as authored.
+#
+# camera= lines are the `_setup_camera` overrides of each problem class
+# (`agentview` is what the benchmark renders; `frontview` is kept for the
+# viewer). galleryview / paperview are visualisation-only and are not carried.
+#
+# zone_z= is the WORLD z of a table target zone's site — where `On(obj,
+# <table region>)` measures its band from (`TargetZone` + `under`, L3). Each
+# problem class appends the zone site to a different body with a different
+# z_offset convention, quoted:
+#     Tabletop     : table body z 0.875, `pos=target_zone.pos`, TargetZone
+#                    default z_offset=0.02                    -> 0.895
+#     Kitchen      : table body z 0.875, z_offset=workspace_offset[2]=0.90,
+#                    `pos + (0,0,-0.90)`                      -> 0.875
+#     Living room  : living_room_table body z 0, z_offset=0.41 -> 0.41
+#     Study        : study_table body z 0, z_offset=0.867      -> 0.867
+#     Floor        : floor body z 0, default z_offset=0.02     -> 0.02
+# `gen_libero_arenas.py` places `<site name="zone_plane">` there; the
+# importer anchors every table box region on it.
+problem=LIBERO_Tabletop_Manipulation
+robot=mounted
+scene=scenes/libero_tabletop_base_style.xml
+workspace=table
+workspace_offset=0,0,0.90
+z_offset=-0.04
+zone_z=0.895
+floor_texture=textures/light-gray-floor-tile.png
+wall_texture=textures/light-gray-plaster.png
+base_pos=-0.66,0,0.912
+table_size=1.0,1.2,0.05
+table_friction=0.6,0.005,0.0001
+camera=agentview:0.6586131746834771,0.0,1.6103500240372423:0.6380177736282349,0.3048497438430786,0.30484986305236816,0.6380177736282349
+camera=frontview:1.0,0.0,1.48:0.56,0.43,0.43,0.56
+
+problem=LIBERO_Kitchen_Tabletop_Manipulation
+robot=mounted
+scene=scenes/libero_kitchen_tabletop_base_style.xml
+workspace=kitchen_table
+workspace_offset=0,0,0.90
+z_offset=-0.04
+zone_z=0.875
+floor_texture=textures/gray_ceramic_tile.png
+wall_texture=textures/yellow_linen_wall_texture.png
+base_pos=-0.66,0,0.912
+table_size=1.0,1.2,0.05
+table_friction=1,0.005,0.0001
+camera=agentview:0.6586131746834771,0.0,1.6103500240372423:0.6380177736282349,0.3048497438430786,0.30484986305236816,0.6380177736282349
+camera=frontview:1.0,0.0,1.48:0.56,0.43,0.43,0.56
+
+problem=LIBERO_Living_Room_Tabletop_Manipulation
+robot=on_the_ground
+scene=scenes/libero_living_room_tabletop_base_style.xml
+workspace=living_room_table
+workspace_offset=0,0,0.41
+z_offset=-0.014
+zone_z=0.41
+floor_texture=textures/seamless_wood_planks_floor.png
+wall_texture=textures/light-gray-plaster.png
+base_pos=-0.51,0,0.42
+camera=agentview:0.6065773716836134,0.0,0.96:0.6182166934013367,0.3432307541370392,0.3432314395904541,0.6182177066802979
+camera=frontview:1.5,0.0,0.9:0.56,0.43,0.43,0.56
+
+problem=LIBERO_Study_Tabletop_Manipulation
+robot=mounted
+scene=scenes/libero_study_base_style.xml
+workspace=study_table
+workspace_offset=-0.2,0,0.867
+z_offset=-0.04
+zone_z=0.867
+floor_texture=textures/light-gray-floor-tile.png
+wall_texture=textures/light-gray-plaster.png
+base_pos=-0.75,0,0.912
+camera=agentview:0.4586131746834771,0.0,1.6103500240372423:0.6380177736282349,0.3048497438430786,0.30484986305236816,0.6380177736282349
+camera=frontview:1.0,0.0,1.48:0.56,0.43,0.43,0.56
+
+problem=LIBERO_Floor_Manipulation
+robot=on_the_ground
+scene=scenes/libero_floor_base_style.xml
+workspace=floor
+workspace_offset=0,0,-0.035
+z_offset=-0.025
+zone_z=0.02
+floor_texture=textures/light-gray-floor-tile.png
+wall_texture=textures/light-gray-plaster.png
+base_pos=-0.6,0,0
+camera=agentview:0.8965773716836134,0.0,0.65:0.6182166934013367,0.3432307541370392,0.3432314395904541,0.6182177066802979
+camera=frontview:1.0,0.0,0.65:0.56,0.43,0.43,0.56
+
+# ── workspaces: the arena is the base scene ───────────────────────────────
+category=table
+kind=workspace
+
+category=kitchen_table
+kind=workspace
+
+category=living_room_table
+kind=workspace
+
+category=study_table
+kind=workspace
+
+category=floor
+kind=workspace
+
+# ── articulated fixtures (envs/objects/articulated_objects.py) ────────────
+# base rotation (pi/4, pi/2) about x is ArticulatedObject's default; as
+# FIXTURES they are placed by the region's yaw about z, so it is unused there.
+category=wooden_cabinet
+kind=asset
+asset=articulated_objects/wooden_cabinet.xml
+rotation=0.7853981633974483,1.5707963267948966
+axis=x
+open=lt:-0.14
+open_range=-0.16,-0.14
+close=gt:0.0
+close_range=0.0,0.005
+
+category=white_cabinet
+kind=asset
+asset=articulated_objects/white_cabinet.xml
+rotation=0.7853981633974483,1.5707963267948966
+axis=x
+open=lt:-0.14
+open_range=-0.16,-0.14
+close=gt:0.0
+close_range=0.0,0.005
+
+category=microwave
+kind=asset
+asset=articulated_objects/microwave.xml
+rotation=0.7853981633974483,1.5707963267948966
+axis=x
+open=lt:-1.3
+open_range=-2.094,-1.3
+close=gt:-0.005
+close_range=-0.005,0.0
+
+category=flat_stove
+kind=asset
+asset=articulated_objects/flat_stove.xml
+rotation=0,0
+axis=y
+on=ge:0.5
+on_range=0.5,2.1
+off=lt:0.0
+off_range=-0.005,0.0
+
+# unused by any task; the counter-example for the direction rule
+category=short_cabinet
+kind=asset
+asset=articulated_objects/short_cabinet.xml
+rotation=0.7853981633974483,1.5707963267948966
+axis=x
+open=gt:0.10
+open_range=0.10,0.16
+close=lt:0.0
+close_range=-0.005,0.0
+
+# ── google scanned (envs/objects/google_scanned_objects.py) ───────────────
+category=akita_black_bowl
+kind=asset
+asset=stable_scanned_objects/akita_black_bowl/akita_black_bowl.xml
+rotation=0,0
+axis=x
+
+category=white_bowl
+kind=asset
+asset=stable_scanned_objects/white_bowl/white_bowl.xml
+rotation=0,0
+axis=x
+
+category=plate
+kind=asset
+asset=stable_scanned_objects/plate/plate.xml
+rotation=0,0
+axis=x
+
+category=basket
+kind=asset
+asset=stable_scanned_objects/basket/basket.xml
+rotation=0,0
+axis=x
+
+category=chefmate_8_frypan
+kind=asset
+asset=stable_scanned_objects/chefmate_8_frypan/chefmate_8_frypan.xml
+rotation=0,0
+axis=x
+
+category=glazed_rim_porcelain_ramekin
+kind=asset
+asset=stable_scanned_objects/glazed_rim_porcelain_ramekin/glazed_rim_porcelain_ramekin.xml
+rotation=0,0
+axis=x
+
+# ── HOPE grocery items (envs/objects/hope_objects.py) ─────────────────────
+# HopeBaseObject: rotation (pi/2, pi/2) about x; most subclasses override to
+# (0, 0), the three cans keep pi/2 but about z.
+category=alphabet_soup
+kind=asset
+asset=stable_hope_objects/alphabet_soup/alphabet_soup.xml
+rotation=1.5707963267948966,1.5707963267948966
+axis=z
+
+category=bbq_sauce
+kind=asset
+asset=stable_hope_objects/bbq_sauce/bbq_sauce.xml
+rotation=1.5707963267948966,1.5707963267948966
+axis=z
+
+category=tomato_sauce
+kind=asset
+asset=stable_hope_objects/tomato_sauce/tomato_sauce.xml
+rotation=1.5707963267948966,1.5707963267948966
+axis=z
+
+category=butter
+kind=asset
+asset=stable_hope_objects/butter/butter.xml
+rotation=0,0
+axis=x
+
+category=chocolate_pudding
+kind=asset
+asset=stable_hope_objects/chocolate_pudding/chocolate_pudding.xml
+rotation=0,0
+axis=x
+
+category=cookies
+kind=asset
+asset=stable_hope_objects/cookies/cookies.xml
+rotation=0,0
+axis=x
+
+category=cream_cheese
+kind=asset
+asset=stable_hope_objects/cream_cheese/cream_cheese.xml
+rotation=0,0
+axis=x
+
+category=ketchup
+kind=asset
+asset=stable_hope_objects/ketchup/ketchup.xml
+rotation=0,0
+axis=x
+
+category=milk
+kind=asset
+asset=stable_hope_objects/milk/milk.xml
+rotation=0,0
+axis=x
+
+category=orange_juice
+kind=asset
+asset=stable_hope_objects/orange_juice/orange_juice.xml
+rotation=0,0
+axis=x
+
+category=salad_dressing
+kind=asset
+asset=stable_hope_objects/salad_dressing/salad_dressing.xml
+rotation=0,0
+axis=x
+
+category=new_salad_dressing
+kind=asset
+asset=stable_hope_objects/new_salad_dressing/new_salad_dressing.xml
+rotation=0,0
+axis=x
+
+# ── turbosquid (envs/objects/turbosquid_objects.py) ───────────────────────
+category=wooden_tray
+kind=asset
+asset=turbosquid_objects/wooden_tray/wooden_tray.xml
+rotation=0,0
+axis=x
+
+category=wooden_two_layer_shelf
+kind=asset
+asset=turbosquid_objects/wooden_two_layer_shelf/wooden_two_layer_shelf.xml
+rotation=0,0
+axis=y
+
+category=wine_rack
+kind=asset
+asset=turbosquid_objects/wine_rack/wine_rack.xml
+rotation=0,0
+axis=y
+
+category=wine_bottle
+kind=asset
+asset=turbosquid_objects/wine_bottle/wine_bottle.xml
+rotation=0,0
+axis=y
+
+category=bowl_drainer
+kind=asset
+asset=turbosquid_objects/bowl_drainer/bowl_drainer.xml
+rotation=0,0
+axis=y
+
+category=moka_pot
+kind=asset
+asset=turbosquid_objects/moka_pot/moka_pot.xml
+rotation=0,0
+axis=y
+
+category=black_book
+kind=asset
+asset=turbosquid_objects/black_book/black_book.xml
+rotation=-1.5707963267948966,-0.7853981633974483
+axis=y
+
+category=yellow_book
+kind=asset
+asset=turbosquid_objects/yellow_book/yellow_book.xml
+rotation=-1.5707963267948966,-0.7853981633974483
+axis=y
+
+category=red_coffee_mug
+kind=asset
+asset=turbosquid_objects/red_coffee_mug/red_coffee_mug.xml
+rotation=-1.5707963267948966,-1.5707963267948966
+axis=y
+
+category=desk_caddy
+kind=asset
+asset=turbosquid_objects/desk_caddy/desk_caddy.xml
+rotation=-1.5707963267948966,-1.5707963267948966
+axis=y
+
+category=porcelain_mug
+kind=asset
+asset=turbosquid_objects/porcelain_mug/porcelain_mug.xml
+rotation=-1.5707963267948966,-1.5707963267948966
+axis=y
+
+category=white_yellow_mug
+kind=asset
+asset=turbosquid_objects/white_yellow_mug/white_yellow_mug.xml
+rotation=-1.5707963267948966,-1.5707963267948966
+axis=y

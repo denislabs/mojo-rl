@@ -52,18 +52,18 @@ from std.math import abs, sqrt
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from mojo_rl.physics3d.fields import (
+from noeira.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
+from noeira.physics3d.fields import (
     Data, Model, DynDims, init_hfield_data, DYN1, rl1,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat,
     build_model_runtime,
     spec_fields_runtime,
 )
-from mojo_rl.physics3d.constants import GEOM_HFIELD
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.constants import GEOM_HFIELD
+from noeira.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
     GEOM_IDX_BODY,
@@ -84,7 +84,7 @@ from mojo_rl.physics3d.gpu.constants import (
     HFIELD_META_IDX_SIZE_Z,
     HFIELD_META_IDX_SIZE_BASE,
 )
-from mojo_rl.physics3d.ray import ray_hfield
+from noeira.physics3d.ray import ray_hfield
 
 comptime DT = DType.float64
 comptime Vec3 = Vec3Generic[DT]
@@ -268,8 +268,8 @@ def test_ray_hfield_vs_mujoco() raises:
     var hf_view = b.d.hfield_data.lt_dyn["cpu", DYN1](rl1(nrow * ncol))
 
     var rng = Lcg(0xC0FFEE)
-    var hits = InlineArray[Int, 4](fill=0)
-    var cases = InlineArray[Int, 4](fill=0)
+    var hits = Array[Int, 4](fill=0)
+    var cases = Array[Int, 4](fill=0)
     var split = 0
     var worst_t = 0.0
     var worst_n = 0.0

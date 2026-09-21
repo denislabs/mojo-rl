@@ -32,18 +32,18 @@ from std.time import perf_counter_ns
 from std.sys import has_accelerator
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_lift_brick import DMLiftBrick
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.envs.dm_control.manipulation_lift_brick import DMLiftBrick
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.gpu.constants import (
     MAX_GPU_MESHES,
     MODEL_MESH_META_SIZE,
     MESH_META_IDX_TRINUM,
 )
-from mojo_rl.physics3d.raytrace import (
+from noeira.physics3d.raytrace import (
     BatchedCameraRenderer,
     init_camera_reference,
 )
-from mojo_rl.render.video_recorder import VideoRecorder
+from noeira.render.video_recorder import VideoRecorder
 
 # ⚠ float32. Metal rejects `double`, so the whole env runs at float32 — the
 # renderer reads `Data` in place and cannot convert.

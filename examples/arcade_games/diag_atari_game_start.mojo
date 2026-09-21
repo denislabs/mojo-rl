@@ -10,11 +10,11 @@ Usage: diag_atari_game_start <game> [hold_fire]
 
 from std.sys import argv
 
-from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
-from mojo_rl.envs.atari.games.registry import AtariGame, game_signals
-from mojo_rl.envs.atari.riot import set_action
-from mojo_rl.envs.atari.cpu6502 import run_frame
-from mojo_rl.envs.atari.flags import ACTION_NOOP, ACTION_FIRE, ACTION_RESET
+from noeira.envs.atari.environment import AtariEnvironment, load_rom
+from noeira.envs.atari.games.registry import AtariGame, game_signals
+from noeira.envs.atari.riot import set_action
+from noeira.envs.atari.cpu6502 import run_frame
+from noeira.envs.atari.flags import ACTION_NOOP, ACTION_FIRE, ACTION_RESET
 
 
 def dump(mut env: AtariEnvironment, game: AtariGame, label: String):
@@ -52,9 +52,9 @@ def main() raises:
         mapper=game.mapper(),
     )
     # Manual boot (NOT env.reset()) so we can observe each phase.
-    from mojo_rl.envs.atari.atari_state import AtariState
-    from mojo_rl.envs.atari.cartridge import init_bank
-    from mojo_rl.envs.atari.cpu6502 import cpu_reset
+    from noeira.envs.atari.atari_state import AtariState
+    from noeira.envs.atari.cartridge import init_bank
+    from noeira.envs.atari.cpu6502 import cpu_reset
 
     env.state = AtariState()
     init_bank(env.state, env.rom_size, game.mapper())

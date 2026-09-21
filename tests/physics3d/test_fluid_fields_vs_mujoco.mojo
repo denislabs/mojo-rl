@@ -17,26 +17,26 @@ from std.sys import has_nvidia_gpu_accelerator
 from max.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.fields import (
     Data,
     Model,
     DynamicsScratch,
     Dims,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import (
+from noeira.physics3d.dynamics.subtree_com import (
     compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.fluid_forces import (
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.fluid_forces import (
     compute_fluid_forces,
 )
-from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.envs.swimmer.swimmer_xml import SwimmerModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DT = DType.float32
 comptime NQ = SwimmerModel.NQ

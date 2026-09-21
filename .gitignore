@@ -243,7 +243,28 @@ skills-lock.json
 
 # Training artifacts (large; not source)
 checkpoints/
+
+# Run directories (`core/run.mojo`). One per execution: run.kv, metrics.csv and
+# checkpoints/.
+#
+# The P0 run root, used by a driver whose project does not exist locally.
+/runs/
+
+# Project directories (`core/project.mojo`). ⚠⚠ ALL OF IT, DEFINITION INCLUDED.
+# Projects are PRIVATE and are created without touching the core repository,
+# so none of `projects/` belongs in it. The definition (`project.kv`,
+# calibration, task files, policy records) reaches another machine through the
+# platform instead: `project-push <name>` / `project-pull <name>`
+# (`core/project_sync.mojo`). This revises PROJECT_LAYER_PLAN.md §4.
+projects/
 *.mp4
+# …except the docs site's demo videos: small, re-encoded by
+# docs-site/scripts/build-media.mjs (or by hand), and the site needs them.
+!docs-site/public/media/*.mp4
+# ...except the vision gate's INPUT. `*.mp4` above is for renderer recordings;
+# this 3 KB file is a committed test fixture, and without it a fresh checkout
+# cannot run tests/vision/test_opencv_shim.mojo at all.
+!tests/fixtures/vision/*.mp4
 # Rendered media dropped at the repo root by demo/diagnostic scripts
 # (root-anchored on purpose - tracked images elsewhere stay addable)
 /*.png
@@ -266,17 +287,35 @@ recording_*.gif
 # Vendored C/C++ sources fetched by build scripts (scripts/build_imgui.sh
 # clones Dear ImGui here on first use). Source, not ours; re-fetchable.
 third_party/
-# The Dear ImGui shim built from mojo_rl/render/imgui/imgui_shim.cpp. The
+# The Dear ImGui shim built from noeira/render/imgui/imgui_shim.cpp. The
 # .cpp IS tracked; the binary is per-platform and rebuilt by
 # `pixi run build-imgui`.
 *.dylib
-# The serial shim built from mojo_rl/io/serial/native/mrl_serial.c. The .c IS
+# The serial shim built from noeira/io/serial/native/nra_serial.c. The .c IS
 # tracked; both binaries are per-platform and rebuilt by
 # `pixi run build-serial`.
-mojo_rl/io/serial/*.so
-mojo_rl/io/serial/*.o
+noeira/io/serial/*.so
+noeira/io/serial/*.o
 fb_walker_d128.ckpt
 
+# The HTTP shim built from noeira/io/native/nra_http.c. The .c IS tracked;
+# the binary is per-platform (it links the pixi env's libcurl by rpath) and is
+# rebuilt by `pixi run build-http`.
+noeira/io/libnra_http.so
+
 # qhull shim (built by `pixi run build-qhull`, not tracked)
-mojo_rl/physics3d/collision/libmrl_qhull.dylib
-mojo_rl/physics3d/collision/libmrl_qhull.so
+noeira/physics3d/collision/libnra_qhull.dylib
+noeira/physics3d/collision/libnra_qhull.so
+
+# Generated printable markers and other local scratch output
+# (tools/vision/make_printable_marker.py writes here).
+scratch/
+
+# G1 rung: the LAFAN1 TrajectoryStore (1.7 GB, examples/g1/lafan_import.mojo) and
+# the reference's own dump it is gated against (tools/g1/lafan_to_store.py)
+/lafan_g1_50hz.h5
+/lafan_g1_50hz_oracle.h5
+
+# LIBERO asset pack, materialised by `pixi run assets-pull libero` (assets.kv)
+noeira/envs/libero/assets/
+build/packs/

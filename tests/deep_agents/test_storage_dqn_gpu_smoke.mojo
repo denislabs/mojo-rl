@@ -13,9 +13,9 @@ from std.random import seed
 from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.dqn.config import DQN
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.dqn.config import DQN
+from noeira.envs.cartpole import CartPoleEnv
 
 comptime OBS = 4
 comptime ACT = 2

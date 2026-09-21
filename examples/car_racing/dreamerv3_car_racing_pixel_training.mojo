@@ -30,16 +30,16 @@ from max.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
-from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
+from noeira.nn.primitives.ops.swish_op import SwishOp
+from noeira.deep_agents.dreamerv3.agent import DreamerV3Agent
+from noeira.deep_agents.dreamerv3.nets_cnn import (
     DreamerEncoderCNN,
     DreamerDecoderCNN,
 )
-from mojo_rl.envs.car_racing.car_racing_mb import CarRacingMB
+from noeira.envs.car_racing.car_racing_mb import CarRacingMB
 
 # =============================================================================
 # Architecture
@@ -129,10 +129,10 @@ def main() raises:
         # ─── Logger (remote; same KNOWN_GROUPS metrics as the discrete path) ──
         var env_vars = load_dotenv()
         var logger = RemoteLogger(
-            server_url=env_vars.get("RL_MONITOR_URL", ""),
+            server_url=env_vars.get("NOEIRA_CLOUD_URL", ""),
             run_name="DreamerV3 CarRacing PIXEL (GPU, continuous)",
             buffer_size=200,
-            api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+            api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
         )
         logger.set_config("algorithm", "DreamerV3")
         logger.set_config("env", "CarRacingPixel")

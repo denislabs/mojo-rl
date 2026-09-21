@@ -26,16 +26,16 @@ Two arms, and they test different things:
 Run: pixi run mojo run -I . tests/physics3d/test_mesh_cap_is_loud.mojo
 """
 
-from mojo_rl.physics3d.fields import Model, DynDims
-from mojo_rl.physics3d.gpu.constants import MAX_GPU_MESHES, MODEL_MESH_META_SIZE
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Model, DynDims
+from noeira.physics3d.gpu.constants import MAX_GPU_MESHES, MODEL_MESH_META_SIZE
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, read_model_source,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.full_parser import parse_xml_full
 
 comptime DT = DType.float64
 
-comptime STL = String("mojo_rl/envs/robots/assets/so_arm100/Base.stl")
+comptime STL = String("noeira/envs/robots/assets/so_arm100/Base.stl")
 
 
 struct Tally:
@@ -97,10 +97,10 @@ def main() raises:
     # ── 1. headroom on real models ────────────────────────────────────────
     print("--- what real models need ---")
     var so = loaded_meshes(
-        String("mojo_rl/envs/robots/assets/so_arm100.xml"), 8192
+        String("noeira/envs/robots/assets/so_arm100.xml"), 8192
     )
     var saw = loaded_meshes(
-        String("mojo_rl/envs/metaworld/assets/sawyer_reach.xml"), 8192
+        String("noeira/envs/metaworld/assets/sawyer_reach.xml"), 8192
     )
     print("    so_arm100", so, "  sawyer", saw)
     # ⚠ NON-VACUITY: a model that loads ZERO collidable meshes says nothing

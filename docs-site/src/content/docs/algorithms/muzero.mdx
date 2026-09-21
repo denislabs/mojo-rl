@@ -71,15 +71,15 @@ actually taken, and at every step match
 Value and reward are predicted as **categorical distributions** over `BINS` atoms
 rather than scalars, which is markedly more stable.
 
-## Building it in mojo-rl
+## Building it in noeira
 
 ```mojo
-from std.gpu.host import DeviceContext
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.deep_agents.muzero import MuZeroAgent
-from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
-from mojo_rl.envs.cartpole import CartPoleEnv
+from max.gpu.host import DeviceContext
+from noeira.nn.constants import DT
+from noeira.nn.initializer import Kaiming
+from noeira.deep_agents.muzero import MuZeroAgent
+from noeira.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
+from noeira.envs.cartpole import CartPoleEnv
 
 comptime OBS = 4
 comptime ACT = 2
@@ -141,7 +141,7 @@ wrong, which makes it a costly mistake to debug.
 ## GPU MCTS
 
 Search runs on-device through
-[`mojo_rl.planners.tree_search`](/planners/tree-search/), batched across
+[`noeira.planners.tree_search`](/planners/tree-search/), batched across
 **environments** — one tree each, advanced in lockstep. Simulations within a
 tree stay sequential.
 
@@ -179,9 +179,9 @@ substantially — `reanalyze_every=1` in the CartPole recipe.
 ## The family
 
 ```mojo
-from mojo_rl.deep_agents.alphazero import AlphaZeroAgent
-from mojo_rl.deep_agents.muzero import MuZeroAgent
-from mojo_rl.deep_agents.efficient_zero_v2 import EZv2DiscreteAgent, EZv2ContinuousAgent
+from noeira.deep_agents.alphazero import AlphaZeroAgent
+from noeira.deep_agents.muzero import MuZeroAgent
+from noeira.deep_agents.efficient_zero_v2 import EZv2DiscreteAgent, EZv2ContinuousAgent
 ```
 
 **AlphaZero** — same search, but with a *known* simulator instead of a learned

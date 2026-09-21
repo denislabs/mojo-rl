@@ -42,20 +42,20 @@ from max.gpu.host import DeviceContext
 from std.math import abs, sin, min, max
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.constants import DT
+from noeira.core.cont_action import ContAction
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     HFIELD_META_IDX_ADR,
     HFIELD_META_IDX_NROW,
 )
-from mojo_rl.envs.dm_control.quadruped import N_HINGE
-from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
+from noeira.envs.dm_control.quadruped import N_HINGE
+from noeira.envs.dm_control.quadruped.quadruped_xml import (
     DMQuadrupedEscapeModel,
 )
-from mojo_rl.envs.dm_control.quadruped.quadruped_escape_config import (
+from noeira.envs.dm_control.quadruped.quadruped_escape_config import (
     ESCAPE_N_RF,
     DMQuadrupedEscapeConfig,
 )

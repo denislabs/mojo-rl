@@ -58,7 +58,7 @@ fixed set of levels, evaluate on unseen ones, and the gap is the generalization
 measure.
 
 ```mojo
-from mojo_rl.envs.procgen.games import CoinRun, Maze, StarPilot
+from noeira.envs.procgen.games import CoinRun, Maze, StarPilot
 ```
 
 ```bash
@@ -66,7 +66,7 @@ pixi run mojo run -I . examples/procgen/coinrun_render_demo.mojo
 pixi run -e nvidia mojo run -I . examples/procgen/coinrun_rainbow_training_gpu.mojo
 ```
 
-The substrate lives in `mojo_rl/envs/procgen/{core,games}` — a shared engine
+The substrate lives in `noeira/envs/procgen/{core,games}` — a shared engine
 (tile maps, sprites, collision, asset atlases) with per-game logic on top, which
 is how 16 games fit in a manageable amount of code.
 

@@ -7,7 +7,7 @@ intermediate to a flat binary directory the Mojo gates read.
 
     pixi run -e act-ref python tools/act/dump_act_reference.py --out /tmp/act_ref
 
-⚠ Runs in the `act-ref` pixi environment ONLY. Nothing under `mojo_rl/` imports
+⚠ Runs in the `act-ref` pixi environment ONLY. Nothing under `noeira/` imports
 torch; this exists so the port is checked against the reference rather than
 against itself.
 
@@ -24,7 +24,7 @@ side has no numpy, and a flat blob plus a shape line needs no parser.
 * `xattn` — `torch.nn.functional.scaled_dot_product_attention` driven exactly
   the way `nn.MultiheadAttention` drives it internally, at `Q_LEN != KV_LEN`,
   with and without a key padding mask, plus the q/k/v gradients of a scalar
-  objective. Gates `mojo_rl/nn/primitives/cross_attention.mojo`.
+  objective. Gates `noeira/nn/primitives/cross_attention.mojo`.
 * `layers` — the reference's own `TransformerEncoderLayer` /
   `TransformerDecoderLayer` (imported from `references/act-main/`, not
   reimplemented), in eval mode, with every parameter emitted under the Mojo
@@ -69,11 +69,37 @@ class Dump:
         return a
 
     def close(self):
-        lines = [
-            f"{n}\t{','.join(str(d) for d in s)}" for n, s in self.entries
-        ]
-        (self.root / "manifest.txt").write_text("\n".join(lines) + "\n")
-        print(f"  wrote {len(self.entries)} arrays to {self.root}")
+        """Write the manifest, MERGING with whatever is already there.
+
+        ⚠ It used to overwrite. `--only frozen_bn` into an existing dump then
+        left a manifest naming 8 arrays, the other ~200 `.bin` files still on
+        disk and unreachable, and five ACT gates failing with
+        `RefDump: no array named 'ens_chunks'` — which reads as a code
+        regression and is not one. `--only` exists to avoid re-running the slow
+        sections; silently invalidating them defeats it.
+
+        Names written this run win, so re-dumping one section refreshes it.
+        """
+        merged: dict[str, str] = {}
+        existing = self.root / "manifest.txt"
+        if existing.is_file():
+            for line in existing.read_text().splitlines():
+                if "\t" in line:
+                    name, shape = line.split("\t", 1)
+                    # Drop entries whose blob has since been removed, so a
+                    # hand-cleaned directory does not resurrect them.
+                    if (self.root / f"{name}.bin").is_file():
+                        merged[name] = shape
+        for n, sh in self.entries:
+            merged[n] = ",".join(str(d) for d in sh)
+        existing.write_text(
+            "\n".join(f"{n}\t{sh}" for n, sh in merged.items()) + "\n"
+        )
+        kept = len(merged) - len(self.entries)
+        print(
+            f"  wrote {len(self.entries)} arrays to {self.root}"
+            + (f" ({kept} kept from a previous run)" if kept > 0 else "")
+        )
 
 
 def mha(q, k, v, n_heads, key_valid=None):
@@ -344,21 +370,13 @@ def section_pos(dump: Dump, seed: int):
     dump.add("pos2d_table", p[0].flatten(1).permute(1, 0).contiguous())
 
 
-def section_resnet(dump: Dump, seed: int):
-    """torchvision `resnet18` truncated at `layer4` — the ACT backbone.
+def resnet18_trunk(net, x):
+    """torchvision `resnet18` forward, truncated at `layer4` — the ACT backbone.
 
-    Emitted under the Mojo side's `for_each_param` names, which come from the
-    `Sequential` child indices of `models/resnet18.mojo`. The mapping is written
-    out rather than derived, so a topology change breaks it loudly.
+    One definition, because the pretrained-weight dump must run EXACTLY the
+    same truncation as the gate does or the two disagree for a reason that has
+    nothing to do with the weights.
     """
-    import torchvision
-
-    torch.manual_seed(seed + 300)
-    IN_H, IN_W, B = 64, 96, 2
-    net = torchvision.models.resnet18(weights=None)
-    net.eval()  # BN in eval -> running stats (init: mean 0, var 1) => identity-ish
-
-    x = torch.randn(B, 3, IN_H, IN_W)
     with torch.no_grad():
         y = net.conv1(x)
         y = net.bn1(y)
@@ -368,9 +386,18 @@ def section_resnet(dump: Dump, seed: int):
         y = net.layer2(y)
         y = net.layer3(y)
         y = net.layer4(y)
-    dump.add("rn18_x", x)
-    dump.add("rn18_out", y)
-    print(f"      resnet18 {IN_H}x{IN_W} -> {tuple(y.shape)}")
+    return y
+
+
+def emit_resnet18(dump: Dump, net, prefix: str = "rn18"):
+    """Every `resnet18` weight + BN statistic under the Mojo side's
+    `for_each_param` names, which come from the `Sequential` child indices of
+    `models/resnet18.mojo`.
+
+    ⚠ ONE COPY OF THIS MAPPING. `dump_resnet18_imagenet.py` calls it too. A
+    second transcription is a second thing to keep in step with a topology
+    change, and this file has already paid for that lesson elsewhere.
+    """
 
     def emit_conv(name, conv):
         # Conv weights are [OC, IC, KH, KW] on both sides — NO transpose. Only
@@ -390,29 +417,86 @@ def section_resnet(dump: Dump, seed: int):
         dump.add(f"{name}.running_mean", bn.running_mean)
         dump.add(f"{name}.running_var", bn.running_var)
 
+    def emit_basic(pre, blk, downsample: bool):
+        emit_conv(f"{pre}.0.0", blk.conv1)
+        emit_bn(f"{pre}.0.1", blk.bn1)
+        emit_conv(f"{pre}.0.3", blk.conv2)
+        emit_bn(f"{pre}.0.4", blk.bn2)
+        if downsample:
+            emit_conv(f"{pre}.1.0", blk.downsample[0])
+            emit_bn(f"{pre}.1.1", blk.downsample[1])
+
     # Stem: Sequential[Conv2DBatchNormReLU[...], MaxPool2D] -> "0.0" / "0.1"
-    emit_conv("rn18.0.0.0", net.conv1)
-    emit_bn("rn18.0.0.1", net.bn1)
+    emit_conv(f"{prefix}.0.0.0", net.conv1)
+    emit_bn(f"{prefix}.0.0.1", net.bn1)
 
     # Blocks. ResBlockConv2DBN  = Sequential[Residual[Seq[conv,bn,relu,conv,bn]], relu]
     #         ResBlockDownsampleBN = Sequential[ProjectedResidual[main, skip], relu]
-    # Child indices below are checked against the Mojo param listing by the gate.
-    def emit_basic(prefix, blk, downsample: bool):
-        emit_conv(f"{prefix}.0.0", blk.conv1)
-        emit_bn(f"{prefix}.0.1", blk.bn1)
-        emit_conv(f"{prefix}.0.3", blk.conv2)
-        emit_bn(f"{prefix}.0.4", blk.bn2)
-        if downsample:
-            emit_conv(f"{prefix}.1.0", blk.downsample[0])
-            emit_bn(f"{prefix}.1.1", blk.downsample[1])
-
-    layers = [net.layer1, net.layer2, net.layer3, net.layer4]
     idx = 1  # Sequential child 0 is the stem
-    for li, layer in enumerate(layers):
-        for bi, blk in enumerate(layer):
-            down = blk.downsample is not None
-            emit_basic(f"rn18.{idx}.0", blk, down)
+    for layer in (net.layer1, net.layer2, net.layer3, net.layer4):
+        for blk in layer:
+            emit_basic(f"{prefix}.{idx}.0", blk, blk.downsample is not None)
             idx += 1
+
+
+def section_resnet(dump: Dump, seed: int):
+    """torchvision `resnet18` truncated at `layer4`, on RANDOM weights."""
+    import torchvision
+
+    torch.manual_seed(seed + 300)
+    IN_H, IN_W, B = 64, 96, 2
+    net = torchvision.models.resnet18(weights=None)
+    net.eval()  # BN in eval -> running stats (init: mean 0, var 1) => identity-ish
+
+    x = torch.randn(B, 3, IN_H, IN_W)
+    y = resnet18_trunk(net, x)
+    dump.add("rn18_x", x)
+    dump.add("rn18_out", y)
+    print(f"      resnet18 {IN_H}x{IN_W} -> {tuple(y.shape)}")
+    emit_resnet18(dump, net, "rn18")
+
+
+def section_frozen_bn(dump: Dump, seed: int):
+    """torchvision `FrozenBatchNorm2d` — what BOTH ACT implementations wrap the
+    ResNet backbone's normalization in.
+
+    Statistics AND affine are `register_buffer`, so all four are constants and
+    none of them takes a gradient. Dumped with statistics that are DELIBERATELY
+    far from the init values (running_var != 1, running_mean != 0): at the init
+    values frozen BN is near-identity and a gate that ignored the statistics
+    entirely would still pass.
+
+    `grad_input` is dumped too. A frozen BatchNorm still PASSES gradient — it is
+    a fixed affine map, `gi = gamma * inv_std * dy` — and a "freeze" that also
+    stopped the gradient reaching the convolutions below would train nothing and
+    look like a learning-rate problem.
+    """
+    from torchvision.ops.misc import FrozenBatchNorm2d
+
+    torch.manual_seed(seed + 700)
+    B, C, H, W = 2, 6, 5, 4
+    bn = FrozenBatchNorm2d(C)
+    with torch.no_grad():
+        bn.weight.copy_(torch.randn(C) * 0.5 + 1.0)
+        bn.bias.copy_(torch.randn(C) * 0.3)
+        bn.running_mean.copy_(torch.randn(C) * 0.7)
+        bn.running_var.copy_(torch.rand(C) * 2.0 + 0.5)  # far from 1.0
+
+    x = torch.randn(B, C, H, W, requires_grad=True)
+    y = bn(x)
+    go = torch.randn(B, C, H, W)
+    y.backward(go)
+
+    dump.add("fbn.gamma", bn.weight)
+    dump.add("fbn.beta", bn.bias)
+    dump.add("fbn.running_mean", bn.running_mean)
+    dump.add("fbn.running_var", bn.running_var)
+    dump.add("fbn_x", x)
+    dump.add("fbn_out", y)
+    dump.add("fbn_go", go)
+    dump.add("fbn_gin", x.grad)
+    print(f"      FrozenBatchNorm2d {B}x{C}x{H}x{W}, running_var in "
+          f"[{bn.running_var.min():.3f}, {bn.running_var.max():.3f}]")
 
 
 # ── CVAE + losses ───────────────────────────────────────────────────────
@@ -780,6 +864,10 @@ def main():
     if args.only in ("all", "pos"):
         print("[pos] 1-D ACT table + 2-D DETR sine table")
         section_pos(dump, args.seed)
+    if args.only in ("all", "frozen_bn"):
+        print("[frozen_bn] torchvision FrozenBatchNorm2d")
+        section_frozen_bn(dump, args.seed)
+
     if args.only in ("all", "resnet"):
         print("[resnet] torchvision resnet18 through layer4")
         section_resnet(dump, args.seed)

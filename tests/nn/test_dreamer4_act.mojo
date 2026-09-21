@@ -12,10 +12,10 @@ Run: pixi run mojo run -I . tests/nn/test_dreamer4_act.mojo
 
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
-from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Deterministic
+from noeira.deep_agents.dreamer4.agent import Dreamer4Agent
+from noeira.deep_agents.dreamer4.shortcut_loss import _mao
 
 
 def main() raises:

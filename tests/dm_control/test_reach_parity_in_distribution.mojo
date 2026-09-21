@@ -50,16 +50,16 @@ from std.math import abs
 from std.python import Python
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.fields import Model, Data, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.envs.dm_control.manipulation_reach_def import (
+from noeira.physics3d.fields import Model, Data, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.envs.dm_control.manipulation_reach_def import (
     ReachSiteFeaturesModel as MD,
 )
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from noeira.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 comptime NMV: Int = 8000
@@ -95,7 +95,7 @@ def test_contact_free_dynamics_match_mujoco() raises:
     var np = Python.import_module("numpy")
     var refmod = Python.import_module("manipulation_ref")
 
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/manipulation/reach_site_features.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/manipulation/reach_site_features.xml")
     var md = mujoco.MjData(m)
     var nu = Int(py=m.nu)
 
@@ -195,7 +195,7 @@ def test_shallow_contact_parity() raises:
     var np = Python.import_module("numpy")
     var refmod = Python.import_module("manipulation_ref")
 
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/manipulation/reach_site_features.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/manipulation/reach_site_features.xml")
     var md = mujoco.MjData(m)
     var nu = Int(py=m.nu)
 
@@ -210,8 +210,8 @@ def test_shallow_contact_parity() raises:
     var hi = refmod.arm_joint_bounds()[1]
     var rng = np.random.default_rng(11)
 
-    var qa = InlineArray[Float64, MD.NQ](fill=0.0)
-    var qb = InlineArray[Float64, MD.NQ](fill=0.0)
+    var qa = Array[Float64, MD.NQ](fill=0.0)
+    var qb = Array[Float64, MD.NQ](fill=0.0)
     var found = 0
     var worst = Float64(0)
     var worst_depth = Float64(0)

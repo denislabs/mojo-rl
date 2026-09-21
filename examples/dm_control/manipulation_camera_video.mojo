@@ -55,14 +55,14 @@ from std.random import seed
 from std.sys import has_accelerator
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_lift_brick import DMLiftBrick
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.raytrace import (
+from noeira.envs.dm_control.manipulation_lift_brick import DMLiftBrick
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.raytrace import (
     BatchedCameraRenderer,
     RGB_CHANNELS,
     init_camera_reference,
 )
-from mojo_rl.render.video_recorder import VideoRecorder
+from noeira.render.video_recorder import VideoRecorder
 
 comptime DT = DType.float32
 comptime W = 84

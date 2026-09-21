@@ -19,11 +19,11 @@ from std.random import seed, random_float64
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.primitives.block_linear import BlockLinear
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.primitives.block_linear import BlockLinear
 
 # NVIDIA linalg.bmm can dispatch to cutlass TF32 tensor-op kernels
 # (s1688gemm) whose 10-bit-mantissa input quantization yields |Δ| ~ 1e-3·|acc|

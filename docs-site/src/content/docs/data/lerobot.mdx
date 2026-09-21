@@ -1,0 +1,280 @@
+---
+title: LeRobot datasets
+description: LeRobot v3.0 datasets in both directions, in Mojo — import into a trajectory store, write from a recorder with per-episode checkpoints, push to the Hub or to noeira cloud.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" note="Import and write are gated byte for byte. The writer handles one data file per dataset; video files roll." />
+
+[LeRobot](https://github.com/huggingface/lerobot) v3.0 is the dataset format
+the SO-101 ecosystem records and shares. noeira reads it, writes it and pushes
+it without Python in the path. The importer needs the `ffmpeg` and `curl`
+binaries, both provided by the pixi environment. It does **not** need
+`huggingface_hub`, `pyarrow`, `imageio`, `Pillow`, `numpy` or `h5py`.
+
+```
+record (SO-101)  ──LeRobotWriter──>  v3.0 directory  ──push──>  Hugging Face Hub
+                                          │                     or noeira cloud
+                                          └──import_lerobot_v3──>  TrajectoryStore (.h5)  ──>  ACT / SmolVLA
+```
+
+| Module | Role |
+|---|---|
+| `noeira/data/lerobot.mojo` | `import_lerobot_v3`, plus the Hub download helpers |
+| `noeira/data/lerobot_write.mojo` | `LeRobotWriter`: episodes in, a v3.0 directory out |
+| `noeira/data/lerobot_push.mojo` | `push_lerobot_dataset`: walk a directory and upload it to the Hub |
+| `noeira/data/lerobot_rejected.mojo` | `meta/rejected_episodes.json`: episodes that are kept on disk but not trained on |
+| `noeira/data/dataset_sync.mojo` | push and pull a project's recording on noeira cloud |
+
+## The format
+
+```
+meta/info.json                        features, fps, total_{episodes,frames}
+meta/tasks.parquet
+meta/stats.json
+meta/episodes/chunk-*/file-*.parquet  per-episode index + per-camera video map
+data/chunk-*/file-*.parquet           action / observation.state / timestamps
+videos/<camera>/chunk-*/file-*.mp4    many episodes concatenated per file
+```
+
+LeRobot packs many episodes into one mp4 per camera and locates each one by
+`from_timestamp`. `round(from_timestamp * fps)` is the episode's first frame
+inside that file.
+
+## Import
+
+```bash
+pixi run mojo run -I . examples/so101/act_so101_import_dataset.mojo \
+    --repo DenisLabs/record-test_20260828_092736 --height 240 --width 320
+```
+
+| Flag | Meaning |
+|---|---|
+| `--repo ORG/NAME` | Hub dataset, downloaded if not already cached |
+| `--root DIR` | a local dataset directory; requires `--out` |
+| `--project P --dataset D` | a project's own recording, `projects/P/datasets/D` (see [projects](/concepts/projects/)) |
+| `--out PATH` | output `.h5` |
+| `--height`, `--width` | resize target (default 240×320) |
+| `--revision REV` | branch or commit (default `main`) |
+| `--force` | rebuild even if the output exists |
+| `--no-download` | fail rather than fetch anything |
+
+The output defaults to `~/.cache/noeira/act_so101/<Org>__<name>_<H>x<W>.h5`,
+which is where `examples/so101/act_so101_train_gpu.mojo` looks for it through
+`ACT_STORE`. The cache root moves with `NOEIRA_CACHE`.
+
+Finding the dataset tries, in order: noeira's own cache
+(`<cache>/lerobot/<Org>__<name>`), then the `huggingface_hub` cache
+(`HF_HUB_CACHE`, or `HF_HOME/hub`), so a dataset a Python tool already pulled is
+reused, and only then the network. The download goes file by file through the
+Hub's tree API. A file whose size already matches the listing is skipped, so an
+interrupted download resumes per file. A file whose downloaded size does not
+match the listing raises instead of being renamed into place.
+
+From code:
+
+```mojo
+from noeira.data.lerobot import import_lerobot_v3, resolve_dataset_root
+
+var root = resolve_dataset_root(String("DenisLabs/record-test_20260828_092736"))
+import_lerobot_v3(root, String("/tmp/store.h5"), height=240, width=320)
+```
+
+The store holds these columns:
+
+| Column | Type | Shape per row |
+|---|---|---|
+| `qpos` | float32 | `observation.state` |
+| `action` | float32 | `action` |
+| `task_index` | int32 | 1 |
+| `images` | uint8 | `(n_cameras, 3, H, W)`, cameras sorted by name |
+
+It also holds `norm_qpos_mean`, `norm_qpos_std`, `norm_action_mean` and
+`norm_action_std`, with the standard deviation floored at `1e-2` as ACT's
+reference does. See the [trajectory store](/data/trajectory-store/) for the
+file itself.
+
+### How it streams
+
+The store writer is append-only and video decoding is sequential. The importer
+satisfies both at once because LeRobot writes each camera's episodes into its
+video files in dataset order: it opens one decoder per camera and advances all
+of them in lockstep with the episode loop. Peak memory is one native frame per
+camera, not the whole image column. That ordering is a property of the writer
+that produced the dataset, not of the format, so the importer **checks** it and
+raises when a camera's episodes are out of order.
+
+The importer also checks that the frame count and episode count agree with
+`meta/info.json`, checks free disk space before decoding the first frame, and
+builds the store at `<out>.tmp`, renaming it only when complete.
+
+## Write
+
+`LeRobotWriter` produces the tree that `import_lerobot_v3` reads, which is the
+tree `lerobot-record` produces:
+
+```mojo
+from noeira.data.lerobot_write import LeRobotWriter
+
+var w = LeRobotWriter(root, fps=30, state_names, action_names,
+                      cameras, height=480, width=640, checkpoint=True)
+for each episode:
+    w.begin_episode(String("Grab the green cube"))
+    for each frame:
+        w.add_frame(state, action, camera_frames)   # rgb24 per camera
+    w.end_episode()
+w.close()
+```
+
+Frames go straight into an `ffmpeg` encoder per camera and are never buffered.
+Per-episode statistics are computed for every feature. Image statistics use a
+256-bin histogram per channel, sampled every 4th pixel in each axis (LeRobot's
+rate), and normalised to [0, 1] as LeRobot reports them.
+
+**Video files roll only between episodes.** An episode split across two files
+could not be located. `video_mb` defaults to 100, not LeRobot's 200.
+
+### Checkpoints and resume
+
+With `checkpoint=True`, the setting the recorders use, `end_episode` closes
+each camera's mp4 (one file per episode) and rewrites every metadata file. The
+directory is a complete, importable dataset after every episode, so a crash
+loses one episode, not the session.
+
+`LeRobotWriter.resume(root, ...)` reopens such a directory and carries on. It
+reads the rows, the episode index and the tasks back through the importer's own
+readers. The per-episode statistics cannot be recomputed without decoding the
+videos, so they come from `meta/mojo_rl_writer_stats.json`, written at every
+checkpoint.
+
+:::note[The file keeps its old name]
+`meta/mojo_rl_writer_stats.json` predates the rename to noeira and was kept on
+purpose. It is an on-disk format name that already lives inside recordings and
+pushed datasets, and `resume` finds a recording's statistics by it.
+:::
+
+`resume` refuses a directory written without checkpoints, since its episodes
+share video files. It also refuses a session whose fps, cameras, resolution or
+joint names differ from what is already on disk.
+
+### What is not implemented
+
+- **One `data/` file and one chunk.** Rolling the data parquet is not
+  implemented; `close()` raises rather than write a data file past 2 GB. A
+  15,447-frame recording's data file is about 1.6 MB.
+- **Uncompressed Parquet.** The native writer does not compress.
+
+## Rejected episodes
+
+An operator can reject a demonstration after recording it. The writer is
+append-only, so the episode stays on disk. Instead,
+`meta/rejected_episodes.json` lists it:
+
+```json
+{"rejected_episodes": [1, 4], "note": "..."}
+```
+
+The recorders (`examples/so101/record.mojo`, `examples/so101/record_ui.mojo`)
+write that file the moment an episode is rejected, not at the end of the
+session. `import_lerobot_v3` skips rejected episodes' frames **and** leaves them
+out of the normalisation statistics. The file lives in `meta/`, so it travels
+with every push and pull. LeRobot's own loader ignores it.
+
+Before opening a writer, a recorder calls `refuse_existing_dataset`: a
+directory that already holds `meta/info.json` or a rejection list is refused
+rather than overwritten. Continuing it is an explicit `--resume`.
+
+## Push
+
+### To the Hugging Face Hub
+
+```bash
+pixi run hf-push-dataset -- --root ~/datasets/so101-tower/cube-in-bowl \
+    --repo DenisLabs/so101-tower-cube-in-bowl
+```
+
+| Flag | Meaning |
+|---|---|
+| `--root DIR` | the dataset directory the recorder wrote (required) |
+| `--repo ORG/NAME` | the dataset repo (required) |
+| `--message TEXT` | commit message |
+| `--public` | create the repo public; **the default is private** |
+
+`HF_TOKEN` is read from the environment, then from `.env`. The Hub ignores the
+visibility flag on a repo that already exists, so a push never un-publishes
+anything.
+
+`push_lerobot_dataset` walks what is on disk rather than taking a list from the
+writer, so the two cannot disagree. It skips hidden files and `.part` files, and
+holds back the video of an episode that is still being recorded. It writes a
+dataset card if the directory has no `README.md`. Underneath, `noeira/io/hf_push.mojo`
+speaks the Hub's write API over libcurl: preupload, LFS batch, upload, commit,
+in that order. Content the Hub already stores is not uploaded again, so
+re-pushing after one new episode moves only the new files. Uploads are
+single-part, which puts a hard limit of 5 GB on any one file. The pusher checks
+it before sending.
+
+`tools/hf/dataset_roundtrip.mojo` runs the whole path against the real Hub
+(write → push → download → import, comparing both stores). It needs the
+network and a write token, and it creates and deletes a private repo, so it is
+a manual check and not part of `test-io`.
+
+### To noeira cloud
+
+A recording that belongs to a [project](/concepts/projects/) lives at
+`projects/<project>/datasets/<dataset>/` and can be mirrored on
+[noeira cloud](/tooling/monitor/):
+
+```bash
+pixi run dataset-push -- --project so101-tower --dataset cube-in-bowl --watch
+pixi run dataset-pull -- --project so101-tower --dataset cube-in-bowl
+pixi run dataset-list -- --project so101-tower
+```
+
+`--watch` re-syncs every `--every` seconds (default 60) until Ctrl-C. Run it in
+a second terminal while recording. It only reads the dataset, so stopping it is
+always safe. Pushing a recording in progress works because of checkpoints: the
+mp4 still being written is skipped, and metadata is pushed last, repeating the
+pass if an episode ended during it. The server never holds an `info.json` that
+names a video it does not have. See [remote datasets](/data/remote/) for the
+credentials.
+
+## The native I/O underneath
+
+| Replaces | Module | Gated against |
+|---|---|---|
+| `pyarrow` | `noeira/io/parquet/` (Thrift compact, Snappy, RLE / bit-packed, PLAIN; reader and writer) | pyarrow on 7 encoding / compression / page-version cases; an Arrow-written file for the writer |
+| `imageio` | `noeira/io/video/` (a pipe to and from `ffmpeg`, RGB24) | the importer and writer gates below |
+| `Pillow` | `noeira/io/image.mojo` (BILINEAR resize) | Pillow, byte for byte |
+| `h5py` | `noeira/io/hdf5/` via the [trajectory store](/data/trajectory-store/) | h5py |
+| `json` | `noeira/io/json.mojo` | Python's `json` |
+
+Parquet is native rather than a binding because `libparquet` is C++ with no
+stable ABI. The subset an Arrow-written LeRobot file needs is small enough to
+own. Video goes through an `ffmpeg` pipe rather than a libavcodec binding.
+
+## Gates
+
+All of these run under `pixi run test-io`. It is not part of the smoke tier,
+because each one reads a reference dump. The dumps come from the default pixi
+environment, with no torch and no download:
+
+```bash
+pixi run python tools/io/dump_parquet_reference.py --out /tmp/pq_ref
+pixi run python tools/io/dump_resize_reference.py --out /tmp/resize_ref
+pixi run python tools/act/make_synthetic_lerobot_v3.py --out /tmp/lerobot_synth
+pixi run test-io
+```
+
+| Gate | What it pins |
+|---|---|
+| `tests/data/test_lerobot_import.mojo` | The Mojo importer against `tools/act/lerobot_v3_to_store.py`, exact on every column and byte, on a synthetic dataset built to break bookkeeping: unequal episodes, out-of-order rows, two video files per camera, a frame gap, frames that encode their own camera and index |
+| `tests/data/test_lerobot_write.mojo` | The writer read back by the importer, which predates it: both video packings, unequal episodes, two cameras, `state_dim != action_dim`; needs `ffmpeg` |
+| `tests/data/test_dataset_sync.mojo` | The noeira cloud push and pull while the writer is still recording, against a mock server playing the catalog and the object store |
+| `tests/io/test_parquet.mojo`, `tests/io/test_parquet_write.mojo` | Parquet read and write, including repetition levels |
+| `tests/io/test_image_resize.mojo` | BILINEAR resize vs Pillow |
+| `tests/io/test_video_abandon.mojo` | Abandoning an `ffmpeg` decode mid-file is not an error |
+
+The Python converter `tools/act/lerobot_v3_to_store.py` is kept only as the
+**oracle** these gates compare against. It is not the supported import path.

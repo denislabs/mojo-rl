@@ -6,7 +6,7 @@ ResNet-20 trained here on CIFAR-10 (CarRacing/Pong frames are closer to CIFAR's
 low-res natural-image domain than ImageNet's). This script trains the classifier
 `CifarFeatureClassifier` and then saves a BACKBONE-ONLY checkpoint
 (`save_params(trainer.model.backbone, …)`) that the perceptual loss loads as a
-frozen, BN-eval feature extractor (`mojo_rl/deep_agents/dreamer4/perceptual_loss.mojo`).
+frozen, BN-eval feature extractor (`noeira/deep_agents/dreamer4/perceptual_loss.mojo`).
 
 Identical training recipe to `examples/nn/resnet/resnet20_cifar10_training_storage_gpu.mojo`
 (Adam + crop/flip aug + warmup-cosine LR, 50 epochs → ~80%+); only the model is
@@ -21,14 +21,14 @@ from std.random import seed
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.datasets import CIFAR10
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.checkpoint import save_params
-from mojo_rl.nn.models.cifar_feature_net import CifarFeatureClassifier
-from mojo_rl.nn.training.trainer import Trainer
-from mojo_rl.nn.training.augmenter import CIFAR10CropFlipAugmenter
-from mojo_rl.nn.optimizer.lr_scheduler import WarmupCosineSchedule
+from noeira.nn.datasets import CIFAR10
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.checkpoint import save_params
+from noeira.nn.models.cifar_feature_net import CifarFeatureClassifier
+from noeira.nn.training.trainer import Trainer
+from noeira.nn.training.augmenter import CIFAR10CropFlipAugmenter
+from noeira.nn.optimizer.lr_scheduler import WarmupCosineSchedule
 
 
 def main() raises:

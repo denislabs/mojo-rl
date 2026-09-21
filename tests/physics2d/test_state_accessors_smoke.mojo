@@ -9,7 +9,7 @@ This is the gate for migrating the accessors off the UnsafeAnyOrigin hatch:
 run instantiates the accessors. The checksum must be bit-identical pre/post.
 """
 
-from mojo_rl.physics2d import PhysicsStateOwned, dtype
+from noeira.physics2d import PhysicsStateOwned, dtype
 
 
 def main() raises:
@@ -93,6 +93,6 @@ def main() raises:
     print("state_accessors_checksum =", checksum)
     print("alias_ok =", alias_ok)
     if not alias_ok:
-        print("FAIL: offset views do not alias state")
-        return
+        # ⚠ RAISE, NEVER `return` — the runner reads the exit code only.
+        raise String("state accessors: offset views do not alias state")
     print("PhysicsStateOwned accessors smoke: OK")

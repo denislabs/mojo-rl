@@ -11,8 +11,8 @@ Asset-free/fast. See `docs/PROCGEN_LEAPER_SCOPE.md`.
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import LeaperGame
-from mojo_rl.envs.procgen.games.leaper import DIST_EASY, DIST_HARD
+from noeira.envs.procgen.games import LeaperGame
+from noeira.envs.procgen.games.leaper import DIST_EASY, DIST_HARD
 
 comptime STEPS = 200
 

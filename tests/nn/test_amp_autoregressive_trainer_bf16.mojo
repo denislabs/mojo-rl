@@ -19,13 +19,13 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_amp_autoregressive_trainer_bf
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.datasets import CharTokenizer, train_val_split
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.training.autoregressive_trainer import AutoregressiveTrainer
-from mojo_rl.nn.core.initializer import Normal
+from noeira.nn.datasets import CharTokenizer, train_val_split
+from noeira.nn.constants import DT
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.training.autoregressive_trainer import AutoregressiveTrainer
+from noeira.nn.core.initializer import Normal
 
 
 comptime VOCAB = 4  # "abcd"

@@ -41,15 +41,15 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.envs.robots.so_arm101 import SoArm101Reach
-from mojo_rl.envs.robots.so_arm101_xml import (
+from noeira.core.cont_action import ContAction
+from noeira.envs.robots.so_arm101 import SoArm101Reach
+from noeira.envs.robots.so_arm101_xml import (
     SoArm101Model,
     MOVING_JAW_BODY_IDX,
     TARGET_BODY_IDX,
 )
-from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import actuator_column
+from noeira.physics3d.gpu.constants import (
     ACT_IDX_CTRL_MAX,
     ACT_IDX_CTRL_MIN,
     ACT_IDX_FORCE_MAX,
@@ -111,7 +111,7 @@ def _ctrl(i: Int) -> Float64:
 
 def _mj() raises -> PythonObject:
     var mujoco = Python.import_module("mujoco")
-    return mujoco.MjModel.from_xml_path("mojo_rl/envs/robots/assets/so_arm101.xml")
+    return mujoco.MjModel.from_xml_path("noeira/envs/robots/assets/so_arm101.xml")
 
 
 def test_model_counts() raises:
@@ -227,7 +227,7 @@ def _load_reference(mujoco: PythonObject, m: PythonObject,
     mujoco.mj_forward(m, d)
 
 
-def _rollout_residual(ctrl_from_pose: Bool) raises -> Float64:
+def _rollout_residual(ctrl_from_pose: Bool) raises -> Tuple[Float64, Float64, Int]:
     var mujoco = Python.import_module("mujoco")
     var m = _mj()
     var d = mujoco.MjData(m)
@@ -242,21 +242,59 @@ def _rollout_residual(ctrl_from_pose: Bool) raises -> Float64:
         qv.append(0.0)
     env.set_state(qp, qv)
 
+    # ⚠⚠ THE ACTION SPACE IS NORMALISED AND `d.ctrl` IS NOT. `SoArmReachConfig`
+    # sets `NORMALIZED_ACTIONS = True`, so `env.step` reads the action as a
+    # number in [-1, 1] and maps it onto each actuator's `ctrlrange`:
+    #
+    #     ctrl = c_min + (action + 1) * 0.5 * (c_max - c_min)
+    #
+    # Writing the same radian value into BOTH sides therefore commands two
+    # different poses. It cost this file both rollout gates: `_ctrl(3) = 0.80`
+    # reached MuJoCo as 0.80 rad and our engine as 1.33 rad, so the two servos
+    # saturated at OPPOSITE signs the moment MuJoCo's crossed its target, and
+    # the arms parted company 0.78 rad. The zero-ctrl gate failed the same way
+    # on the two joints whose range is not symmetric (`_ctrl = 0` maps to the
+    # MIDPOINT, which is 0.785 rad on the gripper, not 0).
+    #
+    # ⚠ `d.ctrl` IS SET FROM THE ROUND TRIP, NOT FROM `c`. Feeding MuJoCo `c`
+    # and our engine `norm` would leave the two a round-trip epsilon apart, and
+    # with `kp = 998` and a servo that saturates at +-3.35 that epsilon decides
+    # WHICH SIDE of the bound the force sits on. Reconstructing the ctrl our
+    # engine will actually compute makes the two commands identical by
+    # construction.
+    var sf_c = SoArm101Model.make_spec_fields[DType.float64]()
+    var c_lo = actuator_column(sf_c, ACT_IDX_CTRL_MIN, NU)
+    var c_hi = actuator_column(sf_c, ACT_IDX_CTRL_MAX, NU)
     var a = ContAction[SoArm101Model.ACTION_DIM]()
     for i in range(NU):
         var c = _ctrl(i) if ctrl_from_pose else 0.0
-        a.data[i] = c
-        d.ctrl[i] = c
+        var lo = c_lo[i]
+        var hi = c_hi[i]
+        var norm = 2.0 * (c - lo) / (hi - lo) - 1.0
+        a.data[i] = norm
+        d.ctrl[i] = lo + (norm + 1.0) * 0.5 * (hi - lo)
 
     var worst = 0.0
+    var final = 0.0
+    var max_nefc = 0
     for _ in range(200):
         for _ in range(FRAME_SKIP):
             mujoco.mj_step(m, d)
+            # ⚠ PER SUBSTEP. On SO-100 the limit rows engage and release
+            # INSIDE the frame-skip window, so a per-control-step reading
+            # reported 6 where the truth was 15.
+            var n = Int(py=d.nefc)
+            if n > max_nefc:
+                max_nefc = n
         _ = env.step(a)
+        final = 0.0
         for i in range(NQ):
             var e = abs(Float64(env.d.qpos.data[i]) - Float64(py=d.qpos[i]))
             worst = max(worst, e)
-    return worst
+            final = max(final, e)
+    # ⚠ BOTH NUMBERS, because the peak alone cannot tell a transient from a
+    # drift. See `test_zero_ctrl_rollout`.
+    return (worst, final, max_nefc)
 
 
 def test_limit_free_rollout_is_exact() raises:
@@ -277,9 +315,16 @@ def test_limit_free_rollout_is_exact() raises:
     MuJoCo's defaults (1.0 / 0.0), the servo could not hold against gravity,
     and the arm fell to its limits — 1.26 rad off on `shoulder_pan` alone. Every static comparison in this file passed anyway.
     """
-    var worst = _rollout_residual(True)
-    print("  commanded 200-step worst |dqpos| =", worst)
-    assert_true(worst < 1e-9, "commanded rollout residual " + String(worst))
+    var r = _rollout_residual(True)
+    print("  commanded 200-step worst |dqpos| =", r[0], " final =", r[1],
+          " max nefc", r[2])
+    assert_true(r[0] < 1e-9, "commanded rollout residual " + String(r[0]))
+    assert_true(
+        r[2] == NEFC_UNCONSTRAINED,
+        "this trajectory engaged a constraint beyond the frictionloss rows"
+        " (nefc " + String(r[2]) + ") — it is supposed to isolate FK + CRBA +"
+        " RNE + the servo, so the gate no longer means what it says",
+    )
 
 
 def test_zero_ctrl_rollout() raises:
@@ -291,12 +336,54 @@ def test_zero_ctrl_rollout() raises:
     be direction-dependent, not because it covers anything the gate above
     does not.
 
-    ⚠⚠ SO SO-101 GATES NOTHING ABOUT JOINT LIMITS. SO-100's zero-ctrl gate
-    does, at 2.4e-4. If the limit constraint regresses, only that file sees it.
+    ⚠⚠ SO SO-101 GATES NOTHING ABOUT JOINT LIMITS — measured per SUBSTEP, not
+    per control step, because on SO-100 the limit rows engage and release
+    inside the frame-skip window and a coarser reading missed them. Here max
+    `nefc` really is 6 in both regimes. SO-100 covers that path instead, in
+    two places: its zero-ctrl gate brushes it (nefc 15, 7.8e-15) and its
+    `test_rollout_into_joint_limits` parks on it (nefc 33, 5.7e-08). If the
+    limit constraint regresses, only that file sees it.
+
+    ⚠⚠ TWO BOUNDS, AND THE LOOSE ONE IS NOT A CONCESSION. This trajectory
+    brings the arm TO REST, and the six `dof_frictionloss` rows switch from
+    slipping to sticking when it gets there. Measured: `max|qvel|` collapses
+    0.0121 -> 0.00080 between control steps 26 and 27, and the residual jumps
+    from 5.4e-18 to 5.98e-09 in that one step, peaking at 1.15e-08 on step 28.
+    Which side of a Coulomb threshold each row lands on is decided at
+    round-off, so the switch is a genuine discontinuity and no float64 engine
+    can track another through it bit for bit.
+
+    ⚠ WHAT MAKES IT A TRANSIENT AND NOT A DEFECT IS THAT IT DECAYS — measured
+    ~2.5x per control step, back to 1e-12/1e-13 by step 40 and still there at
+    step 199, because a stuck arm is stable. So the peak is bounded at 1e-7
+    (measured 1.15e-08, from THIS run and not inherited) and the FINAL
+    residual is bounded at 1e-11. The second bound is the load-bearing one: a
+    systematic error — the normalised-action bug this pair of gates was
+    failing on, which ran 0.78 rad — does not decay, and would blow the final
+    check even if someone widened the peak.
     """
-    var worst = _rollout_residual(False)
-    print("  zero-ctrl (no limits engaged) 200-step worst |dqpos| =", worst)
-    assert_true(worst < 1e-9, "zero-ctrl rollout residual " + String(worst))
+    var r = _rollout_residual(False)
+    print("  zero-ctrl 200-step worst |dqpos| =", r[0], " final =", r[1],
+          " max nefc", r[2])
+    assert_true(
+        r[0] < 1e-7,
+        "zero-ctrl peak residual " + String(r[0]) + " — measured 1.15e-08 at"
+        " the stick transition; a peak above 1e-7 is a bigger event than"
+        " round-off through that discontinuity",
+    )
+    assert_true(
+        r[1] < 1e-11,
+        "zero-ctrl FINAL residual " + String(r[1]) + " — the stick transient"
+        " must decay back to round-off by step 199. A residual that persists"
+        " is a systematic disagreement, not the discontinuity",
+    )
+    assert_true(
+        r[2] == NEFC_UNCONSTRAINED,
+        "ctrl = 0 engaged a constraint beyond the frictionloss rows (nefc "
+        + String(r[2]) + ") — this file's claim to cover no limit path, and"
+        " the bounds above, are both measured on the assumption that it does"
+        " not",
+    )
 
 
 def test_arm_is_contact_free() raises:

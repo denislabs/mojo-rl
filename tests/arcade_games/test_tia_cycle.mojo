@@ -8,7 +8,7 @@ Validates the building blocks before they are wired into a renderer:
 Run: pixi run -e apple mojo run -I . tests/arcade_games/test_tia_cycle.mojo
 """
 
-from mojo_rl.envs.atari.tia_cycle import (
+from noeira.envs.atari.tia_cycle import (
     DelayQueue,
     DQ_CAP,
     BallCounter,
@@ -60,19 +60,19 @@ def test_delay_queue() raises:
 
     # cycle_collect drains matured writes into caller-owned fixed buffers
     # (no heap) and returns how many fired this clock.
-    var r0 = InlineArray[UInt8, DQ_CAP](fill=0)
-    var v0 = InlineArray[UInt8, DQ_CAP](fill=0)
+    var r0 = Array[UInt8, DQ_CAP](fill=0)
+    var v0 = Array[UInt8, DQ_CAP](fill=0)
     var n0 = q.cycle_collect(r0, v0)
     expect(n0 == 1, "delay0 fires on cycle 1")
     expect(r0[0] == 0x1F and v0[0] == 0xAA, "delay0 reg/value correct")
 
-    var r1 = InlineArray[UInt8, DQ_CAP](fill=0)
-    var v1 = InlineArray[UInt8, DQ_CAP](fill=0)
+    var r1 = Array[UInt8, DQ_CAP](fill=0)
+    var v1 = Array[UInt8, DQ_CAP](fill=0)
     var n1 = q.cycle_collect(r1, v1)
     expect(n1 == 0, "nothing on cycle 2 (delay2 not yet)")
 
-    var r2 = InlineArray[UInt8, DQ_CAP](fill=0)
-    var v2 = InlineArray[UInt8, DQ_CAP](fill=0)
+    var r2 = Array[UInt8, DQ_CAP](fill=0)
+    var v2 = Array[UInt8, DQ_CAP](fill=0)
     var n2 = q.cycle_collect(r2, v2)
     expect(n2 == 1, "delay2 fires on cycle 3")
     expect(r2[0] == 0x1B and v2[0] == 0xBB, "delay2 reg/value correct")

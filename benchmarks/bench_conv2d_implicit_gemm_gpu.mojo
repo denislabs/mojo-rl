@@ -33,7 +33,7 @@ Run (Apple = parity + signal):
     pixi run -e apple  mojo run -I . benchmarks/bench_conv2d_implicit_gemm_gpu.mojo
 """
 
-from std.gpu import global_idx, thread_idx, block_idx, block_dim
+from max.gpu import global_idx, thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
 from max.gpu.host import DeviceContext, DeviceBuffer
@@ -43,7 +43,7 @@ from layout.tile_layout import Layout as TileLayout
 from linalg.matmul import matmul as max_matmul
 from linalg.bmm import batched_matmul
 
-from mojo_rl.nn.primitives.conv2d import _im2col_cpu, _im2col_kernel
+from noeira.nn.primitives.conv2d import _im2col_cpu, _im2col_kernel
 
 comptime DT = DType.float32
 comptime IT = DType.int32
@@ -234,7 +234,7 @@ def _time_baseline[
     comptime nb_col = (BS * COL + TPB - 1) // TPB
     comptime nb_bias = (BS * OC + TPB - 1) // TPB
 
-    @parameter
+    @__parameter
     def one() raises:
         ctx.enqueue_function[
             _im2col_kernel[
@@ -277,7 +277,7 @@ def _time_o5[
     comptime gx = (OC + TILE - 1) // TILE
     comptime gy = (BS + TILE - 1) // TILE
 
-    @parameter
+    @__parameter
     def one() raises:
         ctx.enqueue_function[
             _implicit_gemm_fwd[
@@ -395,7 +395,7 @@ def _time_mec[
     comptime nb_l = (LN + TPB - 1) // TPB
     comptime nb_sc = (BS * OC + TPB - 1) // TPB
 
-    @parameter
+    @__parameter
     def one() raises:
         ctx.enqueue_function[
             _mec_lower_kernel[BATCH, IC, K, S, P, H, W, OW, IN_FLAT, HP]

@@ -38,7 +38,7 @@ outlive the next call into lin2. That's a tight constraint.
 
 from layout import TileTensor, TensorLayout, row_major
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
 
 # ──────────────────────────────────────────────────────────────────────

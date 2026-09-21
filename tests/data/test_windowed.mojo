@@ -18,7 +18,7 @@ Run:
 from std.random import seed
 from std.testing import assert_equal, assert_true
 
-from mojo_rl.data import (
+from noeira.data import (
     ColumnSpec,
     IndexBatch,
     IDX_DT,
@@ -30,7 +30,7 @@ from mojo_rl.data import (
 )
 
 
-comptime OUT = "/tmp/mojo_rl_windowed.h5"
+comptime OUT = "/tmp/noeira_windowed.h5"
 comptime N_ROWS: Int = 96
 comptime DIM: Int = 5
 comptime EP: Int = 16

@@ -5,7 +5,7 @@ The pass is a friction-only Gauss-Seidel sweep run AFTER the primal solve with
 the normal forces held fixed. The elliptic branch is a different algorithm from
 the pyramidal one — one normal row plus `dim-1` tangential rows per contact,
 and a QCQP over the friction ellipsoid rather than a closed-form 1-D minimum.
-See `mojo_rl/physics3d/solver/noslip.mojo`.
+See `noeira/physics3d/solver/noslip.mojo`.
 
 ⚠⚠ HOW THE FIXTURE WAS CHOSEN, INCLUDING THE MEASUREMENT THAT WAS WRONG
 
@@ -94,16 +94,16 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Model, Data, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.gpu.constants import MODEL_META_IDX_NOSLIP_TOLERANCE
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.fields import Model, Data, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.gpu.constants import MODEL_META_IDX_NOSLIP_TOLERANCE
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields.spec_fields import SpecFields
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.fields.spec_fields import SpecFields
+from noeira.physics3d.model.model_dims import ModelDims
 
 
 comptime DTYPE = DType.float64
@@ -202,8 +202,28 @@ comptime TOL_STEP1: Float64 = 1e-11
 # Measured 1.1e-8. It is kept as a second assertion only to catch a divergence
 # that starts small and grows — the message on it says which number to read
 # first.
-comptime TOL_V: Float64 = 1e-7
-comptime TOL_Q: Float64 = 1e-8
+# ⚠⚠ SET FROM A MEASURED TRANSITION, AND THE WINDOW BOUND IS WHAT HOLDS THEM
+# HONEST. Traced per step, the ON leg sits at round-off — `|dv| <= 1.7e-13` —
+# for THIRTEEN of the thirty steps. At step 14 it reaches 9.6e-11, at step 19
+# 4.86e-05, and from there it PLATEAUS around 4.2e-05 rather than growing:
+# the two engines have settled into slightly different post-switch
+# configurations and are tracking each other stably. `ncon` is 6 at every step
+# of the rollout, so nothing makes or breaks contact — what switches is which
+# rows the noslip sweep finds at their friction bound, decided at round-off
+# under a 40 m/s impact.
+#
+# The 30-step bounds are therefore an order above the measurement and are not
+# where this file's discrimination lives. That comes from `TOL_STEP1`
+# (measured 3.3e-14), `TOL_EARLY` over the whole pre-switch window, and the
+# `noslip_iter=0` ablation, which runs 0.433 / 0.0111 — four orders above the
+# plateau here.
+comptime TOL_V: Float64 = 5e-4
+comptime TOL_Q: Float64 = 1e-5
+
+# The sweep must be MuJoCo's for a SUSTAINED window, not just on step 1.
+# Measured max 1.7e-13 over these steps.
+comptime EXACT_STEPS: Int = 12
+comptime TOL_EARLY: Float64 = 1e-12
 
 
 def _mj(noslip: Int = -1, tol: Float64 = -1.0) raises -> PythonObject:
@@ -343,7 +363,7 @@ def test_noslip_is_first_order_here() raises:
 def _rollout[
     MD: ModelDefLike
 ](mujoco: PythonObject, m: PythonObject, md: PythonObject) raises -> Tuple[
-    Float64, Float64, Int, Float64
+    Float64, Float64, Int, Float64, Float64
 ]:
     """Step `MD` and MuJoCo together from MuJoCo's current state.
 
@@ -396,6 +416,7 @@ def _rollout[
     var worst_v = 0.0
     var contact_steps = 0
     var first_v = 0.0
+    var early_v = 0.0
     for _s in range(N_STEPS):
         for i in range(MD.NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)
@@ -415,7 +436,10 @@ def _rollout[
                 worst_v = e
             if _s == 0 and e > first_v:
                 first_v = e
-    return (worst_q, worst_v, contact_steps, first_v)
+            # ⚠ THE SUSTAINED WINDOW, not just step 1. See `EXACT_STEPS`.
+            if _s < EXACT_STEPS and e > early_v:
+                early_v = e
+    return (worst_q, worst_v, contact_steps, first_v, early_v)
 
 
 def test_noslip_elliptic_matches_mujoco() raises:
@@ -456,6 +480,16 @@ def test_noslip_elliptic_matches_mujoco() raises:
         "our elliptic solve disagrees with MuJoCo on the FIRST step, where"
         " nothing has been amplified yet — the sweep is running but computing"
         " something other than mj_solNoSlip's elliptic branch",
+    )
+    print("  ON : worst |d(qvel)| over the first", EXACT_STEPS, "steps =",
+          r_on[4], "  <- the sustained one")
+    assert_true(
+        r_on[4] < TOL_EARLY,
+        "our elliptic noslip sweep drifts from MuJoCo within the first "
+        + String(EXACT_STEPS) + " steps, before the stick/slip switch that"
+        " makes the 30-step bounds loose. This window is supposed to hold at a"
+        " few hundred ULP (measured 1.7e-13), so a failure here is a wrong"
+        " sweep and not the discontinuity",
     )
     assert_true(
         r_on[1] < TOL_V and r_on[0] < TOL_Q,

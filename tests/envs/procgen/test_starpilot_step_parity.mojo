@@ -12,8 +12,8 @@ destruction, and explosions. See `docs/PROCGEN_STARPILOT_SCOPE.md`.
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import StarpilotGame
-from mojo_rl.envs.procgen.games.starpilot import DIST_EASY, DIST_HARD
+from noeira.envs.procgen.games import StarpilotGame
+from noeira.envs.procgen.games.starpilot import DIST_EASY, DIST_HARD
 
 comptime STEPS = 250
 

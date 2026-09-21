@@ -11,11 +11,11 @@ Run: pixi run mojo run -I . tests/deep_agents/test_az_pred_adapter_cpu_smoke.moj
 
 from std.testing import assert_true
 
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.ptr import untracked
-from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
-from mojo_rl.deep_agents.zero.mcts_adapters_cpu import AZRepCPU, AZPredCPU
-from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.ptr import untracked
+from noeira.deep_agents.alphazero.nets import AZMLPNet
+from noeira.deep_agents.zero.mcts_adapters_cpu import AZRepCPU, AZPredCPU
+from noeira.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
 
 
 def main() raises:

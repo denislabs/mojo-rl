@@ -14,17 +14,17 @@ Run:
 from std.math import isfinite, abs as fabs
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.combinators.sequential import Sequential
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.nn.combinators.sequential import Sequential
 
-from mojo_rl.deep_agents.dqn.target_y_block import DQNTargetYBlock
-from mojo_rl.deep_agents.dqn.q_update_block import DQNQUpdateBlock
+from noeira.deep_agents.dqn.target_y_block import DQNTargetYBlock
+from noeira.deep_agents.dqn.q_update_block import DQNQUpdateBlock
 
 comptime OBS = 4
 comptime NA = 3

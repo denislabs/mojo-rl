@@ -1,27 +1,38 @@
 {
 	"$schema": "./node_modules/wrangler/config-schema.json",
-	"name": "mojo-rl-docs",
+	"name": "noeira-docs",
 	"compatibility_date": "2026-07-29",
 
 	// Static-assets-only Worker: there is no `main`, so no Worker script runs.
 	// Astro builds a fully static site, so requests are served straight from
 	// Cloudflare's asset storage with no compute and no per-request billing.
 	"assets": {
+		// dist/, not dist/docs: Astro builds into dist/docs (outDir), so asset
+		// paths equal URL paths under /docs, and dist/ holds the root files
+		// copied from root/ (robots.txt, _redirects).
 		"directory": "./dist",
-		// Astro emits directory-style URLs (/start/why/index.html), which is
-		// exactly what "auto-trailing-slash" resolves. Left implicit — it is the
-		// default — but noted because switching Astro to `build.format: 'file'`
-		// would require changing it.
+		// Astro emits directory-style URLs (/docs/start/why/index.html), which
+		// is exactly what "auto-trailing-slash" resolves. Left implicit — it is
+		// the default — but noted because switching Astro to `build.format:
+		// 'file'` would require changing it.
+		// A miss under /docs/ is answered by the nearest 404.html walking up,
+		// i.e. dist/docs/404.html.
 		"not_found_handling": "404-page"
 	},
 
-	// Binds the hostname AND creates its DNS record, since denislabs.com is a
-	// zone on this same account. Removing this entry does not remove the record.
+	// Routes, not a custom domain: a custom domain claims the whole hostname,
+	// and noeira.ai keeps its root for the marketing site. A route needs a
+	// PROXIED DNS record on noeira.ai to attach to (a placeholder
+	// `AAAA noeira.ai 100::` is Cloudflare's documented choice for a hostname
+	// served only by Workers).
+	//
+	// `noeira.ai/` and `noeira.ai/robots.txt` are borrowed until the marketing
+	// site exists: the root redirects to /docs/ (root/_redirects), and a
+	// robots.txt that 5xx'd would make crawlers back off the whole domain.
 	"routes": [
-		{
-			"pattern": "mojo-rl.denislabs.com",
-			"custom_domain": true
-		}
+		{ "pattern": "noeira.ai/docs*", "zone_name": "noeira.ai" },
+		{ "pattern": "noeira.ai/", "zone_name": "noeira.ai" },
+		{ "pattern": "noeira.ai/robots.txt", "zone_name": "noeira.ai" }
 	],
 
 	"observability": {

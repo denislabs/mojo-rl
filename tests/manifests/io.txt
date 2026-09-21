@@ -1,0 +1,109 @@
+# I/O manifest — `pixi run test-io`
+#
+# The native readers that replaced the Python data-prep pipeline, each gated
+# against the library it replaced. NOT in `test-smoke`: every one of them reads
+# a reference dump, and the smoke tier is defined as self-contained.
+#
+# Prerequisites (all in the default pixi environment — no torch, no download):
+#
+#   pixi run python tools/io/dump_parquet_reference.py --out /tmp/pq_ref
+#   pixi run python tools/io/dump_resize_reference.py --out /tmp/resize_ref
+#   pixi run python tools/act/make_synthetic_lerobot_v3.py --out /tmp/lerobot_synth
+#
+# Each test defaults to those paths and takes an override as its one argument.
+
+# SHA-256 vs 130 digests pinned from Python `hashlib` — every length residue
+# mod 64, both padding boundaries, and the chunk-split invariance that makes a
+# streamed file hash legitimate.
+tests/io/test_sha256.mojo
+# Base64 vs Python's stdlib `base64`, pinned as literals: every length
+# residue mod 3 (both padding cases), byte values covering the whole alphabet
+# so a URL-safe `-_` encoder cannot pass, and five malformed inputs that must
+# be REFUSED rather than decoded into plausible bytes.
+tests/io/test_base64.mojo
+# The JSON writer's exact output (validated by `json.loads` before pinning),
+# its escaping, and its refusal of NaN / Infinity.
+tests/io/test_json_write.mojo
+# The HTTP client against `tools/io/mock_http_server.py` on a loopback port:
+# needs `pixi run build-http` and `python3`, nothing else. Covers the paths a
+# live server will not produce on demand — a 404 that must not touch the
+# output file, and a server that IGNORES `Range` and answers 200.
+tests/io/test_http.mojo
+# The PNG decoder vs Pillow, on fixtures written HERE rather than found:
+# CIFAR-10's 60,000 images never use the `Average` filter, so real data leaves
+# that branch uncovered. Auto-generates its fixtures on first run.
+tests/io/test_png.mojo
+# The PNG ENCODER, read back by both this repo's decoder and Pillow — a round
+# trip through our own pair would share any misunderstanding about CRC spans or
+# colour types and agree with itself while nothing else could read the file.
+tests/io/test_png_write.mojo
+# The Parquet reader vs pyarrow: 7 encoding/compression/page-version
+# combinations, every value compared.
+tests/io/test_parquet.mojo
+# The Parquet WRITER against a file Arrow wrote (committed, 13 KB, no pyarrow
+# at test time). Three legs: schema structure, values, and the REPETITION
+# LEVELS — the third exists because corrupting the grouping left the first two
+# fully green, and the fixture carries a [2,3,2] nested column because
+# LeRobot's own [3,1,1] can never emit repetition levels 2 or 3.
+tests/io/test_parquet_write.mojo
+# The bilinear resize vs Pillow, byte for byte.
+tests/io/test_image_resize.mojo
+# The LeRobot v3 import vs tools/act/lerobot_v3_to_store.py, on a synthetic
+# dataset built to break the bookkeeping the unit gates cannot see.
+tests/data/test_lerobot_import.mojo
+# The LeRobot v3 WRITER, read back by `import_lerobot_v3` — code that predates
+# it and knows nothing about it. Two video packings (all episodes in one mp4,
+# located by from_timestamp; and one mp4 per episode, located by file_index),
+# unequal episode lengths, two cameras, state_dim != action_dim, and frames
+# that are flat colours encoding their own (episode, t, camera) so a routing
+# error is detectable through lossy H.264. Needs `ffmpeg`.
+tests/data/test_lerobot_write.mojo
+tests/data/test_dataset_sync.mojo
+# CIFAR-10 preparation end to end — the same parquet read by `io/parquet`'s
+# BYTE_ARRAY path, decoded by `io/png.mojo` and laid out channel-major, against
+# a .bin that `pyarrow` + `PIL` produced. 30,730,000 bytes compared.
+#   pixi run python tools/io/dump_cifar_reference.py --out /tmp/cifar_ref
+tests/nn/test_cifar10_prep.mojo
+# The PNG decoder on every asset PNG in the repo — 1,443 files, the 248
+# palettes and 7 sub-byte ones included, all compared as RGBA against Pillow.
+# The converse of test_png.mojo: real encoders rather than chosen fixtures.
+#   pixi run python tools/io/dump_asset_png_reference.py --out /tmp/png_assets
+tests/io/test_png_assets.mojo
+# NEAREST resize vs Pillow over 200 random size pairs. Both Craftax sprite
+# atlases resize this way, and the obvious formula disagrees with Pillow on
+# 93 of 600 pairs — Pillow walks an accumulator and its drift is the answer.
+#   pixi run python tools/io/dump_resize_nearest_reference.py --out /tmp/nearest_ref
+tests/io/test_resize_nearest.mojo
+
+# ── the async POST sink behind RemoteLogger ───────────────────────────
+# Offline by design: framing, drop accounting, and the property that a
+# dashboard which is DOWN costs the training thread nothing and does not
+# hold the process open. Delivery against a live dashboard is validated by
+# running a real job — see docs/CONCURRENCY_BACKBONE.md step 2.
+tests/io/test_http_sink.mojo
+# The §7b heartbeat, against a RECORDING fixture rather than a status code:
+# the questions are WHEN and HOW OFTEN, which no status can express. The
+# decisive leg is that a BUSY run sends ZERO pings — a "did it fire?" check
+# passes just as happily for a worker that pings every millisecond, so the
+# interval has an upper bound too. Needs `pixi run build-http`.
+tests/io/test_http_sink_heartbeat.mojo
+# §7's ArtifactSink, against a fixture playing BOTH the monitor and R2. The
+# decisive legs need the fixture's SLOW-PUT mode: over loopback a transfer
+# finishes before the next offer is made, so a sink with no dedup at all — and
+# a close() that waits for nothing — both pass without it. Checks the received
+# bytes hash to the file on disk. Needs `pixi run build-http`.
+tests/io/test_artifact_sink.mojo
+
+# ── abandoning an ffmpeg decode mid-file ──────────────────────────────
+# The importer rolls over to the next episode without draining the mp4, so a
+# broken output pipe must not read as a failure. Needs `ffmpeg`; writes its
+# own fixture. The excuse was written for signal 13 and was DEAD — ffmpeg
+# SIG_IGNs SIGPIPE and exits 224 — so two of the four legs exist purely to
+# stop the widened excuse from becoming a blanket one.
+tests/io/test_video_abandon.mojo
+
+# ── the ffmpeg pipe behind VideoRecorder, on a worker thread ───────────
+# No ffmpeg here on purpose: the consumer is `cat`/`sh`, so back-pressure
+# and the drop tally are asserted against BYTES ON DISK. Includes the
+# SIGPIPE leg — a child that exits must not take the process with it.
+tests/io/test_frame_pipe_thread.mojo

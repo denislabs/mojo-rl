@@ -9,13 +9,13 @@ subtract loop never terminates (boot freeze, 2x262-line capped frames).
 Run: pixi run mojo run -I . tests/arcade_games/test_tia_bus_noise.mojo
 """
 
-from mojo_rl.envs.atari.atari_state import AtariState
-from mojo_rl.envs.atari.tia import tia_read
-from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
-from mojo_rl.envs.atari.cpu6502 import cpu_reset, run_frame
-from mojo_rl.envs.atari.cartridge import init_bank
-from mojo_rl.envs.atari.riot import set_action
-from mojo_rl.envs.atari.flags import ACTION_NOOP, ROM_AUTO, CX_BLPF
+from noeira.envs.atari.atari_state import AtariState
+from noeira.envs.atari.tia import tia_read
+from noeira.envs.atari.environment import AtariEnvironment, load_rom
+from noeira.envs.atari.cpu6502 import cpu_reset, run_frame
+from noeira.envs.atari.cartridge import init_bank
+from noeira.envs.atari.riot import set_action
+from noeira.envs.atari.flags import ACTION_NOOP, ROM_AUTO, CX_BLPF
 
 
 def test_unmapped_read_returns_bus_noise() raises:

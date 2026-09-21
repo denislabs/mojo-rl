@@ -3,7 +3,7 @@
     pixi run build-imgui                                   # ONCE, for the UI
     pixi run mojo build -I . -o /tmp/studio examples/physics3d/physics_studio.mojo
     /tmp/studio                                            # then File > Open
-    /tmp/studio mojo_rl/envs/humanoid/assets/humanoid.xml sweep 0.4
+    /tmp/studio noeira/envs/humanoid/assets/humanoid.xml sweep 0.4
 
 ⚠ BUILD ONCE AND RUN THE BINARY. `mojo run` recompiles, and this file takes
 ~2 min to build. It does NOT grow with the number of models it can open —
@@ -52,75 +52,75 @@ from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.math3d import Vec3 as Vec3G, Quat as QuatG
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model, DynDims, SpecFields
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.math3d import Vec3 as Vec3G, Quat as QuatG
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.fields import Data, Model, DynDims, SpecFields
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
     read_model_source,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.flat_model import FlatModelDef
-from mojo_rl.physics3d.parser.render_fields import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.flat_model import FlatModelDef
+from noeira.physics3d.parser.render_fields import (
     RenderFields, build_render_fields,
 )
-from mojo_rl.physics3d.parser.model_def_from_xml import RfOnlyModelDef
-from mojo_rl.physics3d.types import ConeType, IntegratorType
-from mojo_rl.physics3d.studio.stepping import (
+from noeira.physics3d.parser.model_def_from_xml import RfOnlyModelDef
+from noeira.physics3d.types import ConeType, IntegratorType
+from noeira.physics3d.studio.stepping import (
     StudioIntegPyr, StudioIntegEll, studio_cone_of, studio_solver_warning,
     studio_condim_warning,
     StudioImpFastPyr, StudioImpFastEll, studio_uses_implicit,
     StudioRk4Pyr, studio_integrator_of,
     studio_integrator_warning,
 )
-from mojo_rl.physics3d.model.model_renderer import ModelRenderer, OverlayLine
-from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
-from mojo_rl.physics3d.dynamics.pose_transmission import (
+from noeira.physics3d.model.model_renderer import ModelRenderer, OverlayLine
+from noeira.physics3d.dynamics.actuation import apply_actions_fields
+from noeira.physics3d.dynamics.pose_transmission import (
     apply_pose_transmission,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, MODEL_MESH_META_SIZE, MODEL_GEOM_SIZE,
     GEOM_IDX_MESH_ID, MAX_GPU_MESHES, MODEL_BODY_SIZE, BODY_IDX_MASS,
 )
-from mojo_rl.physics3d.studio.scene import SceneDoc, scene_from_base
-from mojo_rl.physics3d.studio.writer import to_mjcf as export_flat_mjcf
-from mojo_rl.physics3d.studio import (
+from noeira.physics3d.studio.scene import SceneDoc, scene_from_base
+from noeira.physics3d.studio.writer import to_mjcf as export_flat_mjcf
+from noeira.physics3d.studio import (
     Ray, ray_through_pixel, pick_geom, outline_geom, outline_body,
     StudioPanel, PanelOut, build_ui, SIDEBAR_W,
 )
-from mojo_rl.physics3d.studio.panel import SEL_BODY, SEL_GEOM, SEL_NONE
-from mojo_rl.physics3d.studio.validate import (
+from noeira.physics3d.studio.panel import SEL_BODY, SEL_GEOM, SEL_NONE
+from noeira.physics3d.studio.validate import (
     Diagnostic, validate_all, worst_severity, count_at, format_diagnostic,
     SEV_ERROR, SEV_WARN,
 )
-from mojo_rl.physics3d.studio.structure import (
+from noeira.physics3d.studio.structure import (
     delete_body, delete_geom, add_body, add_joint, rename_element,
     reparent_body,
 )
-from mojo_rl.physics3d.studio.remap import (
+from noeira.physics3d.studio.remap import (
     remap_state, pose_snapshot, apply_pose_snapshot,
 )
-from mojo_rl.physics3d.studio.history import History, edit_key
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.kinematics.mocap import reset_mocap_from_model
-from mojo_rl.physics3d.studio.edit import (
+from noeira.physics3d.studio.history import History, edit_key
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.kinematics.mocap import reset_mocap_from_model
+from noeira.physics3d.studio.edit import (
     Edit, apply_edit, apply_edit_to_document, needs_rebuild, field_name,
     TARGET_GEOM, TARGET_BODY,
     F_POS_X, F_POS_Y, F_POS_Z, F_SIZE_0, F_SIZE_1, F_SIZE_2,
     F_RGBA_R, F_RGBA_G, F_RGBA_B, F_RGBA_A, F_FRICTION, F_MASS,
 )
-from mojo_rl.render.imgui import (
+from noeira.render.imgui import (
     ig_want_mouse, gz_begin_frame, gz_set_rect, gz_set_orthographic,
     gz_set_size, gz_manipulate, gz_is_over, gz_is_using,
     GZ_TRANSLATE, GZ_ROTATE, GZ_LOCAL, GZ_WORLD,
 )
-from mojo_rl.render.gpu_types import perspective_projection
-from mojo_rl.physics3d.studio.gizmo import (
+from noeira.render.gpu_types import perspective_projection
+from noeira.physics3d.studio.gizmo import (
     Frame, frame_to_cm, mat4_to_cm, edit_frame, frame_drift, gizmo_edits,
     gizmo_mode_name, GIZMO_OFF, GIZMO_MOVE, GIZMO_TURN,
 )
-from mojo_rl.physics3d.studio.mesh_bounds import (
+from noeira.physics3d.studio.mesh_bounds import (
     empty_half_extents, measure_geom_from_file, biggest_half_extent,
 )
 
@@ -703,7 +703,7 @@ def run_studio(
     var L = Loaded(first)
     L.describe()
 
-    var panel = StudioPanel(drive, scale, String("mojo_rl/envs"))
+    var panel = StudioPanel(drive, scale, String("noeira/envs"))
     panel.remember(first)
 
     var renderer = ModelRenderer[RfOnlyModelDef](
@@ -1007,6 +1007,12 @@ def run_studio(
             panel.want_save = 1
         renderer.set_show_hud(panel.show_hud)
         renderer.set_show_sites(panel.show_sites)
+        # ⚠ THE SIX CHECKBOXES WERE DEAD until 2026-09-15: `panel.group_shown`
+        # was written by the panel and read by nothing, so toggling group 3
+        # to see dog's collision capsules did nothing. `body_geom_visible`
+        # now reads `rf.group_shown`, which this is the one writer of.
+        for g in range(len(panel.group_shown)):
+            renderer.set_group_shown(g, panel.group_shown[g])
         if ui.quit:
             break
         # ── the transform gizmo — V2.10 ───────────────────────────────────
@@ -1649,7 +1655,7 @@ def run_studio(
 def main() raises:
     seed(0)
     var args = argv()
-    var path = String("mojo_rl/envs/humanoid/assets/humanoid.xml")
+    var path = String("noeira/envs/humanoid/assets/humanoid.xml")
     if len(args) > 1:
         path = String(args[1])
     else:

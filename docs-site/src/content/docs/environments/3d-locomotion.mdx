@@ -7,11 +7,13 @@ import Maturity from '~/components/Maturity.astro';
 import Demo from '~/components/Demo.astro';
 import DemoGrid from '~/components/DemoGrid.astro';
 
-<Maturity level="stable" note="Contact-rich models (Humanoid, Ant) are the least settled part of physics3d." />
+<Maturity level="stable" note="Gymnasium-style tasks on physics3d; the physics is gated against MuJoCo 3.12, the task code against Gymnasium." />
 
-MuJoCo-style continuous control on `mojo_rl.physics3d` — a generalized-coordinates
-engine with CRBA mass matrices, RNE bias forces, constraint solvers and MJCF
-model loading. Models are defined in MJCF XML, the same format MuJoCo uses.
+MuJoCo-style continuous control on `noeira.physics3d` — a generalized-coordinates
+engine with CRBA mass matrices, RNE bias forces, a Newton constraint solver and
+MJCF model loading. Models are defined in MJCF XML, the same format MuJoCo
+uses. For the DeepMind Control versions of these bodies — walker, cheetah,
+hopper, humanoid, quadruped, dog — see [DeepMind Control](/environments/dm-control/).
 
 <DemoGrid min="15rem">
 	<Demo name="half_cheetah_sac_trained" caption="HalfCheetah" meta="17 obs · 6 act" />
@@ -45,8 +47,8 @@ model loading. Models are defined in MJCF XML, the same format MuJoCo uses.
 Dimensions come from the **model** struct:
 
 ```mojo
-from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM   # 17
 comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM #  6
@@ -73,8 +75,7 @@ not a design.
 **HalfCheetah** — a planar two-legged runner. Reward is forward velocity minus a
 control cost, with **no early termination**, so every episode runs the full 1000
 steps. That makes returns smooth and comparable, which is why it is the default
-benchmark for continuous control here. A trained SAC policy reaches a running
-gait in about six minutes on an RTX 5090.
+benchmark for continuous control here.
 
 **Hopper** — one leg, three actuators, terminates when it falls. Deceptively
 hard: the healthy-state termination means a policy that has not learned to
@@ -105,9 +106,10 @@ wired up correctly before spending time on Humanoid.
 
 ## Validation against MuJoCo
 
-These are not approximations. The physics is checked against **live MuJoCo**:
-a family of tests steps both engines from the same state and compares
-trajectories, and the MJCF loader reads the same model files.
+These are not approximations. The physics is checked against **live MuJoCo
+3.12**, the version pixi installs: a family of tests steps both engines from the
+same state and compares trajectories, and the MJCF loader reads the same model
+files.
 
 ```bash
 pixi run mojo run -I . tests/physics3d/test_euler_fields_vs_mujoco.mojo
@@ -115,11 +117,9 @@ pixi run mojo run -I . tests/physics3d/test_humanoid_fk_vs_mujoco.mojo
 pixi run mojo run -I . tests/physics3d/test_hopper_fk_vs_mujoco.mojo
 ```
 
-These require `mujoco` in the pixi environment, since they call `mj_step`
-directly rather than comparing against recorded fixtures.
-
-`references/mujoco-3.3.6/` in the repo matches the version pinned in `pixi.toml`,
-and is the first place to look when a mismatch appears.
+They call `mj_step` in-process rather than comparing against recorded
+fixtures. [Validation](/physics/validation/) has the full set and the order to
+debug a mismatch in.
 
 ## Reward structure
 
@@ -149,19 +149,16 @@ optimizations made it unnecessary.
 (`FRAME_SKIP`, 2–5 here). The physics timestep stays small for stability while the
 agent acts at a manageable rate.
 
-**Integrator** — configurable per environment. HalfCheetah uses Euler with a
-Newton solver; Humanoid uses RK4, which needs extra workspace
-(`INTEGRATOR_WS_EXTRA`).
+**Integrator** — configurable per environment, always with the Newton solver.
+HalfCheetah uses Euler; the others take the environment trait's default, RK4,
+and those that need it declare RK4's extra workspace (`INTEGRATOR_WS_EXTRA`).
 
 :::caution[CUDA-graph capture and the blocked solver]
-The pyramidal-contact path uses a one-environment-per-block Newton kernel with
+On NVIDIA the contact solve uses a one-environment-per-block Newton kernel with
 cooperative shared memory. Capturing it in a CUDA graph illegal-addresses on
 replay, so the GPU examples set `USE_ENV_CUDA_GRAPH=False` while keeping
 `USE_TRAIN_CUDA_GRAPH=True`. Eager environment stepping is correct — only the
 per-step launch collapse is lost.
-
-Separately, do not pass `cone=ELLIPTIC` with the RK4 integrator: the serial
-solver's local memory requirement exceeds what the GPU provides. Use `PYRAMIDAL`.
 :::
 
 ## Next

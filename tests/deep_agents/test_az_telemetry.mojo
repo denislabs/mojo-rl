@@ -19,15 +19,15 @@ from std.memory import Pointer
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.core.logger import CsvLogger
-from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
-from mojo_rl.deep_agents.alphazero.agent import AlphaZeroAgent
-from mojo_rl.deep_agents.zero.symmetries import D4SquareAugmenter
-from mojo_rl.deep_agents.zero.evaluators import (
+from noeira.core.logger import CsvLogger
+from noeira.deep_agents.alphazero.nets import AZMLPNet
+from noeira.deep_agents.alphazero.agent import AlphaZeroAgent
+from noeira.deep_agents.zero.symmetries import D4SquareAugmenter
+from noeira.deep_agents.zero.evaluators import (
     RandomOpponent,
     GPUMinimaxTicTacToe,
 )
-from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
+from noeira.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
 
 
 def main() raises:

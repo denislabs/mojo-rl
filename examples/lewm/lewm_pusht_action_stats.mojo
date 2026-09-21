@@ -27,7 +27,7 @@ from std.math import sqrt
 from std.memory import alloc
 from std.random import seed as rng_seed
 
-from mojo_rl.envs.pusht import PushTOfflineSampler
+from noeira.envs.pusht import PushTOfflineSampler
 
 
 comptime B = 32

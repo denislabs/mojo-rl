@@ -44,29 +44,29 @@ Run with:
     pixi run mojo run -I . tests/dm_control/test_reassemble_5_bricks_vs_dm_control.mojo
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt, sin, cos
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_reassemble5 import DMReassemble5
-from mojo_rl.envs.dm_control.manipulation_reassemble5_def import (
+from noeira.envs.dm_control.manipulation_reassemble5 import DMReassemble5
+from noeira.envs.dm_control.manipulation_reassemble5_def import (
     Reassemble5Model,
 )
-from mojo_rl.envs.dm_control.manipulation_reassemble5_config import (
+from noeira.envs.dm_control.manipulation_reassemble5_config import (
     OBS_DIM,
     N_BRICKS,
     FIXED_BRICK,
 )
-from mojo_rl.envs.dm_control.manipulation_reassemble import (
+from noeira.envs.dm_control.manipulation_reassemble import (
     build_stack,
     sigma_of_base,
     write_reassemble_orders,
     read_reassemble_order,
     quat_integrate_z_pi,
 )
-from mojo_rl.envs.dm_control.manipulation_stack_fixed import (
+from noeira.envs.dm_control.manipulation_stack_fixed import (
     ROBOT_SITE_BASE,
     SITE_PINCH,
     stack_brick_body_of,
@@ -81,12 +81,12 @@ from mojo_rl.envs.dm_control.manipulation_stack_fixed import (
     TCP_BBOX_LOWER_Z,
     TCP_BBOX_UPPER_Z,
 )
-from mojo_rl.envs.dm_control.manipulation_obs import (
+from noeira.envs.dm_control.manipulation_obs import (
     N_ARM,
     N_HAND,
     torque_site_of,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_POS_X,
     BODY_IDX_QUAT_X,
@@ -657,12 +657,12 @@ def test_reassemble_5_build_stack_matches_dm_control() raises:
     var refmod = _refmod()
     var env = ENV()
 
-    var base_pos = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var base_pos = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     base_pos[0] = Scalar[DTYPE](0.03)
     base_pos[1] = Scalar[DTYPE](-0.02)
     base_pos[2] = Scalar[DTYPE](PROP_Z)
     var mjq = _mj_quat(0.7853981633974483)  # pi/4
-    var base_quat = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var base_quat = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     base_quat[0] = Scalar[DTYPE](mjq[1])
     base_quat[1] = Scalar[DTYPE](mjq[2])
     base_quat[2] = Scalar[DTYPE](mjq[3])

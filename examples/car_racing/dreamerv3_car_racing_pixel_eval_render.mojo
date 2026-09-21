@@ -27,14 +27,14 @@ Reads dreamerv3_carracing_pixel_gpu.ckpt.
 from std.memory import alloc
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
-from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
+from noeira.nn.constants import DT
+from noeira.nn.primitives.ops.swish_op import SwishOp
+from noeira.deep_agents.dreamerv3.agent import DreamerV3Agent
+from noeira.deep_agents.dreamerv3.nets_cnn import (
     DreamerEncoderCNN,
     DreamerDecoderCNN,
 )
-from mojo_rl.envs.car_racing.car_racing_mb import CarRacingMB
+from noeira.envs.car_racing.car_racing_mb import CarRacingMB
 
 # ── arch (MUST match dreamerv3_car_racing_pixel_training.mojo) ──
 comptime C = 4

@@ -36,8 +36,8 @@ MuJoCo's own samples, which is why this sat unnoticed.
 Run: pixi run mojo run -I . tests/physics3d/test_loader_composition.mojo
 """
 
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
-from mojo_rl.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.physics3d.parser.expander import expand_mjcf
 
 
 comptime ATTACH_SCENE = String("tests/physics3d/fixtures/attach/scene.xml")

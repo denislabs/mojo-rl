@@ -1,6 +1,6 @@
 """Test native Space Invaders — CPU + GPU."""
 
-from mojo_rl.envs.arcade_games.space_invaders import SpaceInvadersEnv
+from noeira.envs.arcade_games.space_invaders import SpaceInvadersEnv
 from max.gpu.host import DeviceContext
 
 comptime dtype = DType.float32

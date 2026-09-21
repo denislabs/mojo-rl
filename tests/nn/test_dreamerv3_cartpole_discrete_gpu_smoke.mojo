@@ -16,9 +16,9 @@ from std.random import random_float64, seed
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.dreamerv3.agent import DreamerV3Agent
+from noeira.envs.cartpole import CartPoleEnv
 
 comptime OBS = 4
 comptime ACT = 2

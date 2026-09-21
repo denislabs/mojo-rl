@@ -52,8 +52,8 @@ from std.math import abs, sqrt
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from mojo_rl.physics3d.constants import (
+from noeira.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
+from noeira.physics3d.constants import (
     GEOM_PLANE,
     GEOM_SPHERE,
     GEOM_CAPSULE,
@@ -61,7 +61,7 @@ from mojo_rl.physics3d.constants import (
     GEOM_CYLINDER,
     GEOM_ELLIPSOID,
 )
-from mojo_rl.physics3d.ray import ray_geom
+from noeira.physics3d.ray import ray_geom
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]

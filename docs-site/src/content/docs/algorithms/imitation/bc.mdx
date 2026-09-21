@@ -1,0 +1,154 @@
+---
+title: Behaviour cloning
+description: The simplest imitation learner — an MLP regressed onto demonstrated actions from low-dimensional observations, with the split, baselines and reload check that make its number readable.
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="The fit, the checkpoint and its reload are gated. As a policy it is a baseline: 13/200 on LIBERO libero_goal." />
+
+Behaviour cloning (BC) fits a network to demonstrations by supervised
+regression: observation in, the demonstrator's action out, mean squared error.
+It uses no reward, no rollouts and no environment during training.
+
+Its known weakness is covariate shift. The policy only ever sees the states the
+demonstrator visited; once its own small errors take it elsewhere, it has no
+data for what to do. That makes BC a **baseline** here — the number an image
+policy or an RL fine-tune has to beat — and a quick test of whether an
+observation carries enough information to imitate at all.
+
+<Papers label="Paper">
+	<Paper
+		title="ALVINN: An Autonomous Land Vehicle in a Neural Network"
+		authors="Pomerleau"
+		year="1988"
+		url="https://proceedings.neurips.cc/paper/1988/hash/812b4ba287f5ee0bc9d43bbf5bbe87fb-Abstract.html"
+		venue="NeurIPS 1988"
+		note="The original behaviour-cloning result."
+	/>
+</Papers>
+
+## The pieces
+
+Everything lives in `noeira/deep_agents/bc/`, generic over where the
+demonstrations come from.
+
+**`BcNet[OBS, ACT]`** (`noeira/deep_agents/bc/policy.mojo`) — an MLP,
+`OBS → 256 → 256 → ACT` with ReLU and no output squash. Recorded actions are
+already in `[-1, 1]`, and a `tanh` head would put the fit's error where the
+gradient vanishes; the driver clamps at inference instead. The network is
+defined once and used by both the trainer and the driver that runs the
+checkpoint, so the two cannot drift apart.
+
+**`BcNorm`** — the input standardisation, `(x − mu) / sd`, computed from the
+**training** rows only. The trainer writes it as a `<checkpoint>.norm` text
+sidecar; `load_bc_norm` refuses a missing sidecar, one whose widths do not
+match the model, or a non-positive spread. A constant input column keeps
+scale 1 instead of dividing by zero.
+
+**`BcDataset`** (`noeira/deep_agents/bc/dataset.mojo`) — observation and action
+rows, already split into training and validation **by demonstration**.
+Consecutive frames of one demonstration are nearly identical, so a row-wise
+split puts a frame's neighbours on both sides and reports a validation error
+that means nothing. Each source therefore holds out whole episodes.
+`BcDataset.from_demo_set(ds, filter, val_episodes)` builds one from a `.demo`
+recording, holding out its last `val_episodes` episodes and keeping the rows a
+`DemoFilter` selects (`all`, `success` or `intervened`).
+
+**`fit_bc[OBS, ACT, BATCH]`** (`noeira/deep_agents/bc/fit.mojo`) — normalise,
+fit with Adam on MSE, save, re-score:
+
+- **Baselines are printed beside the result.** The validation MSE of
+  predicting zero and of predicting the training-mean action. A fit that does
+  not beat the mean has learned nothing.
+- **The checkpoint is re-scored on the CPU**, reloaded through the same path a
+  driver uses. A save that wrote the wrong copy, a load that filled nothing or
+  a shape that drifted would otherwise leave a policy that trains well and acts
+  like something else.
+- **It refuses** — raises instead of returning — when the dataset's widths do
+  not match the network, when either split is empty, when the reloaded
+  checkpoint scores more than 1.5× worse than the fit, or when the fit does
+  not beat the training-mean baseline.
+
+`BATCH` is a compile-time parameter: one build has one batch size.
+
+## On LIBERO
+
+`examples/libero/libero_bc_train.mojo` trains on `libero_goal`'s
+demonstrations. The store holds each frame's simulator state, not the policy's
+input, so the trainer **rebuilds** each observation exactly as the batched
+environment writes it — joint positions and velocities, one active word per
+free object slot, then the goal words — with the same host function the device
+path is gated against. A policy trained on any other vector would be trained on
+something the environment never produces.
+
+```bash
+pixi run libero-demo-import --no-images          # build/demos/libero_goal.lowdim.h5
+pixi run libero-bc-train                         # -> build/policies/libero_goal_bc.ckpt + .norm
+pixi run libero-bc-train --demos 10 --epochs 5   # a smoke run
+pixi run -e nvidia libero-eval-batched -- --policy build/policies/libero_goal_bc.ckpt
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--epochs N` | 20 | training epochs |
+| `--lr X` | 1e-3 | Adam learning rate |
+| `--val-demos K` | 5 | the last K demonstrations of every task are held out |
+| `--demos N` | all | use only the first N demonstrations per task |
+| `--out PATH` | `build/policies/libero_goal_bc.ckpt` | checkpoint path; `.norm` is written beside it |
+
+Rebuilding the observation needs forward kinematics per row: about a minute for
+the 63,728 rows of `libero_goal`. The success rate comes from
+`libero-eval-batched` on LIBERO's frozen initial states, not from the trainer.
+See [LIBERO](/environments/libero/).
+
+`pixi run bc-policy` checks the checkpoint's trip from trainer to driver: a
+bit-for-bit round trip, the normalisation and its refusals.
+
+## On a `.demo` recording
+
+The same fit runs on anything recorded in the `.demo` format — the SO-101
+tower's teleoperation, scripted expert or DAgger files (see
+[HIL-SERL and DAgger](/algorithms/imitation/hil-serl/)):
+
+```mojo
+from noeira.deep_agents.demos.file import read_demo_file
+from noeira.deep_agents.demos.filter import DemoFilter
+from noeira.deep_agents.bc.dataset import BcDataset
+from noeira.deep_agents.bc.fit import fit_bc
+
+comptime OBS = 49   # the recording's obs_dim
+comptime ACT = 6    # and act_dim
+
+def main() raises:
+    var ds = read_demo_file("projects/so101-tower/demos/expert_lift_brick_50.demo")
+    var data = BcDataset.from_demo_set(ds, DemoFilter(DemoFilter.SUCCESS), 5)
+    var report = fit_bc[OBS, ACT, 256](data, 40, 1e-3, "build/policies/tower_bc.ckpt")
+    print(report.reloaded_val, "vs mean baseline", report.mse_mean)
+```
+
+`tests/deep_agents/test_bc_fit_gpu.mojo` is the runnable version of this, on a
+synthetic recording.
+
+Inside an RL run, the same idea appears as the BC term of
+[HIL-SERL](/algorithms/imitation/hil-serl/) (`--bc-weight`), and `--bc-only`
+trains the SAC actor as a pure imitator while its critics learn.
+
+## Results
+
+| Task | Result | Note |
+|---|---|---|
+| LIBERO `libero_goal`, 10 tasks × 20 frozen inits, 600 steps | **13/200** | low-dimensional observation with goal words |
+
+For comparison on the same protocol: a vision-free kNN matcher over joints and
+their one-step difference scores 144/200, and [ACT](/algorithms/imitation/act/)
+with cameras 31/200. The kNN result shows the task is solvable from
+proprioception by committing to the nearest demonstrated phase; a regression
+onto the conditional mean blurs exactly where demonstrations disagree.
+
+## Next
+
+- [ACT](/algorithms/imitation/act/) — chunked imitation from cameras
+- [HIL-SERL and DAgger](/algorithms/imitation/hil-serl/) — the data BC lacks: states the policy reaches on its own

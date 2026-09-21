@@ -25,7 +25,7 @@ interceptor is present purely because LD_PRELOAD puts it there, and its
                                                    ours and this arc's
                                                    conclusion is wrong.
 
-⚠ NEEDS MOJO_RL_INTERCEPT_LOG=1. The destroy log is rate-limited to 2 lines
+⚠ NEEDS NOEIRA_INTERCEPT_LOG=1. The destroy log is rate-limited to 2 lines
 by default (it is on the hot path — MAX's teardown happens often enough that
 logging it unconditionally slowed training measurably). The env var lifts the
 limit AND is what makes the per-launch stream lines visible.
@@ -37,16 +37,16 @@ question — WHERE does the destroy fall relative to our markers — becomes
 unanswerable. This is the same buffering that made three crash runs of this
 arc look like they died earlier than they did.
 
-    MOJO_RL_INTERCEPT_LOG=1 pixi run -e nvidia mojo run -I . \
+    NOEIRA_INTERCEPT_LOG=1 pixi run -e nvidia mojo run -I . \
         tests/cuda/probe_max_stream_lifetime.mojo
 """
 
-from std.gpu import thread_idx
+from max.gpu import thread_idx
 from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
 
 def main() raises:
@@ -54,7 +54,6 @@ def main() raises:
         print("non-NVIDIA: no interceptor, nothing to observe. Skipped.")
         return
 
-    @parameter
     @always_inline
     def _bump(buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin]):
         if Int(thread_idx.x) != 0:

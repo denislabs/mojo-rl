@@ -15,12 +15,12 @@ Run with:
 """
 
 from max.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.constants import DT as dtype
+from noeira.nn.constants import DT as dtype
 
 
 # =============================================================================

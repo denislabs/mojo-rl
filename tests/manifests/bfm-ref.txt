@@ -1,0 +1,14 @@
+# BFM-Zero learner gates that run TORCH IN-PROCESS — `pixi run test-bfm-ref`
+#
+# These import the reference's classes through Python interop and compare
+# forward, input gradient and every parameter gradient on the same weights,
+# so they need the `act-ref` environment (the task runs them under it).
+# No dumps, no artefacts.
+
+# G3.2: the residual towers (F, actor, B) and every composition piece against
+# nn_models.py in torch; a report-only probe of the fused LinearAct variants
+tests/nn/test_bfm_towers_vs_torch.mojo
+
+# G3.2: the running observation normaliser against BatchNorm1d(affine=False,
+# momentum 0.01) in train and eval mode, and its sidecar round trip
+tests/fb/test_obs_ema_vs_batchnorm.mojo

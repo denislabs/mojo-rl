@@ -10,8 +10,8 @@ See `docs/PROCGEN_FRUITBOT_SCOPE.md`.
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import FruitbotGame
-from mojo_rl.envs.procgen.games.fruitbot import (
+from noeira.envs.procgen.games import FruitbotGame
+from noeira.envs.procgen.games.fruitbot import (
     DIST_EASY, DIST_HARD, GOOD_OBJ, BAD_OBJ, BARRIER, LOCKED_DOOR, LOCK,
 )
 

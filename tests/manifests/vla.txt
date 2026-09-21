@@ -1,0 +1,98 @@
+# SmolVLA manifest (CPU) — `pixi run test-vla`
+#
+# Structural gates for the SmolVLA port. These read
+# `tools/vla/smolvla_base_manifest.tsv` — the 500-tensor checklist fetched by
+# two HTTP Range requests — and NOT the 906,712,520-byte weight file, so they
+# need neither the network nor a download and belong in ordinary CI.
+#
+# ⚠ They gate STRUCTURE, not numbers: that the port names every published
+# tensor, with the right shape, in both directions. Numerical parity against
+# `lerobot` in Python is a separate, later gate that does need the weights.
+
+# Step 2 — the SigLIP vision tower's 197 tensors, ours <-> theirs, both ways.
+tests/deep_agents/smolvla/test_vision_name_map.mojo
+
+# Step 3 — GQA's K/V head broadcast: the grouping rule (g//REP, not g%N_KV),
+# the backward's SUM over REP, the adjoint identity, and GPU/CPU parity.
+tests/nn/test_repeat_kv_heads.mojo
+
+# Step 3 — the SmolLM2 text tower: 145 checkpoint tensors + 112 TN_ZEROS
+# biases, covered both ways, with the element arithmetic reconciled.
+tests/deep_agents/smolvla/test_text_name_map.mojo
+
+# Step 4 — connector + token embedding + LM head + the five action heads
+# (13 tensors), and the running total across every map at once: 355/500 with
+# nothing double-claimed. The consolidated gate is what catches a tensor named
+# by two maps, which a per-component gate cannot see.
+tests/deep_agents/smolvla/test_checkpoint_coverage.mojo
+
+# Step 5/6 — the action expert's 145 tensors, and the layer parity that gives
+# the two kinds away (even k=[320,720] self, odd k=[320,320] cross). With this
+# the consolidated gate above reaches 500/500.
+tests/deep_agents/smolvla/test_expert_name_map.mojo
+
+# Step 6 — the prefix-LM block mask (`make_att_2d_masks`'s cumsum rule), against
+# the three worked examples the reference documents, SmolVLA's own layout, and
+# the agreement of the prefill/denoise windows with the square mask.
+tests/deep_agents/smolvla/test_attn_mask.mojo
+
+# Step 7 — prefix/suffix assembly pieces: the sinusoidal time embedding against
+# a numpy transcription of openpi's, and the language gather's sqrt(DIM) scale.
+tests/deep_agents/smolvla/test_embed.mojo
+
+# The pre-tokenised instruction table, checked in beside the manifest. Pins
+# N_LANG=6 for this recording (so P = 2*64+6+1 = 135), that the trailing
+# newline `NewLineTaskProcessorStep` appends survived, and that two
+# instructions of different lengths raise rather than silently picking one.
+tests/deep_agents/smolvla/test_tasks.mojo
+
+# V2 — the batch sampler at an episode boundary. `lerobot` CLAMPS the query
+# index (the chunk repeats the last real action) where `ACTDataset` pads with
+# a normalized zero, and for SmolVLA that choice is load-bearing: the chunk is
+# a network INPUT through x_t, not only a loss target, so a padded slot's
+# value changes the gradient on the VALID timesteps too. Builds its own
+# three-episode store; 80,000 chunk slots checked, and a leg asserting the
+# clamp is OBSERVABLY different from a zero-pad.
+tests/deep_agents/smolvla/test_dataset_chunks.mojo
+
+# V2 — the two SigLIP front doors. Training reads the store's PLANAR uint8
+# [N_CAM, 3, H, W]; deployment reads a camera's INTERLEAVED BGR [H, W, 3].
+# Handing one to the other raises nothing and gives a recognisable, scrambled
+# image. Bit-exact agreement for the same physical frame at the SO-101's own
+# 640x480, plus a leg proving the layouts are NOT interchangeable and one
+# pinning the pad to the TOP (resize_with_pad) rather than centred
+# (resize_with_pad_torch, the other lerobot function).
+tests/deep_agents/smolvla/test_store_vs_camera_frame.mojo
+
+# V2 — the ASSEMBLY around those two doors: N_CAM blocks laid back to back in
+# an order that is part of the checkpoint. A store row and the equivalent
+# camera frames must fill the same observation, block for block, and a
+# camera SWAP must be detectable — nothing else about a swap is observable at
+# runtime, no shape change and no error, only the policy behaving wrongly.
+tests/deep_agents/smolvla/test_store_observation.mojo
+
+# V2 stage 7 — the gradient back to the prefix embeddings, which is what
+# train_state_proj=True needs: the state token is a prefix embedding, so
+# state_proj's gradient is a slice of this and every VLM layer sits between it
+# and the loss. Differences the WHOLE chain (prefill -> cache -> one denoising
+# step) because the two drivers are separately gated and their JOIN is not.
+# Carries three measured ablations, including the two-source accumulation at
+# KR that leaves state_proj with 79% of a gradient.
+tests/deep_agents/smolvla/test_prefill_backward.mojo
+
+# V2 stage 7 — state_proj, the one trainable weight UPSTREAM of the frozen
+# tower. Its gradient arrives only after loss -> expert -> dL/d(cached K/V) ->
+# all sixteen VLM layers -> the prefix embeddings, with no VLM weight trained
+# anywhere along it. 256 weights against central differences of that whole
+# chain, plus the property that rows 6..31 (the state padding) can never move.
+tests/deep_agents/smolvla/test_state_proj_grad.mojo
+
+# V2 — the checkpoint round trip. A 73-minute fine-tune that keeps nothing is
+# a measurement, not a model. Saves the TRAINABLE set only (the frozen tower
+# is already on disk as the base checkpoint), and gates that the weights come
+# back bit-identical, that the reloaded model computes the SAME loss, that
+# Adam's moments survive — a resume without them restarts with a cold
+# optimizer, whose first step is what damages a pretrained model — and, first,
+# that the destination DIFFERED beforehand, without which all of that passes
+# on a load that did nothing.
+tests/deep_agents/smolvla/test_finetune_checkpoint.mojo

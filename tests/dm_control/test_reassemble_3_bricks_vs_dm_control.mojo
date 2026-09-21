@@ -41,31 +41,31 @@ Run with:
     pixi run mojo run -I . tests/dm_control/test_reassemble_3_bricks_vs_dm_control.mojo
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt, sin, cos
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_reassemble3 import DMReassemble3
-from mojo_rl.envs.dm_control.manipulation_reassemble3_def import (
+from noeira.envs.dm_control.manipulation_reassemble3 import DMReassemble3
+from noeira.envs.dm_control.manipulation_reassemble3_def import (
     Reassemble3Model,
 )
-from mojo_rl.envs.dm_control.manipulation_reassemble3_config import (
+from noeira.envs.dm_control.manipulation_reassemble3_config import (
     OBS_DIM,
     N_BRICKS,
     FIXED_BRICK,
     initial_order,
     desired_order,
 )
-from mojo_rl.envs.dm_control.manipulation_reassemble import (
+from noeira.envs.dm_control.manipulation_reassemble import (
     build_stack,
     reassemble_reward,
     pairwise_stacking_reward_coef,
     quat_integrate_z_pi,
     REASSEMBLE_CLOSE_COEF,
 )
-from mojo_rl.envs.dm_control.manipulation_stack_fixed import (
+from noeira.envs.dm_control.manipulation_stack_fixed import (
     ROBOT_SITE_BASE,
     SITE_PINCH,
     stack_brick_body_of,
@@ -80,16 +80,16 @@ from mojo_rl.envs.dm_control.manipulation_stack_fixed import (
     TCP_BBOX_LOWER_Z,
     TCP_BBOX_UPPER_Z,
 )
-from mojo_rl.envs.dm_control.manipulation_stack2_config import (
+from noeira.envs.dm_control.manipulation_stack2_config import (
     pairwise_stacking_reward,
     CLOSE_COEF,
 )
-from mojo_rl.envs.dm_control.manipulation_obs import (
+from noeira.envs.dm_control.manipulation_obs import (
     N_ARM,
     N_HAND,
     torque_site_of,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_POS_X,
     BODY_IDX_QUAT_X,
@@ -334,7 +334,7 @@ def test_reassemble_3_model_and_orders_match_dm_control() raises:
     # stack at all.
     var ntables = Int(py=refmod.n_tables_compared())
     var cmp = refmod.compare_xml_excluding_hint_bricks(
-        "mojo_rl/envs/dm_control/assets/manipulation/stack_3_bricks.xml", TASK
+        "noeira/envs/dm_control/assets/manipulation/stack_3_bricks.xml", TASK
     )
     var bad = cmp[0]
     var n_hint = Int(py=cmp[1])
@@ -691,13 +691,13 @@ def test_reassemble_3_build_stack_matches_dm_control() raises:
     var ini = initial_order()
     var des = desired_order()
 
-    var base_pos = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var base_pos = Array[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     base_pos[0] = Scalar[DTYPE](0.03)
     base_pos[1] = Scalar[DTYPE](-0.02)
     base_pos[2] = Scalar[DTYPE](PROP_Z)
     var yaw = 0.7853981633974483  # pi/4
     var mjq = _mj_quat(yaw)
-    var base_quat = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var base_quat = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     base_quat[0] = Scalar[DTYPE](mjq[1])  # x
     base_quat[1] = Scalar[DTYPE](mjq[2])  # y
     base_quat[2] = Scalar[DTYPE](mjq[3])  # z
@@ -805,7 +805,7 @@ def test_reassemble_3_build_stack_matches_dm_control() raises:
     # ⚠ THE FLIP MUST DO SOMETHING. `quat_integrate_z_pi` is the one piece of
     # quaternion algebra here, and a no-op version would still pass every
     # comparison above if the reference happened to be flip-insensitive.
-    var q = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    var q = Array[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
     q[2] = Scalar[DTYPE](mjq[3])
     q[3] = Scalar[DTYPE](mjq[0])
     var qr = quat_integrate_z_pi[DTYPE](q)

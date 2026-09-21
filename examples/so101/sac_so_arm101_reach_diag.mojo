@@ -40,14 +40,14 @@ from std.random import seed
 from std.math import sqrt, asin, abs
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.data.any_replay import AnyReplay
-from mojo_rl.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
-from mojo_rl.deep_agents.training.blocks import ReplaySampleStep
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
-from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
-from mojo_rl.utils.fmt import col, fixed, pad_left
+from noeira.nn.constants import DT
+from noeira.deep_agents.data.any_replay import AnyReplay
+from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
+from noeira.deep_agents.training.blocks import ReplaySampleStep
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.robots.so_arm101_xml import SoArm101Model
+from noeira.envs.robots.so_arm101 import SoArm101ReachConfig
+from noeira.utils.fmt import col, fixed, pad_left
 
 comptime EnvT = Phyics3dEnv[
     SoArm101Model, SoArm101ReachConfig, DT, TERMINATE_ON_UNHEALTHY=False
@@ -230,8 +230,15 @@ def main() raises:
         )
     print("  " + "-" * 62)
     print(
-        "  alpha 1.0 is the raw policy. `deploy_reach_real.mojo` ships 0.15;"
-        "\n  anything in 0.1-0.3 has cost nothing measurable in reach rate"
-        " while\n  cutting the command's per-step motion several-fold."
+        "  alpha 1.0 is the raw policy. `deploy_reach_real.mojo` ships 0.05,"
+        "\n  which on the current checkpoint holds the reach rate exactly"
+        " while cutting\n  command motion ~48x (4438 -> 93 ticks/step)."
+        "\n  ⚠ A VELOCITY PENALTY CANNOT SEE OSCILLATION, only speed: across"
+        " five\n  checkpoints mean |qvel| fell 1.21 -> 0.92 while the"
+        " REVERSAL rate rose\n  59% -> 92%. The policy paid for lower speed"
+        " with higher frequency,\n  which is exactly what the metric asked"
+        " for. Penalising the ACTION RATE\n  is the fix that targets the"
+        " oscillation itself, and it needs the previous\n  action in the"
+        " observation to stay Markov."
     )
     print("=" * 72)

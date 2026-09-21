@@ -23,7 +23,7 @@ is fixed at 4 internally for pixel mode.
 Rainbow components: C51 + Double + PER + Dueling + Noisy + N-step.
 
 The whole agent comes from the `RainbowCNN` preset in
-`mojo_rl/deep_agents/c51/config.mojo` — Nature-CNN backbone + noisy
+`noeira/deep_agents/c51/config.mojo` — Nature-CNN backbone + noisy
 dueling distributional heads + N-step-over-PER replay with the uint8 obs
 ring (lossless here too: AtariEnv emits exact `k/255` pixel obs), tuned
 pixel defaults baked in (lr 6.25e-5, warmup 20k, ε=0). Only the
@@ -45,17 +45,17 @@ from std.memory import Pointer
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
 
-from mojo_rl.deep_agents.c51.config import RainbowCNN
-from mojo_rl.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
+from noeira.deep_agents.c51.config import RainbowCNN
+from noeira.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
 
-from mojo_rl.envs.atari import AtariEnv, load_rom
-from mojo_rl.envs.atari.games.registry import AtariGame
-from mojo_rl.envs.atari.flags import OBS_WIDTH, OBS_HEIGHT
-from mojo_rl.core.fmt import fit
+from noeira.envs.atari import AtariEnv, load_rom
+from noeira.envs.atari.games.registry import AtariGame
+from noeira.envs.atari.flags import OBS_WIDTH, OBS_HEIGHT
+from noeira.core.fmt import fit
 
 
 # =============================================================================
@@ -222,8 +222,8 @@ def main() raises:
         # =====================================================================
 
         var env_vars = load_dotenv()
-        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-        var url = env_vars.get("RL_MONITOR_URL", "")
+        var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+        var url = env_vars.get("NOEIRA_CLOUD_URL", "")
 
         var logger = RemoteLogger(
             server_url=url,

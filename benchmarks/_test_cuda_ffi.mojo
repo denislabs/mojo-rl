@@ -13,12 +13,12 @@ Run with:
 """
 
 from max.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from std.ffi import OwnedDLHandle, c_int
 from std.memory import alloc
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
-from mojo_rl.nn.constants import DT as dtype
+from noeira.nn.constants import DT as dtype
 
 
 comptime CUptr = Pointer[NoneType, MutAnyOrigin]

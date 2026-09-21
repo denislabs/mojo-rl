@@ -47,8 +47,8 @@ from std.sys import has_nvidia_gpu_accelerator
 from max.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.fields import (
     AsStatic,
     Data,
     Model,
@@ -56,9 +56,9 @@ from mojo_rl.physics3d.fields import (
     ContactScratch,
     Dims,
 )
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
-from mojo_rl.physics3d.integrator.euler import (
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
+from noeira.physics3d.integrator.euler import (
     _armature_kernel,
     _fnet_passive_kernel,
     _qacc_writeback_kernel,
@@ -66,33 +66,33 @@ from mojo_rl.physics3d.integrator.euler import (
     _fnet_passive_env,
     _qacc_writeback_env,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import (
+from noeira.physics3d.dynamics.subtree_com import (
     compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import (
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import (
     compute_mass_matrix,
 )
-from mojo_rl.physics3d.dynamics.ldl import (
+from noeira.physics3d.dynamics.ldl import (
     ldl_factor,
     ldl_solve,
     compute_m_inv,
 )
-from mojo_rl.physics3d.dynamics.rne import (
+from noeira.physics3d.dynamics.rne import (
     compute_bias_forces_rne,
 )
-from mojo_rl.physics3d.collision.contact_detection import (
+from noeira.physics3d.collision.contact_detection import (
     detect_contacts,
 )
-from mojo_rl.physics3d.solver.newton_solve import (
+from noeira.physics3d.solver.newton_solve import (
     solve_newton,
     solve_newton_blocked,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
     CONTACT_SIZE,
@@ -103,8 +103,8 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_RANGE_MIN,
     JOINT_IDX_RANGE_MAX,
 )
-from mojo_rl.envs.dm_control.ball_in_cup import DMBallInCupModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.envs.dm_control.ball_in_cup import DMBallInCupModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = DMBallInCupModel.NQ
@@ -161,8 +161,8 @@ def _fields_prep[
         var M_v = scratch.M.lt["cpu", L_M]()
         for e in range(BATCH):
             _armature_env[DTYPE](e, AsStatic[MD](), joints_v, M_v)
-        ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        ldl_factor[target, DTYPE, BATCH=BATCH](mf, scratch, ctx)
+        compute_m_inv[target, DTYPE, BATCH=BATCH](mf, scratch, ctx)
         compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
         var qvel_v = d.qvel.lt["cpu", L_NV]()
@@ -173,7 +173,7 @@ def _fields_prep[
             _fnet_passive_env[DTYPE](
                 e, AsStatic[MD](), qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
             )
-        ldl_solve[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        ldl_solve[target, DTYPE, BATCH=BATCH](mf, scratch, ctx)
         var qacc_ws_v = scratch.qacc_ws.lt["cpu", L_NV]()
         var qacc_v = d.qacc.lt["cpu", L_NV]()
         var qacc_c_v = scratch.qacc_constrained.lt["cpu", L_NV]()
@@ -190,8 +190,8 @@ def _fields_prep[
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        ldl_factor[target, DTYPE, BATCH=BATCH](mf, scratch, ctx)
+        compute_m_inv[target, DTYPE, BATCH=BATCH](mf, scratch, ctx)
         compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         ctx.value().enqueue_function[
             _fnet_passive_kernel[DTYPE, NQ, NV, NJOINT, BATCH]
@@ -205,7 +205,7 @@ def _fields_prep[
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_solve[target, DTYPE, BATCH=BATCH](scratch, ctx)
+        ldl_solve[target, DTYPE, BATCH=BATCH](mf, scratch, ctx)
         ctx.value().enqueue_function[
             _qacc_writeback_kernel[DTYPE, NV, BATCH]
         ](

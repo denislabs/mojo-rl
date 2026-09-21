@@ -1,6 +1,6 @@
 """Test ConnectFour environment — gravity, win directions, draws, full columns."""
 
-from mojo_rl.envs.board_games.connect_four import ConnectFourEnv
+from noeira.envs.board_games.connect_four import ConnectFourEnv
 
 
 def test_reset() raises:

@@ -12,10 +12,10 @@ returns stay finite. Real CUDA-graph capture is validated on NVIDIA.
 from std.random import seed
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.dqn.config import DQN
-from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
-from mojo_rl.envs.arcade_games.pong import PongEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.dqn.config import DQN
+from noeira.deep_agents.training import BatchedGpuDiscreteEnv
+from noeira.envs.arcade_games.pong import PongEnv
 
 
 comptime OBS_DIM = PongEnv[DT].OBS_DIM

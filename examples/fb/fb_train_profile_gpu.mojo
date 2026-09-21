@@ -46,26 +46,27 @@ from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import sqrt
 from std.random import random_float64, seed
 
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU, Tanh
-from mojo_rl.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
-from mojo_rl.nn.random.box_muller import box_muller_normal_gpu
+from noeira.nn.constants import DT, TPB
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.ptr import mptr
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU, Tanh
+from noeira.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
+from noeira.nn.random.box_muller import box_muller_normal_gpu
 
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.data.resident import ResidentColumn, IDX_DT
-from mojo_rl.data.sampler import UniformDeviceSampler
+from noeira.data.store import TrajectoryStore
+from noeira.data.resident import ResidentColumn, IDX_DT
+from noeira.data.sampler import UniformDeviceSampler
 
-from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
-from mojo_rl.deep_agents.fb.trainer import FBTrainer, FBLosses
-from mojo_rl.deep_agents.fb.kernels import (
+from noeira.cuda import CUDAGraph, maybe_capture_replay
+from noeira.deep_agents.fb.trainer import FBTrainer, FBLosses
+from noeira.deep_agents.fb.kernels import (
     gather_rows_kernel,
     gather_idx_kernel,
     z_mixture_kernel,
     project_sphere_kernel,
+    uniform01_kernel,
     ensure_t,
     _blocks,
 )
@@ -390,10 +391,16 @@ def main() raises:
             ctx, mptr(gauss.dev.value().unsafe_ptr()), UInt64(SEED), rng_off
         )
         rng_off += UInt64(BATCH * D)
-        box_muller_normal_gpu[BATCH * 2](
-            ctx, mptr(pick.dev.value().unsafe_ptr()), UInt64(SEED) + 31, rng_off
+        # ⚠⚠ UNIFORMS, not Gaussians. Until 2026-09-07 this was a second
+        # `box_muller_normal_gpu` call: `z_mixture_kernel` then took the uniform
+        # branch 69 % of the time and clamped half its B(s+) picks to row 0.
+        # See `kernels.uniform01_kernel`. Every §13 number and the A2 sweep
+        # trained under the old draw; re-run `base` before comparing across it.
+        ctx.enqueue_function[uniform01_kernel[BATCH * 2]](
+            mptr(pick.dev.value().unsafe_ptr()), UInt64(SEED) + 31, rng_off,
+            grid_dim=_blocks(BATCH * 2), block_dim=TPB,
         )
-        rng_off += UInt64(BATCH * 2)
+        rng_off += UInt64(2 * BATCH * 2)
         ctx.enqueue_function[z_mixture_kernel[D, BATCH]](
             t.bz.dev.value().unsafe_ptr(),
             gauss.dev.value().unsafe_ptr(),

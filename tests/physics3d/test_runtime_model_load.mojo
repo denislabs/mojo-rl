@@ -37,31 +37,31 @@ Run: pixi run mojo run -I . tests/physics3d/test_runtime_model_load.mojo
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.fields import (
     Data,
     Model,
     DynamicsScratch,
     DimsLike,
     DynDims,
 )
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.parser import (
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.parser import (
     parse_model_runtime,
     dims_from_flat,
     build_model_runtime,
     spec_fields_runtime,
 )
-from mojo_rl.physics3d.fields.spec_fields import SpecFields
-from mojo_rl.physics3d.parser.fields_build import build_spec_fields
-from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.hopper.hopper_xml import HopperModel
+from noeira.physics3d.fields.spec_fields import SpecFields
+from noeira.physics3d.parser.fields_build import build_spec_fields
+from noeira.physics3d.dynamics.actuation import apply_actions_fields
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.hopper.hopper_xml import HopperModel
 
 comptime DT = DType.float64
 
-comptime WALKER_XML = "mojo_rl/envs/walker2d/assets/walker2d.xml"
-comptime HOPPER_XML = "mojo_rl/envs/hopper/assets/hopper.xml"
+comptime WALKER_XML = "noeira/envs/walker2d/assets/walker2d.xml"
+comptime HOPPER_XML = "noeira/envs/hopper/assets/hopper.xml"
 
 
 struct Tally(Movable):

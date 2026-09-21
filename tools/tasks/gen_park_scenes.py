@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""Generate the P0 parked-slot scenes — SO-ARM101 plus k free-jointed props.
+
+WHAT P0 ASKS
+------------
+`docs/TASK_LAYER_PLAN.md` §3 rests on a FIXED SCENE BUDGET: a task family
+declares every slot it could ever use, and a task that does not use one parks
+it. §3.3 parks by POSE, correctly, because `Model` is shared across lanes and
+only `Data.xpos`/`xquat` are per-lane. What nobody has measured is what a
+parked slot COSTS. This emits the scenes that answer it:
+
+    so101_park_k0.xml    the control — the arm as it ships
+    so101_park_k3.xml    + 3 parked free bodies   (+21 nq, +18 nv)
+    so101_park_k6.xml    + 6                      (+42 nq, +36 nv)
+    so101_park_k9.xml    + 9                       (+63 nq, +54 nv)
+    so101_park_k12.xml   + 12                      (+84 nq, +72 nv)
+    so101_park_k13.xml   + 13                      (+91 nq, +78 nv)
+
+⚠⚠ THE PARK POSE IS NOT `(0, 0, -2)`, AND THE OBVIOUS CHOICE IS THE WORST ONE
+-----------------------------------------------------------------------------
+`docs/TASK_LAYER_PLAN.md` §4.2 writes the park pose as `park=0.0,0.0,-2.0` —
+below the workspace, out of the way. Measured against MuJoCo 3.10.0 on
+2026-09-02, that is not "out of the way", it is a DEEP PENETRATION:
+
+    park pose        contacts at t=0        after 1.2 s of sim
+    (0, 0, -2)       4, at dist = -2.02     EJECTED to z = +36.7
+    (100, 0, 0.5)    0                      LANDED, resting at z = 0.02
+    (10,  0, 10)     0                      z = 2.95, never reaches the plane
+
+Two reasons the first row is fatal here, not merely untidy:
+
+* `so_arm101.xml`'s floor is `size="0 0 0.05"`, which in MJCF means an
+  INFINITE plane. There is no "beside" it and no "below" it — only above.
+* SO-ARM101 ships `max_contacts=16`. At FOUR contacts per parked slot, k=4
+  already overflows the budget, and an overflowed budget DROPS contacts. The
+  probe would then be measuring a different, easier problem at every k, while
+  reporting a throughput curve that looks perfectly well-behaved.
+
+So slots park HIGH and to the side, and the drop is bounded by arithmetic:
+free fall for the probe's horizon (300 control steps x frame_skip 2 x 2 ms =
+1.2 s) is 0.5*9.81*1.2^2 = 7.06 m. `PARK_Z = 50` leaves ~43 m of headroom,
+i.e. it survives a run 6x longer than the one it is sized for.
+
+⚠ AND THEY ARE SPREAD, NOT STACKED. k boxes at ONE pose interpenetrate each
+other, which would put k*(k-1)/2 contact pairs into a measurement whose whole
+purpose is to isolate the cost of `nq`/`nv` from the cost of contacts. The
+spacing below is 25x the box half-extent.
+
+⚠ THIS FILE DOES NOT DECIDE THE BUDGET. It emits scenes; P0 reads a curve off
+them. See `docs/TASK_LAYER_IMPLEMENTATION.md` §1 for the three legs, and note
+that leg 1 alone cannot answer the question.
+
+USAGE
+    pixi run python tools/tasks/gen_park_scenes.py            # write
+    pixi run python tools/tasks/gen_park_scenes.py --check    # CI: fail on diff
+
+Then regenerate the comptime dims, which is what makes the budget a CI
+assertion rather than a convention (`docs/TASK_LAYER_IMPLEMENTATION.md` Gap B):
+
+    pixi run gen-dims
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+BASE = "noeira/envs/robots/assets/so_arm101.xml"
+OUT_DIR = "noeira/envs/robots/assets"
+
+# The budgets P0 sweeps. 0 is the control and must stay first.
+#
+# ⚠⚠ 9 IS THE CEILING, AND IT IS A HARDWARE LIMIT, NOT A CHOICE. The GPU
+# Newton solver holds three NV*NV matrices (M, H, L) plus `Je` (ME*NV) in
+# THREADGROUP memory. Measured on an RTX 5090 (sm_120, 101,376 B/block),
+# fp32, MAX_CONTACTS=16:
+#
+#     k    nv   Je       total      vs limit
+#     0     6     1,968      5,460  fits
+#     3    24    10,176     21,300  fits
+#     6    42    21,840     48,372  fits
+#     9    60    36,960     86,676  fits
+#    10    66    42,768    101,940  OVER by 564 B
+#    12    78    55,536    136,212  OVER   <- ptxas said exactly this
+#
+# k=12 was in this list until 2026-09-02 and did not compile:
+#     ptxas error : Entry function 'noeira_physics3d_solver_newt...' uses
+#                   too much shared data (0x21414 bytes, 0x18c00 max)
+# 0x21414 == 136,212, which the formula above reproduces to the byte.
+#
+# ⚠ AND THE SPILL GATE DOES NOT CATCH IT. `solver/je_budget.je_spills`
+# compares **Je alone** against a 64 KB constant; at k=12 Je is 54 KB, so it
+# declines to spill while the three NV*NV matrices (73 KB) push the block over.
+# The gate budgets ONE ARRAY, not the TOTAL. It was tuned on humanoid_CMU and
+# dog, which are high-nv AND high-contact; a fixed scene budget produces the
+# shape it was never tuned for — HIGH nv, LOW contact count. See
+# `docs/TASK_LAYER_IMPLEMENTATION.md`.
+#
+# ⚠ DO NOT "FIX" THIS BY RAISING k AND LETTING Je SPILL. If Je spills at k=12
+# and not at k<=9, the widest point runs a DIFFERENT SOLVER PATH (Je in global
+# memory, read across up to 200 Newton iterations) from the control, and leg 1
+# would be comparing two code paths while calling the difference a budget cost.
+# One path across the whole sweep is what makes the curve mean anything.
+# ⚠ 12 AND 13 ARE THE P4 SCENES, AND 13 IS THE CEILING, NOT A ROUND NUMBER.
+# Before P4 the sweep stopped at 9 because k=12 did not COMPILE — `je_spills`
+# budgeted `Je` alone, so the blocked Newton kernel asked for 136,212 B against
+# ptxas's 101,376 B. Budgeting the TOTAL spills `Je` to global and reaches
+# exactly k=13 (93,400 B); k=14 is 106,360 B and still over, so 13 is where the
+# three `NV*NV` matrices become the binding term.
+#
+# ⚠⚠ A SWEEP ACROSS 9 AND 12 COMPARES TWO CODE PATHS. k<=9 keeps `Je` in
+# threadgroup memory and k>=10 spills it to global, where it is re-read on
+# every Newton iteration. That is a real cost and it is NOT a cost of the extra
+# dofs — quoting a `x k=0` column across the spill boundary would attribute it
+# to the slot count. Report the two halves separately.
+SLOT_COUNTS = [0, 3, 6, 9, 12, 13]
+
+# ── the park pose, measured (see the module docstring) ─────────────────────
+PARK_X = 10.0        # metres, well outside any workspace
+PARK_Y = 0.0
+PARK_Z = 50.0        # 43 m of headroom over the horizon's 7.06 m of free fall
+PARK_SPACING = 0.5   # 25x the half-extent below, so no two slots touch
+
+# A slot is a small free-jointed box: 7 nq / 6 nv / 1 geom, the cheapest thing
+# that is still a real prop. Mass is a prop's mass, not a token — the mass
+# matrix is what CRBA factorises and P0 is measuring that factorisation.
+SLOT_HALF_EXTENT = 0.02
+SLOT_MASS = 0.05
+
+
+def slot_xml(i: int) -> str:
+    """One parked slot, as MJCF, at world level.
+
+    ⚠ WORLD LEVEL IS NOT A STYLE CHOICE. MuJoCo rejects a free joint anywhere
+    else ("free joint can only be used on top level"), which is the same rule
+    `physics3d/studio/scene.mojo` records for `<attach>`-ed props.
+    """
+    x = PARK_X + i * PARK_SPACING
+    h = SLOT_HALF_EXTENT
+    return (
+        f'    <body name="slot{i}" pos="{x} {PARK_Y} {PARK_Z}">\n'
+        f'      <freejoint name="slot{i}_free"/>\n'
+        f'      <geom name="slot{i}_geom" type="box" '
+        f'size="{h} {h} {h}" mass="{SLOT_MASS}" rgba="0.2 0.6 0.9 1"/>\n'
+        f'    </body>\n'
+    )
+
+
+def build(base_text: str, k: int, name: str) -> str:
+    """The base model with k parked slots spliced in before `</worldbody>`."""
+    marker = "  </worldbody>"
+    if base_text.count(marker) != 1:
+        raise SystemExit(
+            f"gen_park_scenes: expected exactly one '{marker}' in {BASE}, "
+            f"found {base_text.count(marker)}. The base asset changed shape."
+        )
+    slots = "".join(slot_xml(i) for i in range(k))
+    banner = (
+        f"    <!-- GENERATED by tools/tasks/gen_park_scenes.py — DO NOT EDIT.\n"
+        f"         {k} parked slot(s) for the P0 scene-budget probe.\n"
+        f"         Park pose is HIGH, not below: the floor is an INFINITE\n"
+        f"         plane, so (0,0,-2) is a 4-contact penetration that ejects\n"
+        f"         the body. See the generator's docstring. -->\n"
+    )
+    out = base_text.replace(marker, banner + slots + marker, 1)
+    # Rename the model so MuJoCo error messages name the scene, not the arm.
+    out = out.replace(
+        '<mujoco model="so101_new_calib">', f'<mujoco model="{name}">', 1
+    )
+    return out
+
+
+POSE_MODULE = "noeira/envs/robots/so101_park_pose.mojo"
+
+
+def pose_module_text() -> str:
+    """The park pose, as Mojo comptime constants — GENERATED.
+
+    ⚠⚠ THIS FILE EXISTS SO THE POSE IS WRITTEN ONCE. The scenes are emitted
+    here in Python; the repark hook that pins a parked slot every step
+    (`so101_park_config.mojo`, P0 leg 3) must write the SAME pose, in Mojo. Two
+    hand-kept copies of one quantity is the single most recurring defect shape
+    in this tree, and the failure here would be quiet in the worst way: the
+    hook would teleport every parked slot to a pose the scene never declared,
+    the bodies would still touch nothing, every assert would pass, and leg 3
+    would measure a different scene from legs 1 and 2.
+    """
+    slots = "\n".join(
+        f"#   slot {i}: ({PARK_X + i * PARK_SPACING}, {PARK_Y}, {PARK_Z})"
+        for i in range(max(SLOT_COUNTS))
+    )
+    return f'''"""Parked-slot pose — GENERATED, DO NOT EDIT.
+
+Regenerate with:  pixi run python tools/tasks/gen_park_scenes.py
+CI checks it with: pixi run python tools/tasks/gen_park_scenes.py --check
+
+The pose `tools/tasks/gen_park_scenes.py` writes into
+`assets/so101_park_k*.xml`, re-exported for the repark hook so the scene and
+the hook cannot drift apart. Read that generator's docstring for WHY the pose
+is high and lateral rather than the `(0, 0, -2)` of
+`docs/TASK_LAYER_PLAN.md` §4.2 — the short version is that the floor is an
+INFINITE plane, so below it is a four-contact penetration, not an absence.
+
+Slot poses:
+{slots}
+"""
+
+comptime PARK_X: Float64 = {PARK_X!r}
+comptime PARK_Y: Float64 = {PARK_Y!r}
+comptime PARK_Z: Float64 = {PARK_Z!r}
+comptime PARK_SPACING: Float64 = {PARK_SPACING!r}
+
+comptime SLOT_HALF_EXTENT: Float64 = {SLOT_HALF_EXTENT!r}
+comptime SLOT_MASS: Float64 = {SLOT_MASS!r}
+
+
+@always_inline
+fn park_pos_x(slot: Int) -> Float64:
+    """The x of parked slot `slot` — the scene's own arithmetic, once."""
+    return PARK_X + Float64(slot) * PARK_SPACING
+'''
+
+
+def verify(paths: dict[int, str]) -> None:
+    """MuJoCo is the oracle: report the dims, and ASSERT no parked contacts.
+
+    ⚠ THE CONTACT ASSERT IS THE POINT OF THIS FUNCTION. A parked slot that
+    touches something turns P0's `nv` sweep into a contact sweep, and the
+    resulting curve would look smooth and mean nothing. This is the check that
+    the measured park pose above is actually doing its job — run every time
+    the scenes are generated, not once by hand.
+    """
+    try:
+        import mujoco
+    except ImportError:
+        print("  (mujoco not importable — skipping verification)")
+        return
+
+    base_ncon = None
+    print("\n  scene                 nq   nv  ngeom  nbody  ncon")
+    print("  " + "-" * 52)
+    for k in SLOT_COUNTS:
+        m = mujoco.MjModel.from_xml_path(paths[k])
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        print(
+            f"  {os.path.basename(paths[k]):20s} "
+            f"{m.nq:4d} {m.nv:4d} {m.ngeom:6d} {m.nbody:6d} {d.ncon:5d}"
+        )
+        if k == 0:
+            base_ncon = d.ncon
+        elif d.ncon != base_ncon:
+            raise SystemExit(
+                f"gen_park_scenes: k={k} has {d.ncon} contacts, the k=0 "
+                f"control has {base_ncon}. A PARKED SLOT IS TOUCHING "
+                f"SOMETHING — the park pose is wrong, and any throughput "
+                f"curve measured on these scenes would be a contact sweep "
+                f"wearing an nv sweep's label."
+            )
+    print(f"\n  OK: every scene has the control's {base_ncon} contact(s) — "
+          f"parked slots touch nothing")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--check", action="store_true",
+                    help="fail if any generated file differs (CI)")
+    args = ap.parse_args()
+
+    if not os.path.exists(BASE):
+        raise SystemExit(f"gen_park_scenes: run from the project root ({BASE})")
+    base_text = open(BASE, encoding="utf-8").read()
+
+    paths: dict[int, str] = {}
+    stale = []
+    for k in SLOT_COUNTS:
+        name = f"so101_park_k{k}"
+        path = os.path.join(OUT_DIR, name + ".xml")
+        paths[k] = path
+        text = build(base_text, k, name)
+        old = open(path, encoding="utf-8").read() if os.path.exists(path) else None
+        if args.check:
+            if old != text:
+                stale.append(path)
+        elif old != text:
+            open(path, "w", encoding="utf-8").write(text)
+            print(f"  wrote {path}")
+        else:
+            print(f"  unchanged {path}")
+
+    # The pose constants the Mojo repark hook reads — same generator, so the
+    # scene and the hook cannot disagree about where "parked" is.
+    pose_text = pose_module_text()
+    pose_old = (
+        open(POSE_MODULE, encoding="utf-8").read()
+        if os.path.exists(POSE_MODULE) else None
+    )
+    if args.check:
+        if pose_old != pose_text:
+            stale.append(POSE_MODULE)
+    elif pose_old != pose_text:
+        open(POSE_MODULE, "w", encoding="utf-8").write(pose_text)
+        print(f"  wrote {POSE_MODULE}")
+    else:
+        print(f"  unchanged {POSE_MODULE}")
+
+    if args.check:
+        if stale:
+            print("STALE (run `pixi run python tools/tasks/gen_park_scenes.py`):")
+            for p in stale:
+                print("  " + p)
+            return 1
+        print("  all park scenes up to date")
+
+    verify(paths)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

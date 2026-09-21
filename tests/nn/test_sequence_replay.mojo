@@ -12,8 +12,8 @@ from std.memory import alloc
 from std.random import seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.data.sequence_replay import SequenceReplay
+from noeira.nn.constants import DT
+from noeira.deep_agents.data.sequence_replay import SequenceReplay
 
 
 def test_basic_record_and_sample() raises:

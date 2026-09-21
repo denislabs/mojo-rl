@@ -40,10 +40,10 @@ from max.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.dm_control.walker import (
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.deep_agents.sac import SAC
+from noeira.envs.dm_control.walker import (
     DMWalkerWalkBatched,
     DMWalkerModel,
 )
@@ -91,8 +91,8 @@ def main() raises:
 
     with DeviceContext() as ctx:
         var env_vars = load_dotenv()
-        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-        var url = env_vars.get("RL_MONITOR_URL", "")
+        var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+        var url = env_vars.get("NOEIRA_CLOUD_URL", "")
 
         var logger = RemoteLogger(
             server_url=url,

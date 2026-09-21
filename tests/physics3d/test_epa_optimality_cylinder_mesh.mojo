@@ -94,16 +94,16 @@ from std.math import abs, sqrt, acos, cos, sin, pi
 from layout import Layout, LayoutTensor
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
-from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
-from mojo_rl.physics3d.collision.gjk import gjk_epa
-from mojo_rl.physics3d.collision.gjk_support import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.collision.ccd_workspace import L_CCD_WS1
+from noeira.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
+from noeira.physics3d.collision.gjk import gjk_epa
+from noeira.physics3d.collision.gjk_support import (
     support_cylinder,
     support_mesh,
 )
-from mojo_rl.physics3d.gpu.constants import mesh_max_edge
-from mojo_rl.physics3d.constants import GEOM_CYLINDER, GEOM_MESH
+from noeira.physics3d.gpu.constants import mesh_max_edge
+from noeira.physics3d.constants import GEOM_CYLINDER, GEOM_MESH
 
 comptime DT = DType.float64
 comptime NV_HULL: Int = 130

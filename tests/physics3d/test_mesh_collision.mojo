@@ -12,17 +12,17 @@ broadphase_sap).
 
 from std.math import sqrt
 from layout import Layout, LayoutTensor
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
-from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
-from mojo_rl.physics3d.collision.gjk import gjk_epa
-from mojo_rl.physics3d.collision.gjk_support import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.collision.ccd_workspace import L_CCD_WS1
+from noeira.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
+from noeira.physics3d.collision.gjk import gjk_epa
+from noeira.physics3d.collision.gjk_support import (
     support_sphere,
     support_box,
     support_mesh,
 )
-from mojo_rl.physics3d.constants import GEOM_SPHERE, GEOM_BOX, GEOM_MESH
-from mojo_rl.physics3d.gpu.constants import mesh_max_edge
+from noeira.physics3d.constants import GEOM_SPHERE, GEOM_BOX, GEOM_MESH
+from noeira.physics3d.gpu.constants import mesh_max_edge
 
 comptime NMV = 8
 comptime L_MV = Layout.row_major(NMV, 3)
@@ -83,7 +83,7 @@ def test_box_box_separated() raises:
     )
     print("  dist=", Float64(result[0]), "(expected ~1.0)")
     if result[0] < 0:
-        print("  FAIL: reported penetration for separated boxes!")
+        raise Error("FAIL: reported penetration for separated boxes!")
     else:
         print("  PASS")
 
@@ -112,7 +112,7 @@ def test_box_box_overlapping() raises:
     )
     print("  dist=", Float64(result[0]), "(expected ~-0.7)")
     if result[0] >= 0:
-        print("  FAIL: reported separation for overlapping boxes!")
+        raise Error("FAIL: reported separation for overlapping boxes!")
     else:
         print("  PASS")
 
@@ -153,7 +153,7 @@ def test_sphere_mesh_separated() raises:
     )
     print("  dist=", Float64(result[0]), "(expected ~2.4)")
     if result[0] < 0:
-        print("  FAIL: reported penetration for separated shapes!")
+        raise Error("FAIL: reported penetration for separated shapes!")
     else:
         print("  PASS")
 
@@ -200,7 +200,7 @@ def test_mesh_box_sawyer_case() raises:
           "normal_z=", Float64(result[6]))
     print("  (expected dist > 0, mesh bottom at z=0.20, box top at z=0.0)")
     if result[0] < 0:
-        print("  FAIL: reported penetration for separated shapes!")
+        raise Error("FAIL: reported penetration for separated shapes!")
         print("  Mesh at z=0.23 ± 0.03 → range [0.20, 0.26]")
         print("  Box from z=-0.92 to z=0.0")
         print("  Gap should be ~0.20")
@@ -244,9 +244,9 @@ def test_mesh_box_touching() raises:
     )
     print("  dist=", Float64(result[0]), "(expected ~0.0)")
     if result[0] < -0.01:
-        print("  FAIL: too deep penetration!")
+        raise Error("FAIL: too deep penetration!")
     elif result[0] > 0.01:
-        print("  FAIL: should be touching!")
+        raise Error("FAIL: should be touching!")
     else:
         print("  PASS")
 
@@ -289,7 +289,7 @@ def test_mesh_box_rotated() raises:
     print("  dist=", Float64(result[0]),
           "(expected ~0.2, mesh at z=0.23±0.03, box top at z=0.0)")
     if result[0] < 0:
-        print("  FAIL: false penetration!")
+        raise Error("FAIL: false penetration!")
     else:
         print("  PASS")
 
@@ -332,7 +332,7 @@ def test_mesh_box_asymmetric() raises:
     print("  dist=", Float64(result[0]),
           "(expected ~0.205)")
     if result[0] < 0:
-        print("  FAIL: false penetration!")
+        raise Error("FAIL: false penetration!")
     else:
         print("  PASS")
 
@@ -388,7 +388,7 @@ def test_mesh_box_actual_sawyer() raises:
     print("  dist=", Float64(result[0]),
           "(expected ~0.15)")
     if result[0] < 0:
-        print("  FAIL: false penetration!")
+        raise Error("FAIL: false penetration!")
     else:
         print("  PASS")
 
@@ -482,7 +482,7 @@ def test_exact_sawyer_runtime() raises:
     # xquat: (0.028, -0.9996, -0.0005, 0.003)  (x,y,z,w)
     # Geom local pos: (0, 0, 0.03), local quat: identity
     # World pos after rotation: body_pos + quat_rotate(body_quat, (0,0,0.03))
-    from mojo_rl.physics3d.kinematics.quat_math import quat_rotate, quat_mul
+    from noeira.physics3d.kinematics.quat_math import quat_rotate, quat_mul
     var bqx = 0.02798404808475026
     var bqy = -0.9996283797925901
     var bqz = -0.00045769893422206113
@@ -512,7 +512,7 @@ def test_exact_sawyer_runtime() raises:
     print("  dist=", Float64(result[0]),
           "normal=", Float64(result[4]), Float64(result[5]), Float64(result[6]))
     if result[0] < 0:
-        print("  FAIL")
+        raise Error("FAIL: see the print above")
     else:
         print("  PASS: gap=", Float64(result[0]))
 

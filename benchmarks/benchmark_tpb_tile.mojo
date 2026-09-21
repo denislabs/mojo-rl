@@ -12,13 +12,13 @@ from std.math import sin, sqrt
 from std.memory import Pointer
 
 from max.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.core.fmt import fit
+from noeira.nn.constants import DT as dtype
+from noeira.core.fmt import fit
 
 
 # =============================================================================
@@ -267,8 +267,8 @@ def benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
     var c_buf = ctx.enqueue_create_buffer[dtype](M * N)
 
     # Initialize with random data on host
-    var a_data = InlineArray[Scalar[dtype], M * K](uninitialized=True)
-    var b_data = InlineArray[Scalar[dtype], K * N](uninitialized=True)
+    var a_data = Array[Scalar[dtype], M * K](uninitialized=True)
+    var b_data = Array[Scalar[dtype], K * N](uninitialized=True)
 
     for i in range(M * K):
         a_data[i] = Scalar[dtype](random_float64() * 2 - 1)
@@ -407,8 +407,8 @@ def benchmark_elementwise_tpb[TPB: Int](ctx: DeviceContext) raises -> Float64:
     var c_buf = ctx.enqueue_create_buffer[dtype](SIZE)
 
     # Initialize
-    var a_data = InlineArray[Scalar[dtype], SIZE](uninitialized=True)
-    var b_data = InlineArray[Scalar[dtype], SIZE](uninitialized=True)
+    var a_data = Array[Scalar[dtype], SIZE](uninitialized=True)
+    var b_data = Array[Scalar[dtype], SIZE](uninitialized=True)
 
     for i in range(SIZE):
         a_data[i] = Scalar[dtype](random_float64() * 2 - 1)
@@ -499,8 +499,8 @@ def benchmark_combined[
     var relu_buf = ctx.enqueue_create_buffer[dtype](M * N)
 
     # Initialize
-    var a_data = InlineArray[Scalar[dtype], M * K](uninitialized=True)
-    var w_data = InlineArray[Scalar[dtype], K * N](uninitialized=True)
+    var a_data = Array[Scalar[dtype], M * K](uninitialized=True)
+    var w_data = Array[Scalar[dtype], K * N](uninitialized=True)
 
     for i in range(M * K):
         a_data[i] = Scalar[dtype](random_float64() * 2 - 1)

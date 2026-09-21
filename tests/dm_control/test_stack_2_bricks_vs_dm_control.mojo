@@ -41,14 +41,14 @@ Run with:
     pixi run mojo run -I . tests/dm_control/test_stack_2_bricks_vs_dm_control.mojo
 """
 
-from std.collections import InlineArray
+from std.collections import Array
 from std.math import abs, sqrt, sin, cos
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_stack2 import DMStack2Bricks
-from mojo_rl.envs.dm_control.manipulation_stack2_config import (
+from noeira.envs.dm_control.manipulation_stack2 import DMStack2Bricks
+from noeira.envs.dm_control.manipulation_stack2_config import (
     OBS_DIM,
     ROBOT_SITE_BASE,
     SITE_PINCH,
@@ -70,12 +70,12 @@ from mojo_rl.envs.dm_control.manipulation_stack2_config import (
     TCP_BBOX_UPPER_Z,
     CLOSE_COEF,
 )
-from mojo_rl.envs.dm_control.manipulation_obs import (
+from noeira.envs.dm_control.manipulation_obs import (
     N_ARM,
     N_HAND,
     torque_site_of,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_POS_X,
     BODY_IDX_QUAT_X,
@@ -352,7 +352,7 @@ def test_stack_2_position_stage_observation_matches_dm_control() raises:
     var refmod = _refmod()
     var env = ENV()
 
-    var starts = InlineArray[Int, 15](fill=0)
+    var starts = Array[Int, 15](fill=0)
     starts[0] = OFF_ARM_POS
     starts[1] = OFF_ARM_TORQUE
     starts[2] = OFF_ARM_VEL
@@ -368,7 +368,7 @@ def test_stack_2_position_stage_observation_matches_dm_control() raises:
     starts[12] = OFF_B1_LINVEL
     starts[13] = OFF_B1_QUAT
     starts[14] = OFF_B1_POS
-    var lens = InlineArray[Int, 15](fill=0)
+    var lens = Array[Int, 15](fill=0)
     lens[0] = 12
     lens[1] = 6
     lens[2] = 6
@@ -385,7 +385,7 @@ def test_stack_2_position_stage_observation_matches_dm_control() raises:
     lens[13] = 4
     lens[14] = 3
 
-    var worst = InlineArray[Float64, 15](fill=0.0)
+    var worst = Array[Float64, 15](fill=0.0)
     var n_bad_contacts = 0
     for ci in range(4):
         var qpos = _qpos_of(ci)

@@ -73,19 +73,19 @@ Run: pixi run mojo run -I . tests/physics3d/test_runtime_step_both_legs.mojo
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.parser import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.parser import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.parser.runtime_load import spec_fields_runtime
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.hopper.hopper_xml import HopperModel
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
-from mojo_rl.envs.robots.so_arm100_xml import SoArm100Model, SO_ARM100_NMESH_VERTS
-from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
+from noeira.physics3d.parser.runtime_load import spec_fields_runtime
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.hopper.hopper_xml import HopperModel
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.envs.robots.so_arm100_xml import SoArm100Model, SO_ARM100_NMESH_VERTS
+from noeira.envs.metaworld.sawyer_reach_xml import SawyerReachModel
 
 comptime DT = DType.float64
 comptime STEPS = 200
@@ -237,10 +237,10 @@ def main() raises:
     print("=== the same model, stepped on BOTH LEGS ===")
     print("--- no gated family, no SAP: the control ---")
     both_legs[Walker2dModel](
-        t, ctx, "mojo_rl/envs/walker2d/assets/walker2d.xml", "walker2d"
+        t, ctx, "noeira/envs/walker2d/assets/walker2d.xml", "walker2d"
     )
     both_legs[HopperModel](
-        t, ctx, "mojo_rl/envs/hopper/assets/hopper.xml", "hopper"
+        t, ctx, "noeira/envs/hopper/assets/hopper.xml", "hopper"
     )
     # ⚠ THESE TWO ARE THE POINT OF THE TEST, and neither was covered before
     # the `may_exist` conversion: humanoid exercises the TENDON rows and, at
@@ -249,23 +249,23 @@ def main() raises:
     # gated only the families that were never broken.
     print("--- 2 tendons + ngeom 18 (SAP): the tendon + broadphase arms ---")
     both_legs[HumanoidModel](
-        t, ctx, "mojo_rl/envs/humanoid/assets/humanoid.xml", "humanoid"
+        t, ctx, "noeira/envs/humanoid/assets/humanoid.xml", "humanoid"
     )
     # ⚠⚠ THE EQUALITY ARM, AND IT EXISTS BECAUSE THE RUNTIME LEG CRASHED
     # HERE. `may_exist` opened `build_weld_equality_rows` to dynamic
-    # providers and it turned out to hold three `InlineArray[…, V_SIZE]` —
+    # providers and it turned out to hold three `Array[…, V_SIZE]` —
     # length 0 on a dynamic provider — that had never been swept, because the
     # ONLY caller sat behind `comptime if D.CAP_NEQUALITY > 0` and was
     # unreachable. Opening a gate can expose a latent zero-size container
     # behind it, and no audit of REACHABLE code can see one.
     print("--- a mocap WELD + meshes: the equality arm ---")
     both_legs[SawyerReachModel, 2048](
-        t, ctx, "mojo_rl/envs/metaworld/assets/sawyer_reach.xml", "sawyer",
+        t, ctx, "noeira/envs/metaworld/assets/sawyer_reach.xml", "sawyer",
         nmesh_verts=2048,
     )
     print("--- 10 collidable meshes + ngeom 33 (SAP): the mesh arm ---")
     both_legs[SoArm100Model, SO_ARM100_NMESH_VERTS](
-        t, ctx, "mojo_rl/envs/robots/assets/so_arm100.xml", "so_arm100",
+        t, ctx, "noeira/envs/robots/assets/so_arm100.xml", "so_arm100",
         nmesh_verts=SO_ARM100_NMESH_VERTS,
     )
 

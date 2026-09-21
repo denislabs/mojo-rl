@@ -45,18 +45,18 @@ Run:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
-from mojo_rl.nn.primitives.elementwise import Elementwise
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.mbpo import MBPOAgent
-from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.nn.primitives.layer_norm import LayerNorm
+from noeira.nn.primitives.elementwise import Elementwise
+from noeira.nn.primitives.ops.swish_op import SwishOp
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.mbpo import MBPOAgent
+from noeira.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 
 # =============================================================================
@@ -153,8 +153,8 @@ def main() raises:
     # ─── Logger (remote) ───────────────────────────────────
 
     var env_vars = load_dotenv()
-    var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-    var url = env_vars.get("RL_MONITOR_URL", "")
+    var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+    var url = env_vars.get("NOEIRA_CLOUD_URL", "")
 
     var logger = RemoteLogger(
         server_url=url,

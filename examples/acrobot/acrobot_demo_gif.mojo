@@ -7,9 +7,9 @@ Run with:
     pixi run mojo run -I . examples/acrobot/acrobot_demo_gif.mojo
 """
 
-from mojo_rl.envs import AcrobotEnv
-from mojo_rl.agents import QLearningAgent
-from mojo_rl.core.fmt import fit
+from noeira.envs import AcrobotEnv
+from noeira.agents import QLearningAgent
+from noeira.core.fmt import fit
 
 
 def main() raises:

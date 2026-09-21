@@ -19,9 +19,9 @@ from std.memory import alloc
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.data.sequence_replay import SequenceReplay
-from mojo_rl.deep_agents.data.gpu_sequence_replay import GPUSequenceReplay
+from noeira.nn.constants import DT
+from noeira.deep_agents.data.sequence_replay import SequenceReplay
+from noeira.deep_agents.data.gpu_sequence_replay import GPUSequenceReplay
 
 comptime OBS = 3
 comptime ACT = 2

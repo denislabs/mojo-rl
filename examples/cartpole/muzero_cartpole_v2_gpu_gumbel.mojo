@@ -31,12 +31,12 @@ Run (GPU env required):
 from std.memory import Pointer
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.muzero import MuZeroMLPConfig, MuZeroBatchedAgent
-from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.nn.constants import DT
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.deep_agents.muzero import MuZeroMLPConfig, MuZeroBatchedAgent
+from noeira.deep_agents.training import BatchedGpuDiscreteEnv
+from noeira.envs.cartpole import CartPoleEnv
 
 
 def main() raises:
@@ -80,13 +80,13 @@ def main() raises:
     var env = BatchedEnvT(ctx)
     var eval_env = BatchedEnvT(ctx)
 
-    # ── metrics logger (silent no-op without RL_MONITOR_URL in env/.env) ──
+    # ── metrics logger (silent no-op without NOEIRA_CLOUD_URL in env/.env) ──
     var env_vars = load_dotenv()
     var logger = RemoteLogger(
-        server_url=env_vars.get("RL_MONITOR_URL", ""),
+        server_url=env_vars.get("NOEIRA_CLOUD_URL", ""),
         run_name="Gumbel MuZero CartPole (GPU, device replay)",
         buffer_size=64,
-        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+        api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
     )
     logger.set_config("agent", "GumbelMuZero")
     logger.set_config("env", "CartPole")

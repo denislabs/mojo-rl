@@ -66,13 +66,13 @@ from std.math import abs, max
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv, Phyics3dEnvConfig
-from mojo_rl.physics3d.model import ModelDefLike
-from mojo_rl.envs.dm_control.manipulation_reach_def import (
+from noeira.envs.phyics3d_env import Phyics3dEnv, Phyics3dEnvConfig
+from noeira.physics3d.model import ModelDefLike
+from noeira.envs.dm_control.manipulation_reach_def import (
     ReachSiteFeaturesModel,
 )
-from mojo_rl.envs.dm_control.manipulation_stack2_def import Stack2BricksModel
-from mojo_rl.envs.dm_control.manipulation_stack2_config import (
+from noeira.envs.dm_control.manipulation_stack2_def import Stack2BricksModel
+from noeira.envs.dm_control.manipulation_stack2_config import (
     Stack2BricksConfig,
     SITE_PINCH as STACK2_PINCH,
     TCP_BBOX_LOWER_X as S2_LO_X,
@@ -82,7 +82,7 @@ from mojo_rl.envs.dm_control.manipulation_stack2_config import (
     TCP_BBOX_UPPER_Y as S2_HI_Y,
     TCP_BBOX_UPPER_Z as S2_HI_Z,
 )
-from mojo_rl.envs.dm_control.manipulation_reach_config import (
+from noeira.envs.dm_control.manipulation_reach_config import (
     N_ARM,
     SITE_PINCH,
     ReachSiteFeaturesConfig,

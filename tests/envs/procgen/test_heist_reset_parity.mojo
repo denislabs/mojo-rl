@@ -11,9 +11,9 @@ Asset-free/fast. See `docs/PROCGEN_HEIST_SCOPE.md`.
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import HeistGame, KEY, LOCKED_DOOR, EXIT
-from mojo_rl.envs.procgen.games.heist import DIST_EASY, DIST_HARD
-from mojo_rl.envs.procgen.core.object_ids import SPACE
+from noeira.envs.procgen.games import HeistGame, KEY, LOCKED_DOOR, EXIT
+from noeira.envs.procgen.games.heist import DIST_EASY, DIST_HARD
+from noeira.envs.procgen.core.object_ids import SPACE
 
 
 @fieldwise_init

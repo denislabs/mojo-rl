@@ -18,7 +18,7 @@ function body (~600 LOC dedup still possible, slightly less elegant).
 
 from std.math import tanh
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
 
 # ──────────────────────────────────────────────────────────────────────

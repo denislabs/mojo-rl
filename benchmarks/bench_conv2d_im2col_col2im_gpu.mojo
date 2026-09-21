@@ -1,7 +1,7 @@
 """Conv2D im2col / col2im kernel A/B — perf + correctness, in isolation.
 
 Self-contained A/B harness (one process) for the two gather/scatter kernels that
-flank the Conv2D GEMM in `mojo_rl/nn/primitives/conv2d.mojo`. Modeled on
+flank the Conv2D GEMM in `noeira/nn/primitives/conv2d.mojo`. Modeled on
 `bench_storage_transpose_gpu.mojo`. Tracker: `docs/CONV2D_KERNEL_OPTIMIZATION.md`.
 
 Each GPU variant is verified against the CPU reference (`_im2col_cpu` /
@@ -32,12 +32,12 @@ Run (Apple = parity only):
     pixi run -e apple  mojo run -I . benchmarks/bench_conv2d_im2col_col2im_gpu.mojo
 """
 
-from std.gpu import global_idx, thread_idx, block_idx, block_dim
+from max.gpu import global_idx, thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.primitives.conv2d import _im2col_cpu, _col2im_cpu
+from noeira.nn.primitives.conv2d import _im2col_cpu, _col2im_cpu
 
 comptime DT = DType.float32
 comptime IT = DType.int32

@@ -21,13 +21,13 @@ WHAT IS COMPARED, and what is NOT:
   * LIGHTS     — dir, diffuse, specular, ambient, directional, castshadow,
                  exponent.
   * CAMERAS    — pos, quat, fovy, mode, targetbody.
-  * MATERIALS  — rgba, shininess, specular, reflectance, texrepeat, texid.
+  * MATERIALS  — rgba, shininess, specular, reflectance, texrepeat, texuniform, texid.
   * SITES      — body, pos, size[0]. This family is why the gate matters:
                  `_rcd`'s site records were WRONG and the consistency gate
                  had to exempt them, which meant reporting rather than
                  asserting. Here they are asserted.
   * TENDONS    — spatial `width` / `rgba`, the render style.
-  * <visual>   — znear, shadowsize, headlight ambient.
+  * <visual>   — znear, shadowsize, headlight ambient/diffuse/specular/active.
 
   ⚠ TEXTURE PARAMETERS CANNOT BE GATED HERE and this is a real hole, not an
   omission. MuJoCo does not RETAIN `builtin`, `rgb1`, `rgb2`, `mark`,
@@ -45,34 +45,34 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml_full
+from noeira.physics3d.parser import parse_xml_full
 
 
 def _read(path: String) raises -> String:
     """The model's MJCF, from the asset — no embedded copy exists any more."""
     with open(path, "r") as f:
         return f.read()
-from mojo_rl.physics3d.parser.render_fields import (
+from noeira.physics3d.parser.render_fields import (
     RenderFields,
     build_render_fields,
 )
-from mojo_rl.physics3d.parser.flat_model import (
+from noeira.physics3d.parser.flat_model import (
     TEX_SKYBOX, TEX_2D, TEX_CUBE,
 )
-from mojo_rl.physics3d.constants import (
+from noeira.physics3d.constants import (
     GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_CYLINDER,
     GEOM_MESH, GEOM_ELLIPSOID,
 )
 
-from mojo_rl.envs.dm_control.ball_in_cup import DMBallInCupModel
-from mojo_rl.envs.dm_control.cheetah import DMCheetahModel
-from mojo_rl.envs.dm_control.fish import DMFishSwimModel
-from mojo_rl.envs.dm_control.humanoid import DMHumanoidModel
-from mojo_rl.envs.dm_control.manipulator import DMManipulatorBringBallModel
-from mojo_rl.envs.dm_control.quadruped import DMQuadrupedWalkModel
-from mojo_rl.envs.dm_control.walker import DMWalkerModel
-from mojo_rl.envs.dm_control.manipulation_stack2_def import Stack2BricksModel
-from mojo_rl.envs.dm_control.manipulation_reassemble5_def import (
+from noeira.envs.dm_control.ball_in_cup import DMBallInCupModel
+from noeira.envs.dm_control.cheetah import DMCheetahModel
+from noeira.envs.dm_control.fish import DMFishSwimModel
+from noeira.envs.dm_control.humanoid import DMHumanoidModel
+from noeira.envs.dm_control.manipulator import DMManipulatorBringBallModel
+from noeira.envs.dm_control.quadruped import DMQuadrupedWalkModel
+from noeira.envs.dm_control.walker import DMWalkerModel
+from noeira.envs.dm_control.manipulation_stack2_def import Stack2BricksModel
+from noeira.envs.dm_control.manipulation_reassemble5_def import (
     Reassemble5Model,
 )
 
@@ -483,6 +483,21 @@ def _check(
            (_i(m.light_type[i]) == 1) == rf.light_directional[i])
         _f(light, ok, "castshadow",
            (_i(m.light_castshadow[i]) != 0) == rf.light_castshadow[i])
+        # ⚠ THE SPOT HALF OF A LIGHT. `pos`, `cutoff` and `attenuation` are
+        # what make `directional="false"` a cone rather than a sun; they
+        # were parsed and dropped at this boundary until 2026-09-15, and the
+        # renderer lit every model as if by suns.
+        _f(light, ok, "pos",
+           not (_neq(_q(m.light_pos[i][0]), rf.light_pos_x[i])
+                or _neq(_q(m.light_pos[i][1]), rf.light_pos_y[i])
+                or _neq(_q(m.light_pos[i][2]), rf.light_pos_z[i])))
+        _f(light, ok, "bodyid", _i(m.light_bodyid[i]) == rf.light_body[i])
+        _f(light, ok, "cutoff",
+           not _neq32(_q(m.light_cutoff[i]), rf.light_cutoff[i]))
+        _f(light, ok, "attenuation",
+           not (_neq32(_q(m.light_attenuation[i][0]), rf.light_att_0[i])
+                or _neq32(_q(m.light_attenuation[i][1]), rf.light_att_1[i])
+                or _neq32(_q(m.light_attenuation[i][2]), rf.light_att_2[i])))
         light.add(ok)
 
     # ── cameras ───────────────────────────────────────────────────────────
@@ -543,6 +558,11 @@ def _check(
         _f(mat, ok, "texrepeat",
            not (_neq32(_q(m.mat_texrepeat[i][0]), rf.mat_texrepeat_u[i])
                 or _neq32(_q(m.mat_texrepeat[i][1]), rf.mat_texrepeat_v[i])))
+        # `texuniform` decides whether a repeat is per face or per metre —
+        # LIBERO's walls tile 5x4 with it and once without. Dropped at the
+        # RenderFields boundary until 2026-09-15.
+        _f(mat, ok, "texuniform",
+           (_i(m.mat_texuniform[i]) != 0) == rf.mat_texuniform[i])
         # ⚠ `mat_texid` IS (nmat, mjNTEXROLE) IN MuJoCo 3.x, not a scalar.
         # A `<material texture="...">` binds the RGB role (index 1); we model
         # one texture per material, so that is the slot to compare.
@@ -616,6 +636,24 @@ def _check(
                     rf.vis_headlight_ambient_g)
             or _neq32(_q(m.vis.headlight.ambient[2]),
                     rf.vis_headlight_ambient_b)))
+    # ⚠ THE WHOLE HEADLIGHT, defaults included: a model with no `<visual>`
+    # must still report MuJoCo's `.4 / .5 / active`, because that is the
+    # light MuJoCo draws it with.
+    _f(vis, okv, "headlight_diffuse",
+       not (_neq32(_q(m.vis.headlight.diffuse[0]), rf.vis_headlight_diffuse_r)
+            or _neq32(_q(m.vis.headlight.diffuse[1]),
+                    rf.vis_headlight_diffuse_g)
+            or _neq32(_q(m.vis.headlight.diffuse[2]),
+                    rf.vis_headlight_diffuse_b)))
+    _f(vis, okv, "headlight_specular",
+       not (_neq32(_q(m.vis.headlight.specular[0]),
+                   rf.vis_headlight_specular_r)
+            or _neq32(_q(m.vis.headlight.specular[1]),
+                    rf.vis_headlight_specular_g)
+            or _neq32(_q(m.vis.headlight.specular[2]),
+                    rf.vis_headlight_specular_b)))
+    _f(vis, okv, "headlight_active",
+       (_i(m.vis.headlight.active) != 0) == rf.vis_headlight_active)
     vis.add(okv)
 
     print("  ", name, "ok")
@@ -656,8 +694,8 @@ def test_render_fields_match_mujoco() raises:
     # primitives-only (dog's 162 meshes are baked out of the port), so
     # without SO-ARM100's 18 mesh assets the `mesh` row above compares
     # nothing but -1 == -1.
-    _check("so_arm100  ", "mojo_rl/envs/robots/assets/so_arm100.xml",
-           _read("mojo_rl/envs/robots/assets/so_arm100.xml"),
+    _check("so_arm100  ", "noeira/envs/robots/assets/so_arm100.xml",
+           _read("noeira/envs/robots/assets/so_arm100.xml"),
            geom, light, cam, mat, site, tex, sten, vis)
     # ⚠⚠ THE MANIPULATION FAMILY HAD NO ROW HERE AT ALL, and it is the only
     # family the VIEWER is used on. Every model above is a single `<worldbody>`

@@ -34,11 +34,11 @@ look reasonable if the CVAE encoder were subtly wrong, since the latent enters
 the decoder through a single token among 14.
 """
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.act.loss_graph import ACTLossGraph
-from mojo_rl.deep_agents.act.refload import ListParams, LoadRefParams, RefDump
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.act.loss_graph import ACTLossGraph
+from noeira.deep_agents.act.refload import ListParams, LoadRefParams, RefDump
 
 
 comptime REF_DIR = "/tmp/act_ref"
@@ -347,7 +347,7 @@ def main() raises:
 
 
 from max.gpu.host import DeviceContext
-from mojo_rl.nn.core.param import ParamVisitor
+from noeira.nn.core.param import ParamVisitor
 
 
 struct GradScan(ParamVisitor):

@@ -19,14 +19,14 @@ flight. Run: pixi run -e nvidia mojo run -I . tests/nn/test_parallel_branch_upda
 """
 
 from max.gpu.host import DeviceContext
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.combinators.parallel import Parallel
-from mojo_rl.nn.primitives.linear import Linear
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.combinators.parallel import Parallel
+from noeira.nn.primitives.linear import Linear
 
 
 struct WSum(ParamVisitor):

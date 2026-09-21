@@ -32,15 +32,15 @@ Run: pixi run mojo run -I . tests/physics3d/test_constraints_vs_mujoco.mojo
 from std.testing import assert_true, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs
-from std.collections import InlineArray
+from std.collections import Array
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.envs.ant.ant_xml import AntModel
-from mojo_rl.envs.hopper.hopper_xml import HopperModel
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.envs.ant.ant_xml import AntModel
+from noeira.envs.hopper.hopper_xml import HopperModel
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 
@@ -119,9 +119,10 @@ def _check_invweights(
 def test_invweight0_vs_mujoco() raises:
     """Root-cause guard: build-time inverse weights must equal MuJoCo's.
 
-    Ant is the discriminating model: it carries a <custom> init_qpos that
-    bends its ankles, so a build at the reset pose instead of qpos0 shows up
-    here (0.75% on the hinges) and nowhere else. Humanoid isolates the
+    Ant was the discriminating model: its <custom> init_qpos used to bend
+    its ankles at reset (the parser no longer applies it; MuJoCo never did),
+    so a build at the reset pose instead of qpos0 showed up here (0.75% on
+    the hinges) and nowhere else. It stays as the guard's history. Humanoid isolates the
     free-joint dof-group averaging (its reset pose IS qpos0, so only the
     averaging can differ). Hopper has neither and must stay exact.
     """
@@ -137,7 +138,7 @@ def test_invweight0_vs_mujoco() raises:
     var bwa = List[Float64]()
     for i in range(2 * A.NBODY):
         bwa.append(Float64(mfa.body_invweight0.data[i]))
-    _check_invweights("ant", "mojo_rl/envs/ant/assets/ant.xml", dwa, bwa, A.NV, A.NBODY)
+    _check_invweights("ant", "noeira/envs/ant/assets/ant.xml", dwa, bwa, A.NV, A.NBODY)
 
     comptime U = HumanoidModel
     comptime MD_2 = ModelDims[U]
@@ -149,7 +150,7 @@ def test_invweight0_vs_mujoco() raises:
     var bwu = List[Float64]()
     for i in range(2 * U.NBODY):
         bwu.append(Float64(mfu.body_invweight0.data[i]))
-    _check_invweights("humanoid", "mojo_rl/envs/humanoid/assets/humanoid.xml", dwu, bwu, U.NV, U.NBODY)
+    _check_invweights("humanoid", "noeira/envs/humanoid/assets/humanoid.xml", dwu, bwu, U.NV, U.NBODY)
 
     comptime H = HopperModel
     comptime MD_3 = ModelDims[H]
@@ -161,7 +162,7 @@ def test_invweight0_vs_mujoco() raises:
     var bwh = List[Float64]()
     for i in range(2 * H.NBODY):
         bwh.append(Float64(mfh.body_invweight0.data[i]))
-    _check_invweights("hopper", "mojo_rl/envs/hopper/assets/hopper.xml", dwh, bwh, H.NV, H.NBODY)
+    _check_invweights("hopper", "noeira/envs/hopper/assets/hopper.xml", dwh, bwh, H.NV, H.NBODY)
 
 
 def _ant_limits(num_steps: Int, overshoot: Float64) raises:
@@ -170,7 +171,7 @@ def _ant_limits(num_steps: Int, overshoot: Float64) raises:
     comptime M = AntModel
     comptime MD_4 = ModelDims[M]
     var mujoco = Python.import_module("mujoco")
-    var mj_model = mujoco.MjModel.from_xml_path("mojo_rl/envs/ant/assets/ant.xml")
+    var mj_model = mujoco.MjModel.from_xml_path("noeira/envs/ant/assets/ant.xml")
     mj_model.opt.integrator = 0
     var mj_data = mujoco.MjData(mj_model)
 
@@ -179,7 +180,7 @@ def _ant_limits(num_steps: Int, overshoot: Float64) raises:
     M.init_fields[DTYPE](ctx, mf)
     var d = Data[DTYPE, MD_4, 1]()
 
-    var q = InlineArray[Float64, M.NQ](fill=0.0)
+    var q = Array[Float64, M.NQ](fill=0.0)
     q[2] = 2.0  # torso high — contact-free, so limits are the ONLY rows
     q[3] = 0.9659258262890683  # tilted root: a wrong free-dof weight shows up
     q[5] = 0.25881904510252074
@@ -197,7 +198,7 @@ def _ant_limits(num_steps: Int, overshoot: Float64) raises:
     for i in range(M.NQ):
         d.qpos.data[i] = Scalar[DTYPE](q[i])
         mj_data.qpos[i] = q[i]
-    var v = InlineArray[Float64, M.NV](fill=0.0)
+    var v = Array[Float64, M.NV](fill=0.0)
     v[3] = 2.0
     v[4] = 1.0
     v[5] = 0.5
@@ -268,7 +269,7 @@ def test_contacts_vs_mujoco() raises:
     """Active contacts: hopper dropped onto the floor, lockstep vs MuJoCo."""
     comptime M = HopperModel
     var mujoco = Python.import_module("mujoco")
-    var mj_model = mujoco.MjModel.from_xml_path("mojo_rl/envs/hopper/assets/hopper.xml")
+    var mj_model = mujoco.MjModel.from_xml_path("noeira/envs/hopper/assets/hopper.xml")
     mj_model.opt.integrator = 0
     var mj_data = mujoco.MjData(mj_model)
     comptime MD_5 = ModelDims[M]
@@ -280,7 +281,7 @@ def test_contacts_vs_mujoco() raises:
 
     # z=0.95 puts the foot on the floor immediately; from the 1.25 rest height
     # it never lands inside the step budget and the case goes vacuous.
-    var q = InlineArray[Float64, M.NQ](fill=0.0)
+    var q = Array[Float64, M.NQ](fill=0.0)
     q[1] = 0.95
     for i in range(M.NQ):
         d.qpos.data[i] = Scalar[DTYPE](q[i])

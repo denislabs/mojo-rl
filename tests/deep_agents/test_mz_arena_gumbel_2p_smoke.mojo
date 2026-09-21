@@ -11,17 +11,17 @@ long NVIDIA run, out of scope here).
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.deep_agents.muzero.nets import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.deep_agents.muzero.nets import (
     MZRepNetC4Conv, MZDynNet, MZPredNet
 )
-from mojo_rl.deep_agents.muzero.selfplay_arena_gumbel_2p import (
+from noeira.deep_agents.muzero.selfplay_arena_gumbel_2p import (
     run_muzero_selfplay_arena_gumbel_2p,
 )
-from mojo_rl.deep_agents.zero.symmetries import HFlipColumnAugmenter
-from mojo_rl.deep_agents.zero.evaluators import RandomOpponent
-from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
+from noeira.deep_agents.zero.symmetries import HFlipColumnAugmenter
+from noeira.deep_agents.zero.evaluators import RandomOpponent
+from noeira.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
 
 def main() raises:

@@ -55,21 +55,21 @@ FIVE ARMS:
 Run: pixi run mojo run -I . tests/physics3d/test_adhesion_actuator_vs_mujoco.mojo
 """
 
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
     read_model_source,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.flat_model import ACT_KIND_ADHESION
-from mojo_rl.physics3d.fields import Data, Model, DynDims, SpecFields
-from mojo_rl.physics3d.fields.dynamics_scratch import DynamicsScratch
-from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
-from mojo_rl.physics3d.dynamics.pose_transmission import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.flat_model import ACT_KIND_ADHESION
+from noeira.physics3d.fields import Data, Model, DynDims, SpecFields
+from noeira.physics3d.fields.dynamics_scratch import DynamicsScratch
+from noeira.physics3d.dynamics.actuation import apply_actions_fields
+from noeira.physics3d.dynamics.pose_transmission import (
     apply_pose_transmission, model_has_adhesion,
 )
-from mojo_rl.physics3d.studio.stepping import STUDIO_DT
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.studio.stepping import STUDIO_DT
+from noeira.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE, KEY_IDX_NQPOS,
     ACT_IDX_KIND, ACT_IDX_KP, ACT_IDX_BODY_ID,
     ACT_IDX_CTRL_MIN, ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_LIMITED,

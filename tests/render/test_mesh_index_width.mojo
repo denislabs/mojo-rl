@@ -26,8 +26,8 @@ EXTERNAL model — a gate built only from our own assets could not fail.
 Run: pixi run mojo run -I . tests/render/test_mesh_index_width.mojo
 """
 
-from mojo_rl.render.stl_loader import load_stl
-from mojo_rl.render.gpu_mesh import generate_sphere
+from noeira.render.stl_loader import load_stl
+from noeira.render.gpu_mesh import generate_sphere
 
 comptime BIG = String(
     "references/mujoco_menagerie-main/toddlerbot_2xc/assets/head_visual.stl"

@@ -14,7 +14,7 @@ See `docs/PROCGEN_CHASER_SCOPE.md`.
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import ChaserGame, DIST_EASY, DIST_HARD, DIST_EXTREME
+from noeira.envs.procgen.games import ChaserGame, DIST_EASY, DIST_HARD, DIST_EXTREME
 
 comptime STEPS = 120
 
