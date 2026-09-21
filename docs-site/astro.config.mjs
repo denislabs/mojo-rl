@@ -1,12 +1,24 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import remarkBaseLinks from './src/plugins/remark-base-links.mjs';
+
+// noeira.ai keeps its root for the marketing site; the docs live under /docs.
+const BASE = '/docs';
 
 // https://astro.build/config
 export default defineConfig({
 	// Canonical origin. Required by @astrojs/sitemap (bundled with Starlight),
 	// which silently skips without it, and used for canonical <link> tags.
-	site: 'https://mojo-rl.denislabs.com',
+	site: 'https://noeira.ai',
+	base: BASE,
+	// Built INTO dist/docs so the Worker's asset paths match its URL paths:
+	// a request for /docs/start/why/ is looked up as dist/docs/start/why/.
+	// dist/ itself carries the root files (robots.txt, _redirects) — see root/.
+	outDir: './dist/docs',
+	// Content links are written root-relative (/tooling/monitor/); this mounts
+	// them under BASE, since Starlight only does that for its own sidebar.
+	markdown: { remarkPlugins: [[remarkBaseLinks, { base: BASE }]] },
 	integrations: [
 		starlight({
 			title: 'noeira',

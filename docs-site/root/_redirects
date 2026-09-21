@@ -1,0 +1,4 @@
+# Served by the docs Worker at the domain root until the marketing site exists.
+# Its routes (wrangler.jsonc) cover `noeira.ai/` and `noeira.ai/robots.txt`
+# only for that reason: drop both when the marketing site takes the root.
+/  /docs/  302

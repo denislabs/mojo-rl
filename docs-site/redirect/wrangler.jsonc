@@ -1,0 +1,14 @@
+{
+	"$schema": "../node_modules/wrangler/config-schema.json",
+	// The old docs Worker's name: deploying this REPLACES the mojo-rl docs site
+	// with a redirect, and keeps the custom domain (and its DNS record) bound.
+	"name": "mojo-rl-docs",
+	"main": "worker.js",
+	"compatibility_date": "2026-07-29",
+	"routes": [
+		{
+			"pattern": "mojo-rl.denislabs.com",
+			"custom_domain": true
+		}
+	]
+}

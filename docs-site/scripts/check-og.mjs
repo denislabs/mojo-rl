@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
-const ORIGIN = 'https://mojo-rl.denislabs.com';
+const ORIGIN = 'https://noeira.ai';
 
 if (!existsSync(dist)) {
 	console.error('check-og: dist/ not found — run `astro build` first.');
@@ -77,7 +77,7 @@ for (const page of pages) {
 	}
 }
 
-const orphans = globSync('og/**/*.png', { cwd: dist })
+const orphans = globSync('docs/og/**/*.png', { cwd: dist })
 	.map((f) => '/' + f)
 	.filter((f) => !referenced.has(f));
 

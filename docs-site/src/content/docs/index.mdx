@@ -10,10 +10,11 @@ hero:
     file: ../../assets/noeira-mark.svg
   actions:
     - text: Get started
-      link: /start/installation/
+      # Frontmatter cannot read `base`, so hero links carry /docs themselves.
+      link: /docs/start/installation/
       icon: right-arrow
     - text: Why noeira
-      link: /start/why/
+      link: /docs/start/why/
       icon: document
       variant: minimal
     - text: GitHub
