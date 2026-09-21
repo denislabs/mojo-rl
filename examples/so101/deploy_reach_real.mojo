@@ -48,7 +48,11 @@ calibrated range; clamp the step to `present +/- max_step_ticks`):
 3. the commanded angle is clamped to the MODEL's `ctrlrange` before it is ever
    mapped back to ticks — the policy trained inside those limits and has no
    reason to be trusted outside them;
-4. torque is released in a `finally`.
+4. the run ends through `robot/so101/deploy_shutdown.return_and_release`, from
+   a `finally`: the follower ramps back to the pose it started from, and torque
+   is released there, on the operator's word — not wherever the policy left
+   the arm (the ACT deployment's arm FELL that way). If the ramp does not
+   arrive, torque is LEFT ON.
 
 ⚠⚠ A `finally` does NOT run on an abort or a signal. If this dies hard, the
 follower is left holding its pose — run `pixi run soarm-torque-off`. That is
@@ -75,6 +79,8 @@ from noeira.physics3d.gpu.constants import (
 from noeira.robot.so101 import SO101Arm, SO101_N, joint_name
 from noeira.robot.so101.ports import follower_port, port_refusal
 from noeira.robot.so101.sim_map import SimJointMap
+from noeira.robot.so101.deploy_shutdown import return_and_release
+from noeira.io.fileio import StdinReader, stdin_is_tty
 from noeira.utils.fmt import col, fixed, pad_left, pad_right
 from noeira.core.policy import describe_policy, resolve_policy
 
@@ -208,7 +214,8 @@ def _sleep_until(deadline_ns: Int):
 
 
 def main() raises:
-    # ⚠⚠ THE ARM MOVES ONLY WITH AN EXPLICIT `--live`. Everything else — the
+    # ⚠⚠ THE ARM MOVES ONLY WITH AN EXPLICIT `--arm` (`--live`, its old name,
+    # is kept as an alias — it always meant "arm"). Everything else — the
     # bus, the observation, the forward kinematics, the policy, the joint
     # mapping, the clamps, the filter and the loop rate — runs identically in
     # DRY RUN, which never arms torque and never writes a goal. A first
@@ -218,7 +225,7 @@ def main() raises:
     # ⚠ RUNTIME, NOT COMPTIME, for `seconds` and `step`. Hardware bring-up is
     # a sweep — the first live run showed the arm rate-limited by the clamp for
     # its whole duration, and answering "how long does it need" or "how much
-    # clamp is enough" should not cost a two-minute rebuild each time. `--live`
+    # clamp is enough" should not cost a two-minute rebuild each time. `--arm`
     # stays a flag rather than a default for the reason it always was.
     var live = False
     var seconds = SECONDS
@@ -227,7 +234,7 @@ def main() raises:
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
-        if a == "--live":
+        if a == "--arm" or a == "--live":
             live = True
         elif a == "--seconds" and i + 1 < len(args):
             seconds = Int(String(args[i + 1]))
@@ -240,7 +247,7 @@ def main() raises:
         print("SO-ARM101 reach — SIM-TRAINED POLICY ON THE REAL ARM  [LIVE]")
     else:
         print("SO-ARM101 reach — DRY RUN (no torque, no goals written)")
-        print("  pass --live to actually move the arm")
+        print("  pass --arm to actually move the arm")
     print("=" * 70)
 
     # ── the policy ────────────────────────────────────────────────────────
@@ -299,6 +306,13 @@ def main() raises:
     var raw = Array[Int32, SO101_N](fill=0)
     if arm.read_positions(Span(raw)) != SO101_N:
         raise Error("deploy: follower did not report 6 positions — not arming")
+    # The one pose known to be safe: the arm rested here, unpowered, before
+    # anything was armed. The shutdown ramps back to it.
+    var start_pose = List[Int32](length=SO101_N, fill=0)
+    for i in range(SO101_N):
+        start_pose[i] = raw[i]
+    var stdin = StdinReader()
+    var interactive = stdin_is_tty()
 
     # ── the mapping self-check ────────────────────────────────────────────
     #
@@ -560,10 +574,18 @@ def main() raises:
                 )
             _sleep_until(t0 + period_ns)
     finally:
-        # Unconditional, dry run included: it costs one packet and it is the
-        # net under every path that could have armed something.
-        arm.set_torque(False)
-        print("\nfollower torque OFF")
+        # Home first, then release — on a dry run this is the unconditional
+        # one-packet release, the net under every path that could have armed.
+        var released = return_and_release(
+            arm, start_pose, live, True, stdin, interactive
+        )
+        if released:
+            print("\nfollower torque OFF")
+        else:
+            print(
+                "⚠ the follower is STILL ENERGISED — the return did not"
+                " arrive; run `pixi run soarm-torque-off` once it is safe."
+            )
 
     print("=" * 70)
     print("TRANSFER RESULT — sim-trained reach on hardware")
@@ -630,7 +652,7 @@ def main() raises:
             "\n     before reading the distance as the policy's fault.",
         )
     if not live:
-        print("  ⚠ DRY RUN — nothing was written to the arm. Add --live.")
+        print("  ⚠ DRY RUN — nothing was written to the arm. Add --arm.")
     # ⚠ The error is FK-derived, not measured with a ruler: it is where the
     # model says the jaw is given the servo angles. A systematic kinematic
     # error is invisible to it. The sim task's own success radius is 20 mm.

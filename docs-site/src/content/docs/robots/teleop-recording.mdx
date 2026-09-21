@@ -21,7 +21,8 @@ Before you start, finish [SO-101 setup](/robots/so101-setup/) and read the
 
 ```bash
 pixi run build-serial
-pixi run mojo run -I . examples/so101/teleop.mojo
+pixi run mojo run -I . examples/so101/teleop.mojo          # dry run: reads both arms, prints the goals
+pixi run mojo run -I . examples/so101/teleop.mojo --arm    # the follower moves
 ```
 
 `examples/so101/teleop.mojo` is the smallest program that proves the stack.
@@ -29,9 +30,11 @@ It reads the leader and commands the follower at 50 Hz for 30 s, and records
 nothing. Its ports come from the environment or the platform default
 (see [ports](/robots/so101-setup/#2-tell-noeira-which-port-is-which-arm)).
 
-:::danger[teleop.mojo arms immediately]
-Unlike the recorders, `teleop.mojo` has no `--arm` flag. It enables follower
-torque as soon as both arms answer. Hold the leader before you start it.
+:::caution[With `--arm`, the follower moves]
+Without `--arm`, `teleop.mojo` reads both arms and prints the goals it would
+command, and never enables torque. With it, the follower's goal is first
+parked on its own pose, then torque comes on and it follows the leader —
+hold the leader before you arm.
 :::
 
 ## The recorders

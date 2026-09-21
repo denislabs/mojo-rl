@@ -53,13 +53,11 @@ instead. On 2026-08-31 someone forgot the flag with nobody at the desk. The
 follower armed, ramped about 22° on `shoulder_pan` and 30° on `wrist_roll` to
 reach the leader's pose, and held.
 
-:::danger[Two programs that do not use `--arm`]
-- `examples/so101/teleop.mojo` enables follower torque as soon as it starts.
-  It has no `--arm` flag.
-- `examples/so101/deploy_reach_real.mojo` moves the arm only with `--live`, not
-  `--arm`.
-
-The ACT and SmolVLA deployments also accept `--live` as an alias for `--arm`.
+:::note[Every program follows the rule]
+`examples/so101/teleop.mojo` and `examples/so101/deploy_reach_real.mojo` were
+the two exceptions until 2026-09-21: the first armed on start, the second used
+`--live`. Both now take `--arm`; the deployments keep `--live` as an alias for
+it.
 :::
 
 ### 2. EEPROM writes are opt-in: `--write`

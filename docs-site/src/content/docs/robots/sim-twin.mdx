@@ -167,7 +167,7 @@ checkpoint on the follower:
 ```bash
 pixi run build-serial
 pixi run mojo run -I . examples/so101/deploy_reach_real.mojo            # dry run
-pixi run mojo run -I . examples/so101/deploy_reach_real.mojo --live     # moves the arm
+pixi run mojo run -I . examples/so101/deploy_reach_real.mojo --arm      # moves the arm
 ```
 
 The policy's observation includes the end-effector position, and no sensor on
@@ -183,12 +183,13 @@ the commanded point against where the end-effector actually ends up.
 The checkpoint is resolved by role (`reach` in project `so101`). See
 [projects](/concepts/projects/).
 
-:::caution[This program releases torque where the arm stands]
-`deploy_reach_real.mojo` moves the arm only with `--live` (it has no `--arm`
-flag). It does **not** use the return-home shutdown of the ACT and
-SmolVLA deployments. It releases torque in a `finally`, wherever the arm is at
-that moment, so support the arm when the run ends. Its runs are short: 5 s by
-default, changed with `--seconds`. `--step` sets the step clamp.
+:::caution[The arm moves only with `--arm`]
+`deploy_reach_real.mojo` moves the arm only with `--arm` (`--live` is kept as
+an alias). It ends through the same return-home shutdown as the ACT and
+SmolVLA deployments: the follower ramps back to the pose it started from,
+and torque is released there on your word — or left on if the ramp does not
+arrive. Its runs are short: 5 s by default, changed with `--seconds`.
+`--step` sets the step clamp.
 :::
 
 ## Next
