@@ -84,7 +84,8 @@ from noeira.nn.constants import DT
 from noeira.core.cont_action import ContAction
 from noeira.core.run import epoch_seconds, iso8601_utc
 from noeira.io.proc import quote_arg, run_capture
-from noeira.deep_agents.demos.file import DemoSet, write_demo_file
+from noeira.deep_agents.demos.ctrl_range import CtrlRange
+from noeira.deep_agents.demos.recorder import EpisodeRecorder, Handover
 from noeira.deep_agents.data.any_replay import AnyReplay
 from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
 from noeira.tasks.sac_family_policy import (
@@ -423,7 +424,10 @@ def _solve5(ref H: List[Float64], ref g: List[Float64]) -> List[Float64]:
 
 struct Expert(Movable):
     var arm: Arm
-    var demos: DemoSet
+    var ctrl: CtrlRange
+    var rec: EpisodeRecorder
+    """The episode bookkeeping (`deep_agents/demos`): rows, the HOLD_STEPS
+    success rule, keep / drop, the file rewritten per kept episode."""
     var noise: Float64
     var feedback: Bool
     var flat_noise: Bool
@@ -442,16 +446,18 @@ struct Expert(Movable):
     var obs: List[Scalar[DT]]
     var prev_obs: List[Scalar[DT]]
     var act_l: List[Float64]
-    var held: Int
     var steps: Int
-    var ep_return: Float64
     var rung_rows: Int
 
     def __init__(
         out self, mut env: E, noise: Float64, feedback: Bool = False,
+        out_path: String = "", keep_failures: Bool = False,
     ) raises:
         self.arm = Arm(env)
-        self.demos = DemoSet(E.OBS_DIM, ACT)
+        self.ctrl = CtrlRange(self.arm.lo.copy(), self.arm.hi.copy())
+        self.rec = EpisodeRecorder(
+            E.OBS_DIM, ACT, out_path, keep_failures, HOLD_STEPS
+        )
         self.noise = noise
         self.feedback = feedback
         self.flat_noise = False
@@ -466,19 +472,11 @@ struct Expert(Movable):
         self.obs = List[Scalar[DT]](length=E.OBS_DIM, fill=Scalar[DT](0))
         self.prev_obs = List[Scalar[DT]](length=E.OBS_DIM, fill=Scalar[DT](0))
         self.act_l = List[Float64](length=ACT, fill=0.0)
-        self.held = 0
         self.steps = 0
-        self.ep_return = 0.0
         self.rung_rows = 0
 
     def _normalized(self, i: Int, q: Float64) -> Float64:
-        var span = self.arm.hi[i] - self.arm.lo[i]
-        var a = 2.0 * (q - self.arm.lo[i]) / span - 1.0 if span != 0.0 else 0.0
-        if a > 1.0:
-            a = 1.0
-        if a < -1.0:
-            a = -1.0
-        return a
+        return self.ctrl.normalize(i, q)
 
     def _apply(mut self, mut env: E) raises -> Bool:
         """Step the env with `self.act_l`, pay the family's reward, record the
@@ -498,17 +496,11 @@ struct Expert(Movable):
             self.timestep,
         )
         var r = Float64(rd[0])
-        self.demos.add(
-            self.prev_obs, self.act_l, r, self.obs, 0.0, self.intervening
-        )
-        self.ep_return += r
         if r > 1.5:
             self.rung_rows += 1
-        if rd[1]:
-            self.held += 1
-        else:
-            self.held = 0
-        return self.held >= HOLD_STEPS
+        return self.rec.record(
+            self.prev_obs, self.act_l, r, self.obs, rd[1], self.intervening
+        )
 
     def reach_mm(self) -> Float64:
         var x = Float64(self.obs[GB + 3])
@@ -525,16 +517,14 @@ struct Expert(Movable):
         `max_steps` have passed. Rows are recorded unflagged. Returns
         (handed over at the arrival, episode already done)."""
         var a32 = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
-        for k in range(max_steps):
+        var h = Handover(HANDOVER_MIN_STEPS, max_steps)
+        for k in range(h.max_steps):
             agent.select_greedy_action(self.obs, a32)
             for i in range(ACT):
                 self.act_l[i] = Float64(a32[i])
             if self._apply(env):
                 return (False, True)
-            if (
-                k + 1 >= HANDOVER_MIN_STEPS and self.reach_mm() < handover_mm
-                and self.settled()
-            ):
+            if h.arrived_at(k, self.reach_mm() < handover_mm and self.settled()):
                 return (True, False)
         return (False, False)
 
@@ -723,10 +713,8 @@ def run_episode(
     did not), then the close, the lift and the hold. Those rows are the
     ones no expert-only file holds — "close from HERE", where here is a
     state the policy reaches on its own (five runs parked on exactly that)."""
-    ex.demos.begin_episode()
-    ex.held = 0
+    ex.rec.begin()
     ex.steps = 0
-    ex.ep_return = 0.0
     ex.rung_rows = 0
     ex.intervening = False
     var handed = False
@@ -799,7 +787,7 @@ def run_episode(
     var brick_z = Float64(env.d.xpos.data[brick * 3 + 2])
     print(
         "  ep", ep, "->", "SUCCESS" if done else "failed", " steps", ex.steps,
-        " return", fixed(ex.ep_return, 1), " rows>1.5 (rung)", ex.rung_rows,
+        " return", fixed(ex.rec.ret, 1), " rows>1.5 (rung)", ex.rung_rows,
         " brick z", fixed(brick_z, 3),
     )
     return done
@@ -933,7 +921,7 @@ def main() raises:
     if brick < 0 or bowl < 0:
         raise Error("brick_brick / bowl_bowl not found in the composed scene")
 
-    var ex = Expert(env, noise, feedback)
+    var ex = Expert(env, noise, feedback, out_path, keep_failures)
     ex.flat_noise = flat_noise
     ex.close_steps = close_steps
     ex.z_grasp = z_grasp
@@ -978,13 +966,9 @@ def main() raises:
             env, ex, brick, bowl, place, ep, verbose, agent_ptr, handover_mm,
             policy_steps,
         )
-        if ok or keep_failures:
-            ex.demos.end_episode(success=ok)
-            write_demo_file(out_path, ex.demos)
-        else:
-            ex.demos.discard_episode()
+        _ = ex.rec.end(success=ok)
         if ok:
             n_ok += 1
     print("-" * 66)
     print("  ", n_ok, "of", n_episodes, "episodes succeeded ->", out_path)
-    print("  ", ex.demos.summary())
+    print("  ", ex.rec.demos.summary())

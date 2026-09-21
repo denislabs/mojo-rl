@@ -74,7 +74,8 @@ from noeira.nn.constants import DT
 from noeira.core.run import epoch_seconds, iso8601_utc
 from noeira.io.proc import quote_arg, run_capture
 from noeira.deep_agents.data.any_replay import AnyReplay
-from noeira.deep_agents.demos.file import DemoSet, write_demo_file
+from noeira.deep_agents.demos.ctrl_range import CtrlRange
+from noeira.deep_agents.demos.recorder import EpisodeRecorder
 from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
 from noeira.tasks.sac_family_policy import (
     SacFamilyPolicy, HIDDEN as FAMILY_HIDDEN, POLICY_BATCH, POLICY_CAP,
@@ -166,22 +167,17 @@ struct TowerTeleop(ActionSource, StepObserver, Movable):
     var intervening: Bool
 
     # ── the recording ──
-    var demos: DemoSet
-    var out_path: String
-    var keep_failures: Bool
+    var rec: EpisodeRecorder
+    """Rows, the hold-N success rule, keep / drop, the file rewritten per
+    kept episode (`deep_agents/demos`)."""
+    var ctrl: CtrlRange
     var frame_skip: Int
     var timestep: Float64
-    var held_steps: Int
     var ep_success: Bool
     var discard: Bool
-    var ep_return: Float64
-    var ep_rows: Int
-    var ep_intervened: Int
     var last_reward: Float64
     var reach_mm: Float64
     var goal_mm: Float64
-    var n_saved: Int
-    var n_dropped: Int
 
     def __init__(
         out self,
@@ -207,6 +203,12 @@ struct TowerTeleop(ActionSource, StepObserver, Movable):
             self.hi[i] = Float64(hi_col[i])
             lo2[i] = Float64(lo_col[i])
             hi2[i] = Float64(hi_col[i])
+        var lo3 = List[Float64]()
+        var hi3 = List[Float64]()
+        for i in range(SO101_N):
+            lo3.append(Float64(lo_col[i]))
+            hi3.append(Float64(hi_col[i]))
+        self.ctrl = CtrlRange(lo3^, hi3^)
         self.map = SimJointMap.identity(lo2^, hi2^)
         self._raw = Array[Int32, SO101_N](fill=0)
         self._last_ok = -1
@@ -234,23 +236,17 @@ struct TowerTeleop(ActionSource, StepObserver, Movable):
             self.policy_label = policy_ckpt
             print("  policy loaded:", policy_ckpt, "— press `i` to intervene")
 
-        self.demos = DemoSet(OBS_DIM, ACT_DIM)
-        self.out_path = out_path
-        self.keep_failures = keep_failures
+        self.rec = EpisodeRecorder(
+            OBS_DIM, ACT_DIM, out_path, keep_failures, HOLD_STEPS_SUCCESS
+        )
         self.frame_skip = frame_skip
         self.timestep = timestep
-        self.held_steps = 0
         self.ep_success = False
         self.discard = False
-        self.ep_return = 0.0
-        self.ep_rows = 0
-        self.ep_intervened = 0
         self.last_reward = 0.0
         self.reach_mm = -1.0
         self.goal_mm = -1.0
-        self.n_saved = 0
-        self.n_dropped = 0
-        self.demos.begin_episode()
+        self.rec.begin()
 
     # ── ActionSource ─────────────────────────────────────────────────────
 
@@ -286,9 +282,10 @@ struct TowerTeleop(ActionSource, StepObserver, Movable):
             "r " + fixed(self.last_reward, 3) + "  reach "
             + fixed(self.reach_mm, 0) + "/" + fixed(REACH_RADIUS_MM, 0)
             + "mm  goal " + fixed(self.goal_mm, 0) + "mm  held "
-            + String(self.held_steps) + "/" + String(HOLD_STEPS_SUCCESS)
-            + "  ep " + String(self.ep_rows) + " rows R=" + fixed(self.ep_return, 1)
-            + "  saved " + String(self.n_saved) + " dropped " + String(self.n_dropped)
+            + String(self.rec.held) + "/" + String(HOLD_STEPS_SUCCESS)
+            + "  ep " + String(self.rec.rows) + " rows R=" + fixed(self.rec.ret, 1)
+            + "  saved " + String(self.rec.n_saved) + " dropped "
+            + String(self.rec.n_dropped)
         )
         return out^
 
@@ -307,12 +304,7 @@ struct TowerTeleop(ActionSource, StepObserver, Movable):
             return
         for i in range(SO101_N):
             var q = self.map.to_sim(self.arm.value().cal, i, self._raw[i])
-            var span = self.hi[i] - self.lo[i]
-            var a = 2.0 * (q - self.lo[i]) / span - 1.0 if span != 0.0 else 0.0
-            if a > 1.0:
-                a = 1.0
-            if a < -1.0:
-                a = -1.0
+            var a = self.ctrl.normalize(i, q)
             action_out[i] = Scalar[DT](a)
             self.last_action[i] = Scalar[DT](a)
 
@@ -364,14 +356,11 @@ struct TowerTeleop(ActionSource, StepObserver, Movable):
         var reward = Float64(rd[0])
         var holds = rd[1]
         var intervened = self.have_policy and self.intervening
-        # `done` stays 0: the driver runs TERMINATE_ON_UNHEALTHY=False, so an
-        # online row never carries a terminal either. `done` from the CPU env
-        # here is only the horizon, which is a truncation.
-        self.demos.add(prev_obs, action, reward, obs, 0.0, intervened=intervened)
-        self.ep_rows += 1
-        if intervened:
-            self.ep_intervened += 1
-        self.ep_return += reward
+        # `done` from the CPU env here is only the horizon, a truncation: the
+        # recorder writes 0 (the driver runs TERMINATE_ON_UNHEALTHY=False).
+        var succeeded = self.rec.record(
+            prev_obs, action, reward, obs, holds, intervened
+        )
         self.last_reward = reward
         _ = done
 
@@ -385,11 +374,7 @@ struct TowerTeleop(ActionSource, StepObserver, Movable):
         var gz = Float64(obs[GOAL_BASE + 8])
         self.goal_mm = ((gx * gx + gy * gy + gz * gz) ** 0.5) * 1000.0
 
-        if holds:
-            self.held_steps += 1
-        else:
-            self.held_steps = 0
-        if self.held_steps >= HOLD_STEPS_SUCCESS:
+        if succeeded:
             self.ep_success = True
             return True     # success: end the episode now
         return False
@@ -397,34 +382,25 @@ struct TowerTeleop(ActionSource, StepObserver, Movable):
     def on_episode_end(mut self, step_i: Int, manual: Bool) raises:
         # `n` while the goal is holding counts; a timeout with it holding
         # (the horizon fell inside the hold window) counts too.
-        if self.held_steps > 0:
+        if self.rec.held > 0:
             self.ep_success = True
-        var keep = (not self.discard) and (self.ep_success or self.keep_failures)
-        if keep and self.ep_rows > 0:
-            self.demos.end_episode(success=self.ep_success)
-            write_demo_file(self.out_path, self.demos)
-            self.n_saved += 1
+        var rows = self.rec.rows
+        if self.rec.end(success=self.ep_success, discard=self.discard):
             print(
-                "  SAVED episode", self.n_saved, "—", self.ep_rows, "rows,",
+                "  SAVED episode", self.rec.n_saved, "—", rows, "rows,",
                 "SUCCESS" if self.ep_success else "failure (kept)",
-                ", return", fixed(self.ep_return, 2),
-                ", intervened rows", self.ep_intervened,
-                "->", self.out_path, "(" + self.demos.summary() + ")",
+                ", return", fixed(self.rec.ret, 2),
+                ", intervened rows", self.rec.intervened_rows,
+                "->", self.rec.out_path, "(" + self.rec.demos.summary() + ")",
             )
         else:
-            self.demos.discard_episode()
-            self.n_dropped += 1
             print(
-                "  dropped episode (", self.ep_rows, "rows,",
+                "  dropped episode (", rows, "rows,",
                 "discarded" if self.discard else "no success", ")",
             )
-        self.demos.begin_episode()
-        self.held_steps = 0
+        self.rec.begin()
         self.ep_success = False
         self.discard = False
-        self.ep_return = 0.0
-        self.ep_rows = 0
-        self.ep_intervened = 0
         _ = step_i
         _ = manual
 
@@ -586,4 +562,4 @@ def main() raises:
     if st.handoff:
         Renderer3D.close_handoff(st.handoff.value().copy())
         st.handoff = None
-    print("recorder closed:", src.demos.summary(), "->", out_path)
+    print("recorder closed:", src.rec.demos.summary(), "->", out_path)
