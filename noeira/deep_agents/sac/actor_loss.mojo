@@ -247,7 +247,11 @@ struct SACActorLoss[
         self.graph.set_node_attr["bc_w", "multiplier"](weight)
         if self._bc_w_dev.dev:
             self._bc_w_dev.data[0] = weight
-            self._bc_w_dev.upload(ctx.value())
+            # ⚠ IN PLACE. `upload` REALLOCATES the device buffer, and the
+            # `bc_w` Scale node holds the handle wired in `make` — an upload
+            # would leave it reading the original zeroed word for the whole
+            # run (it did: the first --bc-q-ratio run trained with λ = 0).
+            self._bc_w_dev.upload_resident(ctx.value())
 
     def set_q_weight(mut self, weight: Scalar[DT]) raises:
         """The multiplier on the SAC half of the loss, `α·logp − min_q`: 1 by
