@@ -1,9 +1,9 @@
 """Every LIBERO family's batched model def and contact budget — GENERATED.
 
-    pixi run gen-libero-envs           # write mojo_rl/tasks/libero_envs/*.mojo
+    pixi run gen-libero-envs           # write noeira/tasks/libero_envs/*.mojo
     pixi run gen-libero-envs --check   # CI: fail if one is stale
 
-Writes, from `mojo_rl/tasks/libero/contact_budget.kv` and the `libero*.family`
+Writes, from `noeira/tasks/libero/contact_budget.kv` and the `libero*.family`
 files:
 
     libero_envs/budgets.mojo          <FAMILY>_MAX_CONTACTS for all 23 families
@@ -52,11 +52,11 @@ The dims module beside it is `tools/gen_model_dims.py`'s (MuJoCo's counts).
 from std.os import listdir
 from std.sys import argv
 
-from mojo_rl.tasks.spec import load_family, SLOT_FREE
+from noeira.tasks.spec import load_family, SLOT_FREE
 
-comptime FAMILY_DIR = "mojo_rl/tasks/families"
-comptime OUT_DIR = "mojo_rl/tasks/libero_envs"
-comptime BUDGET_KV = "mojo_rl/tasks/libero/contact_budget.kv"
+comptime FAMILY_DIR = "noeira/tasks/families"
+comptime OUT_DIR = "noeira/tasks/libero_envs"
+comptime BUDGET_KV = "noeira/tasks/libero/contact_budget.kv"
 comptime GRASP_MARGIN = 32
 comptime ROUND = 16
 
@@ -174,15 +174,15 @@ def render_env(family: String, n_free: Int, b: Int, peak: Int) raises -> String:
         + ", measured\npeak " + String(peak) + "). " + String(n_free)
         + " free slots. ELLIPTIC cone: robosuite's `base.xml`.\n"
         '"""\n\n'
-        "from mojo_rl.physics3d.parser import ModelDefFromXML\n"
-        "from mojo_rl.physics3d.types import ConeType\n"
-        "from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv\n"
-        "from mojo_rl.tasks.task_hooks import TASK_GOAL_WORDS\n"
-        "from mojo_rl.tasks.libero_osc_config import LiberoOscConfig\n"
-        "from mojo_rl.tasks.placement." + family + " import " + cm
+        "from noeira.physics3d.parser import ModelDefFromXML\n"
+        "from noeira.physics3d.types import ConeType\n"
+        "from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv\n"
+        "from noeira.tasks.task_hooks import TASK_GOAL_WORDS\n"
+        "from noeira.tasks.libero_osc_config import LiberoOscConfig\n"
+        "from noeira.tasks.placement." + family + " import " + cm
         + "Placement\n"
-        "from mojo_rl.tasks.libero_envs.budgets import " + up + "_MAX_CONTACTS\n"
-        "from mojo_rl.tasks.libero_envs." + family + "_dims import " + up
+        "from noeira.tasks.libero_envs.budgets import " + up + "_MAX_CONTACTS\n"
+        "from noeira.tasks.libero_envs." + family + "_dims import " + up
         + "_DIMS\n\n"
         "comptime _pm = " + up + "_DIMS\n\n"
         "comptime " + up + "_OBS_DIM: Int = (\n"
@@ -191,7 +191,7 @@ def render_env(family: String, n_free: Int, b: Int, peak: Int) raises -> String:
         '"""`task_hooks.write_task_obs`\'s layout: qpos, qvel, one active word'
         ' per\nfree slot, the goal words."""\n\n'
         "comptime " + cm + "Model = ModelDefFromXML[\n"
-        '    xml_path="mojo_rl/tasks/scenes/' + family + '.xml",\n'
+        '    xml_path="noeira/tasks/scenes/' + family + '.xml",\n'
         "    nbody=_pm.NBODY,\n"
         "    njoint=_pm.NJOINT,\n"
         "    nq=_pm.NQ,\n"

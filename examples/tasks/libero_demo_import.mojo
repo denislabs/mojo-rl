@@ -4,7 +4,7 @@
     pixi run libero-demo-import --no-images --demos 2     # a smoke run, 1/30 the size
     pixi run libero-demo-import libero_goal --out build/demos/libero_goal.h5
 
-The importer is `mojo_rl/data/libero_demos.mojo` — native, no h5py and no
+The importer is `noeira/data/libero_demos.mojo` — native, no h5py and no
 MuJoCo. This file supplies the task list and then CHECKS the one column only we
 can produce.
 
@@ -63,19 +63,19 @@ from std.sys import argv
 
 from std.memory.alloc import unsafe_alloc
 
-from mojo_rl.io.hdf5.reader import H5File
-from mojo_rl.data.libero_demos import (
+from noeira.io.hdf5.reader import H5File
+from noeira.data.libero_demos import (
     import_libero_demos, CAM_H, CAM_W, N_CAMS, CAM_ELEMS, COL_STATE, COL_IMAGES,
     COL_QPOS, COL_JOINTS, COL_GRIPPER, QPOS_PROPRIO, QPOS_WORDS, JOINT_DIM,
     GRIPPER_DIM,
 )
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.tasks.spec import load_task
-from mojo_rl.tasks.libero_state_remap import load_state_remap
-from mojo_rl.tasks.libero_fixtures import dump_path_from_index
+from noeira.data.store import TrajectoryStore
+from noeira.tasks.spec import load_task
+from noeira.tasks.libero_state_remap import load_state_remap
+from noeira.tasks.libero_fixtures import dump_path_from_index
 
 
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
+comptime TASK_DIR = "noeira/tasks/tasks/"
 comptime DEMO_DIR = "references/libero_demos/"
 
 comptime MAX_ULPS: Float64 = 2.0
@@ -170,7 +170,7 @@ def main() raises:
         )
     var remap = load_state_remap(suite)
     print("  remap :", len(remap.joints), "joints, nq", remap.nq, "nv", remap.nv,
-          "(mojo_rl/tasks/libero/state_remap_" + suite + ".kv)")
+          "(noeira/tasks/libero/state_remap_" + suite + ".kv)")
 
     var names = List[String]()
     var texts = List[String]()
@@ -418,7 +418,7 @@ def main() raises:
             raise Error(
                 "a stored plane's mean differs from its source CHANNEL's by "
                 + String(worst_mean) + ". The HWC -> CHW transpose in"
-                " mojo_rl/data/libero_demos.mojo is wrong; the planes are not"
+                " noeira/data/libero_demos.mojo is wrong; the planes are not"
                 " the channels."
             )
         if flip_bad > 0:
@@ -582,7 +582,7 @@ def main() raises:
             + " ULPs, over the " + String(MAX_ULPS) + " our decimal parser costs"
             " (see the header). A permutation does not round, so a residual"
             " this large is a WRONG ADDRESS. Compare"
-            " mojo_rl/tasks/libero/state_remap_" + suite + ".kv against"
+            " noeira/tasks/libero/state_remap_" + suite + ".kv against"
             " tools/tasks/libero_demo_common.build_remap."
         )
     print()

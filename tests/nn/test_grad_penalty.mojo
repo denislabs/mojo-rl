@@ -1,6 +1,6 @@
 """`GradPenalty` gate — the WGAN-GP / R1 parameter gradient, at first order.
 
-`mojo_rl/nn/loss/grad_penalty.mojo` computes ∂/∂θ mean_i(‖∇ₓD_i‖ − t)² from
+`noeira/nn/loss/grad_penalty.mojo` computes ∂/∂θ mean_i(‖∇ₓD_i‖ − t)² from
 three forward and two backward passes (a directional finite difference along
 the stop-gradient unit gradient — exact up to O(ε²), see the module). Two
 independent oracles pin it, and a third check pins the call-order contract:
@@ -35,17 +35,17 @@ from std.random import random_float64, seed
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.call import call_forward, call_vjp
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU, Tanh
-from mojo_rl.nn.loss.grad_penalty import GradPenalty
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.call import call_forward, call_vjp
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.module import Module
+from noeira.nn.core.initializer import Xavier
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU, Tanh
+from noeira.nn.loss.grad_penalty import GradPenalty
 
 
 comptime IN = 5

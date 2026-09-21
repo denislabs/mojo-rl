@@ -22,16 +22,16 @@ not have; see the note at the end of this file.
 Run: pixi run mojo run -I . tests/tasks/test_task_eval.mojo
 """
 
-from mojo_rl.tasks.spec import (
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.predicates import bind_goal, parse_goal, require_tier_a
-from mojo_rl.tasks.eval import eval_goal, region_sites
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.tasks.family import scene_path
+from noeira.tasks.predicates import bind_goal, parse_goal, require_tier_a
+from noeira.tasks.eval import eval_goal, region_sites
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
 
 
-comptime TASKS = "mojo_rl/tasks/tasks/"
+comptime TASKS = "noeira/tasks/tasks/"
 
 
 struct Tally(Copyable, ImplicitlyCopyable, Movable):
@@ -93,7 +93,7 @@ def main() raises:
     print("=== three tasks, one family — P2c ===")
     var ta = Tally()
 
-    var f = load_family("mojo_rl/tasks/families/so101_tabletop.family")
+    var f = load_family("noeira/tasks/families/so101_tabletop.family")
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)
     print("  family:", f.name, "| regions:", len(f.regions),

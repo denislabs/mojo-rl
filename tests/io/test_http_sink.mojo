@@ -21,9 +21,9 @@ refused promptly and deterministically — no timeout, no waiting.
 from std.memory import Pointer
 from std.time import perf_counter_ns
 
-from mojo_rl.core.concurrent.ring import SharedRing
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.io.http_sink import (
+from noeira.core.concurrent.ring import SharedRing
+from noeira.core.logger import RemoteLogger
+from noeira.io.http_sink import (
     DEFAULT_SLOT_BYTES,
     HttpPostSink,
     unframe,

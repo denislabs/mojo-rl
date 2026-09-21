@@ -50,13 +50,13 @@ Run:
 
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
-from mojo_rl.experimental.swm.envs.klein_grid import (
+from noeira.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
+from noeira.experimental.swm.envs.klein_grid import (
     KleinWorld,
     KleinWorldConfig,
     ALIAS_LOCAL,
 )
-from mojo_rl.experimental.swm.map_builder import (
+from noeira.experimental.swm.map_builder import (
     WalkRecord,
     label_walk,
     count_labels,
@@ -65,7 +65,7 @@ from mojo_rl.experimental.swm.map_builder import (
     clone_graph,
     count_reversing,
 )
-from mojo_rl.experimental.swm.cscg import Cscg, dense_labels
+from noeira.experimental.swm.cscg import Cscg, dense_labels
 
 comptime DT = DType.float64
 comptime W = 6

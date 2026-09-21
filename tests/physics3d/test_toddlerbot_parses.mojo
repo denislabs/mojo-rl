@@ -22,8 +22,8 @@ Run with:
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.xml_parser import merge_mjcf
+from noeira.physics3d.parser.full_parser import parse_xml_full
 
 comptime ROOT = String("references/mujoco_menagerie-main/")
 

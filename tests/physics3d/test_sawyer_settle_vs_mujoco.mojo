@@ -45,10 +45,10 @@ from std.math import abs, sqrt
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.envs.metaworld import SawyerReach
-from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.core.cont_action import ContAction
+from noeira.envs.metaworld import SawyerReach
+from noeira.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,

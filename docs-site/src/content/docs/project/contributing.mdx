@@ -7,15 +7,15 @@ import Maturity from '~/components/Maturity.astro';
 
 <Maturity level="stable" />
 
-mojo-rl is developed in the open and was selected for a **Modular Community
+noeira is developed in the open and was selected for a **Modular Community
 Grant** in 2026. Bug reports and contributions are welcome — the
 [project status](/) is honest about which parts are settled and which are not.
 
 ## Setup
 
 ```bash
-git clone https://github.com/denislabs/mojo-rl.git
-cd mojo-rl
+git clone https://github.com/noeira/noeira.git
+cd noeira
 pixi install
 pixi run install-pre-commit
 ```
@@ -73,9 +73,9 @@ by extracting the body into a helper function.
 If a build stops making progress rather than failing, suspect depth first.
 :::
 
-:::caution[Stale `mojo_rl.mojoc` shadows the source tree]
+:::caution[Stale `noeira.mojoc` shadows the source tree]
 ```bash
-rm -f mojo_rl.mojoc
+rm -f noeira.mojoc
 ```
 A stale precompiled package produces errors pointing at code that no longer
 exists.
@@ -111,7 +111,7 @@ no longer match the code. Corrections are welcome:
   `Trainer[MODEL, NC, IN, BATCH, target, …]`, with no loss parameter
 - Several cited example paths do not exist
 - `CLAUDE.md` names an `nn/initializer/` and `nn/autodiff/` package; neither exists
-- `mojo_rl/physics3d/README.md` predates the field-layout migration
+- `noeira/physics3d/README.md` predates the field-layout migration
 - Published observation dimensions disagree with the source in five places — Humanoid is 45, not 376
 - `INSTALL.md` is a scratch file of profiling commands, not an install guide
 - Checkpoints are `storage-ckpt v3`; the prose says v2
@@ -152,7 +152,7 @@ debugging it. The production build is authoritative.
 
 ## Roadmap
 
-From the project's own [roadmap](https://github.com/denislabs/mojo-rl/blob/main/ROADMAP.md):
+From the project's own [roadmap](https://github.com/noeira/noeira/blob/main/ROADMAP.md):
 
 **Stabilize and harden** — battle-test the 3D physics engine and the complex
 agents for community use.

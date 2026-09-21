@@ -53,8 +53,8 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-OUR_SCENE = os.path.join(ROOT, "mojo_rl", "tasks", "scenes", "libero_goal.xml")
-PACK = os.path.join(ROOT, "mojo_rl", "tasks", "libero", "assets")
+OUR_SCENE = os.path.join(ROOT, "noeira", "tasks", "scenes", "libero_goal.xml")
+PACK = os.path.join(ROOT, "noeira", "tasks", "libero", "assets")
 # robosuite 1.4.0's package tree (the version LIBERO pins): its `models/assets`
 # holds the Panda / gripper / mount meshes the demo's merged model names, and
 # `controllers/` is the source this file transcribes. `references/` is

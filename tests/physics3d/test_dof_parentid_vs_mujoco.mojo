@@ -15,12 +15,12 @@ Run: pixi run mojo run -I . tests/physics3d/test_dof_parentid_vs_mujoco.mojo
 from std.python import Python
 from std.testing import assert_true
 
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime,
     dims_from_flat,
     build_model_runtime,
 )
-from mojo_rl.physics3d.fields import Model, DynDims
+from noeira.physics3d.fields import Model, DynDims
 from tests.physics3d.tree_block_goldens import blk_case_count, blk_path
 
 comptime DT = DType.float64

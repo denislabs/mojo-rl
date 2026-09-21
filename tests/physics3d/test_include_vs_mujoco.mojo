@@ -40,13 +40,13 @@ input against the output and raises naming the missing one.
 Run: pixi run mojo run -I . tests/physics3d/test_include_vs_mujoco.mojo
 """
 
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, read_model_source,
 )
-from mojo_rl.physics3d.parser.xml_parser import (
+from noeira.physics3d.parser.xml_parser import (
     resolve_includes, merge_mjcf,
 )
-from mojo_rl.physics3d.parser.expander import expand_mjcf, check_references
+from noeira.physics3d.parser.expander import expand_mjcf, check_references
 
 comptime SCENE = String(
     "references/mujoco_menagerie-main/toddlerbot_2xc/scene.xml"

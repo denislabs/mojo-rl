@@ -36,14 +36,14 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.gpu.constants import GEOM_IDX_RBOUND
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.gpu.constants import GEOM_IDX_RBOUND
+from noeira.physics3d.model.model_dims import ModelDims
 
 # A tiny real hull: 8 vertices, 684 bytes. Big enough to be a mesh, small
 # enough that the fixture costs nothing.
-comptime DIR = "mojo_rl/envs/robots/assets/so_arm100/"
+comptime DIR = "noeira/envs/robots/assets/so_arm100/"
 comptime FILE = "Moving_Jaw_Collision_2.stl"
 
 comptime BODY = """

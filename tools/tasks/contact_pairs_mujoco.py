@@ -50,7 +50,7 @@ def main() -> int:
 
     import mujoco
 
-    xml = f"mojo_rl/tasks/scenes/{family}.xml"
+    xml = f"noeira/tasks/scenes/{family}.xml"
     m = mujoco.MjModel.from_xml_path(xml)
     name = lambda b: mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, b)
 

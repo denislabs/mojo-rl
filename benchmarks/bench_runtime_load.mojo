@@ -15,11 +15,11 @@ at 0, double until the builder stops raising.
 
 from std.time import perf_counter_ns
 
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.parser.runtime_load import spec_fields_runtime
+from noeira.physics3d.parser.runtime_load import spec_fields_runtime
 
 comptime DT = DType.float64
 comptime REPS = 5
@@ -97,8 +97,8 @@ def bench_one(path: String, label: String) raises:
 
 def main() raises:
     print("=== runtime parse + build, min of", REPS, "===")
-    bench_one("mojo_rl/envs/walker2d/assets/walker2d.xml", "walker2d ")
-    bench_one("mojo_rl/envs/dm_control/assets/quadruped_run.xml", "quadruped")
-    bench_one("mojo_rl/envs/humanoid/assets/humanoid.xml", "humanoid ")
-    bench_one("mojo_rl/envs/robots/assets/so_arm100.xml", "so_arm100")
-    bench_one("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml", "dog      ")
+    bench_one("noeira/envs/walker2d/assets/walker2d.xml", "walker2d ")
+    bench_one("noeira/envs/dm_control/assets/quadruped_run.xml", "quadruped")
+    bench_one("noeira/envs/humanoid/assets/humanoid.xml", "humanoid ")
+    bench_one("noeira/envs/robots/assets/so_arm100.xml", "so_arm100")
+    bench_one("noeira/envs/dm_control/assets/dog_stand_walk.xml", "dog      ")

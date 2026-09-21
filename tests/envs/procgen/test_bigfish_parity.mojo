@@ -13,8 +13,8 @@ See `docs/PROCGEN_BIGFISH_SCOPE.md`.
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import BigfishGame
-from mojo_rl.envs.procgen.games.bigfish import DIST_EASY, DIST_HARD
+from noeira.envs.procgen.games import BigfishGame
+from noeira.envs.procgen.games.bigfish import DIST_EASY, DIST_HARD
 
 comptime STEPS = 300
 

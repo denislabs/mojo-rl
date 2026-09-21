@@ -15,9 +15,9 @@ policy fed shifted inputs.
 from std.os import getenv
 from std.os.path import exists
 
-from mojo_rl.deep_agents.act.data import ACTDataset
-from mojo_rl.deep_agents.act.norm_file import ACTNorm, act_norm_from
-from mojo_rl.nn.constants import DT
+from noeira.deep_agents.act.data import ACTDataset
+from noeira.deep_agents.act.norm_file import ACTNorm, act_norm_from
+from noeira.nn.constants import DT
 
 
 comptime QPOS = 6
@@ -31,7 +31,7 @@ def main() raises:
     print("[act-norm-file] gate")
     var store = getenv("ACT_STORE")
     if store.byte_length() == 0:
-        store = getenv("HOME") + "/.cache/mojo_rl/act_so101/DenisLabs__record-test_20260825_094319_240x320.h5"
+        store = getenv("HOME") + "/.cache/noeira/act_so101/DenisLabs__record-test_20260825_094319_240x320.h5"
     if not exists(store):
         raise Error("no store at " + store + " — set ACT_STORE (see test_act_dataset.mojo)")
     var ds = ACTDataset[QPOS, ADIM, N_CAM, H, W](store.copy(), seed=7, max_image_bytes=0)
@@ -43,7 +43,7 @@ def main() raises:
         ds.qpos_mean, ds.qpos_std, ds.action_mean, ds.action_std,
         cams, H, W, store,
     )
-    var path = String("/tmp/mojo_rl_act_norm_gate.json")
+    var path = String("/tmp/noeira_act_norm_gate.json")
     n.save(path)
     var back = ACTNorm.load(path, QPOS, ADIM)
 

@@ -46,19 +46,19 @@ from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.deep_agents.smolvla.text import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Deterministic
+from noeira.deep_agents.smolvla.text import (
     SMOLLM_DIM, SMOLLM_HEADS, SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM,
     SMOLLM_KV_W, SMOLLM_LAYERS,
 )
-from mojo_rl.deep_agents.smolvla.expert import (
+from noeira.deep_agents.smolvla.expert import (
     SmolVLAExpert, EXPERT_W, EXPERT_FF,
 )
-from mojo_rl.deep_agents.smolvla.kv_cache import SmolVLAKVCache
-from mojo_rl.deep_agents.smolvla.fused import SmolVLADenoise
-from mojo_rl.deep_agents.smolvla.attn_mask import att_2d_mask, smolvla_ar
+from noeira.deep_agents.smolvla.kv_cache import SmolVLAKVCache
+from noeira.deep_agents.smolvla.fused import SmolVLADenoise
+from noeira.deep_agents.smolvla.attn_mask import att_2d_mask, smolvla_ar
 
 
 # ── the deploy's real shape (N_CAM 2, IMG_TOK 64, N_LANG 6, CHUNK 50) ──────

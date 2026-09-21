@@ -53,21 +53,21 @@ FOUR ARMS:
 Run: pixi run mojo run -I . tests/physics3d/test_pid_plugin_actuator_vs_mujoco.mojo
 """
 
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
     read_model_source,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.flat_model import ACT_KIND_PID
-from mojo_rl.physics3d.fields import Data, Model, DynDims, SpecFields
-from mojo_rl.physics3d.fields.dynamics_scratch import DynamicsScratch
-from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
-from mojo_rl.physics3d.types import ConeType, IntegratorType
-from mojo_rl.physics3d.studio.stepping import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.flat_model import ACT_KIND_PID
+from noeira.physics3d.fields import Data, Model, DynDims, SpecFields
+from noeira.physics3d.fields.dynamics_scratch import DynamicsScratch
+from noeira.physics3d.dynamics.actuation import apply_actions_fields
+from noeira.physics3d.types import ConeType, IntegratorType
+from noeira.physics3d.studio.stepping import (
     StudioImpFastEll, studio_cone_of, studio_integrator_of, STUDIO_DT,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     ACT_IDX_KIND, ACT_IDX_KP, ACT_IDX_PID_KI, ACT_IDX_PID_KD,
     ACT_IDX_PID_IMAX, ACT_IDX_PID_SLEW, ACT_IDX_ACT_ADR,

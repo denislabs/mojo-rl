@@ -8,10 +8,10 @@ Writes `docs/WM_LOSS_GRAPH.md`. `describe` reads only the comptime topology, so
 the graph is default-constructed — no make / device context. CPU-only.
 """
 
-from mojo_rl.nn.combinators.graph_export import (
+from noeira.nn.combinators.graph_export import (
     TextExporter, MermaidExporter,
 )
-from mojo_rl.deep_agents.dreamerv3.wm import WMLossGraph
+from noeira.deep_agents.dreamerv3.wm import WMLossGraph
 
 
 def write_md(path: String, title: String, mermaid: String) raises:

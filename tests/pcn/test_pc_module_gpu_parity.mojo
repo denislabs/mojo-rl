@@ -21,20 +21,20 @@ from std.math import abs
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.optimizer.adam import Adam
+from noeira.nn.constants import DT
+from noeira.nn.optimizer.adam import Adam
 
-from mojo_rl.experimental.pcn.pc_block import PCBlock
-from mojo_rl.experimental.pcn.predictive_model import PCIdentity
-from mojo_rl.experimental.pcn.pc_sequential import PCSequential
-from mojo_rl.experimental.pcn.pc_module import PCModule
-from mojo_rl.experimental.pcn.pc_initializer import PCXavier
-from mojo_rl.experimental.pcn.pc_module_trainer import pc_module_train_one_batch
-from mojo_rl.experimental.pcn.pc_module_trainer_gpu import (
+from noeira.experimental.pcn.pc_block import PCBlock
+from noeira.experimental.pcn.predictive_model import PCIdentity
+from noeira.experimental.pcn.pc_sequential import PCSequential
+from noeira.experimental.pcn.pc_module import PCModule
+from noeira.experimental.pcn.pc_initializer import PCXavier
+from noeira.experimental.pcn.pc_module_trainer import pc_module_train_one_batch
+from noeira.experimental.pcn.pc_module_trainer_gpu import (
     pc_module_train_one_batch_gpu,
     PCGpuWorkspace,
 )
-from mojo_rl.nn.core.ptr import mptr
+from noeira.nn.core.ptr import mptr
 
 
 def main() raises:

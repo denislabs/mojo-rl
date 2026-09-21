@@ -15,9 +15,9 @@ Run (no GPU):
     pixi run mojo run -I . examples/cartpole/muzero_cartpole_v2_cpu.mojo
 """
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.muzero import MuZeroMLPConfig, MuZeroAgent
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.muzero import MuZeroMLPConfig, MuZeroAgent
+from noeira.envs.cartpole import CartPoleEnv
 
 
 def main() raises:

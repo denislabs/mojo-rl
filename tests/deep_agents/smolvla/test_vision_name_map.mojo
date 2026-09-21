@@ -27,14 +27,14 @@ Run:
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.core.torch_names import TorchNameMap
-from mojo_rl.deep_agents.smolvla.vision import SigLIPVisionTower
-from mojo_rl.deep_agents.smolvla.names import vision_name_map, SMOLVLA_VISION
-from mojo_rl.deep_agents.smolvla.manifest import Manifest, shape_str
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.core.torch_names import TorchNameMap
+from noeira.deep_agents.smolvla.vision import SigLIPVisionTower
+from noeira.deep_agents.smolvla.names import vision_name_map, SMOLVLA_VISION
+from noeira.deep_agents.smolvla.manifest import Manifest, shape_str
 
 comptime N_VISION = 197
 comptime TOWER = SigLIPVisionTower[]

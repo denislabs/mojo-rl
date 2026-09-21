@@ -3,9 +3,9 @@
 Run: pixi run mojo run -I . examples/procgen/dodgeball_render_demo.mojo
 """
 
-from mojo_rl.io.png import save_png
-from mojo_rl.envs.procgen.games import DodgeballGame, DodgeballAssets
-from mojo_rl.envs.procgen.games.dodgeball import DIST_HARD
+from noeira.io.png import save_png
+from noeira.envs.procgen.games import DodgeballGame, DodgeballAssets
+from noeira.envs.procgen.games.dodgeball import DIST_HARD
 
 comptime ASSET_ROOT = String("assets/procgen/")
 comptime SEED = 0

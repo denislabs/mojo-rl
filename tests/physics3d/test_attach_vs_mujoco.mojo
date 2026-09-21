@@ -38,13 +38,13 @@ is the reference for what the expander should produce.
 Run: pixi run mojo run -I . tests/physics3d/test_attach_vs_mujoco.mojo
 """
 
-from mojo_rl.physics3d.parser.expander import (
+from noeira.physics3d.parser.expander import (
     expand_mjcf, check_references,
 )
-from mojo_rl.physics3d.parser.runtime_load import read_model_source
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.studio.scene import SceneDoc, Instance
-from mojo_rl.physics3d.studio.panel import _f
+from noeira.physics3d.parser.runtime_load import read_model_source
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.studio.scene import SceneDoc, Instance
+from noeira.physics3d.studio.panel import _f
 
 comptime SCENE = String("tests/physics3d/fixtures/attach/scene.xml")
 

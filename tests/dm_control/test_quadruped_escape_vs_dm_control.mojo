@@ -27,19 +27,19 @@ from std.math import abs, sqrt, tanh
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.envs.dm_control.quadruped import DMQuadrupedEscape
-from mojo_rl.envs.dm_control.quadruped.quadruped_escape_config import (
+from noeira.envs.dm_control.quadruped import DMQuadrupedEscape
+from noeira.envs.dm_control.quadruped.quadruped_escape_config import (
     ESCAPE_WORKSPACE_SITE,
     ESCAPE_RF_SITE_0,
     ESCAPE_N_RF,
     ESCAPE_TERRAIN_GEOM,
     ESCAPE_TERRAIN_RADIUS,
 )
-from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
+from noeira.envs.dm_control.quadruped.quadruped_xml import (
     TORSO_BODY_IDX,
     QUADRUPED_ESCAPE_OBS_DIM,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_HFIELD_META_SIZE,
     HFIELD_META_IDX_ADR,
     HFIELD_META_IDX_NROW,

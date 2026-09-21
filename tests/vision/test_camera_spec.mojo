@@ -19,7 +19,7 @@ named "". That is `_a_rule_written_inline_twice_drifts` with four copies.
 
 from std.sys import CompilationTarget
 
-from mojo_rl.vision.camera_thread import (
+from noeira.vision.camera_thread import (
     CameraReader,
     _pack_fourcc,
     default_fourcc,

@@ -5,7 +5,7 @@ Question this answers:
      ELSE in the nn library can we get cheap wins from Mojo's CPU SIMD and
      parallelize primitives, without touching Accelerate?"
 
-Tests the patterns common across `mojo_rl/nn/`:
+Tests the patterns common across `noeira/nn/`:
 - Elementwise unary (ReLU)                          ← cheap baseline
 - Elementwise transcendental (Tanh, Mish)           ← biggest expected win
 - Elementwise read-modify-write (Adam.step)         ← bandwidth-bound + FMA
@@ -26,7 +26,7 @@ from std.random import seed, random_float64
 from std.sys import simd_width_of
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.constants import DT as dtype
+from noeira.nn.constants import DT as dtype
 
 
 comptime SIMD_WIDTH = simd_width_of[dtype]()

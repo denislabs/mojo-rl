@@ -7,7 +7,7 @@ Run:
   pixi run mojo run -I . tests/envs/craftax_full/test_state_layout.mojo
 """
 
-from mojo_rl.envs.craftax_full import (
+from noeira.envs.craftax_full import (
     MAP_H,
     MAP_W,
     MAP_SIZE_PER_FLOOR,
@@ -28,7 +28,7 @@ from mojo_rl.envs.craftax_full import (
     TILE_CHANNELS,
     STATE_SIZE,
 )
-from mojo_rl.envs.craftax_full.constants import (
+from noeira.envs.craftax_full.constants import (
     achievement_reward_weight,
     floor_mob_health,
     melee_damage,
@@ -45,7 +45,7 @@ from mojo_rl.envs.craftax_full.constants import (
     PROJ_FIREBALL,
     PROJ_ICEBALL,
 )
-from mojo_rl.envs.craftax_full.state import (
+from noeira.envs.craftax_full.state import (
     S_MAP_BASE,
     S_ITEM_MAP_BASE,
     S_MOB_MAP_BASE,

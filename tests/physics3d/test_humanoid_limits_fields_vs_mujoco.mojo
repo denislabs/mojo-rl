@@ -54,10 +54,10 @@ from std.math import abs
 from std.collections import Array
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
-from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.integrator.rk4 import RK4Integrator
+from noeira.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
+from noeira.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
     MODEL_META_IDX_NTENDON,
     MODEL_JOINT_SIZE,
@@ -87,7 +87,7 @@ from mojo_rl.physics3d.gpu.constants import (
     TENDON_IDX_SOLIMP_4,
     METADATA_SIZE,
 )
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
 
 comptime DTYPE = DType.float64
 comptime NQ = HumanoidModel.NQ  # 24

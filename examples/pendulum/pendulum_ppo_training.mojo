@@ -7,14 +7,14 @@ surface compiles and runs end-to-end at small scale.
 
 from std.random import seed
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import Tanh
-from mojo_rl.deep_agents.primitives.gaussian_head import GaussianHead
-from mojo_rl.deep_agents.ppo import PPOAgent
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import Tanh
+from noeira.deep_agents.primitives.gaussian_head import GaussianHead
+from noeira.deep_agents.ppo import PPOAgent
 
-from mojo_rl.envs.pendulum import PendulumEnv
+from noeira.envs.pendulum import PendulumEnv
 
 
 comptime OBS_DIM = 3

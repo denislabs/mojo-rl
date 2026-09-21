@@ -47,8 +47,8 @@ WINDOWS=${WINDOWS:-5,30,45}
 SNAPS=${SNAPS:-8}
 
 BENCH=benchmarks/physics3d_gpu/bench_libero_collision.mojo
-CCD=mojo_rl/physics3d/collision/ccd_workspace.mojo
-SAP=mojo_rl/physics3d/collision/broadphase_sap.mojo
+CCD=noeira/physics3d/collision/ccd_workspace.mojo
+SAP=noeira/physics3d/collision/broadphase_sap.mojo
 
 [ -f "$BENCH" ] || { echo "!! run from the repository root ($BENCH not found)"; exit 1; }
 mkdir -p "$OUT"

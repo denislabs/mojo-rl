@@ -33,7 +33,7 @@ is created chunked with an **unlimited** leading axis, so a collection run
 streams to disk instead of buffering in RAM:
 
 ```mojo
-from mojo_rl.data import ColumnSpec, TrajectoryStoreWriter
+from noeira.data import ColumnSpec, TrajectoryStoreWriter
 
 var cols = List[ColumnSpec]()
 cols.append(ColumnSpec(String("state"), DType.float32, DIM))
@@ -63,7 +63,7 @@ A complete round trip — write, push, pull, reopen, verify — is in
 ## Reading
 
 ```mojo
-from mojo_rl.data import TrajectoryStore
+from noeira.data import TrajectoryStore
 
 var s = TrajectoryStore(String(path))
 print(s.n_rows(), "rows,", s.n_episodes(), "episodes")
@@ -89,7 +89,7 @@ Sampling reads from memory, never from disk. `ResidentColumn` loads a whole
 column and optionally mirrors it to the device:
 
 ```mojo
-from mojo_rl.data import IndexBatch, ResidentColumn
+from noeira.data import IndexBatch, ResidentColumn
 
 var col = ResidentColumn[DType.float32].load(store, String("qpos"))
 col.to_device(ctx)                              # optional — gather does it lazily
@@ -138,7 +138,7 @@ that treat a window as one trajectory opt in via `draw_starts_in_episodes`.
 
 ## The HDF5 layer
 
-`mojo_rl/io/hdf5/` is a native FFI over libhdf5 — no Python in the read or write
+`noeira/io/hdf5/` is a native FFI over libhdf5 — no Python in the read or write
 path. Each H5 sub-API lives in its own file, with `reader.mojo` and
 `writer.mojo` providing the `H5File` / `H5Dataset` / `H5Writer` surface the
 store consumes.

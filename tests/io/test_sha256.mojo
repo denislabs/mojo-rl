@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | SHA-256 vs an independent implementation
 # +--------------------------------------------------------------------------+ #
-"""Gate `mojo_rl/io/sha256.mojo` against digests computed by Python `hashlib`.
+"""Gate `noeira/io/sha256.mojo` against digests computed by Python `hashlib`.
 
     pixi run mojo run -I . tests/io/test_sha256.mojo
 
@@ -26,8 +26,8 @@ chunks must give one digest — that is what makes `sha256_file`'s 8 MiB chunked
 read legitimate.
 """
 
-from mojo_rl.io.sha256 import Sha256, sha256_hex, sha256_string, sha256_file
-from mojo_rl.io.fileio import write_file_atomic
+from noeira.io.sha256 import Sha256, sha256_hex, sha256_string, sha256_file
+from noeira.io.fileio import write_file_atomic
 
 
 comptime _N_CASES = 130
@@ -171,7 +171,7 @@ def main() raises:
     print("  5/5 chunk splittings agree")
 
     # ── sha256_file reads the same bytes ─────────────────────────────
-    var path = String("/tmp/mojo_rl_sha256_gate.bin")
+    var path = String("/tmp/noeira_sha256_gate.bin")
     var big = _message(129)
     write_file_atomic(path, big)
     var from_file = sha256_file(path, 7)  # a chunk size that splits blocks

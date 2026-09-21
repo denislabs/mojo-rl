@@ -50,16 +50,16 @@ from std.testing import assert_true, TestSuite
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
     JLIM_SIZE,
     METADATA_SIZE,
 )
-from mojo_rl.physics3d.fields import Data, SpecFields, Dims
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.fields import Data, SpecFields, Dims
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 

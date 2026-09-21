@@ -15,13 +15,13 @@ Run:
 
 from std.random import seed
 
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
-from mojo_rl.deep_agents.training.blocks import ReplaySampleStep
-from mojo_rl.deep_agents.data.any_replay import AnyReplay
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
+from noeira.deep_agents.training.blocks import ReplaySampleStep
+from noeira.deep_agents.data.any_replay import AnyReplay
 
-from mojo_rl.envs.pendulum import PendulumEnv
+from noeira.envs.pendulum import PendulumEnv
 
 
 comptime EnvT = PendulumEnv[DT]
@@ -62,7 +62,7 @@ def main() raises:
 
     # 1. Build a RemoteLogger. If the dashboard server isn't running, all
     # flush() / log_scalar() calls silently no-op (errors swallowed by the
-    # helper in mojo_rl/core/logger.mojo).
+    # helper in noeira/core/logger.mojo).
     var logger = RemoteLogger(
         server_url="http://localhost:3000/api",
         run_name="sac_pendulum_remote_demo",

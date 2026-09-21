@@ -9,14 +9,14 @@ An OPEN episode must not reach the file.
 
 from std.testing import assert_equal, assert_true
 
-from mojo_rl.deep_agents.data.demo_file import (
+from noeira.deep_agents.data.demo_file import (
     DemoSet, read_demo_file, write_demo_file, DEMO_FLAG_INTERVENED,
     DEMO_FLAG_SUCCESS,
 )
 
 comptime OBS = 5
 comptime ACT = 2
-comptime PATH = "/tmp/mojo_rl_test_demo_file.demo"
+comptime PATH = "/tmp/noeira_test_demo_file.demo"
 
 
 def _obs(k: Int) -> List[Float64]:

@@ -39,23 +39,23 @@ is listed as owed in the assessment. It is not claimed here.
 from std.os.path import exists
 from std.sys import has_accelerator, has_nvidia_gpu_accelerator
 
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
-from mojo_rl.physics3d.dynamics.osc_pose import ARM_DOF, OscPoseConfig
-from mojo_rl.physics3d.dynamics.osc_pose_gpu import (
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.physics3d.dynamics.osc_pose import ARM_DOF, OscPoseConfig
+from noeira.physics3d.dynamics.osc_pose_gpu import (
     OSC_ACTION_DIM, OSC_REF_WORDS, OSC_REF_DOF, OSC_REF_QADR, OSC_REF_ACT,
     OSC_REF_SITE, OSC_REF_GRIP_ACT0, OSC_REF_GRIP_ACT1, build_osc_refs,
 )
-from mojo_rl.tasks.spec import load_family
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
-from mojo_rl.tasks.libero_goal_xml import LiberoGoalModel
-from mojo_rl.tasks.libero_goal_config import (
+from noeira.tasks.spec import load_family
+from noeira.tasks.family import scene_path
+from noeira.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
+from noeira.tasks.libero_goal_xml import LiberoGoalModel
+from noeira.tasks.libero_goal_config import (
     LiberoGoalOscConfig, LiberoGoalOscEnv, LIBERO_GOAL_FRAME_SKIP,
 )
 
 
-comptime FAMILY = "mojo_rl/tasks/families/libero_goal.family"
-comptime PACK = "mojo_rl/tasks/libero/assets"
+comptime FAMILY = "noeira/tasks/families/libero_goal.family"
+comptime PACK = "noeira/tasks/libero/assets"
 comptime N_ENVS = 4
 
 

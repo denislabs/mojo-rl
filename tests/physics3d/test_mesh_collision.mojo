@@ -12,17 +12,17 @@ broadphase_sap).
 
 from std.math import sqrt
 from layout import Layout, LayoutTensor
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
-from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
-from mojo_rl.physics3d.collision.gjk import gjk_epa
-from mojo_rl.physics3d.collision.gjk_support import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.collision.ccd_workspace import L_CCD_WS1
+from noeira.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
+from noeira.physics3d.collision.gjk import gjk_epa
+from noeira.physics3d.collision.gjk_support import (
     support_sphere,
     support_box,
     support_mesh,
 )
-from mojo_rl.physics3d.constants import GEOM_SPHERE, GEOM_BOX, GEOM_MESH
-from mojo_rl.physics3d.gpu.constants import mesh_max_edge
+from noeira.physics3d.constants import GEOM_SPHERE, GEOM_BOX, GEOM_MESH
+from noeira.physics3d.gpu.constants import mesh_max_edge
 
 comptime NMV = 8
 comptime L_MV = Layout.row_major(NMV, 3)
@@ -482,7 +482,7 @@ def test_exact_sawyer_runtime() raises:
     # xquat: (0.028, -0.9996, -0.0005, 0.003)  (x,y,z,w)
     # Geom local pos: (0, 0, 0.03), local quat: identity
     # World pos after rotation: body_pos + quat_rotate(body_quat, (0,0,0.03))
-    from mojo_rl.physics3d.kinematics.quat_math import quat_rotate, quat_mul
+    from noeira.physics3d.kinematics.quat_math import quat_rotate, quat_mul
     var bqx = 0.02798404808475026
     var bqy = -0.9996283797925901
     var bqz = -0.00045769893422206113

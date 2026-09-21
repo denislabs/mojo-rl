@@ -11,7 +11,7 @@ Training runs emit metrics through a `Logger`. Which logger you attach decides
 where they go — nowhere, a CSV file, or a live dashboard.
 
 ```mojo
-from mojo_rl.core.logger import NoOpLogger, CsvLogger, RemoteLogger, CompositeLogger
+from noeira.core.logger import NoOpLogger, CsvLogger, RemoteLogger, CompositeLogger
 ```
 
 | Logger | Destination |
@@ -65,14 +65,14 @@ Streams to a dashboard over HTTP — batched JSON POSTs, registering the run on
 first flush.
 
 ```mojo
-from mojo_rl.core.dotenv import load_dotenv
+from noeira.core.dotenv import load_dotenv
 
 var env_vars = load_dotenv()
 var logger = RemoteLogger(
-    server_url=env_vars.get("RL_MONITOR_URL", ""),
+    server_url=env_vars.get("NOEIRA_CLOUD_URL", ""),
     run_name="SAC HalfCheetah (GPU)",
     buffer_size=64,
-    api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+    api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
 )
 logger.set_config("algorithm", "SAC")
 logger.set_config("env", "HalfCheetah")
@@ -80,11 +80,11 @@ logger.set_config("n_envs", String(N_ENVS))
 ```
 
 Configuration comes from a `.env` file at the repo root, read by
-`mojo_rl.core.dotenv`:
+`noeira.core.dotenv`:
 
 ```
-RL_MONITOR_URL=https://your-monitor-url
-RL_MONITOR_API_KEY=...
+NOEIRA_CLOUD_URL=https://your-monitor-url
+NOEIRA_CLOUD_API_KEY=...
 ```
 
 `buffer_size` controls batching. Smaller means fresher charts and more requests;

@@ -65,18 +65,18 @@ from std.pathlib import Path
 from std.random import seed
 from std.sys import argv
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.data.any_replay import AnyReplay
-from mojo_rl.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
-from mojo_rl.deep_agents.training.blocks import ReplaySampleStep
-from mojo_rl.envs.dm_control.viewer_core import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.data.any_replay import AnyReplay
+from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
+from noeira.deep_agents.training.blocks import ReplaySampleStep
+from noeira.envs.dm_control.viewer_core import (
     ActionSource, DRIVE_POLICY, ViewerState, run_view,
 )
-from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
-from mojo_rl.render.imgui import imgui_shim_available
-from mojo_rl.render.renderer3d import Renderer3D
-from mojo_rl.utils.fmt import fixed
+from noeira.envs.robots.so_arm101 import SoArm101ReachConfig
+from noeira.envs.robots.so_arm101_xml import SoArm101Model
+from noeira.render.imgui import imgui_shim_available
+from noeira.render.renderer3d import Renderer3D
+from noeira.utils.fmt import fixed
 
 comptime SEED: Int = 0
 

@@ -31,18 +31,18 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Model, Data, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.fields import Model, Data, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_SPRINGREF,
 )
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_dims import ModelDims
 
 
 comptime DTYPE = DType.float64

@@ -13,10 +13,10 @@ from std.memory import alloc
 from std.math import abs
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.deep_agents.dreamer4.pong_reward_buffer import (
+from noeira.deep_agents.dreamer4.pong_reward_buffer import (
     Dreamer4PongRewardBuffer,
 )
-from mojo_rl.envs.arcade_games.pong.offline_buffer import PONG_FRAME_BYTES
+from noeira.envs.arcade_games.pong.offline_buffer import PONG_FRAME_BYTES
 
 
 def _make_synthetic(n: Int) -> Dreamer4PongRewardBuffer:

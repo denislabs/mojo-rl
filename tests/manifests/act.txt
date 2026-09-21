@@ -10,7 +10,7 @@
 #
 #   pixi run -e act-ref python tools/act/dump_act_reference.py --out /tmp/act_ref
 #   pixi run -e act-ref python tools/act/dump_resnet18_imagenet.py \
-#       --out ~/.cache/mojo_rl/act_so101/resnet18_imagenet
+#       --out ~/.cache/noeira/act_so101/resnet18_imagenet
 #   pixi run python tools/act/lerobot_v3_to_store.py \
 #       --repo DenisLabs/record-test_20260828_092736 --height 240 --width 320
 #

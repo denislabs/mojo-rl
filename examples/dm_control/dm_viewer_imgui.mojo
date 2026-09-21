@@ -13,7 +13,7 @@ third is the action scale.
 failure, not a compile error — the shim is loaded by dlopen. `run_viewer`
 checks for it up front and says so rather than aborting mid-frame.
 
-THE VIEWER ITSELF LIVES IN `mojo_rl.envs.dm_control.viewer`. This file is
+THE VIEWER ITSELF LIVES IN `noeira.envs.dm_control.viewer`. This file is
 argv parsing and nothing else, so the logic can be precompiled with the
 package and reused by other front ends. Read that module's header for the
 controls, the drive modes, what the tool can and cannot tell you, and why
@@ -22,7 +22,7 @@ controls, the drive modes, what the tool can and cannot tell you, and why
 RELATIONSHIP TO `dm_viewer.mojo`. That one stays; this is a parallel port, not
 a replacement. Same physics, same renderer, same task-switch machinery — the
 difference is a Dear ImGui sidebar instead of the hand-rolled
-`mojo_rl/render/ui.mojo` widgets. Keeping both means the ImGui dependency
+`noeira/render/ui.mojo` widgets. Keeping both means the ImGui dependency
 stays optional.
 
 ⚠ TWO TASKS ARE ABSENT, AND FOR THE SAME REASON: `dog_fetch` and the dog-sized
@@ -42,7 +42,7 @@ blocks on it. CPU physics on purpose: one env at 60 Hz needs no GPU.
 from std.random import seed
 from std.sys import argv
 
-from mojo_rl.envs.dm_control.viewer import (
+from noeira.envs.dm_control.viewer import (
     run_viewer, task_index, parse_drive, print_task_list, DRIVE_SWEEP,
 )
 

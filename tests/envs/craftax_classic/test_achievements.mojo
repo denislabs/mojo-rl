@@ -14,8 +14,8 @@ DEFEAT_SKELETON, EAT_COW). Mob AI / natural spawning lands in 3B.
 
 from std.random.philox import Random as PhiloxRandom
 
-from mojo_rl.envs.craftax_classic import CraftaxClassicEnv
-from mojo_rl.envs.craftax_classic.constants import (
+from noeira.envs.craftax_classic import CraftaxClassicEnv
+from noeira.envs.craftax_classic.constants import (
     MAP_W,
     BLOCK_GRASS,
     BLOCK_WATER,
@@ -93,7 +93,7 @@ from mojo_rl.envs.craftax_classic.constants import (
     MAX_COWS,
     MAX_SKELETONS,
 )
-from mojo_rl.envs.craftax_classic.state import (
+from noeira.envs.craftax_classic.state import (
     S_MAP_BASE,
     S_PLAYER_POS,
     S_PLAYER_DIR,
@@ -106,7 +106,7 @@ from mojo_rl.envs.craftax_classic.state import (
     S_IS_SLEEPING,
     STATE_SIZE,
 )
-from mojo_rl.nn.constants import DT as dtype
+from noeira.nn.constants import DT as dtype
 
 
 # ----------------------------------------------------------------------------

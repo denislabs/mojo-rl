@@ -72,19 +72,19 @@ from std.sys import argv
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.envs.robots import UnitreeG1
-from mojo_rl.envs.robots.unitree_g1_xml import UnitreeG1Model
-from mojo_rl.envs.robots.unitree_g1_config import UnitreeG1Config
-from mojo_rl.physics3d.fields import Data, Model
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
-from mojo_rl.physics3d.collision.ccd_workspace import (
+from noeira.core.cont_action import ContAction
+from noeira.envs.robots import UnitreeG1
+from noeira.envs.robots.unitree_g1_xml import UnitreeG1Model
+from noeira.envs.robots.unitree_g1_config import UnitreeG1Config
+from noeira.physics3d.fields import Data, Model
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.broadphase_sap import detect_contacts_sap
+from noeira.physics3d.collision.ccd_workspace import (
     COLL_BLOCK_KERNEL, COLL_TPB, COLL_CCD_LANES, COLL_NCAND_CAP,
     COLL_NO_FALLBACK, HILL_WARM_ACROSS_STEPS,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE, METADATA_SIZE, META_IDX_NUM_CONTACTS,
     CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B, CONTACT_IDX_DIST,
     CONTACT_IDX_POS_X, CONTACT_IDX_POS_Y, CONTACT_IDX_POS_Z,

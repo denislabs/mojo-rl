@@ -1,7 +1,7 @@
 # SmolVLA gates that need the PUBLISHED weights — `pixi run test-vla-weights`
 #
 # ⚠ Separate from `vla.txt` because these download `model.safetensors`
-# (906,712,520 bytes, cached under ~/.cache/mojo_rl). The structural gates in
+# (906,712,520 bytes, cached under ~/.cache/noeira). The structural gates in
 # `vla.txt` deliberately need neither the network nor the file, so ordinary CI
 # runs those; this one is opt-in.
 

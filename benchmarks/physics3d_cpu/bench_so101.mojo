@@ -16,9 +16,9 @@ precision, so a ratio can be split into "the algorithm" and "the float".
 
 from std.sys import argv
 
-from mojo_rl.envs.robots import SoArm101Model, SoArm101ReachConfig
-from mojo_rl.envs.robots.so101_park_config import So101ParkProbeConfig
-from mojo_rl.envs.robots.so101_park_xml import (
+from noeira.envs.robots import SoArm101Model, SoArm101ReachConfig
+from noeira.envs.robots.so101_park_config import So101ParkProbeConfig
+from noeira.envs.robots.so101_park_xml import (
     SoArm101ParkK0Model,
     SoArm101ParkK3Model,
     SoArm101ParkK6Model,

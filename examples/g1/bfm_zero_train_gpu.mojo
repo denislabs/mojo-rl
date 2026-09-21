@@ -100,43 +100,43 @@ from max.gpu import global_idx
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.call import call_forward
-from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.core.run import RunContext, register_run
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import CsvLogger, RemoteLogger, CompositeLogger
-from mojo_rl.io.artifact_sink import close_sink, sink_for_run
-from mojo_rl.deep_agents.training.checkpoint import announce_checkpoint
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.data.resident import IDX_DT
-from mojo_rl.deep_agents.fb import FBCPROnlineAgent
-from mojo_rl.deep_agents.fb.bfm_towers import (
+from noeira.cuda import CUDAGraph, maybe_capture_replay
+from noeira.nn.constants import DT, TPB
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.call import call_forward
+from noeira.nn.core.ptr import mptr
+from noeira.core.run import RunContext, register_run
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import CsvLogger, RemoteLogger, CompositeLogger
+from noeira.io.artifact_sink import close_sink, sink_for_run
+from noeira.deep_agents.training.checkpoint import announce_checkpoint
+from noeira.data.store import TrajectoryStore
+from noeira.data.resident import IDX_DT
+from noeira.deep_agents.fb import FBCPROnlineAgent
+from noeira.deep_agents.fb.bfm_towers import (
     BFMFTower, BFMActorTower, BFMBNet, BFMDNet,
 )
-from mojo_rl.deep_agents.fb.kernels import (
+from noeira.deep_agents.fb.kernels import (
     gather_rows_kernel, project_sphere_kernel, ensure_t, _blocks,
 )
-from mojo_rl.deep_agents.fb.kernels import uniform01_kernel
-from mojo_rl.envs.robots import UnitreeG1Batched
-from mojo_rl.envs.robots.unitree_g1_xml import (
+from noeira.deep_agents.fb.kernels import uniform01_kernel
+from noeira.envs.robots import UnitreeG1Batched
+from noeira.envs.robots.unitree_g1_xml import (
     UnitreeG1Model, UNITREE_G1_OBS_DIM, UNITREE_G1_STATE_DIM, UNITREE_G1_PRIV_DIM,
 )
-from mojo_rl.envs.robots import UnitreeG1
-from mojo_rl.deep_agents.fb.obs_norm import ObsNorm
-from mojo_rl.deep_agents.fb.trainer import FBTrainer
-from mojo_rl.envs.robots.g1_motion_priority import (
+from noeira.envs.robots import UnitreeG1
+from noeira.deep_agents.fb.obs_norm import ObsNorm
+from noeira.deep_agents.fb.trainer import FBTrainer
+from noeira.envs.robots.g1_motion_priority import (
     G1_PRIO_REFRESH, g1_motion_priority, g1_fill_motion_table,
     g1_fill_window_table,
 )
-from mojo_rl.envs.robots.g1_tracking_eval import (
+from noeira.envs.robots.g1_tracking_eval import (
     G1_D, G1_H, G1_L, G1_HB, G1_HD,
     G1_SEG_ROWS, G1TrackScore, g1_n_segments, g1_segment_row, g1_score_segment,
 )
-from mojo_rl.envs.robots.unitree_g1_rsi import (
+from noeira.envs.robots.unitree_g1_rsi import (
     G1RsiTable, rsi_inject_kernel, G1_RSI_NQ, G1_RSI_NV, G1_LIE_DOWN_PROB,
     lie_down_selected,
 )
@@ -153,7 +153,7 @@ comptime HB: Int = G1_HB
 comptime HD: Int = G1_HD
 comptime BATCH: Int = 1024
 # ⚠ THE RING IS THE LARGEST THING ON THE CARD, not the model. Measured from
-# `MOJO_RL_ALLOC_TRACE=1` at H=2048/L=6 (docs §12.22): `r_obs` and `r_nxt` were
+# `NOEIRA_ALLOC_TRACE=1` at H=2048/L=6 (docs §12.22): `r_obs` and `r_nxt` were
 # 4020.7 MB EACH (CAP x 527 x 4) and `r_z` another 1953 MB — 9.76 GiB of a
 # 25.9 GiB Tensor peak, against a 28.5 GiB pool that still OOM'd, so there is
 # >= 2.6 GiB of non-Tensor overhead (MAX workspaces, the graph, cuBLAS) on top.
@@ -540,11 +540,11 @@ def main() raises:
     # must never take the training run with it.
     var env_vars = load_dotenv()
     var remote = RemoteLogger(
-        server_url=env_vars.get("RL_MONITOR_URL", ""),
+        server_url=env_vars.get("NOEIRA_CLOUD_URL", ""),
         run_name=run.name(),
         run_id=run.id,
         buffer_size=64,
-        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+        api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
     )
     remote.set_config("algorithm", "BFM-Zero FB-CPR")
     remote.set_config("env", "unitree_g1")

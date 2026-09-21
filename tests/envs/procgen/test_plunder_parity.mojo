@@ -10,8 +10,8 @@ Asset-free/fast. See `docs/PROCGEN_PLUNDER_SCOPE.md`.
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import PlunderGame, PANEL
-from mojo_rl.envs.procgen.games.plunder import DIST_EASY, DIST_HARD
+from noeira.envs.procgen.games import PlunderGame, PANEL
+from noeira.envs.procgen.games.plunder import DIST_EASY, DIST_HARD
 
 comptime STEPS = 400
 

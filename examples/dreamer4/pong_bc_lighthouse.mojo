@@ -34,23 +34,23 @@ no-observation prior is reported so the gap is explicit. Pure CPU.
 
 from std.math import sqrt, log, cos
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.experimental.lewm.pong_data import WindowSource
-from mojo_rl.envs.arcade_games.pong.offline_buffer import PongOfflineBuffer
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Xavier
+from noeira.nn.optimizer.adam import Adam
+from noeira.experimental.lewm.pong_data import WindowSource
+from noeira.envs.arcade_games.pong.offline_buffer import PongOfflineBuffer
 
-from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
-from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
-from mojo_rl.deep_agents.dreamer4.recon_loss import (
+from noeira.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
+from noeira.deep_agents.dreamer4.agent import Dreamer4Agent
+from noeira.deep_agents.dreamer4.recon_loss import (
     masked_recon_loss, full_recon_psnr,
 )
-from mojo_rl.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
-from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao
-from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_argmax
-from mojo_rl.deep_agents.dreamerv3.twohot import symexp_twohot_bins
+from noeira.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
+from noeira.deep_agents.dreamer4.shortcut_loss import _mao
+from noeira.deep_agents.dreamerv3.dists_discrete import cat_argmax
+from noeira.deep_agents.dreamerv3.twohot import symexp_twohot_bins
 
 
 # tiny deterministic RNG (xorshift64* + Box-Muller), as in the dynamics lighthouse

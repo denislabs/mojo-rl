@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | The camera -> base fit, and the reflection that fits it better than a rotation
 # +--------------------------------------------------------------------------+ #
-"""Gate for `mojo_rl/vision/extrinsics.mojo`.
+"""Gate for `noeira/vision/extrinsics.mojo`.
 
     pixi run build-opencv     # ONCE — the fit calls `svd_3x3`
     pixi run mojo run -I . tests/vision/test_extrinsics_kabsch.mojo
@@ -32,9 +32,9 @@ That is why none of them is gated on the residual alone.
 
 from std.math import abs, sqrt
 
-from mojo_rl.math3d import Mat3 as Mat3Generic, Vec3 as Vec3Generic
-from mojo_rl.vision.extrinsics import RigidFit, fit_rigid
-from mojo_rl.vision.opencv import opencv_shim_available
+from noeira.math3d import Mat3 as Mat3Generic, Vec3 as Vec3Generic
+from noeira.vision.extrinsics import RigidFit, fit_rigid
+from noeira.vision.opencv import opencv_shim_available
 
 comptime Vec3d = Vec3Generic[DType.float64]
 comptime Mat3d = Mat3Generic[DType.float64]

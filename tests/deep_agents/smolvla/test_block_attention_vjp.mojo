@@ -76,9 +76,9 @@ from std.math import abs, exp, sqrt
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.smolvla.block_attention import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.smolvla.block_attention import (
     BlockCrossAttention, BA_MASK_NEG,
 )
 

@@ -16,12 +16,12 @@ Run:
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.deep_agents.core.online_target_pair import OnlineTargetPair
+from noeira.nn.constants import DT
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.core.initializer import Xavier
+from noeira.deep_agents.core.online_target_pair import OnlineTargetPair
 
 
 comptime IN = 4

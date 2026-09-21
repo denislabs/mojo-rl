@@ -15,9 +15,9 @@ from std.math import abs
 from std.random import seed, random_float64
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.envs.ant import Ant
-from mojo_rl.envs.ant.ant_xml import AntModel
-from mojo_rl.core.cont_action import ContAction
+from noeira.envs.ant import Ant
+from noeira.envs.ant.ant_xml import AntModel
+from noeira.core.cont_action import ContAction
 
 
 def test_reset_height_is_mujoco_qpos0() raises:

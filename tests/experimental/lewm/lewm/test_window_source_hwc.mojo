@@ -13,9 +13,9 @@ from std.memory import alloc
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.offline_buffer import OfflineBuffer
-from mojo_rl.experimental.lewm.pong_data import WindowSource
+from noeira.nn.constants import DT
+from noeira.core.offline_buffer import OfflineBuffer
+from noeira.experimental.lewm.pong_data import WindowSource
 
 
 comptime C = 3

@@ -46,14 +46,14 @@ Run: pixi run mojo run -I . tests/physics3d/test_gjk_simplex.mojo
 
 from std.math import abs, sqrt
 from layout import Layout, LayoutTensor
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1, CCD_WS_SPX
-from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
-from mojo_rl.physics3d.collision.gjk import gjk_epa
-from mojo_rl.physics3d.collision.gjk_support import _subdistance
-from mojo_rl.physics3d.collision.epa import sv, set_sv
-from mojo_rl.physics3d.gpu.constants import mesh_max_edge
-from mojo_rl.physics3d.constants import GEOM_CYLINDER, GEOM_MESH
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.collision.ccd_workspace import L_CCD_WS1, CCD_WS_SPX
+from noeira.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
+from noeira.physics3d.collision.gjk import gjk_epa
+from noeira.physics3d.collision.gjk_support import _subdistance
+from noeira.physics3d.collision.epa import sv, set_sv
+from noeira.physics3d.gpu.constants import mesh_max_edge
+from noeira.physics3d.constants import GEOM_CYLINDER, GEOM_MESH
 
 comptime DT = DType.float64
 comptime NMV = 8

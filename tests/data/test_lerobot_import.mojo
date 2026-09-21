@@ -28,8 +28,8 @@ off is a different dataset, not a rounding difference.
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.data.lerobot import import_lerobot_v3
-from mojo_rl.data.store import TrajectoryStore
+from noeira.data.lerobot import import_lerobot_v3
+from noeira.data.store import TrajectoryStore
 
 
 comptime DEFAULT_REF = "/tmp/lerobot_synth"

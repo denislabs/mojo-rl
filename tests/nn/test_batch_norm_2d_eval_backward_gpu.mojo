@@ -32,13 +32,13 @@ Both arms must now agree. A regression here means the eval branch has been
 "optimized" back into dropping them.
 """
 from max.gpu.host import DeviceContext
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.primitives.batch_norm_2d import BatchNorm2D
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.primitives.batch_norm_2d import BatchNorm2D
 
 comptime B = 2
 comptime C = 4

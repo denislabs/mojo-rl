@@ -1,6 +1,6 @@
 ---
 title: Data
-description: mojo_rl.data — one column-oriented trajectory store behind replay buffers, offline datasets and demonstrations, on a native HDF5 layer.
+description: noeira.data — one column-oriented trajectory store behind replay buffers, offline datasets and demonstrations, on a native HDF5 layer.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -8,7 +8,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <Maturity level="stable" note="Transition buffers are migrated and gated. The sequence buffers (DreamerV3, Dreamer 4, zero-series) still have their own storage." />
 
-`mojo_rl.data` is the storage layer underneath training: the replay buffers the
+`noeira.data` is the storage layer underneath training: the replay buffers the
 off-policy agents sample from, the on-disk format offline datasets and
 demonstrations are written in, and the index policies that decide which rows a
 minibatch contains.
@@ -39,8 +39,8 @@ new buffer rather than a new configuration.
 ## Three layers
 
 ```
-mojo_rl/io/       transport. HDF5 read + write, resumable HTTP. No RL semantics.
-mojo_rl/data/     the STORE: named columns, episode index, host/device residency.
+noeira/io/       transport. HDF5 read + write, resumable HTTP. No RL semantics.
+noeira/data/     the STORE: named columns, episode index, host/device residency.
    └── samplers   index policies over a store: uniform, prioritized,
                   sequence-window, and the device Philox sampler.
 ```
@@ -82,7 +82,7 @@ holds*:
 So a store declares its columns rather than inheriting them:
 
 ```mojo
-from mojo_rl.data import ColumnSpec, TrajectoryStoreWriter
+from noeira.data import ColumnSpec, TrajectoryStoreWriter
 
 var cols = List[ColumnSpec]()
 cols.append(ColumnSpec(String("qpos"), DType.float32, 9))
@@ -128,11 +128,11 @@ not derived from these figures.
 ## Package map
 
 ```
-mojo_rl/io/
+noeira/io/
 ├── hdf5/          native libhdf5 FFI — reader.mojo, writer.mojo, per-API h5*.mojo
 └── fetch.mojo     resumable HTTP → local cache, sha256-verified
 
-mojo_rl/data/
+noeira/data/
 ├── column.mojo        ColumnSpec, dtype mapping
 ├── manifest.mojo      schema written into the file
 ├── episode_index.mojo ep_len / ep_offset + validation
@@ -149,7 +149,7 @@ mojo_rl/data/
 
 ## Supervised datasets live elsewhere, on purpose
 
-MNIST, CIFAR-10, TinyShakespeare and PushT stay in `mojo_rl/nn/datasets/` — see
+MNIST, CIFAR-10, TinyShakespeare and PushT stay in `noeira/nn/datasets/` — see
 [nn training](/nn/training/). Folding them in here was considered and rejected:
 they are images plus labels, or a token stream. No episodes, no actions, no
 rewards, no ragged row axis. Expressing them as a trajectory store would mean
@@ -162,7 +162,7 @@ trajectory store.
 ## What is not migrated
 
 The *sequence* buffers — `sequence_replay`, `gpu_sequence_replay`, and the
-zero-series MCTS variants under `mojo_rl/deep_agents/data/` — still own their
+zero-series MCTS variants under `noeira/deep_agents/data/` — still own their
 storage. They serve DreamerV3, Dreamer 4 and the AlphaZero/MuZero family, whose
 unit of sampling is a length-`T` window rather than a transition.
 `SequenceWindowSampler` already exists and is gated, so the index policy is in

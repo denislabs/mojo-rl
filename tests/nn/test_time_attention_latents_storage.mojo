@@ -8,18 +8,18 @@ from the bit-identical legacy↔storage run the parity test used to verify. It a
 re-checks the structural invariants (non-latent outputs and non-latent input
 grads are exactly 0). The GPU check is storage-only (GPU vs CPU consistency).
 Run:
-  rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . tests/nn/test_time_attention_latents_storage.mojo
+  rm -f noeira.mojoc && pixi run -e apple mojo run -I . tests/nn/test_time_attention_latents_storage.mojo
 """
 
 from std.math import abs
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.time_attention_latents import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.time_attention_latents import (
     TimeAttentionLatents,
 )
 

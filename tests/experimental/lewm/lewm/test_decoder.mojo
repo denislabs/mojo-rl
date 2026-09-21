@@ -13,9 +13,9 @@ from max.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.experimental.lewm.decoder import patchify, unpatchify
-from mojo_rl.experimental.lewm.decoder_trainer import LeWMDecoderTrainer
+from noeira.nn.constants import DT
+from noeira.experimental.lewm.decoder import patchify, unpatchify
+from noeira.experimental.lewm.decoder_trainer import LeWMDecoderTrainer
 
 
 # toy dims

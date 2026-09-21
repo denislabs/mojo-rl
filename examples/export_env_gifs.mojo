@@ -8,21 +8,21 @@ Run with:
 """
 
 from std.random import seed
-from mojo_rl.envs.render_random import render_random
+from noeira.envs.render_random import render_random
 
-from mojo_rl.envs.ant import Ant
-from mojo_rl.envs.half_cheetah import HalfCheetah
-from mojo_rl.envs.hopper import Hopper
-from mojo_rl.envs.walker2d import Walker2d
-from mojo_rl.envs.swimmer import Swimmer
-from mojo_rl.envs.humanoid import Humanoid
-from mojo_rl.envs.inverted_pendulum import InvertedPendulum
-from mojo_rl.envs.inverted_double_pendulum import InvertedDoublePendulum
-from mojo_rl.envs.reacher import Reacher
-from mojo_rl.envs.pusher import Pusher
-from mojo_rl.envs.metaworld import SawyerReach
+from noeira.envs.ant import Ant
+from noeira.envs.half_cheetah import HalfCheetah
+from noeira.envs.hopper import Hopper
+from noeira.envs.walker2d import Walker2d
+from noeira.envs.swimmer import Swimmer
+from noeira.envs.humanoid import Humanoid
+from noeira.envs.inverted_pendulum import InvertedPendulum
+from noeira.envs.inverted_double_pendulum import InvertedDoublePendulum
+from noeira.envs.reacher import Reacher
+from noeira.envs.pusher import Pusher
+from noeira.envs.metaworld import SawyerReach
 
-from mojo_rl.core import BoxContinuousActionEnv, RenderableEnv
+from noeira.core import BoxContinuousActionEnv, RenderableEnv
 
 
 def record_env[

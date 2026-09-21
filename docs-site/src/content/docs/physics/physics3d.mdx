@@ -11,7 +11,7 @@ import Physics3dPipeline from '~/components/diagrams/Physics3dPipeline.astro';
 
 <Maturity level="stable" note="Contact-rich models and elliptic friction cones are the least settled areas." />
 
-`mojo_rl.physics3d` simulates articulated rigid bodies in **generalized
+`noeira.physics3d` simulates articulated rigid bodies in **generalized
 coordinates** — joint space rather than world space — following MuJoCo's design.
 Models are defined in MJCF XML, the same format MuJoCo reads.
 
@@ -119,7 +119,7 @@ time.
 ## MJCF loading
 
 ```mojo
-from mojo_rl.physics3d.parser import ModelDefFromXML
+from noeira.physics3d.parser import ModelDefFromXML
 ```
 
 The parser reads MJCF XML into a flat model description, which is then built
@@ -166,7 +166,7 @@ model/
 Joint types are `FREE` (7 DOF), `BALL` (4), `SLIDE` (1) and `HINGE` (1).
 
 :::note[The package README predates the sunset]
-`mojo_rl/physics3d/README.md` describes a `types.mojo` holding
+`noeira/physics3d/README.md` describes a `types.mojo` holding
 `Model[NQ,NV,NBODY,NJOINT]` and a 17-file `model/` directory. That layout was
 retired: `Model` and `Data` now live in `physics3d/fields/`, `types.mojo` is 29
 lines, and `model/` holds three files. Trust the source.

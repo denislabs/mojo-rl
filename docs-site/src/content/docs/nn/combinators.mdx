@@ -14,10 +14,10 @@ type system, a network is built by nesting types rather than by appending to a
 list at runtime.
 
 ```mojo
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.combinators.residual import Residual
-from mojo_rl.nn.combinators.repeat import Repeat
-from mojo_rl.nn.combinators.parallel import Parallel
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.combinators.residual import Residual
+from noeira.nn.combinators.repeat import Repeat
+from noeira.nn.combinators.parallel import Parallel
 ```
 
 
@@ -100,9 +100,9 @@ actually reaches it.
 ## Pre-built models
 
 ```mojo
-from mojo_rl.nn.models.resnet import ResNet
-from mojo_rl.nn.models.gpt import GPT
-from mojo_rl.nn.models.vit import ViT
+from noeira.nn.models.resnet import ResNet
+from noeira.nn.models.gpt import GPT
+from noeira.nn.models.vit import ViT
 ```
 
 | Model | Notes |
@@ -126,7 +126,7 @@ inputs, shared subgraphs, multiple outputs — use the named-node builder in
 `combinators/compute_graph.mojo`.
 
 ```mojo
-from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from noeira.nn.combinators.compute_graph import ComputeGraph
 ```
 
 Nodes are declared with names and wired by reference, and the graph resolves the

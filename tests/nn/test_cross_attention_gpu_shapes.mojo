@@ -26,12 +26,12 @@ of fp32 accumulation is judged on the same scale as a 5-token one.
 from std.math import sqrt
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.primitives.cross_attention import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.primitives.cross_attention import (
     CrossAttention,
     xa_fused_routes_to_max,
 )

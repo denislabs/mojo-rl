@@ -81,25 +81,25 @@ from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.act.config import SO101_FPS
-from mojo_rl.deep_agents.act.inference import TemporalEnsemble
-from mojo_rl.deep_agents.smolvla.finetune import load_trainables
-from mojo_rl.deep_agents.smolvla.heads import (
+from noeira.deep_agents.act.config import SO101_FPS
+from noeira.deep_agents.act.inference import TemporalEnsemble
+from noeira.deep_agents.smolvla.finetune import load_trainables
+from noeira.deep_agents.smolvla.heads import (
     SMOLVLA_ACTION_DIM,
     SMOLVLA_EXPERT_W,
     SMOLVLA_STATE_DIM,
 )
-from mojo_rl.deep_agents.smolvla.expert import EXPERT_FF
-from mojo_rl.deep_agents.smolvla.text import (
+from noeira.deep_agents.smolvla.expert import EXPERT_FF
+from noeira.deep_agents.smolvla.text import (
     SMOLLM_DIM,
     SMOLLM_KV_W,
     SMOLLM_LAYERS,
 )
-from mojo_rl.deep_agents.smolvla.observation import (
+from noeira.deep_agents.smolvla.observation import (
     fill_camera_images, fill_siglip_frames, siglip_frames_into_slot,
 )
-from mojo_rl.deep_agents.smolvla.policy import SmolVLAPolicy
-from mojo_rl.deep_agents.smolvla.query_worker import (
+from noeira.deep_agents.smolvla.policy import SmolVLAPolicy
+from noeira.deep_agents.smolvla.query_worker import (
     QW_DROPPED,
     QW_FAILED,
     QW_N_CELLS,
@@ -111,24 +111,24 @@ from mojo_rl.deep_agents.smolvla.query_worker import (
     QW_SUBMIT_US,
     SmolVLAQueryWorker,
 )
-from mojo_rl.core.concurrent.block import SharedBlock
-from mojo_rl.core.concurrent.ring import SharedRing
-from mojo_rl.core.concurrent.worker import BackgroundThread
-from mojo_rl.deep_agents.smolvla.recording import SO101_N_LANG, SO101_TASKS
-from mojo_rl.deep_agents.smolvla.tasks import TaskTokens
-from mojo_rl.io.fileio import StdinReader, stdin_is_tty
-from mojo_rl.io.hf import hf_download_file, HF_MODEL
-from mojo_rl.io.json import JsonDoc, load_json
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
-from mojo_rl.robot.so101.deploy_shutdown import return_and_release
-from mojo_rl.robot.so101.ports import follower_port, port_refusal
-from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
-from mojo_rl.vision.camera_thread import CameraReader, parse_camera_specs
-from mojo_rl.vision.resize_pad import SIGLIP_INPUT
+from noeira.core.concurrent.block import SharedBlock
+from noeira.core.concurrent.ring import SharedRing
+from noeira.core.concurrent.worker import BackgroundThread
+from noeira.deep_agents.smolvla.recording import SO101_N_LANG, SO101_TASKS
+from noeira.deep_agents.smolvla.tasks import TaskTokens
+from noeira.io.fileio import StdinReader, stdin_is_tty
+from noeira.io.hf import hf_download_file, HF_MODEL
+from noeira.io.json import JsonDoc, load_json
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.linear import Linear
+from noeira.robot.so101 import SO101Arm, SO101_N, joint_name
+from noeira.robot.so101.deploy_shutdown import return_and_release
+from noeira.robot.so101.ports import follower_port, port_refusal
+from noeira.utils.fmt import col, fixed, pad_left, pad_right
+from noeira.vision.camera_thread import CameraReader, parse_camera_specs
+from noeira.vision.resize_pad import SIGLIP_INPUT
 
 
 comptime TARGET: StaticString = "gpu" if is_defined["SMOLVLA_GPU"]() else "cpu"

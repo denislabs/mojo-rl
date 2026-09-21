@@ -85,35 +85,35 @@ from std.os.path import exists, dirname
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.io.hdf5.reader import H5File
-from mojo_rl.data.column import ColumnSpec
-from mojo_rl.data.store import TrajectoryStore, TrajectoryStoreWriter
-from mojo_rl.data.libero_demos import (
+from noeira.io.hdf5.reader import H5File
+from noeira.data.column import ColumnSpec
+from noeira.data.store import TrajectoryStore, TrajectoryStoreWriter
+from noeira.data.libero_demos import (
     CAM_H, CAM_W, N_CAMS, CAM_ELEMS, ACTION_DIM, QPOS_PROPRIO, QPOS_WORDS,
     COL_ACTION, COL_STATE, COL_QPOS, COL_TASK, COL_IMAGES,
 )
-from mojo_rl.physics3d.fields import Data, Model
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
-from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.raytrace import BatchedCameraRenderer, RGB_CHANNELS
-from mojo_rl.physics3d.raytrace.visual import build_visual_model
-from mojo_rl.tasks.spec import load_family, load_task
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.predicates import joint_qpos_addresses
-from mojo_rl.tasks.libero_goal_xml import LiberoGoalModel
-from mojo_rl.tasks.libero_osc_config import LiberoOscConfig
-from mojo_rl.tasks.placement.libero_goal import LiberoGoalPlacement
-from mojo_rl.tasks.libero_visual import libero_site_conditions
-from mojo_rl.tasks.libero_fixtures import patch_fixtures, fixtures_dump_path
+from noeira.physics3d.fields import Data, Model
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.physics3d.parser.fields_build import build_model_fields_from_flat
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.raytrace import BatchedCameraRenderer, RGB_CHANNELS
+from noeira.physics3d.raytrace.visual import build_visual_model
+from noeira.tasks.spec import load_family, load_task
+from noeira.tasks.family import scene_path
+from noeira.tasks.predicates import joint_qpos_addresses
+from noeira.tasks.libero_goal_xml import LiberoGoalModel
+from noeira.tasks.libero_osc_config import LiberoOscConfig
+from noeira.tasks.placement.libero_goal import LiberoGoalPlacement
+from noeira.tasks.libero_visual import libero_site_conditions
+from noeira.tasks.libero_fixtures import patch_fixtures, fixtures_dump_path
 
 
 comptime DT = DType.float32
 """The device's type — the eval env's `Data` is float32 too."""
 comptime SUITE = "libero_goal"
-comptime FAMILY_DIR = "mojo_rl/tasks/families/"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
+comptime FAMILY_DIR = "noeira/tasks/families/"
+comptime TASK_DIR = "noeira/tasks/tasks/"
 comptime DEMO_DIR = "references/libero_demos/"
 comptime LANES = 64
 """Rows rendered per launch. Comptime: the kernel is instantiated per value."""
@@ -365,8 +365,8 @@ def main() raises:
         env_id=String("libero_rerender:") + suite,
         seed=0,
         source_commit=String("LIBERO-v1 demonstrations, states remapped by ")
-            + "mojo_rl/tasks/libero/state_remap_" + suite + ".kv, images by"
-            " mojo_rl/physics3d/raytrace (batch.mojo) at " + String(CAM_W)
+            + "noeira/tasks/libero/state_remap_" + suite + ".kv, images by"
+            " noeira/physics3d/raytrace (batch.mojo) at " + String(CAM_W)
             + "x" + String(CAM_H) + " " + String(SAMPLES) + "x MSAA, group 1,"
             " row 0 = top, frame r = state r",
     )

@@ -24,7 +24,7 @@ KEPT the old names in `âš ` notes explaining what they were and why they went â€
 that history is worth more than the grep is, so the gate reads code only.
 """
 
-from mojo_rl.core.kv import split_on
+from noeira.core.kv import split_on
 
 
 comptime DRIVERS = (

@@ -56,7 +56,7 @@ from std.collections import Array
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.envs.dm_control.dog.dog_xml import (
+from noeira.envs.dm_control.dog.dog_xml import (
     DMDogStandWalkModel,
     DOG_OBS_DIM,
     DOG_N_HINGE,
@@ -71,8 +71,8 @@ from mojo_rl.envs.dm_control.dog.dog_xml import (
     DOG_FRAME_SKIP,
     dsp,
 )
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_IPOS_X,
@@ -93,10 +93,10 @@ from mojo_rl.physics3d.gpu.constants import (
     SENSOR_IDX_SERVED,
     SENSOR_IDX_TYPE,
 )
-from mojo_rl.physics3d.joint_types import JNT_FREE
-from mojo_rl.physics3d.constants import SENS_SUBTREEANGMOM
+from noeira.physics3d.joint_types import JNT_FREE
+from noeira.physics3d.constants import SENS_SUBTREEANGMOM
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_dims import ModelDims
 comptime MD = ModelDims[DMDogStandWalkModel]
 
 
@@ -130,7 +130,7 @@ def _mj_from_our_xml() raises -> PythonObject:
     model; on its own it would compare our engine against our own parser.
     """
     var mujoco = Python.import_module("mujoco")
-    return mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
+    return mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_stand_walk.xml")
 
 
 def _build() raises -> Model[DType.float64, MD]:
@@ -283,9 +283,9 @@ def test_dog_xml_matches_reference() raises:
     # ⚠ PATHS, NOT XML TEXT — dog's skin texture is model-file-relative,
     # so `compare_xml_to_reference` loads by path (§10.5 decision 1).
     var xmls = [
-        String("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml"),
-        String("mojo_rl/envs/dm_control/assets/dog_trot.xml"),
-        String("mojo_rl/envs/dm_control/assets/dog_run.xml"),
+        String("noeira/envs/dm_control/assets/dog_stand_walk.xml"),
+        String("noeira/envs/dm_control/assets/dog_trot.xml"),
+        String("noeira/envs/dm_control/assets/dog_run.xml"),
     ]
     for t in range(3):
         var bad = refmod.compare_xml_to_reference(xmls[t], floors[t])
@@ -312,8 +312,8 @@ def test_dog_xml_matches_reference() raises:
 
     # The three floors must actually DIFFER, or the loop above compared one
     # model to itself three times.
-    var m_walk = Python.import_module("mujoco").MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
-    var m_run = Python.import_module("mujoco").MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_run.xml")
+    var m_walk = Python.import_module("mujoco").MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_stand_walk.xml")
+    var m_run = Python.import_module("mujoco").MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_run.xml")
     var floor_walk = Float64(py=m_walk.geom_size[0][0])
     var floor_run = Float64(py=m_run.geom_size[0][0])
     print("  floor half-extent: stand/walk", floor_walk, " run", floor_run)

@@ -1,5 +1,5 @@
 """Write `tests/fixtures/joblib_arrays.pkl` — the fixture `tests/io/test_pickle_joblib.mojo`
-reads with `mojo_rl/io/pickle.mojo`. Needs joblib + numpy (any env that has them):
+reads with `noeira/io/pickle.mojo`. Needs joblib + numpy (any env that has them):
 
     python tools/io/make_joblib_fixture.py
 

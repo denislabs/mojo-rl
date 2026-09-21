@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate `mojo_rl/envs/robots/assets/so_arm101_tower.xml` from `so_arm101.xml`.
+"""Generate `noeira/envs/robots/assets/so_arm101_tower.xml` from `so_arm101.xml`.
 
     pixi run python tools/soarm/bake_so_arm101_tower.py            # write
     pixi run python tools/soarm/bake_so_arm101_tower.py --check    # CI
@@ -67,9 +67,9 @@ import sys
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-STOCK = "mojo_rl/envs/robots/assets/so_arm101.xml"
-OUT = "mojo_rl/envs/robots/assets/so_arm101_tower.xml"
-MESHDIR = "mojo_rl/envs/robots/assets/so_arm101"
+STOCK = "noeira/envs/robots/assets/so_arm101.xml"
+OUT = "noeira/envs/robots/assets/so_arm101_tower.xml"
+MESHDIR = "noeira/envs/robots/assets/so_arm101"
 STOCK_MESH = "wrist_roll_follower_so101_v1"
 MOUNT_MESH = "wrist_cam_mount_32x32_uvc_module_so101"
 

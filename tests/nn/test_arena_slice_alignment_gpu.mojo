@@ -29,14 +29,14 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_arena_slice_alignment_gpu.moj
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.optimizer.param_arena import PARAM_ALIGN
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.optimizer.param_arena import PARAM_ALIGN
 
 
 # Odd widths on purpose: W = 5*7 = 35 and b = 7 are both ≢ 0 mod 4, which is

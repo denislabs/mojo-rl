@@ -28,14 +28,14 @@ Run with:
 Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 """
 
-from mojo_rl.envs import PendulumEnv
-from mojo_rl.core import (
+from noeira.envs import PendulumEnv
+from noeira.core import (
     ContinuousReplayBuffer,
     PolynomialFeatures,
     TrainingMetrics,
 )
-from mojo_rl.agents import DDPGAgent, TD3Agent
-from mojo_rl.core.fmt import fit
+from noeira.agents import DDPGAgent, TD3Agent
+from noeira.core.fmt import fit
 
 
 def main() raises:

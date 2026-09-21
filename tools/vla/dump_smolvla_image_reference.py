@@ -4,7 +4,7 @@
     pixi run -e act-ref python tools/vla/dump_smolvla_image_reference.py --out /tmp/vla_img
 
 ⚠ **SmolVLA's resize is NOT the resize this repo already implements.**
-`mojo_rl/vision/preprocess.mojo` reproduces PIL BILINEAR, whose filter support
+`noeira/vision/preprocess.mojo` reproduces PIL BILINEAR, whose filter support
 GROWS with the reduction factor (5 taps at 1.25x). SmolVLA calls
 `F.interpolate(mode="bilinear", align_corners=False)`, which is a fixed 2-tap
 triangle with NO antialiasing at any scale. Feeding one where the other is

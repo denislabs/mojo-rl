@@ -1,6 +1,6 @@
 """Every generatable family's device placement table — GENERATED artifacts.
 
-    pixi run gen-placement-tables           # write mojo_rl/tasks/placement/*.mojo
+    pixi run gen-placement-tables           # write noeira/tasks/placement/*.mojo
     pixi run gen-placement-tables --check   # CI: fail if one is stale
 
 `placement/table.place_free_slots` is the device twin of
@@ -36,20 +36,20 @@ refuses, because the kernel runs before FK.
 from std.os import listdir
 from std.sys import argv
 
-from mojo_rl.tasks.spec import load_family, FamilySpec, SLOT_FREE
-from mojo_rl.tasks.family import scene_path, park_pos
-from mojo_rl.tasks.reset import free_slot_addresses
-from mojo_rl.tasks.eval import region_sites
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.tasks.spec import load_family, FamilySpec, SLOT_FREE
+from noeira.tasks.family import scene_path, park_pos
+from noeira.tasks.reset import free_slot_addresses
+from noeira.tasks.eval import region_sites
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
 
 comptime DT = DType.float64
-comptime FAMILY_DIR = "mojo_rl/tasks/families"
-comptime OUT_DIR = "mojo_rl/tasks/placement"
+comptime FAMILY_DIR = "noeira/tasks/families"
+comptime OUT_DIR = "noeira/tasks/placement"
 comptime GRIPPER_SITE_NAMES = "robot_grip_site,robot_grasp_center,robot_gripperframe"
 """The end-effector site, per base robot, first match wins: the vendored
 Panda's (the one OSC_POSE drives, `examples/tasks/libero_eval.mojo`), the
@@ -382,7 +382,7 @@ def generate(family: String) raises -> String:
     o += " followed on one slide), " + String(len(jnames)) + " drawable joints.\n"
     o += "See `placement/table.mojo` for what each method means.\n"
     o += '"""\n\n'
-    o += "from mojo_rl.tasks.placement.table import PlacementTable\n\n\n"
+    o += "from noeira.tasks.placement.table import PlacementTable\n\n\n"
     o += "struct " + name + "(PlacementTable):\n"
     o += "    comptime N_SLOTS: Int = " + String(len(f.slots)) + "\n"
     o += "    comptime N_FREE: Int = " + String(len(fslot)) + "\n"

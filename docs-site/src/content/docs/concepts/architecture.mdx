@@ -1,6 +1,6 @@
 ---
 title: The layered stack
-description: How mojo-rl is organised — five layers from environments to training drivers, every one of them running on CPU or GPU.
+description: How noeira is organised — five layers from environments to training drivers, every one of them running on CPU or GPU.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -8,7 +8,7 @@ import LayeredStack from '~/components/diagrams/LayeredStack.astro';
 
 <Maturity level="stable" />
 
-mojo-rl is five layers. Each one is usable on its own — the physics engines
+noeira is five layers. Each one is usable on its own — the physics engines
 without the agents, the neural-network framework without the RL — and each one
 has both a CPU and a GPU path.
 
@@ -27,7 +27,7 @@ one.
 ## Package layout
 
 ```
-mojo_rl/
+noeira/
 ├── core/           Traits, tabular replay buffers, tile coding, metrics, logging
 ├── agents/         Tabular & linear algorithms (Q-Learning → linear SAC)
 ├── deep_agents/    Deep RL, one facade package per algorithm
@@ -86,7 +86,7 @@ model for CarRacing, and LIDAR distance sensing for BipedalWalker.
 
 ## Layer 3 — Deep learning
 
-[`mojo_rl.nn`](/nn/) — described in the project's own words as *"something
+[`noeira.nn`](/nn/) — described in the project's own words as *"something
 between Tinygrad and PyTorch"*. Networks are assembled from small reusable `Module`
 blocks, each `Param` owning its own value and gradient tensors.
 
@@ -116,7 +116,7 @@ architecture it is optimizing.
 
 Tier 5 splits once more. Most agents decide by evaluating a policy network;
 TD-MPC2 and the zero-series decide by running a **search** at every step. That
-search is not part of the agent — it lives in [`mojo_rl.planners`](/planners/),
+search is not part of the agent — it lives in [`noeira.planners`](/planners/),
 written against callback traits, which is why the same MPPI implementation
 drives a learned world model in production and a closed-form oracle in a test.
 

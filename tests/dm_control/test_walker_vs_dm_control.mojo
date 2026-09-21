@@ -29,7 +29,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.walker import (
+from noeira.envs.dm_control.walker import (
     DMWalkerStand,
     DMWalkerWalk,
     DMWalkerRun,
@@ -37,9 +37,9 @@ from mojo_rl.envs.dm_control.walker import (
     TORSO_BODY_IDX,
     STAND_HEIGHT,
 )
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_IPOS_X,
@@ -176,7 +176,7 @@ def test_walker_model_matches_mujoco() raises:
     var sys = Python.import_module("sys")
     sys.path.insert(0, REF_PATH)
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/walker.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/walker.xml")
 
     assert_true(Int(py=m.nbody) == DMWalkerModel.NBODY, "nbody mismatch")
     assert_true(Int(py=m.njnt) == DMWalkerModel.NJOINT, "njnt mismatch")

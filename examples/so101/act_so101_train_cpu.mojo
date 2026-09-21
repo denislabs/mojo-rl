@@ -51,8 +51,8 @@ reference used 50 demonstrations per task.
 
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.act.config import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.act.config import (
     act_pretrained_spec,
     SO101_ADIM,
     SO101_IMG_H,
@@ -60,10 +60,10 @@ from mojo_rl.deep_agents.act.config import (
     SO101_N_CAM,
     SO101_QPOS,
 )
-from mojo_rl.deep_agents.act.data import ACTDataset
-from mojo_rl.deep_agents.act.trainer import ACTTrainer
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
+from noeira.deep_agents.act.data import ACTDataset
+from noeira.deep_agents.act.trainer import ACTTrainer
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
 
 from std.python import Python, PythonObject
 
@@ -135,7 +135,7 @@ def store_path() raises -> String:
     var home = String(os.path.expanduser(PythonObject("~")))
     return (
         home
-        + "/.cache/mojo_rl/act_so101/"
+        + "/.cache/noeira/act_so101/"
         + "DenisLabs__record-test_20260825_094319_"
         + String(IMG_H) + "x" + String(IMG_W) + ".h5"
     )
@@ -180,20 +180,20 @@ def main() raises:
     print("")
 
     # Same metric stream as the GPU example — see its header. Inert without
-    # `RL_MONITOR_URL` in `.env`, and forced inert by `ACT_NO_MONITOR=1`.
+    # `NOEIRA_CLOUD_URL` in `.env`, and forced inert by `ACT_NO_MONITOR=1`.
     var env_vars = load_dotenv()
     var no_monitor = String(
         os.environ.get(PythonObject("ACT_NO_MONITOR"), PythonObject(""))
     )
     var monitor_url = (
         String("") if no_monitor.byte_length() > 0
-        else env_vars.get("RL_MONITOR_URL", "")
+        else env_vars.get("NOEIRA_CLOUD_URL", "")
     )
     var logger = RemoteLogger(
         server_url=monitor_url,
         run_name="ACT SO-ARM101 (CPU)",
         buffer_size=64,
-        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+        api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
     )
     logger.set_config("algorithm", "ACT")
     logger.set_config("robot", "SO-ARM101")
@@ -214,7 +214,7 @@ def main() raises:
             "streaming to " + monitor_url if logger.is_active()
             else (
                 "OFF (ACT_NO_MONITOR)" if no_monitor.byte_length() > 0
-                else "local only (set RL_MONITOR_URL in .env)"
+                else "local only (set NOEIRA_CLOUD_URL in .env)"
             )
         )
     )

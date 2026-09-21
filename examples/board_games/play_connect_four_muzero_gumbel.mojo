@@ -30,21 +30,21 @@ from std.memory import alloc
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.checkpoint import load_params_multi
-from mojo_rl.deep_agents.muzero.nets_spatial import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.checkpoint import load_params_multi
+from noeira.deep_agents.muzero.nets_spatial import (
     MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
 )
-from mojo_rl.deep_agents.zero.mcts_adapters_mz import (
+from noeira.deep_agents.zero.mcts_adapters_mz import (
     MZRepGPU, MZDynGPU, MZPredGPU,
 )
-from mojo_rl.planners.tree_search import GumbelGPUMCTS, SelfPlay
-from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
-from mojo_rl.render import Renderer2D, SDL_Color
-from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
-from mojo_rl.render.sdl.sdl_scancode import Scancode
-from mojo_rl.render.sdl.sdl_mouse import get_mouse_state
+from noeira.planners.tree_search import GumbelGPUMCTS, SelfPlay
+from noeira.envs.board_games.connect_four.connect_four import ConnectFourEnv
+from noeira.render import Renderer2D, SDL_Color
+from noeira.render.sdl.sdl_keyboard import get_keyboard_state
+from noeira.render.sdl.sdl_scancode import Scancode
+from noeira.render.sdl.sdl_mouse import get_mouse_state
 
 
 def main() raises:

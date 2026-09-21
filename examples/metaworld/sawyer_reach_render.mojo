@@ -5,8 +5,8 @@ Run with:
 """
 
 from std.random import seed
-from mojo_rl.envs.render_random import render_random
-from mojo_rl.envs.metaworld import SawyerReach
+from noeira.envs.render_random import render_random
+from noeira.envs.metaworld import SawyerReach
 
 
 def main() raises:

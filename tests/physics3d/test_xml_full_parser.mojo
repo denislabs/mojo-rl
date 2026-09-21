@@ -24,21 +24,21 @@ Expected output:
   FK round-trip succeeds, torso xpos_z ≈ 0.7
 """
 
-from mojo_rl.physics3d.parser import ParsedModel, parse_xml
-from mojo_rl.physics3d.parser import FlatModelDef
-from mojo_rl.physics3d.parser import parse_xml_full
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.parser import ParsedModel, parse_xml
+from noeira.physics3d.parser import FlatModelDef
+from noeira.physics3d.parser import parse_xml_full
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.physics3d.parser.fields_build import build_model_fields_from_flat
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_POS_Z,
     MODEL_META_IDX_GRAVITY_Z,
 )
-from mojo_rl.physics3d.constants import GEOM_PLANE, GEOM_CAPSULE
+from noeira.physics3d.constants import GEOM_PLANE, GEOM_CAPSULE
 from std.testing import assert_true, TestSuite
 
 

@@ -38,7 +38,7 @@ VIS = VLM + "model.vision_model."
 TXT = VLM + "model.text_model."
 
 DEFAULT_WEIGHTS = os.path.expanduser(
-    "~/.cache/mojo_rl/hub/lerobot__smolvla_base/main/model.safetensors"
+    "~/.cache/noeira/hub/lerobot__smolvla_base/main/model.safetensors"
 )
 
 

@@ -4,7 +4,7 @@ Compares our FK output (xpos, xquat, xipos) with MuJoCo's for the HalfCheetah
 model at multiple qpos configurations. Uses Python interop to call MuJoCo.
 
 Run with:
-    cd mojo-rl && pixi run mojo run -I . test_fk_vs_mujoco.mojo
+    cd noeira && pixi run mojo run -I . test_fk_vs_mujoco.mojo
 """
 
 from std.python import Python, PythonObject
@@ -13,12 +13,12 @@ from std.collections import Array
 from std.testing import assert_true, TestSuite
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
-from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from noeira.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from noeira.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 
 
 # =============================================================================

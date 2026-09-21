@@ -14,14 +14,14 @@ from std.math import isfinite
 from std.random import seed, random_float64
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.initializer import Kaiming, TruncNormalIn
-from mojo_rl.nn.primitives.upsample2x import Upsample2x
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.initializer import Kaiming, TruncNormalIn
+from noeira.nn.primitives.upsample2x import Upsample2x
+from noeira.nn.primitives.ops.swish_op import SwishOp
+from noeira.deep_agents.dreamerv3.nets_cnn import (
     DreamerDecoderStem,
     DreamerEncoderCNNPool,
     DreamerDecoderCNNPool,

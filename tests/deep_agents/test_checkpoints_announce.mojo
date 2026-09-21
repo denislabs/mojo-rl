@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | Every checkpoint a driver writes must be offered to the artifact sink
 # +--------------------------------------------------------------------------+ #
-"""A SOURCE gate over `mojo_rl/deep_agents/training/`.
+"""A SOURCE gate over `noeira/deep_agents/training/`.
 
     pixi run build-http                              # ONCE
     pixi run mojo run -I . tests/deep_agents/test_checkpoints_announce.mojo
@@ -32,26 +32,26 @@ written down, and the count of scanned save sites is PRINTED beside the count
 of failures — "0 violations" is also what scanning nothing prints.
 """
 
-from mojo_rl.deep_agents.training.checkpoint import (
+from noeira.deep_agents.training.checkpoint import (
     announce_checkpoint,
     offered_path,
 )
-from mojo_rl.io.artifact_sink import ArtifactSink
-from mojo_rl.io.fileio import read_file_bytes
-from mojo_rl.io.proc import quote_arg, run_capture
+from noeira.io.artifact_sink import ArtifactSink
+from noeira.io.fileio import read_file_bytes
+from noeira.io.proc import quote_arg, run_capture
 
 
 def drivers() -> List[String]:
     """⚠ A LIST, NOT A `comptime` TUPLE: a tuple cannot be indexed by a runtime
     loop variable. Written down rather than globbed — see the header."""
     var out = List[String]()
-    out.append(String("mojo_rl/deep_agents/training/driver_offpolicy.mojo"))
+    out.append(String("noeira/deep_agents/training/driver_offpolicy.mojo"))
     out.append(
-        String("mojo_rl/deep_agents/training/driver_offpolicy_discrete.mojo")
+        String("noeira/deep_agents/training/driver_offpolicy_discrete.mojo")
     )
-    out.append(String("mojo_rl/deep_agents/training/driver_onpolicy.mojo"))
+    out.append(String("noeira/deep_agents/training/driver_onpolicy.mojo"))
     out.append(
-        String("mojo_rl/deep_agents/training/driver_onpolicy_discrete.mojo")
+        String("noeira/deep_agents/training/driver_onpolicy_discrete.mojo")
     )
     return out^
 
@@ -181,7 +181,7 @@ def main() raises:
     var fwd = run_capture(
         String(
             "grep -rl 'checkpoint_path=checkpoint_path,'"
-            " mojo_rl/deep_agents/*/agent.mojo 2>/dev/null"
+            " noeira/deep_agents/*/agent.mojo 2>/dev/null"
         ),
         1 << 20,
     )
@@ -300,7 +300,7 @@ def main() raises:
     # The sink points at the discard port, so the upload fails immediately and
     # deterministically — what is being measured is that the artifact reached
     # the sink AT ALL, which the failure count proves and a no-op cannot fake.
-    var dead_run = String("/tmp/mojo_rl_announce_gate")
+    var dead_run = String("/tmp/noeira_announce_gate")
     var s1 = ArtifactSink(
         run_id=String("gate"),
         run_dir=dead_run,

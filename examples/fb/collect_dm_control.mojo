@@ -39,25 +39,25 @@ Run:
 from std.math import sqrt
 from std.random import random_float64, seed
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
 
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.data.resident import ResidentColumn
-from mojo_rl.data.sampler import UniformSampler
+from noeira.data.store import TrajectoryStore
+from noeira.data.resident import ResidentColumn
+from noeira.data.sampler import UniformSampler
 
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
 
-from mojo_rl.deep_agents.fb.collect import collect_random
-from mojo_rl.deep_agents.fb.rnd import RND
+from noeira.deep_agents.fb.collect import collect_random
+from noeira.deep_agents.fb.rnd import RND
 
-from mojo_rl.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
-from mojo_rl.envs.dm_control.cheetah import DMCheetahModel, DMCheetahConfig
-from mojo_rl.envs.dm_control.wide_reset import (
+from noeira.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
+from noeira.envs.dm_control.cheetah import DMCheetahModel, DMCheetahConfig
+from noeira.envs.dm_control.wide_reset import (
     WideResetConfig,
     WALKER_ROOTZ_ADR, WALKER_Z_LO, WALKER_Z_HI,
     CHEETAH_ROOTZ_ADR, CHEETAH_Z_LO, CHEETAH_Z_HI,

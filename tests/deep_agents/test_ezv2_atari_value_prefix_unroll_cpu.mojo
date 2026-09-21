@@ -13,21 +13,21 @@ Run:
 
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.deep_agents.efficient_zero_v2.nets_atari import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.optimizer.adam import Adam
+from noeira.deep_agents.efficient_zero_v2.nets_atari import (
     EZRepNetResNetAtari, EZDynZNetAtari, EZRewardLSTMAtari, EZPredNetAtari,
     EZ_C, EZ_LATENT, EZ_LSTM_HIDDEN, EZ_LSTM_HORIZON,
     ez_atari_init_zero_pred, ez_atari_init_zero_reward,
 )
-from mojo_rl.deep_agents.efficient_zero_v2.nets import (
+from noeira.deep_agents.efficient_zero_v2.nets import (
     EZProjectorNet, EZPredictorNet,
 )
-from mojo_rl.deep_agents.efficient_zero_v2.blocks import (
+from noeira.deep_agents.efficient_zero_v2.blocks import (
     ezv2_unroll_train_step_cpu_vp,
 )
-from mojo_rl.deep_agents.zero import value_prefix_from_rewards
+from noeira.deep_agents.zero import value_prefix_from_rewards
 
 
 def main() raises:

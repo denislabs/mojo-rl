@@ -1,4 +1,4 @@
-"""Minimal gate for `mojo_rl/cuda/device_graph.mojo`: record, replay, latch.
+"""Minimal gate for `noeira/cuda/device_graph.mojo`: record, replay, latch.
 
 The successor to `test_cuda_graph_minimal.mojo`, and much smaller, because
 most of what that file gates does not exist here: there is no interceptor to
@@ -46,7 +46,7 @@ Run with:
         tests/cuda/probe_device_graph_steps.mojo && /tmp/probe_dg
 
     # bisect a suspected graph problem against a known-good run:
-    MOJO_RL_DEVICE_GRAPH=0 pixi run -e nvidia mojo run -I . \
+    NOEIRA_DEVICE_GRAPH=0 pixi run -e nvidia mojo run -I . \
         tests/cuda/test_device_graph_minimal.mojo
 """
 
@@ -56,8 +56,8 @@ from std.testing import assert_true, TestSuite
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.cuda import GraphSlot, maybe_record_replay
+from noeira.nn.constants import DT
+from noeira.cuda import GraphSlot, maybe_record_replay
 
 comptime CALLS = 5
 

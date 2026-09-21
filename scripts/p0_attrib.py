@@ -18,7 +18,7 @@ pattern misses.
 this tree's own captured profiles:
 
     naive_batched_matmul_kernel_float32_float32_float32_True_79987f6b
-    mojo_rl_nn_primitives_conv2d6A6A6A6A6A6A6A_5bd29d73087ee488
+    noeira_nn_primitives_conv2d6A6A6A6A6A6A6A_5bd29d73087ee488
 
 The first keeps the function name; the second truncates a long one to a fixed
 width, pads with `6A`, and appends a hash. If our kernels take the second form
@@ -63,9 +63,9 @@ SPILL_FROM = 1
 # Mojo emits a long kernel symbol as the module path CUT TO 29 CHARACTERS, then
 # `6A` padding, then a hash of the comptime parameters:
 #
-#     mojo_rl/nn/primitives/conv2d          (28) -> mojo_rl_nn_primitives_conv2d
-#     mojo_rl/nn/primitives/batch_norm      (32) -> mojo_rl_nn_primitives_batch_n
-#     mojo_rl/physics3d/solver/newton_solve (37) -> mojo_rl_physics3d_solver_newt
+#     noeira/nn/primitives/conv2d          (28) -> noeira_nn_primitives_conv2d
+#     noeira/nn/primitives/batch_norm      (32) -> noeira_nn_primitives_batch_n
+#     noeira/physics3d/solver/newton_solve (37) -> noeira_physics3d_solver_newt
 #
 # The first two are read off this tree's own captured profile
 # (`act_so101_profile_gpu_baseline.txt`); the third off the ptxas error quoted
@@ -74,12 +74,12 @@ SPILL_FROM = 1
 #
 # ⚠ SO A PATTERN MUST NOT SPELL MORE THAN SURVIVES. `physics3d_dynamics_mass`
 # never appears — `dynamics/mass_matrix` is 38 characters and arrives as
-# `mojo_rl_physics3d_dynamics_ma`. The first draft of this table spelled the
+# `noeira_physics3d_dynamics_ma`. The first draft of this table spelled the
 # full names and would have labelled EVERY physics kernel `unlabelled` while
 # looking perfectly reasonable. `self_test()` below pins each one.
 #
 # ⚠ AND ONE COLLISION IS UNFIXABLE HERE: `integrator/rk4` and
-# `integrator/euler` both truncate to `mojo_rl_physics3d_integrator_`. On an
+# `integrator/euler` both truncate to `noeira_physics3d_integrator_`. On an
 # RK4 model only RK4's kernels launch, so the bucket is honestly named
 # `integrator` rather than guessing which file it came from.
 #
@@ -111,17 +111,17 @@ def self_test():
         return mod.replace("/", "_")[:29]
 
     cases = [
-        ("mojo_rl/physics3d/dynamics/mass_matrix", "crba"),
-        ("mojo_rl/physics3d/dynamics/ldl", "ldl_pair"),
-        ("mojo_rl/physics3d/dynamics/lu", "lu"),
-        ("mojo_rl/physics3d/dynamics/rne", "rne"),
-        ("mojo_rl/physics3d/dynamics/cdof", "cdof"),
-        ("mojo_rl/physics3d/solver/newton_solve", "newton"),
-        ("mojo_rl/physics3d/integrator/rk4", "integrator"),
-        ("mojo_rl/physics3d/integrator/euler", "integrator"),
-        ("mojo_rl/physics3d/kinematics/forward_kinematics", "fk"),
-        ("mojo_rl/physics3d/collision/contact_detection", "collision"),
-        ("mojo_rl/physics3d/constraints/contact_solve", "constraint"),
+        ("noeira/physics3d/dynamics/mass_matrix", "crba"),
+        ("noeira/physics3d/dynamics/ldl", "ldl_pair"),
+        ("noeira/physics3d/dynamics/lu", "lu"),
+        ("noeira/physics3d/dynamics/rne", "rne"),
+        ("noeira/physics3d/dynamics/cdof", "cdof"),
+        ("noeira/physics3d/solver/newton_solve", "newton"),
+        ("noeira/physics3d/integrator/rk4", "integrator"),
+        ("noeira/physics3d/integrator/euler", "integrator"),
+        ("noeira/physics3d/kinematics/forward_kinematics", "fk"),
+        ("noeira/physics3d/collision/contact_detection", "collision"),
+        ("noeira/physics3d/constraints/contact_solve", "constraint"),
     ]
     bad = 0
     print("=== labeller self-test (truncate-to-29 + 6A padding + hash) ===")
@@ -133,7 +133,7 @@ def self_test():
         print(f"  {'ok ' if ok else 'FAIL'} {sym[:40]:<42} -> {got:<11}"
               f"{'' if ok else '  want ' + want}")
     # Negative control: an nn kernel must NOT be claimed by a physics term.
-    for sym in ("mojo_rl_nn_primitives_conv2d6A6A_x",
+    for sym in ("noeira_nn_primitives_conv2d6A6A_x",
                 "naive_batched_matmul_kernel_float32_float32_float32_True_1",
                 "void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm>(P)"):
         got = label(sym)

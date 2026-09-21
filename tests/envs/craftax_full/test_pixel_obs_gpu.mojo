@@ -12,7 +12,7 @@ Run:
 
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.envs.craftax_full import (
+from noeira.envs.craftax_full import (
     CraftaxFullPixelEnv,
     CraftaxFullAction,
     PIXEL_OBS_DIM,
@@ -20,8 +20,8 @@ from mojo_rl.envs.craftax_full import (
     OBS_PIX_W,
     STATE_SIZE,
 )
-from mojo_rl.envs.craftax_full.craftax_full_pixel import ATLAS_FLOATS
-from mojo_rl.nn.constants import DT as dtype
+from noeira.envs.craftax_full.craftax_full_pixel import ATLAS_FLOATS
+from noeira.nn.constants import DT as dtype
 
 
 comptime BATCH: Int = 1

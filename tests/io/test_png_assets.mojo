@@ -22,8 +22,8 @@ Everything is compared as RGBA, which is what all three sprite loaders asked
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.io.fileio import read_file_bytes
-from mojo_rl.io.png import load_png_file, to_rgba
+from noeira.io.fileio import read_file_bytes
+from noeira.io.png import load_png_file, to_rgba
 
 
 def main() raises:

@@ -16,7 +16,7 @@
 #   pixi run -e act-ref python tools/nn/dump_safetensors_reference.py \
 #       --out /tmp/st_ref
 #   pixi run -e act-ref python tools/act/dump_resnet18_imagenet.py \
-#       --out ~/.cache/mojo_rl/act_so101/resnet18_imagenet
+#       --out ~/.cache/noeira/act_so101/resnet18_imagenet
 #
 # ⚠ AND AFTERWARDS, or half of each gate is untested. Both Mojo files WRITE a
 # file they cannot judge — only the reference implementation reading our bytes

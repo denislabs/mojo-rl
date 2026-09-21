@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | The PNG encoder, read back by Pillow
 # +--------------------------------------------------------------------------+ #
-"""Gate `encode_png` / `save_png` in `mojo_rl/io/png.mojo`.
+"""Gate `encode_png` / `save_png` in `noeira/io/png.mojo`.
 
     pixi run build-http                                   # ONCE
     pixi run mojo run -I . tests/io/test_png_write.mojo
@@ -23,12 +23,12 @@ encoder that assumed rows were padded.
 from std.os import makedirs
 from std.os.path import exists
 
-from mojo_rl.io.fileio import write_file_atomic
-from mojo_rl.io.png import load_png_file, save_png
-from mojo_rl.io.proc import run_capture
+from noeira.io.fileio import write_file_atomic
+from noeira.io.png import load_png_file, save_png
+from noeira.io.proc import run_capture
 
 
-comptime DIR = "/tmp/mojo_rl_png_write"
+comptime DIR = "/tmp/noeira_png_write"
 comptime W = 23
 comptime H = 17
 

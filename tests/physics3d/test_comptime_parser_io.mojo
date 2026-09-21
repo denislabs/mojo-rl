@@ -24,8 +24,8 @@ from std.ffi import external_call
 from std.io.file import open
 from std.testing import assert_true, assert_equal, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml_full
-from mojo_rl.physics3d.constants import GEOM_PLANE, GEOM_CAPSULE
+from noeira.physics3d.parser import parse_xml_full
+from noeira.physics3d.constants import GEOM_PLANE, GEOM_CAPSULE
 
 
 comptime FIXTURE_XML = """
@@ -72,7 +72,7 @@ def test_parser_file_io_roundtrip() raises:
     inline string would. Non-vacuity: the element counts are all non-zero and
     two parsed VALUES (a non-default damping and the actuator gear) are
     checked, so an empty or truncated read cannot pass."""
-    var path = String("/tmp/mojo_rl_parser_io_roundtrip.xml")
+    var path = String("/tmp/noeira_parser_io_roundtrip.xml")
     _write_fixture(path)
 
     var xml: String

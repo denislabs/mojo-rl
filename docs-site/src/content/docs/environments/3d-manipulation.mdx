@@ -107,8 +107,8 @@ Reacher and Pusher wrap into the batched GPU driver like any physics3d
 environment:
 
 ```mojo
-from mojo_rl.envs.reacher import ReacherModel, ReacherConfig
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.reacher import ReacherModel, ReacherConfig
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 
 comptime BatchedEnvT = Phyics3dBatchedEnv[ReacherModel, ReacherConfig, N_ENVS]
 ```

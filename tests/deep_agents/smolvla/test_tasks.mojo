@@ -20,8 +20,8 @@ Run:
 
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.deep_agents.smolvla.tasks import TaskTokens
-from mojo_rl.deep_agents.smolvla.attn_mask import smolvla_ar
+from noeira.deep_agents.smolvla.tasks import TaskTokens
+from noeira.deep_agents.smolvla.attn_mask import smolvla_ar
 
 comptime TABLE = "tools/vla/smolvla_tasks_record-test_20260828_092736.tsv"
 comptime NEWLINE_ID = 198

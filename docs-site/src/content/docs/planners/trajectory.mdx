@@ -18,7 +18,7 @@ from the new state. That is model-predictive control, and it is what
 [TD-MPC2](/algorithms/tdmpc2/) does at every environment step.
 
 ```mojo
-from mojo_rl.planners.trajectory import (
+from noeira.planners.trajectory import (
     CategoricalRandomShooter, ContinuousRandomShooter,
     CategoricalCEMOptimizer, ContinuousCEMOptimizer,
     MPPICPU, MPPIGPUBatched,
@@ -219,7 +219,7 @@ walking `t = T-1 → 0`, so it parallelizes across problems and not within one.
 
 ## Testing a planner
 
-`mojo_rl/planners/testing/` holds world models with known optima, which is what
+`noeira/planners/testing/` holds world models with known optima, which is what
 makes it possible to test correctness rather than convergence:
 
 | Stub | What it pins down |

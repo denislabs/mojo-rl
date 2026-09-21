@@ -25,16 +25,16 @@ Inspect:  /tmp/sac_storage_selfcheck.csv
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.core.logger import CsvLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
-from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+from noeira.core.logger import CsvLogger
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.nn.primitives.layer_norm import LayerNorm
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.sac import SACAgent
+from noeira.deep_agents.training.blocks import UniformSampleCpuStep
+from noeira.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17

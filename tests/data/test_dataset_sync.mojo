@@ -18,28 +18,28 @@ from std.os import makedirs
 from std.os.path import exists
 from std.time import sleep
 
-from mojo_rl.data.dataset_sync import (
+from noeira.data.dataset_sync import (
     HashCache,
     dataset_path_refusal,
     pull_dataset,
     push_dataset,
     watch_is_done,
 )
-from mojo_rl.data.lerobot import import_lerobot_v3
-from mojo_rl.data.lerobot_push import dataset_files
-from mojo_rl.data.lerobot_write import LeRobotWriter
-from mojo_rl.data.recording_files import plan_upload, recording_finished, video_file_index
-from mojo_rl.data.remote import RemoteCatalog
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.io.fileio import remove_file
-from mojo_rl.io.http import HttpClient, http_shim_available
-from mojo_rl.io.proc import run_capture
-from mojo_rl.io.sha256 import sha256_file
+from noeira.data.lerobot import import_lerobot_v3
+from noeira.data.lerobot_push import dataset_files
+from noeira.data.lerobot_write import LeRobotWriter
+from noeira.data.recording_files import plan_upload, recording_finished, video_file_index
+from noeira.data.remote import RemoteCatalog
+from noeira.data.store import TrajectoryStore
+from noeira.io.fileio import remove_file
+from noeira.io.http import HttpClient, http_shim_available
+from noeira.io.proc import run_capture
+from noeira.io.sha256 import sha256_file
 
 
-comptime WORK = "/tmp/mojo_rl_dataset_sync_gate"
-comptime PORT_FILE = "/tmp/mojo_rl_dataset_sync_gate_port"
-comptime LOG_FILE = "/tmp/mojo_rl_dataset_sync_gate_log"
+comptime WORK = "/tmp/noeira_dataset_sync_gate"
+comptime PORT_FILE = "/tmp/noeira_dataset_sync_gate_port"
+comptime LOG_FILE = "/tmp/noeira_dataset_sync_gate_log"
 comptime SLUG = "so101-tower"
 comptime NAME = "cube-in-bowl"
 comptime H = 48
@@ -78,7 +78,7 @@ def _start_server() raises -> String:
             pass
     _ = run_capture(
         "python3 tools/io/mock_monitor_server.py " + String(PORT_FILE) + " "
-        + String(LOG_FILE) + " 240 > /tmp/mojo_rl_dataset_sync_gate_server.log 2>&1 &"
+        + String(LOG_FILE) + " 240 > /tmp/noeira_dataset_sync_gate_server.log 2>&1 &"
     )
     for _ in range(100):
         if exists(PORT_FILE):

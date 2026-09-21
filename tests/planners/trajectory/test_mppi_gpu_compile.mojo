@@ -16,8 +16,8 @@ from std.memory import alloc
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.planners.trajectory import (
+from noeira.nn.constants import DT as dtype
+from noeira.planners.trajectory import (
     MPPIGPUBatched,
     RolloutCallbackGPU,
 )

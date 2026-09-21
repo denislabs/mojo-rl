@@ -1,9 +1,9 @@
 """Minimal test: load and render the exact MetaWorld table STL files directly."""
 
-from mojo_rl.render import Renderer3D, Camera3D, Color
-from mojo_rl.render.light import Light
-from mojo_rl.render.stl_loader import load_stl
-from mojo_rl.math3d import Vec3 as V3, Quat as Q4
+from noeira.render import Renderer3D, Camera3D, Color
+from noeira.render.light import Light
+from noeira.render.stl_loader import load_stl
+from noeira.math3d import Vec3 as V3, Quat as Q4
 
 comptime Vec3 = V3[DType.float64]
 comptime Quat = Q4[DType.float64]
@@ -13,7 +13,7 @@ def main() raises:
     # Step 1: just load the STL files
     print("Loading tablebody.stl...")
     var mesh1 = load_stl(
-        "mojo_rl/envs/metaworld/assets/meshes/table/tablebody.stl"
+        "noeira/envs/metaworld/assets/meshes/table/tablebody.stl"
     )
     print(
         "  vertices:",
@@ -24,7 +24,7 @@ def main() raises:
 
     print("Loading tabletop.stl...")
     var mesh2 = load_stl(
-        "mojo_rl/envs/metaworld/assets/meshes/table/tabletop.stl"
+        "noeira/envs/metaworld/assets/meshes/table/tabletop.stl"
     )
     print(
         "  vertices:",
@@ -82,7 +82,7 @@ def main() raises:
         renderer.draw_mesh(
             name="tablebody",
             file_path=(
-                "mojo_rl/envs/metaworld/assets/meshes/table/tablebody.stl"
+                "noeira/envs/metaworld/assets/meshes/table/tablebody.stl"
             ),
             center=Vec3(0.0, 0.6, -0.65),
             orientation=Quat(0.0, 0.0, 0.0, 1.0),

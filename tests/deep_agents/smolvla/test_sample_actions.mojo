@@ -23,22 +23,22 @@ from std.math import abs, sqrt
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.deep_agents.smolvla.text import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.linear import Linear
+from noeira.deep_agents.smolvla.text import (
     SmolVLMTextLayers, SMOLLM_DIM, SMOLLM_FF, SMOLLM_KV_W, SMOLLM_LAYERS,
     SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM,
 )
-from mojo_rl.deep_agents.smolvla.expert import (
+from noeira.deep_agents.smolvla.expert import (
     SmolVLAExpert, EXPERT_W, EXPERT_FF,
 )
-from mojo_rl.deep_agents.smolvla.heads import SMOLVLA_EXPERT_W
-from mojo_rl.deep_agents.smolvla.kv_cache import SmolVLAKVCache
-from mojo_rl.deep_agents.smolvla.fused import SmolVLAPrefill, SmolVLADenoise
-from mojo_rl.deep_agents.smolvla.policy import SmolVLAActionSampler
-from mojo_rl.deep_agents.smolvla.attn_mask import (
+from noeira.deep_agents.smolvla.heads import SMOLVLA_EXPERT_W
+from noeira.deep_agents.smolvla.kv_cache import SmolVLAKVCache
+from noeira.deep_agents.smolvla.fused import SmolVLAPrefill, SmolVLADenoise
+from noeira.deep_agents.smolvla.policy import SmolVLAActionSampler
+from noeira.deep_agents.smolvla.attn_mask import (
     att_2d_mask, att_2d_mask_square, smolvla_ar,
 )
 

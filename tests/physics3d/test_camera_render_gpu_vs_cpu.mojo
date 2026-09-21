@@ -31,26 +31,26 @@ from max.gpu.host import DeviceContext
 from std.testing import assert_true, assert_almost_equal, TestSuite
 from layout import Layout
 
-from mojo_rl.math3d import Vec3 as Vec3Generic
-from mojo_rl.physics3d.fields import Data, Model, Dims, init_hfield_data
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.math3d import Vec3 as Vec3Generic
+from noeira.physics3d.fields import Data, Model, Dims, init_hfield_data
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.fields_build import build_model_fields_from_flat
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.gpu.constants import (
     MODEL_CAM_SIZE,
     CAM_IDX_ACTIVE,
     CAM_IDX_BODY,
     CAM_IDX_MODE,
     CAM_IDX_REF_SET,
 )
-from mojo_rl.physics3d.raytrace import (
+from noeira.physics3d.raytrace import (
     BatchedCameraRenderer,
     RGB_CHANNELS,
     camera_world_frame,
     init_camera_reference,
 )
-from mojo_rl.physics3d.raytrace.visual import build_visual_model, SiteCondition
+from noeira.physics3d.raytrace.visual import build_visual_model, SiteCondition
 
 comptime GT = DType.float32
 comptime BATCH = 2

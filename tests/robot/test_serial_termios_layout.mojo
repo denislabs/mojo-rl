@@ -32,10 +32,10 @@ from std.ffi import external_call
 from std.sys import CompilationTarget
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.io.serial.native import (
+from noeira.io.serial.native import (
     baud_constant, layout_from_headers, layout_names,
 )
-from mojo_rl.io.serial.port import (
+from noeira.io.serial.port import (
     OFF_CC,
     OFF_ISPEED,
     OFF_OSPEED,

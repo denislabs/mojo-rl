@@ -12,7 +12,7 @@ Run:
   pixi run mojo run -I . tests/envs/craftax_full/test_pixel_obs.mojo
 """
 
-from mojo_rl.envs.craftax_full import (
+from noeira.envs.craftax_full import (
     CraftaxFullPixelEnv,
     CraftaxFullAction,
     OBS_PIX_H,
@@ -20,8 +20,8 @@ from mojo_rl.envs.craftax_full import (
     OBS_CHANNELS,
     PIXEL_OBS_DIM,
 )
-from mojo_rl.envs.craftax_full.craftax_full_pixel import VIEW_PIX_H
-from mojo_rl.envs.craftax_full.constants import (
+from noeira.envs.craftax_full.craftax_full_pixel import VIEW_PIX_H
+from noeira.envs.craftax_full.constants import (
     ACTION_LEFT,
     ACTION_RIGHT,
     ACTION_UP,

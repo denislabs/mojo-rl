@@ -26,8 +26,8 @@ from std.os import getenv
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.data.lerobot_push import dataset_files, push_lerobot_dataset
+from noeira.core.dotenv import load_dotenv
+from noeira.data.lerobot_push import dataset_files, push_lerobot_dataset
 
 
 def _flag(name: String) raises -> String:
@@ -78,7 +78,7 @@ def main() raises:
 
     var message = _flag(String("--message"))
     if message.byte_length() == 0:
-        message = String("Upload dataset with mojo-rl")
+        message = String("Upload dataset with noeira")
     var private = not _has(String("--public"))
 
     var files = dataset_files(root)

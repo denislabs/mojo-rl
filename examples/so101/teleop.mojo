@@ -36,9 +36,9 @@ in the first example).
 from std.ffi import external_call
 from std.time import perf_counter_ns
 
-from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
-from mojo_rl.robot.so101.ports import follower_port, leader_port, port_refusal
-from mojo_rl.utils.fmt import col, fixed
+from noeira.robot.so101 import SO101Arm, SO101_N, joint_name
+from noeira.robot.so101.ports import follower_port, leader_port, port_refusal
+from noeira.utils.fmt import col, fixed
 
 
 comptime HZ = 50

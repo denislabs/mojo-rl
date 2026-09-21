@@ -16,13 +16,13 @@ from max.gpu.host import DeviceContext
 from std.testing import assert_true
 from layout import Layout
 
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.dreamerv3.blocks import _imag_bwd_continuous_k
-from mojo_rl.deep_agents.dreamerv3.imag_loss import (
+from noeira.nn.constants import DT, TPB
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.dreamerv3.blocks import _imag_bwd_continuous_k
+from noeira.deep_agents.dreamerv3.imag_loss import (
     imag_loss_cpu, imag_loss_backward,
 )
-from mojo_rl.deep_agents.dreamerv3.normalize import PercentileNormalize
+from noeira.deep_agents.dreamerv3.normalize import PercentileNormalize
 
 comptime NS = 6
 comptime TI = 4

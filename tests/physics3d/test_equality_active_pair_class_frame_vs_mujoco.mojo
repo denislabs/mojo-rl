@@ -19,8 +19,8 @@ from std.math import abs, sqrt
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
 
 comptime ACTIVE_XML = String(
     """<mujoco model="active">

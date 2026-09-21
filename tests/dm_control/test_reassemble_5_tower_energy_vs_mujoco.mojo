@@ -57,13 +57,13 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_reassemble5_def import Reassemble5Model
-from mojo_rl.envs.dm_control.manipulation_reassemble5_config import (
+from noeira.envs.dm_control.manipulation_reassemble5_def import Reassemble5Model
+from noeira.envs.dm_control.manipulation_reassemble5_config import (
     Reassemble5Config,
 )
-from mojo_rl.envs.dm_control.manipulation_stack_fixed import BRICK_DOF_ADR_0
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from noeira.envs.dm_control.manipulation_stack_fixed import BRICK_DOF_ADR_0
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
 
 comptime E32 = Phyics3dEnv[Reassemble5Model, Reassemble5Config, DType.float32, False]
 comptime E64 = Phyics3dEnv[Reassemble5Model, Reassemble5Config, DType.float64, False]

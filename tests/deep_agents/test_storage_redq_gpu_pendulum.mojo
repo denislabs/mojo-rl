@@ -35,19 +35,19 @@ from std.random import seed
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.redq.config import SmallREDQ
-from mojo_rl.deep_agents.redq.trainer import REDQTrainer
-from mojo_rl.deep_agents.redq.kernels import REDQ_TARGET_MIN
-from mojo_rl.deep_agents.training.blocks import ReplaySampleStep
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.deep_agents.training.driver_offpolicy import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.redq.config import SmallREDQ
+from noeira.deep_agents.redq.trainer import REDQTrainer
+from noeira.deep_agents.redq.kernels import REDQ_TARGET_MIN
+from noeira.deep_agents.training.blocks import ReplaySampleStep
+from noeira.deep_agents.training.batched_env import BatchedGpuEnv
+from noeira.deep_agents.training.driver_offpolicy import (
     run_offpolicy_train_batched,
 )
-from mojo_rl.deep_agents.data.any_replay import AnyReplay
-from mojo_rl.deep_agents.redq.config import REDQActor, REDQCritic
-from mojo_rl.envs.pendulum.pendulum_v2 import PendulumV2
-from mojo_rl.envs.pendulum.pendulum_v1 import PendulumEnv
+from noeira.deep_agents.data.any_replay import AnyReplay
+from noeira.deep_agents.redq.config import REDQActor, REDQCritic
+from noeira.envs.pendulum.pendulum_v2 import PendulumV2
+from noeira.envs.pendulum.pendulum_v1 import PendulumEnv
 
 
 comptime OBS = 3

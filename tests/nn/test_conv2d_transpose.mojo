@@ -20,11 +20,11 @@ from std.math import abs
 from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.conv2d_transpose import Conv2DTranspose
+from noeira.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.conv2d_transpose import Conv2DTranspose
 
 # Upsample config (the decoder use-case): 4x4 → 8x8, stride 2.
 comptime IC = 4

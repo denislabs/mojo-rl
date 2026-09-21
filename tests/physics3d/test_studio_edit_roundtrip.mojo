@@ -27,21 +27,21 @@ after.
 Run: pixi run mojo run -I . tests/physics3d/test_studio_edit_roundtrip.mojo
 """
 
-from mojo_rl.physics3d.fields import Model, DynDims
-from mojo_rl.physics3d.gpu.constants import MODEL_GEOM_SIZE
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Model, DynDims
+from noeira.physics3d.gpu.constants import MODEL_GEOM_SIZE
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, read_model_source,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.studio.edit import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.studio.edit import (
     Edit, EditLog, apply_edit, needs_rebuild,
     TARGET_GEOM, TARGET_BODY,
     F_POS_X, F_POS_Z, F_SIZE_0, F_SIZE_1, F_FRICTION, F_RGBA_R, F_MASS,
 )
 
 comptime DT = DType.float64
-comptime MODEL = String("mojo_rl/envs/walker2d/assets/walker2d.xml")
+comptime MODEL = String("noeira/envs/walker2d/assets/walker2d.xml")
 
 
 struct Tally:

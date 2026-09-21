@@ -5,7 +5,7 @@
 # library dump, the reference's observation function in numpy. They need
 # the repo-root artefacts a fresh clone does not have:
 #
-#   mojo_rl/envs/robots/assets/unitree_g1.xml + unitree_g1/   (tests/robots/g1_bake.py)
+#   noeira/envs/robots/assets/unitree_g1.xml + unitree_g1/   (tests/robots/g1_bake.py)
 #   lafan_g1_50hz.h5                                        (examples/g1/lafan_import.mojo)
 #   lafan_g1_50hz_oracle.h5     the reference's own dump, G1b's oracle (tools/g1/lafan_to_store.py)
 #

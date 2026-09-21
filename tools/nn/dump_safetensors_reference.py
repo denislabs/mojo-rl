@@ -2,7 +2,7 @@
 # +--------------------------------------------------------------------------+ #
 # | The reference safetensors implementation, on both ends of ours
 # +--------------------------------------------------------------------------+ #
-"""Gate `mojo_rl/io/safetensors.mojo` against the library everyone else uses.
+"""Gate `noeira/io/safetensors.mojo` against the library everyone else uses.
 
     pixi run -e act-ref python tools/nn/dump_safetensors_reference.py \
         --out /tmp/st_ref                       # 1. reference WRITES
@@ -299,7 +299,7 @@ def verify_ours(out: Path) -> int:
 
     head = json.loads(raw[8 : 8 + hlen])
     meta = head.get("__metadata__", {})
-    if meta.get("producer") != "mojo-rl":
+    if meta.get("producer") != "noeira":
         print(f"  FAIL  __metadata__ producer: {meta!r}")
         fails += 1
     else:

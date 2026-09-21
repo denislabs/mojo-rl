@@ -59,21 +59,21 @@ from std.pathlib import Path
 from std.random import seed
 from std.sys import argv
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.data.any_replay import AnyReplay
-from mojo_rl.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
-from mojo_rl.deep_agents.training.blocks import ReplaySampleStep
-from mojo_rl.envs.dm_control.viewer_core import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.data.any_replay import AnyReplay
+from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
+from noeira.deep_agents.training.blocks import ReplaySampleStep
+from noeira.envs.dm_control.viewer_core import (
     ActionSource, DRIVE_POLICY, ViewerState, run_view, task_index,
 )
-from mojo_rl.render.imgui import imgui_shim_available
-from mojo_rl.render.renderer3d import Renderer3D
-from mojo_rl.utils.fmt import fixed
+from noeira.render.imgui import imgui_shim_available
+from noeira.render.renderer3d import Renderer3D
+from noeira.utils.fmt import fixed
 
-from mojo_rl.tasks.posed_reset import posed_qpos, task_meta_words
-from mojo_rl.tasks.placement.so101_tower import So101TowerPlacement
-from mojo_rl.tasks.family_config import So101TowerConfig
-from mojo_rl.tasks.so101_tower_xml import So101TowerModel
+from noeira.tasks.posed_reset import posed_qpos, task_meta_words
+from noeira.tasks.placement.so101_tower import So101TowerPlacement
+from noeira.tasks.family_config import So101TowerConfig
+from noeira.tasks.so101_tower_xml import So101TowerModel
 
 comptime SEED: Int = 0
 comptime FAMILY = "so101_tower"

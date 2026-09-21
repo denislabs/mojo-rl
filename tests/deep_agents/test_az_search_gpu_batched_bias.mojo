@@ -26,17 +26,17 @@ from std.math import abs
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
-from mojo_rl.deep_agents.zero.mcts_adapters import AZPredGPU, AZEnvGPU
-from mojo_rl.planners.tree_search import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.deep_agents.alphazero.nets import AZMLPNet
+from noeira.deep_agents.zero.mcts_adapters import AZPredGPU, AZEnvGPU
+from noeira.planners.tree_search import (
     GenericGPUMCTS,
     AlphaGoPUCT,
     NoNoise,
     SelfPlay,
 )
-from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
+from noeira.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
 
 def main() raises:

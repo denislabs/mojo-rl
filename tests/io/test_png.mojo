@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | The PNG decoder vs Pillow, on every filter
 # +--------------------------------------------------------------------------+ #
-"""Gate `mojo_rl/io/png.mojo`.
+"""Gate `noeira/io/png.mojo`.
 
     pixi run build-http                                    # ONCE (inflate)
     pixi run mojo run -I . tests/io/test_png.mojo [<fixture-dir>]
@@ -36,9 +36,9 @@ Also covered, because each is a separate way to be wrong:
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.io.fileio import read_file_bytes
-from mojo_rl.io.png import load_png_file
-from mojo_rl.io.proc import run_capture
+from noeira.io.fileio import read_file_bytes
+from noeira.io.png import load_png_file
+from noeira.io.proc import run_capture
 
 
 def _compare(dir: String, name: String) raises -> Int:
@@ -78,7 +78,7 @@ def _must_raise(dir: String, name: String, what: String) raises:
 
 
 def main() raises:
-    var dir = String("/tmp/mojo_rl_png_fixtures")
+    var dir = String("/tmp/noeira_png_fixtures")
     var args = argv()
     if len(args) > 1:
         dir = String(args[1])

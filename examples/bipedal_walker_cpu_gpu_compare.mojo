@@ -12,9 +12,9 @@ from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 from std.random import seed as set_seed
 
-from mojo_rl.envs.bipedal_walker import BipedalWalker, BWConstants
-from mojo_rl.envs.bipedal_walker.action import BipedalWalkerAction
-from mojo_rl.physics2d import (
+from noeira.envs.bipedal_walker import BipedalWalker, BWConstants
+from noeira.envs.bipedal_walker.action import BipedalWalkerAction
+from noeira.physics2d import (
     dtype,
     TPB,
     BODY_STATE_SIZE,
@@ -1061,4 +1061,4 @@ def main() raises:
         print("  - This is expected behavior for physics simulations")
         print("  - Step-by-step rewards match closely (see Test 2)")
 
-from mojo_rl.core.fmt import fit
+from noeira.core.fmt import fit

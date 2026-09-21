@@ -36,13 +36,13 @@ Run:
 from std.math import sqrt
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import (
+from noeira.experimental.swm.so_d import (
     SqMat,
     skew_from_vector,
     expm_skew,
     householder,
 )
-from mojo_rl.experimental.swm.rng import Rng
+from noeira.experimental.swm.rng import Rng
 
 comptime DT = DType.float64
 comptime N = 12

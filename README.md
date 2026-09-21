@@ -1,5 +1,5 @@
 <!--
-  The wordmark carries the project name, so it stands in for an `# mojo-rl`
+  The wordmark carries the project name, so it stands in for an `# noeira`
   heading; `alt` keeps the accessible name. <picture> + prefers-color-scheme is
   supported by GitHub, so the logo follows the reader's theme: the light file is
   dark-on-transparent, the dark file light-on-transparent. PNG rather than SVG
@@ -7,19 +7,18 @@
 -->
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs-site/src/assets/mojo-rl-logo-transparent-dark-2x.png">
-    <img alt="mojo-rl" src="docs-site/src/assets/mojo-rl-logo-light-2x.png" width="420">
+    <source media="(prefers-color-scheme: dark)" srcset="docs-site/src/assets/noeira-logo-transparent-dark-nobaseline-2x.png">
+    <img alt="noeira" src="docs-site/src/assets/noeira-logo-light-nobaseline-2x.png" width="420">
   </picture>
 </p>
 
 <p align="center">
-  An end-to-end world‑model &amp; RL framework written in Mojo, featuring trait-based design,
-  40+ RL algorithms, GPU-accelerated deep RL, custom 2D/3D physics engines,
-  native arcade game engines, and SDL3 rendering.
+  <b>Dream in simulation. Act in the world.</b><br>
+  An end-to-end Physical AI stack in Mojo: physics, learning, perception and deployment, from simulator to robot.
 </p>
 
 <p align="center">
-  <b>📖 Documentation — <a href="https://mojo-rl.denislabs.com">mojo-rl.denislabs.com</a></b>
+  <b>📖 Documentation — <a href="https://noeira.ai/docs">noeira.ai/docs</a></b>
 </p>
 
 > **Note:** This is a beta version, not a production-grade library yet. While the tabular agents and core deep RL algorithms (DQN, PPO, SAC, TD3) are well-tested, the 3D physics engine, complex deep agents (DreamerV3, TD-MPC2, MuZero), and some advanced features are still experimental and may contain bugs. Contributions and bug reports are welcome!
@@ -28,14 +27,14 @@
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, actions, models, optimizers, and physics
 - **40+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC, REDQ), deep RL (DQN family including Noisy DQN, C51, Rainbow; A2C, PPO), and model-based RL (MBPO, TD-MPC2, DreamerV3, MuZero)
-- **Deep learning framework** (`mojo_rl/nn/`): Module/Param neural networks with autodiff (each `Param` owns `val`+`grad` tensors), 20+ primitive layer types, SGD/Adam/AdamW optimizers, automatic compile-time fusion (MatMul+Bias+Act, Conv2D+Act), checkpoint v2, CPU/GPU support
-- **Composable models** (`mojo_rl/nn/`): Sequential/Residual/Parallel/Repeat combinators, pre-built architectures (ResNet, GPT, ViT, LSTM), and a ComputeGraph named-node DAG builder for complex loss graphs
-- **3D physics engine** (`mojo_rl/physics3d/`): MuJoCo-inspired generalized coordinates engine with CRBA, RNE, constraint solvers (PGS, Newton, CG), collision detection, MJCF XML parsing, CPU/GPU support
-- **2D physics engine** (`mojo_rl/physics2d/`): GPU-accelerated batched physics for LunarLander, BipedalWalker, CarRacing with impulse solving and tire friction
+- **Deep learning framework** (`noeira/nn/`): Module/Param neural networks with autodiff (each `Param` owns `val`+`grad` tensors), 20+ primitive layer types, SGD/Adam/AdamW optimizers, automatic compile-time fusion (MatMul+Bias+Act, Conv2D+Act), checkpoint v2, CPU/GPU support
+- **Composable models** (`noeira/nn/`): Sequential/Residual/Parallel/Repeat combinators, pre-built architectures (ResNet, GPT, ViT, LSTM), and a ComputeGraph named-node DAG builder for complex loss graphs
+- **3D physics engine** (`noeira/physics3d/`): MuJoCo-inspired generalized coordinates engine with CRBA, RNE, constraint solvers (PGS, Newton, CG), collision detection, MJCF XML parsing, CPU/GPU support
+- **2D physics engine** (`noeira/physics2d/`): GPU-accelerated batched physics for LunarLander, BipedalWalker, CarRacing with impulse solving and tire friction
 - **25 native environments**: Tabular, classic control, 2D physics, MuJoCo-style 3D, and GPU-accelerated arcade games
-- **Arcade game engines** (`mojo_rl/envs/arcade_games/`): Native GPU-accelerated Pong, Breakout, Space Invaders with clean obs + pixel obs modes
-- **Atari 2600 emulator** (`mojo_rl/envs/atari/`): Full 6502 CPU, TIA, RIOT emulation for ROM-based training
-- **SDL3 rendering** (`mojo_rl/render/`): 2D CPU rasterizer + GPU-accelerated 3D renderer with Blinn-Phong lighting, shadows, skybox, interactive camera, video recording
+- **Arcade game engines** (`noeira/envs/arcade_games/`): Native GPU-accelerated Pong, Breakout, Space Invaders with clean obs + pixel obs modes
+- **Atari 2600 emulator** (`noeira/envs/atari/`): Full 6502 CPU, TIA, RIOT emulation for ROM-based training
+- **SDL3 rendering** (`noeira/render/`): 2D CPU rasterizer + GPU-accelerated 3D renderer with Blinn-Phong lighting, shadows, skybox, interactive camera, video recording
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
 - **GPU training**: All deep agents (DQN, C51, Rainbow, DDPG, TD3, SAC, REDQ, PPO, MBPO, TD-MPC2, DreamerV3, MuZero) support GPU-accelerated training
 
@@ -101,20 +100,20 @@ pixi run -e nvidia mojo run -I . examples/half_cheetah/ppo_half_cheetah_training
 
 ## Documentation
 
-Full documentation lives at **[mojo-rl.denislabs.com](https://mojo-rl.denislabs.com)** — this README is the summary.
+Full documentation lives at **[noeira.ai/docs](https://noeira.ai/docs)** — this README is the summary.
 
 | | |
 |---|---|
-| [Why mojo-rl](https://mojo-rl.denislabs.com/start/why/) | what the framework is for, and what it is not |
-| [Installation](https://mojo-rl.denislabs.com/start/installation/) · [Tabular quickstart](https://mojo-rl.denislabs.com/start/quickstart-tabular/) · [GPU quickstart](https://mojo-rl.denislabs.com/start/quickstart-gpu/) | first run, CPU then GPU |
-| [RL in five minutes](https://mojo-rl.denislabs.com/start/rl-in-five-minutes/) | the vocabulary the rest of the docs assume |
-| [The layered stack](https://mojo-rl.denislabs.com/concepts/architecture/) · [Traits](https://mojo-rl.denislabs.com/concepts/traits/) · [Compile-time composition](https://mojo-rl.denislabs.com/concepts/compile-time-composition/) | how the pieces fit together |
-| [Environments](https://mojo-rl.denislabs.com/environments/) | all 25, with observation and action shapes |
-| [Algorithms](https://mojo-rl.denislabs.com/algorithms/) | 20 pages by family, from tabular to the zero-series |
-| [Neural networks](https://mojo-rl.denislabs.com/nn/) | `Module`/`Param`, primitives, optimizers, training |
-| [3D physics](https://mojo-rl.denislabs.com/physics/physics3d/) · [2D physics](https://mojo-rl.denislabs.com/physics/physics2d/) · [Validation](https://mojo-rl.denislabs.com/physics/validation/) | both engines and how they are checked against MuJoCo |
-| [Rendering](https://mojo-rl.denislabs.com/rendering/) · [Tooling](https://mojo-rl.denislabs.com/tooling/logging/) | SDL3 renderers, logging, the training monitor |
-| [Contributing](https://mojo-rl.denislabs.com/project/contributing/) · [Testing](https://mojo-rl.denislabs.com/project/testing/) | working on the framework itself |
+| [Why noeira](https://noeira.ai/docs/start/why/) | what the framework is for, and what it is not |
+| [Installation](https://noeira.ai/docs/start/installation/) · [Tabular quickstart](https://noeira.ai/docs/start/quickstart-tabular/) · [GPU quickstart](https://noeira.ai/docs/start/quickstart-gpu/) | first run, CPU then GPU |
+| [RL in five minutes](https://noeira.ai/docs/start/rl-in-five-minutes/) | the vocabulary the rest of the docs assume |
+| [The layered stack](https://noeira.ai/docs/concepts/architecture/) · [Traits](https://noeira.ai/docs/concepts/traits/) · [Compile-time composition](https://noeira.ai/docs/concepts/compile-time-composition/) | how the pieces fit together |
+| [Environments](https://noeira.ai/docs/environments/) | all 25, with observation and action shapes |
+| [Algorithms](https://noeira.ai/docs/algorithms/) | 20 pages by family, from tabular to the zero-series |
+| [Neural networks](https://noeira.ai/docs/nn/) | `Module`/`Param`, primitives, optimizers, training |
+| [3D physics](https://noeira.ai/docs/physics/physics3d/) · [2D physics](https://noeira.ai/docs/physics/physics2d/) · [Validation](https://noeira.ai/docs/physics/validation/) | both engines and how they are checked against MuJoCo |
+| [Rendering](https://noeira.ai/docs/rendering/) · [Tooling](https://noeira.ai/docs/tooling/logging/) | SDL3 renderers, logging, the training monitor |
+| [Contributing](https://noeira.ai/docs/project/contributing/) · [Testing](https://noeira.ai/docs/project/testing/) | working on the framework itself |
 
 Pages carry a maturity marker (stable / beta / experimental) so the state of each
 component is explicit, and every algorithm page links the paper it implements.
@@ -124,8 +123,8 @@ The site is built from `docs-site/` — see its README to run it locally.
 ## Project Structure
 
 ```
-mojo-rl/
-├── mojo_rl/                     # Main Mojo package
+noeira/
+├── noeira/                     # Main Mojo package
 │   ├── core/                    #   Core RL abstractions (traits, replay buffers, tile coding)
 │   ├── agents/                  #   Tabular & linear RL algorithms (20+ agents)
 │   ├── deep_agents/             #   Deep RL agents (per-algorithm facade packages)
@@ -289,8 +288,8 @@ Full 6502 CPU + TIA + RIOT emulation. CPU-only (Pong, Breakout, Space Invaders R
 ### Tabular RL
 
 ```mojo
-from mojo_rl.agents import QLearningAgent
-from mojo_rl.envs import GridWorldEnv
+from noeira.agents import QLearningAgent
+from noeira.envs import GridWorldEnv
 
 def main():
     var env = GridWorldEnv(width=5, height=5)
@@ -302,15 +301,15 @@ def main():
 
 ```mojo
 from std.gpu.host import DeviceContext
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.sac import SACAgent
+from noeira.deep_agents.training.blocks import UniformSampleGpuStep
+from noeira.deep_agents.training.batched_env import BatchedGpuEnv
+from noeira.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM      # 17
 comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM   #  6
@@ -348,14 +347,14 @@ See [`examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`](examples/half_c
 
 ```mojo
 from std.gpu.host import DeviceContext
-from mojo_rl.nn.datasets import MNIST
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.combinators import Sequential
-from mojo_rl.nn.loss import CrossEntropyLoss
-from mojo_rl.nn.optimizer import Adam
-from mojo_rl.nn.training import Trainer
-from mojo_rl.nn.initializer import Kaiming
+from noeira.nn.datasets import MNIST
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.relu import ReLU
+from noeira.nn.combinators import Sequential
+from noeira.nn.loss import CrossEntropyLoss
+from noeira.nn.optimizer import Adam
+from noeira.nn.training import Trainer
+from noeira.nn.initializer import Kaiming
 
 # Model at compile time: 784 -> 128 (ReLU) -> 128 (ReLU) -> 10
 comptime Net = Sequential[
@@ -383,8 +382,8 @@ See [`examples/nn/mlp/mlp_mnist_training_gpu.mojo`](examples/nn/mlp/mlp_mnist_tr
 
 The sketches below are the shape of it. For the full walkthroughs — trait choice,
 GPU batching, and the mistakes that cost the most time — see
-[Writing your own environment](https://mojo-rl.denislabs.com/environments/custom/)
-and [Writing your own algorithm](https://mojo-rl.denislabs.com/algorithms/custom/).
+[Writing your own environment](https://noeira.ai/docs/environments/custom/)
+and [Writing your own algorithm](https://noeira.ai/docs/algorithms/custom/).
 
 ### Adding a New Environment
 

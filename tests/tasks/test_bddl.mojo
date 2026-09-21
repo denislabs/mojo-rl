@@ -28,13 +28,13 @@ It carries every construct that broke the reader while it was being written:
 Run: pixi run mojo run -I . tests/tasks/test_bddl.mojo
 """
 
-from mojo_rl.tasks.bddl import parse_bddl, tokenize_bddl
-from mojo_rl.tasks.libero_import import (
+from noeira.tasks.bddl import parse_bddl, tokenize_bddl
+from noeira.tasks.libero_import import (
     classify_goal, translate_family, translate_task, family_todo_count,
     GAP_NONE, GAP_ARTICULATION, GAP_FIXTURE_REGION, GAP_OBJECT_TARGET,
     GAP_TAPE_TERMS,
 )
-from mojo_rl.tasks.spec import SLOT_FREE, SLOT_STATIC
+from noeira.tasks.spec import SLOT_FREE, SLOT_STATIC
 
 
 comptime FIXTURE = """(define (problem LIBERO_Kitchen_Tabletop_Manipulation)

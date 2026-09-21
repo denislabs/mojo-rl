@@ -25,17 +25,17 @@ from std.math import abs
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.deep_agents.smolvla.text import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.deep_agents.smolvla.text import (
     SmolVLMTextLayers, SMOLLM_DIM, SMOLLM_FF, SMOLLM_KV_W, SMOLLM_LAYERS,
     SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM,
 )
-from mojo_rl.deep_agents.smolvla.kv_cache import SmolVLAKVCache
-from mojo_rl.deep_agents.smolvla.fused import SmolVLAPrefill
-from mojo_rl.deep_agents.smolvla.attn_mask import att_2d_mask_square, smolvla_ar
+from noeira.deep_agents.smolvla.kv_cache import SmolVLAKVCache
+from noeira.deep_agents.smolvla.fused import SmolVLAPrefill
+from noeira.deep_agents.smolvla.attn_mask import att_2d_mask_square, smolvla_ar
 
 comptime P = 32          # prefix tokens (8 image + 23 language + 1 state)
 comptime SUFFIX = 8

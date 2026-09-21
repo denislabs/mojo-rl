@@ -99,14 +99,14 @@ from std.math import abs, sqrt
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.deep_agents.smolvla.text import SMOLLM_THETA
-from mojo_rl.deep_agents.smolvla.expert import SmolVLAExpert
-from mojo_rl.deep_agents.smolvla.kv_cache import SmolVLAKVCache
-from mojo_rl.deep_agents.smolvla.fused import SmolVLADenoise
-from mojo_rl.deep_agents.smolvla.attn_mask import att_2d_mask, smolvla_ar
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Deterministic
+from noeira.deep_agents.smolvla.text import SMOLLM_THETA
+from noeira.deep_agents.smolvla.expert import SmolVLAExpert
+from noeira.deep_agents.smolvla.kv_cache import SmolVLAKVCache
+from noeira.deep_agents.smolvla.fused import SmolVLADenoise
+from noeira.deep_agents.smolvla.attn_mask import att_2d_mask, smolvla_ar
 
 comptime P = 6
 comptime S = 3

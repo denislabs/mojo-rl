@@ -61,22 +61,22 @@ from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
-from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
-from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac import SAC
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.robots.so_arm101_xml import SoArm101Model
+from noeira.envs.robots.so_arm101 import SoArm101ReachConfig
+from noeira.physics3d.fields import actuator_column
+from noeira.physics3d.gpu.constants import (
     ACT_IDX_CTRL_MAX,
     ACT_IDX_CTRL_MIN,
     META_IDX_TASK_PARAM_6,
 )
-from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
-from mojo_rl.robot.so101.ports import follower_port, port_refusal
-from mojo_rl.robot.so101.sim_map import SimJointMap
-from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
-from mojo_rl.core.policy import describe_policy, resolve_policy
+from noeira.robot.so101 import SO101Arm, SO101_N, joint_name
+from noeira.robot.so101.ports import follower_port, port_refusal
+from noeira.robot.so101.sim_map import SimJointMap
+from noeira.utils.fmt import col, fixed, pad_left, pad_right
+from noeira.core.policy import describe_policy, resolve_policy
 
 comptime POLICY_PROJECT = "so101"
 comptime POLICY_ROLE = "reach"

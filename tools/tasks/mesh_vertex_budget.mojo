@@ -1,6 +1,6 @@
 """The hull-vertex budget a scene needs — the number `NMESH_VERTS` restates.
 
-    pixi run mojo run -I . tools/tasks/mesh_vertex_budget.mojo mojo_rl/tasks/scenes/so101_tower.xml
+    pixi run mojo run -I . tools/tasks/mesh_vertex_budget.mojo noeira/tasks/scenes/so101_tower.xml
 
 `fields_build` refuses a budget below what the COLLIDABLE hulls need, and its
 error names the exact figure. This asks with a budget of one vertex and prints
@@ -14,8 +14,8 @@ why a figure copied from `mjModel` is wrong: our hulls keep ~26% more).
 
 from std.sys import argv
 
-from mojo_rl.physics3d.fields import Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
 

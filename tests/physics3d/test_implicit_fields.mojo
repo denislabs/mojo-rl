@@ -17,11 +17,11 @@ from std.math import abs
 from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.integrator.implicit import (
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.integrator.implicit import (
     ImplicitIntegrator,
 )
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
 
 comptime DT = DType.float32
 comptime NQ = Walker2dModel.NQ

@@ -14,13 +14,13 @@ Run (Apple Metal):
 from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
-from mojo_rl.deep_agents.alphazero.selfplay_gumbel import (
+from noeira.nn.core.initializer import Kaiming
+from noeira.deep_agents.alphazero.nets import AZMLPNet
+from noeira.deep_agents.alphazero.selfplay_gumbel import (
     run_alphazero_gumbel_selfplay,
 )
-from mojo_rl.deep_agents.alphazero.eval import eval_policy_vs_random
-from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
+from noeira.deep_agents.alphazero.eval import eval_policy_vs_random
+from noeira.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
 
 
 def main() raises:

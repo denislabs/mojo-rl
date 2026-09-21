@@ -27,7 +27,7 @@ import sys
 import mujoco
 import numpy as np
 
-SCENE = "mojo_rl/tasks/scenes/so101_tower.xml"
+SCENE = "noeira/tasks/scenes/so101_tower.xml"
 POSES = {
     "rest": [0.0] * 6,
     # every arm joint off zero, inside its range; wrist_roll far from zero

@@ -7,7 +7,7 @@
  * Documentation that names files rots silently; this makes it rot loudly.
  *
  * Scans every .md/.mdx page under src/content/docs for repo-relative paths
- * (examples/…, tests/…, benchmarks/…, mojo_rl/…, docs/…) appearing in inline
+ * (examples/…, tests/…, benchmarks/…, noeira/…, docs/…) appearing in inline
  * code, links, or code fences, and checks each one against the repository.
  *
  * Usage:  node scripts/check-refs.mjs
@@ -37,7 +37,7 @@ const TRACKED = [
 	'examples',
 	'tests',
 	'benchmarks',
-	'mojo_rl',
+	'noeira',
 	'docs',
 	'gifs',
 	'scripts',
@@ -49,7 +49,8 @@ const TRACKED = [
  * prose, not references, and produce noise.
  */
 const PATH_RE = new RegExp(
-	String.raw`\b(?:${TRACKED.join('|')})\/[\w./@-]+\.[a-zA-Z0-9]+`,
+	// Not after a `/`: `github.com/noeira/noeira.git` is a URL, not the package.
+	String.raw`(?<![\w./-])(?:${TRACKED.join('|')})\/[\w./@-]+\.[a-zA-Z0-9]+`,
 	'g',
 );
 

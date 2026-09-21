@@ -21,9 +21,9 @@ from std.random import random_float64, seed
 from std.math import isfinite
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.config import TDMPC2, TDMPC2Config
-from mojo_rl.envs.pendulum import PendulumV2
+from noeira.nn.constants import DT
+from noeira.deep_agents.tdmpc2.config import TDMPC2, TDMPC2Config
+from noeira.envs.pendulum import PendulumV2
 
 comptime OBS = 3
 comptime ACT = 1

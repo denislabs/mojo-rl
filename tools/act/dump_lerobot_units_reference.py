@@ -68,7 +68,7 @@ def extract(src: Path) -> dict:
         if not m:
             print(f"could not find `{name}` in {src}.\n"
                   "  lerobot's normalization has changed — read it and update "
-                  "both this script and mojo_rl/robot/so101/arm.mojo.",
+                  "both this script and noeira/robot/so101/arm.mojo.",
                   file=sys.stderr)
             raise SystemExit(1)
         out[name] = m.group(1)

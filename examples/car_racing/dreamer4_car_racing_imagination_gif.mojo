@@ -43,23 +43,23 @@ from std.math import max
 from std.random import seed
 from max.gpu.host import DeviceContext, HostBuffer
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Xavier
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
 
-from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
-from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
-from mojo_rl.deep_agents.dreamer4.patchify import (
+from noeira.deep_agents.dreamer4.agent import Dreamer4Agent
+from noeira.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
+from noeira.deep_agents.dreamer4.patchify import (
     downscale_box, temporal_patchify, temporal_unpatchify,
 )
-from mojo_rl.deep_agents.dreamer4.imag_rollout import _fwd_window
-from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao, _ilog2
-from mojo_rl.deep_agents.dreamer4.online import (
+from noeira.deep_agents.dreamer4.imag_rollout import _fwd_window
+from noeira.deep_agents.dreamer4.shortcut_loss import _mao, _ilog2
+from noeira.deep_agents.dreamer4.online import (
     OnlineRng, _encode, _push_frame, _step_repeat,
 )
-from mojo_rl.envs.car_racing.car_racing_mb import CarRacingMB
-from mojo_rl.render.image_writer import save_frame_sequence_gif
+from noeira.envs.car_racing.car_racing_mb import CarRacingMB
+from noeira.render.image_writer import save_frame_sequence_gif
 
 
 # ── checkpoint base (overridable) ──

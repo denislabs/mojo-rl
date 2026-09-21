@@ -14,8 +14,8 @@ Run:
 
 from std.testing import assert_true, assert_almost_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.efficient_zero_v2.loss_ops import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.efficient_zero_v2.loss_ops import (
     consistency_loss_and_grad,
 )
 

@@ -33,10 +33,10 @@ the metrics plumbing, which does not care what produced the loss.
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.models.conv import Conv2DBatchNormReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.deep_agents.act.trainer import ACTTrainer
+from noeira.nn.constants import DT
+from noeira.nn.models.conv import Conv2DBatchNormReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.deep_agents.act.trainer import ACTTrainer
 
 
 comptime QPOS = 6

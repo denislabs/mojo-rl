@@ -4,7 +4,7 @@ walk replayed from (a) MuJoCo 3.12's grid-extrema seed (`mesh_extrema`,
 commit 83e621d7) and (b) the vertex the same call landed on in the PREVIOUS
 step. PERFORMANCE.md §13.48 has the numbers this printed on 2026-09-08.
 
-    # set `_HILL_PROBE = True` in mojo_rl/physics3d/collision/gjk.mojo, then
+    # set `_HILL_PROBE = True` in noeira/physics3d/collision/gjk.mojo, then
     pixi run mojo build -I . -I benchmarks benchmarks/physics3d_cpu/hill_probe.mojo -o <bin>
     <bin>
 
@@ -15,11 +15,11 @@ the box's to say (§13.18's block-kernel bisect: four GJK candidates, 206 of
 the 270 µs at k=0).
 """
 
-from mojo_rl.envs.robots.so101_park_config import So101ParkProbeConfig
-from mojo_rl.envs.robots.so101_park_xml import SoArm101ParkK0Model
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.physics3d.collision.gjk import hill_probe
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.envs.robots.so101_park_config import So101ParkProbeConfig
+from noeira.envs.robots.so101_park_xml import SoArm101ParkK0Model
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.physics3d.collision.gjk import hill_probe
+from noeira.physics3d.gpu.constants import (
     MODEL_MESH_META_SIZE,
     MESH_META_IDX_VERTADR,
     MESH_META_IDX_VERTNUM,

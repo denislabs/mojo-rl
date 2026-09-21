@@ -7,7 +7,7 @@ scene `Je` is 54 KB — comfortably under — so it declined to spill, while the
 kernel's three `NV*NV` matrices put the block at 136,212 B against a 101,376 B
 limit and `ptxas` refused to compile it:
 
-    ptxas error : Entry function 'mojo_rl_physics3d_solver_newt...' uses
+    ptxas error : Entry function 'noeira_physics3d_solver_newt...' uses
                   too much shared data (0x21414 bytes, 0x18c00 max)
 
 Budgeting one array out of eleven cannot predict that. The models it WAS tuned
@@ -33,11 +33,11 @@ Run: pixi run mojo run -I . tests/physics3d/test_newton_shared_budget.mojo
 """
 
 from std.sys.info import size_of
-from mojo_rl.physics3d.solver.je_budget import (
+from noeira.physics3d.solver.je_budget import (
     newton_shared_elems, je_spills, je_elems, SOLVER_SHARED_BUDGET,
     SOLVER_SHARED_LIMIT,
 )
-from mojo_rl.physics3d.types import ConeType
+from noeira.physics3d.types import ConeType
 
 comptime DT = DType.float32          # the park probe's dtype
 comptime MC = 16                     # PARK_MAX_CONTACTS

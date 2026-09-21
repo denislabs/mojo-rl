@@ -34,7 +34,7 @@ from std.python import Python, PythonObject
 from std.math import abs
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.full_parser import parse_xml_full
 
 
 # A model exercising all eight modelled elements, both attachment kinds, a

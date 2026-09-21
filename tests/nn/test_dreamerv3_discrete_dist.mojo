@@ -12,8 +12,8 @@ from std.math import log, abs
 from std.random import random_float64, seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.dreamerv3.dists_discrete import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.dreamerv3.dists_discrete import (
     cat_fwd, cat_bwd, cat_softmax_mix, UNIMIX,
 )
 

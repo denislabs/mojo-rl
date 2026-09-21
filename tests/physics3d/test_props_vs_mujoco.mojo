@@ -26,16 +26,16 @@ for that reason.
 Run: pixi run mojo run -I . tests/physics3d/test_props_vs_mujoco.mojo
 """
 
-from mojo_rl.physics3d.fields import Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE, BODY_IDX_MASS,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.studio.scene import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.studio.scene import (
     SceneDoc, scene_from_base,
     PROP_BOX, PROP_SPHERE, PROP_CAPSULE, PROP_CYLINDER,
 )
@@ -177,11 +177,11 @@ def main() raises:
     # the wrong model, with nothing to say so. The studio writes the edited
     # copy and re-points the entry at it; this is that re-point.
     print("--- retarget_asset ---")
-    var d3 = scene_from_base(String("mojo_rl/envs/ant/assets/ant.xml"))
+    var d3 = scene_from_base(String("noeira/envs/ant/assets/ant.xml"))
     var before3 = d3.to_mjcf(String("s"))
     t.truth(before3.find(String("assets/ant.xml\"")) != -1,
             "the scene names its base model")
-    t.truth(d3.retarget_asset(String("mojo_rl/envs/ant/assets/ant.xml"),
+    t.truth(d3.retarget_asset(String("noeira/envs/ant/assets/ant.xml"),
                               String("/tmp/edited_ant.xml")),
             "retarget_asset finds the entry")
     var after3 = d3.to_mjcf(String("s"))
@@ -189,7 +189,7 @@ def main() raises:
             "and the scene now names the EDITED file")
     # ⚠ NON-VACUITY: the original path must be GONE, not merely joined by the
     # new one — a scene naming both would load whichever MuJoCo saw first.
-    t.truth(after3.find(String("mojo_rl/envs/ant/assets/ant.xml")) == -1,
+    t.truth(after3.find(String("noeira/envs/ant/assets/ant.xml")) == -1,
             "and no longer names the original")
     # ⚠ AND THE CONTROL: a path the table does not hold must report False,
     # or the studio would print "pointed the scene at it" having done nothing.

@@ -42,15 +42,15 @@ from std.time import perf_counter_ns
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.io.hf import hf_download_file, HF_MODEL
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.smolvla.policy import SmolVLAPolicy
-from mojo_rl.deep_agents.smolvla.normalize import SmolVLAStats, normalize_state
-from mojo_rl.deep_agents.smolvla.heads import SMOLVLA_CONNECTOR_IN
-from mojo_rl.deep_agents.smolvla.observation import fill_camera_images
-from mojo_rl.deep_agents.smolvla.tasks import TaskTokens
-from mojo_rl.vision.resize_pad import SIGLIP_INPUT
+from noeira.io.hf import hf_download_file, HF_MODEL
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.smolvla.policy import SmolVLAPolicy
+from noeira.deep_agents.smolvla.normalize import SmolVLAStats, normalize_state
+from noeira.deep_agents.smolvla.heads import SMOLVLA_CONNECTOR_IN
+from noeira.deep_agents.smolvla.observation import fill_camera_images
+from noeira.deep_agents.smolvla.tasks import TaskTokens
+from noeira.vision.resize_pad import SIGLIP_INPUT
 
 comptime TARGET = "gpu"
 """⚠ ONE target per binary, deliberately. Building both would instantiate two
@@ -95,7 +95,7 @@ def _launch_count() -> Int:
     has no count to report.
     """
     try:
-        var lib = OwnedDLHandle("./mojo_rl/cuda/libcuda_intercept.so")
+        var lib = OwnedDLHandle("./noeira/cuda/libcuda_intercept.so")
         return Int(lib.get_function[c_int]("intercept_get_launch_count")())
     except:
         return -1
@@ -238,7 +238,7 @@ def main() raises:
         # ⚠ ~5 us of launch overhead each is the rule of thumb on this class of
         # part. If that product is a large share of the query, the fix is
         # FEWER launches (fusion, or the CUDA-graph capture this repo already
-        # has in `mojo_rl/cuda/graph.mojo`) — not lower precision.
+        # has in `noeira/cuda/graph.mojo`) — not lower precision.
         var overhead_ms = Float64(per_query) * 0.005
         print("     at ~5 us each that is", overhead_ms, "ms =",
               100.0 * overhead_ms / ms(best), "% of the query")

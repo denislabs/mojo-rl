@@ -45,34 +45,34 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml_full
+from noeira.physics3d.parser import parse_xml_full
 
 
 def _read(path: String) raises -> String:
     """The model's MJCF, from the asset — no embedded copy exists any more."""
     with open(path, "r") as f:
         return f.read()
-from mojo_rl.physics3d.parser.render_fields import (
+from noeira.physics3d.parser.render_fields import (
     RenderFields,
     build_render_fields,
 )
-from mojo_rl.physics3d.parser.flat_model import (
+from noeira.physics3d.parser.flat_model import (
     TEX_SKYBOX, TEX_2D, TEX_CUBE,
 )
-from mojo_rl.physics3d.constants import (
+from noeira.physics3d.constants import (
     GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_CYLINDER,
     GEOM_MESH, GEOM_ELLIPSOID,
 )
 
-from mojo_rl.envs.dm_control.ball_in_cup import DMBallInCupModel
-from mojo_rl.envs.dm_control.cheetah import DMCheetahModel
-from mojo_rl.envs.dm_control.fish import DMFishSwimModel
-from mojo_rl.envs.dm_control.humanoid import DMHumanoidModel
-from mojo_rl.envs.dm_control.manipulator import DMManipulatorBringBallModel
-from mojo_rl.envs.dm_control.quadruped import DMQuadrupedWalkModel
-from mojo_rl.envs.dm_control.walker import DMWalkerModel
-from mojo_rl.envs.dm_control.manipulation_stack2_def import Stack2BricksModel
-from mojo_rl.envs.dm_control.manipulation_reassemble5_def import (
+from noeira.envs.dm_control.ball_in_cup import DMBallInCupModel
+from noeira.envs.dm_control.cheetah import DMCheetahModel
+from noeira.envs.dm_control.fish import DMFishSwimModel
+from noeira.envs.dm_control.humanoid import DMHumanoidModel
+from noeira.envs.dm_control.manipulator import DMManipulatorBringBallModel
+from noeira.envs.dm_control.quadruped import DMQuadrupedWalkModel
+from noeira.envs.dm_control.walker import DMWalkerModel
+from noeira.envs.dm_control.manipulation_stack2_def import Stack2BricksModel
+from noeira.envs.dm_control.manipulation_reassemble5_def import (
     Reassemble5Model,
 )
 
@@ -694,8 +694,8 @@ def test_render_fields_match_mujoco() raises:
     # primitives-only (dog's 162 meshes are baked out of the port), so
     # without SO-ARM100's 18 mesh assets the `mesh` row above compares
     # nothing but -1 == -1.
-    _check("so_arm100  ", "mojo_rl/envs/robots/assets/so_arm100.xml",
-           _read("mojo_rl/envs/robots/assets/so_arm100.xml"),
+    _check("so_arm100  ", "noeira/envs/robots/assets/so_arm100.xml",
+           _read("noeira/envs/robots/assets/so_arm100.xml"),
            geom, light, cam, mat, site, tex, sten, vis)
     # ⚠⚠ THE MANIPULATION FAMILY HAD NO ROW HERE AT ALL, and it is the only
     # family the VIEWER is used on. Every model above is a single `<worldbody>`

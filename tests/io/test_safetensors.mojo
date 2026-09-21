@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | safetensors: the round trip, the widenings, and every way a file is wrong
 # +--------------------------------------------------------------------------+ #
-"""Self-contained gate for `mojo_rl/io/safetensors.mojo` — no dump, no network.
+"""Self-contained gate for `noeira/io/safetensors.mojo` — no dump, no network.
 
     pixi run mojo run -I . tests/io/test_safetensors.mojo
 
@@ -40,8 +40,8 @@ mistake.
 
 from std.memory import bitcast
 
-from mojo_rl.io.fileio import write_file_atomic
-from mojo_rl.io.safetensors import (
+from noeira.io.fileio import write_file_atomic
+from noeira.io.safetensors import (
     SafeTensors,
     SafeTensorsWriter,
     ST_BF16,
@@ -52,7 +52,7 @@ from mojo_rl.io.safetensors import (
 )
 
 
-comptime TMP = "/tmp/mojo_rl_st_gate"
+comptime TMP = "/tmp/noeira_st_gate"
 
 
 def check(mut fails: Int, name: String, ok: Bool, detail: String = String("")):
@@ -151,7 +151,7 @@ def main() raises:
     var none = List[Float32]()
     var shape_zero: List[Int] = [0, 4]
     w.add_f32_list(String("m.empty"), shape_zero, none)
-    w.add_metadata(String("producer"), String("mojo-rl"))
+    w.add_metadata(String("producer"), String("noeira"))
     w.save(String(TMP) + "_rt.safetensors")
 
     var rt = SafeTensors(String(TMP) + "_rt.safetensors")
@@ -167,7 +167,7 @@ def main() raises:
           rt.shape_str(String("m.scalar")))
     check(fails, "0-element tensor survives",
           rt.numel(String("m.empty")) == 0 and len(rt.read_f32(String("m.empty"))) == 0)
-    check(fails, "metadata survives", rt.metadata(String("producer")) == "mojo-rl")
+    check(fails, "metadata survives", rt.metadata(String("producer")) == "noeira")
     var back = rt.read_f32(String("m.big"))
     var bad = 0
     for i in range(len(back)):

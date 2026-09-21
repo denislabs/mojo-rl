@@ -9,13 +9,13 @@
     /tmp/dg_spike                      # <- run it DIRECTLY, bare shell
 
     # skip the arm that may kill the process (see arm D):
-    MOJO_RL_SPIKE_SPLITK=0 pixi run -e nvidia mojo run -I . \\
+    NOEIRA_SPIKE_SPLITK=0 pixi run -e nvidia mojo run -I . \\
         benchmarks/bench_device_graph_spike.mojo
 
 ## Why this exists
 
 `docs/MODULAR_SOURCE_DEEP_DIVE.md` found that MAX 26.5 SHIPS the API our
-`mojo_rl/cuda/graph.mojo` reimplements by hand:
+`noeira/cuda/graph.mojo` reimplements by hand:
 
     from max.gpu.host import DeviceGraph, DeviceGraphBuilder
 
@@ -80,7 +80,7 @@ analytic checksum both times. A pass on replay 1 and a fail on replay 2 is the
 signature of the dangling workspace and is the most likely outcome.
 
 ⚠ It may also fault or abort. It runs LAST so that A–C have already printed,
-and `MOJO_RL_SPIKE_SPLITK=0` skips it.
+and `NOEIRA_SPIKE_SPLITK=0` skips it.
 
 ⚠ AND IT MUST PROVE IT IS SPLIT-K ON *THIS* CARD. `[256 x 2592] @ [2592 x 256]`
 partitions K on a 5090; `select_config` hardcodes `A100.sm_count = 108` in its
@@ -104,7 +104,7 @@ measuring nothing. It prints `num_k_partitions` and says so when it is 1.
 **A and B settle the migration.** DeviceGraph records both MAX's kernel style
 and OURS, with no interceptor, and `build` executes nothing — so a `STEP()`
 closure ports by taking a `DeviceContext` ARGUMENT instead of capturing one.
-That is the entire change `mojo_rl/cuda/graph.mojo` needs to become deletable,
+That is the entire change `noeira/cuda/graph.mojo` needs to become deletable,
 and it is independent of everything below.
 
 ## D: the prediction was right, and the failure is WORSE than an abort
@@ -359,7 +359,7 @@ def arm_a(ctx: DeviceContext) raises -> Bool:
     """`add_function`: build must NOT execute; each replay must execute once.
 
     ⚠ "BUILD MUST NOT EXECUTE" IS HALF THE ASSERTION, and it is the half a
-    careless harness drops. `mojo_rl/cuda/graph.mojo`'s minimal test learned
+    careless harness drops. `noeira/cuda/graph.mojo`'s minimal test learned
     this: a graph layer that silently ran the work eagerly and replayed NOTHING
     passes any check that only looks at the final value.
     """
@@ -892,7 +892,7 @@ def arm_f(ctx: DeviceContext) raises -> Bool:
 
     ⚠ TO ATTRIBUTE IT, RUN F WITHOUT D:
 
-        MOJO_RL_SPIKE_SPLITK=0 pixi run -e nvidia mojo run -I . \\
+        NOEIRA_SPIKE_SPLITK=0 pixi run -e nvidia mojo run -I . \\
             benchmarks/bench_device_graph_spike.mojo
 
     D completes and reports before F starts, so D is probably not the author —
@@ -990,7 +990,7 @@ def arm_e(ctx: DeviceContext) raises:
     #     above — so the DeviceBuffer is freed there and every launch in this
     #     arm, eager and replayed alike, writes through a dangling `lt`. Arms A
     #     and B never hit it only because they happen to read `buf` back at the
-    #     end. `mojo_rl/cuda/graph.mojo:54` and this file's own `_Gemm` docstring
+    #     end. `noeira/cuda/graph.mojo:54` and this file's own `_Gemm` docstring
     #     both state the rule; the timing arm was written without applying it.
     #
     # (b) VACUITY. A timing arm that never checks a value is happy to report a
@@ -1064,16 +1064,16 @@ def main() raises:
     print("")
 
     var d = 2  # 2 = not attempted
-    if getenv("MOJO_RL_SPIKE_SPLITK", "1") == "0":
-        print("  D. SKIPPED by MOJO_RL_SPIKE_SPLITK=0")
+    if getenv("NOEIRA_SPIKE_SPLITK", "1") == "0":
+        print("  D. SKIPPED by NOEIRA_SPIKE_SPLITK=0")
     else:
         print("  (D and F may fault or abort — everything above has printed.")
-        print("   MOJO_RL_SPIKE_SPLITK=0 / MOJO_RL_SPIKE_VENDOR=0 skip them.)")
+        print("   NOEIRA_SPIKE_SPLITK=0 / NOEIRA_SPIKE_VENDOR=0 skip them.)")
         d = _run[arm_d]("D", ctx)
 
     var f = 2
-    if getenv("MOJO_RL_SPIKE_VENDOR", "1") == "0":
-        print("  F. SKIPPED by MOJO_RL_SPIKE_VENDOR=0")
+    if getenv("NOEIRA_SPIKE_VENDOR", "1") == "0":
+        print("  F. SKIPPED by NOEIRA_SPIKE_VENDOR=0")
     else:
         f = _run[arm_f]("F", ctx)
 
@@ -1097,7 +1097,7 @@ def main() raises:
         print("  text above: that names the call DeviceGraph will not record.")
     else:
         print("  A,B,C PASS -> DeviceGraph records our kernels AND MAX's")
-        print("  library calls, with no interceptor. `mojo_rl/cuda/graph.mojo`")
+        print("  library calls, with no interceptor. `noeira/cuda/graph.mojo`")
         print("  is replaceable; the migration is giving `maybe_capture_replay`")
         print("  a STEP(ctx) signature instead of a captured context.")
         if f == -1:
@@ -1111,7 +1111,7 @@ def main() raises:
             print("  vendor path is the prerequisite, the same way owning the")
             print("  workspace is for split-K.")
             print("  Confirm it is F's own and not D's residue:")
-            print("    MOJO_RL_SPIKE_SPLITK=0 <same command>")
+            print("    NOEIRA_SPIKE_SPLITK=0 <same command>")
         if f == 0:
             print("")
             print("  F FAILED -> the VENDOR path's 32MB scratch dangles too,")

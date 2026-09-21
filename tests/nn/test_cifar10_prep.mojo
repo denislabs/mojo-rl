@@ -30,9 +30,9 @@ visible.
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.io.fileio import file_size, read_file_bytes
-from mojo_rl.io.parquet import ParquetFile
-from mojo_rl.io.png import decode_png
+from noeira.io.fileio import file_size, read_file_bytes
+from noeira.io.parquet import ParquetFile
+from noeira.io.png import decode_png
 
 
 comptime N = 10000

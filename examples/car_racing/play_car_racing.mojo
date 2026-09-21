@@ -30,11 +30,11 @@ Run with:
 
 from std.memory import alloc
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.car_racing import CarRacingMB
-from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
-from mojo_rl.render.sdl.sdl_scancode import Scancode
-from mojo_rl.core.fmt import fit
+from noeira.nn.constants import DT
+from noeira.envs.car_racing import CarRacingMB
+from noeira.render.sdl.sdl_keyboard import get_keyboard_state
+from noeira.render.sdl.sdl_scancode import Scancode
+from noeira.core.fmt import fit
 
 
 comptime MAX_STEPS = 1_000_000  # effectively no truncation while exploring

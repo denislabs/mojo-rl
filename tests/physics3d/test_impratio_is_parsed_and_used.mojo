@@ -60,11 +60,11 @@ a configuration the reference is known to move on.
 from max.gpu.host import DeviceContext
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.fields import Model
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.fields import Model
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.gpu.constants import (
     MODEL_META_IDX_IMPRATIO,
 )
 

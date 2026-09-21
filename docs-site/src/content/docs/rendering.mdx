@@ -9,7 +9,7 @@ import DemoGrid from '~/components/DemoGrid.astro';
 
 <Maturity level="stable" note="Requires SDL3. Not needed for training." />
 
-`mojo_rl.render` draws environments — for watching a policy, for recording, and
+`noeira.render` draws environments — for watching a policy, for recording, and
 for playing them yourself. It is optional: training never touches it.
 
 <DemoGrid min="15rem">
@@ -38,7 +38,7 @@ Draws lines, filled and outlined polygons, circles and text into a pixel buffer
 that SDL3 presents.
 
 ```mojo
-from mojo_rl.render.renderer2d import Renderer2D
+from noeira.render.renderer2d import Renderer2D
 ```
 
 No GPU required, which makes it the reliable choice for a headless box or a
@@ -59,7 +59,7 @@ shaders. Six passes:
 | text | HUD overlay |
 
 ```mojo
-from mojo_rl.render.renderer3d import Renderer3D
+from noeira.render.renderer3d import Renderer3D
 ```
 
 Meshes are cached and draw commands deferred, so a batch of similar geoms costs
@@ -84,7 +84,7 @@ Mouse orbits, pans and zooms.
 ## Video capture
 
 ```mojo
-from mojo_rl.render.video_recorder import VideoRecorder
+from noeira.render.video_recorder import VideoRecorder
 ```
 
 Records MP4 or GIF through Python `imageio` (a pixi dependency, so nothing extra

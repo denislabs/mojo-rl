@@ -26,7 +26,7 @@ noise. A skip that says which command to run is not.
 
 from std.math import abs
 
-from mojo_rl.physics3d.collision.qhull_native import (
+from noeira.physics3d.collision.qhull_native import (
     qhull_faces, qhull_max_faces, qhull_shim_available,
 )
 
@@ -124,7 +124,7 @@ def main() raises:
     _check_closed(rt[0].copy(), tn)
     print("  PASS: tetrahedron is 4 triangles, closed")
 
-    # ---- THE BUFFER GUARD IS REAL, not decorative. `mrl_qhull_faces` returns
+    # ---- THE BUFFER GUARD IS REAL, not decorative. `nra_qhull_faces` returns
     # -2 rather than writing past the end, and the Mojo wrapper turns that into
     # a raise. A silent 0 here would be a mesh with NO collision geometry.
     var small = List[Int32](length=3, fill=Int32(0))

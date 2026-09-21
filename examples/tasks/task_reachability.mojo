@@ -45,18 +45,18 @@ and a prop's free joint would add six uniform dimensions that mean nothing.
 from std.random.philox import Random as PhiloxRandom
 from std.sys import argv
 
-from mojo_rl.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
-from mojo_rl.tasks.spec import load_family, load_task, validate_task_against_family
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.predicates import parse_goal, bind_goal
-from mojo_rl.tasks.eval import (
+from noeira.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
+from noeira.tasks.spec import load_family, load_task, validate_task_against_family
+from noeira.tasks.family import scene_path
+from noeira.tasks.predicates import parse_goal, bind_goal
+from noeira.tasks.eval import (
     eval_goal, region_sites, region_rects, region_half_heights,
 )
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
 
 
 comptime DT = DType.float64
@@ -75,8 +75,8 @@ def main() raises:
     print("reachability of `so101_reach_brick` — uniform over the arm's joints")
     print("=" * 72)
 
-    var f = load_family("mojo_rl/tasks/families/so101_tabletop.family")
-    var t = load_task("mojo_rl/tasks/tasks/so101_reach_brick.task")
+    var f = load_family("noeira/tasks/families/so101_tabletop.family")
+    var t = load_task("noeira/tasks/tasks/so101_reach_brick.task")
     validate_task_against_family(t, f)
 
     var fmd = parse_model_runtime(scene_path(f))

@@ -25,9 +25,9 @@ Run with:
     pixi run mojo run -I . examples/solve_frozenlake.mojo
 """
 
-from mojo_rl.envs import FrozenLakeEnv
-from mojo_rl.agents import QLearningAgent, DoubleQLearningAgent
-from mojo_rl.core.fmt import fit
+from noeira.envs import FrozenLakeEnv
+from noeira.agents import QLearningAgent, DoubleQLearningAgent
+from noeira.core.fmt import fit
 
 
 def train_and_evaluate(

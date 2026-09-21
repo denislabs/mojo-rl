@@ -19,9 +19,9 @@ repo's own `runs/`. A gate that wrote where the tool writes would be one
 
 from std.time import perf_counter_ns
 
-from mojo_rl.core.kv import kv_lines
-from mojo_rl.core.logger import CompositeLogger, CsvLogger, RemoteLogger
-from mojo_rl.core.run import (
+from noeira.core.kv import kv_lines
+from noeira.core.logger import CompositeLogger, CsvLogger, RemoteLogger
+from noeira.core.run import (
     RunContext,
     civil_from_days,
     date_utc,
@@ -32,11 +32,11 @@ from mojo_rl.core.run import (
     register_run,
     slugify,
 )
-from mojo_rl.io.proc import run_capture
+from noeira.io.proc import run_capture
 
 
 def _root() -> String:
-    return String("/tmp/mojo_rl_run_gate_") + String(perf_counter_ns())
+    return String("/tmp/noeira_run_gate_") + String(perf_counter_ns())
 
 
 # =============================================================================
@@ -346,5 +346,5 @@ def main() raises:
     # ⚠ THE PREFIX IS A LITERAL, NOT A VARIABLE. An `rm -rf` assembled from a
     # String is one empty value away from a very bad day; this one cannot
     # widen, and every root above is minted under exactly this prefix.
-    _ = run_capture(String("rm -rf /tmp/mojo_rl_run_gate_* 2>&1"), 4096)
+    _ = run_capture(String("rm -rf /tmp/noeira_run_gate_* 2>&1"), 4096)
     print("[PASS] run context")

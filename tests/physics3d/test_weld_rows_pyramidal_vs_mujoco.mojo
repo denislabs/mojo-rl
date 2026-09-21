@@ -43,9 +43,9 @@ from std.python import Python
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.parser.xml_parser import merge_mjcf
+from noeira.physics3d.fields import (
     AsStatic,
     Model,
     Data,
@@ -55,36 +55,36 @@ from mojo_rl.physics3d.fields import (
     Scratch,
     cap,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.integrator.euler import (
+from noeira.physics3d.integrator.euler import (
     EulerIntegrator,
     _armature_env,
     _fnet_passive_env,
     _qacc_writeback_env,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import compute_mass_matrix
-from mojo_rl.physics3d.dynamics.ldl import (
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import compute_mass_matrix
+from noeira.physics3d.dynamics.ldl import (
     ldl_factor,
     ldl_solve,
     compute_m_inv,
 )
-from mojo_rl.physics3d.dynamics.rne import compute_bias_forces_rne
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.solver.newton_solve import (
+from noeira.physics3d.dynamics.rne import compute_bias_forces_rne
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.solver.newton_solve import (
     solve_newton,
     solve_newton_blocked,
 )
-from mojo_rl.physics3d.constraints.equality_tendon import (
+from noeira.physics3d.constraints.equality_tendon import (
     build_weld_equality_rows,
 )
-from mojo_rl.physics3d.types import _max_one
-from mojo_rl.physics3d.dynamics.ldl import compute_m_inv as _compute_m_inv
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.types import _max_one
+from noeira.physics3d.dynamics.ldl import compute_m_inv as _compute_m_inv
+from noeira.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
@@ -99,10 +99,10 @@ from mojo_rl.physics3d.gpu.constants import (
     EQ_IDX_RELPOSE_Z,
     EQ_IDX_RELPOSE_W,
 )
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.solver.je_budget import je_ws_size
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.solver.je_budget import je_ws_size
 from layout import Layout
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 comptime NSTEPS = 600

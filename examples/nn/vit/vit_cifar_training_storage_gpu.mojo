@@ -16,14 +16,14 @@ from std.testing import assert_true
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.datasets import CIFAR10
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.models.vit import ViT
-from mojo_rl.nn.optimizer.adam import AdamW
-from mojo_rl.nn.training.trainer import Trainer
-from mojo_rl.nn.training.augmenter import CIFAR10CropFlipAugmenter
-from mojo_rl.nn.optimizer.lr_scheduler import WarmupCosineSchedule
+from noeira.nn.datasets import CIFAR10
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.models.vit import ViT
+from noeira.nn.optimizer.adam import AdamW
+from noeira.nn.training.trainer import Trainer
+from noeira.nn.training.augmenter import CIFAR10CropFlipAugmenter
+from noeira.nn.optimizer.lr_scheduler import WarmupCosineSchedule
 
 
 comptime IN_CHANNELS = 3

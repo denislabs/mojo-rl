@@ -19,11 +19,11 @@ Run:
 
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.nn.core.torch_names import TorchNameMap, TN_ZEROS
-from mojo_rl.deep_agents.smolvla.names import (
+from noeira.nn.core.torch_names import TorchNameMap, TN_ZEROS
+from noeira.deep_agents.smolvla.names import (
     vision_name_map, text_name_map, misc_name_map, expert_name_map,
 )
-from mojo_rl.deep_agents.smolvla.manifest import Manifest, shape_str
+from noeira.deep_agents.smolvla.manifest import Manifest, shape_str
 
 comptime N_TOTAL = 500
 comptime N_VISION = 197

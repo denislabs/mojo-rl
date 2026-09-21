@@ -12,7 +12,7 @@
 # state, and `build/` is gitignored (.gitignore:11) — so `build/diag/lr3_all.txt`
 # does not survive a clone and must be REGENERATED here (step 3). The LIBERO
 # meshes and textures are gitignored too (.gitignore:317, 364 of the 466 files
-# under mojo_rl/tasks/libero); only the XML is tracked, so the asset pack has to
+# under noeira/tasks/libero); only the XML is tracked, so the asset pack has to
 # be pulled (step 2) or the model will not parse.
 #
 # ⚠ THE TWO `sed`s ARE BOTH LOAD-BEARING and each is verified below:
@@ -25,7 +25,7 @@ set -euo pipefail
 
 FAMILY=libero_living_room_scene3
 DUMP=build/diag/lr3_all.txt
-NS=mojo_rl/physics3d/solver/newton_solve.mojo
+NS=noeira/physics3d/solver/newton_solve.mojo
 SAP=tools/tasks/solve_at_pose.mojo
 
 cd "$(dirname "$0")/.."
@@ -59,15 +59,15 @@ command -v pixi >/dev/null || {
 pixi install
 
 say "2. the LIBERO asset pack (meshes + textures, gitignored)"
-if [ -d mojo_rl/tasks/libero/assets/stable_hope_objects ]; then
+if [ -d noeira/tasks/libero/assets/stable_hope_objects ]; then
     echo "already materialised, skipping"
 else
     # `assets.kv` carries the URL and the sha256 that is the pack's identity.
     pixi run assets-pull libero
 fi
-[ -d mojo_rl/tasks/libero/assets/stable_hope_objects ] || {
+[ -d noeira/tasks/libero/assets/stable_hope_objects ] || {
     echo "the asset pack did not materialise — check the network and" \
-         "mojo_rl/tasks/libero/assets.kv" >&2; exit 1; }
+         "noeira/tasks/libero/assets.kv" >&2; exit 1; }
 
 say "3. regenerate the dumped state ($DUMP)"
 if [ -s "$DUMP" ]; then

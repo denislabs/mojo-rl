@@ -25,10 +25,10 @@ from std.math import abs
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.io.fileio import read_file_bytes
-from mojo_rl.io.hf import hf_download_file, HF_MODEL
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.smolvla.policy import SmolVLAPolicy
+from noeira.io.fileio import read_file_bytes
+from noeira.io.hf import hf_download_file, HF_MODEL
+from noeira.nn.constants import DT
+from noeira.deep_agents.smolvla.policy import SmolVLAPolicy
 
 comptime REPO = String("lerobot/smolvla_base")
 comptime SAMPLES = String("tools/vla/smolvla_samples.tsv")

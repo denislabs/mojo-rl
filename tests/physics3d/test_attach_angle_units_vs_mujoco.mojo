@@ -40,9 +40,9 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true
 
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.runtime_load import read_model_source
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.runtime_load import read_model_source
+from noeira.physics3d.parser.full_parser import parse_xml_full
 
 comptime TOL: Float64 = 1e-12
 comptime DIR = String("tests/physics3d/fixtures/attach_units/")

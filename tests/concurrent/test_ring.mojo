@@ -18,9 +18,9 @@ on its own is what a ring that never wrapped also prints.
 from std.memory import Pointer
 from std.time import perf_counter_ns
 
-from mojo_rl.core.concurrent.block import SharedBlock
-from mojo_rl.core.concurrent.ring import SharedRing, SpscRing, cells_for
-from mojo_rl.core.concurrent.worker import (
+from noeira.core.concurrent.block import SharedBlock
+from noeira.core.concurrent.ring import SharedRing, SpscRing, cells_for
+from noeira.core.concurrent.worker import (
     POLL_DID_WORK,
     POLL_DONE,
     POLL_IDLE,

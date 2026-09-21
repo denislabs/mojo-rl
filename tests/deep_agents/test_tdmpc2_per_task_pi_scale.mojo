@@ -35,8 +35,8 @@ from std.random import seed
 from std.testing import assert_true, assert_almost_equal, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.agent_mt import TDMPC2MultiTaskAgent
+from noeira.nn.constants import DT
+from noeira.deep_agents.tdmpc2.agent_mt import TDMPC2MultiTaskAgent
 
 comptime MAX_OBS = 3
 comptime ENC = 32

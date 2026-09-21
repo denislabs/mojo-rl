@@ -45,16 +45,16 @@ Run:
 from std.math import sqrt
 from std.random import random_float64, seed
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU, Tanh
-from mojo_rl.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
-from mojo_rl.deep_agents.fb.trainer import FBTrainer
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.module import Module
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.initializer import Xavier
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU, Tanh
+from noeira.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
+from noeira.deep_agents.fb.trainer import FBTrainer
 
 from max.gpu.host import DeviceContext
 

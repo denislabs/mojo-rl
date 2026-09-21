@@ -18,17 +18,17 @@ Run: pixi run mojo run -I . tests/deep_agents/test_storage_redq_ofe_aux.mojo
 from std.random import seed, random_float64
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Xavier
+from noeira.nn.optimizer.adam import Adam
 
-from mojo_rl.deep_agents.redq_ofe.ofe_nets import (
+from noeira.deep_agents.redq_ofe.ofe_nets import (
     OFEStateBranch6, OFEActionBranch6, OFEPredictorHead,
     state_branch_out_dim, action_branch_out_dim,
 )
-from mojo_rl.deep_agents.redq_ofe.aux_loss_step import OFEAuxLossStep
-from mojo_rl.deep_agents.training.trainer_block import TrainerState
+from noeira.deep_agents.redq_ofe.aux_loss_step import OFEAuxLossStep
+from noeira.deep_agents.training.trainer_block import TrainerState
 
 
 comptime OBS = 4

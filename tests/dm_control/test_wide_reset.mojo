@@ -25,16 +25,16 @@ from std.math import sqrt
 from std.random import seed
 from std.testing import assert_true
 
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
-from mojo_rl.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
-from mojo_rl.envs.dm_control.walker.walker_xml import TORSO_BODY_IDX
-from mojo_rl.envs.dm_control.cheetah import DMCheetahModel, DMCheetahConfig
-from mojo_rl.envs.dm_control.cheetah.cheetah_xml import (
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
+from noeira.envs.dm_control.walker.walker_xml import TORSO_BODY_IDX
+from noeira.envs.dm_control.cheetah import DMCheetahModel, DMCheetahConfig
+from noeira.envs.dm_control.cheetah.cheetah_xml import (
     TORSO_BODY_IDX as CHEETAH_TORSO_BODY_IDX,
 )
-from mojo_rl.envs.dm_control.wide_reset import (
+from noeira.envs.dm_control.wide_reset import (
     WideResetConfig,
     WALKER_ROOTZ_ADR,
     WALKER_Z_LO,

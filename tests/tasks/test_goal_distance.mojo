@@ -35,21 +35,21 @@ rather than one task.
 
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, MODEL_CURRICULUM_SIZE,
 )
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
-from mojo_rl.tasks.spec import load_family, load_task
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import So101TabletopConfig
-from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
-from mojo_rl.tasks.predicates import parse_goal, bind_goal
-from mojo_rl.tasks.eval import (
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.tasks.spec import load_family, load_task
+from noeira.tasks.family import scene_path
+from noeira.tasks.family_config import So101TabletopConfig
+from noeira.tasks.so101_tabletop_xml import So101TabletopModel
+from noeira.tasks.predicates import parse_goal, bind_goal
+from noeira.tasks.eval import (
     region_sites, region_rects, region_half_heights,
 )
-from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.gpu_eval import (
+from noeira.tasks.tape import encode_goal, TAPE_WORDS
+from noeira.tasks.gpu_eval import (
     region_table_words, eval_tape_gpu, tape_distance_gpu,
 )
 
@@ -118,7 +118,7 @@ def main() raises:
         " (0.120-0.191 m)",
     )
 
-    var f = load_family("mojo_rl/tasks/families/so101_tabletop.family")
+    var f = load_family("noeira/tasks/families/so101_tabletop.family")
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)
     var rects = region_rects(f)
@@ -173,7 +173,7 @@ def main() raises:
     var n_miss = 0
 
     for n in range(len(names)):
-        var t = load_task("mojo_rl/tasks/tasks/" + names[n] + ".task")
+        var t = load_task("noeira/tasks/tasks/" + names[n] + ".task")
         var g = bind_goal(parse_goal(t.goal), f, fmd.body_names, fmd.site_names)
         var tp = encode_goal(g)
         for k in range(TAPE_WORDS):
@@ -264,7 +264,7 @@ def main() raises:
     # ── 3. monotone: closer is not farther ────────────────────────────────
     print()
     print("--- 3. moving toward the goal does not increase the distance ---")
-    var t_g = load_task("mojo_rl/tasks/tasks/so101_gather_bricks.task")
+    var t_g = load_task("noeira/tasks/tasks/so101_gather_bricks.task")
     var g_g = bind_goal(
         parse_goal(t_g.goal), f, fmd.body_names, fmd.site_names
     )

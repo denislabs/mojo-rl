@@ -18,13 +18,13 @@ from std.memory import alloc
 from std.testing import assert_true
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.experimental.lewm.trainer import (
+from noeira.nn.constants import DT
+from noeira.experimental.lewm.trainer import (
     LeWMTrainer,
     _SaveVisitor,
     _NamedExportVisitor,
 )
-from mojo_rl.experimental.lewm.offline_buffer import OfflineWindowBuffer
+from noeira.experimental.lewm.offline_buffer import OfflineWindowBuffer
 
 
 # toy config (same as test_trainer.mojo)

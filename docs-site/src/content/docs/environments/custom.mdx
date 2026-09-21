@@ -27,8 +27,8 @@ See [Traits](/concepts/traits/) for what each requires.
 ## 2. Define State and Action
 
 ```mojo
-from mojo_rl.core.state import State
-from mojo_rl.core.action import Action
+from noeira.core.state import State
+from noeira.core.action import Action
 
 
 struct MyState(State):
@@ -51,7 +51,7 @@ need your own.
 A discrete example:
 
 ```mojo
-from mojo_rl.core.env_traits import DiscreteEnv
+from noeira.core.env_traits import DiscreteEnv
 
 
 struct MyEnv(DiscreteEnv):
@@ -128,7 +128,7 @@ and joints across the batch dimension.
 Once implemented, wrap it for the batched drivers:
 
 ```mojo
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
+from noeira.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
 
 comptime EnvT = BatchedGpuDiscreteEnv[MyEnv[DT], N_ENVS, OBS_DIM, 1]
 ```
@@ -140,7 +140,7 @@ than hand-written dynamics. Define the model in **MJCF XML** — the same format
 MuJoCo uses — and load it:
 
 ```mojo
-from mojo_rl.physics3d.parser import build_model_fields_from_flat
+from noeira.physics3d.parser import build_model_fields_from_flat
 ```
 
 Then implement a config struct (`Phyics3dEnvConfig`) supplying observation

@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | VideoRecorder: does what comes back out match what went in?
 # +--------------------------------------------------------------------------+ #
-"""Gates `mojo_rl/render/video_recorder.mojo` by reading its own output back.
+"""Gates `noeira/render/video_recorder.mojo` by reading its own output back.
 
     pixi run mojo run -I . tests/render/test_video_recorder.mojo
 
@@ -12,7 +12,7 @@ dump, no dataset, no display.
 and something plausible comes out regardless of whether the channel order is
 right, the crop offset is right, or the rows are in order — a swapped R and B
 produces a perfectly good video of the wrong colour. So every check here reads
-the output back through `mojo_rl/io/video` and compares pixels.
+the output back through `noeira/io/video` and compares pixels.
 
 The still path carries the pixel assertions because **PNG is lossless**: what
 comes back is exactly what was written, so channel order and crop can be
@@ -27,9 +27,9 @@ symmetric frame would leave alone.
 
 from std.os.path import exists
 
-from mojo_rl.io.video import VideoDecoder, probe_video
-from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.render.video_recorder import VideoRecorder
+from noeira.io.video import VideoDecoder, probe_video
+from noeira.nn.core.ptr import mptr
+from noeira.render.video_recorder import VideoRecorder
 
 
 comptime W = 64

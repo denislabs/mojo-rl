@@ -12,14 +12,14 @@ Run (no GPU):
 
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.ptr import untracked
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
-from mojo_rl.deep_agents.zero.mcts_adapters_mz_cpu import (
+from noeira.nn.constants import DT
+from noeira.nn.core.ptr import untracked
+from noeira.nn.core.initializer import Kaiming
+from noeira.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
+from noeira.deep_agents.zero.mcts_adapters_mz_cpu import (
     MZRepCPU, MZDynCPU, MZPredCPU,
 )
-from mojo_rl.planners.tree_search import (
+from noeira.planners.tree_search import (
     GenericCPUMCTS,
     MuZeroPUCT,
     DirichletNoise,

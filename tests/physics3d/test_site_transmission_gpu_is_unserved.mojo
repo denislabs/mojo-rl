@@ -20,7 +20,7 @@ drives the DOF itself". The silent-zero reading of AUD-41 requires someone to
 open that hatch and then not drive the dof. Test one below is that guard;
 tests two and three are what is behind it.
 
-WHO IS EXPOSED. Across `mojo_rl/envs` and `mojo_rl/tasks` — the only trees
+WHO IS EXPOSED. Across `noeira/envs` and `noeira/tasks` — the only trees
 that reach the batched GPU path — there is exactly one `<spatial>` tendon
 (`ball_in_cup.xml`) and it is a LIMIT, not a transmission; no actuator has a
 `site=`; none is `<adhesion>`. quadruped's eight tendon actuators drive
@@ -47,18 +47,18 @@ from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
     METADATA_SIZE,
     JLIM_SIZE,
 )
-from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims
-from mojo_rl.physics3d.fields.dynamics_scratch import DynamicsScratch
-from mojo_rl.physics3d.dynamics.pose_transmission import (
+from noeira.physics3d.fields import Data, Model, SpecFields, Dims
+from noeira.physics3d.fields.dynamics_scratch import DynamicsScratch
+from noeira.physics3d.dynamics.pose_transmission import (
     apply_pose_transmission,
 )
 

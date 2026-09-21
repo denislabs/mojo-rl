@@ -33,9 +33,9 @@ from std.random import seed, random_float64
 from std.testing import assert_true
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.envs.pendulum import PendulumV2
-from mojo_rl.envs.pendulum.constants import PConstants, PendulumLayout
-from mojo_rl.nn.constants import DT as dtype
+from noeira.envs.pendulum import PendulumV2
+from noeira.envs.pendulum.constants import PConstants, PendulumLayout
+from noeira.nn.constants import DT as dtype
 
 
 # =============================================================================

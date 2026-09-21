@@ -41,15 +41,15 @@ from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.envs.dm_control.fish import DMFishUprightModel
-from mojo_rl.physics3d.fields import Model, Data, Dims, AsStatic
-from mojo_rl.physics3d.kinematics.quat_math import quat2vel
-from mojo_rl.physics3d.kinematics.integrate_pos import integrate_pos
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.envs.dm_control.fish import DMFishUprightModel
+from noeira.physics3d.fields import Model, Data, Dims, AsStatic
+from noeira.physics3d.kinematics.quat_math import quat2vel
+from noeira.physics3d.kinematics.integrate_pos import integrate_pos
+from noeira.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_TYPE,
 )
-from mojo_rl.physics3d.joint_types import JNT_FREE
+from noeira.physics3d.joint_types import JNT_FREE
 
 comptime DTYPE = DType.float64
 
@@ -198,7 +198,7 @@ def test_integrate_pos_matches_mujoco() raises:
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
     var rng = np.random.default_rng(7)
-    var mm = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/fish.xml")
+    var mm = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/fish.xml")
     var dat = mujoco.MjData(mm)
 
     assert_true(Int(py=mm.nq) == NQ, "nq mismatch")

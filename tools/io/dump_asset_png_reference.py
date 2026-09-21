@@ -21,8 +21,8 @@ import os
 
 DIRS = [
     "assets/procgen",
-    "mojo_rl/envs/craftax_classic/assets",
-    "mojo_rl/envs/craftax_full/assets",
+    "noeira/envs/craftax_classic/assets",
+    "noeira/envs/craftax_full/assets",
 ]
 
 

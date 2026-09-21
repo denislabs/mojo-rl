@@ -81,9 +81,9 @@ import sys
 import xml.etree.ElementTree as ET
 
 RS = "references/robosuite-master/robosuite/models/assets"
-OUT_XML = "mojo_rl/envs/robots/assets/panda_robosuite.xml"
-OUT_XML_NOMOUNT = "mojo_rl/envs/robots/assets/panda_robosuite_nomount.xml"
-OUT_DIR = "mojo_rl/envs/robots/assets/panda_robosuite"
+OUT_XML = "noeira/envs/robots/assets/panda_robosuite.xml"
+OUT_XML_NOMOUNT = "noeira/envs/robots/assets/panda_robosuite_nomount.xml"
+OUT_DIR = "noeira/envs/robots/assets/panda_robosuite"
 
 INIT_QPOS = "0 -0.161037389 0 -2.44459747 0 2.2267522 0.7853981633974483 0.020833 -0.020833"
 

@@ -13,8 +13,8 @@ See `docs/PROCGEN_BOSSFIGHT_SCOPE.md`.
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import BossfightGame
-from mojo_rl.envs.procgen.games.bossfight import DIST_EASY, DIST_HARD, BARRIER
+from noeira.envs.procgen.games import BossfightGame
+from noeira.envs.procgen.games.bossfight import DIST_EASY, DIST_HARD, BARRIER
 
 
 comptime STEPS = 300

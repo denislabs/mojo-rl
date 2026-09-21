@@ -33,19 +33,19 @@ golden — would go stale silently, which is worse.
 Run: pixi run mojo run -I . tests/physics3d/test_export_roundtrip.mojo
 """
 
-from mojo_rl.physics3d.fields import Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, read_model_source,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.studio.writer import to_mjcf, unwritable
-from mojo_rl.physics3d.studio.edit import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.studio.writer import to_mjcf, unwritable
+from noeira.physics3d.studio.edit import (
     Edit, apply_edit, TARGET_GEOM, F_SIZE_0, F_POS_X, F_FRICTION,
 )
 
 comptime DT = DType.float64
-comptime MODEL = String("mojo_rl/envs/walker2d/assets/walker2d.xml")
+comptime MODEL = String("noeira/envs/walker2d/assets/walker2d.xml")
 
 
 struct Tally:
@@ -195,9 +195,9 @@ def main() raises:
     print("--- refusal ---")
     var hum = parse_xml_full(
         expand_mjcf(read_model_source(
-            String("mojo_rl/envs/humanoid/assets/humanoid.xml")
-        )[0], String("mojo_rl/envs/humanoid/assets")),
-        String("mojo_rl/envs/humanoid/assets"),
+            String("noeira/envs/humanoid/assets/humanoid.xml")
+        )[0], String("noeira/envs/humanoid/assets")),
+        String("noeira/envs/humanoid/assets"),
     )
     # humanoid has two fixed tendons.
     t.truth(unwritable(hum).byte_length() > 0,

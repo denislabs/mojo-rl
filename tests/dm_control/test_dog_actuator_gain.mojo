@@ -58,9 +58,9 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.envs.dm_control.dog import DMDogStandWalkModel
-from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.gpu.constants import ACT_IDX_KP, ACT_IDX_GEAR
+from noeira.envs.dm_control.dog import DMDogStandWalkModel
+from noeira.physics3d.fields import actuator_column
+from noeira.physics3d.gpu.constants import ACT_IDX_KP, ACT_IDX_GEAR
 
 comptime M = DMDogStandWalkModel
 comptime TEST_PATH = "tests/dm_control"

@@ -10,7 +10,7 @@ training step and nothing else.
     pixi run -e nvidia nsys profile --stats=true mojo run -I . \\
         examples/so101/act_so101_profile_gpu.mojo
 
-⚠ Run from the project root: `mojo_rl/io/hdf5` resolves libhdf5 relative to the
+⚠ Run from the project root: `noeira/io/hdf5` resolves libhdf5 relative to the
 working directory. `ACT_STORE` selects the dataset, as everywhere else.
 
 ## What is already known, so nobody re-measures it
@@ -100,25 +100,25 @@ from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.models.conv import Conv2DBatchNormReLU
-from mojo_rl.nn.models.resnet18 import (
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.models.conv import Conv2DBatchNormReLU
+from noeira.nn.models.resnet18 import (
     RESNET18_OUT_CH,
     ResNet18Backbone,
     ResNet18OutH,
     ResNet18OutW,
 )
-from mojo_rl.deep_agents.act.config import (
+from noeira.deep_agents.act.config import (
     SO101_ADIM,
     SO101_IMG_H,
     SO101_IMG_W,
     SO101_N_CAM,
     SO101_QPOS,
 )
-from mojo_rl.deep_agents.act.data import ACTDataset
-from mojo_rl.deep_agents.act.data_gpu import ACTDeviceDataset
-from mojo_rl.deep_agents.act.trainer import ACTTrainer
+from noeira.deep_agents.act.data import ACTDataset
+from noeira.deep_agents.act.data_gpu import ACTDeviceDataset
+from noeira.deep_agents.act.trainer import ACTTrainer
 
 
 # ─── Profiling knobs ──────────────────────────────────────────────────────
@@ -277,7 +277,7 @@ def store_path() raises -> String:
         raise Error("$HOME is unset; set ACT_STORE to the store path")
     return (
         home
-        + "/.cache/mojo_rl/act_so101/"
+        + "/.cache/noeira/act_so101/"
         + "DenisLabs__record-test_20260828_092736_"
         + String(IMG_H)
         + "x"

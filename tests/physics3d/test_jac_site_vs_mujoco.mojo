@@ -57,19 +57,19 @@ from std.collections import Array
 from max.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.envs.dm_control.ball_in_cup import (
+from noeira.envs.dm_control.ball_in_cup import (
     DMBallInCupModel,
 )
-from mojo_rl.envs.dm_control.quadruped import (
+from noeira.envs.dm_control.quadruped import (
     DMQuadrupedFetchModel,
 )
-from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, Dims, DimsLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.jac_point import jac_site
-from mojo_rl.physics3d.fields.scratch import Scratch, cap
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, Data, DynamicsScratch, Dims, DimsLike
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.jac_point import jac_site
+from noeira.physics3d.fields.scratch import Scratch, cap
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
@@ -78,8 +78,8 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_TYPE,
     SITE_IDX_BODY,
 )
-from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_SLIDE
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.joint_types import JNT_FREE, JNT_SLIDE
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 
@@ -304,7 +304,7 @@ def test_jac_site_quadruped_fetch() raises:
     var sf = M.make_spec_fields[DTYPE]()
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
-    var mm = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/quadruped_fetch.xml")
+    var mm = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/quadruped_fetch.xml")
     var dat = mujoco.MjData(mm)
 
     var ctx = DeviceContext()
@@ -328,7 +328,7 @@ def test_jac_site_ball_in_cup() raises:
     var sf = M.make_spec_fields[DTYPE]()
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
-    var mm = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/ball_in_cup.xml")
+    var mm = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/ball_in_cup.xml")
     var dat = mujoco.MjData(mm)
 
     var ctx = DeviceContext()

@@ -11,8 +11,8 @@ coin_quota completion) over a jump-heavy tape. Ground truth =
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import ClimberGame
-from mojo_rl.envs.procgen.games.climber import DIST_EASY, DIST_HARD, WALL_TOP, COIN, ENEMY
+from noeira.envs.procgen.games import ClimberGame
+from noeira.envs.procgen.games.climber import DIST_EASY, DIST_HARD, WALL_TOP, COIN, ENEMY
 
 
 comptime STEPS = 200

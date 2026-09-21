@@ -15,14 +15,14 @@ from std.math import isnan, isinf
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.training.trainer_block import TrainerState
-from mojo_rl.deep_agents.sac.target_y_block import TargetYBlock
+from noeira.nn.constants import DT
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.core.initializer import Xavier
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.training.trainer_block import TrainerState
+from noeira.deep_agents.sac.target_y_block import TargetYBlock
 
 
 comptime OBS = 3

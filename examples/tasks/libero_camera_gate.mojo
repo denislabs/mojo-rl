@@ -30,26 +30,26 @@ faithful setting here, not a shortcut.
 from std.sys import argv
 from std.math import log10, sqrt
 
-from mojo_rl.math3d import Vec3
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.math3d import Vec3
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE, BODY_IDX_POS_X, BODY_IDX_QUAT_X, BODY_IDX_QUAT_W,
     MAX_GPU_CAMERAS, MODEL_CAM_SIZE, CAM_IDX_ACTIVE, CAM_IDX_FOVY,
     CAM_IDX_POS_X, CAM_IDX_QUAT_X, CAM_IDX_QUAT_W,
 )
-from mojo_rl.physics3d.raytrace.visual import build_visual_model
-from mojo_rl.physics3d.raytrace.host_render import render_lane_cpu
-from mojo_rl.physics3d.raytrace.camera import camera_world_frame, camera_pixel_ray
-from mojo_rl.physics3d.fields.rt_layout import DYN1, DYN2, rl1, rl2
-from mojo_rl.tasks.spec import load_family
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.libero_visual import libero_site_conditions
-from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
-from mojo_rl.tasks.libero_fixtures import dump_path_from_index
+from noeira.physics3d.raytrace.visual import build_visual_model
+from noeira.physics3d.raytrace.host_render import render_lane_cpu
+from noeira.physics3d.raytrace.camera import camera_world_frame, camera_pixel_ray
+from noeira.physics3d.fields.rt_layout import DYN1, DYN2, rl1, rl2
+from noeira.tasks.spec import load_family
+from noeira.tasks.family import scene_path
+from noeira.tasks.libero_visual import libero_site_conditions
+from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.tasks.libero_fixtures import dump_path_from_index
 
 
 comptime DT = DType.float64
@@ -176,7 +176,7 @@ def main() raises:
     var suite_cut = String(suite[byte=0:cut])
     suite = suite_cut^
 
-    var f = load_family("mojo_rl/tasks/families/" + suite + ".family")
+    var f = load_family("noeira/tasks/families/" + suite + ".family")
     var fmd = parse_model_runtime(scene_path(f))
     var verts = 32768
     var dims = dims_from_flat(

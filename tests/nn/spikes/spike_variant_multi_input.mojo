@@ -29,7 +29,7 @@ Probe C: can Variant wrap distinct LayoutTensor types?
 from std.utils import Variant
 from layout import LayoutTensor, Layout, TileTensor, TensorLayout, row_major
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
 
 # ──────────────────────────────────────────────────────────────────────

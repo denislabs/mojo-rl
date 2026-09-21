@@ -18,18 +18,18 @@ from std.python import Python, PythonObject
 from max.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model, Dims, AsStatic
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
-from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
-from mojo_rl.physics3d.collision.gjk import gjk_epa_witness
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.collision.native_multicontact import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.fields import Data, Model, Dims, AsStatic
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.ccd_workspace import L_CCD_WS1
+from noeira.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
+from noeira.physics3d.collision.gjk import gjk_epa_witness
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.collision.native_multicontact import (
     native_multicontact_contacts,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_POS_X,
     CONTACT_IDX_POS_Y,
@@ -48,7 +48,7 @@ from mojo_rl.physics3d.gpu.constants import (
     mesh_max_polyvert,
     mesh_max_edge,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     GEOM_IDX_TYPE,
     GEOM_IDX_BODY,
     GEOM_IDX_HALF_X,

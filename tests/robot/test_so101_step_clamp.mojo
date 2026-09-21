@@ -15,7 +15,7 @@ helps if the phase really changes, and only stays safe if it does NOT change
 while a joint is still far from its goal.
 """
 
-from mojo_rl.robot.so101 import ALIGN_TICKS, SO101_N, is_aligned, step_limit
+from noeira.robot.so101 import ALIGN_TICKS, SO101_N, is_aligned, step_limit
 
 
 def main() raises:

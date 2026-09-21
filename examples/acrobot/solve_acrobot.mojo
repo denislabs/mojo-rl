@@ -23,10 +23,10 @@ Run with:
 Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 """
 
-from mojo_rl.envs import AcrobotEnv
-from mojo_rl.agents import QLearningAgent, SARSALambdaAgent
-from mojo_rl.render import Renderer2D
-from mojo_rl.core.fmt import fit
+from noeira.envs import AcrobotEnv
+from noeira.agents import QLearningAgent, SARSALambdaAgent
+from noeira.render import Renderer2D
+from noeira.core.fmt import fit
 
 
 def main() raises:

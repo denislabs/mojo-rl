@@ -103,7 +103,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.dog import (
+from noeira.envs.dm_control.dog import (
     DMDogFetch,
     DMDogFetchModel,
     DOG_SITE_PALM_L,
@@ -114,14 +114,14 @@ from mojo_rl.envs.dm_control.dog import (
     DOG_TORSO_BODY_IDX,
     DOG_PELVIS_BODY_IDX,
 )
-from mojo_rl.envs.dm_control.dog.dog_xml import DOG_FRAME_SKIP
-from mojo_rl.envs.dm_control.dog.dog_fetch_xml import (
+from noeira.envs.dm_control.dog.dog_xml import DOG_FRAME_SKIP
+from noeira.envs.dm_control.dog.dog_fetch_xml import (
     FETCH_BALL_QPOS_0,
     FETCH_BALL_DOF_0,
     FETCH_BALL_BODY_IDX,
 )
-from mojo_rl.physics3d.sensors.touch import touch_sphere_site
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.sensors.touch import touch_sphere_site
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,

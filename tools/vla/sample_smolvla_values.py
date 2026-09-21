@@ -78,7 +78,7 @@ def main() -> int:
     if path is None:
         import os
         path = os.path.expanduser(
-            "~/.cache/mojo_rl/hub/lerobot__smolvla_base/main/model.safetensors"
+            "~/.cache/noeira/hub/lerobot__smolvla_base/main/model.safetensors"
         )
 
     lines = []

@@ -1,6 +1,6 @@
 """`<keyframe><key>` — parsed, and NOT applied by the default reset.
 
-`keyframe` and `<key` appeared NOWHERE in `mojo_rl/physics3d/parser/`: the
+`keyframe` and `<key` appeared NOWHERE in `noeira/physics3d/parser/`: the
 section was not merged, not counted and not read. ToddlerBot's reference env
 resets from `keyframe("home").qpos`, whose values differ from `qpos0` in 26 of
 51 slots by up to 1.5708 rad, and which sets 18 of its 30 controls. Without it
@@ -40,10 +40,10 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
-from mojo_rl.physics3d.fields import Data, Dims
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.parser.xml_parser import merge_mjcf
+from noeira.physics3d.fields import Data, Dims
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 

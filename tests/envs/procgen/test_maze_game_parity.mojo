@@ -9,14 +9,14 @@ reference Procgen's maze exactly. Ground truth from `scratchpad/maze_game_probe.
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import (
+from noeira.envs.procgen.games import (
     MazeGame,
     DIST_EASY,
     DIST_HARD,
     DIST_MEMORY,
     world_dim_for,
 )
-from mojo_rl.envs.procgen.core.object_ids import SPACE
+from noeira.envs.procgen.core.object_ids import SPACE
 
 comptime ASSET_ROOT = String("assets/procgen/")
 

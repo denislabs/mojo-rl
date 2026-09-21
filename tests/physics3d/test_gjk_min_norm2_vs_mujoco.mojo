@@ -100,10 +100,10 @@ them poses a convex pair separated by less than 10 microns.
 from std.math import abs
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.collision.ccd_workspace import L_CCD_WS1
-from mojo_rl.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
-from mojo_rl.physics3d.collision.gjk import gjk_epa
-from mojo_rl.physics3d.constants import GEOM_BOX, GEOM_CYLINDER
+from noeira.physics3d.collision.ccd_workspace import L_CCD_WS1
+from noeira.physics3d.collision.ccd_workspace_host import ccd_ws_alloc
+from noeira.physics3d.collision.gjk import gjk_epa
+from noeira.physics3d.constants import GEOM_BOX, GEOM_CYLINDER
 
 comptime DT = DType.float64
 comptime LV = Layout.row_major(1, 3)

@@ -18,8 +18,8 @@ committed; `tools/vision/make_resize_fixture.py` regenerates them.
 
 from std.pathlib import Path
 
-from mojo_rl.vision.opencv import imread, opencv_shim_available
-from mojo_rl.vision.preprocess import camera_frame_to_chw_rgb, pil_bilinear_u8
+from noeira.vision.opencv import imread, opencv_shim_available
+from noeira.vision.preprocess import camera_frame_to_chw_rgb, pil_bilinear_u8
 
 comptime FIX = "tests/fixtures/vision/"
 comptime SRC_W = 320

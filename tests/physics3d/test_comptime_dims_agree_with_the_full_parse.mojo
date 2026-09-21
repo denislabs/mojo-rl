@@ -36,7 +36,7 @@ a parser that cannot call the first one. Until then the disagreement RAISES
 with a message naming the cause. Both are worth having: the raise is what
 stops a silently shifted model reaching a rollout.
 
-SURVEYED: no model in `mojo_rl/envs`, Menagerie or dm_control states a ball or
+SURVEYED: no model in `noeira/envs`, Menagerie or dm_control states a ball or
 free joint `type` in a `<default>` class, so nothing in the tree is affected —
 which is also why the hole stayed open.
 """
@@ -44,10 +44,10 @@ which is also why the hole stayed open.
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Model, Dims
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.fields import Model, Dims
 
 comptime DTYPE = DType.float64
 

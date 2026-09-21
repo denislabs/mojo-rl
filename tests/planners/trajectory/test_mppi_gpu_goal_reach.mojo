@@ -32,8 +32,8 @@ from std.random import seed as _set_seed
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype, TPB
-from mojo_rl.planners.trajectory import MPPIGPUBatched, RolloutCallbackGPU
+from noeira.nn.constants import DT as dtype, TPB
+from noeira.planners.trajectory import MPPIGPUBatched, RolloutCallbackGPU
 
 
 # Comptime sizes for this test — chosen so MPPI converges tightly

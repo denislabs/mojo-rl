@@ -12,7 +12,7 @@
         --offset 0.0 -0.045 0.012
 
 `docs/VISION_ASSESSMENT_2026_09_09.md` §2 item 1, the RIG half.
-`mojo_rl/vision/extrinsics.mojo` is the solver; this is what feeds it.
+`noeira/vision/extrinsics.mojo` is the solver; this is what feeds it.
 
 ## ⚠⚠ THIS PROGRAM NEVER ENERGISES THE ARM, AND HAS NO FLAG THAT DOES
 
@@ -80,14 +80,14 @@ from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.math3d import Mat3 as Mat3Generic, Quat as QuatGeneric, Vec3 as Vec3Generic
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model, GRIPPER_BODY_IDX
-from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
-from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
-from mojo_rl.render.imgui import (
+from noeira.math3d import Mat3 as Mat3Generic, Quat as QuatGeneric, Vec3 as Vec3Generic
+from noeira.nn.constants import DT
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.robots.so_arm101_xml import SoArm101Model, GRIPPER_BODY_IDX
+from noeira.envs.robots.so_arm101 import SoArm101ReachConfig
+from noeira.physics3d.fields import actuator_column
+from noeira.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
+from noeira.render.imgui import (
     IgTexture,
     ig_begin_panel,
     ig_begin_window,
@@ -104,15 +104,15 @@ from mojo_rl.render.imgui import (
     ig_text_disabled,
     imgui_shim_available,
 )
-from mojo_rl.render.renderer3d import Renderer3D
-from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_short
-from mojo_rl.robot.so101.ports import follower_port
-from mojo_rl.robot.so101.sim_map import SimJointMap
-from mojo_rl.utils.fmt import fixed
-from mojo_rl.vision.calib_file import CameraCalib, read_calib, write_calib
-from mojo_rl.vision.extrinsics import RigidFit, fit_rigid
-from mojo_rl.vision.camera_thread import open_camera_spec
-from mojo_rl.vision.opencv import (
+from noeira.render.renderer3d import Renderer3D
+from noeira.robot.so101 import SO101Arm, SO101_N, joint_short
+from noeira.robot.so101.ports import follower_port
+from noeira.robot.so101.sim_map import SimJointMap
+from noeira.utils.fmt import fixed
+from noeira.vision.calib_file import CameraCalib, read_calib, write_calib
+from noeira.vision.extrinsics import RigidFit, fit_rigid
+from noeira.vision.camera_thread import open_camera_spec
+from noeira.vision.opencv import (
     ArucoDetector,
     DICT_4X4_50,
     SOLVEPNP_IPPE_SQUARE,

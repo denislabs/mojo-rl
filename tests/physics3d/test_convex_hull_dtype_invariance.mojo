@@ -36,8 +36,8 @@ and drops shallow contacts, with one sign, silently.
 from std.math import abs
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.collision.convex_hull import load_mesh_hull
-from mojo_rl.physics3d.model.mesh_inertia import MeshInertia
+from noeira.physics3d.collision.convex_hull import load_mesh_hull
+from noeira.physics3d.model.mesh_inertia import MeshInertia
 
 
 def _hull_size[DTYPE: DType](path: String) raises -> Int:
@@ -97,7 +97,7 @@ def test_small_collision_mesh() raises:
     """
     _both(
         "Fixed_Jaw_Collision_2",
-        "mojo_rl/envs/robots/assets/so_arm100/Fixed_Jaw_Collision_2.stl",
+        "noeira/envs/robots/assets/so_arm100/Fixed_Jaw_Collision_2.stl",
     )
 
 
@@ -105,7 +105,7 @@ def test_scanned_visual_mesh() raises:
     """A full scanned part — thousands of vertices, the case that diverged."""
     _both(
         "Wrist_Pitch_Roll",
-        "mojo_rl/envs/robots/assets/so_arm100/Wrist_Pitch_Roll.stl",
+        "noeira/envs/robots/assets/so_arm100/Wrist_Pitch_Roll.stl",
     )
 
 
@@ -117,7 +117,7 @@ def test_large_scanned_mesh() raises:
     """
     _both(
         "wrist_roll_pitch_so101_v2",
-        "mojo_rl/envs/robots/assets/so_arm101/wrist_roll_pitch_so101_v2.stl",
+        "noeira/envs/robots/assets/so_arm101/wrist_roll_pitch_so101_v2.stl",
     )
 
 

@@ -50,8 +50,8 @@ from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.cuda import CUDAGraph
+from noeira.nn.constants import DT
+from noeira.cuda import CUDAGraph
 
 
 def main() raises:

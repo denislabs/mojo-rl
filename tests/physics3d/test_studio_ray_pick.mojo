@@ -27,22 +27,22 @@ Run: pixi run mojo run -I . tests/physics3d/test_studio_ray_pick.mojo
 
 from std.math import sqrt, pi
 
-from mojo_rl.math3d import Vec3 as Vec3G, Quat as QuatG
-from mojo_rl.physics3d.studio.outline import (
+from noeira.math3d import Vec3 as Vec3G, Quat as QuatG
+from noeira.physics3d.studio.outline import (
     outline_geom, outline_body, SELECT_COLOR,
 )
-from mojo_rl.physics3d.studio.pick import (
+from noeira.physics3d.studio.pick import (
     Ray, Hit, ray_through_pixel, pick_geom,
     _hit_sphere, _hit_box, _hit_capsule,
 )
-from mojo_rl.physics3d.parser.render_fields import build_render_fields
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.render_fields import build_render_fields
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime, read_model_source,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.parser.runtime_load import spec_fields_runtime
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.parser.runtime_load import spec_fields_runtime
 
 comptime DT = DType.float64
 comptime Vec3 = Vec3G[DT]
@@ -201,7 +201,7 @@ def test_primitives(mut t: Tally) raises:
 
 def test_sweep(mut t: Tally) raises:
     print("--- sweep on walker2d ---")
-    var path = String("mojo_rl/envs/walker2d/assets/walker2d.xml")
+    var path = String("noeira/envs/walker2d/assets/walker2d.xml")
     var src = read_model_source(path)
     var fmd = parse_xml_full(src[0], src[1])
     var dims = dims_from_flat(fmd, max_contacts=64)
@@ -335,7 +335,7 @@ def test_outline(mut t: Tally) raises:
     a BOUND on the distance from the geom's own world centre.
     """
     print("--- selection outline ---")
-    var path = String("mojo_rl/envs/walker2d/assets/walker2d.xml")
+    var path = String("noeira/envs/walker2d/assets/walker2d.xml")
     var src = read_model_source(path)
     var fmd = parse_xml_full(src[0], src[1])
     var dims = dims_from_flat(fmd, max_contacts=64)

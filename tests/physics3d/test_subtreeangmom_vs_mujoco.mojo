@@ -4,7 +4,7 @@
 
 Angular momentum of a subtree about that subtree's centre of mass, in the
 world frame. Six declarations, all of them dog
-(`mojo_rl/envs/dm_control/assets/dog_{trot,run,fetch,stand_walk}.xml` and
+(`noeira/envs/dm_control/assets/dog_{trot,run,fetch,stand_walk}.xml` and
 dm_control's own `dog.xml`), and it was the last kind still ADDRESSED and
 unserved on a model this tree ships an env for.
 
@@ -48,11 +48,11 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.fields import Data, Model
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.integrator.euler import EulerIntegrator
 
 comptime DTYPE = DType.float64
 comptime NSD = 9  # three sensors x 3

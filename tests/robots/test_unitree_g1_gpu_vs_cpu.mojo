@@ -69,10 +69,10 @@ from std.sys import has_nvidia_gpu_accelerator
 from std.math import abs, sin
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.envs.robots import UnitreeG1, UnitreeG1Batched
-from mojo_rl.envs.robots.unitree_g1_xml import UnitreeG1Model
+from noeira.nn.constants import DT
+from noeira.core.cont_action import ContAction
+from noeira.envs.robots import UnitreeG1, UnitreeG1Batched
+from noeira.envs.robots.unitree_g1_xml import UnitreeG1Model
 
 
 comptime N_ENVS = 2

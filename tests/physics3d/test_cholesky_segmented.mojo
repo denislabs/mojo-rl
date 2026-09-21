@@ -31,8 +31,8 @@ Run: pixi run mojo run -I . tests/physics3d/test_cholesky_segmented.mojo
 """
 
 from std.math import sqrt, abs
-from mojo_rl.physics3d.fields.scratch import Scratch
-from mojo_rl.physics3d.solver.cholesky import (
+from noeira.physics3d.fields.scratch import Scratch
+from noeira.physics3d.solver.cholesky import (
     chol_factor_inline, chol_factor_seg,
     chol_solve_inline, chol_solve_seg,
 )

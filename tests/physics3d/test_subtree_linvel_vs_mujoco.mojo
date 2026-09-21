@@ -30,15 +30,15 @@ from std.python import Python
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.sensors.subtree import subtree_linvel
+from noeira.physics3d.sensors.subtree import subtree_linvel
 
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 
 comptime M = Walker2dModel
@@ -53,7 +53,7 @@ comptime N_STATES: Int = 6
 
 def test_subtree_linvel_matches_mujoco() raises:
     var mj = Python.import_module("mujoco")
-    var model = mj.MjModel.from_xml_path("mojo_rl/envs/walker2d/assets/walker2d.xml")
+    var model = mj.MjModel.from_xml_path("noeira/envs/walker2d/assets/walker2d.xml")
     var data = mj.MjData(model)
 
     var ctx = DeviceContext()

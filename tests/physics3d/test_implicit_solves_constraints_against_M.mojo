@@ -47,18 +47,18 @@ from std.math import abs
 from max.gpu.host import DeviceContext
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
     read_model_source,
 )
-from mojo_rl.physics3d.studio.stepping import (
+from noeira.physics3d.studio.stepping import (
     StudioImpFastEll, StudioImpFastPyr, studio_cone_of,
 )
-from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
-from mojo_rl.physics3d.types import ConeType
+from noeira.physics3d.dynamics.actuation import apply_actions_fields
+from noeira.physics3d.types import ConeType
 
 comptime DT = DType.float64
 comptime SPOT = String(

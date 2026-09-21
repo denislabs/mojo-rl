@@ -6,7 +6,7 @@ policy's `step within chunk`.
 
     # on whichever box has a store of the recording — no import needed
     mojo run -I . tools/so101/demo_step_stats.mojo \\
-        --store ~/.cache/mojo_rl/act_so101/so101-tower__cube-in-bowl_480x640.h5
+        --store ~/.cache/noeira/act_so101/so101-tower__cube-in-bowl_480x640.h5
 
     # the ACT-sized store of the SAME recording answers identically
     mojo run -I . tools/so101/demo_step_stats.mojo --store <...>_240x320.h5 \\
@@ -38,10 +38,10 @@ is the normalisation statistics — not the control loop.
 from std.math import sqrt
 from std.sys import argv
 
-from mojo_rl.deep_agents.act.config import SO101_FPS
-from mojo_rl.deep_agents.act.data import ACTDataset
-from mojo_rl.nn.constants import DT
-from mojo_rl.utils.fmt import fixed, pad_left
+from noeira.deep_agents.act.config import SO101_FPS
+from noeira.deep_agents.act.data import ACTDataset
+from noeira.nn.constants import DT
+from noeira.utils.fmt import fixed, pad_left
 
 comptime QPOS = 6
 comptime ADIM = 6

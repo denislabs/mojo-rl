@@ -16,17 +16,17 @@ Run: pixi run mojo run -I . tests/nn/test_dreamer4_train_online.mojo
 
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.core.state import State
-from mojo_rl.core.action import Action
-from mojo_rl.core.env_traits import BoxDiscreteActionEnv
-from mojo_rl.core.logger import NoOpLogger
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Xavier
+from noeira.core.state import State
+from noeira.core.action import Action
+from noeira.core.env_traits import BoxDiscreteActionEnv
+from noeira.core.logger import NoOpLogger
 
-from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
-from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
-from mojo_rl.deep_agents.dreamer4.online import run_online_dreamer4
-from mojo_rl.nn.models.cifar_feature_net import CifarBackbone
+from noeira.deep_agents.dreamer4.agent import Dreamer4Agent
+from noeira.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
+from noeira.deep_agents.dreamer4.online import run_online_dreamer4
+from noeira.nn.models.cifar_feature_net import CifarBackbone
 
 
 # ── trivial State / Action ─────────────────────────────────────────────────

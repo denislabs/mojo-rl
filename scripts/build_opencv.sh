@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the OpenCV shim that `mojo_rl/vision/opencv/` binds to.
+# Build the OpenCV shim that `noeira/vision/opencv/` binds to.
 #
 #   pixi run build-opencv           # build if stale
 #   pixi run build-opencv --force   # rebuild unconditionally
@@ -9,14 +9,14 @@
 # libopencv_{core,imgproc,calib,objdetect,videoio,imgcodecs}.dylib plus headers
 # under include/opencv5.  This script only compiles our own shim against it.
 #
-# ⚠ THE ARTIFACT IS NOT TRACKED.  Anything importing `mojo_rl.vision.opencv`
+# ⚠ THE ARTIFACT IS NOT TRACKED.  Anything importing `noeira.vision.opencv`
 # fails at RUNTIME (dlopen abort), not at compile time, if this has not been
 # run.  `opencv_shim_available()` exists so a caller can degrade with a message.
 set -euo pipefail
 
 ROOT="${PIXI_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-SRC="$ROOT/mojo_rl/vision/opencv/opencv_shim.cpp"
-OUTDIR="$ROOT/mojo_rl/vision/opencv"
+SRC="$ROOT/noeira/vision/opencv/opencv_shim.cpp"
+OUTDIR="$ROOT/noeira/vision/opencv"
 
 case "$(uname -s)" in
 Darwin) LIB="$OUTDIR/libmojo_cv.dylib" ;;

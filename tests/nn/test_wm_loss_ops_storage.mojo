@@ -1,5 +1,5 @@
 """DreamerV3 WM loss ops on the storage ABI — gates the legacy→storage port of
-`mojo_rl/deep_agents/dreamerv3/wm_loss_ops.mojo`.
+`noeira/deep_agents/dreamerv3/wm_loss_ops.mojo`.
 
 For each of SymlogMSELoss[OBS] / TwoHotLoss[BINS] / BinaryLoss:
   1. Finite-difference grad check on CPU (vjp vs central-difference of Σ out).
@@ -10,19 +10,19 @@ grad-input pairs are backed by a `TensorPack[2]` (whose subscript returns a
 shared `MutAnyOrigin` ref) — mirroring `test_two_hot_ce_storage.mojo`.
 
 Run:
-  rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . \
+  rm -f noeira.mojoc && pixi run -e apple mojo run -I . \
       tests/nn/test_wm_loss_ops_storage.mojo
 """
 
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Zero
-from mojo_rl.deep_agents.dreamerv3.wm_loss_ops import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Zero
+from noeira.deep_agents.dreamerv3.wm_loss_ops import (
     SymlogMSELoss,
     TwoHotLoss,
     BinaryLoss,

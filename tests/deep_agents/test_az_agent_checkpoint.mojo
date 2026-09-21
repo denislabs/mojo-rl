@@ -11,9 +11,9 @@ Run (Apple Metal):
 from std.testing import assert_equal, assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
-from mojo_rl.deep_agents.alphazero.agent import AlphaZeroAgent
-from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
+from noeira.deep_agents.alphazero.nets import AZMLPNet
+from noeira.deep_agents.alphazero.agent import AlphaZeroAgent
+from noeira.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
 
 
 def main() raises:

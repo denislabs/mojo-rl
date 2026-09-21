@@ -21,7 +21,7 @@ the arm articulate.
 failure, not a compile error — the shim is loaded by dlopen.
 `run_manipulation_viewer` checks for it up front and says so.
 
-THE VIEWER ITSELF LIVES IN `mojo_rl.envs.dm_control.viewer_manipulation`. This
+THE VIEWER ITSELF LIVES IN `noeira.envs.dm_control.viewer_manipulation`. This
 file is argv parsing and nothing else. Read that module's header for the build
 cost, why the reset visibly pauses, and what the tool can and cannot tell you.
 
@@ -44,12 +44,12 @@ blocks on it. CPU physics on purpose: one env at 60 Hz needs no GPU.
 from std.random import seed
 from std.sys import argv
 
-from mojo_rl.envs.dm_control.viewer_manipulation import (
+from noeira.envs.dm_control.viewer_manipulation import (
     run_manipulation_viewer,
     manipulation_task_index,
     print_manipulation_task_list,
 )
-from mojo_rl.envs.dm_control.viewer_core import parse_drive, DRIVE_ZERO
+from noeira.envs.dm_control.viewer_core import parse_drive, DRIVE_ZERO
 
 comptime SEED: Int = 0
 

@@ -21,8 +21,8 @@ from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout
 
-from mojo_rl.physics3d.fields import DynamicsScratch, Dims, DimsLike
-from mojo_rl.physics3d.dynamics.lu import (
+from noeira.physics3d.fields import DynamicsScratch, Dims, DimsLike
+from noeira.physics3d.dynamics.lu import (
     lu_factor,
     lu_solve,
     compute_m_inv_from_lu,

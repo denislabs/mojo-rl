@@ -5,7 +5,7 @@
     pixi run assets-pull robots         # just one env's packs
     pixi run assets-pull --force        # re-fetch even if present
 
-⚠⚠ NOTHING IS MIGRATED YET. This walks `mojo_rl/**/assets.kv`, of which there
+⚠⚠ NOTHING IS MIGRATED YET. This walks `noeira/**/assets.kv`, of which there
 are currently NONE — the meshes and textures are still tracked in git. That is
 deliberate (`docs/PROJECT_LAYER_PLAN.md` §9): the infrastructure exists first,
 so moving an env's assets out becomes a reversible decision made one env at a
@@ -19,17 +19,17 @@ training. Lazy fetch on first env construction is the fallback, not the plan.
 from std.sys import argv
 from std.os.path import exists
 
-from mojo_rl.assets.pack import Pack, PackFile, load_packs
-from mojo_rl.assets.resolve import (
+from noeira.assets.pack import Pack, PackFile, load_packs
+from noeira.assets.resolve import (
     archive_path,
     cache_root,
     pack_status,
     pull_pack,
     resolve_url,
 )
-from mojo_rl.io.fileio import file_size
-from mojo_rl.io.proc import quote_arg, run_capture
-from mojo_rl.utils.fmt import pad_left, pad_right
+from noeira.io.fileio import file_size
+from noeira.io.proc import quote_arg, run_capture
+from noeira.utils.fmt import pad_left, pad_right
 
 
 def _has(name: String) -> Bool:
@@ -54,7 +54,7 @@ def _positional(n: Int) -> String:
 
 
 def _find_pack_files(filter: String) raises -> List[String]:
-    """Every `assets.kv` under `mojo_rl/`, optionally narrowed by a substring.
+    """Every `assets.kv` under `noeira/`, optionally narrowed by a substring.
 
     ⚠ FOUND BY WALKING, NOT BY A LIST IN THIS FILE. An env that declares packs
     and is not listed somewhere central would silently never be fetched, and
@@ -62,7 +62,7 @@ def _find_pack_files(filter: String) raises -> List[String]:
     """
     var out = List[String]()
     var txt = run_capture(
-        "find mojo_rl -name assets.kv -type f 2>/dev/null | sort", 1 << 20
+        "find noeira -name assets.kv -type f 2>/dev/null | sort", 1 << 20
     )
     for line in txt.split("\n"):
         var s = String(line.strip())
@@ -81,7 +81,7 @@ def _mb(n: Int) -> String:
 def cmd_status() raises:
     var files = _find_pack_files(_positional(1))
     if len(files) == 0:
-        print("no assets.kv anywhere under mojo_rl/")
+        print("no assets.kv anywhere under noeira/")
         print(
             "  Nothing has been migrated yet — env assets are still tracked in"
             " git. See docs/PROJECT_LAYER_PLAN.md §9."
@@ -129,7 +129,7 @@ def cmd_pull() raises:
     var files = _find_pack_files(_positional(1))
     var force = _has("--force")
     if len(files) == 0:
-        print("no assets.kv anywhere under mojo_rl/ — nothing to pull")
+        print("no assets.kv anywhere under noeira/ — nothing to pull")
         return
     var pulled = 0
     var already = 0

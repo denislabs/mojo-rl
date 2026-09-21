@@ -25,9 +25,9 @@ from std.memory import alloc
 from std.math import abs
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.zero.nstep_targets import compute_nstep_value_targets
-from mojo_rl.deep_agents.zero.twohot_targets import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.zero.nstep_targets import compute_nstep_value_targets
+from noeira.deep_agents.zero.twohot_targets import (
     mz_two_hot_target_one, mz_scalar_transform, mz_inverse_scalar_transform,
 )
 

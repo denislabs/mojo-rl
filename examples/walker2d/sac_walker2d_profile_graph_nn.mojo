@@ -32,17 +32,17 @@ from std.random import seed
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
-from mojo_rl.core.fmt import fit
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.sac import SACAgent
+from noeira.deep_agents.training.blocks import UniformSampleGpuStep
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.walker2d.walker2d_config import Walker2dConfig
+from noeira.core.fmt import fit
 
 
 # ─── Profiling knobs ──────────────────────────────────────────────────────

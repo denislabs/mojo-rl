@@ -13,7 +13,7 @@ Run:
 """
 
 from max.gpu.host import DeviceContext
-from mojo_rl.envs.craftax_classic import (
+from noeira.envs.craftax_classic import (
     CraftaxClassicEnv,
     CraftaxClassicPixelEnv,
     PIXEL_OBS_DIM,
@@ -22,10 +22,10 @@ from mojo_rl.envs.craftax_classic import (
     OBS_CHANNELS,
     BLOCK_PIXEL_SIZE,
 )
-from mojo_rl.envs.craftax_classic.state import STATE_SIZE
-from mojo_rl.envs.craftax_classic.constants import ACTION_NOOP, ACTION_RIGHT
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.nn.core.ptr import mptr
+from noeira.envs.craftax_classic.state import STATE_SIZE
+from noeira.envs.craftax_classic.constants import ACTION_NOOP, ACTION_RIGHT
+from noeira.nn.constants import DT as dtype
+from noeira.nn.core.ptr import mptr
 
 
 @always_inline

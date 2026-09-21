@@ -28,10 +28,10 @@ Run:
 
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import SqMat
-from mojo_rl.experimental.swm.place_graph import PlaceGraph, Edge
-from mojo_rl.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
-from mojo_rl.experimental.swm.envs.klein_grid import (
+from noeira.experimental.swm.so_d import SqMat
+from noeira.experimental.swm.place_graph import PlaceGraph, Edge
+from noeira.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
+from noeira.experimental.swm.envs.klein_grid import (
     KleinWorld,
     KleinWorldConfig,
     ACT_X,

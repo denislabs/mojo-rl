@@ -72,7 +72,7 @@ in the gates is what stands in for it. Do not "fix" it by lowering the
 fraction bound to 0 — that is where this started.
 """
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
 
 comptime PARITY_ATOL: Float64 = 1e-5

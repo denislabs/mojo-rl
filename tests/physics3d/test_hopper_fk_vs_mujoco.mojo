@@ -6,7 +6,7 @@ model at multiple qpos configurations. Uses Python interop to call MuJoCo.
 Hopper uses ELLIPTIC cone (default), providing coverage for non-pyramidal cone.
 
 Run with:
-    cd mojo-rl && pixi run mojo run physics3d/tests/test_hopper_fk_vs_mujoco.mojo
+    cd noeira && pixi run mojo run physics3d/tests/test_hopper_fk_vs_mujoco.mojo
 """
 
 from std.testing import assert_true, TestSuite
@@ -15,12 +15,12 @@ from std.math import abs
 from std.collections import Array
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
-from mojo_rl.envs.hopper.hopper_xml import HopperModel
-from mojo_rl.envs.hopper.hopper_config import HopperConfig
+from noeira.envs.hopper.hopper_xml import HopperModel
+from noeira.envs.hopper.hopper_config import HopperConfig
 
 
 # =============================================================================

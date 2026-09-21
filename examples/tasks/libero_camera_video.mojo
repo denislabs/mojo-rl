@@ -60,22 +60,22 @@ from std.math import log10
 from std.memory.alloc import unsafe_alloc
 from std.os.path import exists
 
-from mojo_rl.math3d import Vec3
-from mojo_rl.io.hdf5.reader import H5File
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.math3d import Vec3
+from noeira.io.hdf5.reader import H5File
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.raytrace.visual import build_visual_model
-from mojo_rl.physics3d.raytrace.host_render import render_lane_cpu
-from mojo_rl.render.video_recorder import VideoRecorder
-from mojo_rl.tasks.spec import load_family
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.libero_state_remap import load_state_remap
-from mojo_rl.tasks.libero_visual import libero_site_conditions
-from mojo_rl.tasks.libero_fixtures import patch_fixtures, fixtures_dump_path
-from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.raytrace.visual import build_visual_model
+from noeira.physics3d.raytrace.host_render import render_lane_cpu
+from noeira.render.video_recorder import VideoRecorder
+from noeira.tasks.spec import load_family
+from noeira.tasks.family import scene_path
+from noeira.tasks.libero_state_remap import load_state_remap
+from noeira.tasks.libero_visual import libero_site_conditions
+from noeira.tasks.libero_fixtures import patch_fixtures, fixtures_dump_path
+from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
 comptime DT = DType.float64
@@ -230,7 +230,7 @@ def main() raises:
         d_im.read_all[DType.uint8](rec)
 
     # ── the scene and the camera ──────────────────────────────────────────
-    var fam = load_family("mojo_rl/tasks/families/" + suite + ".family")
+    var fam = load_family("noeira/tasks/families/" + suite + ".family")
     var fmd = parse_model_runtime(scene_path(fam))
     var verts = 32768
     var dims = dims_from_flat(

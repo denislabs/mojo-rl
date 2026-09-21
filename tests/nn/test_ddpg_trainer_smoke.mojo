@@ -4,13 +4,13 @@ from std.math import isfinite
 from std.random import random_float64, seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.ddpg.trainer import DDPGTrainer
-from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.primitives.activations import Tanh
+from noeira.nn.constants import DT
+from noeira.deep_agents.ddpg.trainer import DDPGTrainer
+from noeira.deep_agents.training.blocks import UniformSampleCpuStep
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.nn.primitives.activations import Tanh
 
 
 def test_ddpg_trainer_smoke() raises:

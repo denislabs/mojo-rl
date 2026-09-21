@@ -13,17 +13,17 @@ Run (no GPU):
     # metrics land in /tmp/ezv2_cartpole_metrics.csv
 """
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.core.logger import CsvLogger
-from mojo_rl.deep_agents.efficient_zero_v2.nets import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.optimizer.adam import Adam
+from noeira.core.logger import CsvLogger
+from noeira.deep_agents.efficient_zero_v2.nets import (
     MZRepNet, MZDynNet, MZPredNet, EZProjectorNet, EZPredictorNet,
 )
-from mojo_rl.deep_agents.efficient_zero_v2.selfplay_cpu import (
+from noeira.deep_agents.efficient_zero_v2.selfplay_cpu import (
     run_ezv2_selfplay_cpu,
 )
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.envs.cartpole import CartPoleEnv
 
 
 def main() raises:

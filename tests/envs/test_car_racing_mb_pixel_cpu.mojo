@@ -6,7 +6,7 @@ contains the car sprite (center), road, and grass — the same kind of image the
 GPU env renders, so a pixel-trained CNN sees in-distribution input.
 """
 
-from mojo_rl.envs.car_racing import CarRacingMB, CarRacingPixel
+from noeira.envs.car_racing import CarRacingMB, CarRacingPixel
 
 
 def main() raises:

@@ -6,7 +6,7 @@
 Input is `tools/g1/lafan_reference_dump.py`'s output — the reference's OWN
 loader and observation builder run on every clip — so this file adds no
 arithmetic: it lays the columns out in `TrajectoryStoreWriter`'s format
-(`mojo_rl/data/store.mojo`), one episode per clip, and writes the manifest
+(`noeira/data/store.mojo`), one episode per clip, and writes the manifest
 byte-for-byte the way `tools/act/lerobot_v3_to_store.py::encode_manifest`
 does (imported, not copied).
 

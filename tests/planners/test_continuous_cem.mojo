@@ -11,13 +11,13 @@ Run:  pixi run mojo run -I . tests/planners/test_continuous_cem.mojo
 from layout import TileTensor, TensorLayout, Idx, row_major
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.planners.trajectory.score_callback import ScorePlanCallback
-from mojo_rl.planners.trajectory import (
+from noeira.nn.constants import DT as dtype
+from noeira.planners.trajectory.score_callback import ScorePlanCallback
+from noeira.planners.trajectory import (
     ContinuousCEMOptimizer,
     ContinuousRandomShooter,
 )
-from mojo_rl.nn.core.ptr import mptr
+from noeira.nn.core.ptr import mptr
 
 
 comptime BATCH = 2

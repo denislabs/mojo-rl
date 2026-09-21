@@ -20,7 +20,7 @@ Attempt C: same-type variadic (`*inputs: TileTensor[DT, L, O]`) — the
 
 from layout import TileTensor, TensorLayout, row_major
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
 
 # ──────────────────────────────────────────────────────────────────────

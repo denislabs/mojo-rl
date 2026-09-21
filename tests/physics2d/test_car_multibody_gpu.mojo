@@ -11,14 +11,14 @@ Run: pixi run -e apple mojo run -I . tests/physics2d/test_car_multibody_gpu.mojo
 from std.math import sqrt
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext
-from mojo_rl.physics2d import dtype
-from mojo_rl.physics2d.constants import IDX_X, IDX_Y, IDX_ANGLE, IDX_VX, IDX_VY, IDX_OMEGA
-from mojo_rl.physics2d.car import CarDynamicsMB, CarMBPhysicsKernel
-from mojo_rl.physics2d.car.constants import (
+from noeira.physics2d import dtype
+from noeira.physics2d.constants import IDX_X, IDX_Y, IDX_ANGLE, IDX_VX, IDX_VY, IDX_OMEGA
+from noeira.physics2d.car import CarDynamicsMB, CarMBPhysicsKernel
+from noeira.physics2d.car.constants import (
     FRICTION_LIMIT, GRASS_FRICTION, ROAD_FRICTION,
     CTRL_STEERING, CTRL_GAS, CTRL_BRAKE,
 )
-from mojo_rl.nn.core.ptr import mptr
+from noeira.nn.core.ptr import mptr
 
 comptime BATCH = 8
 comptime BOFF = 0

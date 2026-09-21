@@ -15,7 +15,7 @@ fixes to its overestimation problem. The result is stable, strong, and
 deterministic.
 
 ```mojo
-from mojo_rl.deep_agents.td3 import TD3Agent
+from noeira.deep_agents.td3 import TD3Agent
 ```
 
 
@@ -91,8 +91,8 @@ noise rather than smoothing. `c = 0.5` with `σ = 0.2` bounds it at 2.5σ.
 ## Building it
 
 ```mojo
-from mojo_rl.deep_agents.td3 import TD3Agent
-from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
+from noeira.deep_agents.td3 import TD3Agent
+from noeira.deep_agents.training.blocks import UniformSampleGpuStep
 
 var agent = TD3Agent[
     "gpu",

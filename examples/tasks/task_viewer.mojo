@@ -7,7 +7,7 @@
 
 argv only picks which task opens FIRST; **every task is in the sidebar** and
 switching is instant. Both argv arguments pick DATA, not code: the same binary
-runs every task in `mojo_rl/tasks/tasks/`, which is the claim the whole layer
+runs every task in `noeira/tasks/tasks/`, which is the claim the whole layer
 exists to make.
 
 ⚠⚠ A TASK SWITCH DOES NOT REBUILD THE MODEL, and that is the fixed scene
@@ -57,34 +57,34 @@ rests on).
 from std.random import seed as seed_rng
 from std.sys import argv
 
-from mojo_rl.math3d import Vec3 as Vec3G, Quat as QuatG
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.math3d import Vec3 as Vec3G, Quat as QuatG
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
     spec_fields_runtime, read_model_source,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.render_fields import build_render_fields
-from mojo_rl.physics3d.parser.model_def_from_xml import RfOnlyModelDef
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.model.model_renderer import ModelRenderer
-from mojo_rl.render.imgui import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.render_fields import build_render_fields
+from noeira.physics3d.parser.model_def_from_xml import RfOnlyModelDef
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.model.model_renderer import ModelRenderer
+from noeira.render.imgui import (
     imgui_shim_available, ig_begin_panel, ig_end, ig_text, ig_text_colored,
     ig_separator_text, ig_selectable, ig_button, ig_spacing,
 )
-from mojo_rl.physics3d.studio.stepping import StudioRk4Pyr
+from noeira.physics3d.studio.stepping import StudioRk4Pyr
 
-from mojo_rl.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
-from mojo_rl.tasks.spec import (
+from noeira.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.predicates import parse_goal, bind_goal, require_tier_a
-from mojo_rl.tasks.eval import eval_goal, region_sites
-from mojo_rl.tasks.sampler import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.predicates import parse_goal, bind_goal, require_tier_a
+from noeira.tasks.eval import eval_goal, region_sites
+from noeira.tasks.sampler import (
     sample_placements, RegionFrame, SampleReport,
 )
-from mojo_rl.tasks.reset import free_slot_addresses, reset_slots
+from noeira.tasks.reset import free_slot_addresses, reset_slots
 
 
 comptime DT = DType.float64
@@ -95,8 +95,8 @@ comptime DT = DType.float64
 # names the list rather than the import.
 comptime Vec3 = Vec3G[DT]
 comptime Quat = QuatG[DT]
-comptime FAMILY = "mojo_rl/tasks/families/so101_tabletop.family"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
+comptime FAMILY = "noeira/tasks/families/so101_tabletop.family"
+comptime TASK_DIR = "noeira/tasks/tasks/"
 
 # ⚠ THE ARM'S OWN COLLISION HULLS, FROM THE ARM'S OWN CONSTANT. 0 means
 # "mesh geoms do not collide" and `fields_build` RAISES rather than letting the

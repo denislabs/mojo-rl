@@ -12,11 +12,11 @@ Run (Apple Metal):
 from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
-from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
-from mojo_rl.deep_agents.alphazero.agent import AlphaZeroAgent
-from mojo_rl.deep_agents.zero.symmetries import D4SquareAugmenter
-from mojo_rl.deep_agents.alphazero.eval import eval_policy_vs_random
-from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
+from noeira.deep_agents.alphazero.nets import AZMLPNet
+from noeira.deep_agents.alphazero.agent import AlphaZeroAgent
+from noeira.deep_agents.zero.symmetries import D4SquareAugmenter
+from noeira.deep_agents.alphazero.eval import eval_policy_vs_random
+from noeira.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
 
 
 def main() raises:

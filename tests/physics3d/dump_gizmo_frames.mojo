@@ -19,20 +19,20 @@ picked something degenerate is visible rather than being averaged away.
 
 from std.sys import argv
 
-from mojo_rl.math3d import Vec3 as Vec3G, Quat as QuatG
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.flat_model import FlatModelDef
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.math3d import Vec3 as Vec3G, Quat as QuatG
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.flat_model import FlatModelDef
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.kinematics.mocap import reset_mocap_from_model
-from mojo_rl.physics3d.studio.gizmo import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.kinematics.mocap import reset_mocap_from_model
+from noeira.physics3d.studio.gizmo import (
     Frame, frame_to_cm, edit_frame, gizmo_edits, GIZMO_MOVE, GIZMO_TURN,
 )
-from mojo_rl.physics3d.studio.edit import (
+from noeira.physics3d.studio.edit import (
     Edit, apply_edit, apply_edit_to_document, TARGET_GEOM, TARGET_BODY,
 )
 

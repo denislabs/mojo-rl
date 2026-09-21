@@ -9,16 +9,16 @@ humanoid and ant; Euler (the default) for half_cheetah.
 
 from std.sys import argv
 
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
-from mojo_rl.envs.hopper.hopper_xml import HopperModel
-from mojo_rl.envs.hopper.hopper_config import HopperConfig
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
-from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
-from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
-from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
-from mojo_rl.envs.ant.ant_xml import AntModel
-from mojo_rl.envs.ant.ant_config import AntConfig
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.walker2d.walker2d_config import Walker2dConfig
+from noeira.envs.hopper.hopper_xml import HopperModel
+from noeira.envs.hopper.hopper_config import HopperConfig
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.envs.humanoid.humanoid_config import HumanoidConfig
+from noeira.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
+from noeira.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from noeira.envs.ant.ant_xml import AntModel
+from noeira.envs.ant.ant_config import AntConfig
 
 from physics3d_cpu.harness import bench
 

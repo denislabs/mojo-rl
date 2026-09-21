@@ -97,13 +97,13 @@ from std.random import seed
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.tdmpc2.config import TDMPC2
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.dm_control.walker.walker_xml import DMWalkerModel
-from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
+from noeira.nn.constants import DT
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.deep_agents.tdmpc2.config import TDMPC2
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.dm_control.walker.walker_xml import DMWalkerModel
+from noeira.envs.dm_control.walker.walker_config import DMWalkerConfig
 
 
 # ── pick ONE ─────────────────────────────────────────────────────────────
@@ -219,10 +219,10 @@ def main() raises:
     # RemoteLogger (dashboard) — URL/key from .env; no-ops if unset.
     var env_vars = load_dotenv()
     var logger = RemoteLogger(
-        server_url=env_vars.get("RL_MONITOR_URL", ""),
+        server_url=env_vars.get("NOEIRA_CLOUD_URL", ""),
         run_name=String("TD-MPC2 dm_control walker ") + String(TASK),
         buffer_size=64,
-        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+        api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
     )
     logger.set_config("algorithm", "TD-MPC2")
     logger.set_config("env", String("dm_control/walker-") + String(TASK))
@@ -232,10 +232,10 @@ def main() raises:
     logger.set_config("batch", String(B))
     logger.set_config("horizon", String(H))
     var logger_ptr = Pointer(to=logger).as_unsafe_any_origin()
-    if env_vars.get("RL_MONITOR_URL", "").byte_length() > 0:
+    if env_vars.get("NOEIRA_CLOUD_URL", "").byte_length() > 0:
         print("  logger: ENABLED → streaming every", DIAG_EVERY, "steps")
     else:
-        print("  logger: DISABLED — RL_MONITOR_URL not in .env")
+        print("  logger: DISABLED — NOEIRA_CLOUD_URL not in .env")
 
     # ─── Single train() call — single-env TD-MPC2 driver ─────────────────
     print("Starting training...")

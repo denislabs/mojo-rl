@@ -12,7 +12,7 @@ Our elliptic solver carried exactly two of them until 2026-08-13 — `Jt1_c` and
 `condim="6"` geom under `cone="elliptic"` silently lost its torsional and
 rolling rows. `MAX_CONDIM` was already threaded all the way to the friction
 builder and consumed only by the PYRAMIDAL branch. See
-`mojo_rl/physics3d/solver/elliptic_cone.mojo`.
+`noeira/physics3d/solver/elliptic_cone.mojo`.
 
 WHY THIS MATTERS RATHER THAN BEING A COMPLETENESS ITEM. Every dm_control
 manipulation model declares `cone="elliptic"`, and Jaco's hand pads are
@@ -92,15 +92,15 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Model, Data, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.fields import Model, Data, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.integrator.euler import EulerIntegrator
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields.spec_fields import SpecFields
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.fields.spec_fields import SpecFields
+from noeira.physics3d.model.model_dims import ModelDims
 
 
 comptime DTYPE = DType.float64

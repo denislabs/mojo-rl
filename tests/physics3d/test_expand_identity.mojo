@@ -29,7 +29,7 @@ turns that into a failure, and the count is printed beside the mismatch count
 because "rows compared" is the number that makes "rows differing" mean
 anything.
 
-⚠ WHY `mojo_rl/` AND NOT A HAND-WRITTEN LIST. A list goes stale the first time
+⚠ WHY `noeira/` AND NOT A HAND-WRITTEN LIST. A list goes stale the first time
 someone adds a model, and it goes stale SILENTLY — the new model is simply not
 covered. The walk cannot.
 
@@ -39,16 +39,16 @@ Run: pixi run mojo run -I . tests/physics3d/test_expand_identity.mojo
 from std.os import listdir
 from std.os.path import isdir
 
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.model_def_from_xml import ModelDefFromXML
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.model_def_from_xml import ModelDefFromXML
 
 
 # The shipped asset tree. Every `.xml` under here is a model this repository
 # builds, and every one of them must be unchanged by expansion today.
-comptime ASSET_ROOT = String("mojo_rl")
+comptime ASSET_ROOT = String("noeira")
 
-# ⚠ A FLOOR, NOT A COUNT. 58 `.xml` files were under `mojo_rl/` on 2026-09-02;
+# ⚠ A FLOOR, NOT A COUNT. 58 `.xml` files were under `noeira/` on 2026-09-02;
 # this is deliberately slack so that adding a model does not fail the gate,
 # while a walk that collapses to nothing still does. Do not "fix" a failure
 # here by lowering it — a drop means the walk broke or assets moved.
@@ -149,7 +149,7 @@ def main() raises:
     _walk(ASSET_ROOT, models)
 
     # ⚠⚠ TWO CLASSES, AND THE SPLIT IS THE POINT SINCE THE TASK LAYER LANDED.
-    # `mojo_rl/tasks/scenes/*.xml` are COMPOSED family scenes — they are full
+    # `noeira/tasks/scenes/*.xml` are COMPOSED family scenes — they are full
     # of `<attach>` by construction, and expansion MUST change them. Asserting
     # blanket identity would have made adding the first family a red gate, and
     # the tempting "fix" is to exclude the directory, which would stop testing

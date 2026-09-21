@@ -60,17 +60,17 @@ from max.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.sac import SACAgent
+from noeira.deep_agents.training.blocks import UniformSampleGpuStep
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
 
 
 # ── pick ONE ─────────────────────────────────────────────────────────────
@@ -177,8 +177,8 @@ def main() raises:
     with DeviceContext() as ctx:
         # ─── Logger ──────────────────────────────────────────────────────
         var env_vars = load_dotenv()
-        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-        var url = env_vars.get("RL_MONITOR_URL", "")
+        var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+        var url = env_vars.get("NOEIRA_CLOUD_URL", "")
 
         var logger = RemoteLogger(
             server_url=url,

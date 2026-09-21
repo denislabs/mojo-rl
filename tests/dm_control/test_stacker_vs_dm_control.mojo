@@ -44,7 +44,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.stacker import (
+from noeira.envs.dm_control.stacker import (
     DMStacker2Model as M2,
     DMStacker4Model as M4,
     DMStacker2Config as CFG2,
@@ -58,11 +58,11 @@ from mojo_rl.envs.dm_control.stacker import (
     BOX_QADR_0,
     BOX_SIZE,
 )
-from mojo_rl.envs.dm_control.planar_arm import arm_joint_obs_order
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.envs.dm_control.planar_arm import arm_joint_obs_order
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
@@ -87,7 +87,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
     TENDON_IDX_INVWEIGHT0,
 )
-from mojo_rl.physics3d.constants import (
+from noeira.physics3d.constants import (
     GEOM_PLANE,
     GEOM_SPHERE,
     GEOM_CAPSULE,
@@ -751,7 +751,7 @@ def _mj_at2(
     MOCAP id, not body id — hence `body_mocapid`.
     """
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/stacker_2.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/stacker_2.xml")
     var dat = mujoco.MjData(m)
     for i in range(NQ2):
         dat.qpos[i] = state[i]
@@ -772,7 +772,7 @@ def _mj_at4(
     tx: Float64, tz: Float64,
 ) raises -> Tuple[PythonObject, PythonObject, PythonObject]:
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/stacker_4.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/stacker_4.xml")
     var dat = mujoco.MjData(m)
     for i in range(NQ4):
         dat.qpos[i] = state[i]

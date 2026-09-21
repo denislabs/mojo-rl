@@ -14,13 +14,13 @@ Run:
   pixi run mojo run -I . tests/envs/craftax_full/test_step.mojo
 """
 
-from mojo_rl.envs.craftax_full import (
+from noeira.envs.craftax_full import (
     CraftaxFullEnv,
     CraftaxFullAction,
     NUM_ACTIONS,
     STATE_SIZE,
 )
-from mojo_rl.envs.craftax_full.constants import (
+from noeira.envs.craftax_full.constants import (
     INTRINSIC_HEALTH,
     INTRINSIC_FOOD,
     INTRINSIC_DRINK,
@@ -69,7 +69,7 @@ from mojo_rl.envs.craftax_full.constants import (
     ACTION_LEVEL_UP_STRENGTH,
     ACTION_LEVEL_UP_INTELLIGENCE,
 )
-from mojo_rl.envs.craftax_full.state import (
+from noeira.envs.craftax_full.state import (
     S_PLAYER_LEVEL,
     S_PLAYER_POS,
     S_TIMESTEP,

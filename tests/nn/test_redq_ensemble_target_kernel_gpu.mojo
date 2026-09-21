@@ -15,9 +15,9 @@ from std.testing import assert_true
 
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.redq.kernels import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.redq.kernels import (
     redq_ensemble_target_cpu,
     redq_ensemble_target_gpu,
     REDQ_TARGET_MIN,

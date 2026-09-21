@@ -97,24 +97,24 @@ from std.memory.alloc import unsafe_alloc
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.io.hdf5.reader import H5File, H5Dataset
-from mojo_rl.physics3d.fields import Data, Model, DynDims, DynamicsScratch
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.nn.constants import DT
+from noeira.io.hdf5.reader import H5File, H5Dataset
+from noeira.physics3d.fields import Data, Model, DynDims, DynamicsScratch
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
     spec_fields_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.studio.stepping import StudioIntegEll
-from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
-from mojo_rl.physics3d.dynamics.osc_pose import (
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.studio.stepping import StudioIntegEll
+from noeira.physics3d.dynamics.actuation import apply_actions_fields
+from noeira.physics3d.dynamics.osc_pose import (
     OscPose, OscPoseConfig, ARM_DOF,
 )
-from mojo_rl.physics3d.dynamics.osc_pose_gpu import (
+from noeira.physics3d.dynamics.osc_pose_gpu import (
     OSC_ACTION_DIM, build_osc_refs,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
     META_IDX_GOAL_HELD, META_IDX_NUM_CONTACTS, META_IDX_INIT_REGION_0,
     META_IDX_LS_EVAL, META_IDX_NEWTON_ITER, META_IDX_SOLVER_ACC_ITER,
@@ -124,31 +124,31 @@ from mojo_rl.physics3d.gpu.constants import (
     META_IDX_SHAPE_W_GOAL, META_IDX_SHAPE_W_REACH, MODEL_CURRICULUM_SIZE,
     CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
 )
-from mojo_rl.tasks.spec import (
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family, FamilySpec,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.predicates import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.predicates import (
     parse_goal, bind_goal, require_tier_a, joint_qpos_addresses, BoundGoal,
 )
-from mojo_rl.tasks.eval import (
+from noeira.tasks.eval import (
     eval_goal, HostState, region_sites, region_contact_bodies,
 )
-from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
-from mojo_rl.tasks.active import active_mask
-from mojo_rl.tasks.libero_state_remap import load_state_remap
-from mojo_rl.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
-from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
-from mojo_rl.tasks.libero_goal_config import (
+from noeira.tasks.tape import encode_goal, TAPE_WORDS
+from noeira.tasks.gpu_eval import region_table_words, require_gpu_regions
+from noeira.tasks.active import active_mask
+from noeira.tasks.libero_state_remap import load_state_remap
+from noeira.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
+from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.tasks.libero_goal_config import (
     LiberoGoalOscEnv, LIBERO_GOAL_FRAME_SKIP,
 )
 
 
 comptime H = DType.float64
 comptime FAMILY = "libero_goal"
-comptime FAMILY_DIR = "mojo_rl/tasks/families/"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
+comptime FAMILY_DIR = "noeira/tasks/families/"
+comptime TASK_DIR = "noeira/tasks/tasks/"
 comptime DEMO_DIR = "references/libero_demos/libero_goal"
 comptime N_TASKS = 10
 comptime LANES = 20

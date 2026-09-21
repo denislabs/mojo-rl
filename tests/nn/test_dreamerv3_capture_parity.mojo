@@ -27,9 +27,9 @@ from std.random import seed
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
-from mojo_rl.deep_agents.dreamerv3.trainer import DreamerV3Trainer
+from noeira.nn.constants import DT
+from noeira.cuda import CUDAGraph, maybe_capture_replay
+from noeira.deep_agents.dreamerv3.trainer import DreamerV3Trainer
 
 comptime OBS = 3
 comptime ACT = 2          # discrete categorical actions

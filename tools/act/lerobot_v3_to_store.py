@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # +--------------------------------------------------------------------------+ #
-# | LeRobot v3.0 dataset  ->  mojo_rl TrajectoryStore (.h5)
+# | LeRobot v3.0 dataset  ->  noeira TrajectoryStore (.h5)
 # +--------------------------------------------------------------------------+ #
 """Convert a LeRobot v3.0 HuggingFace dataset into one `TrajectoryStore` file.
 
 Run ONCE per (repo, resolution); everything after that is pure Mojo through
-`mojo_rl/io/hdf5` + `mojo_rl.data.TrajectoryStore`.
+`noeira/io/hdf5` + `noeira.data.TrajectoryStore`.
 
     pixi run python tools/act/lerobot_v3_to_store.py \
         --repo DenisLabs/record-test_20260825_094319 --height 240 --width 320
@@ -439,7 +439,7 @@ def main():
         out = Path(args.out)
     elif args.repo:
         slug = args.repo.replace("/", "__")
-        out = Path.home() / ".cache/mojo_rl/act_so101" / f"{slug}_{h}x{w}.h5"
+        out = Path.home() / ".cache/noeira/act_so101" / f"{slug}_{h}x{w}.h5"
     else:
         raise SystemExit("need --repo (or --out with --refresh-stats)")
     if args.refresh_stats:

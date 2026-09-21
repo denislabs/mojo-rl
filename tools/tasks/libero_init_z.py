@@ -5,7 +5,7 @@
     pixi run libero-init-z libero_10 libero_90 --by-scene
     pixi run libero-init-z libero_object --check
 
-Writes `mojo_rl/tasks/libero/init_z_<family>.kv`: one line per prop, the z its
+Writes `noeira/tasks/libero/init_z_<family>.kv`: one line per prop, the z its
 free joint holds in `libero/libero/init_files/<suite>/*.pruned_init`. The
 grouping mirrors `tools/tasks/gen_libero_family.mojo` — one file per FAMILY,
 which is the suite for the first three and the SCENE for LIBERO-10/90.
@@ -79,7 +79,7 @@ import zipfile
 
 BDDL_ROOT = "references/LIBERO-master/libero/libero/bddl_files"
 INIT_ROOT = "references/LIBERO-master/libero/libero/init_files"
-OUT_DIR = "mojo_rl/tasks/libero"
+OUT_DIR = "noeira/tasks/libero"
 N_ROBOT_QPOS = 9
 """Panda's seven arm joints plus the gripper's two."""
 FREE_QPOS = 7

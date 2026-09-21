@@ -5,7 +5,7 @@
 
 WHAT IT EMITS, and from where:
 
-    mojo_rl/envs/robots/assets/unitree_g1.xml
+    noeira/envs/robots/assets/unitree_g1.xml
         The reference's sim-to-sim MuJoCo model — the file BFM-Zero's own
         `--simulator mujoco` path loads and the one its "MuJoCo (DR)" table
         row was produced with —
@@ -15,9 +15,9 @@ WHAT IT EMITS, and from where:
         with the `<include>` inlined, the two `<sensor>` blocks dropped, the
         `<compiler meshdir>` pointed at our copy of the meshes, and ONE
         deviation stated below.
-    mojo_rl/envs/robots/assets/unitree_g1/*.STL
+    noeira/envs/robots/assets/unitree_g1/*.STL
         The 36 meshes the model names (18 MB), copied verbatim.
-    mojo_rl/envs/robots/unitree_g1_pd.mojo
+    noeira/envs/robots/unitree_g1_pd.mojo
         The PD controller tables the reference computes torques with, read
         out of `config/robot/g1/g1_29dof_hard_waist.yaml` by the reference's
         own substring rule and emitted per DoF in the model's joint order:
@@ -60,10 +60,10 @@ REF_YAML = os.path.join(REF, "config", "robot", "g1", "g1_29dof_hard_waist.yaml"
 SCENE = "scene_29dof_freebase_noadditional_actuators.xml"
 ROBOT = "g1_29dof_old_freebase_noadditional_actuators.xml"
 
-ASSET_DIR = os.path.join(REPO, "mojo_rl", "envs", "robots", "assets")
+ASSET_DIR = os.path.join(REPO, "noeira", "envs", "robots", "assets")
 ASSET_XML = os.path.join(ASSET_DIR, "unitree_g1.xml")
 MESH_DIR = os.path.join(ASSET_DIR, "unitree_g1")
-PD_MOJO = os.path.join(REPO, "mojo_rl", "envs", "robots", "unitree_g1_pd.mojo")
+PD_MOJO = os.path.join(REPO, "noeira", "envs", "robots", "unitree_g1_pd.mojo")
 
 # `simulator/mujoco/mujoco.py:47` — `opt.timestep = 1 / sim.fps`, fps 200.
 SIM_TIMESTEP = 1.0 / 200.0

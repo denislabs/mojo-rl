@@ -1,4 +1,4 @@
-"""A recording stand-in for the rl-monitor Worker, for the sink gates.
+"""A recording stand-in for the noeira-cloud Worker, for the sink gates.
 
     python3 tools/io/mock_monitor_server.py <port-file> <log-file> [<seconds>]
 
@@ -44,7 +44,7 @@ thing a real server will not do reliably.
 
 ⚠⚠ THIS MIRRORS THE WORKER'S RULES AND IS NOT THEIR GATE. The swap and the
 path rules are gated on the Worker itself (`worker/test/project_files.test.ts`
-in rl-monitor); this copy exists so the Mojo client's behaviour under those
+in noeira-cloud); this copy exists so the Mojo client's behaviour under those
 rules can be driven without a network. The cap is deliberately TINY
 (`PROJECT_FILE_MAX`) so a gate can exceed it with a 5 KB file.
 

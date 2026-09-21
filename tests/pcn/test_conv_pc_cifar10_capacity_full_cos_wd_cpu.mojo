@@ -32,22 +32,22 @@ from std.time import perf_counter_ns
 from std.math import sqrt
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.experimental.pcn.pc_initializer import PCXavier
-from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
-from mojo_rl.experimental.pcn.pc_scheduler import CosineWarmupSchedule
-from mojo_rl.nn.datasets.cifar10 import CIFAR10
-from mojo_rl.experimental.pcn import (
+from noeira.nn.constants import DT as dtype
+from noeira.nn.core.ptr import mptr
+from noeira.experimental.pcn.pc_initializer import PCXavier
+from noeira.experimental.pcn.pc_optimizer import PCAdam
+from noeira.experimental.pcn.pc_scheduler import CosineWarmupSchedule
+from noeira.nn.datasets.cifar10 import CIFAR10
+from noeira.experimental.pcn import (
     PCBlock,
     PCSequential,
     PCIdentity,
     PCReLU,
     PCTrainer,
 )
-from mojo_rl.experimental.pcn.pc_trainer import PCTrainResult
-from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
-from mojo_rl.core.fmt import fit
+from noeira.experimental.pcn.pc_trainer import PCTrainResult
+from noeira.experimental.pcn.pc_conv_block import ConvPCBlock
+from noeira.core.fmt import fit
 
 comptime BATCH = 125
 comptime EPOCHS = 15                   # full budget

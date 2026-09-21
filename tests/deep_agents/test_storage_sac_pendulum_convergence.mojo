@@ -17,28 +17,28 @@ from std.math import exp as fexp, log as flog, tanh as ftanh
 from std.random import random_float64, seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.primitives.rsample import RSample
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.core.initializer import Xavier, Zero
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.optimizer.scalar_adam import ScalarAdam
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.nn.primitives.rsample import RSample
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.core.initializer import Xavier, Zero
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.optimizer.scalar_adam import ScalarAdam
 
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.core.online_target_pair import OnlineTargetPair
-from mojo_rl.deep_agents.training.trainer_block import TrainerState
-from mojo_rl.deep_agents.training.blocks.twin_critic_step import TwinCriticStep
-from mojo_rl.deep_agents.training.blocks.polyak_step import PolyakStep
-from mojo_rl.deep_agents.sac.target_y_block import TargetYBlock
-from mojo_rl.deep_agents.sac.actor_loss import SACActorLoss
-from mojo_rl.deep_agents.sac.blocks.alpha_update_step import AlphaUpdateStep
-from mojo_rl.data.replay import StoreReplay
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.core.online_target_pair import OnlineTargetPair
+from noeira.deep_agents.training.trainer_block import TrainerState
+from noeira.deep_agents.training.blocks.twin_critic_step import TwinCriticStep
+from noeira.deep_agents.training.blocks.polyak_step import PolyakStep
+from noeira.deep_agents.sac.target_y_block import TargetYBlock
+from noeira.deep_agents.sac.actor_loss import SACActorLoss
+from noeira.deep_agents.sac.blocks.alpha_update_step import AlphaUpdateStep
+from noeira.data.replay import StoreReplay
 
-from mojo_rl.envs.pendulum.pendulum_v1 import PendulumEnv
+from noeira.envs.pendulum.pendulum_v1 import PendulumEnv
 
 
 comptime OBS = 3

@@ -8,7 +8,7 @@ CNN Q-network trains on the same device.
 Rainbow components: C51 + Double + PER + Dueling + Noisy + N-step.
 
 The whole agent comes from the `RainbowCNN` preset in
-`mojo_rl/deep_agents/c51/config.mojo` — Nature-CNN backbone + noisy
+`noeira/deep_agents/c51/config.mojo` — Nature-CNN backbone + noisy
 dueling distributional heads + N-step-over-PER replay with the uint8 obs
 ring, tuned pixel defaults baked in (lr 6.25e-5, warmup 20k, ε=0).
 Training runs through `agent.train_gpu_batched`, the facade over the
@@ -34,14 +34,14 @@ from std.memory import Pointer
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
 
-from mojo_rl.deep_agents.c51.config import RainbowCNN
-from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
-from mojo_rl.envs.arcade_games.pong import PongPixelEnv
-from mojo_rl.core.fmt import fit
+from noeira.deep_agents.c51.config import RainbowCNN
+from noeira.deep_agents.training import BatchedGpuDiscreteEnv
+from noeira.envs.arcade_games.pong import PongPixelEnv
+from noeira.core.fmt import fit
 
 
 # =============================================================================
@@ -183,8 +183,8 @@ def main() raises:
         # =====================================================================
 
         var env_vars = load_dotenv()
-        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-        var url = env_vars.get("RL_MONITOR_URL", "")
+        var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+        var url = env_vars.get("NOEIRA_CLOUD_URL", "")
 
         var logger = RemoteLogger(
             server_url=url,

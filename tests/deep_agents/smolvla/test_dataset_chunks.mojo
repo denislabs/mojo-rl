@@ -57,13 +57,13 @@ from std.os import remove
 from std.pathlib import Path
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.data.store import TrajectoryStoreWriter
-from mojo_rl.data.column import ColumnSpec
-from mojo_rl.deep_agents.smolvla.normalize import SmolVLAStats
-from mojo_rl.deep_agents.smolvla.dataset import SmolVLABatchSampler
+from noeira.nn.constants import DT
+from noeira.nn.core.ptr import mptr
+from noeira.nn.core.tensor import Tensor
+from noeira.data.store import TrajectoryStoreWriter
+from noeira.data.column import ColumnSpec
+from noeira.deep_agents.smolvla.normalize import SmolVLAStats
+from noeira.deep_agents.smolvla.dataset import SmolVLABatchSampler
 
 comptime SDIM = 3
 comptime ADIM_REAL = 2

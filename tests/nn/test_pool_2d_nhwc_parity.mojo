@@ -12,13 +12,13 @@ breakage.)
 from std.math import abs
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.max_pool_2d import MaxPool2D
-from mojo_rl.nn.primitives.avg_pool_2d import AvgPool2D
-from mojo_rl.nn.primitives.conv2d import _in_off, _out_off
+from noeira.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.max_pool_2d import MaxPool2D
+from noeira.nn.primitives.avg_pool_2d import AvgPool2D
+from noeira.nn.primitives.conv2d import _in_off, _out_off
 
 comptime C = 3
 comptime K = 2

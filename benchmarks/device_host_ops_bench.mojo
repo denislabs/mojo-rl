@@ -25,9 +25,9 @@ from max.gpu import global_idx
 from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.fill import fill_dev
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.fill import fill_dev
 from std.memory import Pointer
 
 

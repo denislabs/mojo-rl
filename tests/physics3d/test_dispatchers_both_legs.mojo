@@ -50,27 +50,27 @@ Run: pixi run mojo run -I . tests/physics3d/test_dispatchers_both_legs.mojo
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.fields import (
     Data,
     Model,
     DynamicsScratch,
     DimsLike,
     DynDims,
 )
-from mojo_rl.physics3d.fields.dims import DIM_POISON
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.fields.dims import DIM_POISON
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import compute_mass_matrix
-from mojo_rl.physics3d.dynamics.ldl import ldl_factor
-from mojo_rl.physics3d.dynamics.rne import compute_bias_forces_rne
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import compute_mass_matrix
+from noeira.physics3d.dynamics.ldl import ldl_factor
+from noeira.physics3d.dynamics.rne import compute_bias_forces_rne
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
     InvertedDoublePendulumModel,
 )
 

@@ -13,11 +13,11 @@ consistency). Run:
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.batch_norm_2d import BatchNorm2D
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.batch_norm_2d import BatchNorm2D
 
 
 comptime C = 3

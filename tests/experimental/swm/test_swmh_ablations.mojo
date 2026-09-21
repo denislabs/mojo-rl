@@ -34,14 +34,14 @@ Run:
 from std.math import abs, sqrt, cos, sin
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import SqMat
-from mojo_rl.experimental.swm.rng import Rng
-from mojo_rl.experimental.swm.procrustes import (
+from noeira.experimental.swm.so_d import SqMat
+from noeira.experimental.swm.rng import Rng
+from noeira.experimental.swm.procrustes import (
     PairBatch,
     procrustes_o_d,
     mean_squared_residual,
 )
-from mojo_rl.experimental.swm.ablations import (
+from noeira.experimental.swm.ablations import (
     holonomy_product,
     cocycle_tangent_norm,
     min_singular_value,
@@ -49,8 +49,8 @@ from mojo_rl.experimental.swm.ablations import (
     fit_orthogonal_with_cocycle,
     fit_translations,
 )
-from mojo_rl.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
-from mojo_rl.experimental.swm.envs.mobius_ring import MobiusConfig
+from noeira.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
+from noeira.experimental.swm.envs.mobius_ring import MobiusConfig
 
 comptime DT = DType.float64
 comptime N = 12

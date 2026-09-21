@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | The JSON writer, gated on its exact output
 # +--------------------------------------------------------------------------+ #
-"""Gate `JsonWriter` / `json_quote` in `mojo_rl/io/json.mojo`.
+"""Gate `JsonWriter` / `json_quote` in `noeira/io/json.mojo`.
 
     pixi run mojo run -I . tests/io/test_json_write.mojo
 
@@ -22,7 +22,7 @@ What it covers beyond the happy path:
 * an unbalanced document, which must raise at `done()` rather than emit.
 """
 
-from mojo_rl.io.json import JsonWriter, json_quote, parse_json
+from noeira.io.json import JsonWriter, json_quote, parse_json
 
 
 def _bytes(s: String) -> List[UInt8]:

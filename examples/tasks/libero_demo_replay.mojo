@@ -18,25 +18,25 @@ the same transcription run by MuJoCo on the same model.
 from std.sys import argv
 from std.os import getenv
 from std.math import sqrt
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from noeira.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
 
-from mojo_rl.physics3d.fields import Data, Model, DynDims, DynamicsScratch
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, DynDims, DynamicsScratch
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
     spec_fields_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.kinematics.site_frame import site_world_quat_list
-from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
-from mojo_rl.physics3d.dynamics.osc_pose import (
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.kinematics.site_frame import site_world_quat_list
+from noeira.physics3d.dynamics.actuation import apply_actions_fields
+from noeira.physics3d.dynamics.osc_pose import (
     OscPose, OscPoseConfig, ARM_DOF,
 )
-from mojo_rl.physics3d.studio.stepping import StudioIntegEll
-from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.physics3d.studio.stepping import StudioIntegEll
+from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
 comptime DT = DType.float64
-comptime SCENE = "mojo_rl/tasks/scenes/libero_goal.xml"
+comptime SCENE = "noeira/tasks/scenes/libero_goal.xml"
 comptime SUBSTEPS = 25
 comptime ROBOT = "robot_"
 

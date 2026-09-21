@@ -44,10 +44,10 @@ from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.mm import mm
-from mojo_rl.nn.core.mm_tiled import bmm_tiled, bmm_tiled_uses_big_tile
-from mojo_rl.nn.core.tensor import Tensor
+from noeira.nn.constants import DT
+from noeira.nn.core.mm import mm
+from noeira.nn.core.mm_tiled import bmm_tiled, bmm_tiled_uses_big_tile
+from noeira.nn.core.tensor import Tensor
 
 
 comptime WARMUP = 3

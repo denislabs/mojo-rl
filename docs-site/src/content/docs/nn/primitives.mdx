@@ -9,17 +9,17 @@ import Papers from '~/components/Papers.astro';
 
 <Maturity level="stable" />
 
-Around seventy leaf modules live in `mojo_rl.nn.primitives`. Every one
+Around seventy leaf modules live in `noeira.nn.primitives`. Every one
 implements [`Module`](/nn/modules/) with explicit `forward` and `vjp`, and most
 have both a CPU and a GPU kernel.
 
 Import paths follow the file name:
 
 ```mojo
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.primitives.conv2d import Conv2D
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.nn.primitives.conv2d import Conv2D
+from noeira.nn.primitives.layer_norm import LayerNorm
 ```
 
 
@@ -134,7 +134,7 @@ that evaluates catastrophically while looking fine.
 `Clamp`, `Scale`.
 
 ```mojo
-from mojo_rl.nn.primitives.activations import ReLU, Tanh, Sigmoid
+from noeira.nn.primitives.activations import ReLU, Tanh, Sigmoid
 ```
 
 `Symlog` — `sign(x)·log(1+|x|)` — compresses unbounded targets and appears

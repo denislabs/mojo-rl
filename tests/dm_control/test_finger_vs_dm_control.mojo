@@ -26,10 +26,10 @@ from std.python import Python, PythonObject
 from std.math import abs, sin, cos, sqrt, log1p, pi
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.dm_control.finger.finger_config import DMFingerTurnConfig
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.dm_control.finger.finger_config import DMFingerTurnConfig
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_IXX,
@@ -44,9 +44,9 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_ARMATURE,
     JOINT_IDX_QPOS0,
 )
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.envs.dm_control.finger.finger_xml import (
+from noeira.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.envs.dm_control.finger.finger_xml import (
     DMFingerSpinModel,
     DMFingerTurnModel,
     PROXIMAL_BODY_IDX,

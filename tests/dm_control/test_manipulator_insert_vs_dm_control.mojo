@@ -43,7 +43,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulator import (
+from noeira.envs.dm_control.manipulator import (
     DMManipulatorInsertBallModel as MB,
     DMManipulatorInsertPegModel as MP,
     target_body_idx,
@@ -55,10 +55,10 @@ from mojo_rl.envs.dm_control.manipulator import (
     OBJECT_QADR_Z,
     OBJECT_QADR_Y,
 )
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_GEOM_SIZE,
     MODEL_SITE_SIZE,
@@ -334,9 +334,9 @@ def _mj_insert(
     """
     var mujoco = Python.import_module("mujoco")
     var xml = String(
-        "mojo_rl/envs/dm_control/assets/manipulator_insert_peg.xml"
+        "noeira/envs/dm_control/assets/manipulator_insert_peg.xml"
     ) if use_peg else String(
-        "mojo_rl/envs/dm_control/assets/manipulator_insert_ball.xml"
+        "noeira/envs/dm_control/assets/manipulator_insert_ball.xml"
     )
     var m = mujoco.MjModel.from_xml_path(String(xml))
     var dat = mujoco.MjData(m)

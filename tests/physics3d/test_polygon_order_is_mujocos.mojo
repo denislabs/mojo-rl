@@ -17,7 +17,7 @@ order) shows the real key order is exactly bucket-contiguous at the map's own
 iteration; and a locally built 3.10.0 agrees with the pixi wheel on the polygon
 order of 84 of 85 `stretch_3` meshes, i.e. it is stable across builds.
 
-So the faithful port is a CALL (`native/mrl_polyorder.cc`), exactly as it is for
+So the faithful port is a CALL (`native/nra_polyorder.cc`), exactly as it is for
 the hull itself. Validated against that dump: our emitted key order matched
 MuJoCo's 649/649 on `base_link_collision`.
 
@@ -40,7 +40,7 @@ off. `test_qhull_shim` covers the hull half of the same dylib.
 from std.math import abs
 from std.testing import assert_true, assert_equal, TestSuite
 
-from mojo_rl.physics3d.collision.qhull_native import (
+from noeira.physics3d.collision.qhull_native import (
     poly_order, qhull_shim_available,
 )
 
@@ -52,7 +52,7 @@ def test_the_shim_is_reachable() raises:
     print("  qhull_shim_available:", ok)
     assert_true(
         ok,
-        "libmrl_qhull.dylib not found — the engine would silently fall back to"
+        "libnra_qhull.dylib not found — the engine would silently fall back to"
         " REVERSE first-seen polygon order, which is a ~70% approximation of"
         " MuJoCo's. Build it with `pixi run build-qhull`.",
     )

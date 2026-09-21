@@ -17,7 +17,7 @@ Run: pixi run mojo run -I . tests/robot/test_feetech_packet.mojo
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from mojo_rl.robot.feetech.packet import (
+from noeira.robot.feetech.packet import (
     build_ping,
     build_read,
     build_write,

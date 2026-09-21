@@ -55,17 +55,17 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.collision.multi_ccd import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.collision.broadphase_sap import detect_contacts_sap
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.collision.multi_ccd import (
     MULTICCD_PERTURBATION_ANGLE,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE,
     METADATA_SIZE,
     META_IDX_NUM_CONTACTS,

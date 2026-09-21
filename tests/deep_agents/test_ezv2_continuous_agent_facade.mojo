@@ -14,11 +14,11 @@ Run (GPU env required):
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.efficient_zero_v2 import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.efficient_zero_v2 import (
     EZV2ContinuousMLPConfig, EZv2ContinuousAgent,
 )
-from mojo_rl.envs.pendulum import PendulumEnv
+from noeira.envs.pendulum import PendulumEnv
 
 
 def main() raises:

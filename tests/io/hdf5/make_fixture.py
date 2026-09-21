@@ -11,7 +11,7 @@ The values are deterministic so the Mojo test can assert exact equality.
 Usage:
     pixi run python tests/io/hdf5/make_fixture.py [output_path]
 
-If ``output_path`` is omitted, writes to ``/tmp/mojo_rl_hdf5_fixture.h5``.
+If ``output_path`` is omitted, writes to ``/tmp/noeira_hdf5_fixture.h5``.
 """
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ def build(path: Path) -> None:
 
 def main() -> int:
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
-        "/tmp/mojo_rl_hdf5_fixture.h5"
+        "/tmp/noeira_hdf5_fixture.h5"
     )
     build(path)
     return 0

@@ -44,41 +44,41 @@ from max.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_NUM_CONTACTS,
     MODEL_CURRICULUM_SIZE, MODEL_SITE_SIZE, MODEL_BODY_SIZE,
     CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.studio.stepping import StudioIntegEll
-from mojo_rl.tasks.spec import (
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.studio.stepping import StudioIntegEll
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family, FamilySpec,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.predicates import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.predicates import (
     parse_goal, bind_goal, require_tier_a, joint_qpos_addresses, joint_id,
     slot_body_id, BoundGoal, OP_ON_BODY, OP_JOINT, OP_IN, OP_ON,
 )
-from mojo_rl.tasks.eval import (
+from noeira.tasks.eval import (
     eval_goal, HostState, region_sites, region_rects, region_half_heights,
     region_box_flags, region_contact_bodies,
 )
-from mojo_rl.tasks.tape import encode_goal, eval_tape, TAPE_WORDS
-from mojo_rl.tasks.gpu_eval import (
+from noeira.tasks.tape import encode_goal, eval_tape, TAPE_WORDS
+from noeira.tasks.gpu_eval import (
     eval_tape_gpu, tape_distance_gpu, region_table_words, require_gpu_regions,
 )
-from mojo_rl.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
-from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
+from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
-comptime FAMILY = "mojo_rl/tasks/families/libero_goal.family"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/libero_goal__"
-comptime PACK = "mojo_rl/tasks/libero/assets"
+comptime FAMILY = "noeira/tasks/families/libero_goal.family"
+comptime TASK_DIR = "noeira/tasks/tasks/libero_goal__"
+comptime PACK = "noeira/tasks/libero/assets"
 
 comptime DT = DType.float64
 comptime F32 = DType.float32

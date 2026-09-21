@@ -7,7 +7,7 @@ intermediate to a flat binary directory the Mojo gates read.
 
     pixi run -e act-ref python tools/act/dump_act_reference.py --out /tmp/act_ref
 
-⚠ Runs in the `act-ref` pixi environment ONLY. Nothing under `mojo_rl/` imports
+⚠ Runs in the `act-ref` pixi environment ONLY. Nothing under `noeira/` imports
 torch; this exists so the port is checked against the reference rather than
 against itself.
 
@@ -24,7 +24,7 @@ side has no numpy, and a flat blob plus a shape line needs no parser.
 * `xattn` — `torch.nn.functional.scaled_dot_product_attention` driven exactly
   the way `nn.MultiheadAttention` drives it internally, at `Q_LEN != KV_LEN`,
   with and without a key padding mask, plus the q/k/v gradients of a scalar
-  objective. Gates `mojo_rl/nn/primitives/cross_attention.mojo`.
+  objective. Gates `noeira/nn/primitives/cross_attention.mojo`.
 * `layers` — the reference's own `TransformerEncoderLayer` /
   `TransformerDecoderLayer` (imported from `references/act-main/`, not
   reimplemented), in eval mode, with every parameter emitted under the Mojo

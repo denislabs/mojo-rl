@@ -9,10 +9,10 @@ action-application issue.
 
 from std.memory import alloc
 
-from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
-from mojo_rl.envs.atari.games.registry import AtariGame, game_signals
-from mojo_rl.envs.atari.riot import set_action
-from mojo_rl.envs.atari.cpu6502 import run_frame, run_frame_video
+from noeira.envs.atari.environment import AtariEnvironment, load_rom
+from noeira.envs.atari.games.registry import AtariGame, game_signals
+from noeira.envs.atari.riot import set_action
+from noeira.envs.atari.cpu6502 import run_frame, run_frame_video
 
 
 def run_path(video: Bool) raises -> Int:

@@ -8,8 +8,8 @@ model carries repo-root-relative asset paths, why four tests `os.chdir` into
 the repo root to load one, and why `mujoco.MjModel.from_xml_path()` cannot
 read our own assets at all. Measured, not assumed:
 
-    from_xml_path('mojo_rl/envs/robots/assets/so_arm100.xml')
-      -> Error opening file 'mojo_rl/envs/robots/assets/so_arm100/Base.stl'
+    from_xml_path('noeira/envs/robots/assets/so_arm100.xml')
+      -> Error opening file 'noeira/envs/robots/assets/so_arm100/Base.stl'
     from_xml_string(open(same).read())
       -> loads
 
@@ -44,7 +44,7 @@ Run: pixi run mojo run -I . tests/physics3d/test_asset_base_dir.mojo
 
 from std.testing import assert_true
 
-from mojo_rl.physics3d.parser import parse_xml_full
+from noeira.physics3d.parser import parse_xml_full
 
 
 # Rules 1 + 4: bare mesh file=, bare texture file=, no meshdir.

@@ -35,8 +35,8 @@ original loop, and the reference does not know the difference — it indexes
 through the same `_col_off` / `_in_off` the rest of the file uses.
 """
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.conv2d import (
+from noeira.nn.constants import DT
+from noeira.nn.primitives.conv2d import (
     LAYOUT_NCHW,
     LAYOUT_NHWC,
     _col_off,

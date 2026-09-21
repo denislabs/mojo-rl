@@ -19,7 +19,7 @@
     pixi run mojo run -I . tools/soarm/so101_calibrate.mojo \\
         --port ... --restore follower.json --write
 
-The Mojo equivalent of `lerobot-calibrate`. `mojo_rl/robot/so101/arm.mojo`
+The Mojo equivalent of `lerobot-calibrate`. `noeira/robot/so101/arm.mojo`
 already READS this out of the servos — deliberately, so no JSON parser is
 needed at run time — and this is the other direction.
 
@@ -68,16 +68,16 @@ writable at all (`arm.mojo:311`).
 from std.sys import argv
 from std.time import perf_counter_ns
 
-from mojo_rl.io.fileio import (
+from noeira.io.fileio import (
     StdinReader, read_file_bytes, stdout_is_tty, write_file_atomic,
 )
-from mojo_rl.io.hf import mojo_rl_cache
-from mojo_rl.io.json import JsonWriter, parse_json
+from noeira.io.hf import noeira_cache
+from noeira.io.json import JsonWriter, parse_json
 from std.os import makedirs
-from mojo_rl.robot.feetech.control_table import (
+from noeira.robot.feetech.control_table import (
     SIZE_2, STS_HOMING_OFFSET, STS_MAX_POSITION_LIMIT, STS_MIN_POSITION_LIMIT,
 )
-from mojo_rl.robot.so101 import (
+from noeira.robot.so101 import (
     NARROWER_FRACTION, SO101Arm, SO101_N, UNLIMITED_MAX, UNLIMITED_MIN,
     SEAM_MARGIN, CalibrationRecord, centre_on_middle_pose, frame_position,
     joint_name,
@@ -85,10 +85,10 @@ from mojo_rl.robot.so101 import (
     load_calibration_json,
     save_calibration_json, span_regressions,
 )
-from mojo_rl.robot.so101.ports import (
+from noeira.robot.so101.ports import (
     default_follower_port, default_leader_port,
 )
-from mojo_rl.utils.fmt import fixed
+from noeira.utils.fmt import fixed
 
 
 comptime CENTRE = 2047
@@ -271,7 +271,7 @@ def _print_cal(label: String, ref c: CalibrationRecord) raises:
 def _auto_backup_path(port: String) raises -> String:
     """Where the automatic pre-write backup goes.
 
-    Under the mojo-rl cache with the port and a timestamp, so a second
+    Under the noeira cache with the port and a timestamp, so a second
     calibration attempt cannot overwrite the copy that would restore the
     first.
     """
@@ -282,7 +282,7 @@ def _auto_backup_path(port: String) raises -> String:
             slug += "_"
         else:
             slug += c
-    var dir = mojo_rl_cache() + "/so101_calibration"
+    var dir = noeira_cache() + "/so101_calibration"
     makedirs(dir, exist_ok=True)
     return (
         dir + "/" + slug + "-" + String(perf_counter_ns() // 1_000_000_000)

@@ -77,14 +77,14 @@ alignment and refuses to write a dataset where it fails.
 from std.sys import argv
 from std.time import perf_counter_ns
 
-from mojo_rl.data.lerobot_write import LeRobotWriter, open_recording
-from mojo_rl.io.fileio import StdinReader
-from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name, joint_short
-from mojo_rl.robot.so101.ports import follower_port, leader_port, port_refusal
-from mojo_rl.utils.fmt import col, fixed
-from mojo_rl.core.project import project_dataset_dir
-from mojo_rl.data.lerobot_rejected import is_rejected, load_rejected_episodes, reject_episode
-from mojo_rl.vision.camera_thread import CameraReader, parse_camera_specs
+from noeira.data.lerobot_write import LeRobotWriter, open_recording
+from noeira.io.fileio import StdinReader
+from noeira.robot.so101 import SO101Arm, SO101_N, joint_name, joint_short
+from noeira.robot.so101.ports import follower_port, leader_port, port_refusal
+from noeira.utils.fmt import col, fixed
+from noeira.core.project import project_dataset_dir
+from noeira.data.lerobot_rejected import is_rejected, load_rejected_episodes, reject_episode
+from noeira.vision.camera_thread import CameraReader, parse_camera_specs
 
 
 

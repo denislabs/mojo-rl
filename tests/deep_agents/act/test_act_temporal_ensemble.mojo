@@ -21,9 +21,9 @@ assertion on the direction, not only on the aggregate.
 
 from std.math import exp
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.act.inference import TemporalEnsemble, denormalize
-from mojo_rl.deep_agents.act.refload import RefDump
+from noeira.nn.constants import DT
+from noeira.deep_agents.act.inference import TemporalEnsemble, denormalize
+from noeira.deep_agents.act.refload import RefDump
 
 
 comptime REF_DIR = "/tmp/act_ref"

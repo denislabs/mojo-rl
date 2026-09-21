@@ -17,9 +17,9 @@ truncations per lane, at exactly 1000 and 2000, and none anywhere else.
 
 from std.testing import assert_true
 from max.gpu.host import DeviceContext, DeviceBuffer
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
+from noeira.nn.constants import DT
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
 
 comptime N = 8
 comptime ITERS = 2100

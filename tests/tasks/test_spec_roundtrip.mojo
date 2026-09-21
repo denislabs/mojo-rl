@@ -15,7 +15,7 @@ Three halves, and the second and third are the ones that matter:
 Run: pixi run mojo run -I . tests/tasks/test_spec_roundtrip.mojo
 """
 
-from mojo_rl.tasks.spec import (
+from noeira.tasks.spec import (
     FamilySpec, TaskSpec,
     parse_family, parse_task, validate_task_against_family,
     SLOT_FREE, SLOT_STATIC,

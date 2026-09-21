@@ -29,19 +29,19 @@ Run: pixi run mojo run -I . tests/physics3d/test_wrap_tendon_vs_mujoco.mojo
 """
 
 from layout import Layout, LayoutTensor
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.fields import (
     Data, Model, DynamicsScratch, DynDims, rl1, rl2, DYN1, DYN2,
 )
-from mojo_rl.physics3d.fields.scratch import Scratch
-from mojo_rl.physics3d.dynamics.tendon import spatial_tendon_length_jac
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields.scratch import Scratch
+from noeira.physics3d.dynamics.tendon import spatial_tendon_length_jac
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
     MODEL_SITE_SIZE,
     MODEL_GEOM_SIZE,

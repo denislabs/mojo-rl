@@ -13,7 +13,7 @@ option string as
 qhull would have built had it run out of budget* — NOT the full hull with
 vertices deleted afterwards. We parsed the attribute nowhere and passed a hard
 `-1`, so every budgeted mesh kept the vertices qhull's budget stopped it
-adding. The shim (`native/mrl_qhull.c`) has taken the argument since it was
+adding. The shim (`native/nra_qhull.c`) has taken the argument since it was
 written; the gap was the parser and the two calls between them.
 
 ⚠⚠ THE ONLY SPELLING trossen_wxai USES IS A `<default>`. It writes
@@ -49,13 +49,13 @@ second and this file would pass while proving nothing.
 from std.math import abs
 from std.testing import assert_true, assert_equal, TestSuite
 
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, read_model_source,
 )
-from mojo_rl.physics3d.fields import Model, DynDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, DynDims
+from noeira.physics3d.gpu.constants import (
     MODEL_MESH_META_SIZE, MESH_META_IDX_VERTNUM,
     MESH_META_IDX_POLYADR, MESH_META_IDX_POLYNUM,
     MODEL_MESH_POLY_SIZE, MESH_POLY_IDX_VERTNUM,

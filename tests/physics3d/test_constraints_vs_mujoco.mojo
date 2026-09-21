@@ -35,12 +35,12 @@ from std.math import abs
 from std.collections import Array
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.envs.ant.ant_xml import AntModel
-from mojo_rl.envs.hopper.hopper_xml import HopperModel
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.envs.ant.ant_xml import AntModel
+from noeira.envs.hopper.hopper_xml import HopperModel
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 
@@ -138,7 +138,7 @@ def test_invweight0_vs_mujoco() raises:
     var bwa = List[Float64]()
     for i in range(2 * A.NBODY):
         bwa.append(Float64(mfa.body_invweight0.data[i]))
-    _check_invweights("ant", "mojo_rl/envs/ant/assets/ant.xml", dwa, bwa, A.NV, A.NBODY)
+    _check_invweights("ant", "noeira/envs/ant/assets/ant.xml", dwa, bwa, A.NV, A.NBODY)
 
     comptime U = HumanoidModel
     comptime MD_2 = ModelDims[U]
@@ -150,7 +150,7 @@ def test_invweight0_vs_mujoco() raises:
     var bwu = List[Float64]()
     for i in range(2 * U.NBODY):
         bwu.append(Float64(mfu.body_invweight0.data[i]))
-    _check_invweights("humanoid", "mojo_rl/envs/humanoid/assets/humanoid.xml", dwu, bwu, U.NV, U.NBODY)
+    _check_invweights("humanoid", "noeira/envs/humanoid/assets/humanoid.xml", dwu, bwu, U.NV, U.NBODY)
 
     comptime H = HopperModel
     comptime MD_3 = ModelDims[H]
@@ -162,7 +162,7 @@ def test_invweight0_vs_mujoco() raises:
     var bwh = List[Float64]()
     for i in range(2 * H.NBODY):
         bwh.append(Float64(mfh.body_invweight0.data[i]))
-    _check_invweights("hopper", "mojo_rl/envs/hopper/assets/hopper.xml", dwh, bwh, H.NV, H.NBODY)
+    _check_invweights("hopper", "noeira/envs/hopper/assets/hopper.xml", dwh, bwh, H.NV, H.NBODY)
 
 
 def _ant_limits(num_steps: Int, overshoot: Float64) raises:
@@ -171,7 +171,7 @@ def _ant_limits(num_steps: Int, overshoot: Float64) raises:
     comptime M = AntModel
     comptime MD_4 = ModelDims[M]
     var mujoco = Python.import_module("mujoco")
-    var mj_model = mujoco.MjModel.from_xml_path("mojo_rl/envs/ant/assets/ant.xml")
+    var mj_model = mujoco.MjModel.from_xml_path("noeira/envs/ant/assets/ant.xml")
     mj_model.opt.integrator = 0
     var mj_data = mujoco.MjData(mj_model)
 
@@ -269,7 +269,7 @@ def test_contacts_vs_mujoco() raises:
     """Active contacts: hopper dropped onto the floor, lockstep vs MuJoCo."""
     comptime M = HopperModel
     var mujoco = Python.import_module("mujoco")
-    var mj_model = mujoco.MjModel.from_xml_path("mojo_rl/envs/hopper/assets/hopper.xml")
+    var mj_model = mujoco.MjModel.from_xml_path("noeira/envs/hopper/assets/hopper.xml")
     mj_model.opt.integrator = 0
     var mj_data = mujoco.MjData(mj_model)
     comptime MD_5 = ModelDims[M]

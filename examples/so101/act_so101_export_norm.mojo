@@ -26,15 +26,15 @@ once, on the box that has the store. Runs trained after do not.
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.core.project import project_dataset_dir, projects_root
-from mojo_rl.data.lerobot import LeRobotInfo
-from mojo_rl.deep_agents.act.config import (
+from noeira.core.project import project_dataset_dir, projects_root
+from noeira.data.lerobot import LeRobotInfo
+from noeira.deep_agents.act.config import (
     SO101_ADIM, SO101_IMG_H, SO101_IMG_W, SO101_N_CAM, SO101_QPOS,
 )
-from mojo_rl.deep_agents.act.data import ACTDataset
-from mojo_rl.deep_agents.act.norm_file import act_norm_from
-from mojo_rl.io.json import load_json
-from mojo_rl.io.proc import quote_arg, run_capture
+from noeira.deep_agents.act.data import ACTDataset
+from noeira.deep_agents.act.norm_file import act_norm_from
+from noeira.io.json import load_json
+from noeira.io.proc import quote_arg, run_capture
 
 
 comptime QPOS = SO101_QPOS

@@ -30,23 +30,23 @@ near-identical frame-to-frame, so one-step next-frame PSNR saturates at the
 from std.math import sqrt, log, log10, cos
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.envs.arcade_games.pong.online_sampler import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Xavier
+from noeira.nn.optimizer.adam import Adam
+from noeira.envs.arcade_games.pong.online_sampler import (
     OnlinePongSampler, ScriptedPongPolicy,
 )
-from mojo_rl.experimental.lewm.pong_data import WindowSource
-from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
-from mojo_rl.deep_agents.dreamer4.dynamics import Dreamer4Dynamics
-from mojo_rl.deep_agents.dreamer4.shortcut_loss import dynamics_pretrain_loss, _mao
-from mojo_rl.deep_agents.dreamer4.ode_sampler import sample_one_timestep
-from mojo_rl.deep_agents.dreamer4.recon_loss import (
+from noeira.experimental.lewm.pong_data import WindowSource
+from noeira.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
+from noeira.deep_agents.dreamer4.dynamics import Dreamer4Dynamics
+from noeira.deep_agents.dreamer4.shortcut_loss import dynamics_pretrain_loss, _mao
+from noeira.deep_agents.dreamer4.ode_sampler import sample_one_timestep
+from noeira.deep_agents.dreamer4.recon_loss import (
     masked_recon_loss, full_recon_psnr,
 )
-from mojo_rl.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
+from noeira.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
 
 
 # ── tiny deterministic RNG (xorshift64* + Box-Muller) ──────────────────

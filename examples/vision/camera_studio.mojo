@@ -83,7 +83,7 @@ from std.sys import argv
 from std.math import atan
 from std.time import perf_counter_ns
 
-from mojo_rl.render.imgui import (
+from noeira.render.imgui import (
     IgTexture,
     ig_begin_panel,
     ig_begin_window,
@@ -105,13 +105,13 @@ from mojo_rl.render.imgui import (
     ig_text_disabled,
     imgui_shim_available,
 )
-from mojo_rl.render.renderer3d import Renderer3D
-from mojo_rl.utils.fmt import fixed
-from mojo_rl.vision.calib_file import CameraCalib, read_calib, write_calib
-from mojo_rl.vision.camera_thread import (
+from noeira.render.renderer3d import Renderer3D
+from noeira.utils.fmt import fixed
+from noeira.vision.calib_file import CameraCalib, read_calib, write_calib
+from noeira.vision.camera_thread import (
     camera_spec_index, open_camera_spec,
 )
-from mojo_rl.vision.opencv import (
+from noeira.vision.opencv import (
     ArucoDetector,
     CALIB_FIX_K3,
     CALIB_ZERO_TANGENT_DIST,

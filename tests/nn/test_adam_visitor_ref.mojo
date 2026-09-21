@@ -4,13 +4,13 @@ optimizer's own generic path, which now forwards to the same code and would
 make the check blind. CPU. Also asserts the walk visits every param once."""
 from std.math import abs, sqrt
 from max.gpu.host import DeviceContext
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.optimizer.adam import Adam
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.optimizer.adam import Adam
 
 comptime NET = Sequential[Linear[37, 53], Linear[53, 29], Linear[29, 7]]
 comptime LR = Scalar[DT](1e-2)

@@ -1,4 +1,4 @@
-"""Generate `mojo_rl/envs/robots/*_xml.mojo`'s XML from the reference MJCF.
+"""Generate `noeira/envs/robots/*_xml.mojo`'s XML from the reference MJCF.
 
     pixi run python tests/robots/so_arm_bake.py            # print both
     pixi run python tests/robots/so_arm_bake.py so_arm100  # print one
@@ -57,7 +57,7 @@ SO101_REF = os.path.join(
 # ⚠ RELATIVE TO THE MODEL FILE, not to the repo root. `7ec05572` made assets
 # resolve against the directory of the `.xml` that names them, and `53ac294b`
 # moved these models out of the `.mojo` string constants into
-# `mojo_rl/envs/robots/assets/<arm>.xml`. Neither commit updated this file, so
+# `noeira/envs/robots/assets/<arm>.xml`. Neither commit updated this file, so
 # `extract()` looked for a constant that no longer existed and the layer-1 gate
 # has been raising `ValueError: substring not found` — DEAD, not passing —
 # ever since. Repaired 2026-08-24.
@@ -457,7 +457,7 @@ BAKERS = {"so_arm100": bake_so_arm100, "so_arm101": bake_so_arm101}
 def asset_path(which):
     """The `.xml` that SHIPS and that `ModelDefFromXML[xml_path=...]` reads."""
     return os.path.join(
-        REPO, "mojo_rl", "envs", "robots", "assets", which + ".xml"
+        REPO, "noeira", "envs", "robots", "assets", which + ".xml"
     )
 
 
@@ -514,7 +514,7 @@ def _string_meshdir(src, which):
     old = 'meshdir="{}"'.format(d)
     assert src.count(old) == 1, "expected exactly one meshdir in " + which
     return src.replace(
-        old, 'meshdir="mojo_rl/envs/robots/assets/{}/"'.format(d)
+        old, 'meshdir="noeira/envs/robots/assets/{}/"'.format(d)
     )
 
 

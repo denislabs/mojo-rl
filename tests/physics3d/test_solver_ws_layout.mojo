@@ -16,7 +16,7 @@ provenance.
 Run: pixi run mojo run -I . tests/physics3d/test_solver_ws_layout.mojo
 """
 
-from mojo_rl.physics3d.constraints.solver_ws import (
+from noeira.physics3d.constraints.solver_ws import (
     ws_lambda_n,
     ws_k_n,
     ws_c_dist,
@@ -59,7 +59,7 @@ from mojo_rl.physics3d.constraints.solver_ws import (
     ws_budget,
     ws_fits,
 )
-from mojo_rl.physics3d.constraints.elliptic_layout import (
+from noeira.physics3d.constraints.elliptic_layout import (
     ell_nt,
     ell_jt,
     ell_sc,

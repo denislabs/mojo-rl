@@ -14,7 +14,7 @@ the whole plan targets the wrong one.
 The obvious move is to run the EXISTING probe once under nsys and read the
 per-kernel summary. It does not work, and the reason is worth writing down:
 Mojo mangles a kernel's comptime parameters into a HASH, not a spelling
-(`mojo_rl_nn_primitives_conv2d6A6A6A6A6A6A6A_5bd29d73087ee488` — the module
+(`noeira_nn_primitives_conv2d6A6A6A6A6A6A6A_5bd29d73087ee488` — the module
 path survives, the `Int`s do not). The existing probe instantiates every leg in
 ONE process, so `_ldl_factor_fields_mt_kernel` appears four times under four
 hashes with nothing to say which is `NV=6` and which is `NV=60`. The only
@@ -56,11 +56,11 @@ from std.sys import argv
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.robots.so101_park_config import So101ParkProbeConfig
-from mojo_rl.envs.robots.so101_park_xml import (
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.robots.so101_park_config import So101ParkProbeConfig
+from noeira.envs.robots.so101_park_xml import (
     SoArm101ParkK0Model,
     SoArm101ParkK3Model,
     SoArm101ParkK6Model,

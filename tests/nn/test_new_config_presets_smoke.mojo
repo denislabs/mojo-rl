@@ -5,14 +5,14 @@ probe where cheap — enough to typecheck the whole config → agent type
 graph and confirm the fused default nets instantiate.
 """
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.deep_agents.ddpg import DDPG
-from mojo_rl.deep_agents.td3 import TD3
-from mojo_rl.deep_agents.ppo import PPO
-from mojo_rl.deep_agents.ppo_discrete import PPODiscrete
-from mojo_rl.deep_agents.a2c import A2C, A2CDiscrete
-from mojo_rl.deep_agents.mbpo import MBPO
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac import SAC
+from noeira.deep_agents.ddpg import DDPG
+from noeira.deep_agents.td3 import TD3
+from noeira.deep_agents.ppo import PPO
+from noeira.deep_agents.ppo_discrete import PPODiscrete
+from noeira.deep_agents.a2c import A2C, A2CDiscrete
+from noeira.deep_agents.mbpo import MBPO
 
 
 def main() raises:

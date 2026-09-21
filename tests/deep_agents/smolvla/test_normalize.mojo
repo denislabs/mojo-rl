@@ -29,9 +29,9 @@ all of them. See the module header.
 from std.math import abs
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.act.refload import RefDump
-from mojo_rl.deep_agents.smolvla.normalize import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.act.refload import RefDump
+from noeira.deep_agents.smolvla.normalize import (
     SmolVLAStats,
     normalize_state,
     unnormalize_action,

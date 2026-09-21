@@ -12,7 +12,7 @@ Goals:
   * driving straight off-track terminates with the -100 off-playfield penalty
 """
 
-from mojo_rl.envs.car_racing import CarRacingMB
+from noeira.envs.car_racing import CarRacingMB
 
 
 def fail(name: String, msg: String) raises:

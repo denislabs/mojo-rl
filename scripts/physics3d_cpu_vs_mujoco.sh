@@ -9,7 +9,7 @@
 # RESULT lines with benchmarks/physics3d_cpu_vs_mujoco_table.py.
 #
 # ⚠ INTERLEAVED, MIN REPORTED. Identical code has drifted 1.4-1.7x across a
-# session on this machine (mojo_rl/physics3d/PERFORMANCE.md §8). Running all
+# session on this machine (noeira/physics3d/PERFORMANCE.md §8). Running all
 # of ours and then all of MuJoCo would charge that drift to one side.
 #
 # ⚠ RUN FROM THE REPO ROOT, INSIDE pixi. Mesh assets resolve by repo-relative
@@ -41,22 +41,22 @@ esac
 # keeps counting. 100 + 700 + 700 = 1500 steps stays clear, and 8 in-process
 # rounds (each a reset) give the short timed region a real minimum.
 MODELS=(
-  gym:walker2d:mojo_rl/envs/walker2d/assets/walker2d.xml
-  gym:hopper:mojo_rl/envs/hopper/assets/hopper.xml
-  gym:half_cheetah:mojo_rl/envs/half_cheetah/assets/half_cheetah.xml
-  gym:ant:mojo_rl/envs/ant/assets/ant.xml
-  gym:humanoid:mojo_rl/envs/humanoid/assets/humanoid.xml
-  so101:so_arm101:mojo_rl/envs/robots/assets/so_arm101.xml
-  so101:so_arm101_f64:mojo_rl/envs/robots/assets/so_arm101.xml
-  so101:park_k0:mojo_rl/envs/robots/assets/so101_park_k0.xml:100:700:8
-  so101:park_k3:mojo_rl/envs/robots/assets/so101_park_k3.xml:100:700:8
-  so101:park_k6:mojo_rl/envs/robots/assets/so101_park_k6.xml:100:700:8
-  so101:park_k9:mojo_rl/envs/robots/assets/so101_park_k9.xml:100:700:8
-  contact:sawyer_reach:mojo_rl/envs/metaworld/assets/sawyer_reach.xml
-  contact:dog_stand:mojo_rl/envs/dm_control/assets/dog_stand_walk.xml
-  contact:humanoid_cmu:mojo_rl/envs/dm_control/assets/humanoid_cmu.xml
-  contact:reassemble3:mojo_rl/envs/dm_control/assets/manipulation/stack_3_bricks.xml:200:2000:1:1
-  contact:reassemble5:mojo_rl/envs/dm_control/assets/manipulation/reassemble5.xml:200:2000:1:1
+  gym:walker2d:noeira/envs/walker2d/assets/walker2d.xml
+  gym:hopper:noeira/envs/hopper/assets/hopper.xml
+  gym:half_cheetah:noeira/envs/half_cheetah/assets/half_cheetah.xml
+  gym:ant:noeira/envs/ant/assets/ant.xml
+  gym:humanoid:noeira/envs/humanoid/assets/humanoid.xml
+  so101:so_arm101:noeira/envs/robots/assets/so_arm101.xml
+  so101:so_arm101_f64:noeira/envs/robots/assets/so_arm101.xml
+  so101:park_k0:noeira/envs/robots/assets/so101_park_k0.xml:100:700:8
+  so101:park_k3:noeira/envs/robots/assets/so101_park_k3.xml:100:700:8
+  so101:park_k6:noeira/envs/robots/assets/so101_park_k6.xml:100:700:8
+  so101:park_k9:noeira/envs/robots/assets/so101_park_k9.xml:100:700:8
+  contact:sawyer_reach:noeira/envs/metaworld/assets/sawyer_reach.xml
+  contact:dog_stand:noeira/envs/dm_control/assets/dog_stand_walk.xml
+  contact:humanoid_cmu:noeira/envs/dm_control/assets/humanoid_cmu.xml
+  contact:reassemble3:noeira/envs/dm_control/assets/manipulation/stack_3_bricks.xml:200:2000:1:1
+  contact:reassemble5:noeira/envs/dm_control/assets/manipulation/reassemble5.xml:200:2000:1:1
 )
 
 if [ "$SKIP_BUILD" = 0 ]; then

@@ -55,10 +55,10 @@ one-line bisect rather than an afternoon.
 from max.gpu.host import DeviceContext
 from std.math import sin
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.constants import DT
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
+from noeira.physics3d.gpu.constants import (
     METADATA_SIZE,
     META_IDX_NUM_CONTACTS,
 )

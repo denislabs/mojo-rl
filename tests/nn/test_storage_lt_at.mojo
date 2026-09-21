@@ -22,8 +22,8 @@ from std.time import perf_counter_ns
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.tensor import Tensor
+from noeira.nn.constants import DT, TPB
+from noeira.nn.core.tensor import Tensor
 
 
 def _add_const_kernel[

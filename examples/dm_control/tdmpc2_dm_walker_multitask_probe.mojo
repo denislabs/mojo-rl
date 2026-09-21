@@ -66,11 +66,11 @@ from std.random import seed
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.config_mt import TDMPC2MultiTask
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.dm_control.walker.walker_xml import DMWalkerModel
-from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
+from noeira.nn.constants import DT
+from noeira.deep_agents.tdmpc2.config_mt import TDMPC2MultiTask
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.dm_control.walker.walker_xml import DMWalkerModel
+from noeira.envs.dm_control.walker.walker_config import DMWalkerConfig
 
 comptime TARGET = "gpu"
 comptime CKPT = "tdmpc2_dm_walker_multitask.ckpt"

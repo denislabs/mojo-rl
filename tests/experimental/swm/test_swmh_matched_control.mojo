@@ -52,16 +52,16 @@ Run:
 from std.math import abs, sqrt
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import SqMat
-from mojo_rl.experimental.swm.procrustes import procrustes_o_d
-from mojo_rl.experimental.swm.ablations import (
+from noeira.experimental.swm.so_d import SqMat
+from noeira.experimental.swm.procrustes import procrustes_o_d
+from noeira.experimental.swm.ablations import (
     fit_free_lsq,
     orthogonality_defect,
     holonomy_product,
     min_singular_value,
 )
-from mojo_rl.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
-from mojo_rl.experimental.swm.envs.mobius_ring import MobiusConfig
+from noeira.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
+from noeira.experimental.swm.envs.mobius_ring import MobiusConfig
 
 comptime DT = DType.float64
 comptime N = 12

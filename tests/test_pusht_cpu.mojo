@@ -8,7 +8,7 @@ Goals:
 """
 
 from std.math import pi, sqrt
-from mojo_rl.envs.pusht import PushTEnv, PConstants, PushTAction
+from noeira.envs.pusht import PushTEnv, PConstants, PushTAction
 
 
 def assert_close(

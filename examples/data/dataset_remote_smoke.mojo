@@ -5,8 +5,8 @@ catalog and R2: write locally -> push -> pull to a fresh path -> reopen and
 verify the contents survived.
 
 Credentials come from `.env` exactly like the remote logger
-(`examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`): `RL_MONITOR_URL`
-+ `RL_MONITOR_API_KEY`.
+(`examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`): `NOEIRA_CLOUD_URL`
++ `NOEIRA_CLOUD_API_KEY`.
 
 Run:
     pixi run mojo run -I . examples/data/dataset_remote_smoke.mojo
@@ -14,14 +14,14 @@ Run:
 
 from std.pathlib import Path
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.data import ColumnSpec, TrajectoryStore, TrajectoryStoreWriter
-from mojo_rl.io.fileio import remove_file
-from mojo_rl.data.remote import RemoteCatalog
+from noeira.core.dotenv import load_dotenv
+from noeira.data import ColumnSpec, TrajectoryStore, TrajectoryStoreWriter
+from noeira.io.fileio import remove_file
+from noeira.data.remote import RemoteCatalog
 
 
-comptime LOCAL = "/tmp/mojo_rl_remote_smoke.h5"
-comptime PULLED = "/tmp/mojo_rl_remote_smoke_pulled.h5"
+comptime LOCAL = "/tmp/noeira_remote_smoke.h5"
+comptime PULLED = "/tmp/noeira_remote_smoke_pulled.h5"
 comptime NAME = "smoke"
 comptime VERSION = "v1"
 
@@ -56,11 +56,11 @@ def build_local() raises:
 def main() raises:
     # ── credentials, and a readable failure if they are absent ────────
     var env = load_dotenv()
-    var url = env.get("RL_MONITOR_URL", "")
-    var key = env.get("RL_MONITOR_API_KEY", "")
+    var url = env.get("NOEIRA_CLOUD_URL", "")
+    var key = env.get("NOEIRA_CLOUD_API_KEY", "")
     print("[0] config")
-    print("      RL_MONITOR_URL  =", url)
-    print("      RL_MONITOR_API_KEY len =", key.byte_length())
+    print("      NOEIRA_CLOUD_URL  =", url)
+    print("      NOEIRA_CLOUD_API_KEY len =", key.byte_length())
     if url.byte_length() == 0 or key.byte_length() == 0:
         print("      MISSING — set both in .env; aborting")
         return

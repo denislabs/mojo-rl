@@ -29,9 +29,9 @@ from max.gpu.host import DeviceContext
 from std.math import abs, cos
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.envs.dm_control.pendulum import (
+from noeira.nn.constants import DT
+from noeira.core.cont_action import ContAction
+from noeira.envs.dm_control.pendulum import (
     DMPendulum,
     DMPendulumBatched,
     DMPendulumModel,

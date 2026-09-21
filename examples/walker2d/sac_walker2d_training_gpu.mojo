@@ -40,13 +40,13 @@ from max.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac import SAC
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.walker2d.walker2d_config import Walker2dConfig
 
 
 # =============================================================================
@@ -105,8 +105,8 @@ def main() raises:
     with DeviceContext() as ctx:
         # ─── Logger (remote) ─────────────────────────────────────────────
         var env_vars = load_dotenv()
-        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-        var url = env_vars.get("RL_MONITOR_URL", "")
+        var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+        var url = env_vars.get("NOEIRA_CLOUD_URL", "")
 
         var logger = RemoteLogger(
             server_url=url,

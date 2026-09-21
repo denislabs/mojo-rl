@@ -57,8 +57,8 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_place_brick import DMPlaceBrick
-from mojo_rl.envs.dm_control.manipulation_place_common import (
+from noeira.envs.dm_control.manipulation_place_brick import DMPlaceBrick
+from noeira.envs.dm_control.manipulation_place_common import (
     OBS_DIM,
     ROBOT_SITE_BASE,
     SITE_PINCH,
@@ -79,12 +79,12 @@ from mojo_rl.envs.dm_control.manipulation_place_common import (
     TARGET_BBOX_LOWER_Z,
     TARGET_BBOX_UPPER_Z,
 )
-from mojo_rl.envs.dm_control.manipulation_obs import (
+from noeira.envs.dm_control.manipulation_obs import (
     N_ARM,
     N_HAND,
     torque_site_of,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_POS_X,
 )

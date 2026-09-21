@@ -10,7 +10,7 @@ import BatchedStateLayout from '~/components/diagrams/BatchedStateLayout.astro';
 
 <Maturity level="stable" />
 
-`mojo_rl.physics2d` is a purpose-built impulse-based engine for
+`noeira.physics2d` is a purpose-built impulse-based engine for
 [LunarLander, BipedalWalker and CarRacing](/environments/2d-physics/). It is not
 a general 2D physics library — it implements exactly what those three need,
 which is why it can be fully batched on GPU.
@@ -29,7 +29,7 @@ batch**, as `[BATCH, STATE_SIZE]`.
 <BatchedStateLayout />
 
 ```
-mojo_rl/physics2d/
+noeira/physics2d/
 ├── layout.mojo      PhysicsLayout — compile-time offsets for bodies, contacts, joints
 ├── state.mojo       the state slab
 ├── config.mojo      compile-time configuration
@@ -98,7 +98,7 @@ The environments are the intended interface, but the engine is usable on its
 own:
 
 ```mojo
-from mojo_rl.physics2d import PhysicsLayout, PhysicsKernel
+from noeira.physics2d import PhysicsLayout, PhysicsKernel
 ```
 
 Define a layout for your bodies, contacts and joints; the kernel steps the

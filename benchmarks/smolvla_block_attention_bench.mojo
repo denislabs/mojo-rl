@@ -47,10 +47,10 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.smolvla.attn_mask import att_2d_mask, smolvla_ar
-from mojo_rl.deep_agents.smolvla.block_attention import (
+from noeira.nn.constants import DT, TPB
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.smolvla.attn_mask import att_2d_mask, smolvla_ar
+from noeira.deep_agents.smolvla.block_attention import (
     BA_DENOM_FLOOR,
     BA_MASK_NEG,
     _ba_context_kernel,

@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | The Parquet WRITER, against a file Arrow wrote
 # +--------------------------------------------------------------------------+ #
-"""Gate `mojo_rl/io/parquet/writer.mojo`.
+"""Gate `noeira/io/parquet/writer.mojo`.
 
     pixi run mojo run -I . tests/io/test_parquet_write.mojo
 
@@ -51,16 +51,16 @@ the fixture. Real data cannot cover that path; the fixture has to. Compare
 Average filter either.
 """
 
-from mojo_rl.io.parquet import ParquetFile
-from mojo_rl.io.parquet.metadata import PT_BYTE_ARRAY, PT_INT64, physical_type_name
-from mojo_rl.io.parquet.writer import (
+from noeira.io.parquet import ParquetFile
+from noeira.io.parquet.metadata import PT_BYTE_ARRAY, PT_INT64, physical_type_name
+from noeira.io.parquet.writer import (
     ParquetWriter, PQ_F32, PQ_F64, PQ_I64, PQ_STR, PqColumn, pq_list,
     pq_list3, pq_scalar,
 )
 
 
 comptime GOLDEN = "tests/fixtures/parquet/golden_v3_shapes.parquet"
-comptime OUT = "/tmp/mojo_rl_parquet_write_gate.parquet"
+comptime OUT = "/tmp/noeira_parquet_write_gate.parquet"
 
 comptime N_ROWS = 26
 comptime N_GROUPS = 4
@@ -398,7 +398,7 @@ def main() raises:
     raised = False
     try:
         var w3 = ParquetWriter(_columns())
-        _ = w3.close(String("/tmp/mojo_rl_parquet_empty.parquet"))
+        _ = w3.close(String("/tmp/noeira_parquet_empty.parquet"))
     except:
         raised = True
     if not raised:

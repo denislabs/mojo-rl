@@ -25,8 +25,8 @@ from std.math import isnan, isinf
 from std.testing import assert_true
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.experimental.lewm.trainer import LeWMTrainer
+from noeira.nn.constants import DT
+from noeira.experimental.lewm.trainer import LeWMTrainer
 
 
 # ── legacy §10.7 Pong-ViT recipe (batch=16, t=6, depth=6, emb=128) ─────

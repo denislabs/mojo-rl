@@ -22,7 +22,7 @@ conversion even when the signature is right. See
 
 Usage:
     python3 scripts/audit_kernel_scalar_args.py [roots...]
-        # default roots: mojo_rl examples tests
+        # default roots: noeira examples tests
 
 Exit code is the number of findings, so it can gate CI.
 
@@ -143,9 +143,9 @@ def scan(roots):
 
 def main():
     # Defaults span all three roots on purpose: `pixi run build` only covers
-    # `mojo_rl`, and tests/examples define kernels of their own that nothing
+    # `noeira`, and tests/examples define kernels of their own that nothing
     # else compiles. Three of the first four findings here were in an example.
-    roots = sys.argv[1:] or ["mojo_rl", "examples", "tests"]
+    roots = sys.argv[1:] or ["noeira", "examples", "tests"]
     findings, unresolved, n_launched = scan(roots)
     resolved = n_launched - len(unresolved)
     print(f"kernels launched: {n_launched}   resolved to a def: {resolved}")

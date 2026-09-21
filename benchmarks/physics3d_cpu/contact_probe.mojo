@@ -12,8 +12,8 @@ twin maps its geoms to bodies before printing.
 
 from std.sys import argv
 
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
     CONTACT_IDX_POS_X, CONTACT_IDX_NX, CONTACT_IDX_DIST, CONTACT_IDX_CONDIM,
     CONTACT_IDX_FORCE_N, CONTACT_IDX_FORCE_T1, CONTACT_IDX_FORCE_T2,
@@ -22,13 +22,13 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_CCD_TOLERANCE, MODEL_META_IDX_CCD_ITERATIONS,
     MODEL_BODY_SIZE, BODY_IDX_MASS, BODY_IDX_IXX, BODY_IDX_IPOS_X, BODY_IDX_IQUAT_X,
 )
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.envs.phyics3d_env import Phyics3dEnv
 from physics3d_cpu.harness import write_pose
-from mojo_rl.envs.dm_control.manipulation_reassemble3_def import Reassemble3Model
-from mojo_rl.envs.dm_control.manipulation_reassemble3_config import Reassemble3Config
-from mojo_rl.envs.dm_control.manipulation_reassemble5_def import Reassemble5Model
-from mojo_rl.envs.dm_control.manipulation_reassemble5_config import Reassemble5Config
+from noeira.envs.dm_control.manipulation_reassemble3_def import Reassemble3Model
+from noeira.envs.dm_control.manipulation_reassemble3_config import Reassemble3Config
+from noeira.envs.dm_control.manipulation_reassemble5_def import Reassemble5Model
+from noeira.envs.dm_control.manipulation_reassemble5_config import Reassemble5Config
 
 comptime DT = DType.float64
 

@@ -67,14 +67,14 @@ this gate connects their indexing.
 from std.math import abs, sqrt
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.deep_agents.smolvla.text import SmolVLMTextLayers, SMOLLM_THETA
-from mojo_rl.deep_agents.smolvla.expert import SmolVLAExpert
-from mojo_rl.deep_agents.smolvla.kv_cache import SmolVLAKVCache
-from mojo_rl.deep_agents.smolvla.fused import SmolVLAPrefill, SmolVLADenoise
-from mojo_rl.deep_agents.smolvla.attn_mask import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Deterministic
+from noeira.deep_agents.smolvla.text import SmolVLMTextLayers, SMOLLM_THETA
+from noeira.deep_agents.smolvla.expert import SmolVLAExpert
+from noeira.deep_agents.smolvla.kv_cache import SmolVLAKVCache
+from noeira.deep_agents.smolvla.fused import SmolVLAPrefill, SmolVLADenoise
+from noeira.deep_agents.smolvla.attn_mask import (
     att_2d_mask, att_2d_mask_square, smolvla_ar,
 )
 

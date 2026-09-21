@@ -28,16 +28,16 @@ claims to.
 from std.math import abs
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.act.refload import RefDump
-from mojo_rl.vision.resize_pad import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.act.refload import RefDump
+from noeira.vision.resize_pad import (
     camera_frame_to_siglip,
     resize_with_pad_chw,
     SIGLIP_INPUT,
 )
-from mojo_rl.vision.preprocess import pil_bilinear_u8
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.smolvla.observation import fill_camera_images
+from noeira.vision.preprocess import pil_bilinear_u8
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.smolvla.observation import fill_camera_images
 
 comptime SIZE = SIGLIP_INPUT
 comptime N = 3 * SIZE * SIZE

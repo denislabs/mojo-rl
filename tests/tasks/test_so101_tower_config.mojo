@@ -33,28 +33,28 @@ from std.os import listdir
 from std.math import abs
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.physics3d.fields import Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.tasks.spec import (
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.reset import free_slot_addresses
-from mojo_rl.tasks.predicates import parse_goal, bind_goal, require_tier_a
-from mojo_rl.tasks.gpu_eval import require_gpu_regions
-from mojo_rl.tasks.placement.check import require_device_placement
-from mojo_rl.tasks.placement.so101_tower import So101TowerPlacement
-from mojo_rl.tasks.family_config import So101TowerConfig
-from mojo_rl.tasks.task_hooks import TASK_GOAL_WORDS
-from mojo_rl.tasks.so101_tower_xml import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.reset import free_slot_addresses
+from noeira.tasks.predicates import parse_goal, bind_goal, require_tier_a
+from noeira.tasks.gpu_eval import require_gpu_regions
+from noeira.tasks.placement.check import require_device_placement
+from noeira.tasks.placement.so101_tower import So101TowerPlacement
+from noeira.tasks.family_config import So101TowerConfig
+from noeira.tasks.task_hooks import TASK_GOAL_WORDS
+from noeira.tasks.so101_tower_xml import (
     So101TowerModel, SO101_TOWER_MAX_CONTACTS, SO101_TOWER_N_FREE_SLOTS,
 )
 
 comptime DT = DType.float64
-comptime FAMILY = "mojo_rl/tasks/families/so101_tower.family"
-comptime TASK_DIR = "mojo_rl/tasks/tasks"
+comptime FAMILY = "noeira/tasks/families/so101_tower.family"
+comptime TASK_DIR = "noeira/tasks/tasks"
 comptime P = So101TowerPlacement
 comptime CFG = So101TowerConfig
 

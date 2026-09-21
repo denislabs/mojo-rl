@@ -10,10 +10,10 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_env_fields_hopper_smok
 from std.random import seed
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.hopper import HopperModel, HopperConfig
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac import SAC
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.hopper import HopperModel, HopperConfig
 
 comptime EnvT = Phyics3dEnv[
     HopperModel, HopperConfig, DT, TERMINATE_ON_UNHEALTHY=True

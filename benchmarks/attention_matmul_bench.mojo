@@ -45,9 +45,9 @@ from max.gpu.host import DeviceContext
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.mm import bmm
-from mojo_rl.nn.core.tensor import Tensor
+from noeira.nn.constants import DT
+from noeira.nn.core.mm import bmm
+from noeira.nn.core.tensor import Tensor
 
 
 comptime WARMUP = 3

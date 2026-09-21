@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | The HTTP client, against a server that does the awkward things
 # +--------------------------------------------------------------------------+ #
-"""Gate `mojo_rl/io/http.mojo` and the resume logic in `mojo_rl/io/fetch.mojo`.
+"""Gate `noeira/io/http.mojo` and the resume logic in `noeira/io/fetch.mojo`.
 
     pixi run build-http                       # ONCE
     pixi run mojo run -I . tests/io/test_http.mojo
@@ -31,18 +31,18 @@ corresponds to a way the transfer can be silently wrong:
 from std.os.path import exists
 from std.time import sleep
 
-from mojo_rl.io.fetch import fetch_to_cache
-from mojo_rl.io.fileio import (
+from noeira.io.fetch import fetch_to_cache
+from noeira.io.fileio import (
     file_size, read_file_bytes, remove_file, write_file_atomic,
 )
-from mojo_rl.io.http import HttpClient, http_shim_available
-from mojo_rl.io.json import parse_json
-from mojo_rl.io.proc import run_capture
-from mojo_rl.io.sha256 import sha256_hex
+from noeira.io.http import HttpClient, http_shim_available
+from noeira.io.json import parse_json
+from noeira.io.proc import run_capture
+from noeira.io.sha256 import sha256_hex
 
 
-comptime PORT_FILE = "/tmp/mojo_rl_http_gate_port"
-comptime TMP = "/tmp/mojo_rl_http_gate"
+comptime PORT_FILE = "/tmp/noeira_http_gate_port"
+comptime TMP = "/tmp/noeira_http_gate"
 
 
 def _blob(n: Int) -> List[UInt8]:
@@ -63,7 +63,7 @@ def _start_server() raises -> String:
     # the server exits.
     _ = run_capture(
         "python3 tools/io/mock_http_server.py " + String(PORT_FILE)
-        + " 120 > /tmp/mojo_rl_http_gate_server.log 2>&1 &"
+        + " 120 > /tmp/noeira_http_gate_server.log 2>&1 &"
     )
     for _ in range(100):
         if exists(PORT_FILE):
@@ -75,7 +75,7 @@ def _start_server() raises -> String:
         sleep(0.1)
     raise Error(
         "the mock server never wrote " + String(PORT_FILE) + " — see"
-        " /tmp/mojo_rl_http_gate_server.log"
+        " /tmp/noeira_http_gate_server.log"
     )
 
 
@@ -91,7 +91,7 @@ def main() raises:
     var checks = 0
 
     var c = HttpClient(10000, 5000)
-    c.header(String("X-Gate"), String("mojo-rl"))
+    c.header(String("X-Gate"), String("noeira"))
     c.bearer(String("k3y"))
 
     # ── 1. a JSON GET, parsed ───────────────────────────────────────
@@ -109,9 +109,9 @@ def main() raises:
     var hroot = hdoc.root()
     if hdoc.string(hdoc.field(hroot, String("authorization"))) != "Bearer k3y":
         raise Error("the Authorization header did not arrive")
-    if hdoc.string(hdoc.field(hroot, String("x-gate"))) != "mojo-rl":
+    if hdoc.string(hdoc.field(hroot, String("x-gate"))) != "noeira":
         raise Error("a custom header did not arrive")
-    if hdoc.string(hdoc.field(hroot, String("user-agent"))) != "mojo-rl/1.0":
+    if hdoc.string(hdoc.field(hroot, String("user-agent"))) != "noeira/1.0":
         raise Error("the User-Agent did not arrive")
     checks += 3
 

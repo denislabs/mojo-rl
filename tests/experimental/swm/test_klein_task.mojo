@@ -43,23 +43,23 @@ Run:
 
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
-from mojo_rl.experimental.swm.envs.klein_grid import (
+from noeira.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
+from noeira.experimental.swm.envs.klein_grid import (
     KleinWorld,
     KleinWorldConfig,
     ALIAS_LOCAL,
     ACT_X,
     ACT_Y,
 )
-from mojo_rl.experimental.swm.place_graph import PlaceGraph
-from mojo_rl.experimental.swm.map_builder import (
+from noeira.experimental.swm.place_graph import PlaceGraph
+from noeira.experimental.swm.map_builder import (
     label_walk,
     count_labels,
     split_until_stable,
     score_map,
     clone_graph,
 )
-from mojo_rl.experimental.swm.graph_planner import (
+from noeira.experimental.swm.graph_planner import (
     plan_double_cover,
     nearest_centroid,
     clone_centroids,

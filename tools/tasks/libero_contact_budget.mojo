@@ -29,47 +29,47 @@ those is the generator's rule (`gen_libero_envs.mojo`), and it is sized from
 ⚠ A ROW THAT REACHES `CAP` IS REFUSED, NOT RECORDED — a saturated count is a
 lower bound on the thing being measured.
 
-Writes `mojo_rl/tasks/libero/contact_budget.kv`: `<family>=<max>,<task>`.
+Writes `noeira/tasks/libero/contact_budget.kv`: `<family>=<max>,<task>`.
 """
 
 from std.os import listdir
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.fields import (
     Data, Model, DynDims, DynamicsScratch, SpecFields,
 )
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
     spec_fields_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
-from mojo_rl.physics3d.studio.stepping import StudioIntegEll
-from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
-from mojo_rl.physics3d.dynamics.osc_pose import (
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from noeira.physics3d.studio.stepping import StudioIntegEll
+from noeira.physics3d.dynamics.actuation import apply_actions_fields
+from noeira.physics3d.dynamics.osc_pose import (
     OscPose, OscPoseConfig, ARM_DOF, OSC_ACTION_DIM,
 )
-from mojo_rl.tasks.spec import (
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family, TaskSpec, FamilySpec,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.eval import region_sites
-from mojo_rl.tasks.sampler import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.eval import region_sites
+from noeira.tasks.sampler import (
     sample_placements, sample_joint_inits, RegionFrame, SampleReport,
 )
-from mojo_rl.tasks.init_table import load_init_table
-from mojo_rl.tasks.reset import (
+from noeira.tasks.init_table import load_init_table
+from noeira.tasks.reset import (
     free_slot_addresses, reset_slots, joint_init_addresses,
     joint_init_dof_addresses, apply_joint_inits,
 )
 
 
 comptime DT = DType.float64
-comptime FAMILY_DIR = "mojo_rl/tasks/families"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
-comptime OUT_PATH = "mojo_rl/tasks/libero/contact_budget.kv"
+comptime FAMILY_DIR = "noeira/tasks/families"
+comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime OUT_PATH = "noeira/tasks/libero/contact_budget.kv"
 comptime CAP = 512
 comptime SUBSTEPS = 25
 comptime SETTLE = 5

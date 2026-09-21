@@ -1,0 +1,80 @@
+# The `so101-tower` rig as a task family — the SO-101 follower with a wrist
+# camera, bolted to the overhead camera tower, on a white desk.
+#
+# THIS IS THE SIM HALF OF THE PROJECT'S SIM-TO-REAL TRACK. The rig it models
+# is the one `projects/so101-tower/` records with (`docs/camera-rig.md`,
+# `docs/tutorials/so101_tower.md`): the base asset carries the wrist camera on
+# the printed mount, the `tower` slot carries the overhead camera on its
+# stand, and the props are the task's PRINTED bowl and brick
+# (`tools/soarm/gen_tower_props.py`: one set of numbers for the print files
+# and the sim assets; the recorded Duplo is `props/duplo_brick.xml`) on the
+# desk. The two `<camera>`s are what the batched tracer renders for a
+# pixel policy; nothing in the tabletop family has one.
+#
+# ⚠ THE SLOT TABLE IS THE BUDGET — see `so101_tabletop.family`. TWO free slots
+# here, not three: nv = 6 + 12 = 18, which is also two fewer than what killed
+# the family on Metal (nv 24, `sac_task_gpu.mojo`'s header).
+schema_version=1
+family=so101_tower
+base=noeira/envs/robots/assets/so_arm101_tower.xml
+horizon=300
+# ⚠ 30, NOT 20: the rig records and deploys at 30 Hz (`meta/info.json`
+# `fps`). `So101TowerConfig.FRAME_SKIP` restates it as 16 substeps of 2 ms
+# (31.25 Hz — the nearest integer skip); a policy stepped here has the same
+# cadence its real deployment will.
+control_freq=30
+# ⚠ THE BASE ASSET'S <option> IS RESTATED IN THE COMPOSED SCENE — MuJoCo
+# ignores an attached child's option. `cone="elliptic" impratio="10"`: the
+# sim grasp creeps out of the jaw under the defaults (see the bake).
+inherit_option=1
+
+# ⚠⚠ THE ROBOT SITS ON THE STAND'S BASE PLATE, 5 mm ABOVE THE DESK. The desk
+# is the floor plane; the tower's foot and plate rest on it. See
+# `props/so101_tower_stand.xml` for where the plate's hole pattern is.
+base_pos=0.0,0.0,0.005
+
+# ⚠ THE FIXTURE CARRIES ITS POSE (see the tabletop family). The stand is
+# placed at the NEGATION of the arm's position on its plate — body (+0.019,
+# +0.077) — so the robot stays at the world origin and every SO-101 constant
+# (reach, park, obs) keeps its meaning. The plate CHAINS onto the foot's end
+# (the rig's owner's correction, twice; see the stand's header): the post
+# then stands 10..13 cm to the arm's RIGHT (-y), IN LINE with its base, where
+# the real one is — the recorded overhead frames show the arm beside the
+# tower's foot at the bottom-left of the image.
+slot=tower:static:noeira/tasks/assets/props/so101_tower_stand.xml:-0.019,-0.077,0.0
+# The desk: 65 x 65 cm, top face at z 0.002, spanning x -0.06..0.59 (the arm
+# and the tower foot stand on its BACK EDGE); the body/site stays at x 0.32 so the
+# regions below keep their frame — the slab is offset inside the asset.
+slot=desk:static:noeira/tasks/assets/props/desk_mat.xml:0.32,0.0,0.001
+slot=bowl:free:noeira/tasks/assets/props/bowl.xml
+slot=brick:free:noeira/tasks/assets/props/brick.xml
+
+# ⚠⚠ `slot_geom=` ON EVERY FREE SLOT, so the device placement table is
+# GENERATED (`pixi run gen-placement-tables`) rather than hand-written — the
+# tabletop family lacks these and restates its radius in `family_config`.
+# bottom_z, top_z, h_radius — PRINTED by `tools/soarm/gen_tower_props.py`,
+# which also writes both assets and both print files from one set of numbers.
+slot_geom=bowl:0.0,0.045,0.060614
+slot_geom=brick:-0.0125,0.0125,0.0176777
+
+park=10.0,0.0,50.0
+
+# ⚠ THE SITE NAME IS THE COMPOSED ONE: `desk_` + `surface`.
+#
+# REGION RECTS ARE IN THE MAT SITE'S FRAME, whose origin is at world
+# (0.32, 0, 0.002). `desk_top` spans world x 0.18..0.38, y -0.16..0.16 — the
+# band the SO-101 reaches at desk height with room for a 6 cm bowl to sit
+# fully on the mat. The 0.03 half-band is the tabletop family's, measured
+# there (`task_reachability.mojo`); re-measure here before trusting a reach
+# rate.
+region=desk_top:site:desk_surface:-0.14,-0.16,0.06,0.16:0.03
+
+# ⚠⚠ TWO STRIPS FOR `init=`, 12 cm APART — see the tabletop family for why
+# a goal may name only region 0 on the device. The bowl (h_radius 0.0606)
+# goes on the arm's LEFT and the brick on its RIGHT, as the 50 recorded
+# episodes have them (bowl centre-left, brick right of it, in the overhead
+# frames). A bowl drawn from `desk_left` and a brick from `desk_right` start
+# at LEAST 0.12 - 0.061 - 0.018 = 4.1 cm apart edge to edge, on every draw,
+# so `Near(brick, bowl, 0.045)` is FALSE at reset for every draw.
+region=desk_left:site:desk_surface:-0.14,0.06,0.06,0.16
+region=desk_right:site:desk_surface:-0.14,-0.16,0.06,-0.06

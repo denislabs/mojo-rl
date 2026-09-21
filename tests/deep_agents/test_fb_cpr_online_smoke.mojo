@@ -22,21 +22,21 @@ from std.random import random_float64, seed
 from std.testing import assert_true
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.data.resident import IDX_DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU, Tanh
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
-from mojo_rl.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
-from mojo_rl.deep_agents.fb.online_cpr import FBCPROnlineAgent
-from mojo_rl.deep_agents.fb.trainer import FBTrainer
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.deep_agents.training.driver_offpolicy import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.data.resident import IDX_DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU, Tanh
+from noeira.nn.primitives.layer_norm import LayerNorm
+from noeira.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
+from noeira.deep_agents.fb.online_cpr import FBCPROnlineAgent
+from noeira.deep_agents.fb.trainer import FBTrainer
+from noeira.deep_agents.training.batched_env import BatchedGpuEnv
+from noeira.deep_agents.training.driver_offpolicy import (
     run_offpolicy_train_batched,
 )
-from mojo_rl.envs.pendulum.pendulum_v2 import PendulumV2
+from noeira.envs.pendulum.pendulum_v2 import PendulumV2
 
 
 comptime OBS = 3

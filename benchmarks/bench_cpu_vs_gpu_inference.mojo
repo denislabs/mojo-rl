@@ -40,12 +40,12 @@ biases the whole comparison.
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor, TensorImpl
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.deep_agents.tdmpc2.nets import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor, TensorImpl
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.module import Module
+from noeira.nn.core.initializer import Kaiming
+from noeira.deep_agents.tdmpc2.nets import (
     TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet, TDMPC2Policy,
 )
 

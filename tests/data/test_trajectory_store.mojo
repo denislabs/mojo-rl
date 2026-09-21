@@ -1,4 +1,4 @@
-"""Gate for data-platform Stage 1 — `mojo_rl/data/`.
+"""Gate for data-platform Stage 1 — `noeira/data/`.
 
 Four layers:
 
@@ -21,7 +21,7 @@ from std.memory import alloc
 from std.pathlib import Path
 from std.testing import assert_almost_equal, assert_equal, assert_true
 
-from mojo_rl.data import (
+from noeira.data import (
     ColumnSpec,
     EpisodeIndex,
     Manifest,
@@ -31,8 +31,8 @@ from mojo_rl.data import (
 )
 
 
-comptime OUT = "/tmp/mojo_rl_store_roundtrip.h5"
-comptime PUSHT_FIXTURE = "/tmp/mojo_rl_hdf5_fixture.h5"
+comptime OUT = "/tmp/noeira_store_roundtrip.h5"
+comptime PUSHT_FIXTURE = "/tmp/noeira_hdf5_fixture.h5"
 comptime PUSHT_REAL = "pusht_expert_train.h5"
 
 # Three uneven episodes; the middle one crosses the 4-row chunk boundary.
@@ -291,7 +291,7 @@ def test_foreign_fixture() raises:
 def test_foreign_real_pusht() raises:
     print("[4b] foreign ingest — REAL pusht_expert_train.h5 ...")
     var home = Path.home()
-    var p = home / ".cache" / "mojo_rl" / "lewm_pusht" / PUSHT_REAL
+    var p = home / ".cache" / "noeira" / "lewm_pusht" / PUSHT_REAL
     if not p.exists():
         print("    SKIP (not cached)")
         return

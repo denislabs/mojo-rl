@@ -38,33 +38,33 @@ Run: pixi run mojo run -I . tests/tasks/test_init_table.mojo
 
 from std.pathlib import Path
 
-from mojo_rl.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.tasks.spec import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.eval import region_sites
-from mojo_rl.tasks.active import active_mask
-from mojo_rl.tasks.sampler import RegionFrame, SampleReport
-from mojo_rl.tasks.reset import free_slot_addresses
-from mojo_rl.tasks.init_table import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.eval import region_sites
+from noeira.tasks.active import active_mask
+from noeira.tasks.sampler import RegionFrame, SampleReport
+from noeira.tasks.reset import free_slot_addresses
+from noeira.tasks.init_table import (
     InitTable, append_init_rows, write_init_table, load_init_table,
     family_key, INIT_TIME_WORDS,
 )
-from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
+from noeira.tasks.so101_tabletop_xml import So101TabletopModel
 
 
 comptime NQ = So101TabletopModel.NQ
 comptime NV = So101TabletopModel.NV
 comptime N_PER_TASK = 8
 
-comptime OUT_A = "/tmp/mojo_rl_init_a.h5"
-comptime OUT_B = "/tmp/mojo_rl_init_b.h5"
+comptime OUT_A = "/tmp/noeira_init_a.h5"
+comptime OUT_B = "/tmp/noeira_init_b.h5"
 
 
 struct Tally(Copyable, ImplicitlyCopyable, Movable):
@@ -88,7 +88,7 @@ def main() raises:
     print("=== frozen init states — freeze, load, refuse ===")
     var ta = Tally()
 
-    var f = load_family("mojo_rl/tasks/families/so101_tabletop.family")
+    var f = load_family("noeira/tasks/families/so101_tabletop.family")
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)
 
@@ -129,8 +129,8 @@ def main() raises:
     for _ in range(NQ):
         base.append(0.0)
 
-    var tg = load_task("mojo_rl/tasks/tasks/so101_gather_bricks.task")
-    var tr = load_task("mojo_rl/tasks/tasks/so101_reach_brick.task")
+    var tg = load_task("noeira/tasks/tasks/so101_gather_bricks.task")
+    var tr = load_task("noeira/tasks/tasks/so101_reach_brick.task")
     validate_task_against_family(tg, f)
     validate_task_against_family(tr, f)
 

@@ -23,20 +23,20 @@ Run: pixi run mojo run -I . tests/deep_agents/test_storage_redq_target_y.mojo
 from std.math import isnan, isinf
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
+from noeira.nn.constants import DT
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.core.initializer import Xavier
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
 
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.core.online_target_pair import OnlineTargetPair
-from mojo_rl.deep_agents.training.trainer_block import TrainerState
-from mojo_rl.deep_agents.redq.ensemble import CriticEnsemble
-from mojo_rl.deep_agents.redq.ensemble_target_y_block import EnsembleTargetYBlock
-from mojo_rl.deep_agents.redq.kernels import REDQ_TARGET_MIN
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.core.online_target_pair import OnlineTargetPair
+from noeira.deep_agents.training.trainer_block import TrainerState
+from noeira.deep_agents.redq.ensemble import CriticEnsemble
+from noeira.deep_agents.redq.ensemble_target_y_block import EnsembleTargetYBlock
+from noeira.deep_agents.redq.kernels import REDQ_TARGET_MIN
 
 
 comptime OBS = 3

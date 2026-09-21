@@ -14,7 +14,7 @@ Run with:
 
 from std.memory import alloc
 from std.ffi import c_int, c_float
-from mojo_rl.envs.board_games.chess.chess import (
+from noeira.envs.board_games.chess.chess import (
     ChessEnv,
     _encode_action,
     _decode_action,
@@ -46,15 +46,15 @@ from mojo_rl.envs.board_games.chess.chess import (
     _row,
     _col,
 )
-from mojo_rl.envs.board_games.chess.chess_sprites import (
+from noeira.envs.board_games.chess.chess_sprites import (
     create_sprite_sheet,
     PIECE_SIZE as SPRITE_SIZE,
     SHEET_WIDTH as SPRITE_SHEET_WIDTH,
     SHEET_HEIGHT as SPRITE_SHEET_HEIGHT,
     BYTES_PER_PIXEL as SPRITE_BPP,
 )
-from mojo_rl.render import Renderer2D, SDL_Color
-from mojo_rl.render.sdl import (
+from noeira.render import Renderer2D, SDL_Color
+from noeira.render.sdl import (
     create_surface_from,
     create_texture_from_surface,
     render_texture,
@@ -69,9 +69,9 @@ from mojo_rl.render.sdl import (
     BlendMode,
     ScaleMode,
 )
-from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
-from mojo_rl.render.sdl.sdl_scancode import Scancode
-from mojo_rl.render.sdl.sdl_mouse import get_mouse_state, MouseButtonFlags
+from noeira.render.sdl.sdl_keyboard import get_keyboard_state
+from noeira.render.sdl.sdl_scancode import Scancode
+from noeira.render.sdl.sdl_mouse import get_mouse_state, MouseButtonFlags
 
 
 def _file_letter(c: Int) -> String:

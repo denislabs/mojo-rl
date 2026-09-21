@@ -29,22 +29,22 @@ distinctive pose behind. Otherwise "the pose survived" could be true because
 Run: pixi run mojo run -I . tests/physics3d/test_state_remap.mojo
 """
 
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.flat_model import FlatModelDef
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.flat_model import FlatModelDef
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.studio.structure import delete_body
-from mojo_rl.physics3d.studio.remap import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.studio.structure import delete_body
+from noeira.physics3d.studio.remap import (
     remap_state, joint_qpos_adr, RemapReport,
 )
 
 
 comptime DT = DType.float64
-comptime MODEL = String("mojo_rl/envs/ant/assets/ant.xml")
-comptime BASE = String("mojo_rl/envs/ant/assets")
+comptime MODEL = String("noeira/envs/ant/assets/ant.xml")
+comptime BASE = String("noeira/envs/ant/assets")
 # ⚠ NOT THE LAST LEG. `front_left_leg`'s two joints sit in the MIDDLE of ant's
 # joint list, so removing them shifts the addresses of everything after —
 # which is the only condition under which arm 1 says anything.

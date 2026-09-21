@@ -51,38 +51,38 @@ props parked.
 from std.os import listdir
 from std.os.path import exists
 
-from mojo_rl.physics3d.fields import Data, Model, DynDims, DynamicsScratch
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, DynDims, DynamicsScratch
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
-from mojo_rl.tasks.spec import (
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
     INIT_TARGET_SLOT, STACK_Z_OFFSET, TABLE_Z_OFFSET, has_stacked_init,
 )
-from mojo_rl.tasks.placement.check import require_device_placement
-from mojo_rl.tasks.placement.libero_spatial import LiberoSpatialPlacement
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.eval import region_sites
-from mojo_rl.tasks.sampler import (
+from noeira.tasks.placement.check import require_device_placement
+from noeira.tasks.placement.libero_spatial import LiberoSpatialPlacement
+from noeira.tasks.family import scene_path
+from noeira.tasks.eval import region_sites
+from noeira.tasks.sampler import (
     sample_placements, sample_joint_inits, RegionFrame, SampleReport,
 )
-from mojo_rl.tasks.reset import (
+from noeira.tasks.reset import (
     free_slot_addresses, reset_slots,
     joint_init_addresses, joint_init_dof_addresses, apply_joint_inits,
 )
-from mojo_rl.tasks.libero_spatial_xml import LIBERO_SPATIAL_MAX_CONTACTS
-from mojo_rl.tasks.libero_init_z import load_init_z
-from mojo_rl.tasks.bddl import parse_bddl
+from noeira.tasks.libero_spatial_xml import LIBERO_SPATIAL_MAX_CONTACTS
+from noeira.tasks.libero_init_z import load_init_z
+from noeira.tasks.bddl import parse_bddl
 
 
 comptime DT = DType.float64
 comptime SUITE = "libero_spatial"
-comptime FAMILY = "mojo_rl/tasks/families/libero_spatial.family"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
-comptime PACK = "mojo_rl/tasks/libero/assets"
+comptime FAMILY = "noeira/tasks/families/libero_spatial.family"
+comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime PACK = "noeira/tasks/libero/assets"
 comptime BDDL_DIR = (
     "references/LIBERO-master/libero/libero/bddl_files/libero_spatial"
 )

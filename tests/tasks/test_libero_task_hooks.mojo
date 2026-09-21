@@ -51,103 +51,103 @@ from std.os import listdir
 from std.os.path import exists
 
 from layout import Layout, LayoutTensor
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_ACTIVE, META_IDX_TASK_PARAM_0,
     META_IDX_GOAL_HELD, MODEL_BODY_SIZE, MODEL_SITE_SIZE, MODEL_GEOM_SIZE,
     MODEL_CURRICULUM_SIZE, CONTACT_SIZE,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.tasks.spec import (
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.tasks.spec import (
     FamilySpec, TaskSpec, load_family, load_task, validate_task_against_family,
     SLOT_FREE,
 )
-from mojo_rl.tasks.family import scene_path, park_pos
-from mojo_rl.tasks.predicates import (
+from noeira.tasks.family import scene_path, park_pos
+from noeira.tasks.predicates import (
     parse_goal, bind_goal, joint_qpos_addresses, BoundGoal,
     OP_IN, OP_ON, OP_AT_REGION, OP_UPRIGHT, OP_JOINT,
 )
-from mojo_rl.tasks.eval import region_sites, region_contact_bodies
-from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.gpu_eval import eval_tape_gpu, region_table_words
-from mojo_rl.tasks.active import active_mask
-from mojo_rl.tasks.reset import (
+from noeira.tasks.eval import region_sites, region_contact_bodies
+from noeira.tasks.tape import encode_goal, TAPE_WORDS
+from noeira.tasks.gpu_eval import eval_tape_gpu, region_table_words
+from noeira.tasks.active import active_mask
+from noeira.tasks.reset import (
     free_slot_addresses, reset_slots, joint_init_addresses,
     joint_init_dof_addresses, apply_joint_inits, SlotAddress,
 )
-from mojo_rl.tasks.sampler import (
+from noeira.tasks.sampler import (
     sample_placements, sample_joint_inits, RegionFrame, SampleReport,
 )
-from mojo_rl.tasks.task_hooks import (
+from noeira.tasks.task_hooks import (
     repark_inactive_slots, write_task_obs, write_task_obs_host,
     TASK_GOAL_WORDS,
 )
-from mojo_rl.tasks.placement.table import PlacementTable
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
-from mojo_rl.tasks.libero_osc_config import LiberoOscConfig
-from mojo_rl.tasks.placement.libero_goal import LiberoGoalPlacement
-from mojo_rl.tasks.libero_goal_xml import LiberoGoalModel
-from mojo_rl.tasks.placement.libero_kitchen_scene1 import LiberoKitchenScene1Placement
-from mojo_rl.tasks.libero_envs.libero_kitchen_scene1_xml import LiberoKitchenScene1Model
-from mojo_rl.tasks.placement.libero_kitchen_scene10 import LiberoKitchenScene10Placement
-from mojo_rl.tasks.libero_envs.libero_kitchen_scene10_xml import LiberoKitchenScene10Model
-from mojo_rl.tasks.placement.libero_kitchen_scene2 import LiberoKitchenScene2Placement
-from mojo_rl.tasks.libero_envs.libero_kitchen_scene2_xml import LiberoKitchenScene2Model
-from mojo_rl.tasks.placement.libero_kitchen_scene3 import LiberoKitchenScene3Placement
-from mojo_rl.tasks.libero_envs.libero_kitchen_scene3_xml import LiberoKitchenScene3Model
-from mojo_rl.tasks.placement.libero_kitchen_scene4 import LiberoKitchenScene4Placement
-from mojo_rl.tasks.libero_envs.libero_kitchen_scene4_xml import LiberoKitchenScene4Model
-from mojo_rl.tasks.placement.libero_kitchen_scene5 import LiberoKitchenScene5Placement
-from mojo_rl.tasks.libero_envs.libero_kitchen_scene5_xml import LiberoKitchenScene5Model
-from mojo_rl.tasks.placement.libero_kitchen_scene6 import LiberoKitchenScene6Placement
-from mojo_rl.tasks.libero_envs.libero_kitchen_scene6_xml import LiberoKitchenScene6Model
-from mojo_rl.tasks.placement.libero_kitchen_scene7 import LiberoKitchenScene7Placement
-from mojo_rl.tasks.libero_envs.libero_kitchen_scene7_xml import LiberoKitchenScene7Model
-from mojo_rl.tasks.placement.libero_kitchen_scene8 import LiberoKitchenScene8Placement
-from mojo_rl.tasks.libero_envs.libero_kitchen_scene8_xml import LiberoKitchenScene8Model
-from mojo_rl.tasks.placement.libero_kitchen_scene9 import LiberoKitchenScene9Placement
-from mojo_rl.tasks.libero_envs.libero_kitchen_scene9_xml import LiberoKitchenScene9Model
-from mojo_rl.tasks.placement.libero_living_room_scene1 import LiberoLivingRoomScene1Placement
-from mojo_rl.tasks.libero_envs.libero_living_room_scene1_xml import LiberoLivingRoomScene1Model
-from mojo_rl.tasks.placement.libero_living_room_scene2 import LiberoLivingRoomScene2Placement
-from mojo_rl.tasks.libero_envs.libero_living_room_scene2_xml import LiberoLivingRoomScene2Model
-from mojo_rl.tasks.placement.libero_living_room_scene3 import LiberoLivingRoomScene3Placement
-from mojo_rl.tasks.libero_envs.libero_living_room_scene3_xml import LiberoLivingRoomScene3Model
-from mojo_rl.tasks.placement.libero_living_room_scene4 import LiberoLivingRoomScene4Placement
-from mojo_rl.tasks.libero_envs.libero_living_room_scene4_xml import LiberoLivingRoomScene4Model
-from mojo_rl.tasks.placement.libero_living_room_scene5 import LiberoLivingRoomScene5Placement
-from mojo_rl.tasks.libero_envs.libero_living_room_scene5_xml import LiberoLivingRoomScene5Model
-from mojo_rl.tasks.placement.libero_living_room_scene6 import LiberoLivingRoomScene6Placement
-from mojo_rl.tasks.libero_envs.libero_living_room_scene6_xml import LiberoLivingRoomScene6Model
-from mojo_rl.tasks.placement.libero_object import LiberoObjectPlacement
-from mojo_rl.tasks.libero_object_xml import LiberoObjectModel
-from mojo_rl.tasks.placement.libero_spatial import LiberoSpatialPlacement
-from mojo_rl.tasks.libero_spatial_xml import LiberoSpatialModel
-from mojo_rl.tasks.placement.libero_study_scene1 import LiberoStudyScene1Placement
-from mojo_rl.tasks.libero_envs.libero_study_scene1_xml import LiberoStudyScene1Model
-from mojo_rl.tasks.placement.libero_study_scene2 import LiberoStudyScene2Placement
-from mojo_rl.tasks.libero_envs.libero_study_scene2_xml import LiberoStudyScene2Model
-from mojo_rl.tasks.placement.libero_study_scene3 import LiberoStudyScene3Placement
-from mojo_rl.tasks.libero_envs.libero_study_scene3_xml import LiberoStudyScene3Model
-from mojo_rl.tasks.placement.libero_study_scene4 import LiberoStudyScene4Placement
-from mojo_rl.tasks.libero_envs.libero_study_scene4_xml import LiberoStudyScene4Model
+from noeira.tasks.placement.table import PlacementTable
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.types import ConeType
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.tasks.libero_osc_config import LiberoOscConfig
+from noeira.tasks.placement.libero_goal import LiberoGoalPlacement
+from noeira.tasks.libero_goal_xml import LiberoGoalModel
+from noeira.tasks.placement.libero_kitchen_scene1 import LiberoKitchenScene1Placement
+from noeira.tasks.libero_envs.libero_kitchen_scene1_xml import LiberoKitchenScene1Model
+from noeira.tasks.placement.libero_kitchen_scene10 import LiberoKitchenScene10Placement
+from noeira.tasks.libero_envs.libero_kitchen_scene10_xml import LiberoKitchenScene10Model
+from noeira.tasks.placement.libero_kitchen_scene2 import LiberoKitchenScene2Placement
+from noeira.tasks.libero_envs.libero_kitchen_scene2_xml import LiberoKitchenScene2Model
+from noeira.tasks.placement.libero_kitchen_scene3 import LiberoKitchenScene3Placement
+from noeira.tasks.libero_envs.libero_kitchen_scene3_xml import LiberoKitchenScene3Model
+from noeira.tasks.placement.libero_kitchen_scene4 import LiberoKitchenScene4Placement
+from noeira.tasks.libero_envs.libero_kitchen_scene4_xml import LiberoKitchenScene4Model
+from noeira.tasks.placement.libero_kitchen_scene5 import LiberoKitchenScene5Placement
+from noeira.tasks.libero_envs.libero_kitchen_scene5_xml import LiberoKitchenScene5Model
+from noeira.tasks.placement.libero_kitchen_scene6 import LiberoKitchenScene6Placement
+from noeira.tasks.libero_envs.libero_kitchen_scene6_xml import LiberoKitchenScene6Model
+from noeira.tasks.placement.libero_kitchen_scene7 import LiberoKitchenScene7Placement
+from noeira.tasks.libero_envs.libero_kitchen_scene7_xml import LiberoKitchenScene7Model
+from noeira.tasks.placement.libero_kitchen_scene8 import LiberoKitchenScene8Placement
+from noeira.tasks.libero_envs.libero_kitchen_scene8_xml import LiberoKitchenScene8Model
+from noeira.tasks.placement.libero_kitchen_scene9 import LiberoKitchenScene9Placement
+from noeira.tasks.libero_envs.libero_kitchen_scene9_xml import LiberoKitchenScene9Model
+from noeira.tasks.placement.libero_living_room_scene1 import LiberoLivingRoomScene1Placement
+from noeira.tasks.libero_envs.libero_living_room_scene1_xml import LiberoLivingRoomScene1Model
+from noeira.tasks.placement.libero_living_room_scene2 import LiberoLivingRoomScene2Placement
+from noeira.tasks.libero_envs.libero_living_room_scene2_xml import LiberoLivingRoomScene2Model
+from noeira.tasks.placement.libero_living_room_scene3 import LiberoLivingRoomScene3Placement
+from noeira.tasks.libero_envs.libero_living_room_scene3_xml import LiberoLivingRoomScene3Model
+from noeira.tasks.placement.libero_living_room_scene4 import LiberoLivingRoomScene4Placement
+from noeira.tasks.libero_envs.libero_living_room_scene4_xml import LiberoLivingRoomScene4Model
+from noeira.tasks.placement.libero_living_room_scene5 import LiberoLivingRoomScene5Placement
+from noeira.tasks.libero_envs.libero_living_room_scene5_xml import LiberoLivingRoomScene5Model
+from noeira.tasks.placement.libero_living_room_scene6 import LiberoLivingRoomScene6Placement
+from noeira.tasks.libero_envs.libero_living_room_scene6_xml import LiberoLivingRoomScene6Model
+from noeira.tasks.placement.libero_object import LiberoObjectPlacement
+from noeira.tasks.libero_object_xml import LiberoObjectModel
+from noeira.tasks.placement.libero_spatial import LiberoSpatialPlacement
+from noeira.tasks.libero_spatial_xml import LiberoSpatialModel
+from noeira.tasks.placement.libero_study_scene1 import LiberoStudyScene1Placement
+from noeira.tasks.libero_envs.libero_study_scene1_xml import LiberoStudyScene1Model
+from noeira.tasks.placement.libero_study_scene2 import LiberoStudyScene2Placement
+from noeira.tasks.libero_envs.libero_study_scene2_xml import LiberoStudyScene2Model
+from noeira.tasks.placement.libero_study_scene3 import LiberoStudyScene3Placement
+from noeira.tasks.libero_envs.libero_study_scene3_xml import LiberoStudyScene3Model
+from noeira.tasks.placement.libero_study_scene4 import LiberoStudyScene4Placement
+from noeira.tasks.libero_envs.libero_study_scene4_xml import LiberoStudyScene4Model
 
 comptime DT = DType.float64
-comptime FAMILY_DIR = "mojo_rl/tasks/families"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
+comptime FAMILY_DIR = "noeira/tasks/families"
+comptime TASK_DIR = "noeira/tasks/tasks/"
 comptime B = 2
 comptime SEED = 7
 comptime MC = 64
 comptime N_LIBERO_FAMILIES = 23
 comptime N_LIBERO_TASKS = 129
 comptime GRIP_NAME = "robot_grip_site"
-comptime BUDGET_KV = "mojo_rl/tasks/libero/contact_budget.kv"
+comptime BUDGET_KV = "noeira/tasks/libero/contact_budget.kv"
 
 
 struct Tally(Copyable, ImplicitlyCopyable, Movable):

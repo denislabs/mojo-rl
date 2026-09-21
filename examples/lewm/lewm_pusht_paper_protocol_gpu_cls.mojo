@@ -23,13 +23,13 @@ from std.random import seed as rng_seed, random_float64
 from max.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.datasets.lewm_pusht import LewmPushTExpert
-from mojo_rl.experimental.lewm.trainer import LeWMTrainer
-from mojo_rl.experimental.lewm.encoder import LeWMEncoderCLS
-from mojo_rl.experimental.lewm.paper_protocol import run_lewm_paper_protocol
-from mojo_rl.experimental.lewm.pong_data import WindowSource
-from mojo_rl.envs.pusht import PushTOfflineSampler
+from noeira.nn.constants import DT
+from noeira.nn.datasets.lewm_pusht import LewmPushTExpert
+from noeira.experimental.lewm.trainer import LeWMTrainer
+from noeira.experimental.lewm.encoder import LeWMEncoderCLS
+from noeira.experimental.lewm.paper_protocol import run_lewm_paper_protocol
+from noeira.experimental.lewm.pong_data import WindowSource
+from noeira.envs.pusht import PushTOfflineSampler
 
 
 # ── must match lewm_pusht_train_gpu_paper_cls.mojo ────────────────────

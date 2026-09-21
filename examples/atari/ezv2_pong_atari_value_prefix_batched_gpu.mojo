@@ -26,23 +26,23 @@ Requires the Pong ROM at `roms/pong.bin`.
 from std.memory import Pointer
 from max.gpu.host import DeviceContext
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.optimizer.adam import Adam
 
-from mojo_rl.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
-from mojo_rl.deep_agents.efficient_zero_v2.nets_atari import (
+from noeira.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
+from noeira.deep_agents.efficient_zero_v2.nets_atari import (
     EZDynVPNetAtari, ez_atari_init_zero_pred, ez_atari_init_zero_reward,
     EZ_LSTM_HORIZON,
 )
-from mojo_rl.deep_agents.efficient_zero_v2.selfplay_gpu_batched_vp import (
+from noeira.deep_agents.efficient_zero_v2.selfplay_gpu_batched_vp import (
     run_ezv2_gumbel_selfplay_gpu_batched_vp,
 )
-from mojo_rl.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
-from mojo_rl.envs.atari import AtariEnv, load_rom
-from mojo_rl.envs.atari.games.registry import AtariGame
+from noeira.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
+from noeira.envs.atari import AtariEnv, load_rom
+from noeira.envs.atari.games.registry import AtariGame
 
 
 comptime FRAMES = 4
@@ -124,10 +124,10 @@ def main() raises:
 
         var env_vars = load_dotenv()
         var logger = RemoteLogger(
-            server_url=env_vars.get("RL_MONITOR_URL", ""),
+            server_url=env_vars.get("NOEIRA_CLOUD_URL", ""),
             run_name="EZv2 ValuePrefix Atari Pong GPU (batched)",
             buffer_size=64,
-            api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+            api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
         )
         logger.set_config("agent", "EZv2 + value-prefix (batched)")
         logger.set_config("env", "Atari Pong (RGB 96, OBS_MODE=2)")

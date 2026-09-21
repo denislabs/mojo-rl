@@ -31,15 +31,15 @@ Run:
 from std.math import abs, sqrt
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.fb.obs_norm import ObsNorm
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.fb.obs_norm import ObsNorm
 
 
 comptime N: Int = 4
 comptime R: Int = 64
-comptime TMP: StaticString = "/tmp/mojo_rl_test_obs_norm.sidecar"
-comptime TMP_BAD: StaticString = "/tmp/mojo_rl_test_obs_norm.bad"
+comptime TMP: StaticString = "/tmp/noeira_test_obs_norm.sidecar"
+comptime TMP_BAD: StaticString = "/tmp/noeira_test_obs_norm.bad"
 
 
 def _make() raises -> Tensor:
@@ -167,7 +167,7 @@ def main() raises:
 
     # ── [6] absent sidecar is None, not an error ────────────────────────
     var missing = ObsNorm[N].try_load(
-        String("/tmp/mojo_rl_test_obs_norm.definitely_absent")
+        String("/tmp/noeira_test_obs_norm.definitely_absent")
     )
     assert_true(
         not Bool(missing),

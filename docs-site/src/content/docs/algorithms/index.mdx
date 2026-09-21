@@ -78,7 +78,7 @@ Monte-Carlo tree search, with self-play as the training signal.
 
 These four — the zero-series plus TD-MPC2 — are the agents that *search* rather
 than evaluate a policy. The search itself is factored out into
-[`mojo_rl.planners`](/planners/): MPPI and CEM over action sequences, MCTS over
+[`noeira.planners`](/planners/): MPPI and CEM over action sequences, MCTS over
 a tree. If you are tuning simulation counts, elite fractions or horizons, that
 section is where the behaviour is described.
 
@@ -126,11 +126,11 @@ Every deep agent has the same shape: one package per algorithm exposing an
 `XxxAgent` over a trainer plus a shared training driver.
 
 ```mojo
-from mojo_rl.deep_agents.dqn import DQNAgent
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.ppo import PPOAgent
-from mojo_rl.deep_agents.muzero import MuZeroAgent
-from mojo_rl.deep_agents.dreamerv3 import DreamerV3Agent
+from noeira.deep_agents.dqn import DQNAgent
+from noeira.deep_agents.sac import SACAgent
+from noeira.deep_agents.ppo import PPOAgent
+from noeira.deep_agents.muzero import MuZeroAgent
+from noeira.deep_agents.dreamerv3 import DreamerV3Agent
 ```
 
 Networks arrive as compile-time parameters, so an agent does not know what
@@ -140,12 +140,12 @@ architecture it is optimizing — see
 Tabular and linear agents live in a separate package with a simpler interface:
 
 ```mojo
-from mojo_rl.agents import QLearningAgent, SARSAAgent, TiledQLearningAgent
+from noeira.agents import QLearningAgent, SARSAAgent, TiledQLearningAgent
 ```
 
 :::note[Some names exist in both packages]
 `PPOAgent`, `DDPGAgent`, `TD3Agent` and `SACAgent` exist in both
-`mojo_rl.agents` (linear) and `mojo_rl.deep_agents` (neural). Check the import
+`noeira.agents` (linear) and `noeira.deep_agents` (neural). Check the import
 path.
 :::
 

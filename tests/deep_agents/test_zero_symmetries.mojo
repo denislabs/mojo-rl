@@ -15,8 +15,8 @@ Run:
 
 from std.testing import assert_equal, assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.zero.symmetries import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.zero.symmetries import (
     IdentityAugmenter, D4SquareAugmenter, HFlipColumnAugmenter,
 )
 

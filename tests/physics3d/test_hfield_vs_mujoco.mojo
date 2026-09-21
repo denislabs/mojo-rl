@@ -45,18 +45,18 @@ from std.testing import assert_true, TestSuite
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, Dims, DynDims, init_hfield_data
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, Dims, DynDims, init_hfield_data
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
 )
-from mojo_rl.physics3d.parser.fields_build import (
+from noeira.physics3d.parser.fields_build import (
     build_model_fields_from_flat,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.constants import GEOM_HFIELD
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.constants import GEOM_HFIELD
+from noeira.physics3d.gpu.constants import (
     MODEL_HFIELD_META_SIZE, HFIELD_META_IDX_NROW, HFIELD_META_IDX_NCOL,
     HFIELD_META_IDX_SIZE_X, HFIELD_META_IDX_SIZE_Z, HFIELD_META_IDX_SIZE_BASE,
     MODEL_GEOM_SIZE, GEOM_IDX_TYPE, GEOM_IDX_RBOUND, GEOM_IDX_HALF_Z,

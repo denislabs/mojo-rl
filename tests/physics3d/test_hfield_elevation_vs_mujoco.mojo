@@ -36,7 +36,7 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.full_parser import parse_xml_full
 
 comptime TOL = 1e-7  # MuJoCo stores hfield_data as float32
 

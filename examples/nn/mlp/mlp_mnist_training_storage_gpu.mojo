@@ -15,13 +15,13 @@ from std.testing import assert_true
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.datasets import MNIST
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.training.trainer import Trainer
+from noeira.nn.datasets import MNIST
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.training.trainer import Trainer
 
 
 def main() raises:

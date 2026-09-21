@@ -55,88 +55,88 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true
 
-from mojo_rl.physics3d.parser import parse_xml
+from noeira.physics3d.parser import parse_xml
 
 
 def _read(path: String) raises -> String:
     """The model's MJCF, from the asset — there is no embedded copy any more."""
     with open(path, "r") as f:
         return f.read()
-from mojo_rl.physics3d.parser.xml_parser import ParsedModel
+from noeira.physics3d.parser.xml_parser import ParsedModel
 
-from mojo_rl.envs.ant.ant_dims import ANT_DIMS
-from mojo_rl.envs.half_cheetah.half_cheetah_dims import HALF_CHEETAH_DIMS
-from mojo_rl.envs.hopper.hopper_dims import HOPPER_DIMS
-from mojo_rl.envs.humanoid.humanoid_dims import HUMANOID_DIMS
-from mojo_rl.envs.humanoid_standup.humanoid_standup_dims import HUMANOID_STANDUP_DIMS
-from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_dims import INVERTED_DOUBLE_PENDULUM_DIMS
-from mojo_rl.envs.inverted_pendulum.inverted_pendulum_dims import INVERTED_PENDULUM_DIMS
-from mojo_rl.envs.pusher.pusher_dims import PUSHER_DIMS
-from mojo_rl.envs.reacher.reacher_dims import REACHER_DIMS
-from mojo_rl.envs.swimmer.swimmer_dims import SWIMMER_DIMS
-from mojo_rl.envs.walker2d.walker2d_dims import WALKER2D_DIMS
-from mojo_rl.envs.metaworld.sawyer_reach_dims import SAWYER_REACH_DIMS
-from mojo_rl.envs.robots.so_arm100_dims import SO_ARM100_DIMS
-from mojo_rl.envs.robots.so_arm101_dims import SO_ARM101_DIMS
-from mojo_rl.envs.dm_control.acrobot.acrobot_dims import DM_ACROBOT_DIMS
-from mojo_rl.envs.dm_control.ball_in_cup.ball_in_cup_dims import DM_BALL_IN_CUP_DIMS
-from mojo_rl.envs.dm_control.cartpole.cartpole_dims import (
+from noeira.envs.ant.ant_dims import ANT_DIMS
+from noeira.envs.half_cheetah.half_cheetah_dims import HALF_CHEETAH_DIMS
+from noeira.envs.hopper.hopper_dims import HOPPER_DIMS
+from noeira.envs.humanoid.humanoid_dims import HUMANOID_DIMS
+from noeira.envs.humanoid_standup.humanoid_standup_dims import HUMANOID_STANDUP_DIMS
+from noeira.envs.inverted_double_pendulum.inverted_double_pendulum_dims import INVERTED_DOUBLE_PENDULUM_DIMS
+from noeira.envs.inverted_pendulum.inverted_pendulum_dims import INVERTED_PENDULUM_DIMS
+from noeira.envs.pusher.pusher_dims import PUSHER_DIMS
+from noeira.envs.reacher.reacher_dims import REACHER_DIMS
+from noeira.envs.swimmer.swimmer_dims import SWIMMER_DIMS
+from noeira.envs.walker2d.walker2d_dims import WALKER2D_DIMS
+from noeira.envs.metaworld.sawyer_reach_dims import SAWYER_REACH_DIMS
+from noeira.envs.robots.so_arm100_dims import SO_ARM100_DIMS
+from noeira.envs.robots.so_arm101_dims import SO_ARM101_DIMS
+from noeira.envs.dm_control.acrobot.acrobot_dims import DM_ACROBOT_DIMS
+from noeira.envs.dm_control.ball_in_cup.ball_in_cup_dims import DM_BALL_IN_CUP_DIMS
+from noeira.envs.dm_control.cartpole.cartpole_dims import (
     DM_CARTPOLE1_DIMS,
     DM_CARTPOLE2_DIMS,
     DM_CARTPOLE3_DIMS
 )
-from mojo_rl.envs.dm_control.cheetah.cheetah_dims import DM_CHEETAH_DIMS
-from mojo_rl.envs.dm_control.finger.finger_dims import (
+from noeira.envs.dm_control.cheetah.cheetah_dims import DM_CHEETAH_DIMS
+from noeira.envs.dm_control.finger.finger_dims import (
     DM_FINGER_DIMS,
     DM_FINGER_SPIN_DIMS
 )
-from mojo_rl.envs.dm_control.fish.fish_dims import DM_FISH_DIMS
-from mojo_rl.envs.dm_control.hopper.hopper_dims import DM_HOPPER_DIMS
-from mojo_rl.envs.dm_control.humanoid.humanoid_dims import DM_HUMANOID_DIMS
-from mojo_rl.envs.dm_control.humanoid_cmu.humanoid_cmu_dims import DM_HUMANOID_CMU_DIMS
-from mojo_rl.envs.dm_control.manipulator.manipulator_dims import (
+from noeira.envs.dm_control.fish.fish_dims import DM_FISH_DIMS
+from noeira.envs.dm_control.hopper.hopper_dims import DM_HOPPER_DIMS
+from noeira.envs.dm_control.humanoid.humanoid_dims import DM_HUMANOID_DIMS
+from noeira.envs.dm_control.humanoid_cmu.humanoid_cmu_dims import DM_HUMANOID_CMU_DIMS
+from noeira.envs.dm_control.manipulator.manipulator_dims import (
     DM_MANIPULATOR_BRING_BALL_DIMS,
     DM_MANIPULATOR_BRING_PEG_DIMS,
     DM_MANIPULATOR_INSERT_BALL_DIMS,
     DM_MANIPULATOR_INSERT_PEG_DIMS
 )
-from mojo_rl.envs.dm_control.pendulum.pendulum_dims import DM_PENDULUM_DIMS
-from mojo_rl.envs.dm_control.point_mass.point_mass_dims import DM_POINT_MASS_DIMS
-from mojo_rl.envs.dm_control.quadruped.quadruped_dims import (
+from noeira.envs.dm_control.pendulum.pendulum_dims import DM_PENDULUM_DIMS
+from noeira.envs.dm_control.point_mass.point_mass_dims import DM_POINT_MASS_DIMS
+from noeira.envs.dm_control.quadruped.quadruped_dims import (
     DM_QUADRUPED_WALK_DIMS,
     DM_QUADRUPED_RUN_DIMS,
     DM_QUADRUPED_FETCH_DIMS
 )
-from mojo_rl.envs.dm_control.reacher.reacher_dims import (
+from noeira.envs.dm_control.reacher.reacher_dims import (
     DM_REACHER_DIMS,
     DM_REACHER_HARD_DIMS,
 )
-from mojo_rl.envs.dm_control.stacker.stacker_dims import (
+from noeira.envs.dm_control.stacker.stacker_dims import (
     DM_STACKER_2_DIMS,
     DM_STACKER_4_DIMS
 )
-from mojo_rl.envs.dm_control.swimmer.swimmer_dims import (
+from noeira.envs.dm_control.swimmer.swimmer_dims import (
     DM_SWIMMER6_DIMS,
     DM_SWIMMER15_DIMS
 )
-from mojo_rl.envs.dm_control.walker.walker_dims import DM_WALKER_DIMS
-from mojo_rl.envs.dm_control.manipulation_lift_box_dims import LIFT_LARGE_BOX_DIMS
-from mojo_rl.envs.dm_control.manipulation_place_cradle_dims import PLACE_CRADLE_DIMS
-from mojo_rl.envs.dm_control.manipulation_place_brick_dims import PLACE_BRICK_DIMS
-from mojo_rl.envs.dm_control.manipulation_lift_brick_dims import LIFT_BRICK_DIMS
-from mojo_rl.envs.dm_control.manipulation_reassemble5_dims import REASSEMBLE5_DIMS
-from mojo_rl.envs.dm_control.manipulation_reach_dims import REACH_SITE_FEATURES_DIMS
-from mojo_rl.envs.dm_control.manipulation_reach_duplo_dims import REACH_DUPLO_DIMS
-from mojo_rl.envs.dm_control.manipulation_stack_3_bricks_dims import STACK_3_BRICKS_DIMS
-from mojo_rl.envs.dm_control.manipulation_stack3r_dims import STACK_3_RANDOM_DIMS
-from mojo_rl.envs.dm_control.manipulation_stack_2_bricks_moveable_base_dims import STACK_2_BRICKS_MOVEABLE_BASE_DIMS
-from mojo_rl.envs.dm_control.manipulation_stack2_dims import STACK_2_BRICKS_DIMS
-from mojo_rl.envs.dm_control.dog.dog_dims import (
+from noeira.envs.dm_control.walker.walker_dims import DM_WALKER_DIMS
+from noeira.envs.dm_control.manipulation_lift_box_dims import LIFT_LARGE_BOX_DIMS
+from noeira.envs.dm_control.manipulation_place_cradle_dims import PLACE_CRADLE_DIMS
+from noeira.envs.dm_control.manipulation_place_brick_dims import PLACE_BRICK_DIMS
+from noeira.envs.dm_control.manipulation_lift_brick_dims import LIFT_BRICK_DIMS
+from noeira.envs.dm_control.manipulation_reassemble5_dims import REASSEMBLE5_DIMS
+from noeira.envs.dm_control.manipulation_reach_dims import REACH_SITE_FEATURES_DIMS
+from noeira.envs.dm_control.manipulation_reach_duplo_dims import REACH_DUPLO_DIMS
+from noeira.envs.dm_control.manipulation_stack_3_bricks_dims import STACK_3_BRICKS_DIMS
+from noeira.envs.dm_control.manipulation_stack3r_dims import STACK_3_RANDOM_DIMS
+from noeira.envs.dm_control.manipulation_stack_2_bricks_moveable_base_dims import STACK_2_BRICKS_MOVEABLE_BASE_DIMS
+from noeira.envs.dm_control.manipulation_stack2_dims import STACK_2_BRICKS_DIMS
+from noeira.envs.dm_control.dog.dog_dims import (
     DM_DOG_STAND_WALK_DIMS,
     DM_DOG_RUN_DIMS,
     DM_DOG_TROT_DIMS
 )
-from mojo_rl.envs.dm_control.dog.dog_fetch_dims import DM_DOG_FETCH_DIMS
+from noeira.envs.dm_control.dog.dog_fetch_dims import DM_DOG_FETCH_DIMS
 
 
 # ⚠ NON-VACUITY FIXTURE. Every real model in the tree leaves `<pair>`,
@@ -327,63 +327,63 @@ def main() raises:
     print("=== model dims: scanned + generated, both vs MuJoCo ===")
 
     check_scan_only(t, "_FIXTURE", String(_FIXTURE_XML))
-    check(t, "ant_xml", "mojo_rl/envs/ant/assets/ant.xml", materialize[ANT_DIMS]())
-    check(t, "half_cheetah_xml", "mojo_rl/envs/half_cheetah/assets/half_cheetah.xml", materialize[HALF_CHEETAH_DIMS]())
-    check(t, "hopper_xml", "mojo_rl/envs/hopper/assets/hopper.xml", materialize[HOPPER_DIMS]())
-    check(t, "humanoid_xml", "mojo_rl/envs/humanoid/assets/humanoid.xml", materialize[HUMANOID_DIMS]())
-    check(t, "humanoid_standup_xml", "mojo_rl/envs/humanoid_standup/assets/humanoid_standup.xml", materialize[HUMANOID_STANDUP_DIMS]())
-    check(t, "inverted_double_pendulum_xml", "mojo_rl/envs/inverted_double_pendulum/assets/inverted_double_pendulum.xml", materialize[INVERTED_DOUBLE_PENDULUM_DIMS]())
-    check(t, "inverted_pendulum_xml", "mojo_rl/envs/inverted_pendulum/assets/inverted_pendulum.xml", materialize[INVERTED_PENDULUM_DIMS]())
-    check(t, "pusher_xml", "mojo_rl/envs/pusher/assets/pusher.xml", materialize[PUSHER_DIMS]())
-    check(t, "reacher_xml", "mojo_rl/envs/reacher/assets/reacher.xml", materialize[REACHER_DIMS]())
-    check(t, "swimmer_xml", "mojo_rl/envs/swimmer/assets/swimmer.xml", materialize[SWIMMER_DIMS]())
-    check(t, "walker2d_xml", "mojo_rl/envs/walker2d/assets/walker2d.xml", materialize[WALKER2D_DIMS]())
-    check(t, "sawyer_reach_xml", "mojo_rl/envs/metaworld/assets/sawyer_reach.xml", materialize[SAWYER_REACH_DIMS]())
-    check(t, "SO_ARM100_XML", "mojo_rl/envs/robots/assets/so_arm100.xml", materialize[SO_ARM100_DIMS]())
-    check(t, "SO_ARM101_XML", "mojo_rl/envs/robots/assets/so_arm101.xml", materialize[SO_ARM101_DIMS]())
-    check(t, "dm_acrobot_xml", "mojo_rl/envs/dm_control/assets/acrobot.xml", materialize[DM_ACROBOT_DIMS]())
-    check(t, "dm_ball_in_cup_xml", "mojo_rl/envs/dm_control/assets/ball_in_cup.xml", materialize[DM_BALL_IN_CUP_DIMS]())
-    check(t, "dm_cartpole1_xml", "mojo_rl/envs/dm_control/assets/cartpole1.xml", materialize[DM_CARTPOLE1_DIMS]())
-    check(t, "dm_cartpole2_xml", "mojo_rl/envs/dm_control/assets/cartpole2.xml", materialize[DM_CARTPOLE2_DIMS]())
-    check(t, "dm_cartpole3_xml", "mojo_rl/envs/dm_control/assets/cartpole3.xml", materialize[DM_CARTPOLE3_DIMS]())
-    check(t, "dm_cheetah_xml", "mojo_rl/envs/dm_control/assets/cheetah.xml", materialize[DM_CHEETAH_DIMS]())
-    check(t, "dm_finger_xml", "mojo_rl/envs/dm_control/assets/finger.xml", materialize[DM_FINGER_DIMS]())
-    check(t, "dm_finger_spin_xml", "mojo_rl/envs/dm_control/assets/finger_spin.xml", materialize[DM_FINGER_SPIN_DIMS]())
-    check(t, "dm_fish_xml", "mojo_rl/envs/dm_control/assets/fish.xml", materialize[DM_FISH_DIMS]())
-    check(t, "dm_hopper_xml", "mojo_rl/envs/dm_control/assets/hopper.xml", materialize[DM_HOPPER_DIMS]())
-    check(t, "dm_humanoid_xml", "mojo_rl/envs/dm_control/assets/humanoid.xml", materialize[DM_HUMANOID_DIMS]())
-    check(t, "dm_humanoid_cmu_xml", "mojo_rl/envs/dm_control/assets/humanoid_cmu.xml", materialize[DM_HUMANOID_CMU_DIMS]())
-    check(t, "dm_manipulator_bring_ball_xml", "mojo_rl/envs/dm_control/assets/manipulator_bring_ball.xml", materialize[DM_MANIPULATOR_BRING_BALL_DIMS]())
-    check(t, "dm_manipulator_bring_peg_xml", "mojo_rl/envs/dm_control/assets/manipulator_bring_peg.xml", materialize[DM_MANIPULATOR_BRING_PEG_DIMS]())
-    check(t, "dm_manipulator_insert_ball_xml", "mojo_rl/envs/dm_control/assets/manipulator_insert_ball.xml", materialize[DM_MANIPULATOR_INSERT_BALL_DIMS]())
-    check(t, "dm_manipulator_insert_peg_xml", "mojo_rl/envs/dm_control/assets/manipulator_insert_peg.xml", materialize[DM_MANIPULATOR_INSERT_PEG_DIMS]())
-    check(t, "dm_pendulum_xml", "mojo_rl/envs/dm_control/assets/pendulum.xml", materialize[DM_PENDULUM_DIMS]())
-    check(t, "dm_point_mass_xml", "mojo_rl/envs/dm_control/assets/point_mass.xml", materialize[DM_POINT_MASS_DIMS]())
-    check(t, "dm_quadruped_walk_xml", "mojo_rl/envs/dm_control/assets/quadruped_walk.xml", materialize[DM_QUADRUPED_WALK_DIMS]())
-    check(t, "dm_quadruped_run_xml", "mojo_rl/envs/dm_control/assets/quadruped_run.xml", materialize[DM_QUADRUPED_RUN_DIMS]())
-    check(t, "dm_quadruped_fetch_xml", "mojo_rl/envs/dm_control/assets/quadruped_fetch.xml", materialize[DM_QUADRUPED_FETCH_DIMS]())
-    check(t, "dm_reacher_xml", "mojo_rl/envs/dm_control/assets/reacher.xml", materialize[DM_REACHER_DIMS]())
-    check(t, "dm_reacher_hard_xml", "mojo_rl/envs/dm_control/assets/reacher_hard.xml", materialize[DM_REACHER_HARD_DIMS]())
-    check(t, "dm_stacker_2_xml", "mojo_rl/envs/dm_control/assets/stacker_2.xml", materialize[DM_STACKER_2_DIMS]())
-    check(t, "dm_stacker_4_xml", "mojo_rl/envs/dm_control/assets/stacker_4.xml", materialize[DM_STACKER_4_DIMS]())
-    check(t, "dm_swimmer6_xml", "mojo_rl/envs/dm_control/assets/swimmer6.xml", materialize[DM_SWIMMER6_DIMS]())
-    check(t, "dm_swimmer15_xml", "mojo_rl/envs/dm_control/assets/swimmer15.xml", materialize[DM_SWIMMER15_DIMS]())
-    check(t, "dm_walker_xml", "mojo_rl/envs/dm_control/assets/walker.xml", materialize[DM_WALKER_DIMS]())
-    check(t, "lift_large_box_xml", "mojo_rl/envs/dm_control/assets/manipulation/lift_large_box.xml", materialize[LIFT_LARGE_BOX_DIMS]())
-    check(t, "place_cradle_xml", "mojo_rl/envs/dm_control/assets/manipulation/place_cradle.xml", materialize[PLACE_CRADLE_DIMS]())
-    check(t, "place_brick_xml", "mojo_rl/envs/dm_control/assets/manipulation/place_brick.xml", materialize[PLACE_BRICK_DIMS]())
-    check(t, "lift_brick_xml", "mojo_rl/envs/dm_control/assets/manipulation/lift_brick.xml", materialize[LIFT_BRICK_DIMS]())
-    check(t, "reassemble5_xml", "mojo_rl/envs/dm_control/assets/manipulation/reassemble5.xml", materialize[REASSEMBLE5_DIMS]())
-    check(t, "reach_site_features_xml", "mojo_rl/envs/dm_control/assets/manipulation/reach_site_features.xml", materialize[REACH_SITE_FEATURES_DIMS]())
-    check(t, "reach_duplo_xml", "mojo_rl/envs/dm_control/assets/manipulation/reach_duplo.xml", materialize[REACH_DUPLO_DIMS]())
-    check(t, "stack_3_bricks_xml", "mojo_rl/envs/dm_control/assets/manipulation/stack_3_bricks.xml", materialize[STACK_3_BRICKS_DIMS]())
-    check(t, "stack_3_random_xml", "mojo_rl/envs/dm_control/assets/manipulation/stack_3_random.xml", materialize[STACK_3_RANDOM_DIMS]())
-    check(t, "stack_2_bricks_moveable_base_xml", "mojo_rl/envs/dm_control/assets/manipulation/stack_2_bricks_moveable_base.xml", materialize[STACK_2_BRICKS_MOVEABLE_BASE_DIMS]())
-    check(t, "stack_2_bricks_xml", "mojo_rl/envs/dm_control/assets/manipulation/stack_2_bricks.xml", materialize[STACK_2_BRICKS_DIMS]())
-    check(t, "dm_dog_stand_walk_xml", "mojo_rl/envs/dm_control/assets/dog_stand_walk.xml", materialize[DM_DOG_STAND_WALK_DIMS]())
-    check(t, "dm_dog_run_xml", "mojo_rl/envs/dm_control/assets/dog_run.xml", materialize[DM_DOG_RUN_DIMS]())
-    check(t, "dm_dog_trot_xml", "mojo_rl/envs/dm_control/assets/dog_trot.xml", materialize[DM_DOG_TROT_DIMS]())
-    check(t, "dm_dog_fetch_xml", "mojo_rl/envs/dm_control/assets/dog_fetch.xml", materialize[DM_DOG_FETCH_DIMS]())
+    check(t, "ant_xml", "noeira/envs/ant/assets/ant.xml", materialize[ANT_DIMS]())
+    check(t, "half_cheetah_xml", "noeira/envs/half_cheetah/assets/half_cheetah.xml", materialize[HALF_CHEETAH_DIMS]())
+    check(t, "hopper_xml", "noeira/envs/hopper/assets/hopper.xml", materialize[HOPPER_DIMS]())
+    check(t, "humanoid_xml", "noeira/envs/humanoid/assets/humanoid.xml", materialize[HUMANOID_DIMS]())
+    check(t, "humanoid_standup_xml", "noeira/envs/humanoid_standup/assets/humanoid_standup.xml", materialize[HUMANOID_STANDUP_DIMS]())
+    check(t, "inverted_double_pendulum_xml", "noeira/envs/inverted_double_pendulum/assets/inverted_double_pendulum.xml", materialize[INVERTED_DOUBLE_PENDULUM_DIMS]())
+    check(t, "inverted_pendulum_xml", "noeira/envs/inverted_pendulum/assets/inverted_pendulum.xml", materialize[INVERTED_PENDULUM_DIMS]())
+    check(t, "pusher_xml", "noeira/envs/pusher/assets/pusher.xml", materialize[PUSHER_DIMS]())
+    check(t, "reacher_xml", "noeira/envs/reacher/assets/reacher.xml", materialize[REACHER_DIMS]())
+    check(t, "swimmer_xml", "noeira/envs/swimmer/assets/swimmer.xml", materialize[SWIMMER_DIMS]())
+    check(t, "walker2d_xml", "noeira/envs/walker2d/assets/walker2d.xml", materialize[WALKER2D_DIMS]())
+    check(t, "sawyer_reach_xml", "noeira/envs/metaworld/assets/sawyer_reach.xml", materialize[SAWYER_REACH_DIMS]())
+    check(t, "SO_ARM100_XML", "noeira/envs/robots/assets/so_arm100.xml", materialize[SO_ARM100_DIMS]())
+    check(t, "SO_ARM101_XML", "noeira/envs/robots/assets/so_arm101.xml", materialize[SO_ARM101_DIMS]())
+    check(t, "dm_acrobot_xml", "noeira/envs/dm_control/assets/acrobot.xml", materialize[DM_ACROBOT_DIMS]())
+    check(t, "dm_ball_in_cup_xml", "noeira/envs/dm_control/assets/ball_in_cup.xml", materialize[DM_BALL_IN_CUP_DIMS]())
+    check(t, "dm_cartpole1_xml", "noeira/envs/dm_control/assets/cartpole1.xml", materialize[DM_CARTPOLE1_DIMS]())
+    check(t, "dm_cartpole2_xml", "noeira/envs/dm_control/assets/cartpole2.xml", materialize[DM_CARTPOLE2_DIMS]())
+    check(t, "dm_cartpole3_xml", "noeira/envs/dm_control/assets/cartpole3.xml", materialize[DM_CARTPOLE3_DIMS]())
+    check(t, "dm_cheetah_xml", "noeira/envs/dm_control/assets/cheetah.xml", materialize[DM_CHEETAH_DIMS]())
+    check(t, "dm_finger_xml", "noeira/envs/dm_control/assets/finger.xml", materialize[DM_FINGER_DIMS]())
+    check(t, "dm_finger_spin_xml", "noeira/envs/dm_control/assets/finger_spin.xml", materialize[DM_FINGER_SPIN_DIMS]())
+    check(t, "dm_fish_xml", "noeira/envs/dm_control/assets/fish.xml", materialize[DM_FISH_DIMS]())
+    check(t, "dm_hopper_xml", "noeira/envs/dm_control/assets/hopper.xml", materialize[DM_HOPPER_DIMS]())
+    check(t, "dm_humanoid_xml", "noeira/envs/dm_control/assets/humanoid.xml", materialize[DM_HUMANOID_DIMS]())
+    check(t, "dm_humanoid_cmu_xml", "noeira/envs/dm_control/assets/humanoid_cmu.xml", materialize[DM_HUMANOID_CMU_DIMS]())
+    check(t, "dm_manipulator_bring_ball_xml", "noeira/envs/dm_control/assets/manipulator_bring_ball.xml", materialize[DM_MANIPULATOR_BRING_BALL_DIMS]())
+    check(t, "dm_manipulator_bring_peg_xml", "noeira/envs/dm_control/assets/manipulator_bring_peg.xml", materialize[DM_MANIPULATOR_BRING_PEG_DIMS]())
+    check(t, "dm_manipulator_insert_ball_xml", "noeira/envs/dm_control/assets/manipulator_insert_ball.xml", materialize[DM_MANIPULATOR_INSERT_BALL_DIMS]())
+    check(t, "dm_manipulator_insert_peg_xml", "noeira/envs/dm_control/assets/manipulator_insert_peg.xml", materialize[DM_MANIPULATOR_INSERT_PEG_DIMS]())
+    check(t, "dm_pendulum_xml", "noeira/envs/dm_control/assets/pendulum.xml", materialize[DM_PENDULUM_DIMS]())
+    check(t, "dm_point_mass_xml", "noeira/envs/dm_control/assets/point_mass.xml", materialize[DM_POINT_MASS_DIMS]())
+    check(t, "dm_quadruped_walk_xml", "noeira/envs/dm_control/assets/quadruped_walk.xml", materialize[DM_QUADRUPED_WALK_DIMS]())
+    check(t, "dm_quadruped_run_xml", "noeira/envs/dm_control/assets/quadruped_run.xml", materialize[DM_QUADRUPED_RUN_DIMS]())
+    check(t, "dm_quadruped_fetch_xml", "noeira/envs/dm_control/assets/quadruped_fetch.xml", materialize[DM_QUADRUPED_FETCH_DIMS]())
+    check(t, "dm_reacher_xml", "noeira/envs/dm_control/assets/reacher.xml", materialize[DM_REACHER_DIMS]())
+    check(t, "dm_reacher_hard_xml", "noeira/envs/dm_control/assets/reacher_hard.xml", materialize[DM_REACHER_HARD_DIMS]())
+    check(t, "dm_stacker_2_xml", "noeira/envs/dm_control/assets/stacker_2.xml", materialize[DM_STACKER_2_DIMS]())
+    check(t, "dm_stacker_4_xml", "noeira/envs/dm_control/assets/stacker_4.xml", materialize[DM_STACKER_4_DIMS]())
+    check(t, "dm_swimmer6_xml", "noeira/envs/dm_control/assets/swimmer6.xml", materialize[DM_SWIMMER6_DIMS]())
+    check(t, "dm_swimmer15_xml", "noeira/envs/dm_control/assets/swimmer15.xml", materialize[DM_SWIMMER15_DIMS]())
+    check(t, "dm_walker_xml", "noeira/envs/dm_control/assets/walker.xml", materialize[DM_WALKER_DIMS]())
+    check(t, "lift_large_box_xml", "noeira/envs/dm_control/assets/manipulation/lift_large_box.xml", materialize[LIFT_LARGE_BOX_DIMS]())
+    check(t, "place_cradle_xml", "noeira/envs/dm_control/assets/manipulation/place_cradle.xml", materialize[PLACE_CRADLE_DIMS]())
+    check(t, "place_brick_xml", "noeira/envs/dm_control/assets/manipulation/place_brick.xml", materialize[PLACE_BRICK_DIMS]())
+    check(t, "lift_brick_xml", "noeira/envs/dm_control/assets/manipulation/lift_brick.xml", materialize[LIFT_BRICK_DIMS]())
+    check(t, "reassemble5_xml", "noeira/envs/dm_control/assets/manipulation/reassemble5.xml", materialize[REASSEMBLE5_DIMS]())
+    check(t, "reach_site_features_xml", "noeira/envs/dm_control/assets/manipulation/reach_site_features.xml", materialize[REACH_SITE_FEATURES_DIMS]())
+    check(t, "reach_duplo_xml", "noeira/envs/dm_control/assets/manipulation/reach_duplo.xml", materialize[REACH_DUPLO_DIMS]())
+    check(t, "stack_3_bricks_xml", "noeira/envs/dm_control/assets/manipulation/stack_3_bricks.xml", materialize[STACK_3_BRICKS_DIMS]())
+    check(t, "stack_3_random_xml", "noeira/envs/dm_control/assets/manipulation/stack_3_random.xml", materialize[STACK_3_RANDOM_DIMS]())
+    check(t, "stack_2_bricks_moveable_base_xml", "noeira/envs/dm_control/assets/manipulation/stack_2_bricks_moveable_base.xml", materialize[STACK_2_BRICKS_MOVEABLE_BASE_DIMS]())
+    check(t, "stack_2_bricks_xml", "noeira/envs/dm_control/assets/manipulation/stack_2_bricks.xml", materialize[STACK_2_BRICKS_DIMS]())
+    check(t, "dm_dog_stand_walk_xml", "noeira/envs/dm_control/assets/dog_stand_walk.xml", materialize[DM_DOG_STAND_WALK_DIMS]())
+    check(t, "dm_dog_run_xml", "noeira/envs/dm_control/assets/dog_run.xml", materialize[DM_DOG_RUN_DIMS]())
+    check(t, "dm_dog_trot_xml", "noeira/envs/dm_control/assets/dog_trot.xml", materialize[DM_DOG_TROT_DIMS]())
+    check(t, "dm_dog_fetch_xml", "noeira/envs/dm_control/assets/dog_fetch.xml", materialize[DM_DOG_FETCH_DIMS]())
 
     print()
     print("models compared :", t.models, "(of which generated:", t.generated, ")")

@@ -9,7 +9,7 @@ step the same scene.
 
 Answers: of MuJoCo's step, how much is collision (broad / mid / narrow) vs
 constraint build vs solve vs dynamics, and how much WORK it does getting there
-(ncon, nefc, solver iterations). `mojo_rl/physics3d/PERFORMANCE.md` compares
+(ncon, nefc, solver iterations). `noeira/physics3d/PERFORMANCE.md` compares
 our own phase profile against the output of this script.
 
 ⚠ THE TIMER UNIT IS CALIBRATED, NOT ASSUMED. `mjTimerStat.duration` is

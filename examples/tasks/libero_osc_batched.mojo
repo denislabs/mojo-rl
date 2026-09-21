@@ -52,22 +52,22 @@ from std.sys import argv
 from std.random import seed as seed_rng
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
-from mojo_rl.physics3d.dynamics.osc_pose import ARM_DOF, OscPoseConfig
-from mojo_rl.physics3d.dynamics.osc_pose_gpu import (
+from noeira.nn.constants import DT
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.physics3d.dynamics.osc_pose import ARM_DOF, OscPoseConfig
+from noeira.physics3d.dynamics.osc_pose_gpu import (
     OSC_ACTION_DIM, build_osc_refs,
 )
-from mojo_rl.tasks.spec import load_family
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
-from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_OBS_DIM
-from mojo_rl.tasks.libero_goal_config import (
+from noeira.tasks.spec import load_family
+from noeira.tasks.family import scene_path
+from noeira.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
+from noeira.tasks.libero_goal_xml import LIBERO_GOAL_OBS_DIM
+from noeira.tasks.libero_goal_config import (
     LiberoGoalOscConfig, LiberoGoalOscEnv, LIBERO_GOAL_FRAME_SKIP,
 )
 
 
-comptime FAMILY = "mojo_rl/tasks/families/libero_goal.family"
+comptime FAMILY = "noeira/tasks/families/libero_goal.family"
 comptime N_ENVS = 16
 comptime NB = LIBERO_GOAL_DIMS.NBODY
 

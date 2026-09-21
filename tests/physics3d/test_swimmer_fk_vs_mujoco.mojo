@@ -14,7 +14,7 @@ MuJoCo fluid dynamics (viscosity=0.1, density=4000) affects forces but not FK.
 FK depends only on joint positions, not velocities or forces.
 
 Run with:
-    cd mojo-rl && pixi run mojo run physics3d/tests/test_swimmer_fk_vs_mujoco.mojo
+    cd noeira && pixi run mojo run physics3d/tests/test_swimmer_fk_vs_mujoco.mojo
 """
 
 from std.testing import assert_true, TestSuite
@@ -23,13 +23,13 @@ from std.math import abs
 from std.collections import Array
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
-from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
-from mojo_rl.envs.swimmer.swimmer_config import SwimmerConfig
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.envs.swimmer.swimmer_xml import SwimmerModel
+from noeira.envs.swimmer.swimmer_config import SwimmerConfig
+from noeira.physics3d.model.model_dims import ModelDims
 
 
 # =============================================================================

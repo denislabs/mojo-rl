@@ -1,4 +1,4 @@
-"""Verify PNGs written by `mojo_rl/io/png.encode_png`, with Pillow.
+"""Verify PNGs written by `noeira/io/png.encode_png`, with Pillow.
 
     python3 tools/io/verify_png_write.py <dir>
 

@@ -57,16 +57,16 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.fields import Data, Model, DynDims, init_hfield_data
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, DynDims, init_hfield_data
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
     read_model_source,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.studio.stepping import StudioImpFastEll
-from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.studio.stepping import StudioImpFastEll
+from noeira.physics3d.dynamics.actuation import apply_actions_fields
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, CONTACT_SIZE,
     CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
     KEY_META_SIZE, KEY_IDX_NQPOS,

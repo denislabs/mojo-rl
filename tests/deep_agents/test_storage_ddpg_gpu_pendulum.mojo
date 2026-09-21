@@ -25,11 +25,11 @@ from std.random import seed
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.ddpg.config import DDPG
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.pendulum.pendulum_v2 import PendulumV2
-from mojo_rl.envs.pendulum.pendulum_v1 import PendulumEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.ddpg.config import DDPG
+from noeira.deep_agents.training.batched_env import BatchedGpuEnv
+from noeira.envs.pendulum.pendulum_v2 import PendulumV2
+from noeira.envs.pendulum.pendulum_v1 import PendulumEnv
 
 
 comptime OBS = 3

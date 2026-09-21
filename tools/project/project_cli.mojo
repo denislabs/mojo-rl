@@ -28,7 +28,7 @@ convention and never adopt the layer at all.
 
 ⚠ `project-push` / `project-pull` ARE THE ONE PAID-HALF PAIR (§10, decision 6):
 everything above works on a single machine with no account. They need
-`RL_MONITOR_URL` + `RL_MONITOR_API_KEY` in `.env` — no new credential.
+`NOEIRA_CLOUD_URL` + `NOEIRA_CLOUD_API_KEY` in `.env` — no new credential.
 
 ⚠ `project-prune` IS DRY-RUN BY DEFAULT and needs `--apply`. It deletes run
 directories; the one thing worse than 219 flat checkpoints is a tool that
@@ -38,29 +38,29 @@ removes the one you wanted.
 from std.sys import argv
 from std.os.path import exists
 
-from mojo_rl.core.project import (
+from noeira.core.project import (
     ProjectSpec,
     check_refs,
     load_project,
     projects_root,
     project_exists,
 )
-from mojo_rl.core.policy import (
+from noeira.core.policy import (
     PolicyRecord,
     load_policy,
     policy_ckpt_path,
     policy_kv_path,
     write_policy,
 )
-from mojo_rl.core.run import RunRecord, epoch_seconds, iso8601_utc, load_run
-from mojo_rl.data.policy_weights import pull_policy_weights
-from mojo_rl.data.project_sync import pull_definition, push_definition
-from mojo_rl.data.remote import RemoteCatalog
-from mojo_rl.io.fetch import fetch_to_cache
-from mojo_rl.io.fileio import file_size
-from mojo_rl.io.json import JsonDoc
-from mojo_rl.io.proc import quote_arg, run_capture
-from mojo_rl.io.sha256 import sha256_file
+from noeira.core.run import RunRecord, epoch_seconds, iso8601_utc, load_run
+from noeira.data.policy_weights import pull_policy_weights
+from noeira.data.project_sync import pull_definition, push_definition
+from noeira.data.remote import RemoteCatalog
+from noeira.io.fetch import fetch_to_cache
+from noeira.io.fileio import file_size
+from noeira.io.json import JsonDoc
+from noeira.io.proc import quote_arg, run_capture
+from noeira.io.sha256 import sha256_file
 
 
 def _flag(name: String, dflt: String) raises -> String:
@@ -279,8 +279,8 @@ def cmd_tag() raises:
 def _tag_file(path: String, text: String) raises:
     """⚠ REWRITE THE RECORD, DO NOT APPEND A LINE. Two `tag=` lines is a record
     that disagrees with itself and a reader that believes the first."""
-    from mojo_rl.core.kv import KvWriter, kv_lines
-    from mojo_rl.io.fileio import write_text_atomic
+    from noeira.core.kv import KvWriter, kv_lines
+    from noeira.io.fileio import write_text_atomic
     var txt: String
     with open(path, "r") as fh:
         txt = fh.read()
@@ -530,7 +530,7 @@ def cmd_promote() raises:
     # ⚠ BOTH CALLS TAKE THE ROOT. They default to `projects/` in the CWD, not to
     # `projects_root()` — so omitting it silently reads a DIFFERENT project
     # than the one being promoted into, or fails to find one at all under
-    # MOJO_RL_PROJECTS. That is exactly what the first version of this did.
+    # NOEIRA_PROJECTS. That is exactly what the first version of this did.
     var root_dir = projects_root()
     if project_exists(project, root_dir):
         var spec = load_project(project, root_dir)

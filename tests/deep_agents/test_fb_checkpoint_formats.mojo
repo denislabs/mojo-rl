@@ -29,17 +29,17 @@ from std.math import abs
 from std.random import random_float64, seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU, Tanh
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
-from mojo_rl.nn.core.param import walk_params, ParamVisitorRef
-from mojo_rl.nn.core.checkpoint import CheckpointWriter
-from mojo_rl.io.fileio import file_size
-from mojo_rl.deep_agents.fb.trainer import FBTrainer
-from mojo_rl.deep_agents.fb import sample_z_uniform
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU, Tanh
+from noeira.nn.primitives.layer_norm import LayerNorm
+from noeira.nn.core.param import walk_params, ParamVisitorRef
+from noeira.nn.core.checkpoint import CheckpointWriter
+from noeira.io.fileio import file_size
+from noeira.deep_agents.fb.trainer import FBTrainer
+from noeira.deep_agents.fb import sample_z_uniform
 
 
 comptime OBS: Int = 5

@@ -26,15 +26,15 @@ Run:
 from std.math import abs, sqrt, cos, sin
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import SqMat
-from mojo_rl.experimental.swm.rng import Rng
-from mojo_rl.experimental.swm.procrustes import (
+from noeira.experimental.swm.so_d import SqMat
+from noeira.experimental.swm.rng import Rng
+from noeira.experimental.swm.procrustes import (
     PairBatch,
     procrustes_o_d,
     mean_squared_residual,
 )
-from mojo_rl.experimental.swm.ablations import holonomy_product
-from mojo_rl.experimental.swm.observables import (
+from noeira.experimental.swm.ablations import holonomy_product
+from noeira.experimental.swm.observables import (
     gnc_weights,
     estimate_c_bar,
     classify,

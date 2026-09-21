@@ -35,7 +35,7 @@ export const { getStaticPaths, GET } = await OGImageRoute({
 		// Light-on-transparent lockup: the card is always dark, regardless of the
 		// viewer's theme. The 2x PNG rather than the SVG because canvaskit
 		// rasterises bitmaps only.
-		logo: { path: './src/assets/mojo-rl-logo-transparent-dark-2x.png', size: [300] },
+		logo: { path: './src/assets/noeira-logo-transparent-dark-nobaseline-2x.png', size: [300] },
 
 		bgGradient: [INK_900, INK_950],
 		border: { color: MOON_CYAN, width: 16, side: 'inline-start' },

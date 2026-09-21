@@ -14,7 +14,7 @@ Usage:
     pixi run mojo run -I . tests/arcade_games/test_tia_advance_n.mojo
 """
 
-from mojo_rl.envs.atari.tia_cycle import (
+from noeira.envs.atari.tia_cycle import (
     BallCounter,
     MissileCounter,
     PlayerCounter,

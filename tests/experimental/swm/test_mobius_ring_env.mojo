@@ -37,11 +37,11 @@ Run:
 from std.math import abs, sqrt
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import SqMat
-from mojo_rl.experimental.swm.rng import Rng
-from mojo_rl.experimental.swm.procrustes import PairBatch, procrustes_o_d
-from mojo_rl.experimental.swm.place_graph import PlaceGraph, Edge
-from mojo_rl.experimental.swm.envs.mobius_ring import MobiusRing, MobiusConfig
+from noeira.experimental.swm.so_d import SqMat
+from noeira.experimental.swm.rng import Rng
+from noeira.experimental.swm.procrustes import PairBatch, procrustes_o_d
+from noeira.experimental.swm.place_graph import PlaceGraph, Edge
+from noeira.experimental.swm.envs.mobius_ring import MobiusRing, MobiusConfig
 
 comptime DT = DType.float64
 comptime N = 12

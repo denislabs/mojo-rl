@@ -14,11 +14,11 @@ file only exercises the new NHWC path against it.
 from std.math import abs
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.conv2d import Conv2D, _in_off, _col_off, _out_off
+from noeira.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.conv2d import Conv2D, _in_off, _col_off, _out_off
 
 comptime IC = 3
 comptime OC = 4

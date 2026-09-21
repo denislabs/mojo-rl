@@ -16,10 +16,10 @@ Run:
     pixi run -e apple mojo run -I . tests/arcade_games/test_pong_cpu_gpu_parity.mojo
 """
 
-from mojo_rl.envs.arcade_games.pong import PongEnv
+from noeira.envs.arcade_games.pong import PongEnv
 from max.gpu.host import DeviceContext
 from std.testing import assert_true
-from mojo_rl.core.fmt import fit
+from noeira.core.fmt import fit
 
 comptime dt = DType.float32
 comptime SS = PongEnv[DType.float64].STATE_SIZE  # 12

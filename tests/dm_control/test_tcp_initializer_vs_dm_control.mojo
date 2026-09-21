@@ -37,12 +37,12 @@ from std.python import Python
 from std.testing import assert_true, TestSuite
 from std.collections import Array
 
-from mojo_rl.physics3d.fields import Model, Data, Dims, DimsLike
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.envs.dm_control.manipulation_reset import (
+from noeira.physics3d.fields import Model, Data, Dims, DimsLike
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.fields_build import build_model_fields_from_flat
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.envs.dm_control.manipulation_reset import (
     has_relevant_collisions,
     tool_center_point_initializer,
     BODY_ARM,

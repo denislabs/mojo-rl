@@ -31,9 +31,9 @@ HIDDEN=64, PER_UNIT=8):
 
 from std.random import seed
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.redq_ofe import REDQOFE6
-from mojo_rl.envs.pendulum import PendulumEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.redq_ofe import REDQOFE6
+from noeira.envs.pendulum import PendulumEnv
 
 
 comptime OBS = 3

@@ -39,7 +39,7 @@ which is what says the distinction is real rather than decorative.
 from std.math import abs
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.vision.resize_pad import (
+from noeira.vision.resize_pad import (
     camera_frame_to_siglip, store_frame_to_siglip, SIGLIP_INPUT,
 )
 

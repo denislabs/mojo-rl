@@ -40,8 +40,8 @@ afternoon — 7.8%, "no change", and 32% — and only the last is real.
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.config import TDMPC2
+from noeira.nn.constants import DT
+from noeira.deep_agents.tdmpc2.config import TDMPC2
 
 comptime OBS = 24
 comptime ACT = 6

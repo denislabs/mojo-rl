@@ -52,15 +52,15 @@ from std.math import abs, sqrt
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from mojo_rl.physics3d.fields import Model, DynDims, DYN1, rl1
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
+from noeira.physics3d.fields import Model, DynDims, DYN1, rl1
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat,
     build_model_runtime,
     spec_fields_runtime,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_BODY,
     GEOM_IDX_POS_X,
@@ -78,7 +78,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MESH_META_IDX_TRIADR,
     MESH_META_IDX_TRINUM,
 )
-from mojo_rl.physics3d.ray import ray_mesh
+from noeira.physics3d.ray import ray_mesh
 
 comptime DT = DType.float64
 comptime Vec3 = Vec3Generic[DT]

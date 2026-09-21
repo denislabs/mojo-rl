@@ -67,63 +67,63 @@ from std.sys import argv
 
 from layout import Layout
 
-from mojo_rl.math3d import Vec3 as Vec3G, Quat as QuatG
-from mojo_rl.nn.constants import DT as NN_DT
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.deep_agents.data.any_replay import AnyReplay
-from mojo_rl.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
-from mojo_rl.deep_agents.training.blocks import ReplaySampleStep
+from noeira.math3d import Vec3 as Vec3G, Quat as QuatG
+from noeira.nn.constants import DT as NN_DT
+from noeira.nn.core.tensor import TensorImpl
+from noeira.deep_agents.data.any_replay import AnyReplay
+from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
+from noeira.deep_agents.training.blocks import ReplaySampleStep
 
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.core.cont_action import ContAction
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
     META_IDX_INIT_REGION_0, META_IDX_SHAPE_W_GOAL, MODEL_CURRICULUM_SIZE,
 )
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, read_model_source,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.render_fields import build_render_fields
-from mojo_rl.physics3d.parser.model_def_from_xml import RfOnlyModelDef
-from mojo_rl.physics3d.model.model_renderer import ModelRenderer
-from mojo_rl.render.imgui import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.render_fields import build_render_fields
+from noeira.physics3d.parser.model_def_from_xml import RfOnlyModelDef
+from noeira.physics3d.model.model_renderer import ModelRenderer
+from noeira.render.imgui import (
     imgui_shim_available, ig_begin_panel, ig_end, ig_text, ig_text_colored,
     ig_separator_text, ig_selectable, ig_button, ig_spacing,
 )
 
-from mojo_rl.tasks.spec import (
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
     FamilySpec, TaskSpec,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import So101TabletopConfig, So101TabletopPlacement
-from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
-from mojo_rl.tasks.predicates import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.family_config import So101TabletopConfig, So101TabletopPlacement
+from noeira.tasks.so101_tabletop_xml import So101TabletopModel
+from noeira.tasks.predicates import (
     parse_goal, bind_goal, require_tier_a, BoundGoal,
 )
-from mojo_rl.tasks.eval import (
+from noeira.tasks.eval import (
     eval_goal, region_sites, region_rects, region_half_heights,
 )
-from mojo_rl.tasks.active import active_mask, init_region_words
-from mojo_rl.tasks.shaping import shaping_words, SHAPING_WORDS
-from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.gpu_eval import (
+from noeira.tasks.active import active_mask, init_region_words
+from noeira.tasks.shaping import shaping_words, SHAPING_WORDS
+from noeira.tasks.tape import encode_goal, TAPE_WORDS
+from noeira.tasks.gpu_eval import (
     region_table_words, tape_distance_gpu, goal_frame_ids,
 )
-from mojo_rl.tasks.sampler import sample_placements, RegionFrame, SampleReport
-from mojo_rl.tasks.reset import (
+from noeira.tasks.sampler import sample_placements, RegionFrame, SampleReport
+from noeira.tasks.reset import (
     free_slot_addresses, reset_slots, SlotAddress,
 )
-from mojo_rl.utils.fmt import fixed
+from noeira.utils.fmt import fixed
 
 
 comptime DT = DType.float64
 comptime Vec3 = Vec3G[DT]
 comptime Quat = QuatG[DT]
 
-comptime FAMILY = "mojo_rl/tasks/families/so101_tabletop.family"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
+comptime FAMILY = "noeira/tasks/families/so101_tabletop.family"
+comptime TASK_DIR = "noeira/tasks/tasks/"
 comptime CKPT_PREFIX = "sac_task_"
 """⚠ MATCHES `sac_task_gpu.mojo`'s own prefix. That file names its checkpoint
 per task for a reason — it wrote `sac_task_reach.ckpt` while training

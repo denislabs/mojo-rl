@@ -1,6 +1,6 @@
 """Measure the frame runner's bulk vs per-clock clock split per game.
 
-Flip `comptime ATARI_PROFILE = True` in mojo_rl/envs/atari/cpu6502.mojo
+Flip `comptime ATARI_PROFILE = True` in noeira/envs/atari/cpu6502.mojo
 first (zero-cost False by default), then:
 
     pixi run mojo run -I . -D ASSERT=none benchmarks/profile_atari_span_split.mojo
@@ -15,8 +15,8 @@ advance (+48% RAM / +35% pixel) — see docs/ATARI_AUDIT.md §2.
 Requires ROMs under `roms/` (run from the repo root).
 """
 
-from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
-from mojo_rl.envs.atari.games.registry import AtariGame
+from noeira.envs.atari.environment import AtariEnvironment, load_rom
+from noeira.envs.atari.games.registry import AtariGame
 
 
 def profile_game(name: String, game: AtariGame) raises:

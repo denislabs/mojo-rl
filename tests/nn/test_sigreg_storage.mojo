@@ -16,18 +16,18 @@ We also assert the transform semantics the consumer relies on: stat >= 0 and
 replicated across rows.
 
 Run:
-  rm -f mojo_rl.mojoc && pixi run mojo run -I . tests/nn/test_sigreg_storage.mojo
-  rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . tests/nn/test_sigreg_storage.mojo
+  rm -f noeira.mojoc && pixi run mojo run -I . tests/nn/test_sigreg_storage.mojo
+  rm -f noeira.mojoc && pixi run -e apple mojo run -I . tests/nn/test_sigreg_storage.mojo
 """
 
 from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.primitives.sigreg import SIGReg
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.primitives.sigreg import SIGReg
 
 
 comptime EPS: Scalar[DT] = 2e-3

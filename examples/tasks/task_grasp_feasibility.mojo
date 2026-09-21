@@ -29,31 +29,31 @@ sim's and not the controller's.
 from std.random import random_float64, seed as seed_rng
 from std.sys import argv
 
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.tasks.spec import (
+from noeira.core.cont_action import ContAction
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import So101TabletopConfig, So101TowerConfig
-from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
-from mojo_rl.tasks.so101_tower_xml import So101TowerModel
-from mojo_rl.envs.phyics3d_env import Phyics3dEnvConfig
-from mojo_rl.physics3d.model import ModelDefLike
-from mojo_rl.tasks.predicates import parse_goal, bind_goal
-from mojo_rl.tasks.eval import region_sites
-from mojo_rl.tasks.active import active_mask
-from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.sampler import sample_placements, RegionFrame, SampleReport
-from mojo_rl.tasks.reset import free_slot_addresses, reset_slots
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.family_config import So101TabletopConfig, So101TowerConfig
+from noeira.tasks.so101_tabletop_xml import So101TabletopModel
+from noeira.tasks.so101_tower_xml import So101TowerModel
+from noeira.envs.phyics3d_env import Phyics3dEnvConfig
+from noeira.physics3d.model import ModelDefLike
+from noeira.tasks.predicates import parse_goal, bind_goal
+from noeira.tasks.eval import region_sites
+from noeira.tasks.active import active_mask
+from noeira.tasks.tape import encode_goal, TAPE_WORDS
+from noeira.tasks.sampler import sample_placements, RegionFrame, SampleReport
+from noeira.tasks.reset import free_slot_addresses, reset_slots
+from noeira.physics3d.gpu.constants import (
     META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE, META_IDX_NUM_CONTACTS,
     CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B, CONTACT_IDX_DIST, CONTACT_SIZE,
     CONTACT_IDX_CONDIM, CONTACT_IDX_FRICTION,
     MODEL_GEOM_SIZE, GEOM_IDX_BODY, GEOM_IDX_HALF_X,
     GEOM_IDX_HALF_Y, GEOM_IDX_HALF_Z, GEOM_IDX_RBOUND,
 )
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.envs.phyics3d_env import Phyics3dEnv
 
 comptime DT = DType.float64
 # GENERIC OVER THE FAMILY: `run[M, C]` below is dispatched on the task's
@@ -214,7 +214,7 @@ def run[M: ModelDefLike, C: Phyics3dEnvConfig](
     print("=" * 72)
 
     var f = load_family(family_path)
-    var t = load_task("mojo_rl/tasks/tasks/" + task_name + ".task")
+    var t = load_task("noeira/tasks/tasks/" + task_name + ".task")
     validate_task_against_family(t, f)
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)
@@ -690,8 +690,8 @@ def main() raises:
         task_name = String(args[1])
     # ⚠ THE FAMILY COMES FROM THE TASK FILE, not from a flag: a task names its
     # family, and a probe run on the wrong scene would measure the wrong jaw.
-    var t = load_task("mojo_rl/tasks/tasks/" + task_name + ".task")
-    var fam = "mojo_rl/tasks/families/" + t.family + ".family"
+    var t = load_task("noeira/tasks/tasks/" + task_name + ".task")
+    var fam = "noeira/tasks/families/" + t.family + ".family"
     if t.family == "so101_tabletop":
         run[So101TabletopModel, So101TabletopConfig](
             task_name, fam, So101TabletopConfig.SLOT_RADIUS,

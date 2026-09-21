@@ -29,11 +29,11 @@ from std.random import seed
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
-from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac import SAC
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.envs.humanoid.humanoid_config import HumanoidConfig
 
 
 # =============================================================================

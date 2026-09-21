@@ -30,7 +30,7 @@ from std.python import Python, PythonObject
 from std.random import random_float64, seed
 from std.testing import assert_true
 
-from mojo_rl.core.assignment import (
+from noeira.core.assignment import (
     linear_sum_assignment, assignment_cost, pairwise_l2, emd_uniform,
 )
 

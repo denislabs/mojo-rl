@@ -35,25 +35,25 @@ the device column is its LAGGED list and is why the rows differ):
 
 """
 from std.sys import argv
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.collision.broadphase_sap import detect_contacts_sap
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
     CONTACT_IDX_POS_X, CONTACT_IDX_DIST, CONTACT_IDX_NX,
 )
-from mojo_rl.tasks.spec import load_family
-from mojo_rl.tasks.family import scene_path
+from noeira.tasks.spec import load_family
+from noeira.tasks.family import scene_path
 
 comptime H = DType.float64
 
 def main() raises:
     var a = argv()
-    var f = load_family(String("mojo_rl/tasks/families/") + String(a[1]) + ".family")
+    var f = load_family(String("noeira/tasks/families/") + String(a[1]) + ".family")
     var fmd = parse_model_runtime(scene_path(f))
     var dims = dims_from_flat(fmd, max_contacts=512, nmesh_verts=65536)
     var m = Model[H, DynDims](dims)

@@ -8,9 +8,9 @@ clocks and compare the cycle counter's first-lit pixel to eol's _resp_pos.
 Run: pixi run -e apple mojo run -I . tests/arcade_games/test_missile_position.mojo
 """
 
-from mojo_rl.envs.atari.tia_cycle import MissileCounter, resx_counter
-from mojo_rl.envs.atari.tia import _resp_pos
-from mojo_rl.envs.atari.flags import HBLANK_CLOCKS, FRAME_WIDTH
+from noeira.envs.atari.tia_cycle import MissileCounter, resx_counter
+from noeira.envs.atari.tia import _resp_pos
+from noeira.envs.atari.flags import HBLANK_CLOCKS, FRAME_WIDTH
 
 
 def cycle_missile_first_lit(write_hctr: Int) -> Int:

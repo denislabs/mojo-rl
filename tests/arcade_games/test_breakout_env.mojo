@@ -1,6 +1,6 @@
 """Test native Breakout environment — CPU + GPU."""
 
-from mojo_rl.envs.arcade_games.breakout import BreakoutEnv
+from noeira.envs.arcade_games.breakout import BreakoutEnv
 from max.gpu.host import DeviceContext
 
 comptime dtype = DType.float32

@@ -23,7 +23,7 @@ dashboard configured at all.
 promptly and deterministically.
 """
 
-from mojo_rl.core.logger import (
+from noeira.core.logger import (
     CompositeLogger,
     CsvLogger,
     NoOpLogger,
@@ -47,7 +47,7 @@ def test_urls_are_built_from_the_base() raises:
     """The four routes, by value.
 
     ⚠ A TRAILING SLASH ON THE BASE MUST NOT DOUBLE. `.env` is hand-edited and
-    `RL_MONITOR_URL` has arrived both ways.
+    `NOEIRA_CLOUD_URL` has arrived both ways.
     """
     var checked = 0
     var wrong = 0

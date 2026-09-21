@@ -16,13 +16,13 @@ from std.math import isnan, isinf
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.deep_agents.tdmpc2.nets import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Kaiming
+from noeira.deep_agents.tdmpc2.nets import (
     TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet, TDMPC2Termination,
 )
-from mojo_rl.deep_agents.tdmpc2.wm_graph import TDMPC2WMGraph
+from noeira.deep_agents.tdmpc2.wm_graph import TDMPC2WMGraph
 
 
 comptime LATENT = 8

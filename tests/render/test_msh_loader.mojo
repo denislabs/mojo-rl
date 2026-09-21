@@ -24,8 +24,8 @@ from std.os.path import exists
 from std.pathlib import Path
 from std.time import perf_counter_ns
 
-from mojo_rl.render.msh_loader import load_msh, msh_counts
-from mojo_rl.render.stl_loader import load_stl
+from noeira.render.msh_loader import load_msh, msh_counts
+from noeira.render.stl_loader import load_stl
 
 
 struct Tally(Copyable, ImplicitlyCopyable, Movable):
@@ -97,7 +97,7 @@ def main() raises:
     print("=" * 70)
     print(".msh reader — L1")
     print("=" * 70)
-    var work = String("/tmp/mojo_rl_msh_") + String(perf_counter_ns())
+    var work = String("/tmp/noeira_msh_") + String(perf_counter_ns())
     from std.os import makedirs
     makedirs(work, exist_ok=True)
 

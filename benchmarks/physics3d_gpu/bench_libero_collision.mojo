@@ -79,24 +79,24 @@ from std.memory.alloc import unsafe_alloc
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.io.hdf5.reader import H5File, H5Dataset
-from mojo_rl.physics3d.fields import Data, Model
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.broadphase_sap import (
+from noeira.io.hdf5.reader import H5File, H5Dataset
+from noeira.physics3d.fields import Data, Model
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.broadphase_sap import (
     detect_contacts_sap, COLL_STOP_AFTER, COLL_REPORT_BASE, _KIND_PLANE_BASE,
 )
-from mojo_rl.physics3d.collision.ccd_workspace import (
+from noeira.physics3d.collision.ccd_workspace import (
     COLL_BLOCK_KERNEL, COLL_TPB, COLL_NCAND_CAP, COLL_NO_FALLBACK,
     COLL_STAGE_SLOTS, HILL_WARM_ACROSS_STEPS, COLL_CAND_REPORT,
     COLL_REPORT_HDR, COLL_PREFILTER,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE, METADATA_SIZE, META_IDX_NUM_CONTACTS,
 )
-from mojo_rl.tasks.libero_state_remap import load_state_remap
-from mojo_rl.tasks.libero_goal_xml import LiberoGoalModel
-from mojo_rl.tasks.libero_goal_config import LiberoGoalOscConfig
+from noeira.tasks.libero_state_remap import load_state_remap
+from noeira.tasks.libero_goal_xml import LiberoGoalModel
+from noeira.tasks.libero_goal_config import LiberoGoalOscConfig
 
 
 comptime DT = DType.float32
@@ -105,7 +105,7 @@ comptime LANES: Int = 256
 """The lane count — a compile-time constant, `sed`ed per build like
 `libero_demo_batched`'s."""
 comptime FAMILY = "libero_goal"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
+comptime TASK_DIR = "noeira/tasks/tasks/"
 comptime DEMO_DIR = "references/libero_demos/libero_goal"
 comptime N_TASKS = 10
 comptime DEMOS_PER_TASK = (LANES + N_TASKS - 1) // N_TASKS

@@ -31,20 +31,20 @@ blocks on it.
 from std.random import seed
 from std.sys import argv
 
-from mojo_rl.envs.dm_control.viewer_core import (
+from noeira.envs.dm_control.viewer_core import (
     ViewerState, run_view, task_index, parse_drive, DRIVE_ZERO,
 )
-from mojo_rl.render.imgui import imgui_shim_available
-from mojo_rl.render.renderer3d import Renderer3D
+from noeira.render.imgui import imgui_shim_available
+from noeira.render.renderer3d import Renderer3D
 
-from mojo_rl.envs.dm_control.manipulation_reach_def import (
+from noeira.envs.dm_control.manipulation_reach_def import (
     ReachSiteFeaturesModel,
 )
-from mojo_rl.envs.dm_control.manipulation_reach_config import (
+from noeira.envs.dm_control.manipulation_reach_config import (
     ReachSiteFeaturesConfig,
 )
-from mojo_rl.envs.dm_control.manipulation_stack2_def import Stack2BricksModel
-from mojo_rl.envs.dm_control.manipulation_stack2_config import (
+from noeira.envs.dm_control.manipulation_stack2_def import Stack2BricksModel
+from noeira.envs.dm_control.manipulation_stack2_config import (
     Stack2BricksConfig,
 )
 

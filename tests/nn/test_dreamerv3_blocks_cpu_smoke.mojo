@@ -10,29 +10,29 @@ deterministic synthetic replay, then runs a few iterations of:
 
 and asserts last_wm_loss / last_ac_loss are FINITE and NONZERO.
 
-Run: rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . \
+Run: rm -f noeira.mojoc && pixi run -e apple mojo run -I . \
        tests/nn/test_dreamerv3_blocks_cpu_smoke.mojo
 """
 
 from std.testing import assert_true
 from std.math import isfinite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
-from mojo_rl.deep_agents.dreamerv3.twohot import symexp_twohot_bins
-from mojo_rl.deep_agents.dreamerv3.normalize import PercentileNormalize
-from mojo_rl.deep_agents.dreamerv3.blocks import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.optimizer.dreamer_opt import DreamerOpt
+from noeira.deep_agents.dreamerv3.twohot import symexp_twohot_bins
+from noeira.deep_agents.dreamerv3.normalize import PercentileNormalize
+from noeira.deep_agents.dreamerv3.blocks import (
     DreamerState, WMStep, ParamSyncStep, ACStep,
 )
-from mojo_rl.deep_agents.dreamerv3.wm import (
+from noeira.deep_agents.dreamerv3.wm import (
     WMCoreGraph, WMImagineGraph, DecLossGraph, RewLossGraph, ConLossGraph,
 )
-from mojo_rl.deep_agents.dreamerv3.nets import (
+from noeira.deep_agents.dreamerv3.nets import (
     DreamerEncoder, DreamerValue, DreamerPolicyHead,
 )
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
+from noeira.nn.primitives.ops.swish_op import SwishOp
 
 
 comptime OBS = 3

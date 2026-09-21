@@ -67,7 +67,7 @@ hyperparameter people most often get wrong. SAC tunes it automatically against a
 target entropy — conventionally `−dim(A)` — so exploration adjusts itself over
 training instead of being hand-scheduled.
 
-## Building it in mojo-rl
+## Building it in noeira
 
 This is the shape of `examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`,
 stripped of logging and checkpointing:
@@ -75,15 +75,15 @@ stripped of logging and checkpointing:
 ```mojo
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.sac import SACAgent
+from noeira.deep_agents.training.blocks import UniformSampleGpuStep
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM      # 17
 comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM   #  6
@@ -219,9 +219,9 @@ so no entropy term.
 update-to-data ratio. More sample-efficient, more compute per step.
 
 ```mojo
-from mojo_rl.deep_agents.ddpg import DDPGAgent
-from mojo_rl.deep_agents.td3 import TD3Agent
-from mojo_rl.deep_agents.redq import REDQAgent
+from noeira.deep_agents.ddpg import DDPGAgent
+from noeira.deep_agents.td3 import TD3Agent
+from noeira.deep_agents.redq import REDQAgent
 ```
 
 ## Next

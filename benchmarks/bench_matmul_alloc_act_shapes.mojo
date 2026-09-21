@@ -20,7 +20,7 @@ each allocation to the kernel launched next instead. The answer was blunt:
     cuMemAlloc_v2, 7,789 calls, by following kernel
       #1  1170 (15.0%)  multistage_gemm_split_k_kernel ..._7853db89
       #2  1146 (14.7%)  cutlass ..._s1688gemm_64x64_16x6_nn_align4
-      #3   799 (10.3%)  mojo_rl_deep_agents_loss_seed...   <- ONE-OFF, see below
+      #3   799 (10.3%)  noeira_deep_agents_loss_seed...   <- ONE-OFF, see below
       #4   625 ( 8.0%)  cutlass ..._s1688gemm_128x128_32x3_tn_align4
       #5   518 ( 6.7%)  cutlass ..._s1688gemm_64x64_16x6_tn_align4
       ... 157 distinct followers, the rest cutlass/split-K

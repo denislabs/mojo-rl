@@ -51,16 +51,16 @@ from std.math import abs, sqrt
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from mojo_rl.physics3d.fields import Data, Model, DynDims, init_hfield_data
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
+from noeira.physics3d.fields import Data, Model, DynDims, init_hfield_data
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat,
     build_model_runtime,
     spec_fields_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.sensors.rangefinder import rangefinder_site
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.sensors.rangefinder import rangefinder_site
 
 comptime DT = DType.float64
 

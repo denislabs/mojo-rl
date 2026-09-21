@@ -24,9 +24,9 @@ Run:
 from std.math import abs
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.fb.kernels import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.fb.kernels import (
     pessimism_blend_t, pessimism_row_weights_t, mean_abs_into_t, mean_into_t,
 )
 

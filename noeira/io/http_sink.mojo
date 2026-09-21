@@ -1,0 +1,491 @@
+# +--------------------------------------------------------------------------+ #
+# | HTTP POSTs that do not block the thread that asked for them
+# +--------------------------------------------------------------------------+ #
+"""Fire-and-forget HTTP POSTs, drained by one background thread.
+
+    var sink = HttpPostSink(api_key=key)
+    _ = sink.post(url, json_body)      # ~microseconds, never touches the network
+    ...
+    sink.close(drain_ms=2000)          # flush what is queued, then join
+
+## Why
+
+`RemoteLogger.flush` used to POST synchronously from the training thread.
+Against a dashboard that answers in 100 ms, twenty flushes cost **2090 ms of
+training time**; through this sink the same twenty cost **0.7 ms** and arrive
+byte-identical and in order
+(`docs/design_spikes/spike_async_post_spsc_ring.mojo`).
+
+## The policy is DROP, and that is deliberate
+
+This is telemetry. A full ring means the dashboard is slower than the run, and
+the right answer is to lose metrics rather than stall training — the opposite
+of a prefetch feed, which must block. Every refusal is counted, and
+`dropped()` is part of the run's output: a caller that never reports it is
+silently lossy. `RemoteLogger.close` prints it.
+
+## Ordering
+
+One ring, one worker, FIFO. So a `/runs` registration posted before an
+`/ingest` batch is still sent first, which is what the dashboard requires.
+Two sinks would not give you that.
+
+## What crosses the thread boundary
+
+Bytes only, in one frame per POST:
+
+    [ Int32 url_len ][ url_len bytes of URL ][ the rest is the body ]
+
+The worker owns its own `HttpClient`. That is not a nicety: `io/http.mojo`
+states the rule outright — a libcurl easy handle must not be shared across
+threads — and `native/nra_http.c` is already prepared for this, with
+`pthread_once` around `curl_global_init` (`:123`) and `CURLOPT_NOSIGNAL`
+(`:581`).
+
+⚠ NOTHING IS REPORTED FROM THE WORKER THREAD. Failures land in atomic cells and
+the OWNING thread prints them, so a dead dashboard cannot interleave garbage
+into training output from a second thread.
+
+⚠ A HUNG DASHBOARD IS BOUNDED BY THE `dead` LATCH, NOT BY `drain_ms`. There is
+no bounded `pthread_join`, so the worker itself must give up: the first failed
+POST latches it dead and the rest of the backlog is discarded. Without that, a
+drain pays the client timeout once per queued payload — measured at 15.0 s for
+three payloads, versus 5.0 s for eight with the latch
+(`docs/design_spikes/spike_bounded_close_hung_dashboard.mojo`).
+"""
+
+from std.memory import ArcPointer, Pointer, unsafe_memcpy
+from std.time import perf_counter_ns
+
+from ..core.concurrent.block import SharedBlock
+from ..core.concurrent.ring import SharedRing
+from ..core.concurrent.worker import (
+    POLL_DID_WORK,
+    POLL_IDLE,
+    BackgroundThread,
+    BackgroundWorker,
+    WorkerCtl,
+)
+from .http import HttpClient, http_shim_available
+
+
+# ── stat cells, written by the worker, read by the owner ──────────────────
+
+comptime STAT_SENT: Int = 0
+"""POSTs that came back with a 2xx."""
+comptime STAT_FAILED: Int = 1
+"""POSTs that raised or came back non-2xx."""
+comptime STAT_ABANDONED: Int = 2
+"""Queued payloads discarded without being tried, because the transport was
+already known dead or the drain deadline had passed."""
+comptime STAT_LAST_STATUS: Int = 3
+"""HTTP status of the last completed POST. -1 for a transport error."""
+comptime STAT_DEAD: Int = 4
+"""1 once the worker has given up. See the class warning."""
+comptime STAT_NO_SHIM: Int = 5
+"""1 if `libnra_http` was missing when the worker started."""
+comptime STAT_PINGS: Int = 6
+"""Heartbeats this worker sent of its own accord. ⚠ REPORT THIS BESIDE `sent()`:
+a run whose only traffic is pings is silent for a reason worth knowing."""
+comptime STAT_CELLS: Int = 8
+
+
+comptime DEFAULT_CAPACITY: Int = 16
+comptime DEFAULT_PING_INTERVAL_MS: Int = 60_000
+"""How long the worker stays silent before saying "still here".
+
+⚠ THIS IS THE CLOCK'S RESOLUTION, NOT ITS THRESHOLD. The server calls a run
+`stale` after ~3 min and `lost` after 30 — three missed pings and ten times
+that. One minute is chosen so that a legitimate silence (an eval pass, a ~15
+minute physics3d kernel build on the 5090) never approaches even the first
+boundary."""
+
+comptime DEFAULT_SLOT_BYTES: Int = 256 * 1024
+"""256 KB per slot. A `RemoteLogger` flush of 200 metrics is ~20 KB, so this
+has generous headroom; an over-long payload is refused and counted in
+`oversize()` rather than truncated."""
+
+
+@always_inline
+def _frame_len(head: String, tail: String) -> Int:
+    return 4 + head.byte_length() + tail.byte_length()
+
+
+# ── the worker ────────────────────────────────────────────────────────────
+
+
+struct HttpPostWorker(BackgroundWorker):
+    """Drains the ring, POSTing each frame with its own client.
+
+    ⚠ THE CLIENT IS BUILT IN `on_start`, ON THIS THREAD. Building it in the
+    constructor would create the libcurl handle on the owning thread and use it
+    here, which is exactly what `io/http.mojo` forbids.
+    """
+
+    var ring: SharedRing
+    var stats: SharedBlock
+    var api_key: String
+    var timeout_ms: Int
+    var client: Optional[HttpClient]
+    var dead: Bool
+    """Latched on the first failure. Thread-local: only this thread reads or
+    writes it, and it is mirrored into `STAT_DEAD` for the owner."""
+    var ping_url: String
+    """Empty disables the heartbeat entirely. A sink with no run to speak for
+    must stay a pure queue."""
+    var ping_body: String
+    var ping_interval_ns: Int64
+    var last_send_ns: Int64
+    """When this thread last put bytes on the wire, successfully or not.
+    Thread-local, like `dead` — nobody else reads it."""
+
+    def __init__(
+        out self,
+        ring: SharedRing,
+        stats: SharedBlock,
+        api_key: String,
+        timeout_ms: Int,
+        ping_url: String = String(""),
+        ping_body: String = String("{}"),
+        ping_interval_ms: Int = DEFAULT_PING_INTERVAL_MS,
+    ):
+        self.ring = ring
+        self.stats = stats
+        self.api_key = api_key
+        self.timeout_ms = timeout_ms
+        self.client = None
+        self.dead = False
+        self.ping_url = ping_url
+        self.ping_body = ping_body
+        self.ping_interval_ns = Int64(ping_interval_ms) * 1_000_000
+        self.last_send_ns = 0
+
+    def __init__(out self, *, deinit move: Self):
+        self.ring = move.ring
+        self.stats = move.stats
+        self.api_key = move.api_key^
+        self.timeout_ms = move.timeout_ms
+        self.client = move.client^
+        self.dead = move.dead
+        self.ping_url = move.ping_url^
+        self.ping_body = move.ping_body^
+        self.ping_interval_ns = move.ping_interval_ns
+        self.last_send_ns = move.last_send_ns
+
+    def on_start(mut self, ctl: WorkerCtl):
+        # The heartbeat is measured from the START of the run, not from zero:
+        # otherwise the first `poll` would find itself infinitely overdue and
+        # ping before the registration it is supposed to follow.
+        self.last_send_ns = Int64(perf_counter_ns())
+        if not http_shim_available():
+            self.dead = True
+            self.stats.release_store(STAT_NO_SHIM, Int64(1))
+            self.stats.release_store(STAT_DEAD, Int64(1))
+            return
+        try:
+            var c = HttpClient(self.timeout_ms, self.timeout_ms)
+            if self.api_key.byte_length() > 0:
+                c.bearer(self.api_key)
+            self.client = Optional(c^)
+        except:
+            self.dead = True
+            self.stats.release_store(STAT_DEAD, Int64(1))
+
+    def poll(mut self, ctl: WorkerCtl) -> Int:
+        var claim = self.ring.begin_pop()
+        if not claim.ok():
+            return self._maybe_ping(ctl)
+
+        # Discard rather than try, when trying cannot help or cannot finish.
+        if self.dead or not self.client or ctl.drain_deadline_passed():
+            _ = self.stats.fetch_add(STAT_ABANDONED, Int64(1))
+            self.ring.end_pop()
+            return POLL_DID_WORK
+
+        var url: String
+        var body: String
+        try:
+            url, body = unframe(claim.data(), claim.len)
+        except:
+            _ = self.stats.fetch_add(STAT_ABANDONED, Int64(1))
+            self.ring.end_pop()
+            return POLL_DID_WORK
+
+        # ⚠ THE HEARTBEAT'S STAMP MOVES ON EVERY REAL SEND. A run that is
+        # logging has already proved it is alive; a ping on top of that is a
+        # POST that says nothing new. This one line is the difference between
+        # a stamp and a free-running timer.
+        self.last_send_ns = Int64(perf_counter_ns())
+        try:
+            var r = self.client.value().post_json(url, body)
+            self.stats.release_store(STAT_LAST_STATUS, Int64(r.status))
+            if r.ok():
+                _ = self.stats.fetch_add(STAT_SENT, Int64(1))
+            else:
+                _ = self.stats.fetch_add(STAT_FAILED, Int64(1))
+                # A 4xx/5xx is the SERVER talking, not a broken transport, so
+                # it does not latch dead — a dashboard restart should recover.
+        except:
+            self.stats.release_store(STAT_LAST_STATUS, Int64(-1))
+            _ = self.stats.fetch_add(STAT_FAILED, Int64(1))
+            # A transport error IS terminal for this run: retrying a dead peer
+            # costs one client timeout per queued payload at close.
+            self.dead = True
+            self.stats.release_store(STAT_DEAD, Int64(1))
+
+        self.ring.end_pop()
+        return POLL_DID_WORK
+
+    def _maybe_ping(mut self, ctl: WorkerCtl) -> Int:
+        """The §7b heartbeat, sent from the idle branch of the poll loop.
+
+        ⚠⚠ IT IS POSTED DIRECTLY, NOT PUSHED ONTO THE RING. `SharedRing` is
+        SPSC and this thread is its CONSUMER; a producer here would be a second
+        writer against a queue whose whole correctness argument is that there
+        is one. So the ping goes straight out through the client this thread
+        already owns — which is also why it can only happen while the ring is
+        empty, and therefore can never reorder ahead of a metric batch.
+
+        ⚠ IT IS A STAMP COMPARISON, NOT A TIMEOUT. `worker.mojo`'s loop is a
+        1 ms poll with nothing to parameterise, so there is no blocking wait to
+        shorten. This costs one `perf_counter_ns` per idle lap and adds no
+        argument to `BackgroundThread`, which four other things depend on.
+
+        ⚠ THE STAMP MOVES ON EVERY ATTEMPT, INCLUDING FAILURES. Otherwise a
+        dashboard answering 500 would be pinged every millisecond forever.
+
+        Returns `POLL_IDLE` when it sends nothing, which is the ring's true
+        state and what lets a stopping worker conclude it has drained.
+        """
+        if self.ping_url.byte_length() == 0:
+            return POLL_IDLE
+        if self.dead or not self.client:
+            return POLL_IDLE
+        # A run that is shutting down has nothing to prove about being alive,
+        # and `close()` has already queued the finish that says so properly.
+        if ctl.should_stop():
+            return POLL_IDLE
+        var now = Int64(perf_counter_ns())
+        if now - self.last_send_ns < self.ping_interval_ns:
+            return POLL_IDLE
+
+        self.last_send_ns = now
+        try:
+            var r = self.client.value().post_json(self.ping_url, self.ping_body)
+            self.stats.release_store(STAT_LAST_STATUS, Int64(r.status))
+            if r.ok():
+                _ = self.stats.fetch_add(STAT_PINGS, Int64(1))
+            else:
+                _ = self.stats.fetch_add(STAT_FAILED, Int64(1))
+        except:
+            self.stats.release_store(STAT_LAST_STATUS, Int64(-1))
+            _ = self.stats.fetch_add(STAT_FAILED, Int64(1))
+            self.dead = True
+            self.stats.release_store(STAT_DEAD, Int64(1))
+        # ⚠ POLL_DID_WORK, NOT POLL_IDLE: the loop must take another lap to
+        # find the ring genuinely empty. Reporting idle here would be true of
+        # the ring but would also skip the 1 ms sleep, spinning a core.
+        return POLL_DID_WORK
+
+    def on_stop(mut self, ctl: WorkerCtl):
+        pass
+
+
+def frame_into(ring: SharedRing, head: String, tail: String) -> Bool:
+    """Write `[Int32 head_len][head][tail]` into a free slot. False if dropped.
+
+    ⚠ THE FRAMING IS GENERIC, THE NAMES WERE NOT. This POSTs a `(url, body)`
+    pair and `artifact_sink.mojo` sends a `(kind, path)` pair through the same
+    two functions — so the parameters say `head`/`tail` rather than pretending
+    there is only one caller. Two sinks framing bytes two ways would be the
+    same rule written twice.
+
+    Module-level so the gate can exercise the real framing rather than a
+    re-implementation of it — `unframe` is its inverse and the two are tested
+    as a pair in `tests/io/test_http_sink.mojo`.
+    """
+    var n = _frame_len(head, tail)
+    if n > ring.slot_bytes():
+        ring.drop_oversize()
+        return False
+    var claim = ring.begin_push()
+    if not claim.ok():
+        ring.drop_full()
+        return False
+    var dst = claim.data()
+    Pointer[Int32, MutUntrackedOrigin](unsafe_from_address=Int(dst))[] = Int32(
+        head.byte_length()
+    )
+    if head.byte_length() > 0:
+        unsafe_memcpy(
+            dest=dst.unsafe_offset(4),
+            src=head.as_bytes().unsafe_ptr(),
+            count=head.byte_length(),
+        )
+    if tail.byte_length() > 0:
+        unsafe_memcpy(
+            dest=dst.unsafe_offset(4 + head.byte_length()),
+            src=tail.as_bytes().unsafe_ptr(),
+            count=tail.byte_length(),
+        )
+    ring.end_push(n)
+    return True
+
+
+def unframe(
+    p: Pointer[UInt8, MutUntrackedOrigin], n: Int
+) raises -> Tuple[String, String]:
+    """`[Int32 head_len][head][tail]` back into two strings."""
+    if n < 4:
+        raise Error("http_sink: frame shorter than its header")
+    var head_len = Int(
+        Pointer[Int32, MutUntrackedOrigin](unsafe_from_address=Int(p))[]
+    )
+    if head_len < 0 or 4 + head_len > n:
+        raise Error("http_sink: frame head_len out of range")
+    var head_b = List[UInt8]()
+    for i in range(head_len):
+        head_b.append(p[unsafe_offset = 4 + i])
+    head_b.append(0)
+    var tail_b = List[UInt8]()
+    for i in range(4 + head_len, n):
+        tail_b.append(p[unsafe_offset=i])
+    tail_b.append(0)
+    return (
+        String(unsafe_from_utf8_ptr=head_b.unsafe_ptr()),
+        String(unsafe_from_utf8_ptr=tail_b.unsafe_ptr()),
+    )
+
+
+# ── the sink ──────────────────────────────────────────────────────────────
+
+
+struct HttpPostSink(ImplicitlyCopyable, Movable):
+    """A queue of POSTs and the one thread that drains it.
+
+    ⚠ COPIES SHARE ONE THREAD AND ONE QUEUE, which is the right meaning: two
+    copies of a logger are one run and should be one connection. It also means
+    `close()` on either copy stops both — the same asymmetry the synchronous
+    version had with its shared client.
+    """
+
+    var _ring: SharedRing
+    var _stats: SharedBlock
+    var _bg: ArcPointer[BackgroundThread[HttpPostWorker]]
+    var _closed: ArcPointer[Bool]
+    """Refcounted so `close()` through one copy is visible to the others."""
+
+    def __init__(
+        out self,
+        api_key: String = String(""),
+        timeout_ms: Int = 5000,
+        capacity: Int = DEFAULT_CAPACITY,
+        slot_bytes: Int = DEFAULT_SLOT_BYTES,
+        ping_url: String = String(""),
+        ping_body: String = String("{}"),
+        ping_interval_ms: Int = DEFAULT_PING_INTERVAL_MS,
+    ) raises:
+        """Allocate the queue and START THE THREAD.
+
+        ⚠ CONSTRUCTING THIS SPAWNS A THREAD. Build it lazily, on the first
+        payload — a logger with no server configured must stay inert.
+
+        Raises:
+            Error: the ring or the thread could not be created.
+        """
+        self._ring = SharedRing(capacity, slot_bytes)
+        self._stats = SharedBlock(STAT_CELLS)
+        self._stats.release_store(STAT_LAST_STATUS, Int64(0))
+        self._bg = ArcPointer(
+            BackgroundThread(
+                HttpPostWorker(
+                    self._ring,
+                    self._stats,
+                    api_key,
+                    timeout_ms,
+                    ping_url,
+                    ping_body,
+                    ping_interval_ms,
+                )
+            )
+        )
+        self._closed = ArcPointer(False)
+
+    def post(mut self, url: String, body: String) -> Bool:
+        """Queue a POST. Returns False if it was DROPPED.
+
+        Never blocks and never raises: a dead dashboard must not be able to
+        stop a training run. The cost is a `memcpy` and a release-store —
+        measured at 0.003 ms for eleven POSTs whose synchronous equivalent
+        cost 629.7 ms.
+        """
+        return frame_into(self._ring, url, body)
+
+    def close(mut self, drain_ms: Int = 2000) raises:
+        """Stop accepting, drain what is queued, join. Idempotent.
+
+        Raises:
+            Error: the join failed.
+        """
+        if self._closed[]:
+            return
+        self._closed[] = True
+        self._bg[].stop(drain_ms)
+
+    # ── observation, all snapshots of live counters ───────────────────────
+
+    @always_inline
+    def sent(self) -> Int:
+        return Int(self._stats.acquire_load(STAT_SENT))
+
+    @always_inline
+    def failed(self) -> Int:
+        return Int(self._stats.acquire_load(STAT_FAILED))
+
+    @always_inline
+    def abandoned(self) -> Int:
+        """Queued but never tried — the transport was dead or the drain
+        deadline had passed."""
+        return Int(self._stats.acquire_load(STAT_ABANDONED))
+
+    @always_inline
+    def dropped(self) -> Int:
+        """Refused at `post()` because the queue was full or the payload did
+        not fit. ⚠ REPORT THIS. It is the cost of the drop policy."""
+        return self._ring.dropped()
+
+    @always_inline
+    def oversize(self) -> Int:
+        """Subset of `dropped()` larger than `slot_bytes` — a caller bug, not
+        back-pressure."""
+        return self._ring.oversize()
+
+    @always_inline
+    def queued(self) -> Int:
+        """Payloads waiting right now."""
+        return self._ring.depth()
+
+    @always_inline
+    def last_status(self) -> Int:
+        """Status of the last completed POST; -1 for a transport error."""
+        return Int(self._stats.acquire_load(STAT_LAST_STATUS))
+
+    @always_inline
+    def pings(self) -> Int:
+        """Heartbeats the worker sent because nothing else was queued."""
+        return Int(self._stats.acquire_load(STAT_PINGS))
+
+    @always_inline
+    def dead(self) -> Bool:
+        """Whether the worker has given up on the transport."""
+        return self._stats.acquire_load(STAT_DEAD) != 0
+
+    @always_inline
+    def shim_missing(self) -> Bool:
+        """Whether `libnra_http` was absent when the worker started. Callers
+        report this once — `pixi run build-http` is the fix."""
+        return self._stats.acquire_load(STAT_NO_SHIM) != 0
+
+    @always_inline
+    def closed(self) -> Bool:
+        return self._closed[]

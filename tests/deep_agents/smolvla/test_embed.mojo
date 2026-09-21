@@ -23,9 +23,9 @@ Run:
 from std.math import abs, sqrt
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.smolvla.embed import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.smolvla.embed import (
     sinusoidal_time_embedding, embed_language_tokens,
 )
 

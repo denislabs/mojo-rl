@@ -17,7 +17,7 @@ from std.math import abs, inf
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.envs.dm_control.rewards import (
+from noeira.envs.dm_control.rewards import (
     tolerance,
     SIGMOID_GAUSSIAN,
     SIGMOID_HYPERBOLIC,

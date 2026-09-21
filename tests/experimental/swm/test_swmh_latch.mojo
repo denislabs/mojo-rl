@@ -29,8 +29,8 @@ Run:
 
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.rng import Rng
-from mojo_rl.experimental.swm.observables import (
+from noeira.experimental.swm.rng import Rng
+from noeira.experimental.swm.observables import (
     classify,
     class_name,
     ClassificationLatch,

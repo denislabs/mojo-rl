@@ -22,10 +22,10 @@ the table. The peak is 24.5/m at 0.046.
 
 from std.math import abs as fabs
 
-from mojo_rl.envs.dm_control.rewards import (
+from noeira.envs.dm_control.rewards import (
     tolerance, SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN
 )
-from mojo_rl.tasks.shaping import optimal_margin
+from noeira.tasks.shaping import optimal_margin
 
 comptime DT = DType.float64
 

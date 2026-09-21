@@ -22,7 +22,7 @@ from std.os import makedirs
 from std.os.path import exists
 from std.time import sleep
 
-from mojo_rl.core.project_sync import (
+from noeira.core.project_sync import (
     ACT_AHEAD,
     ACT_BEHIND,
     ACT_CONFLICT,
@@ -38,17 +38,17 @@ from mojo_rl.core.project_sync import (
     save_base,
     sync_refusal,
 )
-from mojo_rl.data.project_sync import pull_definition, push_definition
-from mojo_rl.data.remote import RemoteCatalog
-from mojo_rl.io.fileio import remove_file, write_text_atomic
-from mojo_rl.io.http import HttpClient, http_shim_available
-from mojo_rl.io.proc import run_capture
-from mojo_rl.io.sha256 import sha256_file
+from noeira.data.project_sync import pull_definition, push_definition
+from noeira.data.remote import RemoteCatalog
+from noeira.io.fileio import remove_file, write_text_atomic
+from noeira.io.http import HttpClient, http_shim_available
+from noeira.io.proc import run_capture
+from noeira.io.sha256 import sha256_file
 
 
-comptime WORK = "/tmp/mojo_rl_project_sync_gate"
-comptime PORT_FILE = "/tmp/mojo_rl_project_sync_gate_port"
-comptime LOG_FILE = "/tmp/mojo_rl_project_sync_gate_log"
+comptime WORK = "/tmp/noeira_project_sync_gate"
+comptime PORT_FILE = "/tmp/noeira_project_sync_gate_port"
+comptime LOG_FILE = "/tmp/noeira_project_sync_gate_log"
 comptime SLUG = "so101-tower"
 
 comptime H1 = "1111111111111111111111111111111111111111111111111111111111111111"
@@ -164,7 +164,7 @@ def _start_server() raises -> String:
             pass
     _ = run_capture(
         "python3 tools/io/mock_monitor_server.py " + String(PORT_FILE) + " "
-        + String(LOG_FILE) + " 180 > /tmp/mojo_rl_project_sync_gate_server.log 2>&1 &"
+        + String(LOG_FILE) + " 180 > /tmp/noeira_project_sync_gate_server.log 2>&1 &"
     )
     for _ in range(100):
         if exists(PORT_FILE):

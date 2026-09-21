@@ -25,7 +25,7 @@ Design (after probing what Float64 conforms to):
 
 from std.reflection import reflect
 from std.testing import assert_equal, assert_true
-from mojo_rl.core.fmt import fit
+from noeira.core.fmt import fit
 
 
 # ---------------------------------------------------------------------

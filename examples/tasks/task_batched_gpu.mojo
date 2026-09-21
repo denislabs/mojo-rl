@@ -59,34 +59,34 @@ from std.random import seed as seed_rng
 from layout import Layout
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.dm_control.rewards import (
+from noeira.nn.constants import DT
+from noeira.envs.dm_control.rewards import (
     tolerance, SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
     META_IDX_GOAL_HELD, META_IDX_SHAPE_W_GOAL,
     MODEL_CURRICULUM_SIZE,
 )
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
 
-from mojo_rl.tasks.spec import load_family, load_task, validate_task_against_family
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import So101TabletopConfig, So101TabletopPlacement
-from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
-from mojo_rl.tasks.predicates import parse_goal, bind_goal, require_tier_a
-from mojo_rl.tasks.eval import (
+from noeira.tasks.spec import load_family, load_task, validate_task_against_family
+from noeira.tasks.family import scene_path
+from noeira.tasks.family_config import So101TabletopConfig, So101TabletopPlacement
+from noeira.tasks.so101_tabletop_xml import So101TabletopModel
+from noeira.tasks.predicates import parse_goal, bind_goal, require_tier_a
+from noeira.tasks.eval import (
     eval_goal, region_sites, region_rects, region_half_heights,
 )
-from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.gpu_eval import (
+from noeira.tasks.tape import encode_goal, TAPE_WORDS
+from noeira.tasks.gpu_eval import (
     region_table_words, require_gpu_regions, tape_distance_gpu,
 )
-from mojo_rl.tasks.sampler import sample_placements, RegionFrame, SampleReport
-from mojo_rl.tasks.reset import free_slot_addresses, reset_slots
-from mojo_rl.tasks.active import active_mask
-from mojo_rl.tasks.shaping import shaping_words, SHAPING_WORDS
+from noeira.tasks.sampler import sample_placements, RegionFrame, SampleReport
+from noeira.tasks.reset import free_slot_addresses, reset_slots
+from noeira.tasks.active import active_mask
+from noeira.tasks.shaping import shaping_words, SHAPING_WORDS
 
 
 comptime N_ENVS = 1024
@@ -142,7 +142,7 @@ def main() raises:
     print("P3 — 1024 lanes, two tasks, one monomorphisation")
     print("=" * 68)
 
-    var f = load_family("mojo_rl/tasks/families/so101_tabletop.family")
+    var f = load_family("noeira/tasks/families/so101_tabletop.family")
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)
     var rects = region_rects(f)
@@ -155,8 +155,8 @@ def main() raises:
     # to be a real task would have left both groups at 0 and made the leg
     # vacuous. `so101_settle_brick.task` is that lane on purpose and says so in
     # its own header.
-    var ta = load_task("mojo_rl/tasks/tasks/so101_settle_brick.task")
-    var tb = load_task("mojo_rl/tasks/tasks/so101_lift_brick.task")
+    var ta = load_task("noeira/tasks/tasks/so101_settle_brick.task")
+    var tb = load_task("noeira/tasks/tasks/so101_lift_brick.task")
     validate_task_against_family(ta, f)
     validate_task_against_family(tb, f)
     var ga = bind_goal(parse_goal(ta.goal), f, fmd.body_names, fmd.site_names)

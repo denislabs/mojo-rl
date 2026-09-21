@@ -76,7 +76,7 @@ training slowdown.
 
 k=12 was in this sweep and DOES NOT COMPILE on an RTX 5090:
 
-    ptxas error : Entry function 'mojo_rl_physics3d_solver_newt...' uses
+    ptxas error : Entry function 'noeira_physics3d_solver_newt...' uses
                   too much shared data (0x21414 bytes, 0x18c00 max)
 
 The GPU Newton solver holds three NV*NV matrices (M, H, L) plus `Je` (ME*NV) in
@@ -157,18 +157,18 @@ this until leg 2 exists.**
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.robots.so101_park_config import So101ParkProbeConfig
-from mojo_rl.envs.robots.so101_park_xml import (
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.robots.so101_park_config import So101ParkProbeConfig
+from noeira.envs.robots.so101_park_xml import (
     SoArm101ParkK0Model,
     SoArm101ParkK3Model,
     SoArm101ParkK6Model,
     SoArm101ParkK9Model,
     PARK_MAX_CONTACTS,
 )
-from mojo_rl.core.fmt import fit
+from noeira.core.fmt import fit
 
 
 # ─── knobs ────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | Our safetensors reader vs the reference implementation — both directions
 # +--------------------------------------------------------------------------+ #
-"""Gates `mojo_rl/io/safetensors.mojo` against `safetensors` itself.
+"""Gates `noeira/io/safetensors.mojo` against `safetensors` itself.
 
     pixi run -e act-ref python tools/nn/dump_safetensors_reference.py --out /tmp/st_ref
     pixi run mojo run -I . tests/io/test_safetensors_reference.mojo /tmp/st_ref
@@ -29,23 +29,23 @@ from std.memory import bitcast
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.io.safetensors import (
+from noeira.io.safetensors import (
     SafeTensors,
     SafeTensorsWriter,
     ST_F32,
     dtype_name,
     is_float_dtype,
 )
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.torch_names import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.torch_names import (
     LoadTorchNamed,
     SaveTorchNamed,
     TorchNameMap,
 )
-from mojo_rl.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear import Linear
 
 from max.gpu.host import DeviceContext
 
@@ -366,7 +366,7 @@ def main() raises:
     # ── now write a file for the reference to read ───────────────────────
     var w = SafeTensorsWriter()
     w.add_metadata(String("format"), String("pt"))
-    w.add_metadata(String("producer"), String("mojo-rl"))
+    w.add_metadata(String("producer"), String("noeira"))
     _add(w, String("mojo.weight"), [3, 4])
     _add(w, String("mojo.bias"), [4])
     _add(w, String("mojo.scalar"), [])

@@ -1,9 +1,9 @@
 """Test: comptime String from Array → draw_mesh."""
 
 from std.collections import Array
-from mojo_rl.render import Renderer3D, Camera3D, Color
-from mojo_rl.render.light import Light
-from mojo_rl.math3d import Vec3 as V3, Quat as Q4
+from noeira.render import Renderer3D, Camera3D, Color
+from noeira.render.light import Light
+from noeira.math3d import Vec3 as V3, Quat as Q4
 
 comptime Vec3 = V3[DType.float64]
 comptime Quat = Q4[DType.float64]
@@ -18,8 +18,8 @@ def build_names() -> Array[String, 2]:
 
 def build_files() -> Array[String, 2]:
     var a = Array[String, 2](fill=String(""))
-    a[0] = "mojo_rl/envs/metaworld/assets/meshes/table/tablebody.stl"
-    a[1] = "mojo_rl/envs/metaworld/assets/meshes/table/tabletop.stl"
+    a[0] = "noeira/envs/metaworld/assets/meshes/table/tablebody.stl"
+    a[1] = "noeira/envs/metaworld/assets/meshes/table/tabletop.stl"
     return a^
 
 

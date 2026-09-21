@@ -10,8 +10,8 @@ from std.random import random_float64, seed
 from std.math import isnan, isinf
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.config_mt import TDMPC2MultiTask
+from noeira.nn.constants import DT
+from noeira.deep_agents.tdmpc2.config_mt import TDMPC2MultiTask
 
 
 def main() raises:

@@ -27,14 +27,14 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.collision.convex_hull import load_mesh_hull
-from mojo_rl.physics3d.collision.mesh_polygons import polygon_normal
-from mojo_rl.physics3d.model.mesh_inertia import MeshInertia
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.collision.convex_hull import load_mesh_hull
+from noeira.physics3d.collision.mesh_polygons import polygon_normal
+from noeira.physics3d.model.mesh_inertia import MeshInertia
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     MODEL_MESH_META_SIZE,
     MODEL_MESH_POLY_SIZE,
     MESH_META_IDX_VERTADR,

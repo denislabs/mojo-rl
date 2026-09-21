@@ -23,14 +23,14 @@ from std.memory import Pointer
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
 
-from mojo_rl.deep_agents.c51.config import RainbowCNN
-from mojo_rl.deep_agents.training import BatchedCpuDiscreteEnv
-from mojo_rl.envs.car_racing import CarRacingMB
-from mojo_rl.core.fmt import fit
+from noeira.deep_agents.c51.config import RainbowCNN
+from noeira.deep_agents.training import BatchedCpuDiscreteEnv
+from noeira.envs.car_racing import CarRacingMB
+from noeira.core.fmt import fit
 
 
 # =============================================================================
@@ -116,10 +116,10 @@ def main() raises:
 
         var env_vars = load_dotenv()
         var logger = RemoteLogger(
-            server_url=env_vars.get("RL_MONITOR_URL", ""),
+            server_url=env_vars.get("NOEIRA_CLOUD_URL", ""),
             run_name="Rainbow CarRacing Pixel HYBRID (cpu env + gpu train)",
             buffer_size=64,
-            api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+            api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
         )
         logger.set_config("agent", "Rainbow DQN CNN (hybrid)")
         logger.set_config("env", "CarRacingMB pixel (CPU)")

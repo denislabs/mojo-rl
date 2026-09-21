@@ -13,10 +13,10 @@ Features:
 Actions: 0=nothing, 1=left engine, 2=main engine, 3=right engine
 """
 
-from mojo_rl.envs.lunar_lander import LunarLanderEnv
+from noeira.envs.lunar_lander import LunarLanderEnv
 from std.random import random_float64, seed
 from std.time import sleep
-from mojo_rl.render import Renderer2D
+from noeira.render import Renderer2D
 
 
 def main() raises:

@@ -23,14 +23,14 @@ Run:
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.core.torch_names import TN_ZEROS
-from mojo_rl.deep_agents.smolvla.text import SmolVLMTextLayers
-from mojo_rl.deep_agents.smolvla.names import text_name_map, SMOLVLA_TEXT
-from mojo_rl.deep_agents.smolvla.manifest import Manifest, shape_str
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.core.torch_names import TN_ZEROS
+from noeira.deep_agents.smolvla.text import SmolVLMTextLayers
+from noeira.deep_agents.smolvla.names import text_name_map, SMOLVLA_TEXT
+from noeira.deep_agents.smolvla.manifest import Manifest, shape_str
 
 # names do not depend on any sequence length: this is a weight container
 comptime TOWER = SmolVLMTextLayers[]

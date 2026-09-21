@@ -40,14 +40,14 @@ from std.random import seed
 from std.math import sqrt, asin, abs
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.data.any_replay import AnyReplay
-from mojo_rl.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
-from mojo_rl.deep_agents.training.blocks import ReplaySampleStep
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
-from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
-from mojo_rl.utils.fmt import col, fixed, pad_left
+from noeira.nn.constants import DT
+from noeira.deep_agents.data.any_replay import AnyReplay
+from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
+from noeira.deep_agents.training.blocks import ReplaySampleStep
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.robots.so_arm101_xml import SoArm101Model
+from noeira.envs.robots.so_arm101 import SoArm101ReachConfig
+from noeira.utils.fmt import col, fixed, pad_left
 
 comptime EnvT = Phyics3dEnv[
     SoArm101Model, SoArm101ReachConfig, DT, TERMINATE_ON_UNHEALTHY=False

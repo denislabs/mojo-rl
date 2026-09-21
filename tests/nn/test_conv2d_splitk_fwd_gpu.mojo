@@ -16,7 +16,7 @@ bytes per call. On the ACT step that is
     workspace = 2 * 9600 * 256 * 4 = 19,660,800 B = 18.75 MB
 
 which is exactly the allocation that aborted the capture, found with
-`-D LOGGING_LEVEL=INFO` after `MOJO_RL_ALLOC_TRACE` proved it was not ours.
+`-D LOGGING_LEVEL=INFO` after `NOEIRA_ALLOC_TRACE` proved it was not ours.
 
 ⚠ The lesson is in the shape, not the gradient: ANY `max_matmul` inside a
 captured region can hit MAX's split-K, and `K >= 2048` with `n % 128 == 0` is
@@ -32,12 +32,12 @@ outputs must agree.
 from std.math import abs
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.splitk_gemm import splitk_path_applies
-from mojo_rl.nn.primitives.conv2d import Conv2D
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.splitk_gemm import splitk_path_applies
+from noeira.nn.primitives.conv2d import Conv2D
 
 
 def check[

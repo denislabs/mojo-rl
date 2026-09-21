@@ -1,6 +1,6 @@
 """Benchmark CPU matmul: naive triple loop vs `linalg.matmul[target="cpu"]`.
 
-The current `MatMul.eval` (mojo_rl/nn/autodiff/primitives/matmul.mojo) uses a
+The current `MatMul.eval` (noeira/nn/autodiff/primitives/matmul.mojo) uses a
 naive triple-loop on CPU. The GPU path on NVIDIA already routes through
 `linalg.matmul` (the optimized GEMM / vendor BLAS). This bench checks whether
 the same `linalg.matmul` is also faster on CPU — it accepts `target="cpu"` and
@@ -17,8 +17,8 @@ from layout import Layout, LayoutTensor
 from layout.tile_tensor import lt_to_tt
 from linalg.matmul import matmul as max_matmul
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.core.fmt import fit
+from noeira.nn.constants import DT as dtype
+from noeira.core.fmt import fit
 
 
 @always_inline

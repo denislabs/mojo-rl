@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | Promotion: a role, its weights, and the history it keeps for free
 # +--------------------------------------------------------------------------+ #
-"""Gate `mojo_rl/core/policy.mojo` and `project-promote` — §8.
+"""Gate `noeira/core/policy.mojo` and `project-promote` — §8.
 
     pixi run mojo run -I . tests/core/test_policy.mojo
 
@@ -27,7 +27,7 @@
 
 from std.os.path import exists
 
-from mojo_rl.core.policy import (
+from noeira.core.policy import (
     PolicyRecord,
     describe_policy,
     resolve_policy,
@@ -37,12 +37,12 @@ from mojo_rl.core.policy import (
     policy_kv_path,
     write_policy,
 )
-from mojo_rl.io.fileio import write_file_atomic
-from mojo_rl.io.proc import quote_arg, run_capture
-from mojo_rl.io.sha256 import sha256_file
+from noeira.io.fileio import write_file_atomic
+from noeira.io.proc import quote_arg, run_capture
+from noeira.io.sha256 import sha256_file
 
 
-comptime TMP = "/tmp/mojo_rl_policy_gate"
+comptime TMP = "/tmp/noeira_policy_gate"
 
 
 def _blob(path: String, seed: Int, n: Int) raises:
@@ -75,7 +75,7 @@ def _is_symlink(path: String) raises -> Bool:
 
 def _promote(rid: String, which: String, name: String, note: String) raises -> String:
     return run_capture(
-        "MOJO_RL_PROJECTS=" + quote_arg(String(TMP) + "/projects")
+        "NOEIRA_PROJECTS=" + quote_arg(String(TMP) + "/projects")
         + " pixi run mojo run -I . tools/project/project_cli.mojo promote "
         + quote_arg(rid) + " " + quote_arg(which) + " --as " + quote_arg(name)
         + (" --note " + quote_arg(note) if note.byte_length() > 0 else "")
@@ -289,7 +289,7 @@ def main() raises:
     # ── 11. ⚠ a record whose WEIGHTS are gone must not stay silent ───
     _ = run_capture("rm -f " + quote_arg(role))
     var shown = run_capture(
-        "MOJO_RL_PROJECTS=" + quote_arg(proot)
+        "NOEIRA_PROJECTS=" + quote_arg(proot)
         + " pixi run mojo run -I . tools/project/project_cli.mojo show so101"
         + " 2>&1 || true",
         1 << 20,

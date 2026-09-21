@@ -9,7 +9,7 @@ import Papers from '~/components/Papers.astro';
 
 <Maturity level="stable" />
 
-Off-policy agents sample past transitions from a replay buffer. In mojo-rl there
+Off-policy agents sample past transitions from a replay buffer. In noeira there
 are two of them — one per backend — and each covers both the uniform and the
 prioritized policy through a compile-time flag:
 
@@ -48,12 +48,12 @@ picks the buffer by naming an alias — nothing inside SAC, TD3, DQN, C51 or DDP
 changes:
 
 ```mojo
-from mojo_rl.data.blocks import StoreUniformSampleCpuStep
+from noeira.data.blocks import StoreUniformSampleCpuStep
 # or
-from mojo_rl.data.blocks import StoreUniformSampleGpuStep
+from noeira.data.blocks import StoreUniformSampleGpuStep
 ```
 
-Four aliases exist in `mojo_rl/data/blocks.mojo`, each taking
+Four aliases exist in `noeira/data/blocks.mojo`, each taking
 `[OBS, ACT, BATCH, CAP]` in that order — deliberately the same order as the
 names they replaced, so a swap is a one-token edit:
 
@@ -64,7 +64,7 @@ names they replaced, so a swap is a one-token edit:
 | `StoreUniformSampleGpuStep` | GPU | uniform (+ ERE) |
 | `StorePerSampleGpuStep` | GPU | prioritized — takes a fifth optional `SDT` for uint8 obs |
 
-The older names in `mojo_rl/deep_agents/training/blocks/block_aliases.mojo`
+The older names in `noeira/deep_agents/training/blocks/block_aliases.mojo`
 (`UniformSampleCpuStep`, `PerSampleGpuStep`, and the four `NStep…` variants)
 still work and now resolve to the same types, so existing code needs no edit.
 
@@ -149,7 +149,7 @@ train/holdout split.
 ## n-step is an accumulator, not a sampler
 
 `NStepBuffer` and `GPUNStepBuffer` in
-`mojo_rl/deep_agents/data/n_step_replay.mojo` hold N pending transitions and
+`noeira/deep_agents/data/n_step_replay.mojo` hold N pending transitions and
 emit one aggregated transition carrying a discounted return. Nothing about them
 samples — they sit at *write* time, in front of any of the buffers above. That
 is why n-step is a decorator block (`NStepSampleStep`) rather than a fifth

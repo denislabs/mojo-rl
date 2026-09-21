@@ -21,7 +21,7 @@ from std.memory import alloc
 from std.python import Python
 from std.testing import assert_equal, assert_true, assert_almost_equal
 
-from mojo_rl.io.hdf5 import (
+from noeira.io.hdf5 import (
     H5File,
     H5Writer,
     H5T_FLOAT,
@@ -34,7 +34,7 @@ from mojo_rl.io.hdf5 import (
 )
 
 
-comptime OUT_PATH = "/tmp/mojo_rl_hdf5_writer_roundtrip.h5"
+comptime OUT_PATH = "/tmp/noeira_hdf5_writer_roundtrip.h5"
 
 comptime ROW_DIM: Int = 9          # e.g. a walker qpos row
 comptime CHUNK_ROWS: Int = 4       # deliberately tiny: forces chunk crossing
@@ -225,7 +225,7 @@ def test_readback_h5py() raises:
 def test_deflate_roundtrip() raises:
     """Compression path: shuffle+deflate must not change the values."""
     print("[test] shuffle+deflate round-trip...")
-    var path = String("/tmp/mojo_rl_hdf5_writer_deflate.h5")
+    var path = String("/tmp/noeira_hdf5_writer_deflate.h5")
     var w = H5Writer(path)
     var ds = w.create[DType.float32](
         String("pixels"), row_dim=ROW_DIM, chunk_rows=CHUNK_ROWS, deflate=4

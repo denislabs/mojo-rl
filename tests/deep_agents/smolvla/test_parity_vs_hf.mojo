@@ -42,30 +42,30 @@ from std.os import getenv
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.core.torch_names import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.core.torch_names import (
     LoadTorchNamed, TorchNameMap, TN_PLAIN,
 )
-from mojo_rl.io.safetensors import SafeTensors
-from mojo_rl.io.hf import hf_download_file, HF_MODEL
-from mojo_rl.deep_agents.act.refload import RefDump
-from mojo_rl.deep_agents.smolvla.vision import (
+from noeira.io.safetensors import SafeTensors
+from noeira.io.hf import hf_download_file, HF_MODEL
+from noeira.deep_agents.act.refload import RefDump
+from noeira.deep_agents.smolvla.vision import (
     SigLIPVisionTower, SigLIPEmbeddings, SigLIPLayer, SIGLIP_IMG, SIGLIP_PATCH,
     SIGLIP_DIM, SIGLIP_GRID, SIGLIP_TOKENS, SIGLIP_HEADS, SIGLIP_FF,
 )
-from mojo_rl.deep_agents.smolvla.text import (
+from noeira.deep_agents.smolvla.text import (
     SmolVLMTextLayers, SMOLLM_DIM, SMOLLM_FF, SMOLLM_KV_W, SMOLLM_LAYERS,
     SMOLLM_KV_HEADS, SMOLLM_HEAD_DIM,
 )
-from mojo_rl.deep_agents.smolvla.kv_cache import SmolVLAKVCache
-from mojo_rl.deep_agents.smolvla.fused import SmolVLAPrefill
-from mojo_rl.deep_agents.smolvla.names import (
+from noeira.deep_agents.smolvla.kv_cache import SmolVLAKVCache
+from noeira.deep_agents.smolvla.fused import SmolVLAPrefill
+from noeira.deep_agents.smolvla.names import (
     vision_name_map, text_name_map, SMOLVLA_VISION,
 )
-from mojo_rl.deep_agents.smolvla.attn_mask import att_2d_mask_square, smolvla_ar
+from noeira.deep_agents.smolvla.attn_mask import att_2d_mask_square, smolvla_ar
 
 comptime REPO = String("lerobot/smolvla_base")
 comptime TS = 32                      # text_seq in the dumper

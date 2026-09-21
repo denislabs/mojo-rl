@@ -44,10 +44,10 @@ from std.math import sqrt, cos, sin, pi, acos
 from layout import Layout, LayoutTensor
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.collision.convex_hull import load_mesh_hull
-from mojo_rl.physics3d.collision.gjk import _support_mesh
-from mojo_rl.physics3d.gpu.constants import mesh_max_edge
-from mojo_rl.physics3d.model.mesh_inertia import MeshInertia
+from noeira.physics3d.collision.convex_hull import load_mesh_hull
+from noeira.physics3d.collision.gjk import _support_mesh
+from noeira.physics3d.gpu.constants import mesh_max_edge
+from noeira.physics3d.model.mesh_inertia import MeshInertia
 
 comptime D = DType.float64
 # Big enough for the largest fixture below; the tensors are comptime-shaped.
@@ -383,7 +383,7 @@ def test_small_collision_hull() raises:
     """
     _check(
         "Fixed_Jaw_Collision_2",
-        "mojo_rl/envs/robots/assets/so_arm100/Fixed_Jaw_Collision_2.stl",
+        "noeira/envs/robots/assets/so_arm100/Fixed_Jaw_Collision_2.stl",
     )
 
 
@@ -391,7 +391,7 @@ def test_scanned_hull() raises:
     """A full scanned part — the shape GJK actually walks in the viewer."""
     _check(
         "Wrist_Pitch_Roll  ",
-        "mojo_rl/envs/robots/assets/so_arm100/Wrist_Pitch_Roll.stl",
+        "noeira/envs/robots/assets/so_arm100/Wrist_Pitch_Roll.stl",
     )
 
 
@@ -401,7 +401,7 @@ def test_long_thin_hull() raises:
     the fixture that would expose it."""
     _check(
         "under_arm_so101_v1",
-        "mojo_rl/envs/robots/assets/so_arm101/under_arm_so101_v1.stl",
+        "noeira/envs/robots/assets/so_arm101/under_arm_so101_v1.stl",
     )
 
 

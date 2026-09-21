@@ -19,11 +19,11 @@ from std.math import abs
 from std.random import random_float64, seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.dreamerv3.imag_loss import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.dreamerv3.imag_loss import (
     imag_loss_cpu, imag_loss_backward,
 )
-from mojo_rl.deep_agents.dreamerv3.normalize import PercentileNormalize
+from noeira.deep_agents.dreamerv3.normalize import PercentileNormalize
 
 
 comptime BK = 3

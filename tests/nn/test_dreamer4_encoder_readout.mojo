@@ -30,18 +30,18 @@ Run: pixi run mojo run -I . tests/nn/test_dreamer4_encoder_readout.mojo
 from std.math import sqrt
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.optimizer.adam import Adam
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.optimizer.adam import Adam
 
-from mojo_rl.deep_agents.dreamer4.encoder import Dreamer4Encoder
-from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
-from mojo_rl.deep_agents.dreamer4.recon_loss import (
+from noeira.deep_agents.dreamer4.encoder import Dreamer4Encoder
+from noeira.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
+from noeira.deep_agents.dreamer4.recon_loss import (
     masked_recon_loss, full_recon_psnr,
 )
-from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao
+from noeira.deep_agents.dreamer4.shortcut_loss import _mao
 
 
 # ── Part 1: patch-sensitivity discriminator (L != NP) ──────────────────────

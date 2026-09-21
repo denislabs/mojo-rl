@@ -13,13 +13,13 @@ Run (no GPU):
 
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
-from mojo_rl.deep_agents.muzero.selfplay_2p_cpu import run_muzero_selfplay_2p_cpu
-from mojo_rl.deep_agents.zero.evaluators import RandomOpponent
-from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.optimizer.adam import Adam
+from noeira.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
+from noeira.deep_agents.muzero.selfplay_2p_cpu import run_muzero_selfplay_2p_cpu
+from noeira.deep_agents.zero.evaluators import RandomOpponent
+from noeira.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
 
 
 def main() raises:

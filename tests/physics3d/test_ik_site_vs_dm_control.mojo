@@ -51,15 +51,15 @@ from std.collections import Array
 from max.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.physics3d.fields import Model, Data, Dims, DimsLike
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.dynamics.ik_site import (
+from noeira.physics3d.fields import Model, Data, Dims, DimsLike
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.fields_build import build_model_fields_from_flat
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.dynamics.ik_site import (
     qpos_from_site_pose,
     set_site_to_xpos,
 )
-from mojo_rl.envs.dm_control.manipulation_reset import (
+from noeira.envs.dm_control.manipulation_reset import (
     set_grasp,
     sample_bbox_uniform,
 )

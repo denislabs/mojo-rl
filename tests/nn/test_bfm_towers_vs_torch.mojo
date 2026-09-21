@@ -28,24 +28,24 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.tensor import Tensor, TensorImpl
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.deep_agents.fb.bfm_towers import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.module import Module
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.tensor import Tensor, TensorImpl
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.deep_agents.fb.bfm_towers import (
     BFMFTower, BFMActorTower, BFMBNet, BFMBlock, BFMResBlock,
 )
-from mojo_rl.nn.combinators.parallel import Parallel
-from mojo_rl.nn.combinators.repeat import Repeat
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_mish import LinearMish
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.primitives.linear_tanh import LinearTanh
-from mojo_rl.nn.primitives.activations import Mish
-from mojo_rl.nn.primitives.slice import Slice
+from noeira.nn.combinators.parallel import Parallel
+from noeira.nn.combinators.repeat import Repeat
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_mish import LinearMish
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.nn.primitives.linear_tanh import LinearTanh
+from noeira.nn.primitives.activations import Mish
+from noeira.nn.primitives.slice import Slice
 
 from max.gpu.host import DeviceContext
 

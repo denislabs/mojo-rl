@@ -6,9 +6,9 @@ Compares:
 """
 
 from std.time import perf_counter_ns
-from mojo_rl.envs.gymnasium import GymCartPoleEnv
-from mojo_rl.envs import CartPoleEnv
-from mojo_rl.agents.qlearning import QLearningAgent
+from noeira.envs.gymnasium import GymCartPoleEnv
+from noeira.envs import CartPoleEnv
+from noeira.agents.qlearning import QLearningAgent
 from std.random import seed
 
 

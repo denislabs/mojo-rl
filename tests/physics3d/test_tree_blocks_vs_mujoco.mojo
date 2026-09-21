@@ -46,13 +46,13 @@ Regenerate the golden: pixi run python scripts/dump_mujoco_trees.py
 Run: pixi run mojo run -I . tests/physics3d/test_tree_blocks_vs_mujoco.mojo
 """
 
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime,
     dims_from_flat,
     build_model_runtime,
 )
-from mojo_rl.physics3d.fields import Model, DynDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, DynDims
+from noeira.physics3d.gpu.constants import (
     MODEL_TREE_SIZE,
     TREE_IDX_DOF_ADR,
     TREE_IDX_DOF_NUM,

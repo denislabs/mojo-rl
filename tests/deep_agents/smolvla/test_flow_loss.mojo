@@ -47,9 +47,9 @@ from std.random import random_float64
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.smolvla.flow_loss import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.smolvla.flow_loss import (
     sample_time, sample_times, sample_noise, build_xt_ut, flow_mse, mean_err,
     FM_ALPHA, FM_SCALE, FM_OFFSET,
 )

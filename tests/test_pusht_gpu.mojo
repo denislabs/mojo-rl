@@ -12,8 +12,8 @@ Run with:
 
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import Pointer
-from mojo_rl.physics2d import dtype, SHAPE_MAX_SIZE
-from mojo_rl.envs.pusht import (
+from noeira.physics2d import dtype, SHAPE_MAX_SIZE
+from noeira.envs.pusht import (
     PushTV2,
     PConstants,
     PushTLayout,

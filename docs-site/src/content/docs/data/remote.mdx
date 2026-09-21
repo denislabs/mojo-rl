@@ -13,7 +13,7 @@ laptop each time. `RemoteCatalog` closes that gap: it resolves a dataset name to
 bytes at a local path, fetching only if the local copy is missing or stale.
 
 ```mojo
-from mojo_rl.data.remote import RemoteCatalog
+from noeira.data.remote import RemoteCatalog
 
 var cat = RemoteCatalog.from_env()                       # reads .env
 var path = cat.pull(String("walker-random-v1"), String("data/walker.h5"))
@@ -24,8 +24,8 @@ Credentials come from a dotenv file, the same two keys the training monitor
 already uses:
 
 ```
-RL_MONITOR_URL=https://…
-RL_MONITOR_API_KEY=…
+NOEIRA_CLOUD_URL=https://…
+NOEIRA_CLOUD_API_KEY=…
 ```
 
 `from_env` raises with the missing key named, rather than letting it surface
@@ -90,7 +90,7 @@ downloaded, rather than one advertising a truncated object.
 
 ## The downloader
 
-`mojo_rl/io/fetch.mojo` handles the transfer. It was generalised from the PushT
+`noeira/io/fetch.mojo` handles the transfer. It was generalised from the PushT
 dataset loader rather than rewritten, because the parts worth keeping are the
 ones that were painful to get right:
 

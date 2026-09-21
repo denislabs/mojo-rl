@@ -13,10 +13,10 @@ from max.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.experimental.lewm.trainer import LeWMTrainer
-from mojo_rl.experimental.lewm.mpc import lewm_mpc_eval
+from noeira.nn.constants import DT
+from noeira.nn.core.ptr import mptr
+from noeira.experimental.lewm.trainer import LeWMTrainer
+from noeira.experimental.lewm.mpc import lewm_mpc_eval
 
 
 comptime IN_CH = 4

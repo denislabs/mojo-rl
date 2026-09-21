@@ -22,20 +22,20 @@ from std.random import seed
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.core.hard_copy import _CollectVisitor, _InjectVisitor
-from mojo_rl.deep_agents.efficient_zero_v2.nets import (
+from noeira.nn.constants import DT
+from noeira.nn.core.module import Module
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.core.hard_copy import _CollectVisitor, _InjectVisitor
+from noeira.deep_agents.efficient_zero_v2.nets import (
     MZRepNet, MZDynNet, EZProjectorNet, EZPredictorNet,
 )
-from mojo_rl.deep_agents.efficient_zero_v2.nets_continuous import EZContPredNet
-from mojo_rl.deep_agents.efficient_zero_v2.blocks_continuous import (
+from noeira.deep_agents.efficient_zero_v2.nets_continuous import EZContPredNet
+from noeira.deep_agents.efficient_zero_v2.blocks_continuous import (
     ezv2_unroll_train_step_continuous_cpu,
     ezv2_unroll_train_step_continuous_gpu,
 )
-from mojo_rl.deep_agents.efficient_zero_v2.unroll_scratch import (
+from noeira.deep_agents.efficient_zero_v2.unroll_scratch import (
     EZV2UnrollContScratch,
 )
 

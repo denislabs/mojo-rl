@@ -10,16 +10,16 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_checkpoint_adam_storage.mojo
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.core.checkpoint import save_params, load_params
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.loss.mse import mse_forward, mse_backward
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.core.checkpoint import save_params, load_params
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.loss.mse import mse_forward, mse_backward
 
 
 comptime B = 4

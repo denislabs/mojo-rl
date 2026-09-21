@@ -23,20 +23,20 @@
 
 from std.os.path import exists
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.checkpoint import load_params, save_params
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.batch_norm_1d import BatchNorm1D
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.io.fileio import read_file_bytes, write_file_atomic
+from noeira.nn.constants import DT
+from noeira.nn.core.checkpoint import load_params, save_params
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.batch_norm_1d import BatchNorm1D
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.combinators.sequential import Sequential
+from noeira.io.fileio import read_file_bytes, write_file_atomic
 
 
 comptime D = 4
 comptime H = 5
 comptime O = 3
 comptime NET = Sequential[Linear[D, H], BatchNorm1D[H], Linear[H, O]]
-comptime PATH = "/tmp/mojo_rl_ckpt_finish_gate.ckpt"
+comptime PATH = "/tmp/noeira_ckpt_finish_gate.ckpt"
 
 
 def main() raises:

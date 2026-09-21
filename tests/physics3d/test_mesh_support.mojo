@@ -1,6 +1,6 @@
 """Test: Mesh support function correctness."""
 
-from mojo_rl.physics3d.collision.gjk_support import support_mesh, support_box
+from noeira.physics3d.collision.gjk_support import support_mesh, support_box
 
 
 def _expect(got: Float64, want: Float64, label: String) raises:

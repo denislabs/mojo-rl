@@ -13,8 +13,8 @@ Expected result: PER should learn faster, especially early in training,
 because it focuses on surprising/important transitions.
 """
 
-from mojo_rl.envs import CliffWalkingEnv
-from mojo_rl.agents import QLearningReplayAgent, QLearningPERAgent
+from noeira.envs import CliffWalkingEnv
+from noeira.agents import QLearningReplayAgent, QLearningPERAgent
 
 
 def run_comparison() raises:
@@ -190,7 +190,7 @@ def demonstrate_per_sampling():
     print("=" * 70)
     print()
 
-    from mojo_rl.core.replay_buffer import PrioritizedReplayBuffer
+    from noeira.core.replay_buffer import PrioritizedReplayBuffer
 
     var buffer = PrioritizedReplayBuffer(capacity=100, alpha=0.6, beta=0.4)
 

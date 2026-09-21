@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | A calibration file that cannot be applied to the wrong picture
 # +--------------------------------------------------------------------------+ #
-"""Gate for `mojo_rl/vision/calib_file.mojo`.
+"""Gate for `noeira/vision/calib_file.mojo`.
 
     pixi run mojo run -I . tests/vision/test_calib_file.mojo
 
@@ -18,13 +18,13 @@ reasonable, and was undetectable before this file existed.
 
 from std.math import abs
 
-from mojo_rl.math3d import Mat3 as Mat3Generic, Vec3 as Vec3Generic
-from mojo_rl.vision.calib_file import CameraCalib, read_calib, write_calib
+from noeira.math3d import Mat3 as Mat3Generic, Vec3 as Vec3Generic
+from noeira.vision.calib_file import CameraCalib, read_calib, write_calib
 
 comptime Vec3d = Vec3Generic[DType.float64]
 comptime Mat3d = Mat3Generic[DType.float64]
 
-comptime TMP = "/tmp/mojo_rl_calib_gate.txt"
+comptime TMP = "/tmp/noeira_calib_gate.txt"
 
 
 def _write_raw(path: String, var body: String) raises:

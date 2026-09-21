@@ -57,9 +57,9 @@ from std.math import abs
 from std.os import getenv
 from std.python import Python, PythonObject
 
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.envs.robots import UnitreeG1
-from mojo_rl.envs.robots.unitree_g1_xml import UnitreeG1Model
+from noeira.core.cont_action import ContAction
+from noeira.envs.robots import UnitreeG1
+from noeira.envs.robots.unitree_g1_xml import UnitreeG1Model
 
 
 comptime NQ = UnitreeG1Model.NQ

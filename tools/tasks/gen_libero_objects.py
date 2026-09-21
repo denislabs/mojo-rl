@@ -13,8 +13,8 @@ refuses the composed scene ("repeated name 'tex-stove_knob' in texture").
 
 This tool applies exactly that one rule — first declaration wins, by (tag,
 name) — re-roots every `file=` at `../assets/`, and writes one XML per
-category of `mojo_rl/tasks/libero/categories.kv` into
-`mojo_rl/tasks/libero/objects/`. Each output is loaded by MuJoCo on its own
+category of `noeira/tasks/libero/categories.kv` into
+`noeira/tasks/libero/objects/`. Each output is loaded by MuJoCo on its own
 before it is written. The family composer attaches these, not the pack's.
 
 ⚠ WHAT ELSE robosuite DOES AND THIS DOES NOT: rename `object` to
@@ -28,9 +28,9 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 
-TABLE = "mojo_rl/tasks/libero/categories.kv"
-PACK = "mojo_rl/tasks/libero/assets"
-OUT_DIR = "mojo_rl/tasks/libero/objects"
+TABLE = "noeira/tasks/libero/categories.kv"
+PACK = "noeira/tasks/libero/assets"
+OUT_DIR = "noeira/tasks/libero/objects"
 
 
 def read_assets(path):

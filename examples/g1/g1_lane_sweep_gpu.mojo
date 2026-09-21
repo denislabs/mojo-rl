@@ -56,10 +56,10 @@ from max.gpu.host import DeviceContext, HostBuffer
 from std.time import perf_counter_ns
 from std.math import sin
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.robots import UnitreeG1Batched
-from mojo_rl.envs.robots.unitree_g1_xml import UnitreeG1Model
-from mojo_rl.envs.robots.unitree_g1_pd import G1_CONTROL_DECIMATION
+from noeira.nn.constants import DT
+from noeira.envs.robots import UnitreeG1Batched
+from noeira.envs.robots.unitree_g1_xml import UnitreeG1Model
+from noeira.envs.robots.unitree_g1_pd import G1_CONTROL_DECIMATION
 
 
 comptime LANES = 256

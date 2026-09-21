@@ -56,7 +56,7 @@ from std.sys import has_nvidia_gpu_accelerator
 from std.memory import alloc
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
 comptime _CUptr = Pointer[NoneType, MutUntrackedOrigin]
 
@@ -84,7 +84,7 @@ def main() raises:
     print("[probe] warmup done")
 
     print("[probe] dlopen libcuda_intercept.so ...")
-    var lib = OwnedDLHandle("./mojo_rl/cuda/libcuda_intercept.so")
+    var lib = OwnedDLHandle("./noeira/cuda/libcuda_intercept.so")
     print("[probe] dlopen ok")
 
     # ── 1. WHAT DID THE UNWRAP ACTUALLY PRODUCE? ─────────────────────────

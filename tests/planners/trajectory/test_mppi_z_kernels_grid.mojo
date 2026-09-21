@@ -13,8 +13,8 @@ with a pre-poisoned destination so an untouched tail cannot pass.
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.planners.trajectory.mppi_kernels import (
+from noeira.nn.constants import DT
+from noeira.planners.trajectory.mppi_kernels import (
     mppi_copy_z_kernel,
     mppi_broadcast_z0_zero_returns_batched_kernel,
 )

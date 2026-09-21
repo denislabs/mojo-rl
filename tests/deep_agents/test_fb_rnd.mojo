@@ -36,12 +36,12 @@ from std.math import abs, sqrt
 from std.random import random_float64, seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.deep_agents.fb.rnd import RND, RunningNorm
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.deep_agents.fb.rnd import RND, RunningNorm
 
 
 comptime OBS: Int = 6

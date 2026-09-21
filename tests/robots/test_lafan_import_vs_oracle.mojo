@@ -3,7 +3,7 @@
     pixi run mojo run -I . tests/robots/test_lafan_import_vs_oracle.mojo
     G1_LAFAN_ORACLE=/path/to/oracle.h5 LAFAN_PKL=/path/to/lafan_29dof.pkl ...
 
-`mojo_rl/data/lafan.mojo` converts a clip from the pickle; the oracle store
+`noeira/data/lafan.mojo` converts a clip from the pickle; the oracle store
 (`lafan_g1_50hz_oracle.h5`, written by the reference's motion library
 through `tools/g1/lafan_reference_dump.py` + `lafan_to_store.py`) holds
 what the reference computed for the same clip. Two clips are converted —
@@ -46,12 +46,12 @@ from std.os import getenv
 from std.os.path import exists
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.data.lafan import (
+from noeira.data.store import TrajectoryStore
+from noeira.data.lafan import (
     load_lafan_clips, convert_clip, LAFAN_NQ, LAFAN_NV, LAFAN_STATE_DIM,
     LAFAN_PRIV_DIM, LAFAN_N_BODIES,
 )
-from mojo_rl.envs.robots import UnitreeG1
+from noeira.envs.robots import UnitreeG1
 
 
 comptime TOL_POS = 1e-5

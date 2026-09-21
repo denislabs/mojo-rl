@@ -18,7 +18,7 @@ Note: At qpos=all_zeros, torso is at z=0 (not 1.25). The natural standing
 pose uses qpos[rootz]=1.25 (= qpos0[rootz]).
 
 Run with:
-    cd mojo-rl && pixi run mojo run physics3d/tests/test_walker2d_fk_vs_mujoco.mojo
+    cd noeira && pixi run mojo run physics3d/tests/test_walker2d_fk_vs_mujoco.mojo
 """
 
 from std.testing import assert_true, TestSuite
@@ -27,12 +27,12 @@ from std.math import abs
 from std.collections import Array
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 
 # =============================================================================

@@ -31,17 +31,17 @@ composed scene loaded as four bodies instead of the whole model, silently.
 Run: pixi run mojo run -I . tests/tasks/test_family_compose_vs_mujoco.mojo
 """
 
-from mojo_rl.tasks.spec import load_family, SLOT_FREE
-from mojo_rl.tasks.family import (
+from noeira.tasks.spec import load_family, SLOT_FREE
+from noeira.tasks.family import (
     compose_family, park_pos, scene_path, SCENE_DIR, BASE_PREFIX,
 )
 from std.sys import argv
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
-from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
-from mojo_rl.tasks.so101_tower_xml import So101TowerModel
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.tasks.so101_tabletop_xml import So101TabletopModel
+from noeira.tasks.so101_tower_xml import So101TowerModel
 
 
-comptime FAMILY = String("mojo_rl/tasks/families/so101_tabletop.family")
+comptime FAMILY = String("noeira/tasks/families/so101_tabletop.family")
 
 
 def _family_path() -> String:
@@ -53,7 +53,7 @@ def _family_path() -> String:
     Run the gate once per family:
 
         pixi run mojo run -I . tests/tasks/test_family_compose_vs_mujoco.mojo \\
-            mojo_rl/tasks/families/so101_tower.family
+            noeira/tasks/families/so101_tower.family
     """
     var args = argv()
     for i in range(1, len(args)):
@@ -76,7 +76,7 @@ def main() raises:
     #
     # ⚠ AND THE PATH MATTERS: MuJoCo reads `<model file=>` relative to the
     # SCENE FILE's directory, so a composed scene dropped in /tmp looks for
-    # `/tmp/mojo_rl/envs/...`. This gate found exactly that on its first run.
+    # `/tmp/noeira/envs/...`. This gate found exactly that on its first run.
     var out = scene_path(f)
     var xml = compose_family(f, SCENE_DIR)
     var on_disk = String("")

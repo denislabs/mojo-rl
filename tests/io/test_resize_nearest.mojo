@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | NEAREST resize vs Pillow, over a random size sweep
 # +--------------------------------------------------------------------------+ #
-"""Gate `resize_nearest_pil` in `mojo_rl/io/image.mojo`.
+"""Gate `resize_nearest_pil` in `noeira/io/image.mojo`.
 
     pixi run python tools/io/dump_resize_nearest_reference.py --out /tmp/nearest_ref
     pixi run mojo run -I . tests/io/test_resize_nearest.mojo [/tmp/nearest_ref]
@@ -24,9 +24,9 @@ from std.memory import alloc
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.io.fileio import read_file_bytes
-from mojo_rl.io.image import resize_nearest_pil
-from mojo_rl.nn.core.ptr import mptr
+from noeira.io.fileio import read_file_bytes
+from noeira.io.image import resize_nearest_pil
+from noeira.nn.core.ptr import mptr
 
 
 def main() raises:

@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | The Mojo bilinear resize, against Pillow, byte for byte
 # +--------------------------------------------------------------------------+ #
-"""Gates `mojo_rl/io/image.mojo` on Pillow's own output.
+"""Gates `noeira/io/image.mojo` on Pillow's own output.
 
     pixi run python tools/io/dump_resize_reference.py --out /tmp/resize_ref
     pixi run mojo run -I . tests/io/test_image_resize.mojo /tmp/resize_ref
@@ -22,7 +22,7 @@ by ONE, and a transposed axis moves nearly everything.
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.io.image import resize_bilinear_pil
+from noeira.io.image import resize_bilinear_pil
 
 
 comptime DEFAULT_REF = "/tmp/resize_ref"

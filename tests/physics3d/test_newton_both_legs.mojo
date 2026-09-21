@@ -56,7 +56,7 @@ from std.utils import IndexList
 from layout import Layout, LayoutTensor, RuntimeLayout
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.fields import (
     Data,
     Model,
     DynamicsScratch,
@@ -67,27 +67,27 @@ from mojo_rl.physics3d.fields import (
     AsStatic,
     Scratch,
 )
-from mojo_rl.physics3d.fields.dims import DIM_POISON
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.solver.newton_solve import _newton_solve_env
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.fields.dims import DIM_POISON
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.solver.newton_solve import _newton_solve_env
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import compute_mass_matrix
-from mojo_rl.physics3d.dynamics.ldl import ldl_factor, ldl_solve, compute_m_inv
-from mojo_rl.physics3d.dynamics.rne import compute_bias_forces_rne
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.integrator.euler import (
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import compute_mass_matrix
+from noeira.physics3d.dynamics.ldl import ldl_factor, ldl_solve, compute_m_inv
+from noeira.physics3d.dynamics.rne import compute_bias_forces_rne
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.integrator.euler import (
     _armature_env,
     _fnet_passive_env,
     _qacc_writeback_env,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE,
     METADATA_SIZE,
     META_IDX_NUM_CONTACTS,
@@ -100,8 +100,8 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_SITE_SIZE,
     MODEL_GEOM_SIZE,
 )
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.hopper.hopper_xml import HopperModel
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.hopper.hopper_xml import HopperModel
 
 comptime DT = DType.float64
 comptime BATCH = 2

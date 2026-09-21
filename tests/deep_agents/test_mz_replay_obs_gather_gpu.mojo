@@ -16,8 +16,8 @@ Run on NVIDIA AND apple; apple is the baseline.
 """
 
 from max.gpu.host import DeviceContext
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.zero.prioritized_sequence_replay_mcts import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.zero.prioritized_sequence_replay_mcts import (
     PrioritizedMCTSSequenceReplay,
 )
 

@@ -16,17 +16,17 @@ Run (NVIDIA): pixi run -e nvidia mojo run -I . examples/car_racing/dreamer4_toke
 
 from max.gpu.host import DeviceContext
 from std.random import seed
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
-from mojo_rl.deep_agents.dreamer4.frame_buffer import Dreamer4FrameBuffer
-from mojo_rl.deep_agents.dreamer4.recon_loss import masked_recon_grad_gpu
-from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao
-from mojo_rl.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
-from mojo_rl.envs.car_racing.car_racing_mb import CarRacingMB
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Xavier
+from noeira.nn.optimizer.adam import Adam
+from noeira.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
+from noeira.deep_agents.dreamer4.frame_buffer import Dreamer4FrameBuffer
+from noeira.deep_agents.dreamer4.recon_loss import masked_recon_grad_gpu
+from noeira.deep_agents.dreamer4.shortcut_loss import _mao
+from noeira.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
+from noeira.envs.car_racing.car_racing_mb import CarRacingMB
 
 
 def _dptr(mut t: Tensor) -> Pointer[Scalar[DT], MutAnyOrigin]:

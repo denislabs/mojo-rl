@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | Artifacts leaving the box: what got sent, and what deliberately did not
 # +--------------------------------------------------------------------------+ #
-"""Gate `mojo_rl/io/artifact_sink.mojo` — §7 of the project layer plan.
+"""Gate `noeira/io/artifact_sink.mojo` — §7 of the project layer plan.
 
     pixi run build-http                              # ONCE
     pixi run mojo run -I . tests/io/test_artifact_sink.mojo
@@ -33,21 +33,21 @@ a credential, or a live service.
 from std.os.path import exists
 from std.time import sleep
 
-from mojo_rl.io.artifact_sink import (
+from noeira.io.artifact_sink import (
     ArtifactSink,
     KIND_CHECKPOINT,
     KIND_EVAL,
     KIND_VIDEO,
 )
-from mojo_rl.io.fileio import remove_file, write_file_atomic
-from mojo_rl.io.http import http_shim_available
-from mojo_rl.io.proc import run_capture
-from mojo_rl.io.sha256 import sha256_file
+from noeira.io.fileio import remove_file, write_file_atomic
+from noeira.io.http import http_shim_available
+from noeira.io.proc import run_capture
+from noeira.io.sha256 import sha256_file
 
 
-comptime PORT_FILE = "/tmp/mojo_rl_art_gate_port"
-comptime LOG_FILE = "/tmp/mojo_rl_art_gate_log"
-comptime RUN_DIR = "/tmp/mojo_rl_art_gate_run"
+comptime PORT_FILE = "/tmp/noeira_art_gate_port"
+comptime LOG_FILE = "/tmp/noeira_art_gate_log"
+comptime RUN_DIR = "/tmp/noeira_art_gate_run"
 comptime RUN_ID = "2026-09-10_art-gate_c0ffee01"
 
 
@@ -62,7 +62,7 @@ def _start_server() raises -> String:
         + String(PORT_FILE)
         + " "
         + String(LOG_FILE)
-        + " 180 > /tmp/mojo_rl_art_gate_server.log 2>&1 &"
+        + " 180 > /tmp/noeira_art_gate_server.log 2>&1 &"
     )
     for _ in range(100):
         if exists(PORT_FILE):

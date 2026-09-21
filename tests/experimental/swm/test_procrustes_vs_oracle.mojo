@@ -30,14 +30,14 @@ Run:
 from std.math import abs, sqrt
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import SqMat
-from mojo_rl.experimental.swm.procrustes import (
+from noeira.experimental.swm.so_d import SqMat
+from noeira.experimental.swm.procrustes import (
     PairBatch,
     procrustes_o_d,
     mean_squared_residual,
 )
-from mojo_rl.experimental.swm.place_graph import PlaceGraph, Edge
-from mojo_rl.experimental.swm.reference_io import (
+from noeira.experimental.swm.place_graph import PlaceGraph, Edge
+from noeira.experimental.swm.reference_io import (
     load_reference,
     ref_scalar,
     ref_int,

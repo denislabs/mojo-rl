@@ -10,8 +10,8 @@ construction — floor/wall textures from the style tables, the table body
 re-posed from `table_full_size` / `table_offset` (TableArena and
 KitchenTableArena only), and each problem class then moves `agentview` and
 `frontview` in `_setup_camera`. This script performs exactly those edits,
-from the numbers in `mojo_rl/tasks/libero/categories.kv`, and writes one
-arena per problem into `mojo_rl/tasks/libero/scenes/`, which the family
+from the numbers in `noeira/tasks/libero/categories.kv`, and writes one
+arena per problem into `noeira/tasks/libero/scenes/`, which the family
 composer attaches as a static slot at the origin.
 
 Quoted from `TableArena.configure_location`:
@@ -45,9 +45,9 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 
-TABLE = "mojo_rl/tasks/libero/categories.kv"
-PACK = "mojo_rl/tasks/libero/assets"
-OUT_DIR = "mojo_rl/tasks/libero/scenes"
+TABLE = "noeira/tasks/libero/categories.kv"
+PACK = "noeira/tasks/libero/assets"
+OUT_DIR = "noeira/tasks/libero/scenes"
 
 # problems whose LIBERO arena class calls configure_location
 REPOSED_WORKSPACES = {"table", "kitchen_table"}

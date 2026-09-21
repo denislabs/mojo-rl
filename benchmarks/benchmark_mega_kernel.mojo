@@ -24,7 +24,7 @@ from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
-from mojo_rl.core.fmt import fit
+from noeira.core.fmt import fit
 
 
 # =============================================================================

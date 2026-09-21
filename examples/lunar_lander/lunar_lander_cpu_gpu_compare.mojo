@@ -12,9 +12,9 @@ from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 from std.random import seed as set_seed
 
-from mojo_rl.envs.lunar_lander import LunarLander
-from mojo_rl.envs.lunar_lander.constants import LLConstants
-from mojo_rl.physics2d import (
+from noeira.envs.lunar_lander import LunarLander
+from noeira.envs.lunar_lander.constants import LLConstants
+from noeira.physics2d import (
     dtype,
     TPB,
     BODY_STATE_SIZE,
@@ -2525,4 +2525,4 @@ def main() raises:
     else:
         print("\nAll tests passed - CPU and GPU behavior appear consistent!")
 
-from mojo_rl.core.fmt import fit
+from noeira.core.fmt import fit

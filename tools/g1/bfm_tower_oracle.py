@@ -1,4 +1,4 @@
-"""The ORACLE for `mojo_rl/deep_agents/fb/bfm_towers.mojo` — the reference's
+"""The ORACLE for `noeira/deep_agents/fb/bfm_towers.mojo` — the reference's
 residual towers in torch, fed OUR weights, run on OUR inputs (G3.2).
 
 Imported through Python interop by `tests/nn/test_bfm_towers_vs_torch.mojo`

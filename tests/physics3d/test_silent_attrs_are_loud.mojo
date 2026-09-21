@@ -20,8 +20,8 @@ physics on a model that loads today. This gate is that list's contract:
 from std.testing import assert_true, TestSuite
 from std.python import Python
 
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
 
 
 # One of every silent row. It must LOAD (nothing here raises) — the point is

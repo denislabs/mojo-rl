@@ -25,7 +25,7 @@ same case, and must NOT flag: a guard that fires on a good sweep is a guard
 that gets disabled.
 """
 
-from mojo_rl.robot.so101 import (
+from noeira.robot.so101 import (
     NARROWER_FRACTION, SO101_N, UNLIMITED_MAX, UNLIMITED_MIN,
     CalibrationRecord, centre_on_middle_pose, frame_position, joint_name,
     span_regressions,

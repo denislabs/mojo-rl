@@ -47,19 +47,19 @@ The tabletop family has the stock arm's `wrist_cam` only.
 from std.random import seed
 from std.sys import argv
 
-from mojo_rl.envs.dm_control.viewer_core import (
+from noeira.envs.dm_control.viewer_core import (
     ViewerState, run_view, task_index, parse_drive, DRIVE_SWEEP,
 )
-from mojo_rl.render.imgui import imgui_shim_available
-from mojo_rl.render.renderer3d import Renderer3D
+from noeira.render.imgui import imgui_shim_available
+from noeira.render.renderer3d import Renderer3D
 
-from mojo_rl.tasks.posed_reset import posed_qpos, task_meta_words
-from mojo_rl.tasks.placement.so101_tower import So101TowerPlacement
-from mojo_rl.tasks.family_config import (
+from noeira.tasks.posed_reset import posed_qpos, task_meta_words
+from noeira.tasks.placement.so101_tower import So101TowerPlacement
+from noeira.tasks.family_config import (
     So101TabletopConfig, So101TabletopPlacement, So101TowerConfig,
 )
-from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
-from mojo_rl.tasks.so101_tower_xml import So101TowerModel
+from noeira.tasks.so101_tabletop_xml import So101TabletopModel
+from noeira.tasks.so101_tower_xml import So101TowerModel
 
 comptime SEED: Int = 0
 comptime N_TOWER_TASKS = 3

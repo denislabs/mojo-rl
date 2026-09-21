@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Build the HTTP shim for `mojo_rl/io/http.mojo`.
+# Build the HTTP shim for `noeira/io/http.mojo`.
 #
 # The dylib is what the Mojo side dlopen's; it links against the pixi env's
-# libcurl. Not tracked in git. Re-run after editing native/mrl_http.c.
+# libcurl. Not tracked in git. Re-run after editing native/nra_http.c.
 #
 #   pixi run build-http
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$ROOT/mojo_rl/io/native/mrl_http.c"
-OUTDIR="$ROOT/mojo_rl/io"
+SRC="$ROOT/noeira/io/native/nra_http.c"
+OUTDIR="$ROOT/noeira/io"
 
 case "$(uname -s)" in
-Darwin) LIB="$OUTDIR/libmrl_http.dylib" ;;
-Linux)  LIB="$OUTDIR/libmrl_http.so" ;;
+Darwin) LIB="$OUTDIR/libnra_http.dylib" ;;
+Linux)  LIB="$OUTDIR/libnra_http.so" ;;
 *) echo "build_http.sh: unsupported OS $(uname -s)" >&2; exit 1 ;;
 esac
 
@@ -47,7 +47,7 @@ echo "  against $PREFIX ($("$PREFIX/bin/curl" --version 2>/dev/null | head -1 ||
 # succeeds with no NEEDED libcurl and dlopen fails at runtime. macOS ld never
 # drops, so the Mac cannot show this. `--no-undefined` makes it a link error.
 # ⚠ -pthread IS REQUIRED, AND WHICH MACHINES NEED IT IS NOT OBVIOUS.
-# `mrl_http.c` guards its `curl_global_init` with `pthread_once`. glibc 2.34
+# `nra_http.c` guards its `curl_global_init` with `pthread_once`. glibc 2.34
 # MERGED libpthread into libc, so on a modern distro the symbol resolves with
 # no flag at all — Ubuntu 22.04 on the Jetson (glibc 2.35) links this happily,
 # and macOS always has pthread in libSystem. A conda toolchain is the case

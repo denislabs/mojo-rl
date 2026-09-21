@@ -8,7 +8,7 @@ Validates the building blocks before they are wired into a renderer:
 Run: pixi run -e apple mojo run -I . tests/arcade_games/test_tia_cycle.mojo
 """
 
-from mojo_rl.envs.atari.tia_cycle import (
+from noeira.envs.atari.tia_cycle import (
     DelayQueue,
     DQ_CAP,
     BallCounter,

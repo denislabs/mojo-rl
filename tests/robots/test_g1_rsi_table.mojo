@@ -32,8 +32,8 @@ from std.os import getenv
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.envs.robots.unitree_g1_rsi import (
+from noeira.data.store import TrajectoryStore
+from noeira.envs.robots.unitree_g1_rsi import (
     G1RsiTable, G1_RSI_NQ, G1_RSI_NV, G1_RSI_ROW, G1_LIE_DOWN_Z, lie_down_row,
 )
 

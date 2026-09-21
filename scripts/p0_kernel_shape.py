@@ -31,7 +31,7 @@ def main():
         n = r.get("Name", "")
         if pat and pat not in n:
             continue
-        key = n.replace("mojo_rl_physics3d_", "")[:40]
+        key = n.replace("noeira_physics3d_", "")[:40]
         if key in seen or not r.get("BlkX"):
             continue
         seen.add(key)

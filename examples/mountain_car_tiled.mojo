@@ -10,12 +10,12 @@ Key challenges:
 3. Only 2D state space but continuous
 """
 
-from mojo_rl.core.tile_coding import TileCoding
-from mojo_rl.agents.tiled_qlearning import (
+from noeira.core.tile_coding import TileCoding
+from noeira.agents.tiled_qlearning import (
     TiledQLearningAgent,
     TiledSARSALambdaAgent,
 )
-from mojo_rl.envs.mountain_car import MountainCarEnv
+from noeira.envs.mountain_car import MountainCarEnv
 
 
 def main() raises:

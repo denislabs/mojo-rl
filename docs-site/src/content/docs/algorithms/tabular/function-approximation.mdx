@@ -42,8 +42,8 @@ descent through a nonlinearity.
 | `TiledSARSALambdaAgent` |
 
 ```mojo
-from mojo_rl.agents import TiledQLearningAgent
-from mojo_rl.core.tile_coding import TileCoding
+from noeira.agents import TiledQLearningAgent
+from noeira.core.tile_coding import TileCoding
 ```
 
 Factory helpers exist for CartPole, MountainCar and Acrobot, so the tiling
@@ -68,8 +68,8 @@ pixi run mojo run -I . examples/cartpole/cartpole_tiled.mojo
 | `LinearSARSALambdaAgent` | with eligibility traces |
 
 ```mojo
-from mojo_rl.agents import LinearQLearningAgent
-from mojo_rl.core.linear_fa import PolynomialFeatures, RBFFeatures, LinearWeights
+from noeira.agents import LinearQLearningAgent
+from noeira.core.linear_fa import PolynomialFeatures, RBFFeatures, LinearWeights
 ```
 
 `PolynomialFeatures` expands `[x, y]` into `[x, y, x², xy, y², …]`.
@@ -87,7 +87,7 @@ pixi run mojo run -I . examples/cartpole/cartpole_linear.mojo
 `FeatureExtractor` is a trait, so a custom basis plugs into the same agents:
 
 ```mojo
-from mojo_rl.core.linear_fa import FeatureExtractor
+from noeira.core.linear_fa import FeatureExtractor
 ```
 
 `LinearWeights` handles dense weight vectors for any extractor.

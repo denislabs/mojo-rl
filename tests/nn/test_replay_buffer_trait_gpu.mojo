@@ -9,11 +9,11 @@ from std.random import seed
 from std.testing import assert_equal, assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.training.replay_buffer import ReplayBuffer
-from mojo_rl.deep_agents.training.trainer_block import TrainerState
-from mojo_rl.data.replay_gpu import StoreReplayGpu
-from mojo_rl.data.replay_gpu import StoreReplayGpu
+from noeira.nn.constants import DT
+from noeira.deep_agents.training.replay_buffer import ReplayBuffer
+from noeira.deep_agents.training.trainer_block import TrainerState
+from noeira.data.replay_gpu import StoreReplayGpu
+from noeira.data.replay_gpu import StoreReplayGpu
 
 
 comptime OBS = 3

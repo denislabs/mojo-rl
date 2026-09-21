@@ -16,8 +16,8 @@ from std.math import abs as mabs
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.experimental.pcn import PCSwish
-from mojo_rl.nn.core.ptr import mptr
+from noeira.experimental.pcn import PCSwish
+from noeira.nn.core.ptr import mptr
 
 
 comptime BATCH = 1

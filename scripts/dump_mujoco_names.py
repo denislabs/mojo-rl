@@ -6,16 +6,16 @@ import sys
 import mujoco
 
 MODELS = [
-    ("walker2d", "mojo_rl/envs/walker2d/assets/walker2d.xml"),
-    ("humanoid", "mojo_rl/envs/humanoid/assets/humanoid.xml"),
-    ("ant", "mojo_rl/envs/ant/assets/ant.xml"),
-    ("so_arm100", "mojo_rl/envs/robots/assets/so_arm100.xml"),
+    ("walker2d", "noeira/envs/walker2d/assets/walker2d.xml"),
+    ("humanoid", "noeira/envs/humanoid/assets/humanoid.xml"),
+    ("ant", "noeira/envs/ant/assets/ant.xml"),
+    ("so_arm100", "noeira/envs/robots/assets/so_arm100.xml"),
     # ⚠ THE SITE-BEARING MODELS ARE THE POINT. Without one, every `site` arm
     # compares 0 elements — and sites carry the ordering trap this gate exists
     # for: `<worldbody>`'s OWN sites belong to body 0 and come FIRST, ahead of
     # every site declared inside a body however early it appears in the text.
     # That is exactly the finger / manipulator / stacker divergence.
-    ("quadruped_walk", "mojo_rl/envs/dm_control/assets/quadruped_walk.xml"),
+    ("quadruped_walk", "noeira/envs/dm_control/assets/quadruped_walk.xml"),
 ]
 
 OBJ = [

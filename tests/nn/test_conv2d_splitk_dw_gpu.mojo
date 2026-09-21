@@ -24,12 +24,12 @@ A green run reading `split shapes: 0` is a red run.
 from std.math import abs
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT, LAYOUT_NCHW
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.splitk_gemm import splitk_path_applies
-from mojo_rl.nn.primitives.conv2d import Conv2D
+from noeira.nn.constants import DT, LAYOUT_NCHW
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.splitk_gemm import splitk_path_applies
+from noeira.nn.primitives.conv2d import Conv2D
 
 
 def check[

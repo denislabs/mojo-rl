@@ -28,17 +28,17 @@ Each is gated against the reference AND against a hand-computed value, so
 
 from std.math import exp
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.primitives.gaussian_vae import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.primitives.gaussian_vae import (
     GaussianKLStdNormal,
     GaussianReparam,
 )
-from mojo_rl.nn.primitives.l1_masked_per_sample import L1MaskedPerSample
-from mojo_rl.deep_agents.act.refload import RefDump
+from noeira.nn.primitives.l1_masked_per_sample import L1MaskedPerSample
+from noeira.deep_agents.act.refload import RefDump
 
 
 comptime REF_DIR = "/tmp/act_ref"

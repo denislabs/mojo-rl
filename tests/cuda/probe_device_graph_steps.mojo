@@ -44,8 +44,8 @@ from std.os import getenv
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.cuda import GraphSlot, maybe_record_replay
+from noeira.nn.constants import DT
+from noeira.cuda import GraphSlot, maybe_record_replay
 
 
 def main() raises:
@@ -85,8 +85,8 @@ def main() raises:
     print("[probe] [5] GraphSlot() ...", flush=True)
     var slot = GraphSlot()
     print(
-        "[probe] [5] ok — MOJO_RL_DEVICE_GRAPH =",
-        getenv("MOJO_RL_DEVICE_GRAPH", "1"),
+        "[probe] [5] ok — NOEIRA_DEVICE_GRAPH =",
+        getenv("NOEIRA_DEVICE_GRAPH", "1"),
         flush=True,
     )
 

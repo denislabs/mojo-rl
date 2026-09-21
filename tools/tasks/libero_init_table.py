@@ -108,7 +108,7 @@ from libero_demo_common import (  # noqa: E402
     rewrite,
 )
 
-REMAP_DIR = os.path.join(ROOT, "mojo_rl", "tasks", "libero")
+REMAP_DIR = os.path.join(ROOT, "noeira", "tasks", "libero")
 
 INIT_FILES = os.path.join(
     ROOT, "references", "LIBERO-master", "libero", "libero", "init_files"
@@ -347,7 +347,7 @@ def write_remap_kv(suite, remap, their_joints, nq, nv, n_tasks):
     this conversion that needs a MuJoCo compile of the recorded `model_file`,
     and the recorded models live in the ~6 GB of gitignored demonstrations. Two
     other consumers want it and neither should need them: the demo importer
-    (G13, `mojo_rl/data/libero_demos.mojo`, which reads their HDF5 natively and
+    (G13, `noeira/data/libero_demos.mojo`, which reads their HDF5 natively and
     has no MuJoCo and no attribute bindings) and anyone rewriting a recorded
     state by hand.
 

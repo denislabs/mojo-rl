@@ -23,12 +23,12 @@ from max.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.deep_agents.dreamerv3.agent import DreamerV3Agent
+from noeira.envs.cartpole import CartPoleEnv
 
 
 # =============================================================================
@@ -100,8 +100,8 @@ def main() raises:
     with DeviceContext() as ctx:
         # ─── Logger (remote) ─────────────────────────────────────────────
         var env_vars = load_dotenv()
-        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-        var url = env_vars.get("RL_MONITOR_URL", "")
+        var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+        var url = env_vars.get("NOEIRA_CLOUD_URL", "")
         var logger = RemoteLogger(
             server_url=url,
             run_name="DreamerV3 CartPole (GPU)",

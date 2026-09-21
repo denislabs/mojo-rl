@@ -20,8 +20,8 @@ from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import LayoutTensor, Layout
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.core.fmt import fit
+from noeira.nn.constants import DT as dtype
+from noeira.core.fmt import fit
 
 comptime TILE = 16
 

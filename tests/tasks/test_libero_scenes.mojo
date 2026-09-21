@@ -70,39 +70,39 @@ composed scene and was run on all twenty: they load, and `ncon` at rest with
 from std.os import listdir
 from std.os.path import exists
 
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.tasks.spec import (
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
     FamilySpec,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.bddl import parse_bddl
-from mojo_rl.tasks.libero_init_z import load_init_z
-from mojo_rl.tasks.eval import region_sites
-from mojo_rl.tasks.predicates import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.bddl import parse_bddl
+from noeira.tasks.libero_init_z import load_init_z
+from noeira.tasks.eval import region_sites
+from noeira.tasks.predicates import (
     parse_goal, bind_goal, require_tier_a, joint_qpos_addresses,
 )
-from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.gpu_eval import require_gpu_regions, MAX_CURRICULUM_REGIONS
-from mojo_rl.tasks.sampler import (
+from noeira.tasks.tape import encode_goal, TAPE_WORDS
+from noeira.tasks.gpu_eval import require_gpu_regions, MAX_CURRICULUM_REGIONS
+from noeira.tasks.sampler import (
     sample_placements, sample_joint_inits, RegionFrame, SampleReport,
 )
-from mojo_rl.tasks.reset import (
+from noeira.tasks.reset import (
     free_slot_addresses, reset_slots,
     joint_init_addresses, joint_init_dof_addresses, apply_joint_inits,
 )
 
 
 comptime DT = DType.float64
-comptime FAMILY_DIR = "mojo_rl/tasks/families"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
-comptime PACK = "mojo_rl/tasks/libero/assets"
+comptime FAMILY_DIR = "noeira/tasks/families"
+comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime PACK = "noeira/tasks/libero/assets"
 comptime BDDL_ROOT = "references/LIBERO-master/libero/libero/bddl_files"
 comptime MAX_CONTACTS = 96
 comptime SEED: UInt64 = 7

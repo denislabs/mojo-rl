@@ -29,11 +29,11 @@ from layout import TileTensor, row_major, Coord
 from nn.rope import rope_ragged
 from std.utils import IndexList
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.rope import RoPE
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.rope import RoPE
 
 comptime SEQ = 6
 comptime HEADS = 3

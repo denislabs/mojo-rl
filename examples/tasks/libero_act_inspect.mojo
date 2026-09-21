@@ -46,8 +46,8 @@ from std.sys import argv
 from std.math import sqrt
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.tasks.libero_act import (
+from noeira.nn.constants import DT
+from noeira.tasks.libero_act import (
     LiberoActTrainer, LiberoActDataset, LIBERO_ACT_QPOS, LIBERO_ACT_ADIM,
     LIBERO_ACT_K, LIBERO_ACT_IMG_ELEMS, LIBERO_ACT_DIM,
 )

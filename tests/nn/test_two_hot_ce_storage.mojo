@@ -20,11 +20,11 @@ from std.testing import assert_true
 from max.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.loss.two_hot import (
+from noeira.nn.constants import DT, TPB
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.loss.two_hot import (
     fill_bins,
     two_hot_ce_loss_batch,
     two_hot_ce_backward_batch,

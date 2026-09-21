@@ -25,14 +25,14 @@ Requirements:
     - SDL2 for rendering (optional): brew install sdl2 sdl2_ttf
 """
 
-from mojo_rl.envs import PendulumEnv
-from mojo_rl.core import (
+from noeira.envs import PendulumEnv
+from noeira.core import (
     ContinuousReplayBuffer,
     PolynomialFeatures,
     TrainingMetrics,
 )
-from mojo_rl.agents import SACAgent
-from mojo_rl.core.fmt import fit
+from noeira.agents import SACAgent
+from noeira.core.fmt import fit
 
 
 def main() raises:

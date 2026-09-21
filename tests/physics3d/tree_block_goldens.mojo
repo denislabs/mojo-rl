@@ -19,49 +19,49 @@ def blk_case_count() -> Int:
 
 def blk_path(i: Int) -> String:
     if i == 0:
-        return String("mojo_rl/envs/robots/assets/so101_park_k0.xml")
+        return String("noeira/envs/robots/assets/so101_park_k0.xml")
     if i == 1:
-        return String("mojo_rl/envs/robots/assets/so101_park_k3.xml")
+        return String("noeira/envs/robots/assets/so101_park_k3.xml")
     if i == 2:
-        return String("mojo_rl/envs/robots/assets/so101_park_k6.xml")
+        return String("noeira/envs/robots/assets/so101_park_k6.xml")
     if i == 3:
-        return String("mojo_rl/envs/robots/assets/so101_park_k9.xml")
+        return String("noeira/envs/robots/assets/so101_park_k9.xml")
     if i == 4:
-        return String("mojo_rl/envs/robots/assets/so_arm101.xml")
+        return String("noeira/envs/robots/assets/so_arm101.xml")
     if i == 5:
-        return String("mojo_rl/envs/ant/assets/ant.xml")
+        return String("noeira/envs/ant/assets/ant.xml")
     if i == 6:
-        return String("mojo_rl/envs/humanoid/assets/humanoid.xml")
+        return String("noeira/envs/humanoid/assets/humanoid.xml")
     if i == 7:
-        return String("mojo_rl/envs/dm_control/assets/acrobot.xml")
+        return String("noeira/envs/dm_control/assets/acrobot.xml")
     if i == 8:
-        return String("mojo_rl/envs/dm_control/assets/ball_in_cup.xml")
+        return String("noeira/envs/dm_control/assets/ball_in_cup.xml")
     if i == 9:
-        return String("mojo_rl/envs/dm_control/assets/cartpole3.xml")
+        return String("noeira/envs/dm_control/assets/cartpole3.xml")
     if i == 10:
-        return String("mojo_rl/envs/dm_control/assets/cheetah.xml")
+        return String("noeira/envs/dm_control/assets/cheetah.xml")
     if i == 11:
-        return String("mojo_rl/envs/dm_control/assets/finger.xml")
+        return String("noeira/envs/dm_control/assets/finger.xml")
     if i == 12:
-        return String("mojo_rl/envs/dm_control/assets/fish.xml")
+        return String("noeira/envs/dm_control/assets/fish.xml")
     if i == 13:
-        return String("mojo_rl/envs/dm_control/assets/hopper.xml")
+        return String("noeira/envs/dm_control/assets/hopper.xml")
     if i == 14:
-        return String("mojo_rl/envs/dm_control/assets/humanoid_cmu.xml")
+        return String("noeira/envs/dm_control/assets/humanoid_cmu.xml")
     if i == 15:
-        return String("mojo_rl/envs/dm_control/assets/manipulator_bring_ball.xml")
+        return String("noeira/envs/dm_control/assets/manipulator_bring_ball.xml")
     if i == 16:
-        return String("mojo_rl/envs/dm_control/assets/point_mass.xml")
+        return String("noeira/envs/dm_control/assets/point_mass.xml")
     if i == 17:
-        return String("mojo_rl/envs/dm_control/assets/quadruped_escape.xml")
+        return String("noeira/envs/dm_control/assets/quadruped_escape.xml")
     if i == 18:
-        return String("mojo_rl/envs/dm_control/assets/quadruped_fetch.xml")
+        return String("noeira/envs/dm_control/assets/quadruped_fetch.xml")
     if i == 19:
-        return String("mojo_rl/envs/dm_control/assets/reacher.xml")
+        return String("noeira/envs/dm_control/assets/reacher.xml")
     if i == 20:
-        return String("mojo_rl/envs/dm_control/assets/stacker_2.xml")
+        return String("noeira/envs/dm_control/assets/stacker_2.xml")
     if i == 21:
-        return String("mojo_rl/envs/dm_control/assets/dog_fetch.xml")
+        return String("noeira/envs/dm_control/assets/dog_fetch.xml")
     if i == 22:
         return String("references/mujoco_menagerie-main/hello_robot_stretch_3/scene.xml")
     if i == 23:

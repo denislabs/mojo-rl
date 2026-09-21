@@ -43,7 +43,7 @@ from layout.tile_layout import Layout as TileLayout
 from linalg.matmul import matmul as max_matmul
 from linalg.bmm import batched_matmul
 
-from mojo_rl.nn.primitives.conv2d import _im2col_cpu, _im2col_kernel
+from noeira.nn.primitives.conv2d import _im2col_cpu, _im2col_kernel
 
 comptime DT = DType.float32
 comptime IT = DType.int32

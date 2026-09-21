@@ -22,17 +22,17 @@ of DEGREES applies and `range="-.52 1.05"` compiles to +-0.0183 rad. The real
 Gymnasium half_cheetah.xml carries `angle="radian"`; this copy dropped it.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.parser import parse_xml_full
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.parser import parse_xml_full
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_POS_Z,
     MODEL_META_IDX_GRAVITY_Z,
 )
 from std.testing import assert_true, TestSuite
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     ACT_IDX_GEAR,
     ACT_IDX_DOF_ADR,

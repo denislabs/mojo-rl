@@ -46,34 +46,34 @@ Run: pixi run mojo run -I . tests/physics3d/test_newton_no_constraint_rows.mojo
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.fields import (
     AsStatic, Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike,
 )
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.solver.je_budget import je_ws_size
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.integrator.euler import (
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.solver.je_budget import je_ws_size
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.integrator.euler import (
     _armature_env, _fnet_passive_env, _qacc_writeback_env,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics, compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import compute_mass_matrix
-from mojo_rl.physics3d.dynamics.ldl import (
+from noeira.physics3d.dynamics.subtree_com import compute_subtree_com
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import compute_mass_matrix
+from noeira.physics3d.dynamics.ldl import (
     ldl_factor, ldl_solve, compute_m_inv,
 )
-from mojo_rl.physics3d.dynamics.rne import compute_bias_forces_rne
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.solver.newton_solve import (
+from noeira.physics3d.dynamics.rne import compute_bias_forces_rne
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.solver.newton_solve import (
     solve_newton, solve_newton_blocked,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, METADATA_SIZE, MODEL_JOINT_SIZE,
 )
 from layout import Layout
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 comptime BATCH = 2

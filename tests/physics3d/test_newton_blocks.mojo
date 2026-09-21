@@ -16,9 +16,9 @@ Run: pixi run mojo run -I . tests/physics3d/test_newton_blocks.mojo
 """
 
 from layout import Layout, LayoutTensor
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.solver.newton_blocks import build_dof_segments
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.solver.newton_blocks import build_dof_segments
+from noeira.physics3d.gpu.constants import (
     MODEL_TREE_SIZE, TREE_IDX_DOF_ADR, TREE_IDX_DOF_NUM, TREE_IDX_KIND,
 )
 

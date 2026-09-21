@@ -16,7 +16,7 @@ deep_agents counterpart of the legacy `redq_half_cheetah_training_gpu.mojo`
   * `RemoteLogger` — streams `avg_reward` + `episodes` at the driver's
     `print_every` cadence and (via `diag_every`) the full REDQ metric bundle
     (critic_loss, actor_loss, alpha, mean_q, ...). Config (server URL + API
-    key) read from a `.env` via `mojo_rl.core.dotenv`.
+    key) read from a `.env` via `noeira.core.dotenv`.
 
 deep_agents REDQ ships single-env training only (R.5); the batched multi-env
 `train()` entry point that SAC has is a follow-up. REDQ's paper uses a single
@@ -37,11 +37,11 @@ from max.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.redq import REDQ
-from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
+from noeira.deep_agents.redq import REDQ
+from noeira.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 
 # =============================================================================
@@ -98,8 +98,8 @@ def main() raises:
     with DeviceContext() as ctx:
         # ─── Logger (remote) ─────────────────────────────────────────────
         var env_vars = load_dotenv()
-        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-        var url = env_vars.get("RL_MONITOR_URL", "")
+        var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+        var url = env_vars.get("NOEIRA_CLOUD_URL", "")
 
         var logger = RemoteLogger(
             server_url=url,

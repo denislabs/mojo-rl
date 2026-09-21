@@ -12,21 +12,21 @@ test used to verify. The GPU check is storage-only (GPU vs CPU consistency).
 This block has a CONDITIONING input (ARITY=2): forward/vjp take a (x, c) pack.
 
 Run:
-  rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . \
+  rm -f noeira.mojoc && pixi run -e apple mojo run -I . \
       tests/nn/test_conditional_transformer_block_storage.mojo
 """
 
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
+from noeira.nn.constants import DT
 
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.param import ParamVisitor as SParamVisitor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.conditional_transformer_block import (
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.core.param import ParamVisitor as SParamVisitor
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.conditional_transformer_block import (
     ConditionalTransformerBlock,
 )
 

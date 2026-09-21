@@ -7,8 +7,8 @@ Run: pixi run -e apple mojo run -I . tests/envs/test_car_racing_pixel_gpu.mojo
 
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext
-from mojo_rl.physics2d import dtype
-from mojo_rl.envs.car_racing import CarRacingPixel
+from noeira.physics2d import dtype
+from noeira.envs.car_racing import CarRacingPixel
 
 
 comptime B = 8

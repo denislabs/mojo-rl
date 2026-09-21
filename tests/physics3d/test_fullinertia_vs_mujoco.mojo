@@ -52,12 +52,12 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.fields.model import Model
-from mojo_rl.physics3d.fields.dims import Dims
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.fields.model import Model
+from noeira.physics3d.fields.dims import Dims
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_IXX,

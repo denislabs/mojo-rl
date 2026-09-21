@@ -24,18 +24,18 @@ from std.random import seed
 from std.math import log, exp
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.datasets import CharTokenizer, load_text, train_val_split
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.lstm_seq import LSTMSeq
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.combinators.tokenwise import Tokenwise
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.training.autoregressive_trainer import (
+from noeira.nn.datasets import CharTokenizer, load_text, train_val_split
+from noeira.nn.constants import DT
+from noeira.nn.primitives.lstm_seq import LSTMSeq
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.combinators.tokenwise import Tokenwise
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.training.autoregressive_trainer import (
     AutoregressiveTrainer,
 )
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.core.fmt import fit
+from noeira.nn.core.initializer import Xavier
+from noeira.core.fmt import fit
 
 
 comptime VOCAB = 65

@@ -17,7 +17,7 @@ Run:
 from std.math import abs
 from std.testing import assert_true
 
-from mojo_rl.envs.robots.g1_motion_priority import (
+from noeira.envs.robots.g1_motion_priority import (
     G1_PRIO_MIN, G1_PRIO_MAX, G1_PRIO_SCALE,
     g1_motion_priority, g1_priority_shares, g1_fill_motion_table,
     g1_fill_window_table, g1_realised_share,

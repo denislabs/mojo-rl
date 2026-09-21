@@ -23,10 +23,10 @@ testing order rather than just size.
 from std.math import abs
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.vision.resize_pad import SIGLIP_INPUT
-from mojo_rl.deep_agents.smolvla.observation import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.vision.resize_pad import SIGLIP_INPUT
+from noeira.deep_agents.smolvla.observation import (
     fill_camera_images, fill_store_images,
 )
 

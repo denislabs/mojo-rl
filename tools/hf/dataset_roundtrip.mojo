@@ -19,7 +19,7 @@ leaving the box. This covers the part a local gate cannot: that the bytes
 survive an upload and a download.
 
 ⚠ IT CREATES AND DELETES A REAL PRIVATE REPO on the account the token belongs
-to, named `mojo-rl-roundtrip`. `--keep` leaves it for inspection.
+to, named `noeira-roundtrip`. `--keep` leaves it for inspection.
 
 The frames are synthetic flat colours, so nothing recorded leaves the machine.
 """
@@ -28,12 +28,12 @@ from std.os import makedirs
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.data.lerobot import hf_download_dataset, import_lerobot_v3
-from mojo_rl.data.lerobot_push import dataset_files, push_lerobot_dataset
-from mojo_rl.data.lerobot_write import LeRobotWriter
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.io.hf_push import HubPush, hf_whoami
+from noeira.core.dotenv import load_dotenv
+from noeira.data.lerobot import hf_download_dataset, import_lerobot_v3
+from noeira.data.lerobot_push import dataset_files, push_lerobot_dataset
+from noeira.data.lerobot_write import LeRobotWriter
+from noeira.data.store import TrajectoryStore
+from noeira.io.hf_push import HubPush, hf_whoami
 
 
 comptime H = 48
@@ -178,8 +178,8 @@ def main() raises:
     except:
         pass
 
-    var local = String("/tmp/mojo_rl_rt_local")
-    var pulled = String("/tmp/mojo_rl_rt_pulled")
+    var local = String("/tmp/noeira_rt_local")
+    var pulled = String("/tmp/noeira_rt_pulled")
 
     print("\n── 1. write ────────────────────────────────────────────────")
     _build(local)
@@ -193,7 +193,7 @@ def main() raises:
     print("  " + local + ".h5")
 
     print("\n── 3. push ─────────────────────────────────────────────────")
-    var repo = hf_whoami(token.copy()) + "/mojo-rl-roundtrip"
+    var repo = hf_whoami(token.copy()) + "/noeira-roundtrip"
     print("  -> " + repo)
     _ = push_lerobot_dataset(
         local, repo.copy(), String("round trip"), True, token.copy()

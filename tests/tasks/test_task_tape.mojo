@@ -20,14 +20,14 @@ would read contacts the kernel does not carry.
 Run: pixi run mojo run -I . tests/tasks/test_task_tape.mojo
 """
 
-from mojo_rl.tasks.spec import load_family, load_task
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.predicates import parse_goal, bind_goal
-from mojo_rl.tasks.eval import (
+from noeira.tasks.spec import load_family, load_task
+from noeira.tasks.family import scene_path
+from noeira.tasks.predicates import parse_goal, bind_goal
+from noeira.tasks.eval import (
     eval_goal, region_sites, region_rects, region_half_heights,
 )
-from mojo_rl.tasks.tape import encode_goal, eval_tape, TAPE_WORDS
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.tasks.tape import encode_goal, eval_tape, TAPE_WORDS
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
 
 
 struct Tally(Copyable, ImplicitlyCopyable, Movable):
@@ -60,7 +60,7 @@ def main() raises:
     print("=== the device tape vs the host evaluator — P3a ===")
     var ta = Tally()
 
-    var f = load_family("mojo_rl/tasks/families/so101_tabletop.family")
+    var f = load_family("noeira/tasks/families/so101_tabletop.family")
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)
     var rects = region_rects(f)
@@ -92,7 +92,7 @@ def main() raises:
     var trues = 0
 
     for n in range(len(names)):
-        var t = load_task("mojo_rl/tasks/tasks/" + names[n] + ".task")
+        var t = load_task("noeira/tasks/tasks/" + names[n] + ".task")
         var g = bind_goal(parse_goal(t.goal), f, fmd.body_names, fmd.site_names)
         var tape = encode_goal(g)
         ta.check(len(tape) == TAPE_WORDS,

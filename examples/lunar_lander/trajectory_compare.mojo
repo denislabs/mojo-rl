@@ -10,15 +10,15 @@ Run with:
 from std.python import Python, PythonObject
 from std.math import abs, sqrt
 
-from mojo_rl.envs.lunar_lander import LunarLander
-from mojo_rl.envs.lunar_lander.constants import LLConstants
-from mojo_rl.envs.lunar_lander.helpers import (
+from noeira.envs.lunar_lander import LunarLander
+from noeira.envs.lunar_lander.constants import LLConstants
+from noeira.envs.lunar_lander.helpers import (
     normalize_position,
     normalize_velocity,
     normalize_angular_velocity,
     compute_shaping,
 )
-from mojo_rl.physics2d import dtype as phys_dtype
+from noeira.physics2d import dtype as phys_dtype
 
 comptime dtype = DType.float32
 

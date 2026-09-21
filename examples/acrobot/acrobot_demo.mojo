@@ -3,7 +3,7 @@
 Run with: pixi run mojo run -I . examples/acrobot_demo.mojo
 """
 
-from mojo_rl.envs import AcrobotEnv, AcrobotAction
+from noeira.envs import AcrobotEnv, AcrobotAction
 from std.random import random_float64
 
 

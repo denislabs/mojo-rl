@@ -51,13 +51,13 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.sensors.touch import touch_sphere_site
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.sensors.touch import touch_sphere_site
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
     CONTACT_IDX_FORCE_N,

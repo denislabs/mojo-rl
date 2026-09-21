@@ -46,22 +46,22 @@ from std.os import makedirs
 from std.os.path import dirname
 from std.math import sqrt
 
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat,
 )
-from mojo_rl.tasks.spec import (
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family, FamilySpec,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.active import active_mask
-from mojo_rl.tasks.reset import free_slot_addresses
-from mojo_rl.tasks.init_table import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.active import active_mask
+from noeira.tasks.reset import free_slot_addresses
+from noeira.tasks.init_table import (
     write_init_table, load_init_table, family_key, INIT_TIME_WORDS,
 )
-from mojo_rl.tasks.libero_fixtures import dump_path_from_index
+from noeira.tasks.libero_fixtures import dump_path_from_index
 
 
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
+comptime TASK_DIR = "noeira/tasks/tasks/"
 comptime OUT_DIR = "build/init"
 
 
@@ -127,7 +127,7 @@ def main() raises:
     var suite_cut = String(suite[byte=0:cut])
     suite = suite_cut^
 
-    var f = load_family("mojo_rl/tasks/families/" + suite + ".family")
+    var f = load_family("noeira/tasks/families/" + suite + ".family")
     var fmd = parse_model_runtime(scene_path(f))
     var dims = dims_from_flat(fmd)
     var nq = dims.get_nq()

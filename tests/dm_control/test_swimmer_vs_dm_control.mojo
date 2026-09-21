@@ -38,10 +38,10 @@ from std.python import Python, PythonObject
 from std.math import abs, sin, sqrt
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_IXX,
@@ -77,10 +77,10 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_VISCOSITY,
 )
 
-from mojo_rl.envs.dm_control.rewards import tolerance, SIGMOID_LONG_TAIL
-from mojo_rl.envs.dm_control.swimmer.swimmer_config import DMSwimmerConfig
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.envs.dm_control.swimmer.swimmer_xml import (
+from noeira.envs.dm_control.rewards import tolerance, SIGMOID_LONG_TAIL
+from noeira.envs.dm_control.swimmer.swimmer_config import DMSwimmerConfig
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.envs.dm_control.swimmer.swimmer_xml import (
     DMSwimmer6Model,
     DMSwimmer15Model,
     HEAD_BODY_IDX,
@@ -88,7 +88,7 @@ from mojo_rl.envs.dm_control.swimmer.swimmer_xml import (
     N_ROOT_DOF,
     TARGET_Z,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     ACT_IDX_GEAR,
     ACT_IDX_CTRL_MIN,

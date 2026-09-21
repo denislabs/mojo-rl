@@ -62,7 +62,7 @@ because of that run.
 ## WHAT IT PRINTS
 
 Per-task success from `tasks/eval_report.SuccessReport`, which is what a run
-sends to `mojo-rl-monitor`. Its arithmetic, the lane-wise comparison and the
+sends to `noeira-cloud`. Its arithmetic, the lane-wise comparison and the
 metric keys are gated on the CPU by `tests/tasks/test_eval_report.mojo`; what
 only this can say is that the numbers came out of a real batch.
 """
@@ -70,41 +70,41 @@ only this can say is that the numbers came out of a real batch.
 from std.random import seed as seed_rng
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.logger import CsvLogger
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.constants import DT
+from noeira.core.logger import CsvLogger
+from noeira.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
     MODEL_CURRICULUM_SIZE,
 )
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
 
-from mojo_rl.tasks.spec import (
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import So101TabletopConfig
-from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
-from mojo_rl.tasks.predicates import parse_goal, bind_goal, require_tier_a
-from mojo_rl.tasks.eval import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.family_config import So101TabletopConfig
+from noeira.tasks.so101_tabletop_xml import So101TabletopModel
+from noeira.tasks.predicates import parse_goal, bind_goal, require_tier_a
+from noeira.tasks.eval import (
     region_sites, region_rects, region_half_heights,
 )
-from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
-from mojo_rl.tasks.sampler import RegionFrame, SampleReport
-from mojo_rl.tasks.reset import free_slot_addresses
-from mojo_rl.tasks.init_table import (
+from noeira.tasks.tape import encode_goal, TAPE_WORDS
+from noeira.tasks.gpu_eval import region_table_words, require_gpu_regions
+from noeira.tasks.sampler import RegionFrame, SampleReport
+from noeira.tasks.reset import free_slot_addresses
+from noeira.tasks.init_table import (
     InitTable, append_init_rows, write_init_table, load_init_table,
 )
-from mojo_rl.tasks.eval_report import SuccessReport
+from noeira.tasks.eval_report import SuccessReport
 
 
 comptime N_ENVS = 256
 comptime N_PER_TASK = N_ENVS // 2
 comptime EVAL_STEPS = 40
 
-comptime TABLE_A = "/tmp/mojo_rl_eval_frozen_a.h5"
-comptime CSV = "/tmp/mojo_rl_eval_frozen.csv"
+comptime TABLE_A = "/tmp/noeira_eval_frozen_a.h5"
+comptime CSV = "/tmp/noeira_eval_frozen.csv"
 
 comptime EnvT = Phyics3dBatchedEnv[
     So101TabletopModel, So101TabletopConfig, N_ENVS
@@ -213,7 +213,7 @@ def main() raises:
     print("P4 — two runs, one frozen init table, the same number")
     print("=" * 68)
 
-    var f = load_family("mojo_rl/tasks/families/so101_tabletop.family")
+    var f = load_family("noeira/tasks/families/so101_tabletop.family")
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)
     var rects = region_rects(f)
@@ -225,8 +225,8 @@ def main() raises:
     # OUTCOME control has nothing to flip. `gather` used to fill that role by
     # accident — its goal held at reset — and is now a real task that scores 0
     # here. `so101_settle_brick.task` is the probe, on purpose.
-    var tg = load_task("mojo_rl/tasks/tasks/so101_settle_brick.task")
-    var tr = load_task("mojo_rl/tasks/tasks/so101_reach_brick.task")
+    var tg = load_task("noeira/tasks/tasks/so101_settle_brick.task")
+    var tr = load_task("noeira/tasks/tasks/so101_reach_brick.task")
     validate_task_against_family(tg, f)
     validate_task_against_family(tr, f)
     var gg = bind_goal(parse_goal(tg.goal), f, fmd.body_names, fmd.site_names)

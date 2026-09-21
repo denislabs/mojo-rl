@@ -39,12 +39,12 @@ Run: pixi run mojo run -I . tests/physics3d/test_ldl_blocked.mojo
 """
 
 from layout import Layout
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Dims
-from mojo_rl.physics3d.dynamics.ldl import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.fields import Dims
+from noeira.physics3d.dynamics.ldl import (
     _ldl_factor_env, _m_inv_env, _ldl_solve_env,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_TREE_SIZE, TREE_IDX_DOF_ADR, TREE_IDX_DOF_NUM,
 )
 

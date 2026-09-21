@@ -28,7 +28,7 @@ from std.sys import has_nvidia_gpu_accelerator
 from max.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.fields import (
     AsStatic,
     AsStatic,
     AsStatic,
@@ -38,11 +38,11 @@ from mojo_rl.physics3d.fields import (
     ContactScratch,
     Dims,
  DimsLike,)
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.solver.je_budget import je_ws_size
-from mojo_rl.physics3d.integrator.euler import (
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.tasks.so101_tabletop_xml import So101TabletopModel
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.solver.je_budget import je_ws_size
+from noeira.physics3d.integrator.euler import (
     _armature_kernel,
     _fnet_passive_kernel,
     _qacc_writeback_kernel,
@@ -50,40 +50,40 @@ from mojo_rl.physics3d.integrator.euler import (
     _fnet_passive_env,
     _qacc_writeback_env,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import (
+from noeira.physics3d.dynamics.subtree_com import (
     compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import (
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import (
     compute_mass_matrix,
 )
-from mojo_rl.physics3d.dynamics.ldl import (
+from noeira.physics3d.dynamics.ldl import (
     ldl_factor,
     ldl_solve,
     compute_m_inv,
 )
-from mojo_rl.physics3d.dynamics.rne import (
+from noeira.physics3d.dynamics.rne import (
     compute_bias_forces_rne,
 )
-from mojo_rl.physics3d.collision.contact_detection import (
+from noeira.physics3d.collision.contact_detection import (
     detect_contacts,
 )
-from mojo_rl.physics3d.solver.newton_solve import (
+from noeira.physics3d.solver.newton_solve import (
     solve_newton, solve_newton_blocked,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_NTREE,
     METADATA_SIZE,
     MODEL_JOINT_SIZE,
 )
-from mojo_rl.envs.ant.ant_xml import AntModel
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.envs.ant.ant_xml import AntModel
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
 
 comptime DTYPE = DType.float32
 comptime BATCH = 2

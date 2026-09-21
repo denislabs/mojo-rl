@@ -15,7 +15,7 @@ This exercises:
 
 from std.memory import alloc
 from std.testing import assert_equal, assert_true
-from mojo_rl.io.hdf5 import (
+from noeira.io.hdf5 import (
     H5File,
     H5Dataset,
     H5T_INTEGER,
@@ -25,7 +25,7 @@ from mojo_rl.io.hdf5 import (
 )
 
 
-comptime FIXTURE_PATH = "/tmp/mojo_rl_hdf5_fixture.h5"
+comptime FIXTURE_PATH = "/tmp/noeira_hdf5_fixture.h5"
 
 # Must match tests/io/hdf5/make_fixture.py
 comptime N_TOTAL: Int = 12

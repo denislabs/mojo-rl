@@ -15,15 +15,15 @@ regression guard that the multi-body port stays faithful + stable.
 
 from std.math import sqrt
 from layout import Layout, LayoutTensor
-from mojo_rl.physics2d import dtype
-from mojo_rl.physics2d.constants import IDX_X, IDX_Y, IDX_ANGLE, IDX_VX, IDX_VY, IDX_OMEGA
-from mojo_rl.physics2d.car import CarDynamicsMB
-from mojo_rl.physics2d.car.constants import (
+from noeira.physics2d import dtype
+from noeira.physics2d.constants import IDX_X, IDX_Y, IDX_ANGLE, IDX_VX, IDX_VY, IDX_OMEGA
+from noeira.physics2d.car import CarDynamicsMB
+from noeira.physics2d.car.constants import (
     FRICTION_LIMIT, GRASS_FRICTION, STEERING_LIMIT,
     CTRL_STEERING, CTRL_GAS, CTRL_BRAKE,
 )
-from mojo_rl.physics2d.constants import BODY_STATE_SIZE
-from mojo_rl.nn.core.ptr import mptr
+from noeira.physics2d.constants import BODY_STATE_SIZE
+from noeira.nn.core.ptr import mptr
 
 # Compact validation layout (one car).
 comptime BOFF = 0

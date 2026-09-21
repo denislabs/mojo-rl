@@ -45,21 +45,21 @@ from std.python import Python, PythonObject
 from std.sys import argv
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.core.assignment import emd_uniform
-from mojo_rl.envs.robots.unitree_g1_rsi import G1RsiTable
-from mojo_rl.envs.robots.g1_tracking_eval import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.core.cont_action import ContAction
+from noeira.core.assignment import emd_uniform
+from noeira.envs.robots.unitree_g1_rsi import G1RsiTable
+from noeira.envs.robots.g1_tracking_eval import (
     G1_D, G1_H, G1_L, G1_HB, G1_HD,
     G1_SEG_ROWS, g1_n_segments, g1_segment_row, g1_score_segment,
 )
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.deep_agents.fb.trainer import FBTrainer
-from mojo_rl.deep_agents.fb.obs_norm import ObsNorm
-from mojo_rl.deep_agents.fb.bfm_towers import BFMFTower, BFMActorTower, BFMBNet
-from mojo_rl.envs.robots import UnitreeG1
-from mojo_rl.envs.robots.unitree_g1_xml import (
+from noeira.data.store import TrajectoryStore
+from noeira.deep_agents.fb.trainer import FBTrainer
+from noeira.deep_agents.fb.obs_norm import ObsNorm
+from noeira.deep_agents.fb.bfm_towers import BFMFTower, BFMActorTower, BFMBNet
+from noeira.envs.robots import UnitreeG1
+from noeira.envs.robots.unitree_g1_xml import (
     UnitreeG1Model, UNITREE_G1_OBS_DIM, UNITREE_G1_STATE_DIM, UNITREE_G1_PRIV_DIM,
 )
 

@@ -14,8 +14,8 @@ Run:
 from std.memory import alloc
 from std.testing import assert_almost_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.zero.nstep_targets import compute_nstep_value_targets
+from noeira.nn.constants import DT
+from noeira.deep_agents.zero.nstep_targets import compute_nstep_value_targets
 
 
 def _alloc(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:

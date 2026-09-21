@@ -23,7 +23,7 @@ against the environment's value and prove nothing.
 from std.os import setenv
 from std.sys import CompilationTarget
 
-from mojo_rl.robot.so101.ports import (
+from noeira.robot.so101.ports import (
     LINUX_FOLLOWER_PORT,
     LINUX_LEADER_PORT,
     MAC_FOLLOWER_PORT,

@@ -28,22 +28,22 @@ EXPECTED routing decision, split and no-split alike, and the run fails if
 nothing split at all.
 
     pixi run -e nvidia mojo run -I . tests/nn/test_module_splitk_dw_gpu.mojo
-    MOJO_RL_SPLITK=0 pixi run -e nvidia mojo run -I . tests/nn/...   # both arms plain
+    NOEIRA_SPLITK=0 pixi run -e nvidia mojo run -I . tests/nn/...   # both arms plain
 """
 
 from std.math import abs
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.splitk_gemm import splitk_path_applies
-from mojo_rl.nn.primitives.linear_act import LinearAct
-from mojo_rl.nn.primitives.ops.relu_op import ReLUOp
-from mojo_rl.nn.primitives.noisy_linear import NoisyLinear
-from mojo_rl.nn.primitives.embedding import Embedding
-from mojo_rl.nn.primitives.conv2d_transpose import Conv2DTranspose
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.splitk_gemm import splitk_path_applies
+from noeira.nn.primitives.linear_act import LinearAct
+from noeira.nn.primitives.ops.relu_op import ReLUOp
+from noeira.nn.primitives.noisy_linear import NoisyLinear
+from noeira.nn.primitives.embedding import Embedding
+from noeira.nn.primitives.conv2d_transpose import Conv2DTranspose
 
 
 # ── shared helpers ─────────────────────────────────────────────────────────

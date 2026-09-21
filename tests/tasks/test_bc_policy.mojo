@@ -34,12 +34,12 @@ from std.os import makedirs
 from std.os.path import exists
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.checkpoint import save_params, load_params
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.tasks.bc_policy import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.checkpoint import save_params, load_params
+from noeira.nn.core.initializer import Kaiming
+from noeira.tasks.bc_policy import (
     BcNet, BC_HID, BcNorm, load_bc_norm, write_bc_norm,
 )
 

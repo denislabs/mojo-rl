@@ -35,13 +35,13 @@ from std.os import getenv
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.envs.robots import UnitreeG1
-from mojo_rl.envs.robots.unitree_g1_xml import (
+from noeira.core.cont_action import ContAction
+from noeira.data.store import TrajectoryStore
+from noeira.envs.robots import UnitreeG1
+from noeira.envs.robots.unitree_g1_xml import (
     UnitreeG1Model, UNITREE_G1_STATE_DIM, UNITREE_G1_OBS_DIM,
 )
-from mojo_rl.envs.robots.unitree_g1_priv_obs import (
+from noeira.envs.robots.unitree_g1_priv_obs import (
     G1_N_SKELETON, G1_PRIV_DIM, g1_skeleton_body, g1_atan2f,
 )
 

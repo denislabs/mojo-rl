@@ -34,10 +34,10 @@ from std.math import abs
 from std.python import Python
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.envs.dm_control.manipulation_reach_def import (
+from noeira.envs.dm_control.manipulation_reach_def import (
     ReachSiteFeaturesModel,
 )
-from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
+from noeira.envs.dm_control.quadruped.quadruped_xml import (
     DMQuadrupedWalkModel,
 )
 

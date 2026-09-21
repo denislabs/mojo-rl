@@ -5,15 +5,15 @@ update of the policy head is broken (a transfer/optimizer bug invisible to
 loss-only parity)."""
 
 from max.gpu.host import DeviceContext
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.optimizer.grad_clip import clip_grad_norm
-from mojo_rl.deep_agents.muzero.nets_spatial import MZPredNetC4Spatial
-from mojo_rl.deep_agents.muzero.loss_ops import soft_ce_slice_loss_and_grad
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.optimizer.grad_clip import clip_grad_norm
+from noeira.deep_agents.muzero.nets_spatial import MZPredNetC4Spatial
+from noeira.deep_agents.muzero.loss_ops import soft_ce_slice_loss_and_grad
 
 
 struct WReader(ParamVisitor):

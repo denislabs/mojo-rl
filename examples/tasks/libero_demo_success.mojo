@@ -45,31 +45,31 @@ count from the FK products at exactly this state.
 from std.sys import argv
 from std.math import sqrt
 
-from mojo_rl.physics3d.fields import Data, Model, DynDims, DynamicsScratch
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, DynDims, DynamicsScratch
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE, BODY_IDX_POS_X, BODY_IDX_QUAT_X, BODY_IDX_QUAT_W,
     META_IDX_NUM_CONTACTS, CONTACT_SIZE, CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
 )
-from mojo_rl.tasks.spec import load_family, load_task, validate_task_against_family
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.predicates import (
+from noeira.tasks.spec import load_family, load_task, validate_task_against_family
+from noeira.tasks.family import scene_path
+from noeira.tasks.predicates import (
     parse_goal, bind_goal, require_tier_a, joint_qpos_addresses,
 )
-from mojo_rl.tasks.eval import (
+from noeira.tasks.eval import (
     eval_goal, HostState, region_sites, region_contact_bodies,
 )
-from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
-from mojo_rl.tasks.libero_fixtures import dump_path_from_index
+from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.tasks.libero_fixtures import dump_path_from_index
 
 
 comptime DT = DType.float64
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
+comptime TASK_DIR = "noeira/tasks/tasks/"
 
 
 def _floats(s: String) raises -> List[Float64]:
@@ -125,7 +125,7 @@ def main() raises:
     # ⚠ A TEMPORARY: `x = String(x[...])` aliases the value being replaced.
     var suite_cut = String(suite[byte=0:cut])
     suite = suite_cut^
-    var f = load_family("mojo_rl/tasks/families/" + suite + ".family")
+    var f = load_family("noeira/tasks/families/" + suite + ".family")
     var fmd = parse_model_runtime(scene_path(f))
     var verts = 32768
     var dims = dims_from_flat(

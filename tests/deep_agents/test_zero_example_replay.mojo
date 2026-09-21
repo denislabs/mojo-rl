@@ -6,9 +6,9 @@ Run:
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.zero.example_replay import MCTSExampleReplay
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.zero.example_replay import MCTSExampleReplay
 
 
 def test_record_len_and_ring() raises:

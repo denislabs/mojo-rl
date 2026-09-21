@@ -11,11 +11,11 @@ Run: pixi run mojo run -I . tests/nn/test_batch_norm_2d_bf16_smoke.mojo
 
 from std.math import isnan, isinf, abs
 from std.testing import assert_true
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.tensor import Tensor, TensorImpl
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.primitives.batch_norm_2d import BatchNorm2D
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.tensor import Tensor, TensorImpl
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.primitives.batch_norm_2d import BatchNorm2D
 
 comptime BF16 = DType.bfloat16
 

@@ -69,12 +69,12 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_stack2of3 import DMStack2of3
-from mojo_rl.envs.dm_control.manipulation_stack2of3_config import (
+from noeira.envs.dm_control.manipulation_stack2of3 import DMStack2of3
+from noeira.envs.dm_control.manipulation_stack2of3_config import (
     OBS_DIM,
     TARGET_HEIGHT,
 )
-from mojo_rl.envs.dm_control.manipulation_stack_random import (
+from noeira.envs.dm_control.manipulation_stack_random import (
     N_BRICKS,
     ROBOT_SITE_BASE,
     SITE_PINCH,
@@ -97,12 +97,12 @@ from mojo_rl.envs.dm_control.manipulation_stack_random import (
     sigma_of,
     read_order,
 )
-from mojo_rl.envs.dm_control.manipulation_obs import (
+from noeira.envs.dm_control.manipulation_obs import (
     N_ARM,
     N_HAND,
     torque_site_of,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_POS_X,
     BODY_IDX_QUAT_X,

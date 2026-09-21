@@ -3,8 +3,8 @@
 from std.math import pi
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext, DeviceBuffer
-from mojo_rl.physics2d import dtype, SHAPE_MAX_SIZE
-from mojo_rl.envs.pusht import (
+from noeira.physics2d import dtype, SHAPE_MAX_SIZE
+from noeira.envs.pusht import (
     PushTV2,
     PConstants,
     PushTLayout,
@@ -15,7 +15,7 @@ from mojo_rl.envs.pusht import (
     IMG_W,
     IMG_C,
 )
-from mojo_rl.nn.core.ptr import mptr
+from noeira.nn.core.ptr import mptr
 
 
 def cpu_test() raises:

@@ -17,7 +17,7 @@ What it does, and what it refuses:
    (`LIBERO-master/README.md`); re-hosting is legal WITH attribution and this
    file is the attribution.
 3. `tar | zstd -19` into `<out>/libero_<version>.tar.zst`, sha256 + size, and
-   writes `mojo_rl/tasks/libero/assets.kv` pointing at `--url`.
+   writes `noeira/tasks/libero/assets.kv` pointing at `--url`.
 
 ⚠ IT DOES NOT UPLOAD. Pushing to the Hub is a separate, outward-facing act;
 this script's output is the archive and the declaration that names it.
@@ -36,7 +36,7 @@ import sys
 KEEP = {".xml", ".msh", ".stl", ".png", ".jpg"}
 DROP = {".obj", ".mtl", ".zip", ".ds_store", ""}
 
-ATTRIBUTION = """LIBERO benchmark assets, repackaged for mojo-rl.
+ATTRIBUTION = """LIBERO benchmark assets, repackaged for noeira.
 
 Source:   https://github.com/Lifelong-Robot-Learning/LIBERO
           libero/libero/assets/  (commit as vendored in references/LIBERO-master)
@@ -65,8 +65,8 @@ def main():
         "--url",
         default="https://huggingface.co/datasets/DenisLabs/mojo-rl-assets/resolve/main/libero_{version}.tar.zst",
     )
-    ap.add_argument("--kv", default="mojo_rl/tasks/libero/assets.kv")
-    ap.add_argument("--table", default="mojo_rl/tasks/libero/categories.kv")
+    ap.add_argument("--kv", default="noeira/tasks/libero/assets.kv")
+    ap.add_argument("--table", default="noeira/tasks/libero/categories.kv")
     a = ap.parse_args()
     src = os.path.abspath(a.src)
     if not os.path.isdir(src):

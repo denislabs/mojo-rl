@@ -25,7 +25,7 @@ notice, since the alarm only ever fires on runs that already look bad.
 
 from std.os import remove
 
-from mojo_rl.tasks.critic_health import critic_health
+from noeira.tasks.critic_health import critic_health
 
 
 def write_csv(path: String, peak_q: Float64, peak_loss: Float64,

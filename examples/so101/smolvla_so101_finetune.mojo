@@ -11,7 +11,7 @@ falls: train on some episodes, measure on episodes never trained on.
 ## Launching a run on a fresh NVIDIA box, start to finish
 
 ```bash
-git clone <this repo> mojo-rl && cd mojo-rl
+git clone <this repo> noeira && cd noeira
 pixi install -e nvidia
 
 # ── 1. disk ───────────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ pixi run -e nvidia hf auth login          # or: export HF_TOKEN=hf_...
 pixi run -e nvidia mojo run -I . \\
     examples/so101/act_so101_import_dataset.mojo \\
     --repo DenisLabs/record-test_20260828_092736 --height 480 --width 640
-export SMOLVLA_STORE=~/.cache/mojo_rl/act_so101/DenisLabs__record-test_20260828_092736_480x640.h5
+export SMOLVLA_STORE=~/.cache/noeira/act_so101/DenisLabs__record-test_20260828_092736_480x640.h5
 
 # ── 4. normalisation statistics — fetched automatically ──────────────────
 # `meta/stats.json` is pulled from the SAME dataset repo as the store, so
@@ -63,7 +63,7 @@ SMOLVLA_STEPS=3 SMOLVLA_NO_MONITOR=1 /tmp/smolvla_finetune
 /tmp/smolvla_finetune
 ```
 
-⚠ **Run it from the project root** — `mojo_rl/io/hdf5` resolves libhdf5 through
+⚠ **Run it from the project root** — `noeira/io/hdf5` resolves libhdf5 through
 a path relative to the working directory, and the tokenised instruction table
 is read from `tools/vla/`.
 
@@ -189,40 +189,40 @@ from std.os.path import exists
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.io.hf import hf_download_file, HF_MODEL, HF_DATASET
-from mojo_rl.io.hdf5 import H5Dataset
+from noeira.nn.constants import DT
+from noeira.nn.core.ptr import mptr
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.primitives.linear import Linear
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.io.hf import hf_download_file, HF_MODEL, HF_DATASET
+from noeira.io.hdf5 import H5Dataset
 
-from mojo_rl.deep_agents.smolvla.policy import SmolVLAPolicy
-from mojo_rl.deep_agents.smolvla.recording import SO101_N_LANG, SO101_TASKS
-from mojo_rl.deep_agents.smolvla.normalize import SmolVLAStats
-from mojo_rl.deep_agents.smolvla.tasks import TaskTokens
-from mojo_rl.deep_agents.smolvla.dataset import SmolVLABatchSampler
-from mojo_rl.deep_agents.smolvla.observation import fill_store_images
-from mojo_rl.deep_agents.smolvla.train_step import SmolVLATrainStep
-from mojo_rl.deep_agents.smolvla.vision_cache import VisionCache
-from mojo_rl.deep_agents.smolvla.finetune import (
+from noeira.deep_agents.smolvla.policy import SmolVLAPolicy
+from noeira.deep_agents.smolvla.recording import SO101_N_LANG, SO101_TASKS
+from noeira.deep_agents.smolvla.normalize import SmolVLAStats
+from noeira.deep_agents.smolvla.tasks import TaskTokens
+from noeira.deep_agents.smolvla.dataset import SmolVLABatchSampler
+from noeira.deep_agents.smolvla.observation import fill_store_images
+from noeira.deep_agents.smolvla.train_step import SmolVLATrainStep
+from noeira.deep_agents.smolvla.vision_cache import VisionCache
+from noeira.deep_agents.smolvla.finetune import (
     zero_trainable_grads, adam_step_trainables, save_trainables,
     load_trainables, adopt_trainables, clip_trainables,
 )
-from mojo_rl.deep_agents.smolvla.flow_loss import (
+from noeira.deep_agents.smolvla.flow_loss import (
     build_xt_ut, sample_noise, sample_times,
 )
-from mojo_rl.deep_agents.smolvla.heads import (
+from noeira.deep_agents.smolvla.heads import (
     SMOLVLA_ACTION_DIM, SMOLVLA_EXPERT_W, SMOLVLA_STATE_DIM,
 )
-from mojo_rl.deep_agents.smolvla.text import (
+from noeira.deep_agents.smolvla.text import (
     SMOLLM_DIM, SMOLLM_LAYERS, SMOLLM_KV_W,
 )
-from mojo_rl.deep_agents.smolvla.expert import EXPERT_FF
-from mojo_rl.deep_agents.smolvla.vision import SIGLIP_LAYERS
+from noeira.deep_agents.smolvla.expert import EXPERT_FF
+from noeira.deep_agents.smolvla.vision import SIGLIP_LAYERS
 
 # ── the recording ────────────────────────────────────────────────────────
 comptime SDIM = 6                # the SO-101's joints
@@ -651,13 +651,13 @@ def main() raises:
     var no_mon = getenv("SMOLVLA_NO_MONITOR")
     var monitor_url = (
         String("") if no_mon.byte_length() > 0
-        else env_vars.get("RL_MONITOR_URL", "")
+        else env_vars.get("NOEIRA_CLOUD_URL", "")
     )
     var logger = RemoteLogger(
         server_url=monitor_url,
         run_name="SmolVLA SO-ARM101 fine-tune",
         buffer_size=64,
-        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+        api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
     )
     logger.set_config("algorithm", "SmolVLA")
     logger.set_config("robot", "SO-ARM101")

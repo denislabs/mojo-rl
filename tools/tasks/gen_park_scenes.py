@@ -65,8 +65,8 @@ import argparse
 import os
 import sys
 
-BASE = "mojo_rl/envs/robots/assets/so_arm101.xml"
-OUT_DIR = "mojo_rl/envs/robots/assets"
+BASE = "noeira/envs/robots/assets/so_arm101.xml"
+OUT_DIR = "noeira/envs/robots/assets"
 
 # The budgets P0 sweeps. 0 is the control and must stay first.
 #
@@ -84,7 +84,7 @@ OUT_DIR = "mojo_rl/envs/robots/assets"
 #    12    78    55,536    136,212  OVER   <- ptxas said exactly this
 #
 # k=12 was in this list until 2026-09-02 and did not compile:
-#     ptxas error : Entry function 'mojo_rl_physics3d_solver_newt...' uses
+#     ptxas error : Entry function 'noeira_physics3d_solver_newt...' uses
 #                   too much shared data (0x21414 bytes, 0x18c00 max)
 # 0x21414 == 136,212, which the formula above reproduces to the byte.
 #
@@ -170,7 +170,7 @@ def build(base_text: str, k: int, name: str) -> str:
     return out
 
 
-POSE_MODULE = "mojo_rl/envs/robots/so101_park_pose.mojo"
+POSE_MODULE = "noeira/envs/robots/so101_park_pose.mojo"
 
 
 def pose_module_text() -> str:

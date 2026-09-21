@@ -3,8 +3,8 @@
     pixi run mojo run -I . tools/tasks/gen_libero_family.mojo libero_goal
     pixi run mojo run -I . tools/tasks/gen_libero_family.mojo libero_goal --check
 
-Writes `mojo_rl/tasks/families/<suite>.family` and, for every file whose goal
-our language can express, `mojo_rl/tasks/tasks/<suite>__<file stem>.task`.
+Writes `noeira/tasks/families/<suite>.family` and, for every file whose goal
+our language can express, `noeira/tasks/tasks/<suite>__<file stem>.task`.
 Needs the LIBERO corpus (`references/LIBERO-master`), the pulled pack
 (`pixi run assets-pull libero`), the generated arenas
 (`tools/tasks/gen_libero_arenas.py`) and the vendored Panda
@@ -54,23 +54,23 @@ from std.os import listdir
 from std.pathlib import Path
 from std.sys import argv
 
-from mojo_rl.tasks.bddl import parse_bddl, BddlProblem
-from mojo_rl.tasks.libero_categories import (
+from noeira.tasks.bddl import parse_bddl, BddlProblem
+from noeira.tasks.libero_categories import (
     load_libero_table, DEFAULT_TABLE_PATH, LiberoTable,
 )
-from mojo_rl.tasks.libero_import import (
+from noeira.tasks.libero_import import (
     resolve_family, translate_task, classify_goal, gap_name, GAP_NONE,
     LIBERO_ROBOT_DIR, LIBERO_ARENA_DIR, RegionAlias,
 )
-from mojo_rl.tasks.spec import (
+from noeira.tasks.spec import (
     FamilySpec, TaskSpec, RegionSpec, validate_task_against_family,
 )
 
 
 comptime BDDL_ROOT = "references/LIBERO-master/libero/libero/bddl_files"
-comptime PACK_DIR = "mojo_rl/tasks/libero/assets"
-comptime FAMILY_DIR = "mojo_rl/tasks/families"
-comptime TASK_DIR = "mojo_rl/tasks/tasks"
+comptime PACK_DIR = "noeira/tasks/libero/assets"
+comptime FAMILY_DIR = "noeira/tasks/families"
+comptime TASK_DIR = "noeira/tasks/tasks"
 
 
 def _stem(path: String) -> String:

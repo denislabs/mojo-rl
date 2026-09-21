@@ -98,7 +98,7 @@ three times first. C stays because "the allocation is a first-call artifact"
 and "the allocation is fine under capture" are different answers.
 
 ⚠ TWO drafts of this file crashed on the 5090 before it ran, both from the same
-rule, and `mojo_rl/cuda/graph.mojo:54` states that rule in full: **Mojo
+rule, and `noeira/cuda/graph.mojo:54` states that rule in full: **Mojo
 destroys a value at its LAST USE, and MAX's `DeviceContext` destructor
 SYNCHRONIZES AND DESTROYS the stream.** `AsyncRT_DeviceContext_release` was
 frame #12 of both stack traces, exactly as that comment predicts.
@@ -130,7 +130,7 @@ from linalg.matmul import matmul as max_matmul
 
 from std.sys import has_nvidia_gpu_accelerator
 
-from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
+from noeira.cuda import CUDAGraph, maybe_capture_replay
 
 comptime DT = DType.float32
 
@@ -179,7 +179,7 @@ struct _Probe[M_: Int, K_: Int, N_: Int](Movable):
     """Owns the context AND the buffers, and does the GEMM in a METHOD.
 
     ⚠⚠ THIS SHAPE IS LOAD-BEARING, and two rounds of crashes came from not
-    using it. `mojo_rl/cuda/graph.mojo:54` spells out why: Mojo destroys a
+    using it. `noeira/cuda/graph.mojo:54` spells out why: Mojo destroys a
     value at its LAST USE, and MAX's `DeviceContext` destructor SYNCHRONIZES
     AND DESTROYS the stream. A `capturing` closure that mentions `ctx`
     directly takes its own copy, that copy dies, and the stream being captured

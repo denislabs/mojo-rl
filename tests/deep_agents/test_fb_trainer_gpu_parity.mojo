@@ -33,14 +33,14 @@ from std.math import abs, sqrt
 from std.random import random_float64, seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import Tanh, ReLU
-from mojo_rl.deep_agents.fb.trainer import FBTrainer
-from mojo_rl.deep_agents.fb.kernels import smooth_action_t, ensure_t
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import Tanh, ReLU
+from noeira.deep_agents.fb.trainer import FBTrainer
+from noeira.deep_agents.fb.kernels import smooth_action_t, ensure_t
 
 
 comptime OBS: Int = 5

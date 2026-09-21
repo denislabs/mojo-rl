@@ -24,8 +24,8 @@ Run:
 from std.math import abs
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.envs.atari import AtariEnv, load_rom
-from mojo_rl.envs.atari.games.registry import AtariGame
+from noeira.envs.atari import AtariEnv, load_rom
+from noeira.envs.atari.games.registry import AtariGame
 
 
 comptime DT = DType.float32

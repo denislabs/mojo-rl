@@ -76,12 +76,12 @@ from nn.attention.gpu.mha import flash_attention, flash_attention_dispatch
 from nn.attention.mha_mask import NullMask
 from nn.attention.mha_operand import LayoutTensorMHAOperand
 
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.core.mm import bmm
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.primitives.cross_attention import (
+from noeira.nn.constants import DT, TPB
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.core.mm import bmm
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.primitives.cross_attention import (
     CrossAttention,
     XATTN_MASK_NEG,
     _xa_pack_kernel,
@@ -92,7 +92,7 @@ from mojo_rl.nn.primitives.cross_attention import (
     xa_fused_routes_to_max,
     XA_FUSED_BQ,
 )
-from mojo_rl.deep_agents.smolvla.block_attention import (
+from noeira.deep_agents.smolvla.block_attention import (
     _ba_context_kernel,
     _ba_softmax_kernel,
     ba_warp_rows_grid,

@@ -14,21 +14,21 @@ so stopping it at any moment is safe.
 
 The dataset lives at `projects/<project>/datasets/<dataset>/` on both boxes.
 The mechanics — which files are held back, why metadata goes last — are in
-`mojo_rl/data/dataset_sync.mojo` and `recording_files.mojo`.
+`noeira/data/dataset_sync.mojo` and `recording_files.mojo`.
 """
 
 from std.os.path import exists
 from std.sys import argv
 from std.time import sleep
 
-from mojo_rl.core.project import project_dataset_dir, projects_root
-from mojo_rl.data.dataset_sync import (
+from noeira.core.project import project_dataset_dir, projects_root
+from noeira.data.dataset_sync import (
     HashCache,
     pull_dataset,
     push_dataset,
     watch_is_done,
 )
-from mojo_rl.data.remote import RemoteCatalog
+from noeira.data.remote import RemoteCatalog
 
 
 def _flag(name: String, dflt: String = String("")) raises -> String:

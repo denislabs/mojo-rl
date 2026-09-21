@@ -131,7 +131,7 @@ def main():
             ub, nb = min(kb)
             same = "" if na == nb else "  (different kernel hash: code path changed)"
             print(f"  {t:<11}{ua:>10.1f}{ub:>10.1f}{ub/ua:>8.3f}"
-                  f"  {nb.replace('mojo_rl_physics3d_', '')[:44]}{same}")
+                  f"  {nb.replace('noeira_physics3d_', '')[:44]}{same}")
     return 0
 
 

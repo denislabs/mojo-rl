@@ -25,21 +25,21 @@ Run: pixi run mojo run -I . tests/tasks/test_tape_gpu_parity.mojo
 """
 
 from layout import Layout
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, MODEL_CURRICULUM_SIZE,
 )
-from mojo_rl.tasks.spec import load_family, load_task
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import So101TabletopConfig
-from mojo_rl.tasks.predicates import parse_goal, bind_goal
-from mojo_rl.tasks.eval import (
+from noeira.tasks.spec import load_family, load_task
+from noeira.tasks.family import scene_path
+from noeira.tasks.family_config import So101TabletopConfig
+from noeira.tasks.predicates import parse_goal, bind_goal
+from noeira.tasks.eval import (
     region_sites, region_rects, region_half_heights,
 )
-from mojo_rl.tasks.tape import encode_goal, eval_tape, TAPE_WORDS
-from mojo_rl.tasks.gpu_eval import eval_tape_gpu, region_table_words
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
-from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
+from noeira.tasks.tape import encode_goal, eval_tape, TAPE_WORDS
+from noeira.tasks.gpu_eval import eval_tape_gpu, region_table_words
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.tasks.so101_tabletop_xml import So101TabletopModel
 
 
 comptime DTYPE = DType.float64
@@ -76,7 +76,7 @@ def main() raises:
     print("=== kernel loop vs host loop — P3b ===")
     var ta = Tally()
 
-    var f = load_family("mojo_rl/tasks/families/so101_tabletop.family")
+    var f = load_family("noeira/tasks/families/so101_tabletop.family")
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)
     var rects = region_rects(f)
@@ -92,8 +92,8 @@ def main() raises:
         )
 
     # ⚠ TWO LANES, TWO DIFFERENT TASKS. See the header.
-    var t0 = load_task("mojo_rl/tasks/tasks/so101_gather_bricks.task")
-    var t1 = load_task("mojo_rl/tasks/tasks/so101_lift_brick.task")
+    var t0 = load_task("noeira/tasks/tasks/so101_gather_bricks.task")
+    var t1 = load_task("noeira/tasks/tasks/so101_lift_brick.task")
     var g0 = bind_goal(parse_goal(t0.goal), f, fmd.body_names, fmd.site_names)
     var g1 = bind_goal(parse_goal(t1.goal), f, fmd.body_names, fmd.site_names)
     var tp0 = encode_goal(g0)

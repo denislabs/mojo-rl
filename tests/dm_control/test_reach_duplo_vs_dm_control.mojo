@@ -41,8 +41,8 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_reach_duplo import DMReachDuplo
-from mojo_rl.envs.dm_control.manipulation_reach_duplo_config import (
+from noeira.envs.dm_control.manipulation_reach_duplo import DMReachDuplo
+from noeira.envs.dm_control.manipulation_reach_duplo_config import (
     OBS_DIM,
     PROP_BODY,
     PROP_FRAME_SITE,
@@ -57,7 +57,7 @@ from mojo_rl.envs.dm_control.manipulation_reach_duplo_config import (
     ROBOT_SITE_BASE,
     SITE_PINCH,
 )
-from mojo_rl.envs.dm_control.manipulation_obs import (
+from noeira.envs.dm_control.manipulation_obs import (
     N_ARM,
     N_HAND,
     torque_site_of,

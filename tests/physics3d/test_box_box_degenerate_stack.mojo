@@ -41,21 +41,21 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.kinematics.quat_math import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.fields import Data, Model
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.kinematics.quat_math import (
     quat_normalize, gpu_quat_normalize,
 )
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.collision.collision_primitives import (
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.collision.collision_primitives import (
     box_box_manifold, BB_MAX_POINTS,
 )
-from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.fields import SpecFields
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.collision.broadphase_sap import detect_contacts_sap
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.fields import SpecFields
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE, META_IDX_NUM_CONTACTS, CONTACT_IDX_DIST,
     CONTACT_IDX_POS_X, CONTACT_IDX_POS_Y, CONTACT_IDX_POS_Z,
 )

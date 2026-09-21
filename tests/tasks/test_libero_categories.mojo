@@ -29,15 +29,15 @@ is for:
 from std.os import makedirs
 from std.time import perf_counter_ns
 
-from mojo_rl.tasks.bddl import parse_bddl
-from mojo_rl.tasks.libero_categories import (
+from noeira.tasks.bddl import parse_bddl
+from noeira.tasks.libero_categories import (
     parse_libero_table, load_libero_table, threshold_holds, Threshold,
     DEFAULT_TABLE_PATH, CMP_LT, CMP_GT, CMP_GE, KIND_WORKSPACE,
 )
-from mojo_rl.tasks.libero_import import (
+from noeira.tasks.libero_import import (
     resolve_family, site_pos, family_todo_count,
 )
-from mojo_rl.tasks.spec import (
+from noeira.tasks.spec import (
     parse_family, parse_slot, SLOT_STATIC, SLOT_FREE,
 )
 
@@ -277,7 +277,7 @@ def main() raises:
     ta.check(absent, "an absent site RAISES")
 
     # ── resolve_family on a fixture, against the quoted arithmetic ─────
-    var work = String("/tmp/mojo_rl_libero_l1_") + String(perf_counter_ns())
+    var work = String("/tmp/noeira_libero_l1_") + String(perf_counter_ns())
     makedirs(work + "/articulated_objects", exist_ok=True)
     makedirs(work + "/stable_scanned_objects/akita_black_bowl", exist_ok=True)
     makedirs(work + "/scenes", exist_ok=True)
@@ -344,9 +344,9 @@ def main() raises:
           and fam2.slots[0].kind == SLOT_STATIC
           and fam2.slots[0].asset == "arenas/libero_tabletop_manipulation_arena.xml",
           "arena is slot 0, static, at the generated path")
-    ta.check(fam2.slots[1].asset == "mojo_rl/tasks/libero/objects/wooden_cabinet.xml",
+    ta.check(fam2.slots[1].asset == "noeira/tasks/libero/objects/wooden_cabinet.xml",
           "fixture uses the generated copy (no joint)")
-    ta.check(fam2.slots[2].asset == "mojo_rl/tasks/libero/objects/akita_black_bowl_free.xml",
+    ta.check(fam2.slots[2].asset == "noeira/tasks/libero/objects/akita_black_bowl_free.xml",
           "object uses the generated _free copy")
     ta.check(fam2.regions[0].site == "arena_workspace", "regions anchor on arena_workspace")
     ta.check(abs(fam2.slots[1].pz - want_z) < 1e-12,

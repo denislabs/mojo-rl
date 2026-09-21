@@ -90,11 +90,11 @@ from std.math import abs, sqrt, atan2, sin, cos
 from std.os import getenv
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.envs.robots import UnitreeG1
-from mojo_rl.envs.robots.unitree_g1_xml import UnitreeG1Model, TORSO_BODY_IDX
-from mojo_rl.envs.robots.unitree_g1_pd import G1_N_DOF, g1_default_pos
-from mojo_rl.physics3d.kinematics.quat_math import quat_mul, quat_rotate
+from noeira.data.store import TrajectoryStore
+from noeira.envs.robots import UnitreeG1
+from noeira.envs.robots.unitree_g1_xml import UnitreeG1Model, TORSO_BODY_IDX
+from noeira.envs.robots.unitree_g1_pd import G1_N_DOF, g1_default_pos
+from noeira.physics3d.kinematics.quat_math import quat_mul, quat_rotate
 
 
 comptime NQ = UnitreeG1Model.NQ

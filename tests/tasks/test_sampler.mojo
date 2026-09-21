@@ -14,8 +14,8 @@ carry. One arm runs against the real `so101_tabletop` for realism.
 Run: pixi run mojo run -I . tests/tasks/test_sampler.mojo
 """
 
-from mojo_rl.tasks.spec import parse_family, parse_task
-from mojo_rl.tasks.sampler import (
+from noeira.tasks.spec import parse_family, parse_task
+from noeira.tasks.sampler import (
     sample_placements, RegionFrame, SampleReport, MAX_PLACE_ATTEMPTS,
 )
 
@@ -182,8 +182,8 @@ def main() raises:
 
     # ── 5. the real family, for realism ───────────────────────────────────
     print("--- the real so101_tabletop family ---")
-    from mojo_rl.tasks.spec import load_family
-    var real = load_family("mojo_rl/tasks/families/so101_tabletop.family")
+    from noeira.tasks.spec import load_family
+    var real = load_family("noeira/tasks/families/so101_tabletop.family")
     var rtask = parse_task(
         String("schema_version=1\ntask=pick\nfamily=so101_tabletop\n"
                "goal=In(brick, table_top)\n"

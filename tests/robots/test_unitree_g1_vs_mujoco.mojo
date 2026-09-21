@@ -44,9 +44,9 @@ from std.math import abs, sin
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.envs.robots import UnitreeG1
-from mojo_rl.envs.robots.unitree_g1_xml import (
+from noeira.core.cont_action import ContAction
+from noeira.envs.robots import UnitreeG1
+from noeira.envs.robots.unitree_g1_xml import (
     UnitreeG1Model,
     PELVIS_BODY_IDX,
     LEFT_ANKLE_ROLL_BODY_IDX,
@@ -57,14 +57,14 @@ from mojo_rl.envs.robots.unitree_g1_xml import (
     UNITREE_G1_OBS_DIM,
     UNITREE_G1_STATE_DIM,
 )
-from mojo_rl.envs.robots.unitree_g1_pd import (
+from noeira.envs.robots.unitree_g1_pd import (
     G1_N_DOF,
     g1_dof_name,
     g1_effort,
     G1_CONTROL_DECIMATION,
 )
-from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import actuator_column
+from noeira.physics3d.gpu.constants import (
     ACT_IDX_CTRL_MAX,
     ACT_IDX_CTRL_MIN,
     META_IDX_NUM_CONTACTS,
@@ -82,7 +82,7 @@ comptime N_STEPS = 100
 # 100-step bound below 1e-3 would gate the reference's noise, not us. The
 # 100-step figure is still printed beside that floor.
 comptime N_GATE = 40
-comptime ASSET = "mojo_rl/envs/robots/assets/unitree_g1.xml"
+comptime ASSET = "noeira/envs/robots/assets/unitree_g1.xml"
 
 
 def _mj() raises -> PythonObject:

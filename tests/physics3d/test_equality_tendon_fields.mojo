@@ -37,12 +37,12 @@ from std.math import abs
 from std.sys import has_nvidia_gpu_accelerator
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_NTENDON,
@@ -88,7 +88,7 @@ from mojo_rl.physics3d.gpu.constants import (
     EQ_IDX_SOLIMP_4,
     METADATA_SIZE,
 )
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
 
 comptime DTYPE = DType.float32
 comptime BATCH = 2

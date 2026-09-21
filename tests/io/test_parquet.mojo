@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | The native Parquet reader, against pyarrow
 # +--------------------------------------------------------------------------+ #
-"""Gates `mojo_rl/io/parquet` value-for-value on a corpus pyarrow wrote.
+"""Gates `noeira/io/parquet` value-for-value on a corpus pyarrow wrote.
 
     pixi run python tools/io/dump_parquet_reference.py --out /tmp/pq_ref
     pixi run mojo run -I . tests/io/test_parquet.mojo /tmp/pq_ref
@@ -25,7 +25,7 @@ See `tools/io/dump_parquet_reference.py` for what each case turns off.
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.io.parquet import ParquetFile
+from noeira.io.parquet import ParquetFile
 
 
 comptime DEFAULT_REF = "/tmp/pq_ref"

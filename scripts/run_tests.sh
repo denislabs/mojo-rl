@@ -76,7 +76,7 @@ if [[ "$TOTAL" -eq 0 ]]; then
     exit 2
 fi
 
-LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mojo-rl-tests.XXXXXX")"
+LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/noeira-tests.XXXXXX")"
 echo "running $TOTAL test file(s)  (logs: $LOG_DIR)"
 echo "----------------------------------------------------------------------"
 

@@ -4,7 +4,7 @@
 """Gates `nn/models/resnet18_torch.mojo` against the torch dump it replaces.
 
     pixi run -e act-ref python tools/act/dump_resnet18_imagenet.py \\
-        --out ~/.cache/mojo_rl/act_so101/resnet18_imagenet
+        --out ~/.cache/noeira/act_so101/resnet18_imagenet
     pixi run mojo run -I . tests/nn/test_safetensors_resnet18_torch.mojo
     pixi run -e act-ref python tools/nn/dump_safetensors_reference.py \\
         --verify-resnet18 /tmp/rn18_export.safetensors
@@ -43,22 +43,22 @@ from std.os import getenv
 from std.os.path import isdir
 from std.sys import argv
 
-from mojo_rl.io.hf import HF_MODEL, hf_download_file
-from mojo_rl.io.safetensors import SafeTensors
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.torch_names import (
+from noeira.io.hf import HF_MODEL, hf_download_file
+from noeira.io.safetensors import SafeTensors
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.torch_names import (
     LoadTorchNamed,
     SaveTorchNamed,
     TN_ZEROS,
 )
-from mojo_rl.nn.models.resnet18 import ResNet18Backbone
-from mojo_rl.nn.models.resnet18_torch import (
+from noeira.nn.models.resnet18 import ResNet18Backbone
+from noeira.nn.models.resnet18_torch import (
     RESNET18_MAP_ENTRIES,
     RESNET18_TV_FILE,
     RESNET18_TV_REPO,
     resnet18_torch_map,
 )
-from mojo_rl.deep_agents.act.refload import RefDump
+from noeira.deep_agents.act.refload import RefDump
 
 
 # Parameters do not depend on the input geometry, so the map is checked at a
@@ -70,7 +70,7 @@ comptime DUMP_PREFIX = "rn18in."
 comptime EXPORT = "/tmp/rn18_export.safetensors"
 comptime GEN = (
     "pixi run -e act-ref python tools/act/dump_resnet18_imagenet.py --out"
-    " ~/.cache/mojo_rl/act_so101/resnet18_imagenet"
+    " ~/.cache/noeira/act_so101/resnet18_imagenet"
 )
 
 
@@ -91,7 +91,7 @@ def main() raises:
         var home = getenv("HOME")
         if home == "":
             raise Error("$HOME is unset; pass the dump directory as an argument")
-        dump_dir = home + "/.cache/mojo_rl/act_so101/resnet18_imagenet"
+        dump_dir = home + "/.cache/noeira/act_so101/resnet18_imagenet"
     if not isdir(dump_dir):
         raise Error(
             "no ResNet18 dump at " + dump_dir + " — generate it with:\n    "
@@ -229,7 +229,7 @@ def main() raises:
     net.for_each_param["cpu", SAVER](sv, None)
     net.for_each_state["cpu", SAVER](sv, None)
     sv.report(String("gate"))
-    sv.writer.add_metadata(String("producer"), String("mojo-rl"))
+    sv.writer.add_metadata(String("producer"), String("noeira"))
     sv.writer.save(String(EXPORT))
 
     var ex = SafeTensors(String(EXPORT))

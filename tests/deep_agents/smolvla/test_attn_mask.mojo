@@ -46,9 +46,9 @@ Run:
 
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.masked_attention import MASK_NEG
-from mojo_rl.deep_agents.smolvla.attn_mask import (
+from noeira.nn.constants import DT
+from noeira.nn.primitives.masked_attention import MASK_NEG
+from noeira.deep_agents.smolvla.attn_mask import (
     att_2d_mask, att_2d_mask_square, smolvla_ar, cumsum_blocks,
 )
 

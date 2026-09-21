@@ -24,7 +24,7 @@ from std.memory import Pointer
 from std.os.path import exists, getsize
 from std.time import perf_counter_ns
 
-from mojo_rl.io.video.frame_pipe_thread import (
+from noeira.io.video.frame_pipe_thread import (
     MAX_SLOTS,
     MIN_SLOTS,
     FramePipeThread,

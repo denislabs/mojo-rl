@@ -2,7 +2,7 @@
 
 ⚠⚠ THIS EXISTS BECAUSE CAPTURE CAN FAIL SILENTLY AND NOTHING WOULD SAY SO.
 `CUDAGraph` does not talk to the CUDA driver directly — every call goes
-through `mojo_rl/cuda/libcuda_intercept.so`, an LD_PRELOAD shim that hooks
+through `noeira/cuda/libcuda_intercept.so`, an LD_PRELOAD shim that hooks
 CUDA via `dlsym` and DISCOVERS MOJO'S INTERNAL STREAM by watching which
 stream Mojo enqueues on (hence "requires at least one prior kernel launch
 for stream discovery" in `CUDAGraph.__init__`).
@@ -68,11 +68,11 @@ Run with:
     pixi run -e apple  mojo run -I . tests/cuda/test_cuda_graph_minimal.mojo
 
     # bisect a suspected capture problem against a no-graph run:
-    MOJO_RL_CUDA_GRAPH=0 pixi run -e nvidia mojo run -I . \
+    NOEIRA_CUDA_GRAPH=0 pixi run -e nvidia mojo run -I . \
         tests/cuda/test_cuda_graph_minimal.mojo
 
     # full driver tracing (launches, stream lifetime, capture rc):
-    MOJO_RL_INTERCEPT_LOG=1 pixi run -e nvidia mojo run -I . \
+    NOEIRA_INTERCEPT_LOG=1 pixi run -e nvidia mojo run -I . \
         tests/cuda/test_cuda_graph_minimal.mojo
 """
 
@@ -82,8 +82,8 @@ from std.sys import has_nvidia_gpu_accelerator
 from std.testing import assert_true, TestSuite
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
+from noeira.nn.constants import DT
+from noeira.cuda import CUDAGraph, maybe_capture_replay
 
 comptime REPLAYS = 5
 
@@ -128,7 +128,7 @@ def test_capture_records_nodes() raises:
 
     var g = CUDAGraph(ctx)
 
-    # Only reachable via MOJO_RL_CUDA_GRAPH=0, which exists so a suspected
+    # Only reachable via NOEIRA_CUDA_GRAPH=0, which exists so a suspected
     # capture problem can be bisected against a known-good run without a
     # rebuild. Capture is ON by default and the assertion below is the real
     # gate. (This branch briefly WAS the default, while we wrongly believed

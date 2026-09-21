@@ -36,13 +36,13 @@ rather than passing quietly and stalling the viewer.
 from std.os import getenv, setenv
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.physics3d.collision.convex_hull import load_mesh_hull
-from mojo_rl.physics3d.collision.hull_cache import (
+from noeira.physics3d.collision.convex_hull import load_mesh_hull
+from noeira.physics3d.collision.hull_cache import (
     HullPayload,
     hull_cache_load,
     hull_cache_path,
 )
-from mojo_rl.physics3d.model.mesh_inertia import MeshInertia
+from noeira.physics3d.model.mesh_inertia import MeshInertia
 
 comptime CACHE_DIR = ".cache/physics3d_hulls_test"
 
@@ -54,9 +54,9 @@ def _fixtures() -> List[String]:
     so every offset in the second and third append is distinct and non-zero.
     """
     var out = List[String]()
-    out.append(String("mojo_rl/envs/robots/assets/so_arm100/Wrist_Pitch_Roll.stl"))
-    out.append(String("mojo_rl/envs/robots/assets/so_arm100/Fixed_Jaw_Collision_2.stl"))
-    out.append(String("mojo_rl/envs/robots/assets/so_arm100/Moving_Jaw_Collision_3.stl"))
+    out.append(String("noeira/envs/robots/assets/so_arm100/Wrist_Pitch_Roll.stl"))
+    out.append(String("noeira/envs/robots/assets/so_arm100/Fixed_Jaw_Collision_2.stl"))
+    out.append(String("noeira/envs/robots/assets/so_arm100/Moving_Jaw_Collision_3.stl"))
     return out^
 
 

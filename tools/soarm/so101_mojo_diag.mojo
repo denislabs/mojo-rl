@@ -4,7 +4,7 @@
 """Read-only dump of both arms, laid out to be diffed against
 `tools/soarm/so101_diag.py` (Python + lerobot + scservo_sdk).
 
-**This is the gate for `mojo_rl/robot/`.** Run the two back to back on the
+**This is the gate for `noeira/robot/`.** Run the two back to back on the
 same arms in the same pose; every integer in the shared columns must match
 exactly. On 2026-08-25 they did: the follower read
 `1931 812 3125 2901 2102 2559` from both stacks.
@@ -22,7 +22,7 @@ Compare with:
 
 from std.time import perf_counter_ns
 
-from mojo_rl.robot.feetech.control_table import (
+from noeira.robot.feetech.control_table import (
     SIZE_1,
     SIZE_2,
     STS_FIRMWARE_MAJOR,
@@ -39,10 +39,10 @@ from mojo_rl.robot.feetech.control_table import (
     STS_STATUS,
     STS_TORQUE_ENABLE,
 )
-from mojo_rl.robot.feetech.packet import error_names
-from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
-from mojo_rl.robot.so101.ports import follower_port, leader_port
-from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
+from noeira.robot.feetech.packet import error_names
+from noeira.robot.so101 import SO101Arm, SO101_N, joint_name
+from noeira.robot.so101.ports import follower_port, leader_port
+from noeira.utils.fmt import col, fixed, pad_left, pad_right
 
 
 

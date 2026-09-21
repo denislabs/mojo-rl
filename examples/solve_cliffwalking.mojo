@@ -27,9 +27,9 @@ Run with:
     pixi run mojo run -I . examples/solve_cliffwalking.mojo
 """
 
-from mojo_rl.envs import CliffWalkingEnv
-from mojo_rl.agents import QLearningAgent, SARSAAgent, SARSALambdaAgent
-from mojo_rl.core.fmt import fit
+from noeira.envs import CliffWalkingEnv
+from noeira.agents import QLearningAgent, SARSAAgent, SARSALambdaAgent
+from noeira.core.fmt import fit
 
 
 def main() raises:

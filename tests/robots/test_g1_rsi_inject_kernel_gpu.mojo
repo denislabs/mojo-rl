@@ -28,9 +28,9 @@ Run: pixi run -e apple mojo run -I . tests/robots/test_g1_rsi_inject_kernel_gpu.
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.envs.robots.unitree_g1_rsi import (
+from noeira.nn.constants import DT, TPB
+from noeira.nn.core.ptr import mptr
+from noeira.envs.robots.unitree_g1_rsi import (
     rsi_inject_kernel, lie_down_selected, G1_RSI_NQ, G1_RSI_NV, G1_LIE_DOWN_Z,
 )
 

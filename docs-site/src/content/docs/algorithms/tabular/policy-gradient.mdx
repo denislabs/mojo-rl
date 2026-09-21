@@ -19,7 +19,7 @@ network in the way — and they are the direct ancestors of
 [continuous-control family](/algorithms/sac/).
 
 ```mojo
-from mojo_rl.agents import (
+from noeira.agents import (
     REINFORCEAgent, REINFORCEWithEntropyAgent,
     ActorCriticAgent, ActorCriticLambdaAgent,
     A2CAgent, PPOAgent, PPOAgentWithMinibatch,
@@ -94,8 +94,8 @@ pixi run mojo run -I . examples/cartpole/cartpole_policy_gradient.mojo
 ```
 
 :::note[Name collision]
-`mojo_rl.agents.PPOAgent` is the linear one;
-`mojo_rl.deep_agents.ppo.PPOAgent` is the neural one. The same applies to
+`noeira.agents.PPOAgent` is the linear one;
+`noeira.deep_agents.ppo.PPOAgent` is the neural one. The same applies to
 `DDPGAgent`, `TD3Agent` and `SACAgent`, which exist in both packages. Check the
 import path.
 :::

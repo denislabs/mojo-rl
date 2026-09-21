@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | Base64 vs an independent implementation
 # +--------------------------------------------------------------------------+ #
-"""Gate `mojo_rl/io/base64.mojo` against Python `base64`, pinned as literals.
+"""Gate `noeira/io/base64.mojo` against Python `base64`, pinned as literals.
 
     pixi run mojo run -I . tests/io/test_base64.mojo
 
@@ -30,7 +30,7 @@ raise. A decoder that accepted those would turn a truncated body into
 plausible bytes.
 """
 
-from mojo_rl.io.base64 import b64_decode, b64_encode, b64_encode_n
+from noeira.io.base64 import b64_decode, b64_encode, b64_encode_n
 
 
 comptime _N = 32

@@ -31,8 +31,8 @@ import Papers from '~/components/Papers.astro';
 ## Optimizers
 
 ```mojo
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.optimizer.sgd import SGD
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.optimizer.sgd import SGD
 ```
 
 | Optimizer | Notes |
@@ -67,8 +67,8 @@ gives a stale value, so bias correction computed host-side will be wrong.
 ### Gradient clipping and schedules
 
 ```mojo
-from mojo_rl.nn.optimizer.grad_clip import clip_grad_norm
-from mojo_rl.nn.optimizer.lr_scheduler import LRScheduler
+from noeira.nn.optimizer.grad_clip import clip_grad_norm
+from noeira.nn.optimizer.lr_scheduler import LRScheduler
 ```
 
 Global gradient-norm clipping is standard in this codebase — PPO uses `0.5`,
@@ -88,9 +88,9 @@ warmup silently stops advancing. Capture after warmup completes.
 ## Losses
 
 ```mojo
-from mojo_rl.nn.loss.cross_entropy import CrossEntropyLoss
-from mojo_rl.nn.loss.mse_loss import MSELoss
-from mojo_rl.nn.loss.two_hot import TwoHot
+from noeira.nn.loss.cross_entropy import CrossEntropyLoss
+from noeira.nn.loss.mse_loss import MSELoss
+from noeira.nn.loss.two_hot import TwoHot
 ```
 
 | Loss | Used for |
@@ -119,7 +119,7 @@ Huber loss is available through the loss helpers used by the DQN family.
 ## Initializers
 
 ```mojo
-from mojo_rl.nn.core.initializer import Kaiming, Xavier, Zero, Normal
+from noeira.nn.core.initializer import Kaiming, Xavier, Zero, Normal
 ```
 
 | Initializer | Use |

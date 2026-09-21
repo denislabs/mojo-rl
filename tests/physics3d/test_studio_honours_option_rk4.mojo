@@ -47,20 +47,20 @@ Measured here (MuJoCo 3.10.0, both engines driven by the same control):
 Run: pixi run mojo run -I . tests/physics3d/test_studio_honours_option_rk4.mojo
 """
 
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
     spec_fields_runtime, read_model_source,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.fields.dynamics_scratch import DynamicsScratch
-from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
-from mojo_rl.physics3d.dynamics.pose_transmission import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.fields.dynamics_scratch import DynamicsScratch
+from noeira.physics3d.dynamics.actuation import apply_actions_fields
+from noeira.physics3d.dynamics.pose_transmission import (
     apply_pose_transmission,
 )
-from mojo_rl.physics3d.types import ConeType, IntegratorType
-from mojo_rl.physics3d.studio.stepping import (
+from noeira.physics3d.types import ConeType, IntegratorType
+from noeira.physics3d.studio.stepping import (
     StudioIntegPyr, StudioRk4Pyr, studio_integrator_of, studio_uses_rk4,
     studio_cone_of, studio_integrator_warning, STUDIO_DT,
 )
@@ -81,7 +81,7 @@ comptime EULER_MODEL = String(
     "references/mujoco_menagerie-main/agility_cassie/scene.xml"
 )
 # The contact arm: RK4 + pyramidal + a foot on the floor.
-comptime RK4_CONTACT_MODEL = String("mojo_rl/envs/hopper/assets/hopper.xml")
+comptime RK4_CONTACT_MODEL = String("noeira/envs/hopper/assets/hopper.xml")
 
 
 def _mj_crazyflie_1() -> List[Float64]:

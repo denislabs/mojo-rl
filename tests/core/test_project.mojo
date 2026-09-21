@@ -17,7 +17,7 @@ about what was trained — this layer's own failure mode, one level up.
 
 from std.time import perf_counter_ns
 
-from mojo_rl.core.project import (
+from noeira.core.project import (
     ProjectSpec,
     check_refs,
     load_project,
@@ -26,12 +26,12 @@ from mojo_rl.core.project import (
     project_exists,
     runs_root_for,
 )
-from mojo_rl.core.run import RunContext
-from mojo_rl.io.proc import run_capture
+from noeira.core.run import RunContext
+from noeira.io.proc import run_capture
 
 
 def _root() -> String:
-    return String("/tmp/mojo_rl_proj_gate_") + String(perf_counter_ns())
+    return String("/tmp/noeira_proj_gate_") + String(perf_counter_ns())
 
 
 def _mk(root: String, name: String) raises -> ProjectSpec:
@@ -50,14 +50,14 @@ def test_ref_parses_path_name_and_commit() raises:
     are separators; a path may contain more."""
     var cases = [
         (
-            String("family:so101_tabletop:mojo_rl/tasks/families/x.family@081b53c0"),
+            String("family:so101_tabletop:noeira/tasks/families/x.family@081b53c0"),
             String("family"), String("so101_tabletop"),
-            String("mojo_rl/tasks/families/x.family"), String("081b53c0"),
+            String("noeira/tasks/families/x.family"), String("081b53c0"),
         ),
         (   # no commit — legal, and it means "unpinned"
-            String("task:reach:mojo_rl/tasks/tasks/reach.task"),
+            String("task:reach:noeira/tasks/tasks/reach.task"),
             String("task"), String("reach"),
-            String("mojo_rl/tasks/tasks/reach.task"), String(""),
+            String("noeira/tasks/tasks/reach.task"), String(""),
         ),
         (   # a path carrying its own colon
             String("dataset:teleop:s3:bucket/x.h5@abc1234"),
@@ -95,11 +95,11 @@ def test_project_round_trips() raises:
     var p = _mk(root, String("so101"))
     p.add_ref(
         String("family"), String("so101_tabletop"),
-        String("mojo_rl/tasks/families/so101_tabletop.family"), String("081b53c0"),
+        String("noeira/tasks/families/so101_tabletop.family"), String("081b53c0"),
     )
     p.add_ref(
         String("task"), String("so101_reach_brick"),
-        String("mojo_rl/tasks/tasks/so101_reach_brick.task"), String("081b53c0"),
+        String("noeira/tasks/tasks/so101_reach_brick.task"), String("081b53c0"),
     )
     p.datasets.append(String("teleop_reach_v1@v1"))
     p.write()
@@ -116,7 +116,7 @@ def test_project_round_trips() raises:
     # `ref=` lines for one family is a project that disagrees with itself.
     back.add_ref(
         String("family"), String("so101_tabletop"),
-        String("mojo_rl/tasks/families/so101_tabletop.family"), String("deadbee1"),
+        String("noeira/tasks/families/so101_tabletop.family"), String("deadbee1"),
     )
     if len(back.refs) != 2:
         raise Error("add_ref appended a duplicate: " + String(len(back.refs)))
@@ -151,12 +151,12 @@ def test_check_refs_finds_missing_and_drift() raises:
     # a real tracked file, pinned to a commit that certainly did not touch it
     p.add_ref(
         String("family"), String("real"),
-        String("mojo_rl/tasks/families/so101_tabletop.family"),
+        String("noeira/tasks/families/so101_tabletop.family"),
         String("0000000"),
     )
     p.add_ref(
         String("task"), String("gone"),
-        String("mojo_rl/tasks/tasks/does_not_exist.task"), String(""),
+        String("noeira/tasks/tasks/does_not_exist.task"), String(""),
     )
     var r = check_refs(p, verbose=False)
     print(
@@ -209,5 +209,5 @@ def main() raises:
     test_unknown_key_and_bad_schema_raise()
     test_check_refs_finds_missing_and_drift()
     test_a_run_lands_under_its_project_once_the_project_exists()
-    _ = run_capture(String("rm -rf /tmp/mojo_rl_proj_gate_* 2>&1"), 4096)
+    _ = run_capture(String("rm -rf /tmp/noeira_proj_gate_* 2>&1"), 4096)
     print("[PASS] project")

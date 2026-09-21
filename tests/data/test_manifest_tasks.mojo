@@ -24,12 +24,12 @@ eat a byte.
 Run: pixi run mojo run -I . tests/data/test_manifest_tasks.mojo
 """
 
-from mojo_rl.data.manifest import (
+from noeira.data.manifest import (
     Manifest, TaskEntry, parse_manifest,
     escape_task_text, unescape_task_text,
 )
-from mojo_rl.data.column import ColumnSpec
-from mojo_rl.data.store import TrajectoryStore, TrajectoryStoreWriter
+from noeira.data.column import ColumnSpec
+from noeira.data.store import TrajectoryStore, TrajectoryStoreWriter
 
 
 def _f32ptr(
@@ -150,7 +150,7 @@ def main() raises:
     # blindness this file's header describes, reproduced one layer down while
     # the header was being written.
     print("--- through a real store, against a literal ---")
-    var tmp = String("/tmp/mojo_rl_manifest_tasks.h5")
+    var tmp = String("/tmp/noeira_manifest_tasks.h5")
     var cols2 = List[ColumnSpec]()
     var shp2 = List[Int]()
     shp2.append(2)

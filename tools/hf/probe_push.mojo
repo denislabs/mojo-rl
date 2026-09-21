@@ -21,7 +21,7 @@ an object the size of a real 194 MB recording, reads whether it comes back
 with a `chunk_size`, and never PUTs it. The whole probe moves about a megabyte.
 
 ⚠ THIS CREATES A REAL REPO ON A REAL ACCOUNT. It is PRIVATE, it is named
-`mojo-rl-push-probe`, and it is DELETED at the end unless `--keep` is passed.
+`noeira-push-probe`, and it is DELETED at the end unless `--keep` is passed.
 The namespace comes from `whoami`, not from a guess.
 """
 
@@ -29,17 +29,17 @@ from std.os import getenv, makedirs
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.io.base64 import b64_encode_n
-from mojo_rl.io.fileio import file_size, read_file_bytes, write_file_atomic
-from mojo_rl.io.hf_push import (
+from noeira.core.dotenv import load_dotenv
+from noeira.io.base64 import b64_encode_n
+from noeira.io.fileio import file_size, read_file_bytes, write_file_atomic
+from noeira.io.hf_push import (
     HF_ENDPOINT, HubPush, HubUpload, LFS_JSON, hf_token, hf_whoami,
 )
-from mojo_rl.io.http import HttpClient
-from mojo_rl.io.json import JsonWriter, parse_json
+from noeira.io.http import HttpClient
+from noeira.io.json import JsonWriter, parse_json
 
 
-comptime SCRATCH = "/tmp/mojo_rl_hf_probe"
+comptime SCRATCH = "/tmp/noeira_hf_probe"
 
 comptime BIG_MB = 194
 """The size of `record-test_20260828_092736`'s first mp4, in MB — the real
@@ -80,7 +80,7 @@ def main() raises:
         elif String(args[i]) == "--big" and i + 1 < len(args):
             big_mb = Int(String(args[i + 1]))
 
-    # `.env` carries HF_TOKEN here, exactly as it carries RL_MONITOR_API_KEY
+    # `.env` carries HF_TOKEN here, exactly as it carries NOEIRA_CLOUD_API_KEY
     # for `RemoteCatalog.from_env`. Read it directly rather than pushing it
     # into the environment — `hf_token()` is the fallback, not the only path.
     var token = String("")
@@ -102,7 +102,7 @@ def main() raises:
     var who = hf_whoami(token.copy())
     print("whoami: " + who)
     if repo == "":
-        repo = who + "/mojo-rl-push-probe"
+        repo = who + "/noeira-push-probe"
     print("repo:   " + repo + "  (private)")
     print("")
 
@@ -112,7 +112,7 @@ def main() raises:
 
     var info = String(
         '{\n  "codebase_version": "v3.0",\n  "fps": 30,\n'
-        '  "note": "mojo-rl push probe, safe to delete"\n}\n'
+        '  "note": "noeira push probe, safe to delete"\n}\n'
     )
     var info_path = String(SCRATCH) + "/meta/info.json"
     write_file_atomic(info_path, _bytes(info))
@@ -237,7 +237,7 @@ def main() raises:
     # ── 4 + 5. upload the small ones and commit ───────────────────────
     print("── 4+5. upload + commit ────────────────────────────────────")
     p.upload_lfs(files)
-    var url = p.push(files, String("mojo-rl push probe"))
+    var url = p.push(files, String("noeira push probe"))
     print("    commit: " + url)
     print("")
 

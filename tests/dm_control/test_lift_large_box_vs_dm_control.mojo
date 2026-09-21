@@ -40,8 +40,8 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_lift import DMLiftLargeBox
-from mojo_rl.envs.dm_control.manipulation_lift_box_config import (
+from noeira.envs.dm_control.manipulation_lift import DMLiftLargeBox
+from noeira.envs.dm_control.manipulation_lift_box_config import (
     OBS_DIM,
     PROP_BODY,
     PROP_GEOM,
@@ -60,8 +60,8 @@ from mojo_rl.envs.dm_control.manipulation_lift_box_config import (
     lowest_vertex_z,
     SITE_PINCH,
 )
-from mojo_rl.envs.dm_control.manipulation_obs import N_ARM, N_HAND
-from mojo_rl.physics3d.gpu.constants import META_IDX_TASK_PARAM_0
+from noeira.envs.dm_control.manipulation_obs import N_ARM, N_HAND
+from noeira.physics3d.gpu.constants import META_IDX_TASK_PARAM_0
 
 comptime DTYPE = DType.float64
 comptime ENV = DMLiftLargeBox[DTYPE]

@@ -21,18 +21,18 @@ count it chose and FAILS if no shape in the sweep actually split. A green run
 with `split shapes: 0` is a red run.
 
     pixi run -e nvidia mojo run -I . tests/nn/test_linear_splitk_dw_gpu.mojo
-    MOJO_RL_SPLITK=0 pixi run -e nvidia mojo run -I . tests/nn/...   # both arms plain
+    NOEIRA_SPLITK=0 pixi run -e nvidia mojo run -I . tests/nn/...   # both arms plain
 """
 
 from std.math import abs
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.splitk_gemm import splitk_path_applies
-from mojo_rl.nn.primitives.linear import Linear
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.splitk_gemm import splitk_path_applies
+from noeira.nn.primitives.linear import Linear
 
 
 def check[IN: Int, OUT: Int, B: Int, EXPECT_SPLIT: Bool](

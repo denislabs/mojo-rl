@@ -28,24 +28,24 @@ Run with:
 
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.flat_model import FlatModelDef
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.flat_model import FlatModelDef
 
-from mojo_rl.envs.dm_control.hopper.hopper_xml import (
+from noeira.envs.dm_control.hopper.hopper_xml import (
     TOUCH_TOE_SITE_IDX,
     TOUCH_HEEL_SITE_IDX,
     TORSO_BODY_IDX as HOPPER_TORSO_BODY_IDX,
 )
-from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
+from noeira.envs.dm_control.quadruped.quadruped_xml import (
     TORSO_SITE_IDX,
     TOE_SITE_0,
     TORSO_BODY_IDX as QUAD_TORSO_BODY_IDX,
 )
-from mojo_rl.envs.dm_control.quadruped.quadruped_escape_config import (
+from noeira.envs.dm_control.quadruped.quadruped_escape_config import (
     ESCAPE_RF_SITE_0,
     ESCAPE_N_RF,
 )
-from mojo_rl.envs.dm_control.dog.dog_xml import (
+from noeira.envs.dm_control.dog.dog_xml import (
     DOG_SITE_PALM_L,
     DOG_SITE_PALM_R,
     DOG_SITE_SOLE_L,
@@ -100,7 +100,7 @@ def _check_body(
 
 def test_hopper_literals() raises:
     print("=== hopper ===")
-    var fmd = _load(String("mojo_rl/envs/dm_control/assets/hopper.xml"))
+    var fmd = _load(String("noeira/envs/dm_control/assets/hopper.xml"))
     var n = 0
     _check_site(fmd, String("touch_toe"), TOUCH_TOE_SITE_IDX,
                 String("TOUCH_TOE_SITE_IDX"), n)
@@ -114,7 +114,7 @@ def test_hopper_literals() raises:
 def test_quadruped_literals() raises:
     print("=== quadruped (walk) ===")
     var fmd = _load(
-        String("mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
+        String("noeira/envs/dm_control/assets/quadruped_walk.xml")
     )
     var n = 0
     # The three IMU sensors all sit on the torso site, so all three must
@@ -148,7 +148,7 @@ def test_quadruped_escape_rangefinders() raises:
     """
     print("=== quadruped escape: 20 rangefinders ===")
     var fmd = _load(
-        String("mojo_rl/envs/dm_control/assets/quadruped_escape.xml")
+        String("noeira/envs/dm_control/assets/quadruped_escape.xml")
     )
     # ⚠ THE NAMES ARE GRID COORDINATES, NOT A FLAT INDEX. They run
     # rf_00..rf_04, rf_10..rf_14, rf_20..rf_24, rf_30..rf_34 — four rows of
@@ -173,7 +173,7 @@ def test_quadruped_escape_rangefinders() raises:
 def test_dog_literals() raises:
     print("=== dog (stand/walk) ===")
     var fmd = _load(
-        String("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
+        String("noeira/envs/dm_control/assets/dog_stand_walk.xml")
     )
     var n = 0
     _check_site(fmd, String("palm_L"), DOG_SITE_PALM_L,
@@ -200,7 +200,7 @@ def test_a_wrong_literal_would_be_caught() raises:
     assertion — every test above would pass while checking nothing.
     """
     print("=== negative control: a planted wrong index is caught ===")
-    var fmd = _load(String("mojo_rl/envs/dm_control/assets/hopper.xml"))
+    var fmd = _load(String("noeira/envs/dm_control/assets/hopper.xml"))
     var n = 0
     var caught = False
     try:

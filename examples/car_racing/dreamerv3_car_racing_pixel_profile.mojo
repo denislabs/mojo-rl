@@ -35,10 +35,10 @@ from std.random import seed
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.deep_agents.dreamerv3.trainer import DreamerV3Trainer
-from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
+from noeira.nn.constants import DT
+from noeira.nn.primitives.ops.swish_op import SwishOp
+from noeira.deep_agents.dreamerv3.trainer import DreamerV3Trainer
+from noeira.deep_agents.dreamerv3.nets_cnn import (
     DreamerEncoderCNN,
     DreamerDecoderCNN,
 )

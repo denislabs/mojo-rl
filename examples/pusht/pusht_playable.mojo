@@ -12,10 +12,10 @@ Controls:
 """
 
 from std.memory import alloc
-from mojo_rl.envs.pusht import PushTEnv, PConstants, PushTAction
-from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
-from mojo_rl.render.sdl.sdl_scancode import Scancode
-from mojo_rl.render.sdl.sdl_mouse import get_mouse_state
+from noeira.envs.pusht import PushTEnv, PConstants, PushTAction
+from noeira.render.sdl.sdl_keyboard import get_keyboard_state
+from noeira.render.sdl.sdl_scancode import Scancode
+from noeira.render.sdl.sdl_mouse import get_mouse_state
 
 
 def main() raises:

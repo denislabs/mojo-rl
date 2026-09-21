@@ -3,7 +3,7 @@
     pixi run gen-family-scenes          # write
     pixi run gen-family-scenes --check  # CI: fail if stale
 
-⚠ A GENERATOR, NOT A TEST. `mojo_rl/tasks/scenes/*.xml` is checked in and read
+⚠ A GENERATOR, NOT A TEST. `noeira/tasks/scenes/*.xml` is checked in and read
 by `tools/gen_model_dims.py` and by a `ModelDefFromXML`, so it must be produced
 by something whose job is to produce it. An earlier draft had P1c's GATE write
 the file, which makes a test the source of a build input — run the tests in a
@@ -19,10 +19,10 @@ comment (`TASK_LAYER_IMPLEMENTATION.md` Gap B).
 
 from std.os import listdir
 from std.sys import argv
-from mojo_rl.tasks.spec import load_family
-from mojo_rl.tasks.family import compose_family, scene_path, SCENE_DIR
+from noeira.tasks.spec import load_family
+from noeira.tasks.family import compose_family, scene_path, SCENE_DIR
 
-comptime FAMILY_DIR = "mojo_rl/tasks/families"
+comptime FAMILY_DIR = "noeira/tasks/families"
 
 
 def families() raises -> List[String]:

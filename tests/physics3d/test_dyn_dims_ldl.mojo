@@ -35,13 +35,13 @@ that is information, not something to assert.
 from std.utils import IndexList
 from layout import Layout, LayoutTensor, RuntimeLayout
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Dims, DynDims
-from mojo_rl.physics3d.fields.rt_layout import DYN1
-from mojo_rl.physics3d.fields.dims import DIM_POISON
-from mojo_rl.physics3d.fields.scratch import Scratch
-from mojo_rl.physics3d.dynamics.ldl import _ldl_factor_env, _ldl_solve_env
-from mojo_rl.physics3d.gpu.constants import MODEL_TREE_SIZE
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.fields import Dims, DynDims
+from noeira.physics3d.fields.rt_layout import DYN1
+from noeira.physics3d.fields.dims import DIM_POISON
+from noeira.physics3d.fields.scratch import Scratch
+from noeira.physics3d.dynamics.ldl import _ldl_factor_env, _ldl_solve_env
+from noeira.physics3d.gpu.constants import MODEL_TREE_SIZE
 
 comptime DT = DType.float64
 comptime DYN2 = Layout.row_major[2]()

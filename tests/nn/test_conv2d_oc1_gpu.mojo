@@ -24,14 +24,14 @@ from std.random import seed, random_float64
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT, LAYOUT_NCHW
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.initializer import TruncNormalIn
-from mojo_rl.nn.primitives.conv2d import Conv2D
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.deep_agents.dreamerv3.nets_cnn import DreamerDecoderCNNPool
+from noeira.nn.constants import DT, LAYOUT_NCHW
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.initializer import TruncNormalIn
+from noeira.nn.primitives.conv2d import Conv2D
+from noeira.nn.primitives.ops.swish_op import SwishOp
+from noeira.deep_agents.dreamerv3.nets_cnn import DreamerDecoderCNNPool
 
 comptime H = 16
 comptime W = 16

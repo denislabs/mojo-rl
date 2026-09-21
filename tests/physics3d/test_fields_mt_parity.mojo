@@ -17,39 +17,39 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_fields_mt_parity.mojo
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import (
+from noeira.physics3d.dynamics.subtree_com import (
     compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import (
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import (
     compute_mass_matrix,
 )
-from mojo_rl.physics3d.dynamics.ldl import (
+from noeira.physics3d.dynamics.ldl import (
     ldl_factor,
     ldl_solve,
     compute_m_inv,
 )
-from mojo_rl.physics3d.dynamics.rne import (
+from noeira.physics3d.dynamics.rne import (
     compute_bias_forces_rne,
 )
-from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.integrator.rk4 import RK4Integrator
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
     METADATA_SIZE,
 )
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
-from mojo_rl.physics3d.parser import ModelDefFromXML
-from mojo_rl.physics3d.parser.xml_parser import parse_xml
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.physics3d.parser import ModelDefFromXML
+from noeira.physics3d.parser.xml_parser import parse_xml
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 

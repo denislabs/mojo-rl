@@ -8,7 +8,7 @@ See `docs/PROCGEN_PORT.md`.
 
 from std.testing import assert_equal, TestSuite
 
-from mojo_rl.envs.procgen.core import LevelScheduler
+from noeira.envs.procgen.core import LevelScheduler
 
 
 def _seq(rand_seed: Int, num_levels: Int, start_level: Int, k: Int) -> List[Int]:

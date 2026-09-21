@@ -48,10 +48,10 @@ Run:
 from std.math import abs, cos, sin
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import SqMat
-from mojo_rl.experimental.swm.rng import Rng
-from mojo_rl.experimental.swm.place_graph import PlaceGraph, Edge
-from mojo_rl.experimental.swm.sheaf_inference import (
+from noeira.experimental.swm.so_d import SqMat
+from noeira.experimental.swm.rng import Rng
+from noeira.experimental.swm.place_graph import PlaceGraph, Edge
+from noeira.experimental.swm.sheaf_inference import (
     InferenceConfig,
     frame_energy,
     frame_gradient,

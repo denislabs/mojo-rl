@@ -38,18 +38,18 @@ Run: pixi run mojo run -I . tests/physics3d/test_structural_edit.mojo
      pixi run python scripts/check_structural_edits_vs_mujoco.py
 """
 
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.flat_model import FlatModelDef
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.flat_model import FlatModelDef
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.fields import Model, DynDims
-from mojo_rl.physics3d.studio.structure import (
+from noeira.physics3d.fields import Model, DynDims
+from noeira.physics3d.studio.structure import (
     delete_body, delete_joint, delete_geom, leftover_dangling,
     add_body, add_joint, add_geom, rename_element, reparent_body,
 )
-from mojo_rl.physics3d.studio.validate import (
+from noeira.physics3d.studio.validate import (
     validate_model, SEV_ERROR,
 )
 
@@ -94,20 +94,20 @@ def cases() -> List[Case]:
     # ── mesh-free, so MuJoCo can judge the edited text ────────────────────
     c.append(Case(String("tests/physics3d/assets/structural_edit_zoo.xml"),
                   String("body"), String("arm"), True, 9))
-    c.append(Case(String("mojo_rl/envs/ant/assets/ant.xml"),
+    c.append(Case(String("noeira/envs/ant/assets/ant.xml"),
                   String("body"), String("front_left_leg"), True, 2))
-    c.append(Case(String("mojo_rl/envs/half_cheetah/assets/half_cheetah.xml"),
+    c.append(Case(String("noeira/envs/half_cheetah/assets/half_cheetah.xml"),
                   String("body"), String("bthigh"), True, 3))
     # humanoid carries TWO tendons and FIVE keyframes.
-    c.append(Case(String("mojo_rl/envs/humanoid/assets/humanoid.xml"),
+    c.append(Case(String("noeira/envs/humanoid/assets/humanoid.xml"),
                   String("body"), String("left_thigh"), True, 4))
-    c.append(Case(String("mojo_rl/envs/walker2d/assets/walker2d.xml"),
+    c.append(Case(String("noeira/envs/walker2d/assets/walker2d.xml"),
                   String("joint"), String("thigh_joint"), True, 1))
     # ⚠ THIS ONE BREAKS THE MODEL ON PURPOSE. `bshin` is the shin's only
     # geom, so the body keeps its joint and loses its mass — which MuJoCo
     # refuses. The edit is still the right thing to perform; the validator is
     # what has to say so.
-    c.append(Case(String("mojo_rl/envs/half_cheetah/assets/half_cheetah.xml"),
+    c.append(Case(String("noeira/envs/half_cheetah/assets/half_cheetah.xml"),
                   String("geom"), String("bshin"), True, 0,
                   String("zero-mass-moving-body")))
     # ── mesh models: arms 1-3 only ────────────────────────────────────────
@@ -334,8 +334,8 @@ def main() raises:
     # A document-wide find-and-replace would re-point all four and still load.
     print("--- a rename stays inside its own namespace ---")
     var hc = expand_mjcf(
-        _read(String("mojo_rl/envs/half_cheetah/assets/half_cheetah.xml")),
-        String("mojo_rl/envs/half_cheetah/assets"),
+        _read(String("noeira/envs/half_cheetah/assets/half_cheetah.xml")),
+        String("noeira/envs/half_cheetah/assets"),
     )
     var hcr = rename_element(hc, String("body"), String("bthigh"),
                              String("hip_link"))
@@ -392,7 +392,7 @@ def main() raises:
         + after_rn.row() + "\n"
     manifest += OUT_DIR + "/" + String(n_judged - 2) + ".xml 1 " \
         + _load_counts(hcr.xml,
-                       String("mojo_rl/envs/half_cheetah/assets")).row() + "\n"
+                       String("noeira/envs/half_cheetah/assets")).row() + "\n"
     manifest += OUT_DIR + "/" + String(n_judged - 1) + ".xml 1 " \
         + after_add.row() + "\n"
 
@@ -402,10 +402,10 @@ def main() raises:
     # which is why the expected pair goes into a sidecar for the python half.
     print("--- reparent ---")
     var ant_src = expand_mjcf(
-        _read(String("mojo_rl/envs/ant/assets/ant.xml")),
-        String("mojo_rl/envs/ant/assets"),
+        _read(String("noeira/envs/ant/assets/ant.xml")),
+        String("noeira/envs/ant/assets"),
     )
-    var ant_base = String("mojo_rl/envs/ant/assets")
+    var ant_base = String("noeira/envs/ant/assets")
     var before_ant = _load_counts(ant_src, ant_base)
     var rp = reparent_body(ant_src, String("front_left_leg"),
                            String("front_right_leg"))
@@ -471,8 +471,8 @@ def main() raises:
     # ⚠ WITHOUT THIS, a `delete_body` that deleted the FIRST body regardless
     # of the name would pass every arm above.
     print("--- a name that is not there ---")
-    var ant = expand_mjcf(_read(String("mojo_rl/envs/ant/assets/ant.xml")),
-                          String("mojo_rl/envs/ant/assets"))
+    var ant = expand_mjcf(_read(String("noeira/envs/ant/assets/ant.xml")),
+                          String("noeira/envs/ant/assets"))
     var miss = delete_body(ant, String("no_such_body"))
     t.truth(not miss.ok, "a missing target reports ok=False")
     t.truth(miss.xml == ant, "and leaves the document BYTE-IDENTICAL")

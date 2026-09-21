@@ -3,7 +3,7 @@
 Was originally a shim-parity test (verifying ``muzero.strategies``
 re-exported value_encoding correctly). The shim was retired
 2026-05-21 once all consumers migrated to import directly from
-``mojo_rl.planners.common.value_encoding``. The shim-parity half of
+``noeira.planners.common.value_encoding``. The shim-parity half of
 this test was dropped at the same time; the remaining test just
 locks in the canonical comptime values so an accidental flip surfaces.
 
@@ -13,7 +13,7 @@ Usage:
 
 from std.testing import assert_true, assert_false
 
-from mojo_rl.planners.common import (
+from noeira.planners.common import (
     CategoricalEncoding,
     ScalarEncoding,
     SymlogEncoding,

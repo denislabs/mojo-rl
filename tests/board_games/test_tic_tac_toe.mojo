@@ -1,6 +1,6 @@
 """Test TicTacToe environment — rules, win conditions, draws, obs, masks."""
 
-from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
+from noeira.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
 def test_reset() raises:

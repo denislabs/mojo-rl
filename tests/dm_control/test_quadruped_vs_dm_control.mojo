@@ -36,7 +36,7 @@ from std.python import Python, PythonObject
 from std.math import abs, sqrt, inf
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.quadruped import (
+from noeira.envs.dm_control.quadruped import (
     DMQuadrupedWalk,
     DMQuadrupedRun,
     DMQuadrupedWalkConfig,
@@ -49,13 +49,13 @@ from mojo_rl.envs.dm_control.quadruped import (
     HINGE_QPOS_0,
     HINGE_DOF_0,
 )
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.constants import (
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.constants import (
     GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_CYLINDER,
     GEOM_MESH, GEOM_ELLIPSOID,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS, BODY_IDX_IXX, BODY_IDX_IYY, BODY_IDX_IZZ,
     BODY_IDX_POS_X, BODY_IDX_QUAT_X, BODY_IDX_PARENT,
@@ -83,7 +83,7 @@ from mojo_rl.physics3d.gpu.constants import (
     TENDON_KIND_FIXED,
     TENDON_IDX_SOLREF_0, TENDON_IDX_SOLIMP_0,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     ACT_IDX_GEAR,
     ACT_IDX_KP,
@@ -143,7 +143,7 @@ def _mj(state_qpos: List[Float64], state_qvel: List[Float64]) raises -> Tuple[
     PythonObject, PythonObject, PythonObject
 ]:
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/quadruped_walk.xml")
     var dat = mujoco.MjData(m)
     for i in range(NQ):
         dat.qpos[i] = state_qpos[i]
@@ -187,7 +187,7 @@ def test_sensor_order_matches_the_observation_layout() raises:
     var sys = Python.import_module("sys")
     sys.path.insert(0, REF_PATH)
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/quadruped_walk.xml")
 
     assert_true(Int(py=m.nq) == NQ, "nq")
     assert_true(Int(py=m.nv) == NV, "nv")
@@ -519,7 +519,7 @@ def _mj_from_our_xml() raises -> PythonObject:
     because `test_quadruped_xml_compiles_to_the_reference_model` proves that
     string IS the reference model."""
     var mujoco = Python.import_module("mujoco")
-    return mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
+    return mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/quadruped_walk.xml")
 
 
 def _mj_geom_type(ours: Int) -> Int:
@@ -575,9 +575,9 @@ def test_quadruped_xml_compiles_to_the_reference_model() raises:
 
     for run in range(2):
         var xml = (
-            String("mojo_rl/envs/dm_control/assets/quadruped_run.xml")
+            String("noeira/envs/dm_control/assets/quadruped_run.xml")
             if run == 1
-            else String("mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
+            else String("noeira/envs/dm_control/assets/quadruped_walk.xml")
         )
         var bad = builder.compare_xml_to_reference(xml, run == 1)
         var n = Int(py=Python.import_module("builtins").len(bad))

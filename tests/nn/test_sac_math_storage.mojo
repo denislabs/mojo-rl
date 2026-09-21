@@ -8,17 +8,17 @@ from std.math import exp
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.primitives.concat import Concat2
-from mojo_rl.nn.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.combinators.graph_decl import InputSlot, Node
-from mojo_rl.nn.core.polyak import polyak_tensor
-from mojo_rl.deep_agents.sac.target_y_block import sac_target_y
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.nn.primitives.concat import Concat2
+from noeira.nn.combinators.compute_graph import ComputeGraph
+from noeira.nn.combinators.graph_decl import InputSlot, Node
+from noeira.nn.core.polyak import polyak_tensor
+from noeira.deep_agents.sac.target_y_block import sac_target_y
 
 
 def _check_polyak_tensor[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:

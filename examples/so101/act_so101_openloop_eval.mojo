@@ -37,8 +37,8 @@ ignoring the gripper — the one dimension that decides whether a grasp happens.
 
 from std.python import Python, PythonObject
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.act.config import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.act.config import (
     ACT_TEMPORAL_ENSEMBLE_M,
     RUN_DEC_LAYERS,
     RUN_DIM,
@@ -53,9 +53,9 @@ from mojo_rl.deep_agents.act.config import (
     SO101_N_CAM,
     SO101_QPOS,
 )
-from mojo_rl.deep_agents.act.data import ACTDataset
-from mojo_rl.deep_agents.act.inference import TemporalEnsemble, denormalize
-from mojo_rl.deep_agents.act.trainer import ACTTrainer
+from noeira.deep_agents.act.data import ACTDataset
+from noeira.deep_agents.act.inference import TemporalEnsemble, denormalize
+from noeira.deep_agents.act.trainer import ACTTrainer
 
 
 comptime QPOS = SO101_QPOS
@@ -127,7 +127,7 @@ def store_path() raises -> String:
     var home = String(os.path.expanduser(PythonObject("~")))
     return (
         home
-        + "/.cache/mojo_rl/act_so101/"
+        + "/.cache/noeira/act_so101/"
         + "DenisLabs__record-test_20260825_094319_"
         + String(IMG_H)
         + "x"

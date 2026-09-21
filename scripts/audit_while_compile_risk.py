@@ -26,7 +26,7 @@ the bound is exact (a chain cannot revisit a node), so nothing is lost. See
 `physics3d/sensors/subtree.mojo::walk_to_root`.
 
 Usage:
-    python3 scripts/audit_while_compile_risk.py [roots...]     # default: mojo_rl tests
+    python3 scripts/audit_while_compile_risk.py [roots...]     # default: noeira tests
 
 Exit code is the number of RISK findings, so it can gate CI if wanted.
 
@@ -107,7 +107,7 @@ def scan(paths):
 
 
 def main():
-    roots = sys.argv[1:] or ["mojo_rl", "tests"]
+    roots = sys.argv[1:] or ["noeira", "tests"]
     findings = scan(roots)
     risk = [f for f in findings if f[4] >= 2]
     watch = [f for f in findings if f[4] < 2]

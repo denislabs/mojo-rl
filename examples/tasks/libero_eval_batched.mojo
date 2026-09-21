@@ -182,79 +182,79 @@ from std.sys import argv
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.checkpoint import load_params
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.checkpoint import load_params
+from noeira.nn.core.initializer import Kaiming
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.dynamics.osc_pose import ARM_DOF, OscPoseConfig
-from mojo_rl.physics3d.dynamics.osc_pose_gpu import (
+from noeira.physics3d.dynamics.osc_pose import ARM_DOF, OscPoseConfig
+from noeira.physics3d.dynamics.osc_pose_gpu import (
     OSC_ACTION_DIM, build_osc_refs,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
     META_IDX_GOAL_HELD, META_IDX_NUM_CONTACTS, META_IDX_INIT_REGION_0,
     META_INIT_SLOTS, META_IDX_JINIT_0, META_JINIT_SLOTS, META_JINIT_WORDS,
     META_IDX_SHAPE_W_GOAL, META_IDX_SHAPE_W_REACH, MODEL_CURRICULUM_SIZE,
     CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
 )
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.tasks.spec import (
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family, FamilySpec, TaskSpec,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.predicates import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.predicates import (
     parse_goal, bind_goal, require_tier_a, joint_qpos_addresses, BoundGoal,
 )
-from mojo_rl.tasks.eval import (
+from noeira.tasks.eval import (
     eval_goal, HostState, region_sites, region_contact_bodies,
 )
-from mojo_rl.tasks.eval_report import SuccessReport
-from mojo_rl.tasks.init_table import load_init_table, InitTable
-from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.gpu_eval import region_table_words, require_gpu_regions
-from mojo_rl.tasks.active import active_mask, init_region_words
-from mojo_rl.tasks.bc_policy import BcNet, BcNorm, load_bc_norm
-from mojo_rl.physics3d.raytrace import BatchedCameraRenderer, RGB_CHANNELS
-from mojo_rl.physics3d.fields.dims import DimsLike
+from noeira.tasks.eval_report import SuccessReport
+from noeira.tasks.init_table import load_init_table, InitTable
+from noeira.tasks.tape import encode_goal, TAPE_WORDS
+from noeira.tasks.gpu_eval import region_table_words, require_gpu_regions
+from noeira.tasks.active import active_mask, init_region_words
+from noeira.tasks.bc_policy import BcNet, BcNorm, load_bc_norm
+from noeira.physics3d.raytrace import BatchedCameraRenderer, RGB_CHANNELS
+from noeira.physics3d.fields.dims import DimsLike
 from max.gpu.host import HostBuffer
-from mojo_rl.physics3d.raytrace.visual import build_visual_model
-from mojo_rl.tasks.libero_visual import libero_site_conditions
-from mojo_rl.tasks.libero_act import (
+from noeira.physics3d.raytrace.visual import build_visual_model
+from noeira.tasks.libero_visual import libero_site_conditions
+from noeira.tasks.libero_act import (
     LiberoActTrainer, LIBERO_ACT_QPOS, LIBERO_ACT_PROPRIO, LIBERO_ACT_ADIM,
     LIBERO_ACT_K,
     LIBERO_ACT_IMG_H, LIBERO_ACT_IMG_W, LIBERO_ACT_IMG_ELEMS, LIBERO_ACT_N_CAM,
 )
-from mojo_rl.deep_agents.act.norm_file import ACTNorm
-from mojo_rl.deep_agents.act.inference import (
+from noeira.deep_agents.act.norm_file import ACTNorm
+from noeira.deep_agents.act.inference import (
     TemporalEnsemble, normalize_camera_chw, denormalize,
 )
-from mojo_rl.deep_agents.act.config import ACT_TEMPORAL_ENSEMBLE_M
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.render.video_recorder import VideoRecorder
-from mojo_rl.tasks.libero_act import LIBERO_ACT_STORE_RENDERED
+from noeira.deep_agents.act.config import ACT_TEMPORAL_ENSEMBLE_M
+from noeira.data.store import TrajectoryStore
+from noeira.render.video_recorder import VideoRecorder
+from noeira.tasks.libero_act import LIBERO_ACT_STORE_RENDERED
 from std.math import log10, sqrt
 from std.memory.alloc import unsafe_alloc
-from mojo_rl.tasks.placement.table import PlacementTable
-from mojo_rl.tasks.placement.check import (
+from noeira.tasks.placement.table import PlacementTable
+from noeira.tasks.placement.check import (
     joint_init_words, require_device_placement,
 )
-from mojo_rl.tasks.libero_osc_config import LiberoOscConfig, LIBERO_CONTROL_FREQ
-from mojo_rl.tasks.placement.libero_goal import LiberoGoalPlacement
-from mojo_rl.tasks.libero_goal_xml import LiberoGoalModel
-from mojo_rl.tasks.placement.libero_object import LiberoObjectPlacement
-from mojo_rl.tasks.libero_object_xml import LiberoObjectModel
-from mojo_rl.tasks.placement.libero_spatial import LiberoSpatialPlacement
-from mojo_rl.tasks.libero_spatial_xml import LiberoSpatialModel
-from mojo_rl.tasks.placement.libero_kitchen_scene3 import LiberoKitchenScene3Placement
-from mojo_rl.tasks.libero_envs.libero_kitchen_scene3_xml import LiberoKitchenScene3Model
-from mojo_rl.tasks.placement.libero_kitchen_scene5 import LiberoKitchenScene5Placement
-from mojo_rl.tasks.libero_envs.libero_kitchen_scene5_xml import LiberoKitchenScene5Model
+from noeira.tasks.libero_osc_config import LiberoOscConfig, LIBERO_CONTROL_FREQ
+from noeira.tasks.placement.libero_goal import LiberoGoalPlacement
+from noeira.tasks.libero_goal_xml import LiberoGoalModel
+from noeira.tasks.placement.libero_object import LiberoObjectPlacement
+from noeira.tasks.libero_object_xml import LiberoObjectModel
+from noeira.tasks.placement.libero_spatial import LiberoSpatialPlacement
+from noeira.tasks.libero_spatial_xml import LiberoSpatialModel
+from noeira.tasks.placement.libero_kitchen_scene3 import LiberoKitchenScene3Placement
+from noeira.tasks.libero_envs.libero_kitchen_scene3_xml import LiberoKitchenScene3Model
+from noeira.tasks.placement.libero_kitchen_scene5 import LiberoKitchenScene5Placement
+from noeira.tasks.libero_envs.libero_kitchen_scene5_xml import LiberoKitchenScene5Model
 
 
 comptime H = DType.float64
@@ -267,8 +267,8 @@ instantiation per model and this driver is run on one family at a time;
 in `main` when a family gains an init table."""
 comptime LANES = 20
 comptime N_ENVS = LANES
-comptime FAMILY_DIR = "mojo_rl/tasks/families/"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
+comptime FAMILY_DIR = "noeira/tasks/families/"
+comptime TASK_DIR = "noeira/tasks/tasks/"
 comptime SETTLE_STEPS = 5
 """`metric.py`: `for _ in range(5): obs, _, _, _ = env.step(dummy)`."""
 comptime LIBERO_MAX_STEPS = 600

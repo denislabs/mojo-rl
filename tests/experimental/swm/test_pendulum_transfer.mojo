@@ -67,11 +67,11 @@ Run:
 from std.math import abs, cos, sin, sqrt
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import SqMat
-from mojo_rl.experimental.swm.place_graph import PlaceGraph, Edge
-from mojo_rl.experimental.swm.procrustes import PairBatch, procrustes_o_d
-from mojo_rl.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
-from mojo_rl.experimental.swm.envs.pendulum_swm import (
+from noeira.experimental.swm.so_d import SqMat
+from noeira.experimental.swm.place_graph import PlaceGraph, Edge
+from noeira.experimental.swm.procrustes import PairBatch, procrustes_o_d
+from noeira.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
+from noeira.experimental.swm.envs.pendulum_swm import (
     PendulumSwm,
     PendulumSwmConfig,
     MAX_SPEED,

@@ -15,11 +15,11 @@ the OTHER arm is unplugged leaves the energised one energised, which is the
 exact situation this exists for.
 """
 
-from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
-from mojo_rl.robot.so101.ports import (
+from noeira.robot.so101 import SO101Arm, SO101_N, joint_name
+from noeira.robot.so101.ports import (
     follower_port, leader_port, port_refusal,
 )
-from mojo_rl.robot.feetech.control_table import (
+from noeira.robot.feetech.control_table import (
     SIZE_1,
     STS_PRESENT_TEMPERATURE,
     STS_TORQUE_ENABLE,

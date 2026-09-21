@@ -10,8 +10,8 @@ Ground truth = `scratchpad/ninja_probe.cpp`. Asset-free/fast. See `docs/PROCGEN_
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import NinjaGame
-from mojo_rl.envs.procgen.games.ninja import DIST_EASY, DIST_HARD, WALL_MID, FIRE, BOMB
+from noeira.envs.procgen.games import NinjaGame
+from noeira.envs.procgen.games.ninja import DIST_EASY, DIST_HARD, WALL_MID, FIRE, BOMB
 
 
 comptime STEPS = 200

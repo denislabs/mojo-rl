@@ -62,11 +62,11 @@ Run:
 from std.math import abs, cos, sin
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import SqMat
-from mojo_rl.experimental.swm.rng import Rng
-from mojo_rl.experimental.swm.procrustes import procrustes_o_d, PairBatch
-from mojo_rl.experimental.swm.envs.klein_grid import KleinGrid, ACT_X, ACT_Y
-from mojo_rl.experimental.swm.observables import maximal_clique_z2, Z2Clique
+from noeira.experimental.swm.so_d import SqMat
+from noeira.experimental.swm.rng import Rng
+from noeira.experimental.swm.procrustes import procrustes_o_d, PairBatch
+from noeira.experimental.swm.envs.klein_grid import KleinGrid, ACT_X, ACT_Y
+from noeira.experimental.swm.observables import maximal_clique_z2, Z2Clique
 
 comptime DT = DType.float64
 comptime W = 6

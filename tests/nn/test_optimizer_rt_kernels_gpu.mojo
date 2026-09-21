@@ -5,16 +5,16 @@ identical weights and grads. Each kernel replaced a per-size instantiation;
 this is the gate that the raw-pointer twin computes the same thing."""
 from std.math import abs
 from max.gpu.host import DeviceContext
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.optimizer.sgd import SGD
-from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
-from mojo_rl.nn.optimizer.grad_clip import clip_grad_norm
-from mojo_rl.deep_agents.dreamerv3.zero_init import scale_output_module
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.optimizer.sgd import SGD
+from noeira.nn.optimizer.dreamer_opt import DreamerOpt
+from noeira.nn.optimizer.grad_clip import clip_grad_norm
+from noeira.deep_agents.dreamerv3.zero_init import scale_output_module
 
 comptime NET = Sequential[Linear[37, 53], Linear[53, 29], Linear[29, 7]]
 comptime TOL = Scalar[DT](2e-5)

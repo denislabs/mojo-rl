@@ -176,7 +176,7 @@ action spaces, define `State` and `Action` structs, and implement the required
 methods. The [environments guide](/concepts/architecture/) covers the families
 you might model yours on.
 
-**A new deep agent** — create a package under `mojo_rl/deep_agents/<algo>/` with
+**A new deep agent** — create a package under `noeira/deep_agents/<algo>/` with
 a trainer and a facade, mirroring an existing one such as `dqn/` or
 `ppo_discrete/`, and reuse a driver from `deep_agents/training/`. Networks arrive
 as compile-time parameters; the shared `primitives/`, `loss/` and `data/`

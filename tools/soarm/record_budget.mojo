@@ -36,16 +36,16 @@ that decides the design.
 from std.sys import argv
 from std.time import perf_counter_ns
 
-from mojo_rl.core.concurrent.thread import sleep_us
+from noeira.core.concurrent.thread import sleep_us
 
-from mojo_rl.io.video import VideoEncoder, VideoEncoderThread
-from mojo_rl.robot.so101 import SO101Arm, SO101_N
-from mojo_rl.robot.so101.ports import leader_port
-from mojo_rl.utils.fmt import fixed
-from mojo_rl.vision.camera_thread import (
+from noeira.io.video import VideoEncoder, VideoEncoderThread
+from noeira.robot.so101 import SO101Arm, SO101_N
+from noeira.robot.so101.ports import leader_port
+from noeira.utils.fmt import fixed
+from noeira.vision.camera_thread import (
     CameraReader, open_camera_spec, parse_camera_specs,
 )
-from mojo_rl.vision.opencv import VideoCapture, opencv_shim_available
+from noeira.vision.opencv import VideoCapture, opencv_shim_available
 
 
 comptime HZ = 30
@@ -177,7 +177,7 @@ def main() raises:
     for i in range(n_cam):
         encs.append(
             VideoEncoder(
-                String("/tmp/mojo_rl_budget_") + String(i) + ".mp4",
+                String("/tmp/noeira_budget_") + String(i) + ".mp4",
                 caps[i].width,
                 caps[i].height,
                 HZ,
@@ -250,7 +250,7 @@ def main() raises:
     for i in range(n_cam):
         d_encs.append(
             VideoEncoder(
-                String("/tmp/mojo_rl_budget_d") + String(i) + ".mp4",
+                String("/tmp/noeira_budget_d") + String(i) + ".mp4",
                 readers[i].width, readers[i].height, HZ,
             )
         )
@@ -313,7 +313,7 @@ def main() raises:
     var e_encs = List[VideoEncoderThread]()
     for i in range(n_cam):
         var et = VideoEncoderThread(
-            String("/tmp/mojo_rl_budget_e") + String(i) + ".mp4",
+            String("/tmp/noeira_budget_e") + String(i) + ".mp4",
             e_readers[i].width, e_readers[i].height, HZ,
         )
         et.start()

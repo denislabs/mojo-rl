@@ -22,12 +22,12 @@ from std.math import abs
 from std.sys import has_nvidia_gpu_accelerator
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.envs.phyics3d_obs import extract_obs_qpos_qvel
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.envs.inverted_pendulum.inverted_pendulum_xml import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.envs.phyics3d_obs import extract_obs_qpos_qvel
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.envs.inverted_pendulum.inverted_pendulum_xml import (
     InvertedPendulumModel,
 )
 

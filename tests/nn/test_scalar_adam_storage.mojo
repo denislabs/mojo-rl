@@ -12,8 +12,8 @@ from std.math import exp as fexp
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.optimizer.scalar_adam import ScalarAdam
+from noeira.nn.constants import DT
+from noeira.nn.optimizer.scalar_adam import ScalarAdam
 
 
 def main() raises:

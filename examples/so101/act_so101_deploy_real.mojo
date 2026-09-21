@@ -185,8 +185,8 @@ from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.act.config import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.act.config import (
     ACT_TEMPORAL_ENSEMBLE_M,
     RUN_DEC_LAYERS,
     RUN_DIM,
@@ -202,27 +202,27 @@ from mojo_rl.deep_agents.act.config import (
     SO101_N_CAM,
     SO101_QPOS,
 )
-from mojo_rl.deep_agents.act.data import ACTDataset
-from mojo_rl.data.lerobot import CameraStream, EpisodeIndex, LeRobotInfo
-from mojo_rl.deep_agents.act.norm_file import ACTNorm, act_norm_from
-from mojo_rl.io.image import resize_bilinear_pil
-from mojo_rl.deep_agents.act.inference import (
+from noeira.deep_agents.act.data import ACTDataset
+from noeira.data.lerobot import CameraStream, EpisodeIndex, LeRobotInfo
+from noeira.deep_agents.act.norm_file import ACTNorm, act_norm_from
+from noeira.io.image import resize_bilinear_pil
+from noeira.deep_agents.act.inference import (
     TemporalEnsemble,
     denormalize,
     normalize_camera_chw,
 )
-from mojo_rl.deep_agents.act.trainer import ACTTrainer
-from mojo_rl.io.fileio import StdinReader, stdin_is_tty
-from mojo_rl.io.json import load_json
-from mojo_rl.io.png import save_png
-from mojo_rl.robot.so101 import SO101Arm, SO101_N, joint_name
-from mojo_rl.robot.so101.ports import follower_port, port_refusal
-from mojo_rl.robot.so101.deploy_shutdown import (
+from noeira.deep_agents.act.trainer import ACTTrainer
+from noeira.io.fileio import StdinReader, stdin_is_tty
+from noeira.io.json import load_json
+from noeira.io.png import save_png
+from noeira.robot.so101 import SO101Arm, SO101_N, joint_name
+from noeira.robot.so101.ports import follower_port, port_refusal
+from noeira.robot.so101.deploy_shutdown import (
     RETURN_TIMEOUT_S, return_and_release,
 )
-from mojo_rl.utils.fmt import col, fixed, pad_left, pad_right
-from mojo_rl.vision.camera_thread import CameraReader, parse_camera_specs
-from mojo_rl.core.policy import describe_policy, resolve_policy
+from noeira.utils.fmt import col, fixed, pad_left, pad_right
+from noeira.vision.camera_thread import CameraReader, parse_camera_specs
+from noeira.core.policy import describe_policy, resolve_policy
 
 
 comptime DEPLOY_TARGET: StaticString = "gpu" if is_defined["ACT_GPU"]() else "cpu"
@@ -322,7 +322,7 @@ small margin keeps the guard about EXTRAPOLATION, which is what it is for."""
 
 
 # ⚠ `return_and_release`, `RETURN_STEP_TICKS` and friends MOVED to
-# `mojo_rl/robot/so101/deploy_shutdown.mojo` when the SmolVLA deployment
+# `noeira/robot/so101/deploy_shutdown.mojo` when the SmolVLA deployment
 # needed the same shutdown. Safety code that exists twice drifts; there is now
 # one copy and both deployments call it.
 

@@ -22,7 +22,7 @@ easy to miss.
 ⚠ RUN THIS ON THE LAPTOP, not a headless box — it opens an SDL3 window and
 blocks on it. CPU physics on purpose: one arm at 60 Hz needs no GPU.
 
-THE VIEWER ITSELF IS `mojo_rl.envs.dm_control.viewer_core`, shared verbatim
+THE VIEWER ITSELF IS `noeira.envs.dm_control.viewer_core`, shared verbatim
 with the dm_control front ends — same sidebar, same run loop, same window
 handoff. This file is a two-entry task table and a `dispatch`, which is the
 `dm_viewer_imgui_two.mojo` shape rather than the 47-arm `viewer.mojo` one:
@@ -51,16 +51,16 @@ SO-100.
 from std.random import seed
 from std.sys import argv
 
-from mojo_rl.envs.dm_control.viewer_core import (
+from noeira.envs.dm_control.viewer_core import (
     ViewerState, run_view, task_index, parse_drive, DRIVE_SWEEP,
 )
-from mojo_rl.render.imgui import imgui_shim_available
-from mojo_rl.render.renderer3d import Renderer3D
+from noeira.render.imgui import imgui_shim_available
+from noeira.render.renderer3d import Renderer3D
 
-from mojo_rl.envs.robots.so_arm100_xml import SoArm100Model
-from mojo_rl.envs.robots.so_arm100 import SoArm100ReachConfig
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
-from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
+from noeira.envs.robots.so_arm100_xml import SoArm100Model
+from noeira.envs.robots.so_arm100 import SoArm100ReachConfig
+from noeira.envs.robots.so_arm101_xml import SoArm101Model
+from noeira.envs.robots.so_arm101 import SoArm101ReachConfig
 
 comptime SEED: Int = 0
 

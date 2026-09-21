@@ -12,18 +12,18 @@ the preset functions compile and link end-to-end.
 
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.redq import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.redq import (
     REDQ, SmallREDQ,
     REDQAgent, REDQActor, REDQCritic,
     REDQConfig, SmallREDQConfig,
     agent_from_config,
     REDQ_TARGET_MIN,
 )
-from mojo_rl.deep_agents.training.blocks import (
+from noeira.deep_agents.training.blocks import (
     UniformSampleCpuStep, ReplaySampleStep,
 )
-from mojo_rl.deep_agents.data.any_replay import AnyReplay
+from noeira.deep_agents.data.any_replay import AnyReplay
 
 
 comptime OBS = 3

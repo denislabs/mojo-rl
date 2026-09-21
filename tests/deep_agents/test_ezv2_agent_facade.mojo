@@ -11,10 +11,10 @@ Run (no GPU):
 
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.efficient_zero_v2.config import EZV2DiscreteMLPConfig
-from mojo_rl.deep_agents.efficient_zero_v2.agent import EZv2DiscreteAgent
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.efficient_zero_v2.config import EZV2DiscreteMLPConfig
+from noeira.deep_agents.efficient_zero_v2.agent import EZv2DiscreteAgent
+from noeira.envs.cartpole import CartPoleEnv
 
 
 def _read(path: String) raises -> String:

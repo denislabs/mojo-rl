@@ -17,12 +17,12 @@ from std.sys import has_accelerator
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT, LAYOUT_NHWC
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
+from noeira.nn.constants import DT, LAYOUT_NHWC
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
 
 comptime B = 2
 comptime Cfg = EZV2AtariConfig[FRAMES=4, ACT=18, LAYOUT=LAYOUT_NHWC]

@@ -8,11 +8,11 @@ diagnostics read the Model records (`env.mf`).
 from std.testing import assert_true, TestSuite
 from std.math import isnan
 from std.random import seed, random_float64
-from mojo_rl.envs.metaworld import SawyerReach
-from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
+from noeira.envs.metaworld import SawyerReach
+from noeira.envs.metaworld.sawyer_reach_xml import SawyerReachModel
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
     GEOM_IDX_BODY,
@@ -29,8 +29,8 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_MESH_ID,
     GEOM_IDX_RBOUND,
 )
-from mojo_rl.core import ContAction
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.core import ContAction
+from noeira.physics3d.model.model_dims import ModelDims
 
 
 def test_sawyer_no_nan() raises:

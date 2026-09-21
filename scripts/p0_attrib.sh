@@ -125,8 +125,8 @@ echo "  -> $BIN"
 } > "$OUT/BUILD.txt"
 echo "--- build fingerprint (also in $OUT/BUILD.txt) ---"
 sed -n '1,3p' "$OUT/BUILD.txt"
-if git rev-parse HEAD >/dev/null 2>&1 && ! git diff --quiet HEAD -- mojo_rl scripts tests 2>/dev/null; then
-  echo "  !! the tree is DIRTY under mojo_rl/scripts/tests — the commit above does"
+if git rev-parse HEAD >/dev/null 2>&1 && ! git diff --quiet HEAD -- noeira scripts tests 2>/dev/null; then
+  echo "  !! the tree is DIRTY under noeira/scripts/tests — the commit above does"
   echo "     NOT identify what was built. The md5 still does."
 fi
 

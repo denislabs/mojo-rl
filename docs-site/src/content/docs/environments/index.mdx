@@ -1,6 +1,6 @@
 ---
 title: Environments
-description: Every environment in mojo-rl — dimensions, action spaces, physics engine and GPU support, in one table.
+description: Every environment in noeira — dimensions, action spaces, physics engine and GPU support, in one table.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -41,7 +41,7 @@ the same GPU pipeline that trains on its output.
 ## Full reference
 
 Dimensions below are read from the source, not from the Gymnasium documentation.
-Where mojo-rl differs from Gymnasium's defaults, it is noted.
+Where noeira differs from Gymnasium's defaults, it is noted.
 
 ### Tabular
 
@@ -87,7 +87,7 @@ Where mojo-rl differs from Gymnasium's defaults, it is noted.
 
 :::note[Humanoid is 45-dimensional, not 376]
 Gymnasium's `Humanoid-v5` observation includes contact forces and inertia terms,
-which push it to 348–376 dimensions. mojo-rl's Humanoid observes
+which push it to 348–376 dimensions. noeira's Humanoid observes
 `(NQ − 2) + NV = 22 + 23 = 45` — position and velocity only. Older copies of the
 project README and slide deck quote 376; the source is authoritative and the GPU
 example reads `HumanoidModel.OBS_DIM  # 45`.

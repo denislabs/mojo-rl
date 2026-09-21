@@ -37,14 +37,14 @@ from std.os import listdir
 from std.pathlib import Path
 from std.sys import argv
 
-from mojo_rl.tasks.bddl import parse_bddl, BddlProblem
-from mojo_rl.tasks.libero_import import (
+from noeira.tasks.bddl import parse_bddl, BddlProblem
+from noeira.tasks.libero_import import (
     translate_family, translate_task, GoalGap, classify_goal,
     resolve_family, family_todo_count,
     GAP_NONE, GAP_OBJECT_TARGET, GAP_FIXTURE_REGION, GAP_ARTICULATION,
     GAP_UNKNOWN_PRED, GAP_ARITY, GAP_TAPE_TERMS, gap_name,
 )
-from mojo_rl.tasks.libero_categories import load_libero_table, DEFAULT_TABLE_PATH
+from noeira.tasks.libero_categories import load_libero_table, DEFAULT_TABLE_PATH
 
 
 comptime DEFAULT_ROOT = "references/LIBERO-master/libero/libero/bddl_files"
@@ -52,7 +52,7 @@ comptime DEFAULT_ROOT = "references/LIBERO-master/libero/libero/bddl_files"
 # the LIBERO pack at the first path; the second is the same files where the
 # reference checkout keeps them. Same bytes either way (the pack is cut from
 # that tree), so the survey's answer does not depend on which one it found.
-comptime PACK_DIR = "mojo_rl/tasks/libero/assets"
+comptime PACK_DIR = "noeira/tasks/libero/assets"
 comptime UPSTREAM_ASSETS = "references/LIBERO-master/libero/libero/assets"
 
 

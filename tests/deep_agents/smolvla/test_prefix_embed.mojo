@@ -25,18 +25,18 @@ from std.math import abs, sqrt
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.combinators.tokenwise import Tokenwise
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.deep_agents.smolvla.vision import SigLIPVisionTower, SIGLIP_IMG
-from mojo_rl.deep_agents.smolvla.text import SMOLLM_DIM
-from mojo_rl.deep_agents.smolvla.heads import SMOLVLA_CONNECTOR_IN
-from mojo_rl.deep_agents.smolvla.policy import SmolVLAPrefixEmbed
-from mojo_rl.deep_agents.smolvla.embed import embed_language_tokens
-from mojo_rl.deep_agents.smolvla.attn_mask import smolvla_ar
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.combinators.tokenwise import Tokenwise
+from noeira.nn.primitives.linear import Linear
+from noeira.deep_agents.smolvla.vision import SigLIPVisionTower, SIGLIP_IMG
+from noeira.deep_agents.smolvla.text import SMOLLM_DIM
+from noeira.deep_agents.smolvla.heads import SMOLVLA_CONNECTOR_IN
+from noeira.deep_agents.smolvla.policy import SmolVLAPrefixEmbed
+from noeira.deep_agents.smolvla.embed import embed_language_tokens
+from noeira.deep_agents.smolvla.attn_mask import smolvla_ar
 
 comptime N_CAM = 1
 comptime N_LANG = 15

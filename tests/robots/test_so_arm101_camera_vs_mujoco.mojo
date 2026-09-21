@@ -39,10 +39,10 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from mojo_rl.envs.robots.so_arm101 import SoArm101Reach
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
-from mojo_rl.physics3d.kinematics.camera_frame import (
+from noeira.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
+from noeira.envs.robots.so_arm101 import SoArm101Reach
+from noeira.envs.robots.so_arm101_xml import SoArm101Model
+from noeira.physics3d.kinematics.camera_frame import (
     camera_world_pos,
     camera_world_quat,
 )
@@ -119,7 +119,7 @@ def test_camera_parent_body_survives_the_parse() raises:
     """
     var mujoco = Python.import_module("mujoco")
     var m = mujoco.MjModel.from_xml_path(
-        "mojo_rl/envs/robots/assets/so_arm101.xml"
+        "noeira/envs/robots/assets/so_arm101.xml"
     )
     var got = _cam_local()
     var ours = got[0]
@@ -181,7 +181,7 @@ def test_camera_local_quat_vs_mujoco() raises:
     """
     var mujoco = Python.import_module("mujoco")
     var m = mujoco.MjModel.from_xml_path(
-        "mojo_rl/envs/robots/assets/so_arm101.xml"
+        "noeira/envs/robots/assets/so_arm101.xml"
     )
     var cam = _cam_local()
     var q = cam[2]
@@ -202,7 +202,7 @@ def test_camera_world_pose_vs_mujoco() raises:
     """Composed `cam_xpos`/`cam_xmat` vs MuJoCo, over five arm poses."""
     var mujoco = Python.import_module("mujoco")
     var m = mujoco.MjModel.from_xml_path(
-        "mojo_rl/envs/robots/assets/so_arm101.xml"
+        "noeira/envs/robots/assets/so_arm101.xml"
     )
     var d = mujoco.MjData(m)
 

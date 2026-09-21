@@ -11,14 +11,14 @@ wrote and checks the two things only MuJoCo can settle:
    scene's. A parked slot in contact makes every task in the family a
    different, slower problem, and the throughput curve would look fine.
 
-    pixi run python tools/tasks/check_family.py /tmp/mojo_rl_family_compose.xml
+    pixi run python tools/tasks/check_family.py /tmp/noeira_family_compose.xml
 """
 import sys
 import mujoco
 
 
-DEFAULT_SCENE = "mojo_rl/tasks/scenes/so101_tabletop.xml"
-DEFAULT_FAMILY = "mojo_rl/tasks/families/so101_tabletop.family"
+DEFAULT_SCENE = "noeira/tasks/scenes/so101_tabletop.xml"
+DEFAULT_FAMILY = "noeira/tasks/families/so101_tabletop.family"
 
 
 def read_family(path: str) -> dict:
@@ -80,7 +80,7 @@ def main() -> int:
         bad += 1
     if bad:
         print("  FAIL: parked slots are in contact — see the park pose note in"
-              " mojo_rl/tasks/family.mojo")
+              " noeira/tasks/family.mojo")
         return 1
 
     # ── the counts, derived INDEPENDENTLY through MuJoCo ─────────────────

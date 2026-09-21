@@ -13,9 +13,9 @@ from std.math import sqrt
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.param import Param
-from mojo_rl.nn.optimizer.adam import Adam
+from noeira.nn.constants import DT
+from noeira.nn.core.param import Param
+from noeira.nn.optimizer.adam import Adam
 
 
 comptime K = 16

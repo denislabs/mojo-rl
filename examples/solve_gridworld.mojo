@@ -15,8 +15,8 @@ Run with:
     pixi run mojo run -I . examples/solve_gridworld.mojo
 """
 
-from mojo_rl.envs import GridWorldEnv
-from mojo_rl.agents import (
+from noeira.envs import GridWorldEnv
+from noeira.agents import (
     QLearningAgent,
     SARSAAgent,
     SARSALambdaAgent,
@@ -204,4 +204,4 @@ def main() raises:
     print("Optimal path is 8 steps (right 4, up 4) with reward = -8 + 10 = 2")
     print("=" * 60)
 
-from mojo_rl.core.fmt import fit
+from noeira.core.fmt import fit

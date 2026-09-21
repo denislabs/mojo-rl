@@ -5,7 +5,7 @@
 """ImageNet-pretrained ResNet18 weights, in this framework's parameter names.
 
     pixi run -e act-ref python tools/act/dump_resnet18_imagenet.py \
-        --out ~/.cache/mojo_rl/act_so101/resnet18_imagenet
+        --out ~/.cache/noeira/act_so101/resnet18_imagenet
 
 Run ONCE. The result is ~45 MB of float32 blobs plus a manifest, read by
 `ACTTrainer.load_backbone` (`deep_agents/act/refload.mojo`).
@@ -81,7 +81,7 @@ def main() -> int:
     ap.add_argument(
         "--out",
         default=str(
-            Path.home() / ".cache/mojo_rl/act_so101/resnet18_imagenet"
+            Path.home() / ".cache/noeira/act_so101/resnet18_imagenet"
         ),
     )
     ap.add_argument(

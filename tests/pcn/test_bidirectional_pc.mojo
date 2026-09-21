@@ -25,17 +25,17 @@ from std.time import perf_counter_ns
 from std.math import exp
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.experimental.pcn.pc_initializer import PCXavier
-from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
-from mojo_rl.nn.datasets.mnist import MNIST
-from mojo_rl.experimental.pcn import (
+from noeira.nn.constants import DT as dtype
+from noeira.experimental.pcn.pc_initializer import PCXavier
+from noeira.experimental.pcn.pc_optimizer import PCAdam
+from noeira.nn.datasets.mnist import MNIST
+from noeira.experimental.pcn import (
     PCBlock,
     PCSequential,
     PCIdentity,
     PCReLU,
 )
-from mojo_rl.render.image_writer import save_image_row, save_reconstruction_grid
+from noeira.render.image_writer import save_image_row, save_reconstruction_grid
 
 
 # ── Notebook 5 hyperparameters ──────────────────────────────────────────────

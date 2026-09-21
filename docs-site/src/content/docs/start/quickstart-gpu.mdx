@@ -31,15 +31,15 @@ Stripped of logging and checkpointing, the whole program is this:
 ```mojo
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.sac import SACAgent
+from noeira.deep_agents.training.blocks import UniformSampleGpuStep
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM      # 17
 comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM   #  6
@@ -121,9 +121,9 @@ captured as a CUDA graph.
 Its parameters are the model, the config, and the batch size:
 
 ```mojo
-from mojo_rl.envs.hopper import HopperModel, HopperConfig
-from mojo_rl.envs.walker2d import Walker2dModel, Walker2dConfig
-from mojo_rl.envs.humanoid import HumanoidModel, HumanoidConfig
+from noeira.envs.hopper import HopperModel, HopperConfig
+from noeira.envs.walker2d import Walker2dModel, Walker2dConfig
+from noeira.envs.humanoid import HumanoidModel, HumanoidConfig
 
 comptime BatchedEnvT = Phyics3dBatchedEnv[HopperModel, HopperConfig, N_ENVS]
 ```
@@ -158,8 +158,8 @@ plain `Sequential` Q-network and no `DeviceContext`.
 Long runs stream metrics to a dashboard rather than scrolling a terminal. The
 real example wires up `RemoteLogger`, which POSTs `actor_loss`, `critic_loss`,
 `alpha`, `mean_q` and episode returns to the
-[training monitor](https://github.com/denislabs/mojo-rl) over HTTP. Configuration
-comes from a `.env` file read by `mojo_rl.core.dotenv`.
+[training monitor](https://github.com/noeira/noeira) over HTTP. Configuration
+comes from a `.env` file read by `noeira.core.dotenv`.
 
 Training also auto-checkpoints. The batched driver writes weights and optimizer
 state every `checkpoint_every` env-steps, and the paired

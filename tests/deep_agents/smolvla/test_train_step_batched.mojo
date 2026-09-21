@@ -63,20 +63,20 @@ from std.math import abs, sqrt
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.core.param import ParamVisitorRT, walk_params
-from mojo_rl.deep_agents.smolvla.policy import SmolVLAPolicy
-from mojo_rl.deep_agents.smolvla.normalize import SmolVLAStats
-from mojo_rl.deep_agents.smolvla.tasks import TaskTokens
-from mojo_rl.deep_agents.smolvla.train_step import SmolVLATrainStep
-from mojo_rl.deep_agents.smolvla.flow_loss import build_xt_ut
-from mojo_rl.deep_agents.smolvla.heads import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.core.param import ParamVisitorRT, walk_params
+from noeira.deep_agents.smolvla.policy import SmolVLAPolicy
+from noeira.deep_agents.smolvla.normalize import SmolVLAStats
+from noeira.deep_agents.smolvla.tasks import TaskTokens
+from noeira.deep_agents.smolvla.train_step import SmolVLATrainStep
+from noeira.deep_agents.smolvla.flow_loss import build_xt_ut
+from noeira.deep_agents.smolvla.heads import (
     SMOLVLA_ACTION_DIM, SMOLVLA_EXPERT_W,
 )
-from mojo_rl.deep_agents.smolvla.text import SMOLLM_DIM
-from mojo_rl.deep_agents.smolvla.expert import EXPERT_FF
+from noeira.deep_agents.smolvla.text import SMOLLM_DIM
+from noeira.deep_agents.smolvla.expert import EXPERT_FF
 
 comptime TABLE = "tools/vla/smolvla_tasks_record-test_20260828_092736.tsv"
 comptime N_CAM = 2

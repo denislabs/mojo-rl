@@ -9,16 +9,16 @@ Run:
 from std.random import seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.deep_agents.c51.trainer import C51Trainer
-from mojo_rl.deep_agents.training.driver_offpolicy_discrete import (
+from noeira.nn.constants import DT
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.deep_agents.c51.trainer import C51Trainer
+from noeira.deep_agents.training.driver_offpolicy_discrete import (
     run_offpolicy_discrete_train, run_offpolicy_discrete_eval,
 )
-from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
-from mojo_rl.envs.cartpole import CartPoleEnv
+from noeira.deep_agents.training.blocks import UniformSampleCpuStep
+from noeira.envs.cartpole import CartPoleEnv
 
 comptime OBS = 4
 comptime NA = 2

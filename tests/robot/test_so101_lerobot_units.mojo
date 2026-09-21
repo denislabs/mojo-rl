@@ -6,7 +6,7 @@
 ⚠⚠ WHY THIS GATE EXISTS. ACT is trained on `observation.state` / `action`
 columns that a LeRobot recording wrote in lerobot's units. Deploying the policy
 means producing those same numbers from servo ticks — and
-`mojo_rl/robot/so101/sim_map.mojo`, which maps ticks to SIM RADIANS, is the
+`noeira/robot/so101/sim_map.mojo`, which maps ticks to SIM RADIANS, is the
 WRONG map for that. It is the right map for the reach policy. Using either in
 the other's place feeds a network numbers it has never seen and raises nothing.
 
@@ -18,8 +18,8 @@ copy of my reading of it.
 
 from std.pathlib import Path
 
-from mojo_rl.robot.so101 import SO101_N
-from mojo_rl.robot.so101.arm import SO101Calibration
+from noeira.robot.so101 import SO101_N
+from noeira.robot.so101.arm import SO101Calibration
 
 comptime FIX = "tests/fixtures/robot/lerobot_units.txt"
 comptime TOL = 1e-9

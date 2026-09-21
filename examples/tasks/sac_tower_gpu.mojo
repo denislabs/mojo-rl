@@ -6,7 +6,7 @@
     pixi run -e apple  mojo run -I . examples/tasks/sac_tower_gpu.mojo so101_tower_reach_clear \\
         --steps 20000 --warmup 20000      # does nv = 18 launch on Metal? (nv = 24 did not)
 
-The driver is `mojo_rl/tasks/sac_family_driver.run_sac` — read its header
+The driver is `noeira/tasks/sac_family_driver.run_sac` — read its header
 before reading a curve; every measured baseline there is the TABLETOP's, and
 this family has none yet. This file binds it to `So101TowerModel` +
 `So101TowerConfig` (`docs/tutorials/so101_tower.md` Stage 8) and files runs
@@ -35,9 +35,9 @@ every minibatch is drawn from them for the whole run.
 
 from std.sys import argv
 
-from mojo_rl.tasks.family_config import So101TowerConfig
-from mojo_rl.tasks.so101_tower_xml import So101TowerModel
-from mojo_rl.tasks.sac_family_driver import run_sac
+from noeira.tasks.family_config import So101TowerConfig
+from noeira.tasks.so101_tower_xml import So101TowerModel
+from noeira.tasks.sac_family_driver import run_sac
 
 
 def main() raises:
@@ -46,7 +46,7 @@ def main() raises:
         args.append(String(a))
     run_sac[So101TowerModel, So101TowerConfig](
         args,
-        family_path=String("mojo_rl/tasks/families/so101_tower.family"),
+        family_path=String("noeira/tasks/families/so101_tower.family"),
         project=String("so101-tower"),
         driver=String("examples/tasks/sac_tower_gpu.mojo"),
         default_task=String("so101_tower_reach_clear"),

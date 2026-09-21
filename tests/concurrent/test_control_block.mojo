@@ -13,12 +13,12 @@ vacuous — it passes on the broken backing too. That is exactly how the bug got
 past the first driver written for it.
 """
 
-from mojo_rl.core.concurrent.block import (
+from noeira.core.concurrent.block import (
     CELLS_PER_LINE,
     ControlBlock,
     ControlBlockView,
 )
-from mojo_rl.core.concurrent.thread import (
+from noeira.core.concurrent.thread import (
     OpaquePtr,
     ThreadHandle,
     null_opaque,

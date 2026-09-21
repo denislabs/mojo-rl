@@ -13,8 +13,8 @@ Run:
   pixi run mojo run -I . tests/envs/craftax_classic/test_obs_layout.mojo
 """
 
-from mojo_rl.envs.craftax_classic import CraftaxClassicEnv
-from mojo_rl.envs.craftax_classic.constants import (
+from noeira.envs.craftax_classic import CraftaxClassicEnv
+from noeira.envs.craftax_classic.constants import (
     MAP_W,
     BLOCK_GRASS,
     BLOCK_WATER,
@@ -39,7 +39,7 @@ from mojo_rl.envs.craftax_classic.constants import (
     MOB_HP,
     MOB_FIELDS,
 )
-from mojo_rl.envs.craftax_classic.state import (
+from noeira.envs.craftax_classic.state import (
     S_MAP_BASE,
     S_PLAYER_POS,
     S_INV_BASE,
@@ -49,7 +49,7 @@ from mojo_rl.envs.craftax_classic.state import (
     S_LIGHT_LEVEL,
     S_IS_SLEEPING,
 )
-from mojo_rl.nn.constants import DT as dtype
+from noeira.nn.constants import DT as dtype
 
 
 @always_inline

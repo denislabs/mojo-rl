@@ -40,17 +40,17 @@ from std.os.path import exists
 from std.sys import argv
 from std.time import perf_counter_ns
 
-from mojo_rl.data.column import ColumnSpec
-from mojo_rl.data.lafan import (
+from noeira.data.column import ColumnSpec
+from noeira.data.lafan import (
     load_lafan_clips, convert_clip, LafanRows, LAFAN_NQ, LAFAN_NV,
     LAFAN_STATE_DIM, LAFAN_PRIV_DIM, LAFAN_N_BODIES, LAFAN_ENV_DT,
 )
-from mojo_rl.data.store import TrajectoryStoreWriter
-from mojo_rl.envs.robots import UnitreeG1
-from mojo_rl.envs.robots.unitree_g1_pd import G1_N_DOF, g1_default_pos
-from mojo_rl.io.fetch import sha256_file
-from mojo_rl.io.fileio import remove_file, rename_over
-from mojo_rl.io.hf import hf_download_file, HF_MODEL
+from noeira.data.store import TrajectoryStoreWriter
+from noeira.envs.robots import UnitreeG1
+from noeira.envs.robots.unitree_g1_pd import G1_N_DOF, g1_default_pos
+from noeira.io.fetch import sha256_file
+from noeira.io.fileio import remove_file, rename_over
+from noeira.io.hf import hf_download_file, HF_MODEL
 
 
 comptime REPO = "LeCAR-Lab/BFM-Zero"

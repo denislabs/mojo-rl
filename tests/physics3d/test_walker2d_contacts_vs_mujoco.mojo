@@ -32,10 +32,10 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
@@ -49,8 +49,8 @@ from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
 )
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = Walker2dModel.NQ
@@ -92,7 +92,7 @@ def test_walker2d_contacts_match_mujoco() raises:
     var sf = Walker2dModel.make_spec_fields[DTYPE]()
     print("--- walker2d contact detection vs MuJoCo ---")
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/walker2d/assets/walker2d.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/walker2d/assets/walker2d.xml")
     var md = mujoco.MjData(m)
 
     var ctx = DeviceContext()

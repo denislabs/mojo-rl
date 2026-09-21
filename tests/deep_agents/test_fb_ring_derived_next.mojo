@@ -40,13 +40,13 @@ from std.testing import assert_true
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.data.resident import IDX_DT
-from mojo_rl.deep_agents.fb.online import (
+from noeira.nn.constants import DT, TPB
+from noeira.nn.core.ptr import mptr
+from noeira.data.resident import IDX_DT
+from noeira.deep_agents.fb.online import (
     ring_store_kernel, ring_indices_kernel, ring_next_idx_kernel,
 )
-from mojo_rl.deep_agents.fb.kernels import gather_rows_kernel
+from noeira.deep_agents.fb.kernels import gather_rows_kernel
 
 comptime OBS = 3
 comptime ACT = 2

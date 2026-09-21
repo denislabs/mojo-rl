@@ -12,8 +12,8 @@ from std.random import random_float64, seed
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.agent import TDMPC2Agent
+from noeira.nn.constants import DT
+from noeira.deep_agents.tdmpc2.agent import TDMPC2Agent
 
 comptime OBS = 17
 comptime ENC = 256

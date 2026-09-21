@@ -51,22 +51,22 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_reach import DMReachSiteFeatures
-from mojo_rl.envs.dm_control.manipulation_reach_config import (
+from noeira.envs.dm_control.manipulation_reach import DMReachSiteFeatures
+from noeira.envs.dm_control.manipulation_reach_config import (
     OBS_DIM,
     SITE_TARGET,
     TARGET_RADIUS,
     ROBOT_SITE_BASE,
     SITE_PINCH,
 )
-from mojo_rl.envs.dm_control.manipulation_obs import (
+from noeira.envs.dm_control.manipulation_obs import (
     N_ARM,
     N_HAND,
     BODY_PINCH,
     torque_body_of,
     torque_site_of,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_FRICTIONLOSS,
     MODEL_SITE_SIZE,

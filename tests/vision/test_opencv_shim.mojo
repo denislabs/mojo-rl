@@ -22,7 +22,7 @@ Fixtures, from `tools/vision/{make_capture_fixture,dump_cv_reference}.py`:
 
 from std.pathlib import Path
 
-from mojo_rl.vision.opencv import (
+from noeira.vision.opencv import (
     ArucoDetector,
     CALIB_FIX_K3,
     CALIB_ZERO_TANGENT_DIST,

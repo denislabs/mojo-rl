@@ -16,9 +16,9 @@ Run: pixi run mojo run -I . tests/deep_agents/test_storage_td3_cpu_pendulum.mojo
 from std.random import seed
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.td3.config import TD3
-from mojo_rl.envs.pendulum.pendulum_v1 import PendulumEnv
+from noeira.nn.constants import DT
+from noeira.deep_agents.td3.config import TD3
+from noeira.envs.pendulum.pendulum_v1 import PendulumEnv
 
 
 comptime OBS = 3

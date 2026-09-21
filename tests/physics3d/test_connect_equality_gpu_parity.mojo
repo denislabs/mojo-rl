@@ -38,12 +38,12 @@ from std.math import abs
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
-from mojo_rl.physics3d.fields import Model, Data, Dims
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.gpu.constants import MODEL_META_IDX_NEQUALITY
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.parser.xml_parser import merge_mjcf
+from noeira.physics3d.fields import Model, Data, Dims
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.gpu.constants import MODEL_META_IDX_NEQUALITY
 
 # ⚠ float32 — Float64 is banned on the GPU path, and the call site is half
 # the fix. Everything below is instantiated at this dtype.

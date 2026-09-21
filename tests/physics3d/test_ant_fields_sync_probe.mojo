@@ -14,20 +14,20 @@ Run: MODULAR_DEBUG=device-sync-mode pixi run -e nvidia mojo run -I . \
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import (
+from noeira.physics3d.dynamics.subtree_com import (
     compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.mass_matrix import (
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.mass_matrix import (
     compute_mass_matrix,
 )
-from mojo_rl.envs.ant.ant_xml import AntModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.envs.ant.ant_xml import AntModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32  # match the gate (Metal is fragile on float64)
 comptime NQ = AntModel.NQ  # 15

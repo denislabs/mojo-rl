@@ -13,7 +13,7 @@ Run:
 from std.math import abs, sqrt
 from std.testing import assert_true
 
-from mojo_rl.envs.robots.g1_tracking_eval import (
+from noeira.envs.robots.g1_tracking_eval import (
     G1_SEG_ROWS, G1_SEG_STRIDE, g1_n_segments, g1_segment_row,
     g1_track_metrics,
 )

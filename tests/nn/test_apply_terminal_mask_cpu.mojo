@@ -21,8 +21,8 @@ from std.memory import alloc
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.training.terminal_mask import apply_terminal_mask
+from noeira.nn.constants import DT
+from noeira.deep_agents.training.terminal_mask import apply_terminal_mask
 
 
 def main() raises:

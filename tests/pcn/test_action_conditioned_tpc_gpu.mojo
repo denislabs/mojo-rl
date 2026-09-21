@@ -22,11 +22,11 @@ from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.experimental.pcn.pc_constants import TPB
-from mojo_rl.experimental.pcn.pc_initializer import PCXavier
-from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
-from mojo_rl.experimental.pcn import (
+from noeira.nn.constants import DT as dtype
+from noeira.experimental.pcn.pc_constants import TPB
+from noeira.experimental.pcn.pc_initializer import PCXavier
+from noeira.experimental.pcn.pc_optimizer import PCAdam
+from noeira.experimental.pcn import (
     PCBlock,
     PCSequential,
     PCTanh,
@@ -437,7 +437,7 @@ def main() raises:
         )
         NET.block_types[1].predict_gpu[BATCH, dtype](
             ctx, z_pred_t, params_b1_t, s_pred_t, a_s_pred_t
-from mojo_rl.core.fmt import fit
+from noeira.core.fmt import fit
         )
 
         # Download s_pred to host for MSE

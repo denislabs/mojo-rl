@@ -22,12 +22,12 @@ specific way of failing silently:
 from std.math import abs
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
-from mojo_rl.envs.robots.so_arm101 import SoArm101ReachConfig
-from mojo_rl.utils.fmt import col, fixed
+from noeira.nn.constants import DT
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.robots.so_arm101_xml import SoArm101Model
+from noeira.envs.robots.so_arm101 import SoArm101ReachConfig
+from noeira.utils.fmt import col, fixed
 
 comptime EnvT = Phyics3dEnv[
     SoArm101Model, SoArm101ReachConfig, DT, TERMINATE_ON_UNHEALTHY=False

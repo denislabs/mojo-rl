@@ -15,15 +15,15 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_optimizer_extras_storage.mojo
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.optimizer.schedules import LinearWarmupSchedule
-from mojo_rl.nn.optimizer.adam import Adam, AdamW
-from mojo_rl.nn.optimizer.grad_clip import clip_grad_norm
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.optimizer.schedules import LinearWarmupSchedule
+from noeira.nn.optimizer.adam import Adam, AdamW
+from noeira.nn.optimizer.grad_clip import clip_grad_norm
 
 
 comptime D = 4

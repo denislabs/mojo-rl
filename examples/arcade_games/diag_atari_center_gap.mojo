@@ -11,15 +11,15 @@ Usage:
     pixi run -e apple mojo run -I . examples/arcade_games/diag_atari_center_gap.mojo
 """
 
-from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
-from mojo_rl.envs.atari.cpu6502 import run_frame_video
-from mojo_rl.envs.atari.flags import (
+from noeira.envs.atari.environment import AtariEnvironment, load_rom
+from noeira.envs.atari.cpu6502 import run_frame_video
+from noeira.envs.atari.flags import (
     ACTION_RIGHT,
     FRAME_WIDTH,
     FRAME_HEIGHT,
     FLAG_CON_RIGHT,
 )
-from mojo_rl.envs.atari.riot import set_action
+from noeira.envs.atari.riot import set_action
 from std.memory import alloc
 
 

@@ -56,14 +56,14 @@ from std.python import Python
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.envs.dm_control.manipulation_reach_def import (
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.envs.dm_control.manipulation_reach_def import (
     ReachSiteFeaturesModel,
 )
-from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import actuator_column
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     ACT_IDX_CTRL_MIN,
     ACT_IDX_CTRL_MAX,
 )

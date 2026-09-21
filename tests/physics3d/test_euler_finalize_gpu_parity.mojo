@@ -27,11 +27,11 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_euler_finalize_gpu_par
 
 from std.math import abs
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.fields import Data, Model
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import MODEL_JOINT_SIZE, JOINT_IDX_DAMPING
-from mojo_rl.envs.inverted_pendulum.inverted_pendulum_xml import (
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.fields import Data, Model
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import MODEL_JOINT_SIZE, JOINT_IDX_DAMPING
+from noeira.envs.inverted_pendulum.inverted_pendulum_xml import (
     InvertedPendulumModel,
 )
 

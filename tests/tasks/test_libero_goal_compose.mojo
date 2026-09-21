@@ -4,7 +4,7 @@ carries every slot — L2's Mojo half of the compose gate.
     pixi run mojo run -I . tests/tasks/test_libero_goal_compose.mojo
 
 The ORACLE half is `pixi run python tools/tasks/check_family.py
-mojo_rl/tasks/scenes/libero_goal.xml mojo_rl/tasks/families/libero_goal.family`
+noeira/tasks/scenes/libero_goal.xml noeira/tasks/families/libero_goal.family`
 (MuJoCo loads the composed scene at `base_qpos`, counts ZERO contacts at
 rest, and sums the nine assets independently: nbody 38, njnt 17, nq 41,
 nv 37, ngeom 190). This file checks the same sums through our runtime
@@ -19,15 +19,15 @@ family's and assumes the composer's own floor; this family has `floor=0`
 
 from std.os.path import exists
 
-from mojo_rl.tasks.spec import load_family, SLOT_FREE, SLOT_STATIC
-from mojo_rl.tasks.family import compose_family, scene_path, SCENE_DIR
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
-from mojo_rl.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
-from mojo_rl.tasks.libero_goal_xml import LiberoGoalModel, LIBERO_GOAL_N_FREE_SLOTS
+from noeira.tasks.spec import load_family, SLOT_FREE, SLOT_STATIC
+from noeira.tasks.family import compose_family, scene_path, SCENE_DIR
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
+from noeira.tasks.libero_goal_xml import LiberoGoalModel, LIBERO_GOAL_N_FREE_SLOTS
 
 
-comptime FAMILY = String("mojo_rl/tasks/families/libero_goal.family")
-comptime PACK = String("mojo_rl/tasks/libero/assets")
+comptime FAMILY = String("noeira/tasks/families/libero_goal.family")
+comptime PACK = String("noeira/tasks/libero/assets")
 
 
 def main() raises:
@@ -43,7 +43,7 @@ def main() raises:
     var bad = 0
 
     # the L2 keys, as generated
-    if f.base != "mojo_rl/envs/robots/assets/panda_robosuite.xml":
+    if f.base != "noeira/envs/robots/assets/panda_robosuite.xml":
         print("  FAIL: base is", f.base)
         bad += 1
     if f.floor or not f.inherit_option:

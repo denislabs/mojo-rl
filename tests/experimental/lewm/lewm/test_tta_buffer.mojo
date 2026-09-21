@@ -16,8 +16,8 @@ frame↔action slot alignment are checkable exactly:
 from std.memory import alloc
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.experimental.lewm.tta_buffer import TTAWindowBuffer
+from noeira.nn.constants import DT
+from noeira.experimental.lewm.tta_buffer import TTAWindowBuffer
 
 
 comptime B = 3

@@ -3,21 +3,21 @@
 ⚠ THE BINDING HALF RUNS AGAINST THE REAL COMPOSED FAMILY, not a fixture. A
 goal's whole job is to name things in a scene, so a gate that binds against
 invented names would pass while every real task failed to resolve. This binds
-`In(brick, table_top)` against `mojo_rl/tasks/scenes/so101_tabletop.xml` and
+`In(brick, table_top)` against `noeira/tasks/scenes/so101_tabletop.xml` and
 checks it lands on the body `<attach prefix="brick_">` actually produced.
 
 Run: pixi run mojo run -I . tests/tasks/test_goal_language.mojo
 """
 
-from mojo_rl.tasks.spec import load_family
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.predicates import (
+from noeira.tasks.spec import load_family
+from noeira.tasks.family import scene_path
+from noeira.tasks.predicates import (
     parse_goal, bind_goal, require_tier_a, slot_body_id,
     joint_qpos_addresses, OP_JOINT, OP_ON_BODY, OP_ON, CMP_GE,
     op_is_composite, op_name,
     OP_IN, OP_AND, OP_NEAR, OP_GRASPED, MAX_GOAL_TERMS,
 )
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
 
 
 struct Tally(Copyable, ImplicitlyCopyable, Movable):
@@ -107,7 +107,7 @@ def main() raises:
 
     # ── 3. binding against the REAL composed family ───────────────────────
     print("--- bind against the composed scene ---")
-    var f = load_family("mojo_rl/tasks/families/so101_tabletop.family")
+    var f = load_family("noeira/tasks/families/so101_tabletop.family")
     var fmd = parse_model_runtime(scene_path(f))
     print("    scene has", len(fmd.body_names), "body names,",
           len(fmd.site_names), "sites")

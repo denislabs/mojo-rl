@@ -20,14 +20,14 @@ minutes, not seconds. It is not in the smoke tier for that reason.
 
 from std.testing import assert_true, assert_equal, TestSuite
 
-from mojo_rl.envs.dm_control.dog.dog_xml import DMDogStandWalkModel
-from mojo_rl.render.skn_loader import load_skn
-from mojo_rl.render.skinning import resolve_skin_bones
-from mojo_rl.physics3d.parser.model_def_from_xml import body_names_of
+from noeira.envs.dm_control.dog.dog_xml import DMDogStandWalkModel
+from noeira.render.skn_loader import load_skn
+from noeira.render.skinning import resolve_skin_bones
+from noeira.physics3d.parser.model_def_from_xml import body_names_of
 
 
 comptime SKN_PATH = String(
-    "mojo_rl/envs/dm_control/dog/assets/dog_skin.skn"
+    "noeira/envs/dm_control/dog/assets/dog_skin.skn"
 )
 
 

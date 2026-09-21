@@ -41,13 +41,13 @@ say() { printf '\n=== %s\n' "$*"; }
 command -v pixi >/dev/null || { echo "pixi is not on PATH" >&2; exit 1; }
 
 say "0. the LIBERO asset pack (meshes + textures are gitignored)"
-if [ -d mojo_rl/tasks/libero/assets/stable_hope_objects ]; then
+if [ -d noeira/tasks/libero/assets/stable_hope_objects ]; then
     echo "already materialised"
 else
     pixi run assets-pull libero
 fi
-[ -d mojo_rl/tasks/libero/assets/stable_hope_objects ] || {
-    echo "the asset pack did not materialise — see mojo_rl/tasks/libero/assets.kv" >&2
+[ -d noeira/tasks/libero/assets/stable_hope_objects ] || {
+    echo "the asset pack did not materialise — see noeira/tasks/libero/assets.kv" >&2
     exit 1; }
 
 # ── run one family, print "<ratio>\t<impl>\t<prec>\t<lane>\t<lanes>\t<verdict>" ──
@@ -133,7 +133,7 @@ else
     fams=()
     # ⚠ A GLOB, NOT `ls | sed`: `ls` here is proxied and prints sizes beside the
     # names, which silently yields an EMPTY family list.
-    for f in mojo_rl/tasks/families/libero_*.family; do
+    for f in noeira/tasks/families/libero_*.family; do
         [ -e "$f" ] || continue
         fams+=("$(basename "$f" .family)")
     done

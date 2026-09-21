@@ -19,15 +19,15 @@ Run (Apple Metal):
 from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.deep_agents.muzero.config import MuZeroMLPConfig
-from mojo_rl.deep_agents.muzero.selfplay_gpu_batched import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.optimizer.adam import Adam
+from noeira.deep_agents.muzero.config import MuZeroMLPConfig
+from noeira.deep_agents.muzero.selfplay_gpu_batched import (
     run_muzero_gumbel_selfplay_gpu_batched,
 )
-from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
-from mojo_rl.envs.arcade_games.pong import PongEnv
+from noeira.deep_agents.training import BatchedGpuDiscreteEnv
+from noeira.envs.arcade_games.pong import PongEnv
 
 
 def main() raises:

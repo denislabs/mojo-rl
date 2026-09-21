@@ -31,24 +31,24 @@ from std.math import sqrt
 from std.testing import assert_almost_equal, assert_equal, assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.envs.dm_control.rewards import (
+from noeira.core.cont_action import ContAction
+from noeira.envs.dm_control.rewards import (
     tolerance, SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN,
 )
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.physics3d.gpu.constants import (
     META_IDX_GOAL_HELD, META_IDX_TASK_PARAM_0, MODEL_CURRICULUM_SIZE,
 )
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
-from mojo_rl.tasks.eval import region_sites, region_rects, region_half_heights
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import So101TowerConfig
-from mojo_rl.tasks.gpu_eval import region_table_words
-from mojo_rl.tasks.host_reward import family_reward_host
-from mojo_rl.tasks.placement.so101_tower import So101TowerPlacement
-from mojo_rl.tasks.posed_reset import posed_qpos, task_meta_words
-from mojo_rl.tasks.so101_tower_xml import So101TowerModel
-from mojo_rl.tasks.spec import load_family
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.tasks.eval import region_sites, region_rects, region_half_heights
+from noeira.tasks.family import scene_path
+from noeira.tasks.family_config import So101TowerConfig
+from noeira.tasks.gpu_eval import region_table_words
+from noeira.tasks.host_reward import family_reward_host
+from noeira.tasks.placement.so101_tower import So101TowerPlacement
+from noeira.tasks.posed_reset import posed_qpos, task_meta_words
+from noeira.tasks.so101_tower_xml import So101TowerModel
+from noeira.tasks.spec import load_family
 
 comptime DTYPE = DType.float64
 comptime CFG = So101TowerConfig
@@ -99,7 +99,7 @@ def main() raises:
     var env = E(ctx)
 
     # the region table (the driver's upload) and the task's meta words
-    var f = load_family("mojo_rl/tasks/families/so101_tower.family")
+    var f = load_family("noeira/tasks/families/so101_tower.family")
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)
     var rects = region_rects(f)

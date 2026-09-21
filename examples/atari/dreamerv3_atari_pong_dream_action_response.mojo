@@ -28,16 +28,16 @@ from std.memory import alloc
 from std.random import seed
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
-from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
+from noeira.nn.constants import DT
+from noeira.nn.primitives.ops.swish_op import SwishOp
+from noeira.deep_agents.dreamerv3.agent import DreamerV3Agent
+from noeira.deep_agents.dreamerv3.nets_cnn import (
     DreamerEncoderCNNPool,
     DreamerDecoderCNNPool,
 )
-from mojo_rl.envs.atari import AtariEnv
-from mojo_rl.envs.atari.games.registry import AtariGame
-from mojo_rl.render.image_writer import save_frame_sequence_gif
+from noeira.envs.atari import AtariEnv
+from noeira.envs.atari.games.registry import AtariGame
+from noeira.render.image_writer import save_frame_sequence_gif
 
 # ── arch (MUST match the training run that WROTE the checkpoint) ──
 # C=1 ↔ AtariEnv OBS_MODE=3 (gray-96 single frame); C=4 ↔ OBS_MODE=4 (stack).

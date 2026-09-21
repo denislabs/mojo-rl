@@ -35,15 +35,15 @@ from std.python import Python, PythonObject
 from std.math import abs, sqrt
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.sensors import (
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.sensors import (
     site_accelerometer,
     site_force_torque,
     site_frame_velocity,
 )
-from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
+from noeira.envs.dm_control.quadruped.quadruped_xml import (
     DMQuadrupedWalkModel,
 )
 
@@ -193,7 +193,7 @@ def _setup(
 def _mj_setup(state: List[Float64]) raises -> Tuple[PythonObject, PythonObject,
                                                     PythonObject]:
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/quadruped_walk.xml")
     var dat = mujoco.MjData(m)
     for i in range(NQ):
         dat.qpos[i] = state[i]
@@ -323,7 +323,7 @@ def _find_standing_z() raises -> Float64:
     by making the "standing" case a second free-flight case.
     """
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/quadruped_walk.xml")
     var dat = mujoco.MjData(m)
     var z = 0.70
     for _ in range(120):

@@ -13,8 +13,8 @@ Run:
 
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.zero.sequence_replay_mcts import MCTSSequenceReplay
+from noeira.nn.constants import DT
+from noeira.deep_agents.zero.sequence_replay_mcts import MCTSSequenceReplay
 
 
 def _a(n: Int) -> List[Scalar[DT]]:

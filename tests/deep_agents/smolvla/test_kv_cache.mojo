@@ -26,9 +26,9 @@ Run:
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.smolvla.kv_cache import SmolVLAKVCache
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.smolvla.kv_cache import SmolVLAKVCache
 
 comptime LAYERS = 16
 comptime PREFIX = 24

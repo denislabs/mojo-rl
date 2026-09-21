@@ -96,7 +96,7 @@ def visual_only():
 def libero_sites(m, d, opt):
     """LIBERO's runtime site visibility, applied to `m.site_rgba` for `d`.
 
-    The same rule as `mojo_rl/tasks/libero_visual.mojo`: a `*burner` site is
+    The same rule as `noeira/tasks/libero_visual.mojo`: a `*burner` site is
     visible when its sibling `*button` hinge is at 0.5 or more
     (`FlatStove.turn_on`), and every other site is hidden — robosuite hides the
     robot's at construction. Enables site group 0, where the burner lives."""

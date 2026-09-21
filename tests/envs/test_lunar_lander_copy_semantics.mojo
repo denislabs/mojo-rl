@@ -11,7 +11,7 @@ Run: pixi run mojo run -I . tests/envs/test_lunar_lander_copy_semantics.mojo
 
 from std.testing import assert_equal, assert_true
 
-from mojo_rl.envs.lunar_lander import LunarLander
+from noeira.envs.lunar_lander import LunarLander
 
 
 def main() raises:

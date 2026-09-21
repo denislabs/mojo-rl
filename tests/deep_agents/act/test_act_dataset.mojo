@@ -12,7 +12,7 @@ shares its reference implementation cannot see a shared mistake.
     pixi run mojo run -I . tests/deep_agents/act/test_act_dataset.mojo
 
 Requires a store; point `ACT_STORE` at one, or let it find the newest under
-`~/.cache/mojo_rl/act_so101/`:
+`~/.cache/noeira/act_so101/`:
 
     pixi run python tools/act/lerobot_v3_to_store.py \
         --repo <hf-dataset> --height 240 --width 320
@@ -29,10 +29,10 @@ round-trip, and the structural invariants below.
 
 from std.python import Python, PythonObject
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.io.hdf5 import H5File
-from mojo_rl.deep_agents.act.config import (
+from noeira.nn.constants import DT
+from noeira.nn.core.ptr import mptr
+from noeira.io.hdf5 import H5File
+from noeira.deep_agents.act.config import (
     IMAGENET_MEAN_R,
     IMAGENET_STD_R,
     SO101_ADIM,
@@ -41,7 +41,7 @@ from mojo_rl.deep_agents.act.config import (
     SO101_N_CAM,
     SO101_QPOS,
 )
-from mojo_rl.deep_agents.act.data import ACTDataset
+from noeira.deep_agents.act.data import ACTDataset
 
 
 comptime QPOS = SO101_QPOS
@@ -73,7 +73,7 @@ def store_path() raises -> String:
     var glob = Python.import_module("glob")
     var home = String(os.path.expanduser(PythonObject("~")))
     var pat = (
-        home + "/.cache/mojo_rl/act_so101/*_" + String(H) + "x" + String(W)
+        home + "/.cache/noeira/act_so101/*_" + String(H) + "x" + String(W)
         + ".h5"
     )
     var hits = glob.glob(PythonObject(pat))

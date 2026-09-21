@@ -15,7 +15,7 @@ environments are faithful ports, and these let you run both from one process and
 compare.
 
 ```mojo
-from mojo_rl.envs.gymnasium import (
+from noeira.envs.gymnasium import (
     GymnasiumClassicControl,
     GymnasiumBox2D,
     GymnasiumToyText,
@@ -55,7 +55,7 @@ tests do exactly this, and the physics3d suite compares against live MuJoCo the
 same way.
 
 **Reaching environments not yet ported.** Gymnasium has far more environments
-than mojo-rl implements natively. If you need one of them, the wrapper gets you
+than noeira implements natively. If you need one of them, the wrapper gets you
 there today.
 
 **Sanity-checking a result.** A suspiciously good score on a native environment
@@ -81,7 +81,7 @@ Use the native implementation for anything that matters:
 The native ports match Gymnasium's dynamics, but a few observation conventions
 differ deliberately. Two worth knowing:
 
-- **Humanoid** — 45 dimensions here versus Gymnasium's 348–376. mojo-rl observes
+- **Humanoid** — 45 dimensions here versus Gymnasium's 348–376. noeira observes
   position and velocity only, omitting contact forces and inertia terms.
 - **CarRacing** — a slip-based tire model rather than Gymnasium's simpler
   friction, which makes the task genuinely harder. Policies do not transfer.

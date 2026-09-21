@@ -41,14 +41,14 @@ case, and both were written after the case cost a real defect:
 
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import (
+from noeira.physics3d.parser import (
     parse_xml_full,
     parse_xml,
     ModelDefFromXML,
 )
-from mojo_rl.physics3d.parser.fields_build import build_spec_fields
-from mojo_rl.physics3d.fields import SpecFields, Dims, DimsLike
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.parser.fields_build import build_spec_fields
+from noeira.physics3d.fields import SpecFields, Dims, DimsLike
+from noeira.physics3d.gpu.constants import (
     TENDON_MAX_WRAPS,
     MODEL_ACTUATOR_SIZE,
     ACT_IDX_KIND,
@@ -89,16 +89,16 @@ from mojo_rl.physics3d.gpu.constants import (
     JLIM_IDX_RANGE_MAX,
 )
 
-from mojo_rl.envs.dm_control.cartpole.cartpole_xml import DMCartpole1Model
-from mojo_rl.envs.dm_control.quadruped.quadruped_xml import DMQuadrupedWalkModel
-from mojo_rl.envs.dm_control.dog.dog_xml import DMDogStandWalkModel
-from mojo_rl.envs.dm_control.manipulation_reach_def import (
+from noeira.envs.dm_control.cartpole.cartpole_xml import DMCartpole1Model
+from noeira.envs.dm_control.quadruped.quadruped_xml import DMQuadrupedWalkModel
+from noeira.envs.dm_control.dog.dog_xml import DMDogStandWalkModel
+from noeira.envs.dm_control.manipulation_reach_def import (
     ReachSiteFeaturesModel,
 )
-from mojo_rl.envs.dm_control.fish.fish_xml import DMFishSwimModel
-from mojo_rl.envs.dm_control.finger.finger_xml import DMFingerSpinModel
-from mojo_rl.envs.ant.ant_xml import AntModel
-from mojo_rl.envs.robots.so_arm100_xml import SoArm100Model
+from noeira.envs.dm_control.fish.fish_xml import DMFishSwimModel
+from noeira.envs.dm_control.finger.finger_xml import DMFingerSpinModel
+from noeira.envs.ant.ant_xml import AntModel
+from noeira.envs.robots.so_arm100_xml import SoArm100Model
 
 
 # ═══ the `ctrlrange="0 0"` fixture — added AFTER it cost a bug ═══════════════

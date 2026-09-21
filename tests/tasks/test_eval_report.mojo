@@ -33,19 +33,19 @@ Run: pixi run mojo run -I . tests/tasks/test_eval_report.mojo
 
 from std.pathlib import Path
 
-from mojo_rl.core.logger import CsvLogger
-from mojo_rl.core.kv import split_on
-from mojo_rl.tasks.init_table import (
+from noeira.core.logger import CsvLogger
+from noeira.core.kv import split_on
+from noeira.tasks.init_table import (
     InitTable, write_init_table, load_init_table,
 )
-from mojo_rl.tasks.eval_report import SuccessReport
+from noeira.tasks.eval_report import SuccessReport
 
 
 comptime NQ = 4
 comptime NV = 3
 comptime FAMILY = "unit_family"
-comptime OUT = "/tmp/mojo_rl_eval_report.h5"
-comptime CSV = "/tmp/mojo_rl_eval_report.csv"
+comptime OUT = "/tmp/noeira_eval_report.h5"
+comptime CSV = "/tmp/noeira_eval_report.csv"
 
 # ⚠ DELIBERATELY UNEQUAL. Task 0 gets 6 episodes and task 1 gets 4, so a log
 # that dropped the denominators, or a breakdown that reused one task's count

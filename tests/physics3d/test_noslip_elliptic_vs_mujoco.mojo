@@ -5,7 +5,7 @@ The pass is a friction-only Gauss-Seidel sweep run AFTER the primal solve with
 the normal forces held fixed. The elliptic branch is a different algorithm from
 the pyramidal one — one normal row plus `dim-1` tangential rows per contact,
 and a QCQP over the friction ellipsoid rather than a closed-form 1-D minimum.
-See `mojo_rl/physics3d/solver/noslip.mojo`.
+See `noeira/physics3d/solver/noslip.mojo`.
 
 ⚠⚠ HOW THE FIXTURE WAS CHOSEN, INCLUDING THE MEASUREMENT THAT WAS WRONG
 
@@ -94,16 +94,16 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Model, Data, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.gpu.constants import MODEL_META_IDX_NOSLIP_TOLERANCE
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.fields import Model, Data, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.gpu.constants import MODEL_META_IDX_NOSLIP_TOLERANCE
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields.spec_fields import SpecFields
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.fields.spec_fields import SpecFields
+from noeira.physics3d.model.model_dims import ModelDims
 
 
 comptime DTYPE = DType.float64

@@ -14,15 +14,15 @@ Run:
 from std.testing import assert_true
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac.actor_loss import SACActorLoss
+from noeira.nn.constants import DT
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Xavier
+from noeira.nn.optimizer.adam import Adam
+from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
+from noeira.deep_agents.sac.actor_loss import SACActorLoss
 
 
 comptime OBS = 3

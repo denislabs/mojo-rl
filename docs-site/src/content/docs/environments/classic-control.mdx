@@ -33,8 +33,8 @@ Balance a pole on a cart by pushing left or right. Observation is
 ends when the pole falls past ~12° or the cart leaves the track.
 
 ```mojo
-from mojo_rl.envs.cartpole import CartPoleEnv
-from mojo_rl.nn.constants import DT
+from noeira.envs.cartpole import CartPoleEnv
+from noeira.nn.constants import DT
 
 var env = CartPoleEnv[DT]()
 ```
@@ -95,8 +95,8 @@ pixi run mojo run -I . examples/pendulum_ddpg.mojo
 Two implementations exist:
 
 ```mojo
-from mojo_rl.envs.pendulum import PendulumEnv   # V1 — CPU, single env
-from mojo_rl.envs.pendulum import PendulumV2    # V2 — GPU, batched
+from noeira.envs.pendulum import PendulumEnv   # V1 — CPU, single env
+from noeira.envs.pendulum import PendulumV2    # V2 — GPU, batched
 ```
 
 :::caution[Pendulum has no terminal state]

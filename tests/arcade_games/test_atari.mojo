@@ -4,16 +4,16 @@ Tests that the 6502 CPU, memory map, and game definitions compile
 and produce sensible output.
 """
 
-from mojo_rl.envs.atari.atari_state import AtariState
-from mojo_rl.envs.atari.flags import (
+from noeira.envs.atari.atari_state import AtariState
+from noeira.envs.atari.flags import (
     RAM_SIZE,
     ACTION_NOOP,
     FLAG_C,
     FLAG_Z,
     FLAG_N,
 )
-from mojo_rl.envs.atari.ram import read_ram, write_ram
-from mojo_rl.envs.atari.cpu6502 import (
+from noeira.envs.atari.ram import read_ram, write_ram
+from noeira.envs.atari.cpu6502 import (
     mem_read,
     mem_write,
     execute_one,
@@ -22,14 +22,14 @@ from mojo_rl.envs.atari.cpu6502 import (
     get_flag,
     update_nz,
 )
-from mojo_rl.envs.atari.opcodes import OPCODE_TABLE, OP_LDA, OP_NOP
-from mojo_rl.envs.atari.riot import set_action, riot_update_timer
-from mojo_rl.envs.atari.cartridge import detect_rom_format, init_bank
+from noeira.envs.atari.opcodes import OPCODE_TABLE, OP_LDA, OP_NOP
+from noeira.envs.atari.riot import set_action, riot_update_timer
+from noeira.envs.atari.cartridge import detect_rom_format, init_bank
 from std.memory import alloc
-from mojo_rl.envs.atari.frame_render import render_frame_bgra, FRAME_BUF_SIZE
-from mojo_rl.envs.atari.games.pong import PongDef
-from mojo_rl.envs.atari.games.breakout import BreakoutDef
-from mojo_rl.envs.atari.games.helpers import (
+from noeira.envs.atari.frame_render import render_frame_bgra, FRAME_BUF_SIZE
+from noeira.envs.atari.games.pong import PongDef
+from noeira.envs.atari.games.breakout import BreakoutDef
+from noeira.envs.atari.games.helpers import (
     get_decimal_score,
     get_decimal_score_2,
 )
@@ -161,7 +161,7 @@ def test_action_mapping():
 
 def test_palette():
     print("Test: Palette...")
-    from mojo_rl.envs.atari.palette import (
+    from noeira.envs.atari.palette import (
         palette_r,
         palette_g,
         palette_b,
@@ -195,7 +195,7 @@ def test_frame_render():
 
     # Check first pixel is the background color in BGRA format
     # Color 0x1E = palette index 30 = 0xECECEC (gray)
-    from mojo_rl.envs.atari.palette import palette_r, palette_g, palette_b
+    from noeira.envs.atari.palette import palette_r, palette_g, palette_b
 
     var expected_r = palette_r(0x1E)
     var expected_g = palette_g(0x1E)
@@ -234,7 +234,7 @@ def test_frame_render_player():
     render_frame_bgra(state, buf)
 
     # Pixel at x=80 (player position) should have player color
-    from mojo_rl.envs.atari.palette import palette_r, palette_g, palette_b
+    from noeira.envs.atari.palette import palette_r, palette_g, palette_b
 
     var p0_r = palette_r(0x42)
     var p0_g = palette_g(0x42)

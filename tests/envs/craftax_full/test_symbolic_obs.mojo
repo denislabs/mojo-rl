@@ -15,13 +15,13 @@ Run:
   pixi run mojo run -I . tests/envs/craftax_full/test_symbolic_obs.mojo
 """
 
-from mojo_rl.envs.craftax_full import (
+from noeira.envs.craftax_full import (
     CraftaxFullEnv,
     CraftaxFullAction,
     OBS_DIM,
     OBS_VIEW_SIZE,
 )
-from mojo_rl.envs.craftax_full.constants import (
+from noeira.envs.craftax_full.constants import (
     VIEW_H,
     VIEW_W,
     TILE_CHANNELS,

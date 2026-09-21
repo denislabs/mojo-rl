@@ -28,14 +28,14 @@ from std.math import abs, sqrt, cos, sin, atan
 from std.random import seed, random_float64
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import (
+from noeira.experimental.swm.so_d import (
     SqMat,
     skew_from_vector,
     cayley,
     expm_skew,
     householder,
 )
-from mojo_rl.experimental.swm.procrustes import polar_orthogonal_factor
+from noeira.experimental.swm.procrustes import polar_orthogonal_factor
 
 comptime DT = DType.float64
 comptime ORTHO_TOL = 1e-12

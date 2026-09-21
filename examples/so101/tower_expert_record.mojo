@@ -80,35 +80,35 @@ from std.random import seed as seed_rng, random_float64
 from std.sys import argv
 from std.pathlib import Path
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.core.run import epoch_seconds, iso8601_utc
-from mojo_rl.io.proc import quote_arg, run_capture
-from mojo_rl.deep_agents.data.demo_file import DemoSet, write_demo_file
-from mojo_rl.deep_agents.data.any_replay import AnyReplay
-from mojo_rl.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
-from mojo_rl.deep_agents.training.blocks import ReplaySampleStep
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.math3d import Quat, Vec3
+from noeira.nn.constants import DT
+from noeira.core.cont_action import ContAction
+from noeira.core.run import epoch_seconds, iso8601_utc
+from noeira.io.proc import quote_arg, run_capture
+from noeira.deep_agents.data.demo_file import DemoSet, write_demo_file
+from noeira.deep_agents.data.any_replay import AnyReplay
+from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
+from noeira.deep_agents.training.blocks import ReplaySampleStep
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.math3d import Quat, Vec3
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import actuator_column
+from noeira.physics3d.gpu.constants import (
     ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN, MODEL_CURRICULUM_SIZE,
 )
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
-from mojo_rl.tasks.eval import region_sites, region_rects, region_half_heights
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import So101TowerConfig, So101TowerTeleopConfig
-from mojo_rl.tasks.gpu_eval import region_table_words
-from mojo_rl.tasks.host_reward import family_reward_host
-from mojo_rl.tasks.placement.so101_tower import So101TowerPlacement
-from mojo_rl.tasks.posed_reset import posed_qpos, task_meta_words
-from mojo_rl.tasks.so101_tower_xml import So101TowerModel
-from mojo_rl.tasks.spec import load_family
-from mojo_rl.utils.fmt import fixed
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.tasks.eval import region_sites, region_rects, region_half_heights
+from noeira.tasks.family import scene_path
+from noeira.tasks.family_config import So101TowerConfig, So101TowerTeleopConfig
+from noeira.tasks.gpu_eval import region_table_words
+from noeira.tasks.host_reward import family_reward_host
+from noeira.tasks.placement.so101_tower import So101TowerPlacement
+from noeira.tasks.posed_reset import posed_qpos, task_meta_words
+from noeira.tasks.so101_tower_xml import So101TowerModel
+from noeira.tasks.spec import load_family
+from noeira.utils.fmt import fixed
 
 comptime FAMILY = "so101_tower"
-comptime FAMILY_PATH = "mojo_rl/tasks/families/so101_tower.family"
+comptime FAMILY_PATH = "noeira/tasks/families/so101_tower.family"
 comptime DEFAULT_TASK = "so101_tower_lift_brick"
 comptime DEMO_DIR = "projects/so101-tower/demos"
 comptime CFG = So101TowerTeleopConfig

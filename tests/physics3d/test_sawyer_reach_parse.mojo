@@ -2,10 +2,10 @@
 
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext
-from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel, pm
-from mojo_rl.physics3d.fields import Model, Dims
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.envs.metaworld.sawyer_reach_xml import SawyerReachModel, pm
+from noeira.physics3d.fields import Model, Dims
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
     MODEL_META_IDX_GRAVITY_Z,

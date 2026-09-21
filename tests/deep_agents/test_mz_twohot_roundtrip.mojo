@@ -13,8 +13,8 @@ math. Run: pixi run -e nvidia mojo run -I . tests/deep_agents/test_mz_twohot_rou
 """
 
 from std.math import log
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.zero.twohot_targets import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.zero.twohot_targets import (
     mz_two_hot_target_batch, mz_decode_value_batch,
 )
 

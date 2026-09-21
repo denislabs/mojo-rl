@@ -29,11 +29,11 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 DEMOS = os.path.join(ROOT, "references", "libero_demos")
-SCENES = os.path.join(ROOT, "mojo_rl", "tasks", "scenes")
+SCENES = os.path.join(ROOT, "noeira", "tasks", "scenes")
 RS14 = os.environ.get(
     "ROBOSUITE_140", os.path.join(ROOT, "references", "robosuite-1.4.0", "robosuite")
 )
-PACK = os.path.join(ROOT, "mojo_rl", "tasks", "libero", "assets")
+PACK = os.path.join(ROOT, "noeira", "tasks", "libero", "assets")
 
 
 def rewrite(xml):

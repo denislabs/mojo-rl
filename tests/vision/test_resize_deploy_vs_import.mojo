@@ -8,8 +8,8 @@
 ⚠⚠ **THERE ARE TWO IMPLEMENTATIONS OF PIL's BILINEAR IN THIS REPO, AND ONE
 TRAIN/DEPLOY BOUNDARY RUNS BETWEEN THEM.**
 
-    mojo_rl/io/image.mojo       `resize_bilinear_pil`   built the dataset
-    mojo_rl/vision/preprocess.mojo `pil_bilinear_u8`    feeds the live camera
+    noeira/io/image.mojo       `resize_bilinear_pil`   built the dataset
+    noeira/vision/preprocess.mojo `pil_bilinear_u8`    feeds the live camera
 
 `act_so101_deploy_real.mojo` asks a policy trained on the first to act on
 pixels produced by the second. Both are separately gated against PIL itself,
@@ -53,9 +53,9 @@ reach, and it is the only one the native import uses.
 
 from std.pathlib import Path
 
-from mojo_rl.io.image import resize_bilinear_pil
-from mojo_rl.io.png import load_png_file
-from mojo_rl.vision.preprocess import pil_bilinear_u8
+from noeira.io.image import resize_bilinear_pil
+from noeira.io.png import load_png_file
+from noeira.vision.preprocess import pil_bilinear_u8
 
 comptime FIX = "tests/fixtures/vision/marker_640x480.png"
 comptime SRC_W = 640

@@ -15,11 +15,11 @@ from std.math import abs
 from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Deterministic
+from noeira.deep_agents.dreamerv3.nets_cnn import (
     DreamerEncoderCNN,
     DreamerDecoderCNN,
 )

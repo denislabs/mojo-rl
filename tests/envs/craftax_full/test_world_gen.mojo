@@ -12,14 +12,14 @@ Run:
   pixi run mojo run -I . tests/envs/craftax_full/test_world_gen.mojo
 """
 
-from mojo_rl.envs.craftax_full import (
+from noeira.envs.craftax_full import (
     MAP_H,
     MAP_W,
     NUM_FLOORS,
     STATE_SIZE,
     generate_full_world,
 )
-from mojo_rl.envs.craftax_full.constants import (
+from noeira.envs.craftax_full.constants import (
     BLOCK_GRASS,
     BLOCK_WATER,
     BLOCK_STONE,
@@ -43,7 +43,7 @@ from mojo_rl.envs.craftax_full.constants import (
     ITEM_LADDER_UP,
     ITEM_TORCH,
 )
-from mojo_rl.envs.craftax_full.state import (
+from noeira.envs.craftax_full.state import (
     s_map,
     s_item_map,
     s_light_map,

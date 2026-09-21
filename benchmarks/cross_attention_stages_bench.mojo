@@ -46,12 +46,12 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.core.mm import bmm
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.primitives.cross_attention import (
+from noeira.nn.constants import DT, TPB
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.core.mm import bmm
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.primitives.cross_attention import (
     CrossAttention,
     XATTN_DENOM_FLOOR,
     XATTN_MASK_NEG,

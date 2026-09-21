@@ -32,12 +32,12 @@ integrator by hand here would be measuring a configuration nothing ships.
 
 from std.time import perf_counter_ns
 
-from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.model.model_def import ModelDefLike
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, MODEL_BODY_SIZE, BODY_IDX_POS_X, BODY_IDX_QUAT_X,
 )
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.envs.phyics3d_env import Phyics3dEnv
 
 
 comptime CTRL: Float64 = 0.1

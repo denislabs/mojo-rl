@@ -37,19 +37,19 @@ from std.math import abs
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.io.fileio import read_file_bytes
-from mojo_rl.io.hf import hf_download_file, HF_MODEL
-from mojo_rl.io.safetensors import SafeTensors
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.core.torch_names import (
+from noeira.io.fileio import read_file_bytes
+from noeira.io.hf import hf_download_file, HF_MODEL
+from noeira.io.safetensors import SafeTensors
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.core.torch_names import (
     TorchNameMap, LoadTorchNamed, TN_TRANSPOSE, TN_ZEROS,
 )
-from mojo_rl.deep_agents.smolvla.vision import SigLIPVisionTower
-from mojo_rl.deep_agents.smolvla.expert import SmolVLAExpert
-from mojo_rl.deep_agents.smolvla.names import (
+from noeira.deep_agents.smolvla.vision import SigLIPVisionTower
+from noeira.deep_agents.smolvla.expert import SmolVLAExpert
+from noeira.deep_agents.smolvla.names import (
     vision_name_map, expert_name_map,
 )
 

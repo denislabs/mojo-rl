@@ -24,13 +24,13 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 
 from std.testing import assert_true
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor, TensorImpl
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.param import Param
-from mojo_rl.nn.core.initializer import Initializer, Deterministic
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.combinators.sequential import Sequential
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor, TensorImpl
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.param import Param
+from noeira.nn.core.initializer import Initializer, Deterministic
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.combinators.sequential import Sequential
 
 comptime BF16 = DType.bfloat16
 

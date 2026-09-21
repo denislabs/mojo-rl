@@ -20,9 +20,9 @@ Run: `pixi run -e nvidia mojo run -I . examples/half_cheetah/tdmpc2_half_cheetah
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.config import TDMPC2
-from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+from noeira.nn.constants import DT
+from noeira.deep_agents.tdmpc2.config import TDMPC2
+from noeira.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 comptime CKPT = "tdmpc2_half_cheetah_mpcoff.ckpt"
 comptime OBS = HalfCheetahConfig.OBS_DIM

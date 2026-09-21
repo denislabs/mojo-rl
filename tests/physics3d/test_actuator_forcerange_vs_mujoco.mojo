@@ -1,7 +1,7 @@
 """Actuator `forcerange` / `forcelimited` against MuJoCo 3.10.0 — Phase 7 gap C.
 
 Before this, `forcerange` and `forcelimited` appeared in ZERO files under
-`mojo_rl/physics3d/`. Every ported model either omits them or never saturates,
+`noeira/physics3d/`. Every ported model either omits them or never saturates,
 so nothing had gone visibly wrong — but they are load-bearing on Jaco, whose
 nine `<velocity kv="500">` actuators are paired with `forcerange="-30.5 30.5"`:
 a 0.63 rad/s command against a stationary joint asks for ~315 N·m where MuJoCo
@@ -44,9 +44,9 @@ from std.python import Python
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.fields import Data, Model, Dims
 
 comptime DTYPE = DType.float64
 

@@ -2,8 +2,8 @@
 """The one-step board row for a composed LIBERO family — L2's fidelity gate.
 
     pixi run mojo build -I . docs/menagerie_fidelity_harnesses/drive.mojo -o /tmp/mfh/drive
-    pixi run python tools/tasks/libero_onestep_vs_mujoco.py mojo_rl/tasks/scenes/libero_goal.xml \
-        mojo_rl/tasks/families/libero_goal.family [N] [ctrl_scale]
+    pixi run python tools/tasks/libero_onestep_vs_mujoco.py noeira/tasks/scenes/libero_goal.xml \
+        noeira/tasks/families/libero_goal.family [N] [ctrl_scale]
 
 Same protocol as `docs/menagerie_fidelity_harnesses/full.py` (both engines
 step the SAME random ctrl sequence from the SAME state; max |d| of qacc /

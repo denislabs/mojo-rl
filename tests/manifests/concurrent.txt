@@ -1,6 +1,6 @@
 # Concurrency manifest — `pixi run test-concurrent`
 #
-# The backbone under `mojo_rl/core/concurrent/`: one pthread, a bounded SPSC
+# The backbone under `noeira/core/concurrent/`: one pthread, a bounded SPSC
 # byte ring, atomic control cells. See `docs/CONCURRENCY_BACKBONE.md`.
 #
 # These are also in `smoke.txt`. They belong there despite being threaded,

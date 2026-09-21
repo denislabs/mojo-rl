@@ -21,7 +21,7 @@ discrete-action agent in the framework.
 <Demo name="rainbow_car_racing" caption="CarRacing — Rainbow" meta="pixel observations" />
 
 ```mojo
-from mojo_rl.deep_agents.c51 import C51Agent
+from noeira.deep_agents.c51 import C51Agent
 ```
 
 
@@ -129,7 +129,7 @@ more often. Two details matter:
 introduces. Without them, the value estimate is skewed toward high-error
 transitions.
 
-**A sum-tree** gives O(log n) sampling by priority. `mojo_rl.core.sum_tree`
+**A sum-tree** gives O(log n) sampling by priority. `noeira.core.sum_tree`
 implements it, and there is a device-resident version so the priorities never
 leave the GPU.
 
@@ -151,10 +151,10 @@ exploring twice.
 ## Building it
 
 ```mojo
-from mojo_rl.deep_agents.c51 import C51Agent
-from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.nn.primitives.dueling_head_c51 import DuelingHeadC51
-from mojo_rl.nn.primitives.noisy_linear import NoisyLinear
+from noeira.deep_agents.c51 import C51Agent
+from noeira.deep_agents.training.blocks import UniformSampleGpuStep
+from noeira.nn.primitives.dueling_head_c51 import DuelingHeadC51
+from noeira.nn.primitives.noisy_linear import NoisyLinear
 
 var agent = C51Agent[
     "gpu",

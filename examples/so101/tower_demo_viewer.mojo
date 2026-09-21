@@ -34,16 +34,16 @@ from std.pathlib import Path
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.data.demo_file import DemoSet, read_demo_file
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.render.imgui import (
+from noeira.deep_agents.data.demo_file import DemoSet, read_demo_file
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.render.imgui import (
     ig_begin_panel, ig_end, ig_text, ig_text_colored, ig_text_disabled,
     ig_separator_text, ig_same_line, ig_spacing, ig_button, ig_checkbox,
     ig_slider_int, ig_slider_float, ig_progress_bar, ig_style_dark,
 )
-from mojo_rl.tasks.family_config import So101TowerTeleopConfig
-from mojo_rl.tasks.so101_tower_xml import So101TowerModel
-from mojo_rl.utils.fmt import fixed
+from noeira.tasks.family_config import So101TowerTeleopConfig
+from noeira.tasks.so101_tower_xml import So101TowerModel
+from noeira.utils.fmt import fixed
 
 comptime CFG = So101TowerTeleopConfig
 comptime E = Phyics3dEnv[So101TowerModel, CFG, DType.float64, False]

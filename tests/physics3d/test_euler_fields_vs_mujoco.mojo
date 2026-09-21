@@ -20,11 +20,11 @@ from std.math import abs
 from std.collections import Array
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.fields import Data, Model, Dims
-from mojo_rl.envs.ant.ant_xml import AntModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.fields import Data, Model, Dims
+from noeira.envs.ant.ant_xml import AntModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 comptime NQ = AntModel.NQ  # 15

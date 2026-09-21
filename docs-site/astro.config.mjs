@@ -9,17 +9,17 @@ export default defineConfig({
 	site: 'https://mojo-rl.denislabs.com',
 	integrations: [
 		starlight({
-			title: 'mojo-rl',
+			title: 'noeira',
 			description:
-				'A reinforcement learning framework written in Mojo — 40+ algorithms, a deep learning framework, 2D/3D physics engines, and 25 native environments.',
+				'Dream in simulation. Act in the world. An end-to-end Physical AI stack in Mojo: physics, learning, perception and deployment, from simulator to robot.',
 			logo: {
 				// Full lockup (mark + wordmark), so it replaces the title text.
 				// Starlight's `dark`/`light` name the THEME the file is shown in:
 				// `dark` needs light-on-transparent, `light` needs dark-on-transparent.
 				// Wordmarks are outlined paths — no font dependency.
-				dark: './src/assets/mojo-rl-logo-transparent-dark.svg',
-				light: './src/assets/mojo-rl-logo-light.svg',
-				alt: 'mojo-rl',
+				dark: './src/assets/noeira-logo-transparent-dark-nobaseline.svg',
+				light: './src/assets/noeira-logo-light-nobaseline.svg',
+				alt: 'noeira',
 				replacesTitle: true,
 			},
 			favicon: '/favicon.svg',
@@ -31,7 +31,7 @@ export default defineConfig({
 				{
 					icon: 'github',
 					label: 'GitHub',
-					href: 'https://github.com/denislabs/mojo-rl',
+					href: 'https://github.com/noeira/noeira',
 				},
 			],
 			expressiveCode: {
@@ -56,7 +56,7 @@ export default defineConfig({
 				{
 					label: 'Start here',
 					items: [
-						{ label: 'Why mojo-rl', slug: 'start/why' },
+						{ label: 'Why noeira', slug: 'start/why' },
 						{ label: 'Installation', slug: 'start/installation' },
 						{ label: 'Quickstart: tabular', slug: 'start/quickstart-tabular' },
 						{ label: 'Quickstart: GPU training', slug: 'start/quickstart-gpu' },

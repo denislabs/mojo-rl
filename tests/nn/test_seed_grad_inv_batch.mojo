@@ -19,8 +19,8 @@ from max.gpu.host import DeviceContext
 
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.loss.seed_grad_inv_batch import seed_grad_inv_batch
+from noeira.nn.constants import DT
+from noeira.deep_agents.loss.seed_grad_inv_batch import seed_grad_inv_batch
 
 
 def test_cpu_basic() raises:

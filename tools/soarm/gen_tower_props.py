@@ -11,9 +11,9 @@ source of truth for both: from the constants below it writes
 
     projects/so101-tower/assets/hardware/bowl_octagon.stl    (mm, to print)
     projects/so101-tower/assets/hardware/brick_25mm.stl      (mm, to print)
-    mojo_rl/tasks/assets/props/bowl.xml                      (m, the sim asset)
-    mojo_rl/tasks/assets/props/brick.xml                     (m, the sim asset)
-    mojo_rl/tasks/assets/props/so101_tower_props/bowl_octagon.stl   (the visual)
+    noeira/tasks/assets/props/bowl.xml                      (m, the sim asset)
+    noeira/tasks/assets/props/brick.xml                     (m, the sim asset)
+    noeira/tasks/assets/props/so101_tower_props/bowl_octagon.stl   (the visual)
 
 Change a number here, run it, print the part, regenerate the family. A number
 edited in the `.xml` by hand is what `--check` catches.
@@ -77,7 +77,7 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HW = "projects/so101-tower/assets/hardware"
-PROPS = "mojo_rl/tasks/assets/props"
+PROPS = "noeira/tasks/assets/props"
 VIS_DIR = "so101_tower_props"
 
 # ── the numbers (mm) ────────────────────────────────────────────────────

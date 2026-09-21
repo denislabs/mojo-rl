@@ -2,7 +2,8 @@
 authors = ["Denis Laboureyras"]
 channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
 preview = ["pixi-build"]
-name = "mojo-rl"
+name = "noeira"
+description = "Dream in simulation. Act in the world. An end-to-end Physical AI stack in Mojo: physics, learning, perception and deployment, from simulator to robot."
 platforms = [
     { platform = "linux-64", cuda = "12" },
     { platform = "linux-aarch64", cuda = "12" },
@@ -11,8 +12,8 @@ platforms = [
 version = "0.1.0"
 license = "MIT"
 license-file = "LICENSE"
-homepage = "https://github.com/denislabs/mojo-rl"
-repository = "https://github.com/denislabs/mojo-rl"
+homepage = "https://github.com/noeira/noeira"
+repository = "https://github.com/noeira/noeira"
 
 
 [feature.nvidia]
@@ -34,7 +35,7 @@ cudnn = ">=9.14.0.64,<10"     # cuDNN for conv_gpu/conv_cudnn
 # and works with any CUDA container (12.x or 13.x) on driver >= 570.
 # On CUDA 13 containers (RTX 5090): ptxas 13.x → supports sm_120 (Blackwell) ✅
 # On CUDA 12.8 containers (RTX 4090): ptxas 12.x → supports sm_89 (Ada) ✅
-env = { MODULAR_NVPTX_COMPILER_PATH = "/usr/local/cuda/bin/ptxas", LD_PRELOAD = "$PIXI_PROJECT_ROOT/mojo_rl/cuda/libcuda_intercept.so" }
+env = { MODULAR_NVPTX_COMPILER_PATH = "/usr/local/cuda/bin/ptxas", LD_PRELOAD = "$PIXI_PROJECT_ROOT/noeira/cuda/libcuda_intercept.so" }
 scripts = ["scripts/build_cuda_intercept.sh"]
 
 # ---------------------------------------------------------------------------
@@ -71,7 +72,7 @@ python = ">=3.13.14,<3.14"
 # driver >= 580). JetPack 6.2 ships driver 540.4.0, so WITHOUT this line the
 # board would need a JetPack 7.2 reflash — which needs an x86 host, which is
 # the thing we are avoiding. /usr/local/cuda/bin/ptxas is JetPack's own.
-env = { MODULAR_NVPTX_COMPILER_PATH = "/usr/local/cuda/bin/ptxas", LD_PRELOAD = "$PIXI_PROJECT_ROOT/mojo_rl/cuda/libcuda_intercept.so" }
+env = { MODULAR_NVPTX_COMPILER_PATH = "/usr/local/cuda/bin/ptxas", LD_PRELOAD = "$PIXI_PROJECT_ROOT/noeira/cuda/libcuda_intercept.so" }
 scripts = ["scripts/build_cuda_intercept.sh"]
 
 [feature.jetson.tasks]
@@ -139,7 +140,7 @@ attn-matmul-bench-jetson = { cmd = "mojo build -I . --target-accelerator sm_87 -
 # PyTorch, for GATING ONLY. `tools/act/dump_act_reference.py` runs the ACT
 # reference (`references/act-main/`) on seeded weights and dumps every
 # intermediate activation + parameter to .npy, which the Mojo ACT gates then
-# compare against. Nothing under `mojo_rl/` imports torch, and no training or
+# compare against. Nothing under `noeira/` imports torch, and no training or
 # inference path depends on this environment — without it the ACT port could
 # only be checked against itself, which is not a check.
 #   pixi run -e act-ref python tools/act/dump_act_reference.py --out /tmp/act_ref
@@ -147,7 +148,7 @@ pytorch = ">=2.5,<3"
 torchvision = ">=0.20,<1"
 numpy = ">=1.26"
 # The REFERENCE safetensors implementation, for gating OURS
-# (`mojo_rl/io/safetensors.mojo`). Our writer's files must be readable by the
+# (`noeira/io/safetensors.mojo`). Our writer's files must be readable by the
 # library everyone else uses, and our reader must agree with it value-for-value
 # on a file that library wrote. A hand-rolled Python check would only re-state
 # the same understanding the Mojo code encodes -- two parsers sharing one wrong
@@ -173,7 +174,7 @@ python = ">=3.13.14,<3.14"
 mojo = "==1.1.0"
 max = "==26.6.0"
 gymnasium = ">=1.3.0,<2"
-# ⚠ DECLARED, NOT TRANSITIVE. `mojo_rl/physics3d/collision/native/mrl_qhull.c`
+# ⚠ DECLARED, NOT TRANSITIVE. `noeira/physics3d/collision/native/nra_qhull.c`
 # links libqhull_r to reproduce `mjCMesh::MakeGraph`'s facet ORDER, which is
 # what decides every merged polygon's normal (see `collision/qhull_native.mojo`).
 # qhull was already present as a transitive dep of another package; relying on
@@ -192,36 +193,36 @@ imageio-ffmpeg = ">=0.6.0,<0.7"
 # ⚠ DECLARED, NOT TRANSITIVE — the same rule as qhull above. `ffmpeg` reached
 # this environment only as a dependency of `imageio-ffmpeg`, and TWO pure-Mojo
 # paths now shell out to it: the LeRobot dataset import
-# (`mojo_rl/io/video`, `mojo_rl/data/lerobot.mojo`) and screen recording
-# (`mojo_rl/render/video_recorder.mojo`). Removing `imageio-ffmpeg` — the
+# (`noeira/io/video`, `noeira/data/lerobot.mojo`) and screen recording
+# (`noeira/render/video_recorder.mojo`). Removing `imageio-ffmpeg` — the
 # natural cleanup now that neither imports it — would take `ffmpeg` with it and
 # break both, at runtime, on a machine where it used to work.
 ffmpeg = ">=7,<9"
-# Used by `mojo_rl/data/lerobot.mojo` to fetch a dataset from the HuggingFace
+# Used by `noeira/data/lerobot.mojo` to fetch a dataset from the HuggingFace
 # Hub. Present as /usr/bin/curl on macOS and most Linux images, absent from
 # slim containers; declared so the import path does not depend on the base
 # image.
 curl = ">=8,<9"
-# ⚠ AND `libcurl`, which is the part that matters now. `mojo_rl/io/http.mojo`
+# ⚠ AND `libcurl`, which is the part that matters now. `noeira/io/http.mojo`
 # links the library, not the binary: every HTTP call in the tree — the metrics
 # logger, the dataset catalog, the HF downloader, the MNIST loader — is a
 # libcurl handle rather than Python `urllib` or a `curl` subprocess. The CLI
 # is still worth having on PATH for debugging the same requests by hand.
 # `zlib` comes with it and the shim links that too (MNIST's `.gz`).
 shaderc = ">=2026.2,<2027"  # for GLSL->SPIR-V shader compilation (cross-platform rendering)
-hdf5 = ">=2.1.0,<3"             # libhdf5 C library, FFI target for mojo_rl/io/hdf5
+hdf5 = ">=2.1.0,<3"             # libhdf5 C library, FFI target for noeira/io/hdf5
 hdf5plugin = ">=7.0.0,<8"          # Blosc/LZ4/ZSTD chunk-compression filters loaded via HDF5_PLUGIN_PATH
 h5py = ">=3.16.0,<4"             # used by inspection script + parity test (not by the Mojo loader)
 # GATE-ONLY. `examples/g1/bfm_zero_tracking_gate.mojo` runs the RELEASED
 # BFM-Zero actor (`FBcprAuxModel.onnx`, CC BY-NC) through Python interop to
 # score our G1 physics against the paper's sim-to-sim row; nothing under
-# `mojo_rl/` imports it (docs/BFM_ZERO_G1_REPRODUCTION.md, G2).
+# `noeira/` imports it (docs/BFM_ZERO_G1_REPRODUCTION.md, G2).
 onnxruntime = ">=1.17"
 scipy = ">=1.12"                 # same gate: `linear_sum_assignment` is the reference's `ot.emd2` for uniform weights
-# ⚠ GATE-ONLY AS OF THE NATIVE-NET WORK. Nothing under `mojo_rl/` imports
+# ⚠ GATE-ONLY AS OF THE NATIVE-NET WORK. Nothing under `noeira/` imports
 # these three any more: `nn/datasets/cifar10.mojo` reads the HF parquet with
 # `io/parquet` + `io/png`, and `nn/datasets/lewm_pusht.mojo` streams its
-# `.h5.zst` through libcurl + libzstd in `io/native/mrl_http.c`. They stay
+# `.h5.zst` through libcurl + libzstd in `io/native/nra_http.c`. They stay
 # DECLARED because they are the ORACLES those replacements are gated against
 # (`tools/io/dump_cifar_reference.py`, `tools/io/make_zstd_fixture.py`) — the
 # same rule as `safetensors` above. Removing them would delete the gates, not
@@ -231,7 +232,7 @@ pyarrow = ">=24.0.0,<25"            # read HF parquet datasets (e.g. CIFAR-10 lo
 zstandard = ">=0.25.0,<0.26"        # first-run decompression of .h5.zst envelope
 
 [package]
-name = "mojo_rl"
+name = "noeira"
 version = "0.1.0"
 
 [package.build]
@@ -272,17 +273,17 @@ default = { features = ["nvidia"] }
 [tasks]
 install-pre-commit = "pre-commit install"
 setup-roms = { cmd = "python3 scripts/setup_roms.py", description = "Download Atari 2600 ROMs and symlink roms/ for the emulator" }
-build = { cmd = "mojo precompile mojo_rl -o mojo_rl.mojoc" }
+build = { cmd = "mojo precompile noeira -o noeira.mojoc" }
 # ── the precompiled package (docs/COMPILE_TIME_PROFILING.md §3.1) ──────────
 # `Import Mojo` is an uncached per-build floor that scales with the symbols a
 # driver references: the SAC HalfCheetah driver pays 32 s of it on EVERY
 # rebuild from source, 2.5 s from the package (warm rebuild 38 s -> 8 s on
 # 1.0, identical binary). For iterating on a driver, config or example — the
-# package is ~3 min and the whole box to rebuild whenever mojo_rl/ changes,
+# package is ~3 min and the whole box to rebuild whenever noeira/ changes,
 # and `run-pkg` warns when it is stale. See scripts/pkg.sh for the two traps
 # it exists to avoid (the source tree shadows the package; shims are found
 # from the root).
-build-pkg = { cmd = "bash scripts/pkg.sh build", description = "Precompile mojo_rl into build/pkg/ (~3 min, wants the whole box)" }
+build-pkg = { cmd = "bash scripts/pkg.sh build", description = "Precompile noeira into build/pkg/ (~3 min, wants the whole box)" }
 run-pkg = { cmd = "bash scripts/pkg.sh run", description = "Build a driver against build/pkg/ and run it: run-pkg examples/x.mojo [args]" }
 compile-pkg = { cmd = "bash scripts/pkg.sh compile", description = "mojo build a driver against build/pkg/: compile-pkg examples/x.mojo -o out [flags]" }
 run = { cmd = "mojo run -I ." }
@@ -303,7 +304,7 @@ test-act = { cmd = "bash scripts/run_tests.sh tests/manifests/act.txt", descript
 test-io = { cmd = "bash scripts/run_tests.sh tests/manifests/io.txt", description = "Native parquet / resize / LeRobot-import gates (needs the dumps in tests/manifests/io.txt)" }
 test-swm = { cmd = "bash scripts/run_tests.sh tests/manifests/swm.txt", description = "SWM-H sheaf world model gates (experimental, CPU)" }
 test-fb = { cmd = "bash scripts/run_tests.sh tests/manifests/fb.txt", description = "Forward-Backward zero-shot RL gates (CPU; docs/BFM_ZERO_SHOT_RL.md)" }
-test-concurrent = { cmd = "bash scripts/run_tests.sh tests/manifests/concurrent.txt", description = "Concurrency backbone (mojo_rl/core/concurrent): pthread, SPSC ring, atomic cells" }
+test-concurrent = { cmd = "bash scripts/run_tests.sh tests/manifests/concurrent.txt", description = "Concurrency backbone (noeira/core/concurrent): pthread, SPSC ring, atomic cells" }
 # Format interop: our safetensors reader/writer against the REFERENCE library,
 # and the Hub's ImageNet ResNet18 against torchvision's. Needs `-e act-ref`
 # dumps AND the two `--verify` passes listed in the manifest header — half of
@@ -325,13 +326,13 @@ test-bfm-ref = { cmd = "pixi run -e act-ref bash scripts/run_tests.sh tests/mani
 # VALUE in an asset needs no regeneration; adding or removing an element does,
 # because only that changes a count. Drift is silent — a stale count sizes a
 # slab wrong and the model still builds — so CI checks it on every push.
-gen-dims = { cmd = "python tools/gen_model_dims.py", description = "Regenerate mojo_rl/envs/**/*_dims.mojo from the .xml assets" }
+gen-dims = { cmd = "python tools/gen_model_dims.py", description = "Regenerate noeira/envs/**/*_dims.mojo from the .xml assets" }
 gen-dims-check = { cmd = "python tools/gen_model_dims.py --check", description = "Fail if any generated *_dims.mojo is stale (CI)" }
 gen-park-scenes = { cmd = "python tools/tasks/gen_park_scenes.py", description = "Regenerate the P0 parked-slot scenes + pose module" }
 gen-park-scenes-check = { cmd = "python tools/tasks/gen_park_scenes.py --check", description = "Fail if the P0 park scenes or pose module are stale (CI)" }
-gen-family-scenes = { cmd = "mojo run -I . tools/tasks/gen_family_scene.mojo", description = "Compose every .family into mojo_rl/tasks/scenes/" }
+gen-family-scenes = { cmd = "mojo run -I . tools/tasks/gen_family_scene.mojo", description = "Compose every .family into noeira/tasks/scenes/" }
 gen-family-scenes-check = { cmd = "mojo run -I . tools/tasks/gen_family_scene.mojo --check", description = "Fail if a composed family scene is stale (CI)" }
-gen-placement-tables = { cmd = "mojo run -I . tools/tasks/gen_placement_tables.mojo", description = "Generate every LIBERO family's device placement table (mojo_rl/tasks/placement/) from the .family + composed scene FK" }
+gen-placement-tables = { cmd = "mojo run -I . tools/tasks/gen_placement_tables.mojo", description = "Generate every LIBERO family's device placement table (noeira/tasks/placement/) from the .family + composed scene FK" }
 gen-placement-tables-check = { cmd = "mojo run -I . tools/tasks/gen_placement_tables.mojo --check", description = "Fail if a device placement table is stale (CI)" }
 device-placement = { cmd = "mojo run -I . tests/tasks/test_device_placement.mojo", description = "The device reset's free-slot placement against the host sampler: so101_tabletop + every LIBERO task, exact, with rule coverage" }
 libero-demo-batched = { cmd = "mojo run -I . examples/tasks/libero_demo_batched.mojo", description = "LIBERO demonstrations replayed on the batched env (a real task per lane) against the CPU replay: success word exact, physics window, success side by side; args: [--demo-offset K] [--steps S] [--window W]" }
@@ -345,28 +346,28 @@ libero-eval-batched = { cmd = "mojo run -I . examples/tasks/libero_eval_batched.
 libero-family-batched = { cmd = "mojo run -I . examples/tasks/libero_family_batched.mojo", description = "One LIBERO family (comptime FAMILY, sed it) on the batched env: device reset == host, success word exact, no contact saturation, physics vs CPU; args: [--steps S] [--window W] [--cpu-lanes K]" }
 box-box-sap-gpu = { cmd = "mojo run -I . tests/physics3d/test_box_box_sap_gpu_parity.mojo", description = "Box/box contacts CPU vs GPU through SAP and N^2 (fails on Metal: the block SAP kernel drops the pair)" }
 format = { cmd = "mojo format -l 80 ." }
-# Dear ImGui shim for `mojo_rl/render/imgui/` (the ImGui dm_control viewer).
+# Dear ImGui shim for `noeira/render/imgui/` (the ImGui dm_control viewer).
 # Clones ImGui into third_party/ on first run, then rebuilds only when stale.
 # Neither the clone nor the built dylib is tracked, so this is a prerequisite
 # of examples/dm_control/dm_viewer_imgui.mojo on a fresh checkout.
-build-imgui = { cmd = "bash scripts/build_imgui.sh", description = "Build the Dear ImGui shim (mojo_rl/render/imgui/)" }
-# Serial shim for `mojo_rl/io/serial/` (the SO-101 Feetech bus). Six lines of
+build-imgui = { cmd = "bash scripts/build_imgui.sh", description = "Build the Dear ImGui shim (noeira/render/imgui/)" }
+# Serial shim for `noeira/io/serial/` (the SO-101 Feetech bus). Six lines of
 # C for ONE call Mojo's FFI cannot make: `ioctl` is C-variadic, and on Apple
 # arm64 variadic args go on the stack while `external_call` puts them in
-# registers -> silent EFAULT. Prerequisite of anything under `mojo_rl/robot/`.
-build-serial = { cmd = "bash scripts/build_serial.sh", description = "Build the serial shim (mojo_rl/io/serial/)" }
-# HTTP shim for `mojo_rl/io/http.mojo` — libcurl behind a fixed-arity C API.
+# registers -> silent EFAULT. Prerequisite of anything under `noeira/robot/`.
+build-serial = { cmd = "bash scripts/build_serial.sh", description = "Build the serial shim (noeira/io/serial/)" }
+# HTTP shim for `noeira/io/http.mojo` — libcurl behind a fixed-arity C API.
 # Same reason as the serial shim, one level up: `curl_easy_setopt` is
 # C-variadic. It also carries zlib's `inflate`, because MNIST ships `.gz`
 # URLs, which is a content encoding libcurl will not decode (it is not a
 # `Content-Encoding` header). Prerequisite of `RemoteLogger`, the dataset
 # catalog, the HF downloader and the MNIST / TinyShakespeare loaders — i.e.
 # of every remaining network call in the tree, none of which touch Python.
-build-http = { cmd = "bash scripts/build_http.sh", description = "Build the HTTP shim (mojo_rl/io/http.mojo)" }
-# qhull shim for `mojo_rl/physics3d/collision/`. MuJoCo does not implement a
+build-http = { cmd = "bash scripts/build_http.sh", description = "Build the HTTP shim (noeira/io/http.mojo)" }
+# qhull shim for `noeira/physics3d/collision/`. MuJoCo does not implement a
 # convex hull — `MakeGraph` CALLS qhull and walks `FORALLfacets`, and that
 # order decides every polygon normal. Prerequisite of any MESH model.
-# OpenCV shim for `mojo_rl/vision/opencv/`. OpenCV has had no C API since 4.x,
+# OpenCV shim for `noeira/vision/opencv/`. OpenCV has had no C API since 4.x,
 # so this is a C++ shim like the ImGui one -- but nothing is vendored: every
 # pixi env already carries the full C++ OpenCV 5.0. Groups A (lifecycle) and
 # B (capture) today; see docs/OPENCV_SHIM_SCOPE.md. Prerequisite of any camera
@@ -375,8 +376,8 @@ build-http = { cmd = "bash scripts/build_http.sh", description = "Build the HTTP
 # with ArUco detection drawn over it. Needs BOTH shims. Build the binary rather
 # than `mojo run` -- it links ResNet-free but still takes ~40 s to compile.
 camera-studio = { cmd = "mojo run -I . examples/vision/camera_studio.mojo", depends-on = ["build-imgui", "build-opencv"], description = "Live camera + ArUco playground (examples/vision/camera_studio.mojo)" }
-build-opencv = { cmd = "bash scripts/build_opencv.sh", description = "Build the OpenCV shim (mojo_rl/vision/opencv/)" }
-build-qhull = { cmd = "bash scripts/build_qhull.sh", description = "Build the qhull shim (mojo_rl/physics3d/collision/)" }
+build-opencv = { cmd = "bash scripts/build_opencv.sh", description = "Build the OpenCV shim (noeira/vision/opencv/)" }
+build-qhull = { cmd = "bash scripts/build_qhull.sh", description = "Build the qhull shim (noeira/physics3d/collision/)" }
 # The SO-101 hardware gate: dump both arms from Mojo, diff against
 # `tools/soarm/so101_diag.py` (Python + lerobot). Read-only — writes no
 # register and never touches torque. Needs the arms plugged in.
@@ -392,7 +393,7 @@ soarm-torque-off = { cmd = "mojo run -I . tools/soarm/so101_torque_off.mojo", de
 assets-status = { cmd = "mojo run -I . tools/assets/assets_cli.mojo status", description = "Which env asset packs are on this box, and which are not" }
 assets-pull = { cmd = "mojo run -I . tools/assets/assets_cli.mojo pull", description = "Fetch env asset packs BEFORE a run starts (see PROJECT_LAYER_PLAN.md §9)" }
 assets-where = { cmd = "mojo run -I . tools/assets/assets_cli.mojo where", description = "Where a pack would be fetched from, and which credential it would use" }
-libero-pack = { cmd = "python tools/assets/build_libero_pack.py", description = "Cut the LIBERO asset pack from references/LIBERO-master and write mojo_rl/tasks/libero/assets.kv (does NOT upload)" }
+libero-pack = { cmd = "python tools/assets/build_libero_pack.py", description = "Cut the LIBERO asset pack from references/LIBERO-master and write noeira/tasks/libero/assets.kv (does NOT upload)" }
 # ── LIBERO (docs/LIBERO_PORT_ASSESSMENT_2026_09_13.md) ───────────────────
 # Regenerate in this order after `assets-pull libero`: robot, arenas, objects,
 # family, then `gen-family-scenes` and `gen-dims`. Each has a --check.
@@ -429,7 +430,7 @@ libero-object = { cmd = "mojo run -I . tests/tasks/test_libero_object.mojo", des
 libero-placement = { cmd = "mojo run -I . tests/tasks/test_libero_placement.mojo", description = "Where a reset puts things: the asset's own bottom_site/top_site/horizontal_radius_site, a contact-free reset for every libero_spatial task, and jinit= as a draw" }
 libero-goal-eval = { cmd = "mojo run -I . tests/tasks/test_libero_goal_eval.mojo", description = "L3 gate: libero_goal's ten goals on the composed scene, host vs tape vs kernel loop (+ device leg with an accelerator)" }
 libero-survey = { cmd = "mojo run -I . examples/tasks/libero_survey.mojo", description = "LIBERO's 130 files against the task layer: parsed / family / task / resolved" }
-libero-onestep = { cmd = "python tools/tasks/libero_onestep_vs_mujoco.py mojo_rl/tasks/scenes/libero_goal.xml mojo_rl/tasks/families/libero_goal.family", description = "One-step board row for the composed libero_goal scene vs MuJoCo (build /tmp/mfh/drive first, see docs/menagerie_fidelity_harnesses/README.md); args: N ctrl_scale" }
+libero-onestep = { cmd = "python tools/tasks/libero_onestep_vs_mujoco.py noeira/tasks/scenes/libero_goal.xml noeira/tasks/families/libero_goal.family", description = "One-step board row for the composed libero_goal scene vs MuJoCo (build /tmp/mfh/drive first, see docs/menagerie_fidelity_harnesses/README.md); args: N ctrl_scale" }
 project-init = { cmd = "mojo run -I . tools/project/project_cli.mojo init", description = "Create projects/<name>/ + project.kv. Pass the name, then --description" }
 project-list = { cmd = "mojo run -I . tools/project/project_cli.mojo list", description = "Every project, with its run count" }
 # Refs, their drift against `git log -1 -- <path>`, and every run's status/outcome/tag.
@@ -441,8 +442,8 @@ project-prune = { cmd = "mojo run -I . tools/project/project_cli.mojo prune", de
 # The one field a human has to write, and what makes runs searchable at all:
 #   grep -l 'tag=.*reach' projects/*/runs/*/run.kv
 project-promote = { cmd = "mojo run -I . tools/project/project_cli.mojo promote", description = 'Promote a run checkpoint to a named role: project-promote <run_id> best --as reach --note "..."' }
-project-push = { cmd = "mojo run -I . tools/project/project_cli.mojo push", description = "Send a project's run artifacts to the monitor (needs RL_MONITOR_*)" }
-project-pull = { cmd = "mojo run -I . tools/project/project_cli.mojo pull", description = "Bring a run's artifacts back onto this box (needs RL_MONITOR_*)" }
+project-push = { cmd = "mojo run -I . tools/project/project_cli.mojo push", description = "Send a project's run artifacts to the monitor (needs NOEIRA_CLOUD_*)" }
+project-pull = { cmd = "mojo run -I . tools/project/project_cli.mojo pull", description = "Bring a run's artifacts back onto this box (needs NOEIRA_CLOUD_*)" }
 run-tag = { cmd = "mojo run -I . tools/project/project_cli.mojo tag", description = 'Tag a run: run-tag <run_id> "free text"' }
 
 # Record teleoperation into a LeRobot v3 dataset. ⚠ SAFE BY DEFAULT: without
@@ -495,7 +496,7 @@ gpu-info = { cmd = "nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_
 gpu-specs = { cmd = "python3 scripts/gpu_specs.py", description = "Get complete GPU architectural specifications (NVIDIA/AMD/Apple Silicon)" }
 
 # Shader compilation
-compile-shaders = { cmd = "bash mojo_rl/render/shaders/compile.sh", description = "Compile GLSL shaders to SPIR-V bytecode" }
+compile-shaders = { cmd = "bash noeira/render/shaders/compile.sh", description = "Compile GLSL shaders to SPIR-V bytecode" }
 
 # macOS
 check-macos = { cmd = "sw_vers -productVersion | awk -F. '{if($1<15) {print \"Error: macOS 15+ required, found \" $0; exit 1}}'", description = "Ensure macOS 15+" }

@@ -10,8 +10,8 @@ Asset-free/fast. See `docs/PROCGEN_MINER_SCOPE.md`.
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import MinerGame, BOULDER, DIAMOND
-from mojo_rl.envs.procgen.games.miner import DIST_EASY, DIST_HARD
+from noeira.envs.procgen.games import MinerGame, BOULDER, DIAMOND
+from noeira.envs.procgen.games.miner import DIST_EASY, DIST_HARD
 
 comptime STEPS = 150
 

@@ -16,10 +16,10 @@ The two that matter:
 
 from std.time import perf_counter_ns
 
-from mojo_rl.core.concurrent.block import SharedBlock
-from mojo_rl.core.concurrent.ring import SharedRing
-from mojo_rl.core.concurrent.thread import sleep_us
-from mojo_rl.core.concurrent.worker import (
+from noeira.core.concurrent.block import SharedBlock
+from noeira.core.concurrent.ring import SharedRing
+from noeira.core.concurrent.thread import sleep_us
+from noeira.core.concurrent.worker import (
     POLL_DID_WORK,
     POLL_DONE,
     POLL_IDLE,

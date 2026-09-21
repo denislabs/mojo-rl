@@ -11,9 +11,9 @@ See `docs/PROCGEN_HEIST_SCOPE.md`.
 
 from std.testing import assert_equal, TestSuite
 
-from mojo_rl.envs.procgen.core.randgen import RandGen
-from mojo_rl.envs.procgen.core.mazegen import MazeGen
-from mojo_rl.envs.procgen.core.object_ids import (
+from noeira.envs.procgen.core.randgen import RandGen
+from noeira.envs.procgen.core.mazegen import MazeGen
+from noeira.envs.procgen.core.object_ids import (
     SPACE,
     WALL_OBJ,
     DOOR_OBJ,

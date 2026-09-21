@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | The LeRobot v3 WRITER, read back by the importer that predates it
 # +--------------------------------------------------------------------------+ #
-"""Gate `mojo_rl/data/lerobot_write.mojo` — Leg B of the recording plan.
+"""Gate `noeira/data/lerobot_write.mojo` — Leg B of the recording plan.
 
     pixi run mojo run -I . tests/data/test_lerobot_write.mojo
 
@@ -44,18 +44,18 @@ from std.os import makedirs
 from std.os.path import exists
 from std.memory import Pointer
 
-from mojo_rl.data.lerobot import free_bytes, import_lerobot_v3
-from mojo_rl.data.lerobot_rejected import (
+from noeira.data.lerobot import free_bytes, import_lerobot_v3
+from noeira.data.lerobot_rejected import (
     kept_rows,
     load_rejected_episodes,
     refuse_existing_dataset,
     reject_episode,
     save_rejected_episodes,
 )
-from mojo_rl.data.lerobot_write import LeRobotWriter
-from mojo_rl.io.fileio import remove_file
-from mojo_rl.io.proc import run_capture
-from mojo_rl.data.store import TrajectoryStore
+from noeira.data.lerobot_write import LeRobotWriter
+from noeira.io.fileio import remove_file
+from noeira.io.proc import run_capture
+from noeira.data.store import TrajectoryStore
 
 
 comptime H = 48
@@ -339,7 +339,7 @@ def _check_checkpoint_resume() raises -> Int:
     recorder leaves: its video file exists and is unreferenced, and all
     metadata is whatever the last `end_episode` wrote.
     """
-    var root = String("/tmp/mojo_rl_lw_ckpt")
+    var root = String("/tmp/noeira_lw_ckpt")
     _ = run_capture(String("rm -rf ") + root)
     var n = 0
     var names = _names()
@@ -355,16 +355,16 @@ def _check_checkpoint_resume() raises -> Int:
     for c in range(2):
         _ = w._enc[c].stop()  # release ffmpeg; nothing else is finished
 
-    if not exists(root + "/meta/mojo_rl_writer_stats.json"):
+    if not exists(root + "/meta/noeira_writer_stats.json"):
         raise Error("checkpoint: no resume state after two episodes")
-    import_lerobot_v3(root, String("/tmp/mojo_rl_lw_ckpt_crash.h5"), H, W, verbose=False)
+    import_lerobot_v3(root, String("/tmp/noeira_lw_ckpt_crash.h5"), H, W, verbose=False)
     var e1 = List[Int]()
     e1.append(0)
     e1.append(1)
     var l1 = List[Int]()
     l1.append(4)
     l1.append(7)
-    n += _verify(String("/tmp/mojo_rl_lw_ckpt_crash.h5"), e1, l1, String("after crash"))
+    n += _verify(String("/tmp/noeira_lw_ckpt_crash.h5"), e1, l1, String("after crash"))
     print("  checkpoint: crash inside episode 3 -> the dataset imports with episodes 0 and 1 intact")
 
     # ── session 2: resume, record two more, finish ────────────────────
@@ -376,13 +376,13 @@ def _check_checkpoint_resume() raises -> Int:
     _record_episode(r, 2, 3)
     _record_episode(r, 3, 5)
     r.close(verbose=False)
-    import_lerobot_v3(root, String("/tmp/mojo_rl_lw_ckpt_resumed.h5"), H, W, verbose=False)
+    import_lerobot_v3(root, String("/tmp/noeira_lw_ckpt_resumed.h5"), H, W, verbose=False)
     var e2 = List[Int]()
     var l2 = List[Int]()
     for pair in [(0, 4), (1, 7), (2, 3), (3, 5)]:
         e2.append(pair[0])
         l2.append(pair[1])
-    n += _verify(String("/tmp/mojo_rl_lw_ckpt_resumed.h5"), e2, l2, String("resumed"))
+    n += _verify(String("/tmp/noeira_lw_ckpt_resumed.h5"), e2, l2, String("resumed"))
     print("  resume: 2 recorded + 2 resumed -> 4 episodes, every row and frame from its own episode")
 
     # ── refusals ──────────────────────────────────────────────────────
@@ -398,7 +398,7 @@ def _check_checkpoint_resume() raises -> Int:
     except:
         refused += 1
     try:
-        _ = LeRobotWriter.resume(String("/tmp/mojo_rl_lw_packed"), FPS, names[0].copy(), names[1].copy(), names[2].copy(), H, W)
+        _ = LeRobotWriter.resume(String("/tmp/noeira_lw_packed"), FPS, names[0].copy(), names[1].copy(), names[2].copy(), H, W)
     except:
         refused += 1
     if refused != 3:
@@ -535,18 +535,18 @@ def main() raises:
     var total = 0
 
     # One mp4 per camera: episodes located by `from_timestamp`.
-    var r1 = String("/tmp/mojo_rl_lw_packed")
+    var r1 = String("/tmp/noeira_lw_packed")
     # A run that died inside the rejected leg leaves its list behind, and the
     # writer does not clear the directory.
     if exists(r1 + "/meta/rejected_episodes.json"):
         remove_file(r1 + "/meta/rejected_episodes.json")
     _write_dataset(r1, 100)
-    total += _check(r1, String("/tmp/mojo_rl_lw_packed.h5"), String("packed"))
+    total += _check(r1, String("/tmp/noeira_lw_packed.h5"), String("packed"))
 
     # One mp4 per episode: located by `file_index`, `from_timestamp` always 0.
-    var r2 = String("/tmp/mojo_rl_lw_rolled")
+    var r2 = String("/tmp/noeira_lw_rolled")
     _write_dataset(r2, 0)
-    total += _check(r2, String("/tmp/mojo_rl_lw_rolled.h5"), String("rolled"))
+    total += _check(r2, String("/tmp/noeira_lw_rolled.h5"), String("rolled"))
 
     if not exists(
         r2 + "/videos/observation.images.front/chunk-000/file-002.mp4"
@@ -557,7 +557,7 @@ def main() raises:
         )
     print("  rolling: the rolled dataset really produced one file per episode")
 
-    total += _check_rejected(r1, String("/tmp/mojo_rl_lw_rejected.h5"))
+    total += _check_rejected(r1, String("/tmp/noeira_lw_rejected.h5"))
     total += _check_checkpoint_resume()
 
     if total < 100:

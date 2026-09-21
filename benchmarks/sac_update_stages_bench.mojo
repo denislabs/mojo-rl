@@ -31,8 +31,8 @@ from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac.config import SAC
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac.config import SAC
 
 
 comptime OBS = 49

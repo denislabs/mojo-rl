@@ -5,10 +5,10 @@ Run with: pixi run mojo run -I . examples/acrobot_native_demo.mojo
 Requires SDL2: brew install sdl2 sdl2_ttf
 """
 
-from mojo_rl.envs import AcrobotEnv
+from noeira.envs import AcrobotEnv
 from std.random import random_float64
 from std.time import sleep
-from mojo_rl.render import Renderer2D
+from noeira.render import Renderer2D
 
 
 def main() raises:

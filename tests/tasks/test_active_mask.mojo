@@ -63,28 +63,28 @@ Run: pixi run mojo run -I . tests/tasks/test_active_mask.mojo
 """
 
 from layout import Layout
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.gpu.constants import (
     METADATA_SIZE, META_IDX_TASK_ACTIVE,
     MODEL_BODY_SIZE, MODEL_SITE_SIZE, MODEL_GEOM_SIZE, CONTACT_SIZE,
 )
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
-from mojo_rl.tasks.spec import (
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
 )
-from mojo_rl.tasks.family import scene_path, park_pos
-from mojo_rl.tasks.active import active_mask, mask_slots, MASK_SLOT_LIMIT
-from mojo_rl.tasks.obs import slot_active, FREE_JOINT_NQ, FREE_JOINT_NV
-from mojo_rl.physics3d.fields import Data, DynDims
-from mojo_rl.tasks.reset import free_slot_addresses
-from mojo_rl.tasks.family_config import So101TabletopConfig, So101TabletopPlacement
-from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.tasks.family import scene_path, park_pos
+from noeira.tasks.active import active_mask, mask_slots, MASK_SLOT_LIMIT
+from noeira.tasks.obs import slot_active, FREE_JOINT_NQ, FREE_JOINT_NV
+from noeira.physics3d.fields import Data, DynDims
+from noeira.tasks.reset import free_slot_addresses
+from noeira.tasks.family_config import So101TabletopConfig, So101TabletopPlacement
+from noeira.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
+from noeira.physics3d.gpu.constants import (
     META_IDX_PREV_X, META_IDX_TASK_PARAM_0,
 )
-from mojo_rl.tasks.predicates import parse_goal, bind_goal
-from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.so101_tabletop_xml import (
+from noeira.tasks.predicates import parse_goal, bind_goal
+from noeira.tasks.tape import encode_goal, TAPE_WORDS
+from noeira.tasks.so101_tabletop_xml import (
     SO101_TABLETOP_N_GOAL_WORDS,
     So101TabletopModel, SO101_TABLETOP_N_FREE_SLOTS, SO101_TABLETOP_OBS_DIM,
 )
@@ -154,7 +154,7 @@ def main() raises:
     print("=== the per-lane active mask, and the obs that carries it ===")
     var ta = Tally()
 
-    var f = load_family("mojo_rl/tasks/families/so101_tabletop.family")
+    var f = load_family("noeira/tasks/families/so101_tabletop.family")
     var fmd = parse_model_runtime(scene_path(f))
 
     # ── 1. the config's restatement, against the composed scene ───────────
@@ -243,8 +243,8 @@ def main() raises:
     # ── 2. the mask, host writer to device decoder ────────────────────────
     print()
     print("--- 2. the mask round-trips ---")
-    var tg = load_task("mojo_rl/tasks/tasks/so101_gather_bricks.task")
-    var tr = load_task("mojo_rl/tasks/tasks/so101_reach_brick.task")
+    var tg = load_task("noeira/tasks/tasks/so101_gather_bricks.task")
+    var tr = load_task("noeira/tasks/tasks/so101_reach_brick.task")
     # ⚠ REAL TAPES, for the nine goal words below — see the note at their
     # write. `gather`'s term 0 is `Near` (two BODIES) and `reach`'s is
     # `AtRegion` (a SITE subject), so the two lanes exercise both arms of

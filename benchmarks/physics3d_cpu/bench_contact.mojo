@@ -18,17 +18,17 @@ have a history of being both slow and unstable here.
 
 from std.sys import argv
 
-from mojo_rl.envs.metaworld import SawyerReachModel, SawyerReachConfig
-from mojo_rl.envs.dm_control.dog import DMDogStandWalkModel, DMDogStandConfig
-from mojo_rl.envs.dm_control.humanoid_cmu import (
+from noeira.envs.metaworld import SawyerReachModel, SawyerReachConfig
+from noeira.envs.dm_control.dog import DMDogStandWalkModel, DMDogStandConfig
+from noeira.envs.dm_control.humanoid_cmu import (
     DMHumanoidCMUModel,
     DMHumanoidCMUConfig,
     WALK_SPEED,
 )
-from mojo_rl.envs.dm_control.manipulation_reassemble3_def import Reassemble3Model
-from mojo_rl.envs.dm_control.manipulation_reassemble3_config import Reassemble3Config
-from mojo_rl.envs.dm_control.manipulation_reassemble5_def import Reassemble5Model
-from mojo_rl.envs.dm_control.manipulation_reassemble5_config import Reassemble5Config
+from noeira.envs.dm_control.manipulation_reassemble3_def import Reassemble3Model
+from noeira.envs.dm_control.manipulation_reassemble3_config import Reassemble3Config
+from noeira.envs.dm_control.manipulation_reassemble5_def import Reassemble5Model
+from noeira.envs.dm_control.manipulation_reassemble5_config import Reassemble5Config
 
 from physics3d_cpu.harness import bench
 

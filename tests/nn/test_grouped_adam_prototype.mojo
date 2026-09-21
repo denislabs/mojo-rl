@@ -29,7 +29,7 @@ from std.sys import has_nvidia_gpu_accelerator
 from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn.constants import DT, TPB
+from noeira.nn.constants import DT, TPB
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -23,8 +23,8 @@ from std.math import sqrt, abs
 from std.testing import assert_true, assert_almost_equal, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.task_embedding import TaskEmbedding
+from noeira.nn.constants import DT
+from noeira.deep_agents.tdmpc2.task_embedding import TaskEmbedding
 
 comptime NUM_TASKS = 3
 comptime TASK_EMB = 8

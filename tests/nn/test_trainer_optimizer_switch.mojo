@@ -10,15 +10,15 @@ Run: pixi run mojo run -I . tests/nn/test_trainer_optimizer_switch.mojo
 
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.optimizer.optimizer import Optimizer
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.optimizer.sgd import SGD
-from mojo_rl.nn.training.trainer import Trainer
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.optimizer.optimizer import Optimizer
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.optimizer.sgd import SGD
+from noeira.nn.training.trainer import Trainer
 
 
 comptime IN = 4

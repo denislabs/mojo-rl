@@ -42,15 +42,15 @@ Run with:
 from std.python import Python
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.fields import Model, Data, Dims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.fields import Model, Data, Dims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE, BODY_IDX_WELDID, META_IDX_NUM_CONTACTS,
 )
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 comptime NMV: Int = 64

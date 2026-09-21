@@ -11,8 +11,8 @@ Validates the new BoxContinuousActionEnv conformance + parametrized resolution:
 Run: pixi run mojo run -I . tests/envs/test_car_racing_mb_continuous_96.mojo
 """
 
-from mojo_rl.envs.car_racing.car_racing_mb import CarRacingMB
-from mojo_rl.envs.car_racing.car_racing_pixel import CarRacingPixel
+from noeira.envs.car_racing.car_racing_mb import CarRacingMB
+from noeira.envs.car_racing.car_racing_pixel import CarRacingPixel
 
 comptime DT = DType.float32
 

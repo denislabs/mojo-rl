@@ -38,8 +38,8 @@ Run: pixi run mojo run -I . tests/physics3d/test_cholesky_both_legs.mojo
 """
 
 from std.math import sqrt
-from mojo_rl.physics3d.fields.scratch import Scratch
-from mojo_rl.physics3d.solver.cholesky import (
+from noeira.physics3d.fields.scratch import Scratch
+from noeira.physics3d.solver.cholesky import (
     chol_factor_inline,
     chol_solve_inline,
     chol_rank1_update,

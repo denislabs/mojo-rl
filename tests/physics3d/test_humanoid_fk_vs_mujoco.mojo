@@ -18,7 +18,7 @@ Key features beyond other models:
   - Default qpos0 = [0, 0, 1.4, 1, 0, 0, 0, 0, ...] (torso at z=1.4)
 
 Run with:
-    cd mojo-rl && pixi run mojo run physics3d/tests/test_humanoid_fk_vs_mujoco.mojo
+    cd noeira && pixi run mojo run physics3d/tests/test_humanoid_fk_vs_mujoco.mojo
 """
 
 from std.testing import assert_true, TestSuite
@@ -27,12 +27,12 @@ from std.math import abs
 from std.collections import Array
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.fields import Data, Model, Dims, DimsLike
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
-from mojo_rl.physics3d.model.model_dims import ModelDims
+from noeira.envs.humanoid.humanoid_xml import HumanoidModel
+from noeira.physics3d.model.model_dims import ModelDims
 
 
 # =============================================================================

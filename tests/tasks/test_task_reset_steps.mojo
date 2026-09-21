@@ -22,20 +22,20 @@ What it asserts is what only a simulation can say:
 Run: pixi run mojo run -I . tests/tasks/test_task_reset_steps.mojo
 """
 
-from mojo_rl.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
-from mojo_rl.tasks.spec import load_family, load_task, validate_task_against_family
-from mojo_rl.tasks.family import scene_path, park_pos
-from mojo_rl.tasks.predicates import parse_goal, bind_goal, slot_body_id
-from mojo_rl.tasks.eval import eval_goal, region_sites
-from mojo_rl.tasks.sampler import (
+from noeira.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
+from noeira.tasks.spec import load_family, load_task, validate_task_against_family
+from noeira.tasks.family import scene_path, park_pos
+from noeira.tasks.predicates import parse_goal, bind_goal, slot_body_id
+from noeira.tasks.eval import eval_goal, region_sites
+from noeira.tasks.sampler import (
     sample_placements, RegionFrame, SampleReport,
 )
-from mojo_rl.tasks.reset import free_slot_addresses, reset_slots
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.tasks.reset import free_slot_addresses, reset_slots
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
 
 
 comptime DT = DType.float64
@@ -62,8 +62,8 @@ def main() raises:
     print("=== the composed family, reset and stepped ===")
     var ta = Tally()
 
-    var f = load_family("mojo_rl/tasks/families/so101_tabletop.family")
-    var t = load_task("mojo_rl/tasks/tasks/so101_gather_bricks.task")
+    var f = load_family("noeira/tasks/families/so101_tabletop.family")
+    var t = load_task("noeira/tasks/tasks/so101_gather_bricks.task")
     validate_task_against_family(t, f)
 
     var fmd = parse_model_runtime(scene_path(f))
@@ -328,7 +328,7 @@ def main() raises:
 
     for ti in range(len(task_files)):
         var tk = load_task(
-            "mojo_rl/tasks/tasks/" + task_files[ti] + ".task"
+            "noeira/tasks/tasks/" + task_files[ti] + ".task"
         )
         validate_task_against_family(tk, f)
         var gk = bind_goal(

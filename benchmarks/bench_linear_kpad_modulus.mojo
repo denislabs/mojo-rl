@@ -67,8 +67,8 @@ from max.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.splitk_gemm import multistage_shape_ok
+from noeira.nn.constants import DT
+from noeira.nn.core.splitk_gemm import multistage_shape_ok
 
 
 comptime WARMUP = 20

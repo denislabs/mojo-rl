@@ -18,24 +18,24 @@ from std.math import abs
 from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
-from mojo_rl.physics3d.fields import (
+from noeira.physics3d.fields import (
     Data,
     Model,
     DynamicsScratch,
     ImplicitScratch,
     Dims,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
+from noeira.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
-from mojo_rl.physics3d.dynamics.subtree_com import (
+from noeira.physics3d.dynamics.subtree_com import (
     compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof import compute_cdof
-from mojo_rl.physics3d.dynamics.qderiv import (
+from noeira.physics3d.dynamics.cdof import compute_cdof
+from noeira.physics3d.dynamics.qderiv import (
     compute_rne_vel_derivative,
 )
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
 
 comptime DT = DType.float32
 comptime NQ = Walker2dModel.NQ

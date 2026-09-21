@@ -33,14 +33,14 @@ from std.testing import assert_true, TestSuite
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.data.resident import IDX_DT
-from mojo_rl.deep_agents.fb import FBCPROnlineAgent
-from mojo_rl.deep_agents.fb.bfm_towers import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.data.resident import IDX_DT
+from noeira.deep_agents.fb import FBCPROnlineAgent
+from noeira.deep_agents.fb.bfm_towers import (
     BFMFTower, BFMActorTower, BFMBNet, BFMDNet,
 )
-from mojo_rl.deep_agents.fb.kernels import ensure_t
+from noeira.deep_agents.fb.kernels import ensure_t
 
 
 comptime OBS = 527

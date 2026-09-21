@@ -21,11 +21,11 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_batched_env_fields_pro
 from std.math import abs
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
-from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS, METADATA_SIZE
+from noeira.nn.constants import DT
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.envs.walker2d.walker2d_xml import Walker2dModel
+from noeira.envs.walker2d.walker2d_config import Walker2dConfig
+from noeira.physics3d.gpu.constants import META_IDX_NUM_CONTACTS, METADATA_SIZE
 
 comptime BATCH = 2
 comptime N_STEPS = 16

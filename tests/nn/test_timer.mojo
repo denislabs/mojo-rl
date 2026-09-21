@@ -10,8 +10,8 @@ Verifies:
 
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.training.timer import Timer
-from mojo_rl.nn.constants import DT
+from noeira.nn.training.timer import Timer
+from noeira.nn.constants import DT
 
 
 def test_add_and_accumulate() raises:

@@ -15,17 +15,17 @@ RNG, which would be testing a coincidence rather than the thing that can break.
 from std.sys import exit
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.deep_agents.act.config import (
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.deep_agents.act.config import (
     SO101_ADIM,
     SO101_IMG_H,
     SO101_IMG_W,
     SO101_N_CAM,
     SO101_QPOS,
 )
-from mojo_rl.deep_agents.act.data import ACTDataset
-from mojo_rl.deep_agents.act.data_gpu import ACTDeviceDataset
+from noeira.deep_agents.act.data import ACTDataset
+from noeira.deep_agents.act.data_gpu import ACTDeviceDataset
 
 from std.python import Python, PythonObject
 
@@ -53,7 +53,7 @@ def store_path() raises -> String:
     var glob = Python.import_module("glob")
     var home = String(os.path.expanduser(PythonObject("~")))
     var pat = (
-        home + "/.cache/mojo_rl/act_so101/*_" + String(IMG_H) + "x"
+        home + "/.cache/noeira/act_so101/*_" + String(IMG_H) + "x"
         + String(IMG_W) + ".h5"
     )
     var hits = glob.glob(PythonObject(pat))

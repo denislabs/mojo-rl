@@ -36,9 +36,9 @@ from std.math import abs, cos, sin, pi
 from std.random import seed, random_float64
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import SqMat, householder
-from mojo_rl.experimental.swm.place_graph import PlaceGraph, Edge
-from mojo_rl.experimental.swm.sheaf_laplacian import (
+from noeira.experimental.swm.so_d import SqMat, householder
+from noeira.experimental.swm.place_graph import PlaceGraph, Edge
+from noeira.experimental.swm.sheaf_laplacian import (
     build_sheaf_laplacian,
     eigenvalues_ascending,
     kernel_dimension,

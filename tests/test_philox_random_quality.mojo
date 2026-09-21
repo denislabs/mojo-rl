@@ -1,7 +1,7 @@
 """Statistical quality tests for PhiloxRandom (CPU + GPU kernel).
 
 Motivated by EZ-V2 Pendulum convergence slowing down after
-`mojo_rl/envs/pendulum/pendulum_v2.mojo` switched its CPU reset RNG from
+`noeira/envs/pendulum/pendulum_v2.mojo` switched its CPU reset RNG from
 the global `std.random.random_float64` to per-env `PhiloxRandom`. Goal:
 rule out PhiloxRandom itself as the cause.
 
@@ -29,7 +29,7 @@ from layout import Layout, LayoutTensor
 from max.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.physics2d import dtype, TPB
+from noeira.physics2d import dtype, TPB
 
 
 # ============================================================================

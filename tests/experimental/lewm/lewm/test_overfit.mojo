@@ -11,9 +11,9 @@ move off zero).
 
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn import Tensor, Adam, Kaiming
-from mojo_rl.experimental.lewm.loss_graph import LeWMLossGraph
+from noeira.nn.constants import DT
+from noeira.nn import Tensor, Adam, Kaiming
+from noeira.experimental.lewm.loss_graph import LeWMLossGraph
 
 
 comptime IN_CH = 4

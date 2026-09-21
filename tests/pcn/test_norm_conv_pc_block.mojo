@@ -15,9 +15,9 @@ from std.memory import alloc
 from std.math import sin
 from layout import Layout, LayoutTensor
 
-from mojo_rl.experimental.pcn.pc_initializer import PCXavier
-from mojo_rl.experimental.pcn.pc_norm_conv_block import NormConvPCBlock
-from mojo_rl.experimental.pcn import PCReLU
+from noeira.experimental.pcn.pc_initializer import PCXavier
+from noeira.experimental.pcn.pc_norm_conv_block import NormConvPCBlock
+from noeira.experimental.pcn import PCReLU
 
 comptime dtype = DType.float32
 comptime CB = NormConvPCBlock[2, 3, 3, 1, 1, 4, 4, PCReLU]

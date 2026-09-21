@@ -11,7 +11,7 @@ steps 3 and 4 write them.
 
 ```bash
 # ── 0. the repo and its environments ──────────────────────────────────────
-git clone <this repo> mojo-rl && cd mojo-rl
+git clone <this repo> noeira && cd noeira
 pixi install -e nvidia      # CUDA toolkit, cuDNN, nsight — tens of GB
 pixi install -e act-ref     # PyTorch, ~3 GB. ONLY for step 4b — skip it
                             # entirely if you take 4a, which is the default.
@@ -33,7 +33,7 @@ df -h .
 #   pixi run -e nvidia mojo run -I . examples/so101/act_so101_import_dataset.mojo \\
 #       --project so101-tower --dataset cube-in-bowl
 #   export ACT_PROJECT=so101-tower
-#   export ACT_STORE=~/.cache/mojo_rl/act_so101/so101-tower__cube-in-bowl_240x320.h5
+#   export ACT_STORE=~/.cache/noeira/act_so101/so101-tower__cube-in-bowl_240x320.h5
 # Then skip to step 4.
 
 # ── 2. HuggingFace auth — ONLY if the dataset repo is private ─────────────
@@ -41,12 +41,12 @@ pixi run -e nvidia hf auth login          # or: export HF_TOKEN=hf_...
 
 # ── 3. the dataset -> a TrajectoryStore (downloads + converts) ────────────
 # Pure Mojo: needs `curl` and `ffmpeg` on PATH and nothing else. It downloads
-# the repo if it is not already in ~/.cache/mojo_rl or the huggingface_hub
+# the repo if it is not already in ~/.cache/noeira or the huggingface_hub
 # cache, then decodes and resizes every frame.
 pixi run -e nvidia mojo run -I . \\
     examples/so101/act_so101_import_dataset.mojo \\
     --repo DenisLabs/record-test_20260828_092736 --height 240 --width 320
-export ACT_STORE=~/.cache/mojo_rl/act_so101/DenisLabs__record-test_20260828_092736_240x320.h5
+export ACT_STORE=~/.cache/noeira/act_so101/DenisLabs__record-test_20260828_092736_240x320.h5
 # The Python converter it replaced is still there and produces a byte-identical
 # store, if you would rather use it:
 #   pixi run -e nvidia python tools/act/lerobot_v3_to_store.py \\
@@ -66,8 +66,8 @@ export ACT_STORE=~/.cache/mojo_rl/act_so101/DenisLabs__record-test_20260828_0927
 #       against (`tests/nn/test_safetensors_resnet18_torch.mojo` compares all
 #       11,190,912 values). The ONLY step in this list that needs PyTorch.
 # pixi run -e act-ref python tools/act/dump_resnet18_imagenet.py \\
-#     --out ~/.cache/mojo_rl/act_so101/resnet18_imagenet
-# export ACT_PRETRAINED=~/.cache/mojo_rl/act_so101/resnet18_imagenet
+#     --out ~/.cache/noeira/act_so101/resnet18_imagenet
+# export ACT_PRETRAINED=~/.cache/noeira/act_so101/resnet18_imagenet
 
 # ── 5. check both before spending GPU hours on them ──────────────────────
 pixi run -e nvidia mojo run -I . tests/deep_agents/act/test_act_dataset.mojo
@@ -82,9 +82,9 @@ pixi run -e nvidia mojo run -I . \\
 pixi run -e nvidia mojo run -I . tests/nn/test_resnet18_hub_weights.mojo
 
 # ── 6. metrics (optional) ────────────────────────────────────────────────
-# `.env` in the project root, read by mojo_rl/core/dotenv.mojo:
-#     RL_MONITOR_URL=https://...
-#     RL_MONITOR_API_KEY=...
+# `.env` in the project root, read by noeira/core/dotenv.mojo:
+#     NOEIRA_CLOUD_URL=https://...
+#     NOEIRA_CLOUD_API_KEY=...
 # Absent, the run is unaffected. It is NOT copied by git — put it there by
 # hand on the new box or the run streams nothing and says so.
 
@@ -100,7 +100,7 @@ three: each is an environment variable whose absence is silent and legal, so a
 run configured wrong looks exactly like a run configured right until the curve
 comes back different.
 
-⚠ **Run it from the project root.** `mojo_rl/io/hdf5` resolves libhdf5 through
+⚠ **Run it from the project root.** `noeira/io/hdf5` resolves libhdf5 through
 a path relative to the working directory (`.pixi/envs/<env>/lib/`), so the
 binary aborts with `symbol not found: H5PLprepend` anywhere else. It also reads
 `.env` from the working directory.
@@ -200,8 +200,8 @@ nothing to resume from or evaluate.
 
 ## Metrics
 
-Streams to the monitoring server named by `RL_MONITOR_URL` / `RL_MONITOR_API_KEY`
-in `.env` (`mojo_rl/core/dotenv.mojo`), the same path
+Streams to the monitoring server named by `NOEIRA_CLOUD_URL` / `NOEIRA_CLOUD_API_KEY`
+in `.env` (`noeira/core/dotenv.mojo`), the same path
 `examples/half_cheetah/sac_half_cheetah_training_gpu.mojo` uses. With neither
 set the logger is inert and the run is unaffected — training must not depend on
 a monitoring server being reachable. `ACT_NO_MONITOR=1` forces it inert with
@@ -258,8 +258,8 @@ from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.act.config import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.act.config import (
     act_pretrained_spec,
     RUN_DEC_LAYERS,
     RUN_DIM,
@@ -275,21 +275,21 @@ from mojo_rl.deep_agents.act.config import (
     SO101_N_CAM,
     SO101_QPOS,
 )
-from mojo_rl.deep_agents.act.data import ACTDataset
-from mojo_rl.deep_agents.act.data_gpu import ACTDeviceDataset
-from mojo_rl.deep_agents.act.trainer import (
+from noeira.deep_agents.act.data import ACTDataset
+from noeira.deep_agents.act.data_gpu import ACTDeviceDataset
+from noeira.deep_agents.act.trainer import (
     ACTTrainer,
     ACTWindowMetrics,
 )
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.core.project import project_exists
-from mojo_rl.deep_agents.act.norm_file import act_norm_from
-from mojo_rl.io.json import load_json
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.core.project import project_exists
+from noeira.deep_agents.act.norm_file import act_norm_from
+from noeira.io.json import load_json
 from std.os import makedirs
-from mojo_rl.core.run import RunContext, register_run
-from mojo_rl.deep_agents.training.checkpoint import announce_checkpoint
-from mojo_rl.io.artifact_sink import ArtifactSink, close_sink, sink_for_run
+from noeira.core.run import RunContext, register_run
+from noeira.deep_agents.training.checkpoint import announce_checkpoint
+from noeira.io.artifact_sink import ArtifactSink, close_sink, sink_for_run
 
 
 
@@ -464,7 +464,7 @@ def store_path() raises -> String:
         raise Error("$HOME is unset; set ACT_STORE to the store path")
     return (
         home
-        + "/.cache/mojo_rl/act_so101/"
+        + "/.cache/noeira/act_so101/"
         + "DenisLabs__record-test_20260825_094319_"
         + String(IMG_H) + "x" + String(IMG_W) + ".h5"
     )
@@ -516,7 +516,7 @@ def main() raises:
     print("")
 
     # ── remote metrics ───────────────────────────────────────────────────
-    # Configured from `.env` (`RL_MONITOR_URL`, `RL_MONITOR_API_KEY`). With
+    # Configured from `.env` (`NOEIRA_CLOUD_URL`, `NOEIRA_CLOUD_API_KEY`). With
     # neither set the logger is inert and the run is unaffected — a training
     # run must not depend on a monitoring server being reachable.
     # `ACT_NO_MONITOR=1` forces it inert. A three-step smoke should not show
@@ -526,7 +526,7 @@ def main() raises:
     var no_monitor = getenv("ACT_NO_MONITOR")
     var monitor_url = (
         String("") if no_monitor.byte_length() > 0
-        else env_vars.get("RL_MONITOR_URL", "")
+        else env_vars.get("NOEIRA_CLOUD_URL", "")
     )
     # ⚠⚠ `run_name="ACT SO-ARM101 (GPU)"` WAS IDENTICAL ON EVERY RUN of this
     # driver — the dashboard showed a column of indistinguishable rows, which
@@ -547,7 +547,7 @@ def main() raises:
         run_name=run.name(),
         run_id=run.id,
         buffer_size=64,
-        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+        api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
     )
     logger.set_config("algorithm", "ACT")
     logger.set_config("robot", "SO-ARM101")
@@ -574,7 +574,7 @@ def main() raises:
             "streaming to " + monitor_url if logger.is_active()
             else (
                 "OFF (ACT_NO_MONITOR)" if no_monitor.byte_length() > 0
-                else "local only (set RL_MONITOR_URL in .env)"
+                else "local only (set NOEIRA_CLOUD_URL in .env)"
             )
         )
     )

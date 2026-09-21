@@ -65,17 +65,17 @@ compromise.
 same rollout can safely be reused for several gradient passes — which is what
 makes an on-policy method affordable at all.
 
-## Building it in mojo-rl
+## Building it in noeira
 
 From `examples/half_cheetah/ppo_half_cheetah_training.mojo`:
 
 ```mojo
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import Tanh
-from mojo_rl.deep_agents.ppo import PPOAgent
-from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+from noeira.nn.constants import DT
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import Tanh
+from noeira.deep_agents.ppo import PPOAgent
+from noeira.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM      # 17
 comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM   #  6
@@ -179,8 +179,8 @@ stepping 32 environments per iteration on-device.
 PPO handles both action types, through separate packages:
 
 ```mojo
-from mojo_rl.deep_agents.ppo import PPOAgent               # continuous, Gaussian head
-from mojo_rl.deep_agents.ppo_discrete import PPODiscreteAgent  # categorical head
+from noeira.deep_agents.ppo import PPOAgent               # continuous, Gaussian head
+from noeira.deep_agents.ppo_discrete import PPODiscreteAgent  # categorical head
 ```
 
 `PPODiscreteAgent` has a `train_batched` entry point for GPU-batched discrete
@@ -209,7 +209,7 @@ A2C is PPO with a single epoch and no clipping — a degenerate case, and
 implemented as such here:
 
 ```mojo
-from mojo_rl.deep_agents.a2c import A2CAgent
+from noeira.deep_agents.a2c import A2CAgent
 ```
 
 Simpler, but strictly worse in practice. Use PPO unless you specifically want

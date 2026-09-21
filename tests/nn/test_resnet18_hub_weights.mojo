@@ -35,15 +35,15 @@ shape walk exists so a mismatch says WHICH tensor is wrong instead of only
 "the file differs", and so a missing tensor is reported as a missing tensor.
 
 ⚠ NEEDS THE NETWORK on its first run, then the file is cached
-(`~/.cache/mojo_rl/hub/`). It is therefore NOT in the smoke tier, which is
+(`~/.cache/noeira/hub/`). It is therefore NOT in the smoke tier, which is
 defined as self-contained. It needs no PyTorch, no dump and no dataset.
 """
 
-from mojo_rl.io.hf import HF_MODEL, hf_download_file
-from mojo_rl.io.safetensors import SafeTensors
-from mojo_rl.io.sha256 import sha256_file
-from mojo_rl.nn.core.torch_names import TN_ZEROS
-from mojo_rl.nn.models.resnet18_torch import (
+from noeira.io.hf import HF_MODEL, hf_download_file
+from noeira.io.safetensors import SafeTensors
+from noeira.io.sha256 import sha256_file
+from noeira.nn.core.torch_names import TN_ZEROS
+from noeira.nn.models.resnet18_torch import (
     RESNET18_TV_REPO, resnet18_torch_map,
 )
 

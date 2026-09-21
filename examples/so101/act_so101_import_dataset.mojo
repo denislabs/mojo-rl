@@ -13,7 +13,7 @@ Replaces `tools/act/lerobot_v3_to_store.py`. The Python script needed
 `huggingface_hub`, `pyarrow`, `imageio`, `Pillow`, `numpy` and `h5py`; this
 needs `curl` and `ffmpeg` on PATH, both of which the pixi environment provides.
 
-Output goes to `~/.cache/mojo_rl/act_so101/<Org>__<name>_<H>x<W>.h5`, which is
+Output goes to `~/.cache/noeira/act_so101/<Org>__<name>_<H>x<W>.h5`, which is
 the path `examples/so101/act_so101_train_gpu.mojo` expects in `ACT_STORE`.
 
 Options
@@ -22,7 +22,7 @@ Options
 --root DIR         a local dataset directory; skips resolution entirely
 --project P --dataset D
                    a project's recording: `projects/P/datasets/D`, output to
-                   `~/.cache/mojo_rl/act_so101/P__D_<H>x<W>.h5`
+                   `~/.cache/noeira/act_so101/P__D_<H>x<W>.h5`
 --out PATH         output .h5 (default: the cache path above)
 --height / --width resize target (default 240x320; the recording is 480x640)
 --revision REV     branch or commit (default `main`)
@@ -38,12 +38,12 @@ from std.os import makedirs
 from std.os.path import exists
 from std.sys import argv
 
-from mojo_rl.core.project import project_dataset_dir
-from mojo_rl.io.fileio import write_text_atomic
-from mojo_rl.io.json import JsonWriter
-from mojo_rl.data.lerobot import (
+from noeira.core.project import project_dataset_dir
+from noeira.io.fileio import write_text_atomic
+from noeira.io.json import JsonWriter
+from noeira.data.lerobot import (
     LeRobotInfo,
-    import_lerobot_v3, mojo_rl_cache, repo_slug, resolve_dataset_root,
+    import_lerobot_v3, noeira_cache, repo_slug, resolve_dataset_root,
 )
 
 
@@ -99,7 +99,7 @@ def main() raises:
             raise Error("--out is required when only --root is given")
         if slug == "":
             slug = repo_slug(repo)
-        var dir = mojo_rl_cache() + "/act_so101"
+        var dir = noeira_cache() + "/act_so101"
         makedirs(dir, exist_ok=True)
         out = dir + "/" + slug + "_" + String(height) + "x" + String(width) + ".h5"
 

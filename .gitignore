@@ -284,25 +284,25 @@ recording_*.gif
 # Vendored C/C++ sources fetched by build scripts (scripts/build_imgui.sh
 # clones Dear ImGui here on first use). Source, not ours; re-fetchable.
 third_party/
-# The Dear ImGui shim built from mojo_rl/render/imgui/imgui_shim.cpp. The
+# The Dear ImGui shim built from noeira/render/imgui/imgui_shim.cpp. The
 # .cpp IS tracked; the binary is per-platform and rebuilt by
 # `pixi run build-imgui`.
 *.dylib
-# The serial shim built from mojo_rl/io/serial/native/mrl_serial.c. The .c IS
+# The serial shim built from noeira/io/serial/native/nra_serial.c. The .c IS
 # tracked; both binaries are per-platform and rebuilt by
 # `pixi run build-serial`.
-mojo_rl/io/serial/*.so
-mojo_rl/io/serial/*.o
+noeira/io/serial/*.so
+noeira/io/serial/*.o
 fb_walker_d128.ckpt
 
-# The HTTP shim built from mojo_rl/io/native/mrl_http.c. The .c IS tracked;
+# The HTTP shim built from noeira/io/native/nra_http.c. The .c IS tracked;
 # the binary is per-platform (it links the pixi env's libcurl by rpath) and is
 # rebuilt by `pixi run build-http`.
-mojo_rl/io/libmrl_http.so
+noeira/io/libnra_http.so
 
 # qhull shim (built by `pixi run build-qhull`, not tracked)
-mojo_rl/physics3d/collision/libmrl_qhull.dylib
-mojo_rl/physics3d/collision/libmrl_qhull.so
+noeira/physics3d/collision/libnra_qhull.dylib
+noeira/physics3d/collision/libnra_qhull.so
 
 # Generated printable markers and other local scratch output
 # (tools/vision/make_printable_marker.py writes here).
@@ -314,5 +314,5 @@ scratch/
 /lafan_g1_50hz_oracle.h5
 
 # LIBERO asset pack, materialised by `pixi run assets-pull libero` (assets.kv)
-mojo_rl/tasks/libero/assets/
+noeira/tasks/libero/assets/
 build/packs/

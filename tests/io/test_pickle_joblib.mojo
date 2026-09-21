@@ -1,4 +1,4 @@
-"""`mojo_rl/io/pickle.mojo` against a joblib fixture and the LAFAN pickle.
+"""`noeira/io/pickle.mojo` against a joblib fixture and the LAFAN pickle.
 
     pixi run mojo run -I . tests/io/test_pickle_joblib.mojo
 
@@ -16,7 +16,7 @@ from std.math import abs
 from std.os.path import exists
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.io.pickle import JoblibPickle, PV_DICT, PV_ARRAY, PV_INT, PV_BOOL, PV_STR, PV_FLOAT, PV_NONE
+from noeira.io.pickle import JoblibPickle, PV_DICT, PV_ARRAY, PV_INT, PV_BOOL, PV_STR, PV_FLOAT, PV_NONE
 
 
 comptime FIXTURE = "tests/fixtures/joblib_arrays.pkl"

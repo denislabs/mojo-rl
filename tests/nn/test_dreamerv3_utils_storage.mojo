@@ -11,7 +11,7 @@
 - normalize: PercentileNormalize.make("perc", …); feed a known sample, check
     stats() offset/scale are finite + sane.
 
-Run: rm -f mojo_rl.mojoc && \
+Run: rm -f noeira.mojoc && \
   pixi run -e apple mojo run -I . tests/nn/test_dreamerv3_utils_storage.mojo
 """
 
@@ -19,25 +19,25 @@ from std.testing import assert_true
 from std.math import isfinite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.param import ParamVisitor
-from mojo_rl.nn.core.initializer import Deterministic, Kaiming
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.rms_norm import RMSNorm
-from mojo_rl.nn.primitives.elementwise import Elementwise
-from mojo_rl.nn.primitives.ops.gelu_op import GELUOp
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.combinators.graph_decl import InputSlot, Node
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.param import ParamVisitor
+from noeira.nn.core.initializer import Deterministic, Kaiming
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.rms_norm import RMSNorm
+from noeira.nn.primitives.elementwise import Elementwise
+from noeira.nn.primitives.ops.gelu_op import GELUOp
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.combinators.compute_graph import ComputeGraph
+from noeira.nn.combinators.graph_decl import InputSlot, Node
 
-from mojo_rl.deep_agents.dreamerv3.normalize import PercentileNormalize
-from mojo_rl.deep_agents.dreamerv3.polyak import polyak_module
-from mojo_rl.deep_agents.dreamerv3.zero_init import (
+from noeira.deep_agents.dreamerv3.normalize import PercentileNormalize
+from noeira.deep_agents.dreamerv3.polyak import polyak_module
+from noeira.deep_agents.dreamerv3.zero_init import (
     scale_output_module, scale_output_graph,
 )
-from mojo_rl.deep_agents.dreamerv3.param_sync import (
+from noeira.deep_agents.dreamerv3.param_sync import (
     collect_graph_params, apply_graph_params,
 )
 

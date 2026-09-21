@@ -19,11 +19,11 @@ from std.random import random_float64
 from std.memory import alloc
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.deep_agents.dreamerv3.trainer import DreamerV3Trainer
-from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
-from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
+from noeira.nn.constants import DT
+from noeira.nn.primitives.ops.swish_op import SwishOp
+from noeira.deep_agents.dreamerv3.trainer import DreamerV3Trainer
+from noeira.deep_agents.dreamerv3.agent import DreamerV3Agent
+from noeira.deep_agents.dreamerv3.nets_cnn import (
     DreamerEncoderCNN,
     DreamerDecoderCNN,
 )

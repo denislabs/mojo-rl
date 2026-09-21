@@ -4,7 +4,7 @@
     pixi run python tools/demo/demo_stats.py projects/so101-tower/demos/*.demo
     pixi run python tools/demo/demo_stats.py FILE --episodes      # one line per episode
 
-The format is `mojo_rl/deep_agents/data/demo_file.mojo`'s (version 1); this
+The format is `noeira/deep_agents/data/demo_file.mojo`'s (version 1); this
 is a READER for a human, not the loader the trainer uses — that one is Mojo
 and gated by `tests/deep_agents/test_demo_file.mojo`. Numpy only.
 """

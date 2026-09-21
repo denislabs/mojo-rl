@@ -3,12 +3,12 @@ GPU path (one kernel per Param). Times `step` only. Run before and after the
 runtime-visitor change; the arena path is not touched by it."""
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.core.module import Module
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.optimizer.adam import Adam
+from noeira.nn.core.module import Module
 
 comptime NET = Sequential[Linear[784, 512], Linear[512, 512], Linear[512, 512], Linear[512, 10]]
 comptime SMALL = Sequential[Linear[16, 32], Linear[32, 32], Linear[32, 32], Linear[32, 4]]

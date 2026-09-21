@@ -16,11 +16,11 @@ from std.math import abs, isnan, isinf
 from max.gpu.host import DeviceContext
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.deep_agents.efficient_zero_v2.nets_atari import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.deep_agents.efficient_zero_v2.nets_atari import (
     EZRepNetResNetAtari, EZDynNetAtari, EZPredNetAtari,
     EZ_LATENT, EZ_C,
     ez_atari_init_zero_pred, ez_atari_init_zero_dyn,

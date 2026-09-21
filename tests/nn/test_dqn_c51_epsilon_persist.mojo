@@ -20,13 +20,13 @@ from std.random import seed
 from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.deep_agents.dqn.trainer import DQNTrainer
-from mojo_rl.deep_agents.c51.trainer import C51Trainer
-from mojo_rl.deep_agents.training.blocks import (
+from noeira.nn.constants import DT
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.deep_agents.dqn.trainer import DQNTrainer
+from noeira.deep_agents.c51.trainer import C51Trainer
+from noeira.deep_agents.training.blocks import (
     UniformSampleCpuStep,
     UniformSampleGpuStep,
 )

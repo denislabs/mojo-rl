@@ -1,6 +1,6 @@
 """Test Go environment — captures, ko, suicide, pass, scoring, parameterized sizes."""
 
-from mojo_rl.envs.board_games.go import GoEnv
+from noeira.envs.board_games.go import GoEnv
 
 
 def pos(row: Int, col: Int, size: Int) -> Int:

@@ -6,7 +6,7 @@ in each slot we populated.
 """
 
 from std.memory import alloc
-from mojo_rl.envs.craftax_full.craftax_full_sprites import (
+from noeira.envs.craftax_full.craftax_full_sprites import (
     build_sprite_sheet,
     SPRITE_SIZE,
     NUM_SPRITES,
@@ -28,7 +28,7 @@ from mojo_rl.envs.craftax_full.craftax_full_sprites import (
     SPR_ICON_MANA,
     SPR_ICON_INT,
 )
-from mojo_rl.envs.craftax_full.constants import (
+from noeira.envs.craftax_full.constants import (
     BLOCK_GRASS,
     BLOCK_WATER,
     BLOCK_LAVA,
@@ -54,7 +54,7 @@ def main() raises:
     print("Craftax-Full sprite-load smoke test")
     print("=" * 50)
 
-    var sheet = build_sprite_sheet(String("mojo_rl/envs/craftax_full/assets"))
+    var sheet = build_sprite_sheet(String("noeira/envs/craftax_full/assets"))
     print(
         "Sheet allocated:",
         SHEET_WIDTH,

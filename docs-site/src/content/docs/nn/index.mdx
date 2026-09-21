@@ -1,6 +1,6 @@
 ---
 title: Neural networks
-description: mojo_rl.nn — Module/Param networks with autodiff, 70+ primitives, automatic fusion, and dual CPU/GPU paths.
+description: noeira.nn — Module/Param networks with autodiff, 70+ primitives, automatic fusion, and dual CPU/GPU paths.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -8,7 +8,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <Maturity level="stable" />
 
-`mojo_rl.nn` is the deep-learning framework the RL agents are built on —
+`noeira.nn` is the deep-learning framework the RL agents are built on —
 described in the project's own words as *"something between Tinygrad and
 PyTorch"*. It is usable on its own: the MNIST, CIFAR-10, ResNet, GPT and ViT
 examples never touch the RL code.
@@ -94,13 +94,13 @@ MNIST to 97%+ in five epochs, on GPU
 
 ```mojo
 from std.gpu.host import DeviceContext
-from mojo_rl.nn.datasets import MNIST
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.training.trainer import Trainer
+from noeira.nn.datasets import MNIST
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.linear_relu import LinearReLU
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.training.trainer import Trainer
 
 
 def main() raises:
@@ -143,7 +143,7 @@ sub-buffer view — no per-batch host-to-device transfer.
 ## Package layout
 
 ```
-mojo_rl/nn/
+noeira/nn/
 ├── core/          Module trait, Param, Tensor, initializers, checkpoint, AMP
 ├── primitives/    70+ leaf layers
 ├── combinators/   Sequential, Residual, Parallel, Repeat, ComputeGraph
@@ -156,8 +156,8 @@ mojo_rl/nn/
 ```
 
 :::note[Initializers live in `core`, not their own package]
-`from mojo_rl.nn.core.initializer import Kaiming` — not
-`mojo_rl.nn.initializer`. Likewise `ComputeGraph` is in `combinators/`, not an
+`from noeira.nn.core.initializer import Kaiming` — not
+`noeira.nn.initializer`. Likewise `ComputeGraph` is in `combinators/`, not an
 `autodiff/` package. Older documentation says otherwise.
 :::
 

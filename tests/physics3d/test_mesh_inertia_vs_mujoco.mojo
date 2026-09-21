@@ -27,7 +27,7 @@ from std.math import abs as math_abs, sqrt
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.model.mesh_inertia import (
+from noeira.physics3d.model.mesh_inertia import (
     MeshInertia,
     mesh_legacy_inertia,
     transform_verts_to_principal_frame,

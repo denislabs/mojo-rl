@@ -15,7 +15,7 @@ substantially improve sample efficiency, and extends the approach to continuous
 control.
 
 ```mojo
-from mojo_rl.deep_agents.efficient_zero_v2 import EZv2DiscreteAgent, EZv2ContinuousAgent
+from noeira.deep_agents.efficient_zero_v2 import EZv2DiscreteAgent, EZv2ContinuousAgent
 ```
 
 
@@ -82,7 +82,7 @@ then let the tree backups choose between them.
 ## Discrete and continuous
 
 ```mojo
-from mojo_rl.deep_agents.efficient_zero_v2 import EZv2DiscreteAgent, EZv2ContinuousAgent
+from noeira.deep_agents.efficient_zero_v2 import EZv2DiscreteAgent, EZv2ContinuousAgent
 ```
 
 The continuous variant is the more interesting one — tree search on continuous
@@ -154,7 +154,7 @@ gain.
 | **EfficientZero V2** | learned latent | discrete + continuous | Gumbel, sampled for continuous | consistency, value prefix, sampled actions |
 
 All three share the `zero/` package and the GPU MCTS kernels in
-[`mojo_rl.planners.tree_search`](/planners/tree-search/).
+[`noeira.planners.tree_search`](/planners/tree-search/).
 
 ## Next
 

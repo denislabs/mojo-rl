@@ -38,32 +38,32 @@ from max.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import (
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.fields import (
     Data, Model, DynDims, DynamicsScratch, DYN1, DYN2, rl1, rl2,
 )
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE, MODEL_JOINT_SIZE, MODEL_META_SIZE, MODEL_SITE_SIZE,
 )
-from mojo_rl.physics3d.dynamics.osc_pose import (
+from noeira.physics3d.dynamics.osc_pose import (
     OscPose, OscPoseConfig, ARM_DOF, OSC_ACTION_DIM,
 )
-from mojo_rl.physics3d.dynamics.osc_pose_gpu import (
+from noeira.physics3d.dynamics.osc_pose_gpu import (
     OSC_REF_WORDS, OSC_STATE_WORDS, OSC_WORK_WORDS, osc_run_gpu,
 )
-from mojo_rl.tasks.spec import load_family
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
-from mojo_rl.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.tasks.spec import load_family
+from noeira.tasks.family import scene_path
+from noeira.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
+from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
 comptime DT = DType.float64
 comptime F32 = DType.float32
-comptime FAMILY = "mojo_rl/tasks/families/libero_goal.family"
-comptime PACK = "mojo_rl/tasks/libero/assets"
+comptime FAMILY = "noeira/tasks/families/libero_goal.family"
+comptime PACK = "noeira/tasks/libero/assets"
 comptime BATCH = 8
 
 comptime NB = LIBERO_GOAL_DIMS.NBODY

@@ -25,9 +25,9 @@ three around it are what keep the widened excuse from becoming a blanket one:
 
 from std.os.path import exists
 
-from mojo_rl.io.proc import Pipe
-from mojo_rl.io.video.decoder import VideoDecoder, probe_video
-from mojo_rl.io.video.encoder import VideoEncoder
+from noeira.io.proc import Pipe
+from noeira.io.video.decoder import VideoDecoder, probe_video
+from noeira.io.video.encoder import VideoEncoder
 
 
 comptime W = 64

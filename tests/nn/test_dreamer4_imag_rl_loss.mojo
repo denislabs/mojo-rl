@@ -18,16 +18,16 @@ from std.math import abs, log
 
 from std.testing import assert_true, assert_almost_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.dreamer4.imag_rl_loss import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.dreamer4.imag_rl_loss import (
     lambda_returns,
     value_td_loss_cpu,
     value_td_loss_backward,
     pmpo_policy_loss_cpu,
     pmpo_policy_loss_backward,
 )
-from mojo_rl.deep_agents.dreamerv3.twohot import symexp_twohot_bins, twohot_pred
-from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_fwd, UNIMIX
+from noeira.deep_agents.dreamerv3.twohot import symexp_twohot_bins, twohot_pred
+from noeira.deep_agents.dreamerv3.dists_discrete import cat_fwd, UNIMIX
 
 
 def _alloc(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:

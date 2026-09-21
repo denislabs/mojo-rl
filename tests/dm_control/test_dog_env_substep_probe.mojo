@@ -51,7 +51,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.dog import (
+from noeira.envs.dm_control.dog import (
     DMDogStand,
     DMDogStandWalkModel,
     DOG_FRAME_SKIP,
@@ -72,7 +72,7 @@ comptime TOL: Float64 = 1e-8
 
 def _mj() raises -> Tuple[PythonObject, PythonObject, PythonObject]:
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
+    var m = mujoco.MjModel.from_xml_path("noeira/envs/dm_control/assets/dog_stand_walk.xml")
     return (mujoco, m, mujoco.MjData(m))
 
 

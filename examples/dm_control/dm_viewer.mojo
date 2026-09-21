@@ -73,83 +73,83 @@ from std.time import perf_counter_ns
 from std.sys import argv
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv, Phyics3dEnvConfig
-from mojo_rl.physics3d.model import ModelDefLike
-from mojo_rl.render.types import Color
-from mojo_rl.render.ui import (
+from noeira.nn.constants import DT
+from noeira.envs.phyics3d_env import Phyics3dEnv, Phyics3dEnvConfig
+from noeira.physics3d.model import ModelDefLike
+from noeira.render.types import Color
+from noeira.render.ui import (
     UI, UI_ROW_H_SMALL, ui_apply_key, UI_KEY_ESCAPE, UI_KEY_RETURN,
 )
 
-from mojo_rl.envs.dm_control.acrobot.acrobot_xml import DMAcrobotModel
-from mojo_rl.envs.dm_control.acrobot.acrobot_config import DMAcrobotConfig
-from mojo_rl.envs.dm_control.ball_in_cup.ball_in_cup_xml import DMBallInCupModel
-from mojo_rl.envs.dm_control.ball_in_cup.ball_in_cup_config import (
+from noeira.envs.dm_control.acrobot.acrobot_xml import DMAcrobotModel
+from noeira.envs.dm_control.acrobot.acrobot_config import DMAcrobotConfig
+from noeira.envs.dm_control.ball_in_cup.ball_in_cup_xml import DMBallInCupModel
+from noeira.envs.dm_control.ball_in_cup.ball_in_cup_config import (
     DMBallInCupConfig,
 )
-from mojo_rl.envs.dm_control.cartpole.cartpole_xml import (
+from noeira.envs.dm_control.cartpole.cartpole_xml import (
     DMCartpole1Model, DMCartpole2Model, DMCartpole3Model,
 )
-from mojo_rl.envs.dm_control.cartpole.cartpole_config import DMCartpoleConfig
-from mojo_rl.envs.dm_control.cheetah.cheetah_xml import DMCheetahModel
-from mojo_rl.envs.dm_control.cheetah.cheetah_config import DMCheetahConfig
-from mojo_rl.envs.dm_control.finger.finger_xml import (
+from noeira.envs.dm_control.cartpole.cartpole_config import DMCartpoleConfig
+from noeira.envs.dm_control.cheetah.cheetah_xml import DMCheetahModel
+from noeira.envs.dm_control.cheetah.cheetah_config import DMCheetahConfig
+from noeira.envs.dm_control.finger.finger_xml import (
     DMFingerSpinModel, DMFingerTurnModel,
 )
-from mojo_rl.envs.dm_control.finger.finger_config import (
+from noeira.envs.dm_control.finger.finger_config import (
     DMFingerSpinConfig, DMFingerTurnConfig,
 )
-from mojo_rl.envs.dm_control.fish.fish_xml import (
+from noeira.envs.dm_control.fish.fish_xml import (
     DMFishSwimModel, DMFishUprightModel,
 )
-from mojo_rl.envs.dm_control.fish.fish_config import (
+from noeira.envs.dm_control.fish.fish_config import (
     DMFishSwimConfig, DMFishUprightConfig,
 )
-from mojo_rl.envs.dm_control.hopper.hopper_xml import DMHopperModel
-from mojo_rl.envs.dm_control.hopper.hopper_config import DMHopperConfig
-from mojo_rl.envs.dm_control.humanoid.humanoid_xml import (
+from noeira.envs.dm_control.hopper.hopper_xml import DMHopperModel
+from noeira.envs.dm_control.hopper.hopper_config import DMHopperConfig
+from noeira.envs.dm_control.humanoid.humanoid_xml import (
     DMHumanoidModel, DMHumanoidPureModel,
 )
-from mojo_rl.envs.dm_control.humanoid.humanoid_config import (
+from noeira.envs.dm_control.humanoid.humanoid_config import (
     DMHumanoidConfig, WALK_SPEED, RUN_SPEED,
 )
-from mojo_rl.envs.dm_control.manipulator.manipulator_xml import (
+from noeira.envs.dm_control.manipulator.manipulator_xml import (
     DMManipulatorBringBallModel, DMManipulatorBringPegModel,
     DMManipulatorInsertBallModel, DMManipulatorInsertPegModel,
 )
-from mojo_rl.envs.dm_control.manipulator.manipulator_config import (
+from noeira.envs.dm_control.manipulator.manipulator_config import (
     DMManipulatorBringBallConfig, DMManipulatorBringPegConfig,
     DMManipulatorInsertBallConfig, DMManipulatorInsertPegConfig,
 )
-from mojo_rl.envs.dm_control.pendulum.pendulum_xml import DMPendulumModel
-from mojo_rl.envs.dm_control.pendulum.pendulum_config import DMPendulumConfig
-from mojo_rl.envs.dm_control.point_mass.point_mass_xml import DMPointMassModel
-from mojo_rl.envs.dm_control.point_mass.point_mass_config import (
+from noeira.envs.dm_control.pendulum.pendulum_xml import DMPendulumModel
+from noeira.envs.dm_control.pendulum.pendulum_config import DMPendulumConfig
+from noeira.envs.dm_control.point_mass.point_mass_xml import DMPointMassModel
+from noeira.envs.dm_control.point_mass.point_mass_config import (
     DMPointMassConfig,
 )
-from mojo_rl.envs.dm_control.point_mass.point_mass_hard_config import (
+from noeira.envs.dm_control.point_mass.point_mass_hard_config import (
     DMPointMassHardConfig,
 )
-from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
+from noeira.envs.dm_control.quadruped.quadruped_xml import (
     DMQuadrupedWalkModel, DMQuadrupedRunModel,
 )
-from mojo_rl.envs.dm_control.quadruped.quadruped_config import (
+from noeira.envs.dm_control.quadruped.quadruped_config import (
     DMQuadrupedWalkConfig, DMQuadrupedRunConfig,
 )
-from mojo_rl.envs.dm_control.reacher.reacher_xml import DMReacherModel
-from mojo_rl.envs.dm_control.reacher.reacher_config import DMReacherConfig
-from mojo_rl.envs.dm_control.stacker.stacker_xml import (
+from noeira.envs.dm_control.reacher.reacher_xml import DMReacherModel
+from noeira.envs.dm_control.reacher.reacher_config import DMReacherConfig
+from noeira.envs.dm_control.stacker.stacker_xml import (
     DMStacker2Model, DMStacker4Model,
 )
-from mojo_rl.envs.dm_control.stacker.stacker_config import (
+from noeira.envs.dm_control.stacker.stacker_config import (
     DMStacker2Config, DMStacker4Config,
 )
-from mojo_rl.envs.dm_control.swimmer.swimmer_xml import (
+from noeira.envs.dm_control.swimmer.swimmer_xml import (
     DMSwimmer6Model, DMSwimmer15Model,
 )
-from mojo_rl.envs.dm_control.swimmer.swimmer_config import DMSwimmerConfig
-from mojo_rl.envs.dm_control.walker.walker_xml import DMWalkerModel
-from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
+from noeira.envs.dm_control.swimmer.swimmer_config import DMSwimmerConfig
+from noeira.envs.dm_control.walker.walker_xml import DMWalkerModel
+from noeira.envs.dm_control.walker.walker_config import DMWalkerConfig
 
 
 # ── drive mode — RUNTIME, so all three live in one binary ────────────────────

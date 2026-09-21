@@ -64,16 +64,16 @@ from std.os.path import exists
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.core.run import RunContext, register_run
-from mojo_rl.deep_agents.act.config import act_pretrained_spec, ACT_SHAPE_WEIGHT
-from mojo_rl.deep_agents.act.norm_file import act_norm_from
-from mojo_rl.deep_agents.act.trainer import ACTWindowMetrics
-from mojo_rl.deep_agents.training.checkpoint import announce_checkpoint
-from mojo_rl.io.artifact_sink import ArtifactSink, close_sink, sink_for_run
-from mojo_rl.tasks.libero_act import (
+from noeira.nn.constants import DT
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.core.run import RunContext, register_run
+from noeira.deep_agents.act.config import act_pretrained_spec, ACT_SHAPE_WEIGHT
+from noeira.deep_agents.act.norm_file import act_norm_from
+from noeira.deep_agents.act.trainer import ACTWindowMetrics
+from noeira.deep_agents.training.checkpoint import announce_checkpoint
+from noeira.io.artifact_sink import ArtifactSink, close_sink, sink_for_run
+from noeira.tasks.libero_act import (
     LiberoActDataset, LiberoActDeviceDataset, LiberoActTrainer,
     LIBERO_ACT_QPOS, LIBERO_ACT_ADIM, LIBERO_ACT_N_CAM, LIBERO_ACT_IMG_H,
     LIBERO_ACT_IMG_W, LIBERO_ACT_IMG_ELEMS, LIBERO_ACT_K, LIBERO_ACT_DIM,
@@ -225,7 +225,7 @@ def main() raises:
     var no_monitor = getenv("ACT_NO_MONITOR")
     var monitor_url = (
         String("") if no_monitor.byte_length() > 0
-        else env_vars.get("RL_MONITOR_URL", "")
+        else env_vars.get("NOEIRA_CLOUD_URL", "")
     )
     var run = RunContext(
         project=project,
@@ -241,7 +241,7 @@ def main() raises:
         run_name=run.name(),
         run_id=run.id,
         buffer_size=64,
-        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+        api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
     )
     logger.set_config("algorithm", "ACT")
     logger.set_config("suite", "libero_goal")
@@ -261,7 +261,7 @@ def main() raises:
     print("  metrics " + (
         "streaming to " + monitor_url if logger.is_active()
         else ("OFF (ACT_NO_MONITOR)" if no_monitor.byte_length() > 0
-              else "local only (set RL_MONITOR_URL in .env)")))
+              else "local only (set NOEIRA_CLOUD_URL in .env)")))
 
     var tr = T.make(
         shape_weight=Scalar[DT](shape_weight),

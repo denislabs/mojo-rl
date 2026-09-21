@@ -14,9 +14,9 @@ Run:
 from std.math import abs, exp, log
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.loss.bce_logits import bce_logits_const_t, bce_logits_rows_t
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.loss.bce_logits import bce_logits_const_t, bce_logits_rows_t
 
 
 comptime N = 13

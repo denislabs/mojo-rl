@@ -44,7 +44,7 @@ from linalg.matmul import matmul as max_matmul
 from linalg.utils_gpu import MatmulConfig, MatmulKernels, select_config
 from linalg.matmul.gpu import multistage_gemm_split_k_kernel, split_k_reduce
 
-from mojo_rl.cuda import CUDAGraph
+from noeira.cuda import CUDAGraph
 
 
 struct SplitKWorkspace[dtype: DType](Movable):
@@ -356,7 +356,7 @@ def main() raises:
             #
             # Capture had already succeeded; only the replay faulted, which is
             # exactly the signature of operands dying after capture. This is
-            # the same rule that forces `mojo_rl/cuda/graph.mojo` to store its
+            # the same rule that forces `noeira/cuda/graph.mojo` to store its
             # own `DeviceContext` in a field.
             #
             # A CUDA graph holds RAW POINTERS to every operand it was captured

@@ -15,18 +15,18 @@ from std.os import makedirs
 from std.os.path import exists
 from std.time import sleep
 
-from mojo_rl.core.policy import PolicyRecord, policy_ckpt_path, write_policy
-from mojo_rl.data.policy_weights import pull_policy_weights
-from mojo_rl.data.remote import RemoteCatalog
-from mojo_rl.io.fileio import file_size, remove_file, write_file_atomic
-from mojo_rl.io.http import HttpClient, http_shim_available
-from mojo_rl.io.proc import run_capture
-from mojo_rl.io.sha256 import sha256_file
+from noeira.core.policy import PolicyRecord, policy_ckpt_path, write_policy
+from noeira.data.policy_weights import pull_policy_weights
+from noeira.data.remote import RemoteCatalog
+from noeira.io.fileio import file_size, remove_file, write_file_atomic
+from noeira.io.http import HttpClient, http_shim_available
+from noeira.io.proc import run_capture
+from noeira.io.sha256 import sha256_file
 
 
-comptime WORK = "/tmp/mojo_rl_policy_weights_gate"
-comptime PORT_FILE = "/tmp/mojo_rl_policy_weights_gate_port"
-comptime LOG_FILE = "/tmp/mojo_rl_policy_weights_gate_log"
+comptime WORK = "/tmp/noeira_policy_weights_gate"
+comptime PORT_FILE = "/tmp/noeira_policy_weights_gate_port"
+comptime LOG_FILE = "/tmp/noeira_policy_weights_gate_log"
 
 
 def _blob(path: String, seed: Int, n: Int) raises:
@@ -45,7 +45,7 @@ def _start_server() raises -> String:
             pass
     _ = run_capture(
         "python3 tools/io/mock_monitor_server.py " + String(PORT_FILE) + " "
-        + String(LOG_FILE) + " 120 > /tmp/mojo_rl_policy_weights_gate_server.log 2>&1 &"
+        + String(LOG_FILE) + " 120 > /tmp/noeira_policy_weights_gate_server.log 2>&1 &"
     )
     for _ in range(100):
         if exists(PORT_FILE):

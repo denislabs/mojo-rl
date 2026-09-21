@@ -13,8 +13,8 @@ See `docs/PROCGEN_COINRUN_SCOPE.md`.
 from std.math import floor
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import CoinrunGame
-from mojo_rl.envs.procgen.games.coinrun import (
+from noeira.envs.procgen.games import CoinrunGame
+from noeira.envs.procgen.games.coinrun import (
     DIST_EASY, DIST_HARD, WALL_MID, WALL_TOP, LAVA_MID, LAVA_TOP,
     ENEMY_BARRIER, GOAL, CRATE, ENEMY, SAW, W, H,
 )

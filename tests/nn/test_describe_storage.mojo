@@ -9,10 +9,10 @@ Run: pixi run mojo run -I . tests/nn/test_describe_storage.mojo
 
 from std.testing import assert_equal, assert_true
 
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.core.describe import describe
+from noeira.nn.core.initializer import Deterministic
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.core.describe import describe
 
 
 comptime D = 4

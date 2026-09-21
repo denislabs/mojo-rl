@@ -25,9 +25,9 @@ from std.math import abs as mabs
 from std.memory import alloc, memset
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.experimental.pcn.pc_initializer import PCXavier
-from mojo_rl.experimental.pcn import (
+from noeira.nn.constants import DT as dtype
+from noeira.experimental.pcn.pc_initializer import PCXavier
+from noeira.experimental.pcn import (
     PCBlock,
     PCSequential,
     PCIdentity,

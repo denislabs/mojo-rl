@@ -9,7 +9,7 @@ This is the gate for migrating the accessors off the UnsafeAnyOrigin hatch:
 run instantiates the accessors. The checksum must be bit-identical pre/post.
 """
 
-from mojo_rl.physics2d import PhysicsStateOwned, dtype
+from noeira.physics2d import PhysicsStateOwned, dtype
 
 
 def main() raises:

@@ -12,8 +12,8 @@ Run:
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.training.trainer_block import TrainerState
+from noeira.nn.constants import DT
+from noeira.deep_agents.training.trainer_block import TrainerState
 
 
 comptime OBS = 3

@@ -25,13 +25,13 @@ Run: `pixi run -e apple mojo run -I . tests/deep_agents/test_tdmpc2_multitask_mp
 from std.math import isfinite, abs
 from std.random import seed
 from std.testing import assert_true, TestSuite
-from mojo_rl.core.logger import NoOpLogger
+from noeira.core.logger import NoOpLogger
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.agent_mt import TDMPC2MultiTaskAgent
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.pendulum import PendulumV2
+from noeira.nn.constants import DT
+from noeira.deep_agents.tdmpc2.agent_mt import TDMPC2MultiTaskAgent
+from noeira.deep_agents.training.batched_env import BatchedGpuEnv
+from noeira.envs.pendulum import PendulumV2
 
 comptime MAX_OBS = 3
 comptime ENC = 32

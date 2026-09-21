@@ -61,8 +61,8 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_lift_brick import DMLiftBrick
-from mojo_rl.envs.dm_control.manipulation_lift_brick_config import (
+from noeira.envs.dm_control.manipulation_lift_brick import DMLiftBrick
+from noeira.envs.dm_control.manipulation_lift_brick_config import (
     OBS_DIM,
     PROP_BODY,
     PROP_FRAME_SITE,
@@ -81,12 +81,12 @@ from mojo_rl.envs.dm_control.manipulation_lift_brick_config import (
     SITE_PINCH,
     ROBOT_SITE_BASE,
 )
-from mojo_rl.envs.dm_control.manipulation_obs import (
+from noeira.envs.dm_control.manipulation_obs import (
     N_ARM,
     N_HAND,
     torque_site_of,
 )
-from mojo_rl.physics3d.gpu.constants import META_IDX_TASK_PARAM_0
+from noeira.physics3d.gpu.constants import META_IDX_TASK_PARAM_0
 
 comptime DTYPE = DType.float64
 comptime ENV = DMLiftBrick[DTYPE]

@@ -39,19 +39,19 @@ from std.math import sqrt
 from std.memory import alloc, memset
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.experimental.pcn.pc_initializer import PCXavier
-from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
-from mojo_rl.nn.datasets.cifar10 import CIFAR10
-from mojo_rl.experimental.pcn import (
+from noeira.nn.constants import DT as dtype
+from noeira.experimental.pcn.pc_initializer import PCXavier
+from noeira.experimental.pcn.pc_optimizer import PCAdam
+from noeira.nn.datasets.cifar10 import CIFAR10
+from noeira.experimental.pcn import (
     PCBlock,
     PCSequential,
     PCIdentity,
     PCReLU,
     PCTrainer,
 )
-from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
-from mojo_rl.core.fmt import fit
+from noeira.experimental.pcn.pc_conv_block import ConvPCBlock
+from noeira.core.fmt import fit
 
 comptime BATCH = 125
 comptime T_INFER = 20

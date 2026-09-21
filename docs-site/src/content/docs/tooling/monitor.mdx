@@ -14,7 +14,7 @@ anywhere instead of tailing a terminal.
 ## The pipeline
 
 ```
-mojo-rl logger  →  Cloudflare Worker  →  SQL database  →  React dashboard
+noeira logger  →  Cloudflare Worker  →  SQL database  →  React dashboard
   POSTs metrics     Hono API + SPA        per-run storage    charts per run
 ```
 
@@ -39,22 +39,22 @@ tooling as to the framework.
 Put the URL and key in a `.env` at the repo root:
 
 ```
-RL_MONITOR_URL=https://your-monitor-url
-RL_MONITOR_API_KEY=...
+NOEIRA_CLOUD_URL=https://your-monitor-url
+NOEIRA_CLOUD_API_KEY=...
 ```
 
 Then attach a `RemoteLogger`:
 
 ```mojo
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
 
 var env_vars = load_dotenv()
 var logger = RemoteLogger(
-    server_url=env_vars.get("RL_MONITOR_URL", ""),
+    server_url=env_vars.get("NOEIRA_CLOUD_URL", ""),
     run_name="SAC HalfCheetah (GPU)",
     buffer_size=64,
-    api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+    api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
 )
 logger.set_config("algorithm", "SAC")
 logger.set_config("env", "HalfCheetah")
@@ -93,11 +93,11 @@ per-episode reward number would not have caught them.
 
 The monitor is where the **noeira** design system originated, and this
 documentation site mirrors it. If you change brand tokens, they live in
-`../mojo-rl-monitor/client/src/index.css` and are hand-mirrored into
+`../noeira-cloud/client/src/index.css` and are hand-mirrored into
 `docs-site/src/styles/noeira.css` — both need updating.
 
 :::note[Separate repository]
-The monitor is not part of mojo-rl and is not required to use it. Without a
+The monitor is not part of noeira and is not required to use it. Without a
 `.env`, `RemoteLogger` simply has nowhere to send; use
 [`CsvLogger`](/tooling/logging/) instead.
 :::

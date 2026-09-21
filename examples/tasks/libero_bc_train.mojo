@@ -54,43 +54,43 @@ from std.sys import argv
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.checkpoint import save_params, load_params
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.checkpoint import save_params, load_params
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.optimizer.adam import Adam
 
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.data.store import TrajectoryStore
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.gpu.constants import (
     META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
 )
-from mojo_rl.tasks.spec import (
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.predicates import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.predicates import (
     parse_goal, bind_goal, require_tier_a, joint_qpos_addresses,
 )
-from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.tasks.active import active_mask
-from mojo_rl.tasks.bc_policy import BcNet, BC_HID, write_bc_norm
-from mojo_rl.tasks.task_hooks import write_task_obs_host
-from mojo_rl.tasks.placement.libero_goal import LiberoGoalPlacement
-from mojo_rl.tasks.libero_goal_xml import (
+from noeira.tasks.tape import encode_goal, TAPE_WORDS
+from noeira.tasks.active import active_mask
+from noeira.tasks.bc_policy import BcNet, BC_HID, write_bc_norm
+from noeira.tasks.task_hooks import write_task_obs_host
+from noeira.tasks.placement.libero_goal import LiberoGoalPlacement
+from noeira.tasks.libero_goal_xml import (
     LIBERO_GOAL_OBS_DIM, LIBERO_GOAL_MAX_CONTACTS,
 )
 
 
 comptime H = DType.float64
 comptime FAMILY = "libero_goal"
-comptime FAMILY_DIR = "mojo_rl/tasks/families/"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
+comptime FAMILY_DIR = "noeira/tasks/families/"
+comptime TASK_DIR = "noeira/tasks/tasks/"
 comptime STORE = "build/demos/libero_goal.lowdim.h5"
 comptime OUT_DIR = "build/policies"
 comptime OBS = LIBERO_GOAL_OBS_DIM

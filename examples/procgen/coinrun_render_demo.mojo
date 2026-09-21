@@ -8,9 +8,9 @@ Run from repo root:
     pixi run mojo run -I . examples/procgen/coinrun_render_demo.mojo
 """
 
-from mojo_rl.io.png import save_png
-from mojo_rl.envs.procgen.games import CoinrunGame, CoinrunAssets
-from mojo_rl.envs.procgen.games.coinrun import DIST_HARD
+from noeira.io.png import save_png
+from noeira.envs.procgen.games import CoinrunGame, CoinrunAssets
+from noeira.envs.procgen.games.coinrun import DIST_HARD
 
 comptime ASSET_ROOT = String("assets/procgen/")
 comptime SEED = 0

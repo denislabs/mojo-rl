@@ -10,10 +10,10 @@
 # TrajectoryStore — so the entire data path is out of the comparison, and it is
 # what recorded the dataset in the first place.
 #
-# Run on the NVIDIA box, in a LeRobot checkout, NOT in mojo-rl:
+# Run on the NVIDIA box, in a LeRobot checkout, NOT in noeira:
 #
 #     pip install -e '.[feetech]'      # or the project's own install
-#     bash /path/to/mojo-rl/tools/act/lerobot_act_baseline.sh defaults
+#     bash /path/to/noeira/tools/act/lerobot_act_baseline.sh defaults
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # THE SPLIT IS THE SAME ONE

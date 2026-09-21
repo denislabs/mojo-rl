@@ -13,8 +13,8 @@ Run:
 from std.math import log
 from std.testing import assert_true, assert_almost_equal
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.zero.twohot_targets import (
+from noeira.nn.constants import DT
+from noeira.deep_agents.zero.twohot_targets import (
     mz_scalar_transform,
     mz_inverse_scalar_transform,
     mz_two_hot_target_batch,

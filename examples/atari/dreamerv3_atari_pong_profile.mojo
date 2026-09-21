@@ -27,16 +27,16 @@ from std.memory import alloc
 from std.random import seed, random_float64
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Zero, TruncNormalIn
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
-from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Zero, TruncNormalIn
+from noeira.nn.primitives.ops.swish_op import SwishOp
+from noeira.deep_agents.dreamerv3.agent import DreamerV3Agent
+from noeira.deep_agents.dreamerv3.nets_cnn import (
     DreamerEncoderCNNPool,
     DreamerDecoderCNNPool,
 )
-from mojo_rl.envs.atari import AtariEnv
-from mojo_rl.envs.atari.games.registry import AtariGame
+from noeira.envs.atari import AtariEnv
+from noeira.envs.atari.games.registry import AtariGame
 
 # ── identical arch to the training run ──
 comptime C = 1

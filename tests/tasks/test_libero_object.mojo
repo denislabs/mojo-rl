@@ -47,7 +47,7 @@ halves of the floor, and leave every downstream number agreeing with itself.
    not actually exercise aliasing and check 1 proves nothing about it.
 
 3. ⚠⚠ **THE START HEIGHT IS LIBERO'S OWN, TO THE PICOMETRE** — every
-   placement's z is compared against `mojo_rl/tasks/libero/init_z_libero
+   placement's z is compared against `noeira/tasks/libero/init_z_libero
    _object.kv`, which `tools/tasks/libero_init_z.py` reads out of the
    `.pruned_init` files the benchmark restores at reset. This is what caught
    the missing `TABLE_Z_OFFSET`: LIBERO routes a floor region to
@@ -82,41 +82,41 @@ union and the alias, and MuJoCo has no opinion about either.
 from std.os import listdir
 from std.os.path import exists
 
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, CONTACT_SIZE, CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts
-from mojo_rl.tasks.bddl import parse_bddl, BddlProblem
-from mojo_rl.tasks.libero_init_z import load_init_z, InitZTable
-from mojo_rl.tasks.spec import (
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.collision.contact_detection import detect_contacts
+from noeira.tasks.bddl import parse_bddl, BddlProblem
+from noeira.tasks.libero_init_z import load_init_z, InitZTable
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
     FamilySpec, TABLE_Z_OFFSET,
 )
-from mojo_rl.tasks.family import scene_path, park_pos
-from mojo_rl.tasks.eval import (
+from noeira.tasks.family import scene_path, park_pos
+from noeira.tasks.eval import (
     region_sites, region_contact_bodies, HostState, eval_goal,
 )
-from mojo_rl.tasks.predicates import (
+from noeira.tasks.predicates import (
     parse_goal, bind_goal, require_tier_a, joint_qpos_addresses, BoundGoal,
 )
-from mojo_rl.tasks.sampler import sample_placements, RegionFrame, SampleReport
-from mojo_rl.tasks.reset import free_slot_addresses, reset_slots
-from mojo_rl.tasks.libero_object_xml import (
+from noeira.tasks.sampler import sample_placements, RegionFrame, SampleReport
+from noeira.tasks.reset import free_slot_addresses, reset_slots
+from noeira.tasks.libero_object_xml import (
     LIBERO_OBJECT_MAX_CONTACTS, LIBERO_OBJECT_N_FREE_SLOTS,
 )
 
 
 comptime DT = DType.float64
 comptime SUITE = "libero_object"
-comptime FAMILY = "mojo_rl/tasks/families/libero_object.family"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
-comptime PACK = "mojo_rl/tasks/libero/assets"
+comptime FAMILY = "noeira/tasks/families/libero_object.family"
+comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime PACK = "noeira/tasks/libero/assets"
 comptime BDDL_DIR = (
     "references/LIBERO-master/libero/libero/bddl_files/libero_object"
 )

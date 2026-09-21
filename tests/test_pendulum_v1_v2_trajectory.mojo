@@ -23,8 +23,8 @@ from std.math import abs, sin, cos
 from std.random import seed, random_float64
 from std.testing import assert_true
 
-from mojo_rl.envs.pendulum import PendulumEnv, PendulumV2
-from mojo_rl.nn.constants import DT as dtype
+from noeira.envs.pendulum import PendulumEnv, PendulumV2
+from noeira.nn.constants import DT as dtype
 
 
 # =============================================================================

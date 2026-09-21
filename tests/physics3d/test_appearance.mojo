@@ -25,11 +25,11 @@ from std.math import sqrt
 
 from layout import Layout, LayoutTensor
 
-from mojo_rl.math3d import Vec3
-from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.constants import GEOM_BOX, GEOM_PLANE, GEOM_MESH
-from mojo_rl.physics3d.fields.rt_layout import DYN1, DYN2, rl1, rl2
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.math3d import Vec3
+from noeira.nn.core.tensor import TensorImpl
+from noeira.physics3d.constants import GEOM_BOX, GEOM_PLANE, GEOM_MESH
+from noeira.physics3d.fields.rt_layout import DYN1, DYN2, rl1, rl2
+from noeira.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
     GEOM_IDX_HALF_X,
@@ -38,25 +38,25 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_RADIUS,
     GEOM_IDX_HALF_LENGTH,
 )
-from mojo_rl.physics3d.parser.flat_model import TEX_2D, TEX_CUBE
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.parser.flat_model import TEX_2D, TEX_CUBE
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     GEOM_IDX_BODY,
     GEOM_IDX_POS_X,
     GEOM_IDX_QUAT_W,
     GEOM_IDX_RAY_VISIBLE,
 )
-from mojo_rl.physics3d.raytrace.appearance import (
+from noeira.physics3d.raytrace.appearance import (
     geom_uv,
     sample_texture,
     sample_texture_lod,
     texture_lod,
     mip_level_adr,
 )
-from mojo_rl.physics3d.raytrace.visual import append_mip_chain
-from mojo_rl.physics3d.raytrace.camera import CameraFrame
-from mojo_rl.physics3d.raytrace.render import render_pixel
-from mojo_rl.physics3d.raytrace.visual_records import (
+from noeira.physics3d.raytrace.visual import append_mip_chain
+from noeira.physics3d.raytrace.camera import CameraFrame
+from noeira.physics3d.raytrace.render import render_pixel
+from noeira.physics3d.raytrace.visual_records import (
     APP_IDX_A,
     APP_IDX_B,
     APP_IDX_G,

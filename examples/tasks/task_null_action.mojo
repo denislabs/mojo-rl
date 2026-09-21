@@ -41,30 +41,30 @@ where a GPU example cannot.
 from std.sys import argv
 
 
-from mojo_rl.tasks.spec import (
+from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import So101TabletopConfig
-from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
-from mojo_rl.tasks.predicates import parse_goal, bind_goal
-from mojo_rl.tasks.eval import eval_goal, region_sites
-from mojo_rl.tasks.active import active_mask, init_region_words
-from mojo_rl.tasks.sampler import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.family_config import So101TabletopConfig
+from noeira.tasks.so101_tabletop_xml import So101TabletopModel
+from noeira.tasks.predicates import parse_goal, bind_goal
+from noeira.tasks.eval import eval_goal, region_sites
+from noeira.tasks.active import active_mask, init_region_words
+from noeira.tasks.sampler import (
     sample_placements, RegionFrame, SampleReport,
 )
-from mojo_rl.tasks.reset import free_slot_addresses, reset_slots
-from mojo_rl.tasks.tape import encode_goal, TAPE_WORDS
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.tasks.reset import free_slot_addresses, reset_slots
+from noeira.tasks.tape import encode_goal, TAPE_WORDS
+from noeira.physics3d.gpu.constants import (
     META_IDX_TASK_PARAM_0, META_IDX_TASK_ACTIVE,
 )
-from mojo_rl.physics3d.parser.runtime_load import parse_model_runtime
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.core.cont_action import ContAction
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.core.cont_action import ContAction
 
 
 comptime DT = DType.float64
-comptime FAMILY = "mojo_rl/tasks/families/so101_tabletop.family"
+comptime FAMILY = "noeira/tasks/families/so101_tabletop.family"
 comptime DEFAULT_TASK = "so101_reach_clear"
 comptime ACT_DIM = 6
 comptime SEED = 11
@@ -84,7 +84,7 @@ def probe(task_name: String, act_value: Float64, verbose: Bool) raises -> Int:
         print("=" * 72)
 
     var f = load_family(FAMILY)
-    var t = load_task("mojo_rl/tasks/tasks/" + task_name + ".task")
+    var t = load_task("noeira/tasks/tasks/" + task_name + ".task")
     validate_task_against_family(t, f)
     var fmd = parse_model_runtime(scene_path(f))
     var rsites = region_sites(f, fmd.site_names)

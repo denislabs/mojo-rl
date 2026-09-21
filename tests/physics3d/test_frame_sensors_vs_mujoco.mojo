@@ -2,7 +2,7 @@
 
 `framepos`, `framequat`, the three axis sensors and the two velocity sensors,
 over the four object types this loader resolves and both reference forms. 212
-declarations across `mojo_rl/envs`, Menagerie and dm_control read these; until
+declarations across `noeira/envs`, Menagerie and dm_control read these; until
 2026-09-13 every one of them read back the NaN `Data` fills `sensordata` with.
 
 ⚠ THE TWO VELOCITY ROWS ARE A DIFFERENT STAGE. `framelinvel`/`frameangvel` are
@@ -33,12 +33,12 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model
-from mojo_rl.physics3d.model.model_dims import ModelDims
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from noeira.physics3d.fields import Data, Model
+from noeira.physics3d.model.model_dims import ModelDims
+from noeira.physics3d.parser import parse_xml, ModelDefFromXML
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.integrator.euler import EulerIntegrator
 
 comptime DTYPE = DType.float64
 

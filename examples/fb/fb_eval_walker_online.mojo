@@ -34,23 +34,23 @@ from std.math import abs, sqrt
 from std.random import random_float64, seed
 from std.sys import argv
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.activations import ReLU, Tanh
-from mojo_rl.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.combinators.sequential import Sequential
+from noeira.nn.primitives.linear import Linear
+from noeira.nn.primitives.activations import ReLU, Tanh
+from noeira.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
 
-from mojo_rl.data.store import TrajectoryStore
-from mojo_rl.data.resident import ResidentColumn
-from mojo_rl.data.sampler import UniformSampler
+from noeira.data.store import TrajectoryStore
+from noeira.data.resident import ResidentColumn
+from noeira.data.sampler import UniformSampler
 
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
-from mojo_rl.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.phyics3d_env_config import Phyics3dEnvConfig
+from noeira.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
 
-from mojo_rl.deep_agents.fb.trainer import FBTrainer
-from mojo_rl.deep_agents.fb import z_from_reward
+from noeira.deep_agents.fb.trainer import FBTrainer
+from noeira.deep_agents.fb import z_from_reward
 
 
 comptime NQ: Int = 9

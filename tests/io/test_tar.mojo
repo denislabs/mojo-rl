@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | The tar reader, on three formats and two attacks
 # +--------------------------------------------------------------------------+ #
-"""Gate `mojo_rl/io/tar.mojo` and `gunzip_file` in `mojo_rl/io/http.mojo`.
+"""Gate `noeira/io/tar.mojo` and `gunzip_file` in `noeira/io/http.mojo`.
 
     pixi run build-http                     # ONCE (gunzip_file lives there)
     pixi run mojo run -I . tests/io/test_tar.mojo
@@ -30,13 +30,13 @@ chunk).
 
 from std.os.path import exists
 
-from mojo_rl.io.fileio import file_size, read_file_bytes
-from mojo_rl.io.http import gunzip_file
-from mojo_rl.io.proc import run_capture
-from mojo_rl.io.tar import untar
+from noeira.io.fileio import file_size, read_file_bytes
+from noeira.io.http import gunzip_file
+from noeira.io.proc import run_capture
+from noeira.io.tar import untar
 
 
-comptime FIX = "/tmp/mojo_rl_tar_fixtures"
+comptime FIX = "/tmp/noeira_tar_fixtures"
 def _long_name() -> String:
     """Built the way `make_tar_fixtures.py` builds it, rather than pasted.
 

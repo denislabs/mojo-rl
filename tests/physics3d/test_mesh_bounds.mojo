@@ -28,27 +28,27 @@ are here because they are the models where passes 1 and 2 can say nothing.
 Run: pixi run mojo run -I . tests/physics3d/test_mesh_bounds.mojo
 """
 
-from mojo_rl.physics3d.constants import GEOM_MESH
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.constants import GEOM_MESH
+from noeira.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE, GEOM_IDX_MESH_ID,
 )
-from mojo_rl.physics3d.fields import Model, DynDims
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.flat_model import FlatModelDef
-from mojo_rl.physics3d.parser.render_fields import (
+from noeira.physics3d.fields import Model, DynDims
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.flat_model import FlatModelDef
+from noeira.physics3d.parser.render_fields import (
     RenderFields, build_render_fields,
 )
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.runtime_load import (
     read_model_source, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.studio.mesh_bounds import (
+from noeira.physics3d.studio.mesh_bounds import (
     empty_half_extents, measure_geom_from_file, biggest_half_extent,
     FALLBACK_HALF,
 )
 
 comptime DT = DType.float64
-comptime ARM = "mojo_rl/envs/robots/assets/so_arm101.xml"
+comptime ARM = "noeira/envs/robots/assets/so_arm101.xml"
 comptime GO2 = "references/mujoco_menagerie-main/unitree_go2/scene.xml"
 comptime ANYMAL = "references/mujoco_menagerie-main/anybotics_anymal_c/scene.xml"
 

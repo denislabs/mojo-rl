@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | Asset packs: the declaration, the credential decision, and the pull
 # +--------------------------------------------------------------------------+ #
-"""Gate `mojo_rl/assets/` — §9's infrastructure.
+"""Gate `noeira/assets/` — §9's infrastructure.
 
     pixi run build-http                              # ONCE
     pixi run mojo run -I . tests/assets/test_asset_packs.mojo
@@ -17,7 +17,7 @@ needs the network, a credential, or a live service.
   the env. Both are refused at parse time, which is the cheapest place to find
   them.
 * **⚠⚠ THE WRONG CREDENTIAL IS SENT.** This is the whole reason `provider=`
-  exists. Two `https://` URLs can need `HF_TOKEN`, `RL_MONITOR_API_KEY`, or
+  exists. Two `https://` URLs can need `HF_TOKEN`, `NOEIRA_CLOUD_API_KEY`, or
   nothing — and getting it wrong either 401s or, far worse, sends a secret to a
   host that should never have seen one.
 * **The bytes arrive corrupt.** A pack that extracts to the wrong meshes is
@@ -30,27 +30,27 @@ needs the network, a credential, or a live service.
 
 from std.os import getenv, setenv
 
-from mojo_rl.core.dotenv import load_dotenv
+from noeira.core.dotenv import load_dotenv
 from std.os.path import exists
 from std.time import sleep
 
-from mojo_rl.assets.pack import Pack, load_packs, parse_packs
-from mojo_rl.assets.resolve import (
+from noeira.assets.pack import Pack, load_packs, parse_packs
+from noeira.assets.resolve import (
     archive_path,
     extract_dir,
     pack_status,
     pull_pack,
     resolve_url,
 )
-from mojo_rl.io.fileio import remove_file, write_text_atomic
-from mojo_rl.io.http import http_shim_available
-from mojo_rl.io.proc import quote_arg, run_capture
-from mojo_rl.io.sha256 import sha256_file
+from noeira.io.fileio import remove_file, write_text_atomic
+from noeira.io.http import http_shim_available
+from noeira.io.proc import quote_arg, run_capture
+from noeira.io.sha256 import sha256_file
 
 
-comptime PORT_FILE = "/tmp/mojo_rl_pack_gate_port"
-comptime LOG_FILE = "/tmp/mojo_rl_pack_gate_log"
-comptime WORK = "/tmp/mojo_rl_pack_gate"
+comptime PORT_FILE = "/tmp/noeira_pack_gate_port"
+comptime LOG_FILE = "/tmp/noeira_pack_gate_log"
+comptime WORK = "/tmp/noeira_pack_gate"
 
 
 def _start_server() raises -> String:
@@ -61,7 +61,7 @@ def _start_server() raises -> String:
             pass
     _ = run_capture(
         "python3 tools/io/mock_monitor_server.py " + String(PORT_FILE) + " "
-        + String(LOG_FILE) + " 180 > /tmp/mojo_rl_pack_gate_server.log 2>&1 &"
+        + String(LOG_FILE) + " 180 > /tmp/noeira_pack_gate_server.log 2>&1 &"
     )
     for _ in range(100):
         if exists(PORT_FILE):
@@ -87,14 +87,14 @@ def main() raises:
     print("=== asset packs (§9) ===")
 
     # ⚠⚠ THE GATE OWNS ITS CACHE, AND IT LEARNED THIS THE HARD WAY. Running
-    # against `~/.cache/mojo_rl` meant a MUTATION SWEEP polluted it: the H10
+    # against `~/.cache/noeira` meant a MUTATION SWEEP polluted it: the H10
     # mutant disables the sha256 check, so it cached a deliberately-wrong
     # archive AND marked it `.ok` — after which the next honest run found the
     # marker, skipped the fetch entirely, and PASSED check 7b without
     # verifying anything. A gate that shares mutable state with its own
     # previous runs can be made vacuous by them.
     _ = run_capture("rm -rf " + quote_arg(String(WORK)))
-    _ = setenv("MOJO_RL_CACHE", String(WORK) + "/cache", True)
+    _ = setenv("NOEIRA_CACHE", String(WORK) + "/cache", True)
 
     if not http_shim_available():
         raise Error("the HTTP shim is not built — `pixi run build-http`")
@@ -111,7 +111,7 @@ def main() raises:
         "sha256=" + String("a" * 64) + "\nbytes=16781312\n"
         "dest=assets/so_arm101\ntoken_env=MY_OWN_TOKEN\n"
     )
-    var pf = parse_packs(good, String("gate"), String("mojo_rl/envs/robots"))
+    var pf = parse_packs(good, String("gate"), String("noeira/envs/robots"))
     if len(pf.packs) != 2:
         raise Error("expected 2 packs, parsed " + String(len(pf.packs)))
     var a = pf.packs[0].copy()
@@ -204,7 +204,7 @@ def main() raises:
 
     # token_env overrides, and a missing one is an error rather than silence
     var p_tok = p_https.copy()
-    p_tok.token_env = String("MOJO_RL_PACK_GATE_TOKEN")
+    p_tok.token_env = String("NOEIRA_PACK_GATE_TOKEN")
     var raised = False
     try:
         _ = resolve_url(p_tok)

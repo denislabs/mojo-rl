@@ -6,9 +6,9 @@ the 96x96 obs and reports bright-pixel stats by region.
 Run: pixi run -e apple mojo run -I . tests/atari/diag_pong_obs_ascii.mojo
 """
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.envs.atari import AtariEnv
-from mojo_rl.envs.atari.games.registry import AtariGame
+from noeira.nn.constants import DT
+from noeira.envs.atari import AtariEnv
+from noeira.envs.atari.games.registry import AtariGame
 
 comptime IMG = 96
 comptime OBS = IMG * IMG

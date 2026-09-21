@@ -10,7 +10,7 @@ early-termination settings the legacy Hopper script uses.
     and SAC's tuned defaults.
   * `RemoteLogger` — streams metrics to a dashboard at the driver's
     `print_every`/`diag_every` cadence. Config (server URL + API key) read
-    from a `.env` via `mojo_rl.core.dotenv`.
+    from a `.env` via `noeira.core.dotenv`.
   * Single-file checkpointing — `agent.save(CHECKPOINT_PATH)` writes ONE
     `.ckpt` file (overwritten each cadence) under a single `nn-ckpt v2`
     envelope containing actor + twin critics + their Adam states +
@@ -33,11 +33,11 @@ Run:
 from std.random import seed
 from std.time import perf_counter_ns
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.hopper import Hopper
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
+from noeira.deep_agents.sac import SAC
+from noeira.envs.hopper import Hopper
 
 
 # =============================================================================
@@ -84,8 +84,8 @@ def main() raises:
 
     # ─── Logger (remote) ───────────────────────────────────
     var env_vars = load_dotenv()
-    var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-    var url = env_vars.get("RL_MONITOR_URL", "")
+    var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+    var url = env_vars.get("NOEIRA_CLOUD_URL", "")
 
     var logger = RemoteLogger(
         server_url=url,

@@ -10,7 +10,7 @@ Asset-free/fast. See `docs/PROCGEN_STARPILOT_SCOPE.md`.
 from std.math import floor
 from std.testing import assert_equal, TestSuite
 
-from mojo_rl.envs.procgen.games import (
+from noeira.envs.procgen.games import (
     StarpilotGame,
     FLYER,
     METEOR,
@@ -18,7 +18,7 @@ from mojo_rl.envs.procgen.games import (
     TURRET,
     FAST_FLYER,
 )
-from mojo_rl.envs.procgen.games.starpilot import DIST_EASY, DIST_HARD
+from noeira.envs.procgen.games.starpilot import DIST_EASY, DIST_HARD
 
 
 @fieldwise_init

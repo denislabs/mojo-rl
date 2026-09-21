@@ -18,11 +18,11 @@ and "nothing was tested" are the same output otherwise, and this gate walks a
 directory: the day the glob returns nothing it must say so.
 """
 
-from mojo_rl.core.kv import KvLine, KvWriter, kv_lines, kv_write
+from noeira.core.kv import KvLine, KvWriter, kv_lines, kv_write
 
 
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
-comptime FAMILY_DIR = "mojo_rl/tasks/families/"
+comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime FAMILY_DIR = "noeira/tasks/families/"
 
 
 def _slurp(path: String) raises -> String:

@@ -36,10 +36,10 @@ Run:
 from std.math import abs
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import SqMat, fixed_subspace_dim
-from mojo_rl.experimental.swm.procrustes import procrustes_o_d
-from mojo_rl.experimental.swm.envs.klein_grid import KleinGrid
-from mojo_rl.experimental.swm.observables import (
+from noeira.experimental.swm.so_d import SqMat, fixed_subspace_dim
+from noeira.experimental.swm.procrustes import procrustes_o_d
+from noeira.experimental.swm.envs.klein_grid import KleinGrid
+from noeira.experimental.swm.observables import (
     classify,
     class_name,
     cycles_are_edge_disjoint,

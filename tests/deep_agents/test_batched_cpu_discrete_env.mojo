@@ -19,10 +19,10 @@ Run:
 
 from std.testing import assert_equal, assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
-from mojo_rl.envs.atari import AtariEnv, load_rom
-from mojo_rl.envs.atari.games.registry import AtariGame
+from noeira.nn.constants import DT
+from noeira.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
+from noeira.envs.atari import AtariEnv, load_rom
+from noeira.envs.atari.games.registry import AtariGame
 
 
 comptime N = 4

@@ -50,23 +50,23 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_reassemble5 import DMReassemble5
-from mojo_rl.envs.dm_control.manipulation_reassemble5_def import (
+from noeira.envs.dm_control.manipulation_reassemble5 import DMReassemble5
+from noeira.envs.dm_control.manipulation_reassemble5_def import (
     Reassemble5Model,
 )
-from mojo_rl.envs.dm_control.manipulation_reassemble5_config import (
+from noeira.envs.dm_control.manipulation_reassemble5_config import (
     OBS_DIM,
     N_BRICKS,
     FIXED_BRICK,
 )
-from mojo_rl.envs.dm_control.manipulation_reassemble import (
+from noeira.envs.dm_control.manipulation_reassemble import (
     build_stack,
     sigma_of_base,
     write_reassemble_orders,
     read_reassemble_order,
     quat_integrate_z_pi,
 )
-from mojo_rl.envs.dm_control.manipulation_stack_fixed import (
+from noeira.envs.dm_control.manipulation_stack_fixed import (
     ROBOT_SITE_BASE,
     SITE_PINCH,
     stack_brick_body_of,
@@ -81,12 +81,12 @@ from mojo_rl.envs.dm_control.manipulation_stack_fixed import (
     TCP_BBOX_LOWER_Z,
     TCP_BBOX_UPPER_Z,
 )
-from mojo_rl.envs.dm_control.manipulation_obs import (
+from noeira.envs.dm_control.manipulation_obs import (
     N_ARM,
     N_HAND,
     torque_site_of,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_POS_X,
     BODY_IDX_QUAT_X,

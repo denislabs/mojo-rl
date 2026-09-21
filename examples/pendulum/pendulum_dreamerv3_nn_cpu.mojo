@@ -15,9 +15,9 @@ Run:
 from std.memory import alloc
 from std.random import random_float64, seed
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
-from mojo_rl.envs.pendulum import PendulumV2
+from noeira.nn.constants import DT
+from noeira.deep_agents.dreamerv3.agent import DreamerV3Agent
+from noeira.envs.pendulum import PendulumV2
 
 # ── CPU-realistic config (smaller than size1m DETER=512/B=16/T=64) ──────
 comptime OBS = 3

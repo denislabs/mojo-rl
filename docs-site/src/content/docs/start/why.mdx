@@ -1,5 +1,5 @@
 ---
-title: Why mojo-rl
+title: Why noeira
 description: Why rebuild the whole reinforcement-learning stack in one language instead of stitching NumPy, PyTorch, MuJoCo and Gymnasium together.
 ---
 
@@ -38,7 +38,7 @@ seams.
 
 ## The thesis: one language, one pipeline
 
-mojo-rl rebuilds the stack — physics, neural networks, algorithms, rendering —
+noeira rebuilds the stack — physics, neural networks, algorithms, rendering —
 from scratch in Mojo. Not as a wrapper over existing libraries: as one codebase
 the compiler sees whole.
 
@@ -80,9 +80,9 @@ savings from staying on-device.
 
 ## What this is not
 
-This is not a claim that mojo-rl beats PyTorch at being PyTorch, or MuJoCo at
+This is not a claim that noeira beats PyTorch at being PyTorch, or MuJoCo at
 being MuJoCo. Those are mature, heavily optimized, widely validated projects with
-years of work behind them, and mojo-rl leans on MuJoCo and Gymnasium as
+years of work behind them, and noeira leans on MuJoCo and Gymnasium as
 correctness references throughout — the physics tests compare against live
 MuJoCo, and the native environments are faithful ports of Gymnasium's dynamics.
 
@@ -91,7 +91,7 @@ loop, optimizations become reachable that no amount of tuning inside any single
 library can reach.
 
 It is also a young project. See the per-page maturity markers, and the
-[roadmap](https://github.com/denislabs/mojo-rl/blob/main/ROADMAP.md) for what is
+[roadmap](https://github.com/noeira/noeira/blob/main/ROADMAP.md) for what is
 landing next.
 
 ## Next

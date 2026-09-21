@@ -17,8 +17,8 @@ from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.core.fmt import fit
+from noeira.nn.constants import DT as dtype
+from noeira.core.fmt import fit
 
 
 # =============================================================================

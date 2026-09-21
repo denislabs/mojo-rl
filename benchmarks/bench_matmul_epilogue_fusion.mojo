@@ -4,7 +4,7 @@
 tile BEFORE the store, and threads it into every kernel the dispatch can
 pick — multistage, split-K's reduce, the cuBLASLt fallback, the naive
 kernel, and Apple's 8x8 simdgroup kernel. We use it NOWHERE today
-(`grep -r elementwise_lambda_fn mojo_rl/` returns nothing), so every
+(`grep -r elementwise_lambda_fn noeira/` returns nothing), so every
 `Linear` pays a second full-tensor kernel for its bias add
 (`_bias_add_kernel` / `_bias_add_slice_kernel`, linear.mojo:51,215).
 

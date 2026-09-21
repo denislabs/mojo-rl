@@ -46,115 +46,115 @@ body-chain walk.
 
 from std.os import listdir
 
-from mojo_rl.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
-from mojo_rl.tasks.spec import (
+from noeira.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
+from noeira.tasks.spec import (
     FamilySpec, TaskSpec, JointInitSpec, load_family, load_task, parse_family,
     parse_task, validate_task_against_family, SLOT_FREE, INIT_TARGET_SLOT,
 )
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.family_config import (
+from noeira.tasks.family import scene_path
+from noeira.tasks.family_config import (
     So101TabletopConfig, So101TabletopPlacement,
 )
-from mojo_rl.tasks.active import init_region_words
-from mojo_rl.tasks.eval import region_sites
-from mojo_rl.tasks.reset import (
+from noeira.tasks.active import init_region_words
+from noeira.tasks.eval import region_sites
+from noeira.tasks.reset import (
     SlotAddress, free_slot_addresses, joint_init_addresses,
     joint_init_dof_addresses,
 )
-from mojo_rl.tasks.sampler import (
+from noeira.tasks.sampler import (
     sample_placements, sample_joint_inits, RegionFrame, SampleReport,
 )
-from mojo_rl.tasks.placement.table import (
+from noeira.tasks.placement.table import (
     PlacementTable, reset_task_slots,
 )
-from mojo_rl.tasks.placement.check import (
+from noeira.tasks.placement.check import (
     require_device_placement, placement_table_drift, joint_init_words,
     SceneFacts,
 )
-from mojo_rl.tasks.placement.libero_goal import LiberoGoalPlacement
-from mojo_rl.tasks.placement.libero_kitchen_scene1 import (
+from noeira.tasks.placement.libero_goal import LiberoGoalPlacement
+from noeira.tasks.placement.libero_kitchen_scene1 import (
     LiberoKitchenScene1Placement,
 )
-from mojo_rl.tasks.placement.libero_kitchen_scene2 import (
+from noeira.tasks.placement.libero_kitchen_scene2 import (
     LiberoKitchenScene2Placement,
 )
-from mojo_rl.tasks.placement.libero_kitchen_scene3 import (
+from noeira.tasks.placement.libero_kitchen_scene3 import (
     LiberoKitchenScene3Placement,
 )
-from mojo_rl.tasks.placement.libero_kitchen_scene4 import (
+from noeira.tasks.placement.libero_kitchen_scene4 import (
     LiberoKitchenScene4Placement,
 )
-from mojo_rl.tasks.placement.libero_kitchen_scene5 import (
+from noeira.tasks.placement.libero_kitchen_scene5 import (
     LiberoKitchenScene5Placement,
 )
-from mojo_rl.tasks.placement.libero_kitchen_scene6 import (
+from noeira.tasks.placement.libero_kitchen_scene6 import (
     LiberoKitchenScene6Placement,
 )
-from mojo_rl.tasks.placement.libero_kitchen_scene7 import (
+from noeira.tasks.placement.libero_kitchen_scene7 import (
     LiberoKitchenScene7Placement,
 )
-from mojo_rl.tasks.placement.libero_kitchen_scene8 import (
+from noeira.tasks.placement.libero_kitchen_scene8 import (
     LiberoKitchenScene8Placement,
 )
-from mojo_rl.tasks.placement.libero_kitchen_scene9 import (
+from noeira.tasks.placement.libero_kitchen_scene9 import (
     LiberoKitchenScene9Placement,
 )
-from mojo_rl.tasks.placement.libero_kitchen_scene10 import (
+from noeira.tasks.placement.libero_kitchen_scene10 import (
     LiberoKitchenScene10Placement,
 )
-from mojo_rl.tasks.placement.libero_living_room_scene1 import (
+from noeira.tasks.placement.libero_living_room_scene1 import (
     LiberoLivingRoomScene1Placement,
 )
-from mojo_rl.tasks.placement.libero_living_room_scene2 import (
+from noeira.tasks.placement.libero_living_room_scene2 import (
     LiberoLivingRoomScene2Placement,
 )
-from mojo_rl.tasks.placement.libero_living_room_scene3 import (
+from noeira.tasks.placement.libero_living_room_scene3 import (
     LiberoLivingRoomScene3Placement,
 )
-from mojo_rl.tasks.placement.libero_living_room_scene4 import (
+from noeira.tasks.placement.libero_living_room_scene4 import (
     LiberoLivingRoomScene4Placement,
 )
-from mojo_rl.tasks.placement.libero_living_room_scene5 import (
+from noeira.tasks.placement.libero_living_room_scene5 import (
     LiberoLivingRoomScene5Placement,
 )
-from mojo_rl.tasks.placement.libero_living_room_scene6 import (
+from noeira.tasks.placement.libero_living_room_scene6 import (
     LiberoLivingRoomScene6Placement,
 )
-from mojo_rl.tasks.placement.libero_object import LiberoObjectPlacement
-from mojo_rl.tasks.placement.libero_spatial import LiberoSpatialPlacement
-from mojo_rl.tasks.placement.libero_study_scene1 import (
+from noeira.tasks.placement.libero_object import LiberoObjectPlacement
+from noeira.tasks.placement.libero_spatial import LiberoSpatialPlacement
+from noeira.tasks.placement.libero_study_scene1 import (
     LiberoStudyScene1Placement,
 )
-from mojo_rl.tasks.placement.libero_study_scene2 import (
+from noeira.tasks.placement.libero_study_scene2 import (
     LiberoStudyScene2Placement,
 )
-from mojo_rl.tasks.placement.libero_study_scene3 import (
+from noeira.tasks.placement.libero_study_scene3 import (
     LiberoStudyScene3Placement,
 )
-from mojo_rl.tasks.placement.libero_study_scene4 import (
+from noeira.tasks.placement.libero_study_scene4 import (
     LiberoStudyScene4Placement,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     META_IDX_NEWTON_ITER, META_SOLVER_WORDS,
     METADATA_SIZE, META_IDX_INIT_REGION_0, META_INIT_SLOTS, META_IDX_LS_EVAL,
     META_IDX_JINIT_0, META_JINIT_SLOTS, META_JINIT_WORDS,
     MODEL_JOINT_SIZE, MODEL_BODY_SIZE, MODEL_GEOM_SIZE,
 )
-from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
 
 from layout import Layout, LayoutTensor
-from mojo_rl.nn.core.tensor import TensorImpl
+from noeira.nn.core.tensor import TensorImpl
 
 
 comptime DT = DType.float64
-comptime SO101_FAMILY = "mojo_rl/tasks/families/so101_tabletop.family"
-comptime FAMILY_DIR = "mojo_rl/tasks/families"
-comptime TASK_DIR = "mojo_rl/tasks/tasks/"
+comptime SO101_FAMILY = "noeira/tasks/families/so101_tabletop.family"
+comptime FAMILY_DIR = "noeira/tasks/families"
+comptime TASK_DIR = "noeira/tasks/tasks/"
 comptime BATCH = 8
 comptime SEED = 7
 comptime TOL: Float64 = 1.0e-12
@@ -1128,7 +1128,7 @@ def main() raises:
     )
     # ⚠ THE RADIUS IS READ FROM THE PROP'S OWN ASSET. For this family it is
     # both the clash radius and the resting height.
-    var cube = parse_model_runtime("mojo_rl/tasks/assets/props/cube.xml")
+    var cube = parse_model_runtime("noeira/tasks/assets/props/cube.xml")
     var ok_rad = False
     for i in range(len(cube.geoms)):
         if cube.geoms[i].half_x == So101TabletopConfig.SLOT_RADIUS:

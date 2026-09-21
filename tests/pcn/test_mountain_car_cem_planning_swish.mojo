@@ -23,11 +23,11 @@ from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.experimental.pcn.pc_initializer import PCXavier
-from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
-from mojo_rl.experimental.pcn.pc_scheduler import CosineWarmupSchedule
-from mojo_rl.experimental.pcn import (
+from noeira.nn.constants import DT as dtype
+from noeira.experimental.pcn.pc_initializer import PCXavier
+from noeira.experimental.pcn.pc_optimizer import PCAdam
+from noeira.experimental.pcn.pc_scheduler import CosineWarmupSchedule
+from noeira.experimental.pcn import (
     PCBlock,
     PCEncoder,
     PCIdentity,

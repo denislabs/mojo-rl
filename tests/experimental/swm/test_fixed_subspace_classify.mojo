@@ -19,8 +19,8 @@ Run:
 from std.math import cos, sin
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import SqMat, householder
-from mojo_rl.experimental.swm.observables import (
+from noeira.experimental.swm.so_d import SqMat, householder
+from noeira.experimental.swm.observables import (
     classify,
     classify_cycle,
     CLASS_NOMINAL,

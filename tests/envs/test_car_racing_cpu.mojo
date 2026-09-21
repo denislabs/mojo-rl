@@ -13,8 +13,8 @@ generator — those are validated/unified separately.
 """
 
 from std.math import sqrt
-from mojo_rl.envs.car_racing import CarRacing, CarRacingAction
-from mojo_rl.envs.car_racing.constants import CRConstants
+from noeira.envs.car_racing import CarRacing, CarRacingAction
+from noeira.envs.car_racing.constants import CRConstants
 
 
 def fail(name: String, msg: String) raises:

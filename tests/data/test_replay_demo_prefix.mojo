@@ -23,13 +23,13 @@ from std.sys import has_accelerator
 from std.testing import assert_equal, assert_true
 from max.gpu.host import DeviceBuffer, DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.data.replay import StoreReplay
-from mojo_rl.data.replay_gpu import StoreReplayGpu
-from mojo_rl.deep_agents.training.blocks.replay_sample_step import (
+from noeira.nn.constants import DT
+from noeira.data.replay import StoreReplay
+from noeira.data.replay_gpu import StoreReplayGpu
+from noeira.deep_agents.training.blocks.replay_sample_step import (
     ReplaySampleStep,
 )
-from mojo_rl.deep_agents.training.trainer_block import TrainerState
+from noeira.deep_agents.training.trainer_block import TrainerState
 
 
 comptime OBS: Int = 3

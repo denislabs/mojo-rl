@@ -10,7 +10,7 @@ the routes below until `/__shutdown` or the timeout.
 exercised with no network and no credentials: status codes, redirects, Range
 resume, an upload, and — the one thing a real server will not do on demand —
 a route that IGNORES `Range` and answers 200, which is the silent-corruption
-case `mojo_rl/io/fetch.mojo` has to detect.
+case `noeira/io/fetch.mojo` has to detect.
 
 Routes
   GET  /json           200 {"ok":true,"n":3,"items":[1,2,3]}

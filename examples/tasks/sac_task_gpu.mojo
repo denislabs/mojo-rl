@@ -8,7 +8,7 @@ header says where that was measured).
 
 The driver — every flag, every baseline, every warning about the reward
 scale, the target-tracking rate and the success criterion — is
-`mojo_rl/tasks/sac_family_driver.run_sac`, generic over the family's model
+`noeira/tasks/sac_family_driver.run_sac`, generic over the family's model
 and config. This file binds it to `So101TabletopModel` +
 `So101TabletopConfig` and files runs under project `so101`, as it always
 did. `examples/tasks/sac_tower_gpu.mojo` is the same driver on the
@@ -18,9 +18,9 @@ GPU kernels are minutes of compile each.
 
 from std.sys import argv
 
-from mojo_rl.tasks.family_config import So101TabletopConfig
-from mojo_rl.tasks.so101_tabletop_xml import So101TabletopModel
-from mojo_rl.tasks.sac_family_driver import run_sac
+from noeira.tasks.family_config import So101TabletopConfig
+from noeira.tasks.so101_tabletop_xml import So101TabletopModel
+from noeira.tasks.sac_family_driver import run_sac
 
 
 def main() raises:
@@ -29,7 +29,7 @@ def main() raises:
         args.append(String(a))
     run_sac[So101TabletopModel, So101TabletopConfig](
         args,
-        family_path=String("mojo_rl/tasks/families/so101_tabletop.family"),
+        family_path=String("noeira/tasks/families/so101_tabletop.family"),
         project=String("so101"),
         driver=String("examples/tasks/sac_task_gpu.mojo"),
         default_task=String("so101_lift_brick"),

@@ -40,15 +40,15 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.core.cont_action import ContAction
-from mojo_rl.envs.robots.so_arm100 import SoArm100Reach
-from mojo_rl.envs.robots.so_arm100_xml import (
+from noeira.core.cont_action import ContAction
+from noeira.envs.robots.so_arm100 import SoArm100Reach
+from noeira.envs.robots.so_arm100_xml import (
     SoArm100Model,
     MOVING_JAW_BODY_IDX,
     TARGET_BODY_IDX,
 )
-from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.fields import actuator_column
+from noeira.physics3d.gpu.constants import (
     ACT_IDX_CTRL_MAX,
     ACT_IDX_CTRL_MIN,
     ACT_IDX_FORCE_MAX,
@@ -109,7 +109,7 @@ def _ctrl(i: Int) -> Float64:
 
 def _mj() raises -> PythonObject:
     var mujoco = Python.import_module("mujoco")
-    return mujoco.MjModel.from_xml_path("mojo_rl/envs/robots/assets/so_arm100.xml")
+    return mujoco.MjModel.from_xml_path("noeira/envs/robots/assets/so_arm100.xml")
 
 
 def test_model_counts() raises:

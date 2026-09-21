@@ -9,7 +9,7 @@ against a fraction of its own weight:
     mj_applyFT(m, d, force, /*torque=*/0, d->xipos + 3*i, i, d->qfrc_gravcomp)
 
 and `mj_passive` folds the result into `qfrc_passive`. The attribute was read
-by NOBODY in this engine — `grep -r gravcomp mojo_rl/` returned nothing — so
+by NOBODY in this engine — `grep -r gravcomp noeira/` returned nothing — so
 every compensated link fell under its full weight from the first step.
 
 ⚠⚠ EIGHT MODELS HERE DECLARE IT, AND ON ALL EIGHT IT IS THE ENTIRE PASSIVE
@@ -67,21 +67,21 @@ from std.math import abs
 from max.gpu.host import DeviceContext
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.parser.expander import expand_mjcf
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.parser.expander import expand_mjcf
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
     read_model_source,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.fields.dynamics_scratch import DynamicsScratch
-from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
-from mojo_rl.physics3d.studio.stepping import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.fields.dynamics_scratch import DynamicsScratch
+from noeira.physics3d.dynamics.actuation import apply_actions_fields
+from noeira.physics3d.studio.stepping import (
     StudioImpFastPyr, StudioImpFastEll, StudioIntegPyr, StudioIntegEll,
     studio_cone_of, studio_uses_implicit,
 )
-from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.types import ConeType
+from noeira.physics3d.gpu.constants import (
     KEY_IDX_NQPOS, MODEL_META_IDX_NGRAVCOMP, MODEL_BODY_SIZE,
     BODY_IDX_GRAVCOMP,
 )

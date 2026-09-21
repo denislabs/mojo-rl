@@ -20,12 +20,12 @@ from std.testing import assert_true
 
 from layout import TileTensor, TensorLayout
 
-from mojo_rl.nn.constants import DT as dtype
-from mojo_rl.planners.trajectory import (
+from noeira.nn.constants import DT as dtype
+from noeira.planners.trajectory import (
     CategoricalRandomShooter,
     ScorePlanCallback,
 )
-from mojo_rl.planners.testing import IdentityDynamics, GoalReachReward
+from noeira.planners.testing import IdentityDynamics, GoalReachReward
 
 
 comptime BATCH: Int = 1

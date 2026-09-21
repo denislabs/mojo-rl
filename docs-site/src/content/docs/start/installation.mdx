@@ -1,13 +1,13 @@
 ---
 title: Installation
-description: Install pixi, fetch mojo-rl's dependencies, and pick the right environment for your GPU.
+description: Install pixi, fetch noeira's dependencies, and pick the right environment for your GPU.
 ---
 
 import Maturity from '~/components/Maturity.astro';
 
 <Maturity level="stable" />
 
-mojo-rl uses [pixi](https://pixi.sh) for dependency management. pixi installs
+noeira uses [pixi](https://pixi.sh) for dependency management. pixi installs
 the Mojo toolchain, the MAX runtime, the Python packages used for reference
 comparisons, and the CUDA toolchain where relevant — you do not install Mojo
 separately.
@@ -33,8 +33,8 @@ brew install pixi
 ## 2. Clone and install
 
 ```bash
-git clone https://github.com/denislabs/mojo-rl.git
-cd mojo-rl
+git clone https://github.com/noeira/noeira.git
+cd noeira
 pixi install
 ```
 
@@ -44,7 +44,7 @@ commands reuse the cached environment.
 ## 3. Run something
 
 Every command runs **from the repository root**, and the `-I .` flag puts the
-repository on Mojo's module search path. Without it, `import mojo_rl` fails.
+repository on Mojo's module search path. Without it, `import noeira` fails.
 
 ```bash
 pixi run mojo run -I . examples/solve_gridworld.mojo
@@ -107,7 +107,7 @@ Breakout, Space Invaders) are independent of it and need no ROMs.
 pixi exposes a few shortcuts:
 
 ```bash
-pixi run build        # precompile the package → mojo_rl.mojoc
+pixi run build        # precompile the package → noeira.mojoc
 pixi run test-smoke   # fast curated CPU test tier (what CI runs)
 pixi run test-cpu     # every non-GPU test — takes hours
 pixi run -e apple test-gpu   # GPU tests on Metal
@@ -121,15 +121,15 @@ If a build picks up code you have already changed, delete the precompiled
 package and rebuild:
 
 ```bash
-rm -f mojo_rl.mojoc
+rm -f noeira.mojoc
 ```
 
-A stale `mojo_rl.mojoc` shadows the source tree, and the resulting errors point
+A stale `noeira.mojoc` shadows the source tree, and the resulting errors point
 at code that no longer exists.
 :::
 
 :::note[Mojo nightly]
-mojo-rl tracks **Mojo nightly**, so your editor's LSP may report warnings on
+noeira tracks **Mojo nightly**, so your editor's LSP may report warnings on
 perfectly valid code. Nightly syntax differs from stable in ways worth knowing:
 `mut` (not `inout`), `deinit` (not `owned`), `comptime` (not `alias`), and
 `ptr + n` (not `ptr.offset(n)`).

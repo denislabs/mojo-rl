@@ -37,14 +37,14 @@ from std.math import abs, sin, sqrt
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.envs.dm_control.point_mass import (
+from noeira.envs.dm_control.point_mass import (
     DMPointMassHard,
     DMPointMassModel,
     T1_TENDON_IDX,
     T2_TENDON_IDX,
     TARGET_SIZE,
 )
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
     TENDON_IDX_NUM_JOINTS,
     TENDON_IDX_JOINT_0,
@@ -56,8 +56,8 @@ from mojo_rl.physics3d.gpu.constants import (
 # ⚠ THE WRAP STRIDE IS A CONSTANT, NOT A LITERAL. These tables are
 # `[actuator * MAX_COMPTIME_TENDON_WRAPS + k]`; the cap moved 4 -> 16
 # with defect 17 and a hardcoded 4 here silently reads the wrong slot.
-from mojo_rl.physics3d.parser.xml_parser import MAX_COMPTIME_TENDON_WRAPS
-from mojo_rl.physics3d.gpu.constants import (
+from noeira.physics3d.parser.xml_parser import MAX_COMPTIME_TENDON_WRAPS
+from noeira.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
     ACTTEN_IDX_STIFFNESS,

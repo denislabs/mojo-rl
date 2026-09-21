@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The precompiled package: build it, and build or run a driver against it.
 #
-#   pixi run build-pkg                       # mojo precompile mojo_rl -> build/pkg/mojo_rl.mojoc
+#   pixi run build-pkg                       # mojo precompile noeira -> build/pkg/noeira.mojoc
 #   pixi run run-pkg examples/x.mojo [args]  # compile x against the package, then run it
 #   pixi run compile-pkg examples/x.mojo -o out [mojo build flags]
 #
@@ -10,11 +10,11 @@
 # SAC HalfCheetah driver pays 32 s of it on EVERY rebuild from source and
 # 2.5 s from the package: warm rebuild 38 s -> 8 s on Mojo 1.0, identical
 # binary. The package costs ~3 min and the whole box to build, so this is
-# for iterating on a driver, config or example, not on mojo_rl/ itself.
+# for iterating on a driver, config or example, not on noeira/ itself.
 #
 # Two things this script exists to get right:
 #   1. The source tree SHADOWS the package whenever the working directory
-#      holds `mojo_rl/`, so the compile runs from build/pkg/ with the
+#      holds `noeira/`, so the compile runs from build/pkg/ with the
 #      driver's absolute path (measured: 128 s from the root, 8 s from here).
 #   2. Drivers find their C shims and assets relative to the project root,
 #      so the BINARY is run from the root, not from build/pkg/.
@@ -22,16 +22,16 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG="$ROOT/build/pkg"
-MOJOC="$PKG/mojo_rl.mojoc"
+MOJOC="$PKG/noeira.mojoc"
 
 usage() { sed -n 2,7p "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 stale_check() {
     [ -f "$MOJOC" ] || { echo "pkg.sh: no $MOJOC — run \`pixi run build-pkg\` first" >&2; exit 1; }
     local newer
-    newer=$(find "$ROOT/mojo_rl" -name '*.mojo' -newer "$MOJOC" | wc -l | tr -d ' ')
+    newer=$(find "$ROOT/noeira" -name '*.mojo' -newer "$MOJOC" | wc -l | tr -d ' ')
     if [ "$newer" != 0 ]; then
-        echo "pkg.sh: WARNING the package is STALE: $newer file(s) under mojo_rl/ are newer than it." >&2
+        echo "pkg.sh: WARNING the package is STALE: $newer file(s) under noeira/ are newer than it." >&2
         echo "        The driver is built against the OLD library. \`pixi run build-pkg\` to refresh." >&2
     fi
 }
@@ -40,9 +40,9 @@ cmd="${1:-}"; shift || usage
 case "$cmd" in
 build)
     mkdir -p "$PKG"
-    echo "pkg.sh: precompiling mojo_rl -> $MOJOC (about 3 min; it wants the whole box)"
+    echo "pkg.sh: precompiling noeira -> $MOJOC (about 3 min; it wants the whole box)"
     t0=$(date +%s)
-    ( cd "$ROOT" && mojo precompile mojo_rl -o "$MOJOC" )
+    ( cd "$ROOT" && mojo precompile noeira -o "$MOJOC" )
     echo "pkg.sh: done in $(( $(date +%s) - t0 )) s, $(( $(stat -f %z "$MOJOC" 2>/dev/null || stat -c %s "$MOJOC") / 1048576 )) MB"
     ;;
 compile)

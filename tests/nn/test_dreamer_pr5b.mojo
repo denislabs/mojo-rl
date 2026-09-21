@@ -15,10 +15,10 @@ part 2. Run: `pixi run mojo run -I . tests/nn/test_dreamer_pr5b.mojo`
 from std.memory import alloc
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.dreamerv3.twohot import twohot_loss_backward
-from mojo_rl.deep_agents.dreamerv3.imag_loss import imag_loss_backward
-from mojo_rl.deep_agents.dreamerv3.repl_loss import repl_loss_backward
+from noeira.nn.constants import DT
+from noeira.deep_agents.dreamerv3.twohot import twohot_loss_backward
+from noeira.deep_agents.dreamerv3.imag_loss import imag_loss_backward
+from noeira.deep_agents.dreamerv3.repl_loss import repl_loss_backward
 
 
 comptime FIXTURE = "tests/nn/dreamerv3/fixtures/pr5b_fixture.txt"

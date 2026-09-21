@@ -53,12 +53,12 @@ Run (after training the ladder for the same TASK):
 
 from std.random import seed
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.data.column import ColumnSpec
-from mojo_rl.data.store import TrajectoryStoreWriter
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
+from noeira.nn.constants import DT
+from noeira.data.column import ColumnSpec
+from noeira.data.store import TrajectoryStoreWriter
+from noeira.deep_agents.sac import SAC
+from noeira.envs.phyics3d_env import Phyics3dEnv
+from noeira.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
 
 from max.gpu.host import DeviceContext
 

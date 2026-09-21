@@ -49,9 +49,9 @@ Run:
 from std.math import sqrt
 from std.testing import assert_true
 
-from mojo_rl.experimental.swm.so_d import SqMat
-from mojo_rl.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
-from mojo_rl.experimental.swm.envs.mobius_ring_nd import (
+from noeira.experimental.swm.so_d import SqMat
+from noeira.experimental.swm.swm_trainer import SwmPhase3, Phase3Config
+from noeira.experimental.swm.envs.mobius_ring_nd import (
     MobiusRingND,
     MobiusNDConfig,
     ACTION_FORWARD_ND,

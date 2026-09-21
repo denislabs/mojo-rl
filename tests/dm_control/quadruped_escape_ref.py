@@ -31,7 +31,7 @@ for _p in (
 import numpy as np  # noqa: E402
 from dm_control.utils import rewards  # noqa: E402
 
-ESCAPE_XML = "mojo_rl/envs/dm_control/assets/quadruped_escape.xml"
+ESCAPE_XML = "noeira/envs/dm_control/assets/quadruped_escape.xml"
 _HEIGHTFIELD_ID = 0
 
 

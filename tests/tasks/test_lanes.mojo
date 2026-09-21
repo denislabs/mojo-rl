@@ -13,7 +13,7 @@ lane belongs to exactly one task, and the per-task counts are the real
 denominators rather than `n_lanes / n_tasks`.
 """
 
-from mojo_rl.tasks.lanes import lane_task, lanes_for_task
+from noeira.tasks.lanes import lane_task, lanes_for_task
 
 
 def main() raises:

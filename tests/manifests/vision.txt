@@ -1,7 +1,7 @@
 # Vision manifest — `bash scripts/run_tests.sh tests/manifests/vision.txt`
 #
 # ⚠ NOT part of `test-smoke`, for ONE reason: it needs a build artifact.
-# `pixi run build-opencv` produces `mojo_rl/vision/opencv/libmojo_cv.dylib`,
+# `pixi run build-opencv` produces `noeira/vision/opencv/libmojo_cv.dylib`,
 # which is gitignored like every other shim, so on a fresh checkout the gate
 # would SKIP rather than fail — and a skip that reports success is the vacuity
 # failure this tree keeps recording. Keep it a tier you run deliberately.

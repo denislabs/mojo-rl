@@ -8,7 +8,7 @@ device — the discrete sibling of the SAC/TD3 GPU-batched path.
 Pong has 3 discrete actions (NOOP, UP, DOWN) and 6D clean observations
 (ball_xy, ball_vxy, paddle_y, cpu_paddle_y — all normalized).
 
-This is the *new* deep_agents Rainbow (`mojo_rl.deep_agents.c51`), NOT the
+This is the *new* deep_agents Rainbow (`noeira.deep_agents.c51`), NOT the
 legacy `deep_agents` agent. The whole agent comes from the `Rainbow` preset
 (dueling/noisy distributional net over an N-step-over-PER sample block) and
 trains through `agent.train_gpu_batched`, the facade over the GPU-batched
@@ -26,14 +26,14 @@ from std.memory import Pointer
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.core.dotenv import load_dotenv
-from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
+from noeira.core.dotenv import load_dotenv
+from noeira.core.logger import RemoteLogger
+from noeira.nn.constants import DT
 
-from mojo_rl.deep_agents.c51.config import Rainbow
-from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
-from mojo_rl.envs.arcade_games.pong import PongEnv
-from mojo_rl.core.fmt import fit
+from noeira.deep_agents.c51.config import Rainbow
+from noeira.deep_agents.training import BatchedGpuDiscreteEnv
+from noeira.envs.arcade_games.pong import PongEnv
+from noeira.core.fmt import fit
 
 
 # =============================================================================
@@ -163,8 +163,8 @@ def main() raises:
         # =====================================================================
 
         var env_vars = load_dotenv()
-        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
-        var url = env_vars.get("RL_MONITOR_URL", "")
+        var api_key = env_vars.get("NOEIRA_CLOUD_API_KEY", "")
+        var url = env_vars.get("NOEIRA_CLOUD_URL", "")
 
         var logger = RemoteLogger(
             server_url=url,

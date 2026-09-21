@@ -29,14 +29,14 @@ from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.parser.runtime_load import (
     dims_from_flat, build_model_runtime, spec_fields_runtime,
 )
-from mojo_rl.physics3d.parser.full_parser import parse_xml_full
-from mojo_rl.physics3d.dynamics.actuation import apply_actions_fields
-from mojo_rl.physics3d.dynamics.pose_transmission import apply_pose_transmission
-from mojo_rl.physics3d.studio.stepping import StudioRk4Pyr
+from noeira.physics3d.parser.full_parser import parse_xml_full
+from noeira.physics3d.dynamics.actuation import apply_actions_fields
+from noeira.physics3d.dynamics.pose_transmission import apply_pose_transmission
+from noeira.physics3d.studio.stepping import StudioRk4Pyr
 
 comptime DT = DType.float64
 

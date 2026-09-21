@@ -43,7 +43,7 @@ Run: pixi run mojo run -I . tests/physics3d/test_compiler_build_modes.mojo
 from std.math import abs
 from std.testing import assert_true
 
-from mojo_rl.physics3d.parser import parse_xml_full
+from noeira.physics3d.parser import parse_xml_full
 
 
 comptime _BODY = """

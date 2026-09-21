@@ -16,13 +16,13 @@ Run:
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.craftax_full import (
+from noeira.envs.craftax_full import (
     CraftaxFullEnv,
     CraftaxFullAction,
     OBS_DIM,
     STATE_SIZE,
 )
-from mojo_rl.envs.craftax_full.constants import (
+from noeira.envs.craftax_full.constants import (
     MAP_H,
     MAP_W,
     NUM_FLOORS,
@@ -36,7 +36,7 @@ from mojo_rl.envs.craftax_full.constants import (
     ACTION_PLACE_TABLE,
     INV_WOOD,
 )
-from mojo_rl.envs.craftax_full.state import (
+from noeira.envs.craftax_full.state import (
     S_PLAYER_POS,
     S_PLAYER_LEVEL,
     S_TIMESTEP,
@@ -45,7 +45,7 @@ from mojo_rl.envs.craftax_full.state import (
     s_monsters_killed,
     s_inv,
 )
-from mojo_rl.nn.constants import DT as dtype
+from noeira.nn.constants import DT as dtype
 
 
 comptime BATCH: Int = 1

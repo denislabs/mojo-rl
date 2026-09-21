@@ -45,12 +45,12 @@ device, so the padded branch is live on Metal as well.
 from std.math import abs
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.primitives.linear_act import LinearAct
-from mojo_rl.nn.primitives.ops.relu_op import ReLUOp
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.primitives.linear_act import LinearAct
+from noeira.nn.primitives.ops.relu_op import ReLUOp
 
 
 def cmp[

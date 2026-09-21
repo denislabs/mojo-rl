@@ -42,15 +42,15 @@ from std.os.path import exists
 from std.testing import assert_true, assert_equal
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.deep_agents.smolvla.policy import SmolVLAPolicy
-from mojo_rl.deep_agents.smolvla.normalize import SmolVLAStats
-from mojo_rl.deep_agents.smolvla.tasks import TaskTokens
-from mojo_rl.deep_agents.smolvla.observation import fill_camera_images
-from mojo_rl.deep_agents.smolvla.vision_cache import VisionCache
-from mojo_rl.vision.resize_pad import SIGLIP_INPUT
+from noeira.nn.constants import DT
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.initializer import Deterministic
+from noeira.deep_agents.smolvla.policy import SmolVLAPolicy
+from noeira.deep_agents.smolvla.normalize import SmolVLAStats
+from noeira.deep_agents.smolvla.tasks import TaskTokens
+from noeira.deep_agents.smolvla.observation import fill_camera_images
+from noeira.deep_agents.smolvla.vision_cache import VisionCache
+from noeira.vision.resize_pad import SIGLIP_INPUT
 
 comptime TABLE = "tools/vla/smolvla_tasks_record-test_20260828_092736.tsv"
 comptime N_CAM = 2

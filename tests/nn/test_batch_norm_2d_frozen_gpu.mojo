@@ -44,13 +44,13 @@ from std.python import Python, PythonObject
 
 from max.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.primitives.batch_norm_2d import BatchNorm2D
-from mojo_rl.deep_agents.act.refload import LoadRefParams, RefDump
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.primitives.batch_norm_2d import BatchNorm2D
+from noeira.deep_agents.act.refload import LoadRefParams, RefDump
 
 
 comptime B = 2

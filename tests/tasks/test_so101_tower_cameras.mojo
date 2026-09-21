@@ -36,24 +36,24 @@ independent is everything after the text.
 from std.math import abs, sqrt
 from std.testing import assert_true
 
-from mojo_rl.math3d import Vec3 as Vec3Generic
-from mojo_rl.physics3d.fields import Data, Model, DynDims
-from mojo_rl.physics3d.fields.rt_layout import DYN1, DYN2, rl1, rl2
-from mojo_rl.physics3d.gpu.constants import MAX_GPU_CAMERAS, MODEL_CAM_SIZE
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.parser.runtime_load import (
+from noeira.math3d import Vec3 as Vec3Generic
+from noeira.physics3d.fields import Data, Model, DynDims
+from noeira.physics3d.fields.rt_layout import DYN1, DYN2, rl1, rl2
+from noeira.physics3d.gpu.constants import MAX_GPU_CAMERAS, MODEL_CAM_SIZE
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from mojo_rl.physics3d.raytrace.camera import camera_world_frame
-from mojo_rl.tasks.family import scene_path
-from mojo_rl.tasks.spec import load_family
-from mojo_rl.tasks.so101_tower_xml import (
+from noeira.physics3d.raytrace.camera import camera_world_frame
+from noeira.tasks.family import scene_path
+from noeira.tasks.spec import load_family
+from noeira.tasks.so101_tower_xml import (
     SO101_TOWER_MAX_CONTACTS, SO101_TOWER_NMESH_VERTS,
 )
 
 comptime DT = DType.float64
 comptime Vec3 = Vec3Generic[DT]
-comptime FAMILY = "mojo_rl/tasks/families/so101_tower.family"
+comptime FAMILY = "noeira/tasks/families/so101_tower.family"
 comptime TOL = 1.0e-6
 
 # `tools/tasks/check_tower_cameras.py`, MuJoCo 3.12.0 — pos, then the x, y, z

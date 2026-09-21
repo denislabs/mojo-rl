@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | The heartbeat: when a silent run says "still here", and when it must not
 # +--------------------------------------------------------------------------+ #
-"""Gate the §7b ping in `mojo_rl/io/http_sink.mojo`.
+"""Gate the §7b ping in `noeira/io/http_sink.mojo`.
 
     pixi run build-http                                    # ONCE
     pixi run mojo run -I . tests/io/test_http_sink_heartbeat.mojo
@@ -39,14 +39,14 @@ by this file. Saying so is cheaper than a check that would pass either way.
 from std.os.path import exists
 from std.time import sleep
 
-from mojo_rl.io.fileio import remove_file
-from mojo_rl.io.http import http_shim_available
-from mojo_rl.io.http_sink import HttpPostSink
-from mojo_rl.io.proc import run_capture
+from noeira.io.fileio import remove_file
+from noeira.io.http import http_shim_available
+from noeira.io.http_sink import HttpPostSink
+from noeira.io.proc import run_capture
 
 
-comptime PORT_FILE = "/tmp/mojo_rl_hb_gate_port"
-comptime LOG_FILE = "/tmp/mojo_rl_hb_gate_log"
+comptime PORT_FILE = "/tmp/noeira_hb_gate_port"
+comptime LOG_FILE = "/tmp/noeira_hb_gate_log"
 comptime RUN_ID = "2026-09-10_hb-gate_deadbeef"
 
 
@@ -61,7 +61,7 @@ def _start_server() raises -> String:
         + String(PORT_FILE)
         + " "
         + String(LOG_FILE)
-        + " 120 > /tmp/mojo_rl_hb_gate_server.log 2>&1 &"
+        + " 120 > /tmp/noeira_hb_gate_server.log 2>&1 &"
     )
     for _ in range(100):
         if exists(PORT_FILE):

@@ -1,7 +1,7 @@
 # +--------------------------------------------------------------------------+ #
 # | Real SO-101 joints -> simulated SO-101 joints
 # +--------------------------------------------------------------------------+ #
-"""Gate for `mojo_rl/robot/so101/sim_map.mojo`, with no arm on the desk.
+"""Gate for `noeira/robot/so101/sim_map.mojo`, with no arm on the desk.
 
 The calibration below is the REAL one, read off this follower's servo EEPROM
 on 2026-08-25 (`pixi run soarm-diag`), so the numbers under test are the ones
@@ -25,11 +25,11 @@ Run: pixi run mojo run -I . tests/robot/test_so101_sim_map.mojo
 from std.math import abs
 from std.testing import assert_almost_equal, assert_equal, assert_true, assert_false, TestSuite
 
-from mojo_rl.envs.robots.so_arm101_xml import SoArm101Model
-from mojo_rl.physics3d.fields import actuator_column
-from mojo_rl.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
-from mojo_rl.robot.so101.arm import GRIPPER, SO101Calibration, SO101_N
-from mojo_rl.robot.so101.sim_map import SimJointMap
+from noeira.envs.robots.so_arm101_xml import SoArm101Model
+from noeira.physics3d.fields import actuator_column
+from noeira.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
+from noeira.robot.so101.arm import GRIPPER, SO101Calibration, SO101_N
+from noeira.robot.so101.sim_map import SimJointMap
 
 # Measured on the follower, 2026-08-25. `ofs` is sign-magnitude-decoded, which
 # is why four of the six are negative.

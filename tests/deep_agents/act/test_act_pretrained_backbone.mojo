@@ -4,7 +4,7 @@
 """Gates the pretrained-weight conversion at the resolution it will be used at.
 
     pixi run -e act-ref python tools/act/dump_resnet18_imagenet.py \\
-        --out ~/.cache/mojo_rl/act_so101/resnet18_imagenet
+        --out ~/.cache/noeira/act_so101/resnet18_imagenet
     pixi run mojo run -I . tests/deep_agents/act/test_act_pretrained_backbone.mojo
 
 ## What this catches that a load count cannot
@@ -32,22 +32,22 @@ the two things that differ in the pretrained path and nowhere else:
 
 from std.python import Python, PythonObject
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.models.resnet18 import (
+from noeira.nn.constants import DT
+from noeira.nn.core.initializer import Kaiming
+from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.tensor_pack import TensorPack
+from noeira.nn.core.tensor_refs import TensorRefs
+from noeira.nn.models.resnet18 import (
     RESNET18_OUT_CH,
     ResNet18Backbone,
     ResNet18OutH,
     ResNet18OutW,
 )
-from mojo_rl.deep_agents.act.config import (
+from noeira.deep_agents.act.config import (
     SO101_IMG_H,
     SO101_IMG_W,
 )
-from mojo_rl.deep_agents.act.refload import (
+from noeira.deep_agents.act.refload import (
     ListParams,
     LoadRefParams,
     RefDump,
@@ -89,7 +89,7 @@ def dump_dir() raises -> String:
     if env.byte_length() > 0:
         return env
     var home = String(os.path.expanduser(PythonObject("~")))
-    return home + "/.cache/mojo_rl/act_so101/resnet18_imagenet"
+    return home + "/.cache/noeira/act_so101/resnet18_imagenet"
 
 
 def main() raises:

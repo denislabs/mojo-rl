@@ -12,7 +12,7 @@
 #
 #   # F3 step 2 — OCCUPANCY. Threads per block = max(MAX_CONTACTS, FLOOR).
 #   # Bit-exact at every value; lives in je_budget.mojo:
-#   KNOB_SRC=mojo_rl/physics3d/solver/je_budget.mojo \
+#   KNOB_SRC=noeira/physics3d/solver/je_budget.mojo \
 #   KNOB=NEWTON_THREADS_FLOOR VALUES="16 32 64 128" \
 #       pixi run -e nvidia bash scripts/p0_knob_sweep.sh
 #
@@ -42,7 +42,7 @@ set -uo pipefail
 # prefix is overwritten before this script ever sees it and the sweep tries to
 # sed a knob into `cuda_intercept.c`. Anything read from the ambient
 # environment needs a name that is not a three-letter English word.
-KNOB_SRC=${KNOB_SRC:-mojo_rl/physics3d/solver/newton_solve.mojo}
+KNOB_SRC=${KNOB_SRC:-noeira/physics3d/solver/newton_solve.mojo}
 KNOB=${KNOB:?set KNOB, e.g. KNOB=NEWTON_MIN_ITER}
 VALUES=${VALUES:?set VALUES, e.g. VALUES="0 8 16 32"}
 KEY="comptime ${KNOB}: Int"

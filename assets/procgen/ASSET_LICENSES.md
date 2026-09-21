@@ -3,7 +3,7 @@
 The sprites and backgrounds under `assets/procgen/` are vendored from the OpenAI
 **Procgen Benchmark** (https://github.com/openai/procgen), which distributes them
 under their original open licenses. They are used here unmodified for the
-pure-Mojo Procgen port (`mojo_rl/envs/procgen/`, `docs/PROCGEN_PORT.md`).
+pure-Mojo Procgen port (`noeira/envs/procgen/`, `docs/PROCGEN_PORT.md`).
 
 Several packs are **CC-BY / OGA-BY** and therefore **require attribution** — in
 particular the Top-Down Backgrounds (davis123, CC-BY 3.0) used by the maze
