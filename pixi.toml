@@ -388,7 +388,8 @@ soarm-diag = { cmd = "mojo run -I . tools/soarm/so101_mojo_diag.mojo", depends-o
 soarm-torque-off = { cmd = "mojo run -I . tools/soarm/so101_torque_off.mojo", depends-on = ["build-serial"], description = "Release torque on both SO-101 arms" }
 # ── the project layer (docs/PROJECT_LAYER_PLAN.md) ───────────────────────
 # A project is a directory + `project.kv`: a container and a naming authority.
-# ⚠ THE DEFINITION IS TRACKED, THE RUNS ARE NOT — `git add projects/<n>/project.kv`.
+# ⚠ PROJECTS ARE NOT IN GIT (`projects/` is gitignored): `project-push` /
+# `project-pull` sync the definition, runs and policies through noeira cloud.
 # Everything here is LOCAL and complete; §10's paid half is push/pull, not these.
 assets-status = { cmd = "mojo run -I . tools/assets/assets_cli.mojo status", description = "Which env asset packs are on this box, and which are not" }
 assets-pull = { cmd = "mojo run -I . tools/assets/assets_cli.mojo pull", description = "Fetch env asset packs BEFORE a run starts (see PROJECT_LAYER_PLAN.md §9)" }
