@@ -6,6 +6,8 @@ description: LIBERO's 130 manipulation tasks as 23 task families on noeira's eng
 import Maturity from '~/components/Maturity.astro';
 import Paper from '~/components/Paper.astro';
 import Papers from '~/components/Papers.astro';
+import Demo from '~/components/Demo.astro';
+import DemoGrid from '~/components/DemoGrid.astro';
 
 <Maturity level="beta" note="The batched OSC path runs on NVIDIA. Frozen inits exist for libero_goal only. Policy results are early." />
 
@@ -30,6 +32,18 @@ examples in `examples/libero/`, tests in `tests/libero/` and generators in
 		note="The task suites, demonstrations and eval protocol ported here."
 	/>
 </Papers>
+
+<DemoGrid min="14rem">
+	<Demo name="libero_bowl_on_plate" caption="put the bowl on the plate" meta="libero_goal · agentview" />
+	<Demo name="libero_drawer_bowl" caption="open the top drawer and put the bowl inside" meta="libero_goal · agentview" />
+	<Demo name="libero_stove" caption="turn on the stove" meta="libero_goal · agentview" />
+	<Demo name="libero_wine_rack" caption="put the wine bottle on the rack" meta="libero_goal · agentview · 1.5× speed" />
+</DemoGrid>
+
+LIBERO's own human demonstrations, each recorded state re-rendered by noeira's
+camera tracer at 256×256 (`pixi run libero-camera-video -- <task> --no-compare
+--size 256`). These are state replays, not simulations: nothing is stepped,
+so they show the scenes and the renderer rather than a policy.
 
 ## Suites and families
 
