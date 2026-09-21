@@ -46,6 +46,14 @@ def apply_hil_serl[
             print("  bc       : weight", cfg.bc_weight, "on the demo half of"
                   " every batch (", half, "rows )")
             logger.log_scalar(String("cfg/bc_weight"), Float64(cfg.bc_weight), 0)
+            if cfg.bc_q_ratio > Scalar[DT](0):
+                trainer.set_bc_q_ratio(cfg.bc_q_ratio)
+                print("  bc-q     : the weight tracks max(", cfg.bc_weight,
+                      ",", cfg.bc_q_ratio, "* mean|Q| ) at every diagnostics"
+                      " flush (logged as `bc_weight`)")
+                logger.log_scalar(
+                    String("cfg/bc_q_ratio"), Float64(cfg.bc_q_ratio), 0
+                )
     if cfg.bc_only:
         trainer.set_q_weight(Scalar[DT](0))
         print("  bc-only  : the SAC half of the actor loss is OFF —"

@@ -723,7 +723,8 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
     # NO CHECKPOINT to diagnose (50k default, first eval 25k): `--checkpoint-
     # every` sets the cadence so a stopped run still has a policy to load.
     var checkpoint_every = CHECKPOINT_EVERY
-    # ⚠ `--demos` / `--demo-filter` / `--bc-weight` / `--bc-only` are
+    # ⚠ `--demos` / `--demo-filter` / `--bc-weight` / `--bc-q-ratio` /
+    # `--bc-only` are
     # HIL-SERL's (`deep_agents/hil_serl`, which documents each); `--init CKPT`
     # loads a `--bc-only` checkpoint (actor + twin critics; targets
     # hard-copied) into a normal run — the second half of a warm start.

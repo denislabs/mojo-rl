@@ -145,6 +145,11 @@ struct SACTrainer[
     var _alpha_accum: Scalar[DT]
     # Diagnostic accumulators (CPU path): batch means drained at flush_metrics.
     var _mean_q_accum: Scalar[DT]            # online Q1(s, a) over the batch
+    # `set_bc_q_ratio`: after every `flush_metrics` the BC weight becomes
+    # max(bc_weight_floor, bc_q_ratio · mean|Q|) — TD3+BC's normalisation,
+    # applied to λ instead of to Q. 0 = fixed λ.
+    var bc_q_ratio: Scalar[DT]
+    var bc_weight_floor: Scalar[DT]
     var _mean_target_accum: Scalar[DT]       # Bellman target y
     var _mean_reward_accum: Scalar[DT]       # batch reward
     var _mean_next_q_accum: Scalar[DT]       # min(Q1_t,Q2_t)(s',a') bootstrap
@@ -207,6 +212,8 @@ struct SACTrainer[
         self._critic_L_accum = Scalar[DT](0.0)
         self._alpha_accum = Scalar[DT](0.0)
         self._mean_q_accum = Scalar[DT](0.0)
+        self.bc_q_ratio = Scalar[DT](0.0)
+        self.bc_weight_floor = Scalar[DT](0.0)
         self._mean_target_accum = Scalar[DT](0.0)
         self._mean_reward_accum = Scalar[DT](0.0)
         self._mean_next_q_accum = Scalar[DT](0.0)
@@ -269,6 +276,8 @@ struct SACTrainer[
         self._critic_L_accum = Scalar[DT](0.0)
         self._alpha_accum = Scalar[DT](0.0)
         self._mean_q_accum = Scalar[DT](0.0)
+        self.bc_q_ratio = Scalar[DT](0.0)
+        self.bc_weight_floor = Scalar[DT](0.0)
         self._mean_target_accum = Scalar[DT](0.0)
         self._mean_reward_accum = Scalar[DT](0.0)
         self._mean_next_q_accum = Scalar[DT](0.0)
@@ -432,6 +441,21 @@ struct SACTrainer[
         """Behaviour-cloning penalty on the batch's first `n_demo_rows` rows —
         `SACActorLoss.set_bc`. Call after the demos are pinned."""
         self.actor_loss_blk.set_bc(weight, n_demo_rows, self.ctx)
+
+    def set_bc_q_ratio(mut self, ratio: Scalar[DT]) raises:
+        """Track the critic: after every `flush_metrics` the BC weight is set
+        to max(λ0, ratio · mean|Q|), λ0 being the weight `set_bc` gave. A
+        fixed λ against a growing Q shrinks the BC term's share of the actor
+        gradient — the tower lift policy peaked at 25k (Q 58) and lost its
+        grasp by 50k (Q 87) that way. 0 turns the tracking off."""
+        if ratio < Scalar[DT](0):
+            raise Error("set_bc_q_ratio: ratio must be >= 0")
+        self.bc_q_ratio = ratio
+        self.bc_weight_floor = self.actor_loss_blk.bc_weight
+
+    def bc_weight(self) -> Scalar[DT]:
+        """The BC weight in force (`SACActorLoss.bc_weight`)."""
+        return self.actor_loss_blk.bc_weight
 
     def set_q_weight(mut self, weight: Scalar[DT]) raises:
         """Multiplier on the SAC half of the actor loss — 0 = BC only.
@@ -1006,6 +1030,12 @@ struct SACTrainer[
             self.twin_critic_blk.inner.c1.mse_loss.reset_accum["gpu"]()
             self.twin_critic_blk.inner.c2.mse_loss.reset_accum["gpu"]()
         self._update_count = 0
+        if self.bc_q_ratio > Scalar[DT](0) and n > 0:
+            var scaled = self.bc_q_ratio * (mq if mq >= Scalar[DT](0) else -mq)
+            var w = scaled if scaled > self.bc_weight_floor else self.bc_weight_floor
+            self.actor_loss_blk.set_bc_weight(w, self.ctx)
+            if Bool(logger):
+                logger.value()[].log_scalar(String("bc_weight"), Float64(w), step)
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^
