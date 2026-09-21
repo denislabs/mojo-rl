@@ -20,9 +20,11 @@ comment (`TASK_LAYER_IMPLEMENTATION.md` Gap B).
 from std.os import listdir
 from std.sys import argv
 from noeira.tasks.spec import load_family
-from noeira.tasks.family import compose_family, scene_path, SCENE_DIR
+from noeira.tasks.family import compose_family, scene_path, scene_dir
 
-comptime FAMILY_DIR = "noeira/tasks/families"
+comptime TASK_ROOTS = "noeira/tasks,noeira/envs/libero"
+"""Every task root (a dir with `families/ tasks/ scenes/`). The generic layer
+never names an env package; the generators that enumerate everything do."""
 
 
 def families() raises -> List[String]:
@@ -40,16 +42,18 @@ def families() raises -> List[String]:
     report should not depend on it.
     """
     var out = List[String]()
-    for e in listdir(FAMILY_DIR):
-        var n = String(e)
-        if n.endswith(".family"):
-            out.append(String(FAMILY_DIR) + "/" + n)
+    for root in String(TASK_ROOTS).split(","):
+        var dir = String(root) + "/families"
+        for e in listdir(dir):
+            var n = String(e)
+            if n.endswith(".family"):
+                out.append(dir + "/" + n)
     for i in range(len(out)):
         for j in range(i + 1, len(out)):
             if out[j] < out[i]:
                 out[i], out[j] = out[j], out[i]
     if len(out) == 0:
-        raise Error("no .family under " + FAMILY_DIR)
+        raise Error("no .family under " + String(TASK_ROOTS))
     return out^
 
 
@@ -65,7 +69,7 @@ def main() raises:
     for i in range(len(fams)):
         var f = load_family(fams[i])
         var out = scene_path(f)
-        var xml = compose_family(f, SCENE_DIR)
+        var xml = compose_family(f, scene_dir(f))
 
         var old = String("")
         var have = True

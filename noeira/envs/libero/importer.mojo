@@ -55,16 +55,16 @@ from .bddl import BddlProblem, BddlAtom, BddlRegion
 from std.math import sqrt
 
 from noeira.core.kv import split_on
-from .libero_categories import (
+from .categories import (
     LiberoTable, LiberoCategory, LiberoProblem, Threshold, JointRange, cmp_name,
 )
-from .spec import (
+from noeira.tasks.spec import (
     FamilySpec, TaskSpec, SlotSpec, RegionSpec, InitSpec, JointInitSpec,
     order_inits,
     SLOT_FREE, SLOT_STATIC, SCHEMA_VERSION,
 )
-from .predicates import parse_goal
-from .tape import MAX_TAPE_TERMS
+from noeira.tasks.predicates import parse_goal
+from noeira.tasks.tape import MAX_TAPE_TERMS
 
 
 # `TargetZone.zone_height` — the half-z of every table target zone's site.
@@ -961,15 +961,15 @@ comptime FIXTURE_YAW_TOLERANCE: Float64 = 0.1
 # Panda's `<option>` is inherited. Regions then anchor on the arena's
 # `workspace` site, which `gen_libero_arenas.py` places at LIBERO's
 # `workspace_offset` — the point every region rect is measured from.
-comptime LIBERO_ARENA_DIR: String = "noeira/tasks/libero/scenes"
+comptime LIBERO_ARENA_DIR: String = "noeira/envs/libero/arenas"
 # ⚠ IN ROBOT MODE THE OBJECTS ARE THE GENERATED COPIES, NOT THE PACK'S.
-# `tools/tasks/gen_libero_objects.py` writes one attachable XML per category:
+# `tools/libero/gen_libero_objects.py` writes one attachable XML per category:
 # the pack's files are byte-identical to upstream, and upstream never loads
 # them directly — robosuite's `merge_assets` drops a repeated (tag, name)
 # asset declaration, which `flat_stove.xml` relies on and which MuJoCo's
 # `<attach>` refuses. Without the robot (L1's survey shape) the pack path is
 # still emitted, so the survey needs no generated files.
-comptime LIBERO_OBJECT_DIR: String = "noeira/tasks/libero/objects"
+comptime LIBERO_OBJECT_DIR: String = "noeira/envs/libero/objects"
 comptime LIBERO_ROBOT_DIR: String = "noeira/envs/robots/assets"
 comptime ARENA_SLOT: String = "arena"
 
@@ -994,7 +994,7 @@ def robot_path(prob: LiberoProblem, robot_dir: String) -> String:
 
 def arena_path(prob: LiberoProblem, arena_dir: String) -> String:
     """`<arena_dir>/<problem, lowercased>_arena.xml` — ONE spelling, shared
-    with `tools/tasks/gen_libero_arenas.py`."""
+    with `tools/libero/gen_libero_arenas.py`."""
     return arena_dir + "/" + prob.name.lower() + "_arena.xml"
 
 
@@ -1137,7 +1137,7 @@ def resolve_family(
         # fixture declares it at 0.045, and leaving it out placed a bowl 4.5 cm
         # into the stove and into the cabinet's roof. MEASURED against
         # LIBERO's frozen states: 1.0100 / 1.2315 with it, 0.9650 / 1.1865
-        # without (`tools/tasks/libero_init_z.py`).
+        # without (`tools/libero/libero_init_z.py`).
         var gf = asset_placement_geom(xml, String(cat.asset))
         s.set_geom(gf[0], gf[1], gf[2])
         f.slots.append(s^)

@@ -5,7 +5,7 @@
 The `so101_tower` family is `So101FamilyConfig[So101TowerPlacement, ...]`, a
 comptime type over a GENERATED table, and neither can read the `.family` or
 the composed scene. This is the CPU gate that says the restated numbers are
-the files' numbers — the shape `tests/tasks/test_libero_task_hooks.mojo` has
+the files' numbers — the shape `tests/libero/test_libero_task_hooks.mojo` has
 for the 23 LIBERO families and `test_active_mask.mojo` for the tabletop:
 
 1. the config's `MAX_STEPS` is the family's `horizon=`, and `FRAME_SKIP`

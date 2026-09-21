@@ -185,7 +185,7 @@ def main() raises:
     # The blocked kernel's elliptic leg adds `fr_e_sh` (ME), four MC arrays
     # and the cone Hessian blocks (`MC * (NT+1)^2`). Pinned to an EXTERNAL
     # oracle the same way arm A is: `mojo build --target-accelerator sm_120
-    # --emit asm` of `examples/tasks/libero_demo_batched.mojo` (LIBERO goal:
+    # --emit asm` of `examples/libero/libero_demo_batched.mojo` (LIBERO goal:
     # nv 37, njoint 17, `LIBERO_GOAL_MAX_CONTACTS` 144, the model def's
     # default `max_condim` 3, no tendon or equality) declared 24 `.shared`
     # arrays totalling 39,892 B for the elliptic kernel. The formula counts

@@ -1,9 +1,9 @@
 """THE CONTROL STAGE OVER A BATCH — the sequence, not the torque law.
 
-    pixi run mojo run -I . tests/tasks/test_osc_control_batched.mojo
+    pixi run mojo run -I . tests/libero/test_osc_control_batched.mojo
 
-`tests/tasks/test_osc_pose_gpu.mojo` gates `osc_run_gpu` — the torque law — over
-eight lanes at one instant, and `tools/tasks/libero_demo_replay.py` gates the
+`tests/libero/test_osc_pose_gpu.mojo` gates `osc_run_gpu` — the torque law — over
+eight lanes at one instant, and `tools/libero/libero_demo_replay.py` gates the
 one-lane host controller against MuJoCo to 1.5e-5 m over a recorded demo. What
 neither can see is the SEQUENCE a batched env has to get right:
 
@@ -92,13 +92,13 @@ from noeira.physics3d.dynamics.osc_control import (
 )
 from noeira.tasks.spec import load_family
 from noeira.tasks.family import scene_path
-from noeira.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
-from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.envs.libero.models.libero_goal_dims import LIBERO_GOAL_DIMS
+from noeira.envs.libero.models.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
 comptime DT = DType.float64
-comptime FAMILY = "noeira/tasks/families/libero_goal.family"
-comptime PACK = "noeira/tasks/libero/assets"
+comptime FAMILY = "noeira/envs/libero/families/libero_goal.family"
+comptime PACK = "noeira/envs/libero/assets"
 comptime BATCH = 8
 comptime N_CONTROL = 3
 comptime N_SUBSTEP = 4

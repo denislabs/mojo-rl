@@ -1,10 +1,10 @@
 """The OSC_POSE kernel over MANY LANES — L4b's gate.
 
-    pixi run mojo run -I . tests/tasks/test_osc_pose_gpu.mojo            # host legs
-    pixi run -e apple mojo run -I . tests/tasks/test_osc_pose_gpu.mojo   # + the device leg
+    pixi run mojo run -I . tests/libero/test_osc_pose_gpu.mojo            # host legs
+    pixi run -e apple mojo run -I . tests/libero/test_osc_pose_gpu.mojo   # + the device leg
 
 `osc_pose_gpu.osc_run_gpu` is the controller; `osc_pose.OscPose` is one lane
-of it, and `tools/tasks/libero_demo_replay.py` gates THAT against MuJoCo to
+of it, and `tools/libero/libero_demo_replay.py` gates THAT against MuJoCo to
 1.5e-5 m over a recorded demo. What a demo replay cannot see is everything
 that only appears with more than one lane, and that is what this file is:
 
@@ -56,14 +56,14 @@ from noeira.physics3d.dynamics.osc_pose_gpu import (
 )
 from noeira.tasks.spec import load_family
 from noeira.tasks.family import scene_path
-from noeira.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
-from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.envs.libero.models.libero_goal_dims import LIBERO_GOAL_DIMS
+from noeira.envs.libero.models.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
 comptime DT = DType.float64
 comptime F32 = DType.float32
-comptime FAMILY = "noeira/tasks/families/libero_goal.family"
-comptime PACK = "noeira/tasks/libero/assets"
+comptime FAMILY = "noeira/envs/libero/families/libero_goal.family"
+comptime PACK = "noeira/envs/libero/assets"
 comptime BATCH = 8
 
 comptime NB = LIBERO_GOAL_DIMS.NBODY

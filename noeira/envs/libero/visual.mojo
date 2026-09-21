@@ -32,7 +32,7 @@ not listed.
 
 from noeira.physics3d.raytrace.visual import SiteCondition
 
-from .spec import FamilySpec
+from noeira.tasks.spec import FamilySpec
 
 
 comptime _STOVE_ON_MIN: Float64 = 0.5

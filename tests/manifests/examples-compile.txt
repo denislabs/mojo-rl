@@ -81,7 +81,7 @@ examples/tasks/sac_task_gpu.mojo --steps 20000
 
 # ⚠ Needs `references/LIBERO-master` (gitignored); SKIPS LOUDLY without it,
 # and a skip is not a pass. Reports what LIBERO needs that we do not have.
-examples/tasks/libero_survey.mojo
+examples/libero/libero_survey.mojo
 examples/tasks/task_eval_frozen.mojo
 examples/tasks/task_batched_gpu.mojo
 

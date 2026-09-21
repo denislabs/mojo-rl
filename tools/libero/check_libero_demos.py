@@ -1,7 +1,7 @@
 """Which LIBERO demo files are readable, and which demos inside them.
 
-    pixi run python tools/tasks/check_libero_demos.py                 # libero_goal, 26 demos
-    pixi run python tools/tasks/check_libero_demos.py libero_object 50
+    pixi run python tools/libero/check_libero_demos.py                 # libero_goal, 26 demos
+    pixi run python tools/libero/check_libero_demos.py libero_object 50
 
 A `libero_demo_batched` run that dies inside libhdf5 with "message not
 aligned" / "can't deserialize object header chunk" is reading a file whose

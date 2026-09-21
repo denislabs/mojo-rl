@@ -3,9 +3,9 @@
 Regenerate with:  pixi run gen-libero-envs
 CI checks it with: pixi run gen-libero-envs --check
 
-From `noeira/tasks/libero/contact_budget.kv` (`pixi run libero-contact-budget`):
+From `noeira/envs/libero/tables/contact_budget.kv` (`pixi run libero-contact-budget`):
 the measured null-action peak + 32, rounded up to a multiple of 16.
-`tools/tasks/gen_libero_envs.mojo` says why, and what it does not prove.
+`tools/libero/gen_libero_envs.mojo` says why, and what it does not prove.
 """
 
 comptime LIBERO_GOAL_MAX_CONTACTS: Int = 144

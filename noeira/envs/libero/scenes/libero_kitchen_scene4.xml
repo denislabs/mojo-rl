@@ -2,12 +2,12 @@
   <compiler angle="radian" inertiagrouprange="0 0" autolimits="true"/>
   <option timestep="0.002" impratio="20" cone="elliptic" density="1.2" viscosity="0.00002" />
   <asset>
-    <model name="panda_robosuite" file="../../envs/robots/assets/panda_robosuite.xml"/>
-    <model name="libero_kitchen_tabletop_manipulation_arena" file="../libero/scenes/libero_kitchen_tabletop_manipulation_arena.xml"/>
-    <model name="white_cabinet" file="../libero/objects/white_cabinet.xml"/>
-    <model name="wine_rack" file="../libero/objects/wine_rack.xml"/>
-    <model name="akita_black_bowl_free" file="../libero/objects/akita_black_bowl_free.xml"/>
-    <model name="wine_bottle_free" file="../libero/objects/wine_bottle_free.xml"/>
+    <model name="panda_robosuite" file="../../robots/assets/panda_robosuite.xml"/>
+    <model name="libero_kitchen_tabletop_manipulation_arena" file="../arenas/libero_kitchen_tabletop_manipulation_arena.xml"/>
+    <model name="white_cabinet" file="../objects/white_cabinet.xml"/>
+    <model name="wine_rack" file="../objects/wine_rack.xml"/>
+    <model name="akita_black_bowl_free" file="../objects/akita_black_bowl_free.xml"/>
+    <model name="wine_bottle_free" file="../objects/wine_bottle_free.xml"/>
   </asset>
   <worldbody>
     <frame pos="-0.66 0.0 0.912" quat="1.0 0.0 0.0 0.0">

@@ -1,6 +1,6 @@
 """THE FIRST UNION FAMILY — eleven props pooled, seven per task, one scene.
 
-    pixi run mojo run -I . tests/tasks/test_libero_object.mojo
+    pixi run mojo run -I . tests/libero/test_libero_object.mojo
 
 `libero_goal` and `libero_spatial` are ten files that declare the SAME props,
 so "one family per suite" cost nothing to believe. `libero_object` is the suite
@@ -47,8 +47,8 @@ halves of the floor, and leave every downstream number agreeing with itself.
    not actually exercise aliasing and check 1 proves nothing about it.
 
 3. ⚠⚠ **THE START HEIGHT IS LIBERO'S OWN, TO THE PICOMETRE** — every
-   placement's z is compared against `noeira/tasks/libero/init_z_libero
-   _object.kv`, which `tools/tasks/libero_init_z.py` reads out of the
+   placement's z is compared against `noeira/envs/libero/tables/init_z_libero
+   _object.kv`, which `tools/libero/libero_init_z.py` reads out of the
    `.pruned_init` files the benchmark restores at reset. This is what caught
    the missing `TABLE_Z_OFFSET`: LIBERO routes a floor region to
    `TableRegionSampler`, whose signature carries `z_offset=0.01`, and this
@@ -92,8 +92,8 @@ from noeira.physics3d.parser.runtime_load import (
 )
 from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
 from noeira.physics3d.collision.contact_detection import detect_contacts
-from noeira.tasks.bddl import parse_bddl, BddlProblem
-from noeira.tasks.libero_init_z import load_init_z, InitZTable
+from noeira.envs.libero.bddl import parse_bddl, BddlProblem
+from noeira.envs.libero.init_z import load_init_z, InitZTable
 from noeira.tasks.spec import (
     load_family, load_task, validate_task_against_family, SLOT_FREE,
     FamilySpec, TABLE_Z_OFFSET,
@@ -107,16 +107,16 @@ from noeira.tasks.predicates import (
 )
 from noeira.tasks.sampler import sample_placements, RegionFrame, SampleReport
 from noeira.tasks.reset import free_slot_addresses, reset_slots
-from noeira.tasks.libero_object_xml import (
+from noeira.envs.libero.models.libero_object_xml import (
     LIBERO_OBJECT_MAX_CONTACTS, LIBERO_OBJECT_N_FREE_SLOTS,
 )
 
 
 comptime DT = DType.float64
 comptime SUITE = "libero_object"
-comptime FAMILY = "noeira/tasks/families/libero_object.family"
-comptime TASK_DIR = "noeira/tasks/tasks/"
-comptime PACK = "noeira/tasks/libero/assets"
+comptime FAMILY = "noeira/envs/libero/families/libero_object.family"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
+comptime PACK = "noeira/envs/libero/assets"
 comptime BDDL_DIR = (
     "references/LIBERO-master/libero/libero/bddl_files/libero_object"
 )

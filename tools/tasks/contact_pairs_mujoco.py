@@ -4,7 +4,7 @@
     pixi run python tools/tasks/contact_pairs_mujoco.py \
         libero_living_room_scene3 build/diag/lr3_dev_states.txt
 
-`examples/tasks/libero_family_batched.mojo --dump-state PATH` writes the DEVICE's
+`examples/libero/libero_family_batched.mojo --dump-state PATH` writes the DEVICE's
 own `qpos` at the first step where its contact count differs from the CPU leg's.
 `tools/tasks/contact_pairs_at_state.mojo` runs OUR CPU detector on those words;
 this runs MuJoCo on the same words, printing the same per-pair shape so the

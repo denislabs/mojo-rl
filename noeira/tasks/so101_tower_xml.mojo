@@ -46,7 +46,7 @@ comptime _pm = SO101_TOWER_DIMS
 # Higher than the tabletop's 32 on purpose: the bowl is NINE boxes, and a brick
 # resting in it touches the base box and up to two walls (each box pair can
 # emit up to 8 contacts), before the gripper's meshes join in. Measure with
-# `tools/tasks/libero_contact_budget.mojo`'s method once a policy grasps here.
+# `tools/libero/libero_contact_budget.mojo`'s method once a policy grasps here.
 comptime SO101_TOWER_MAX_CONTACTS: Int = 48
 
 # ⚠ MEASURED ON THE COMPOSED SCENE, NOT COPIED FROM THE ARM.

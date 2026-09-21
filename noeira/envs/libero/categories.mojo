@@ -1,4 +1,4 @@
-"""LIBERO's object registry, read from `noeira/tasks/libero/categories.kv`.
+"""LIBERO's object registry, read from `noeira/envs/libero/tables/categories.kv`.
 
     var t = load_libero_table()                 # the shipped table
     var c = t.category("akita_black_bowl")      # asset, rotation, articulation
@@ -31,7 +31,7 @@ evaluates what it is given.
 from noeira.core.kv import kv_lines, split_on, split_once
 
 
-comptime DEFAULT_TABLE_PATH: String = "noeira/tasks/libero/categories.kv"
+comptime DEFAULT_TABLE_PATH: String = "noeira/envs/libero/tables/categories.kv"
 
 comptime KIND_ASSET: Int = 0
 comptime KIND_WORKSPACE: Int = 1
@@ -40,7 +40,7 @@ comptime KIND_WORKSPACE: Int = 1
 # ⚠ THE COMPARISON CODES LIVE IN `predicates.mojo` — they are the wire
 # format of a `Joint` term's `b` — and are re-exported here so the table's
 # readers keep their import. One definition, two names for it.
-from .predicates import CMP_NONE, CMP_LT, CMP_LE, CMP_GT, CMP_GE, cmp_from_name, cmp_name
+from noeira.tasks.predicates import CMP_NONE, CMP_LT, CMP_LE, CMP_GT, CMP_GE, cmp_from_name, cmp_name
 
 
 def threshold_holds(op: Int, qpos: Float64, thr: Float64) -> Bool:

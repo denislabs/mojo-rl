@@ -1,8 +1,8 @@
 """ACT ON LIBERO — the policy's SHAPE, written once and read by both ends.
 
-    from noeira.tasks.libero_act import LiberoActTrainer, LiberoActDataset
+    from noeira.envs.libero.act import LiberoActTrainer, LiberoActDataset
 
-`examples/tasks/libero_act_train.mojo` fits it; `examples/tasks/
+`examples/libero/libero_act_train.mojo` fits it; `examples/tasks/
 libero_eval_batched.mojo --act DIR` runs it in the loop with the cameras.
 `tasks/bc_policy.mojo` exists for the same reason this file does: a network
 each driver spells for itself is `_a_rule_written_inline_twice_drifts`, and
@@ -47,7 +47,7 @@ that is the ARM that prices the gap, not a mistake, and the eval prints which
 store the norm file names so the two cannot be confused in a table.
 """
 
-from noeira.data.libero_demos import (
+from noeira.envs.libero.demos import (
     CAM_H, CAM_W, N_CAMS, ACTION_DIM, QPOS_PROPRIO, QPOS_WORDS,
 )
 from noeira.deep_agents.act.config import (
@@ -60,7 +60,7 @@ from noeira.nn.models.resnet18 import (
 )
 from noeira.deep_agents.act.data import ACTDataset
 from noeira.deep_agents.act.data_gpu import ACTDeviceDataset
-from noeira.tasks.libero_osc_config import LIBERO_CONTROL_FREQ
+from noeira.envs.libero.osc_config import LIBERO_CONTROL_FREQ
 
 
 comptime LIBERO_GOAL_N_TASKS: Int = 10

@@ -1,7 +1,7 @@
 """Our tracer against LIBERO's own pixels — the L5 gate's fourth column.
 
-    pixi run python tools/tasks/libero_camera_gate.py --suite libero_goal
-    pixi run mojo run -I . examples/tasks/libero_camera_gate.mojo \
+    pixi run python tools/libero/libero_camera_gate.py --suite libero_goal
+    pixi run mojo run -I . examples/libero/libero_camera_gate.mojo \
         references/libero_demos/_camera/libero_goal/index.txt
 
 The Python half writes three columns and this writes the fourth. Read its
@@ -47,9 +47,9 @@ from noeira.physics3d.raytrace.camera import camera_world_frame, camera_pixel_ra
 from noeira.physics3d.fields.rt_layout import DYN1, DYN2, rl1, rl2
 from noeira.tasks.spec import load_family
 from noeira.tasks.family import scene_path
-from noeira.tasks.libero_visual import libero_site_conditions
-from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
-from noeira.tasks.libero_fixtures import dump_path_from_index
+from noeira.envs.libero.visual import libero_site_conditions
+from noeira.envs.libero.models.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.envs.libero.fixtures import dump_path_from_index
 
 
 comptime DT = DType.float64
@@ -140,7 +140,7 @@ def main() raises:
     if len(a) < 2:
         raise Error(
             "usage: libero_camera_gate.mojo <index.txt>   (written by"
-            " tools/tasks/libero_camera_gate.py)"
+            " tools/libero/libero_camera_gate.py)"
         )
     var index_path = String(a[1])
     var index_text: String
@@ -176,7 +176,7 @@ def main() raises:
     var suite_cut = String(suite[byte=0:cut])
     suite = suite_cut^
 
-    var f = load_family("noeira/tasks/families/" + suite + ".family")
+    var f = load_family("noeira/envs/libero/families/" + suite + ".family")
     var fmd = parse_model_runtime(scene_path(f))
     var verts = 32768
     var dims = dims_from_flat(
@@ -205,7 +205,7 @@ def main() raises:
     print("  scene:", scene_path(f), "| nq", nq, "nv", nv,
           "ngeom", dims.get_ngeom())
 
-    # LIBERO's runtime site toggles (the stove burner) — `tasks/libero_visual`.
+    # LIBERO's runtime site toggles (the stove burner) — `envs/libero/visual`.
     var vis = build_visual_model[DT, DynDims](
         fmd, m, group_mask=VISUAL_GROUP_MASK,
         conditions=libero_site_conditions(f),
@@ -222,7 +222,7 @@ def main() raises:
         raise Error(
             "no camera 'arena_agentview' in " + scene_path(f)
             + " — LIBERO's `_setup_camera` pose is written into the arena by"
-            " tools/tasks/gen_libero_arenas.py; is the arena regenerated?"
+            " tools/libero/gen_libero_arenas.py; is the arena regenerated?"
         )
     var cb = cam * MODEL_CAM_SIZE
     print("  camera: arena_agentview (index", cam, ") fovy",

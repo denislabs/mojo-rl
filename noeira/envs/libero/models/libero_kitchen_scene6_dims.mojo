@@ -12,7 +12,7 @@ that changes a count. `--check` fails the build if you forget.
 from noeira.physics3d.parser.xml_parser import ParsedModel
 
 
-# noeira/tasks/scenes/libero_kitchen_scene6.xml
+# noeira/envs/libero/scenes/libero_kitchen_scene6.xml
 comptime LIBERO_KITCHEN_SCENE6_DIMS = ParsedModel(
     nbody=27,
     njoint=12,

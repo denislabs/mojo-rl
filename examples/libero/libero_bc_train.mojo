@@ -8,7 +8,7 @@ Reads `build/demos/<family>.lowdim.h5` (`data/libero_demos.mojo`'s store: one
 episode per demonstration, `state` in OUR joint order, `action` the recorded
 seven OSC_POSE words), rebuilds each frame's OBSERVATION exactly as the batched
 env writes it, fits an MLP, and writes a checkpoint
-`examples/tasks/libero_eval_batched.mojo` can load into `_policy_action`.
+`examples/libero/libero_eval_batched.mojo` can load into `_policy_action`.
 
 ## ⚠⚠ THE OBSERVATION IS REBUILT, NOT STORED — AND THAT IS THE POINT
 
@@ -16,7 +16,7 @@ The store holds `state` (qpos ++ qvel), not the policy input. The input is what
 `task_hooks.write_task_obs` writes on the device — qpos, qvel, one active word
 per free slot, then the nine goal words measured from `robot_grip_site` — and
 `write_task_obs_host` is the SAME implementation
-(`tests/tasks/test_libero_task_hooks.mojo` gates the two word for word on every
+(`tests/libero/test_libero_task_hooks.mojo` gates the two word for word on every
 LIBERO task). So each row here is: load `state` into a CPU `Data`, run FK, put
 the row's task tape and mask into `meta`, and call the host writer. A policy
 trained on anything else would be trained on a vector the env never produces.
@@ -81,16 +81,16 @@ from noeira.tasks.tape import encode_goal, TAPE_WORDS
 from noeira.tasks.active import active_mask
 from noeira.tasks.bc_policy import BcNet, BC_HID, write_bc_norm
 from noeira.tasks.task_hooks import write_task_obs_host
-from noeira.tasks.placement.libero_goal import LiberoGoalPlacement
-from noeira.tasks.libero_goal_xml import (
+from noeira.envs.libero.placement.libero_goal import LiberoGoalPlacement
+from noeira.envs.libero.models.libero_goal_xml import (
     LIBERO_GOAL_OBS_DIM, LIBERO_GOAL_MAX_CONTACTS,
 )
 
 
 comptime H = DType.float64
 comptime FAMILY = "libero_goal"
-comptime FAMILY_DIR = "noeira/tasks/families/"
-comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime FAMILY_DIR = "noeira/envs/libero/families/"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
 comptime STORE = "build/demos/libero_goal.lowdim.h5"
 comptime OUT_DIR = "build/policies"
 comptime OBS = LIBERO_GOAL_OBS_DIM

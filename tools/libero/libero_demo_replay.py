@@ -2,7 +2,7 @@
 """L4's gate: one LIBERO demo, three sims, one controller transcription.
 
     pixi run libero-replay <demo.hdf5> --demo 0 --out <dir>
-    pixi run mojo run -I . examples/tasks/libero_demo_replay.mojo <dir>/demo_0_dump.txt <dir>/demo_0_ours.txt
+    pixi run mojo run -I . examples/libero/libero_demo_replay.mojo <dir>/demo_0_dump.txt <dir>/demo_0_ours.txt
     pixi run libero-replay <demo.hdf5> --demo 0 --out <dir> --compare
 
 The demo files are HF `yifengzhu-hf/LIBERO-datasets` (one HDF5 per task,

@@ -5,7 +5,7 @@
 
 ## ⚠⚠ WHY THIS EXISTS — A MOKA POT FELL THROUGH THE TABLE (2026-09-14)
 
-`examples/tasks/libero_family_batched.mojo` on `libero_kitchen_scene3`, M1 Pro:
+`examples/libero/libero_family_batched.mojo` on `libero_kitchen_scene3`, M1 Pro:
 the device reset matched the host to 8e-8, and then the moka pot fell 0.9 m
 to the floor on every lane while the CPU leg rested it on the table. The
 device listed ZERO contacts where the CPU listed 28 (table x moka pot). This

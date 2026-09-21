@@ -3,7 +3,7 @@
     pixi run mojo run -I . tools/tasks/contact_pairs_at_state.mojo \
         libero_living_room_scene3 build/diag/lr3_dev_states.txt
 
-`examples/tasks/libero_family_batched.mojo --dump-state PATH` writes the
+`examples/libero/libero_family_batched.mojo --dump-state PATH` writes the
 DEVICE's own `qpos` at the first step where its contact COUNT differs from the
 CPU leg's. This runs our CPU detector — both broadphases — on those exact
 words, so the device, our CPU and MuJoCo can be compared AT ONE POSE instead of
@@ -53,7 +53,7 @@ comptime H = DType.float64
 
 def main() raises:
     var a = argv()
-    var f = load_family(String("noeira/tasks/families/") + String(a[1]) + ".family")
+    var f = load_family(String(a[1]) if String(a[1]).endswith(".family") else String("noeira/tasks/families/") + String(a[1]) + ".family")
     var fmd = parse_model_runtime(scene_path(f))
     var dims = dims_from_flat(fmd, max_contacts=512, nmesh_verts=65536)
     var m = Model[H, DynDims](dims)

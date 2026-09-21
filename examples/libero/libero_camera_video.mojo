@@ -1,14 +1,14 @@
 """A LIBERO demonstration, re-rendered by OUR camera tracer, as an MP4.
 
     pixi run libero-camera-video put_the_bowl_on_the_plate
-    pixi run mojo run -I . examples/tasks/libero_camera_video.mojo put_the_bowl_on_the_plate
-    pixi run mojo run -I . examples/tasks/libero_camera_video.mojo turn_on_the_stove --demo 3
-    pixi run mojo run -I . examples/tasks/libero_camera_video.mojo turn_on_the_stove --camera eye_in_hand
-    pixi run mojo run -I . examples/tasks/libero_camera_video.mojo open_the_middle_drawer_of_the_cabinet \\
+    pixi run mojo run -I . examples/libero/libero_camera_video.mojo put_the_bowl_on_the_plate
+    pixi run mojo run -I . examples/libero/libero_camera_video.mojo turn_on_the_stove --demo 3
+    pixi run mojo run -I . examples/libero/libero_camera_video.mojo turn_on_the_stove --camera eye_in_hand
+    pixi run mojo run -I . examples/libero/libero_camera_video.mojo open_the_middle_drawer_of_the_cabinet \\
         --size 512 --samples 4 --scale 1 --out drawer_512.mp4
 
 Reads `data/demo_<k>/states` from LIBERO's own HDF5, remaps every recorded
-state into our scene's joint order (`tasks/libero_state_remap`), renders each
+state into our scene's joint order (`envs/libero/state_remap`), renders each
 one with the batched tracer's host leg at LIBERO's settings — 4x MSAA, the
 visual geom group, the stove burner rule — and writes
 
@@ -27,14 +27,14 @@ and scene — which is what a fidelity clip is for. `libero_demo_replay.mojo`
 is the one that runs the demo's ACTIONS through our physics.
 
 ⚠ OBSERVATION `i` IS THE STATE AT `i + 1`, and it is stored upside down —
-`tools/tasks/libero_camera_gate.py`'s header measured both (6 dB and 26 dB
+`tools/libero/libero_camera_gate.py`'s header measured both (6 dB and 26 dB
 respectively). Both are applied here; a misaligned clip would look like a
 one-frame lag and an unflipped one like a ceiling camera.
 
 ⚠⚠ THE FIXTURES ARE THE DEMO'S, READ FROM THE DEMO-SUCCESS DUMP — AND THEY ARE
 WORTH 7 dB. LIBERO re-draws each fixture inside a 19-20 mm band per episode,
 and the recorded pose lives in the `model_file` attribute, which `io/hdf5`
-cannot read (no `H5A`). `tools/tasks/libero_demo_success.py` extracts it with
+cannot read (no `H5A`). `tools/libero/libero_demo_success.py` extracts it with
 MuJoCo into `references/libero_demos/_dumps/<suite>/<task>.dump` (`FIX` lines
 per `DEMO` block), and this reads that file when it exists. Without it the
 fixtures sit at the scene's band centre, up to ~1 cm off — measured on
@@ -72,10 +72,10 @@ from noeira.physics3d.raytrace.host_render import render_lane_cpu
 from noeira.render.video_recorder import VideoRecorder
 from noeira.tasks.spec import load_family
 from noeira.tasks.family import scene_path
-from noeira.tasks.libero_state_remap import load_state_remap
-from noeira.tasks.libero_visual import libero_site_conditions
-from noeira.tasks.libero_fixtures import patch_fixtures, fixtures_dump_path
-from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.envs.libero.state_remap import load_state_remap
+from noeira.envs.libero.visual import libero_site_conditions
+from noeira.envs.libero.fixtures import patch_fixtures, fixtures_dump_path
+from noeira.envs.libero.models.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
 comptime DT = DType.float64
@@ -230,7 +230,7 @@ def main() raises:
         d_im.read_all[DType.uint8](rec)
 
     # ── the scene and the camera ──────────────────────────────────────────
-    var fam = load_family("noeira/tasks/families/" + suite + ".family")
+    var fam = load_family("noeira/envs/libero/families/" + suite + ".family")
     var fmd = parse_model_runtime(scene_path(fam))
     var verts = 32768
     var dims = dims_from_flat(
@@ -275,7 +275,7 @@ def main() raises:
         fix_note = (
             String("  ⚠ no fixture dump at ") + fixtures_dump
             + " — fixtures at the scene's band centre (~1 cm off, ~7 dB)."
-            " Write it with `pixi run python tools/tasks/libero_demo_success.py"
+            " Write it with `pixi run python tools/libero/libero_demo_success.py"
             " --suite " + suite + "`."
         )
     var cam = -1

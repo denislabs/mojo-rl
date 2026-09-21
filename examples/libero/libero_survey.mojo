@@ -1,7 +1,7 @@
 """LIBERO'S 130 TASKS AGAINST OUR TAXONOMY — P5, and it is a REPORT.
 
-    pixi run mojo run -I . examples/tasks/libero_survey.mojo
-    pixi run mojo run -I . examples/tasks/libero_survey.mojo <bddl_root>
+    pixi run mojo run -I . examples/libero/libero_survey.mojo
+    pixi run mojo run -I . examples/libero/libero_survey.mojo <bddl_root>
 
 `TASK_LAYER_PLAN.md` §P5: LIBERO is **not a port target** and never was; it is
 "the cheapest available stress test of P1-P4 on somebody else's taxonomy".
@@ -37,14 +37,14 @@ from std.os import listdir
 from std.pathlib import Path
 from std.sys import argv
 
-from noeira.tasks.bddl import parse_bddl, BddlProblem
-from noeira.tasks.libero_import import (
+from noeira.envs.libero.bddl import parse_bddl, BddlProblem
+from noeira.envs.libero.importer import (
     translate_family, translate_task, GoalGap, classify_goal,
     resolve_family, family_todo_count,
     GAP_NONE, GAP_OBJECT_TARGET, GAP_FIXTURE_REGION, GAP_ARTICULATION,
     GAP_UNKNOWN_PRED, GAP_ARITY, GAP_TAPE_TERMS, gap_name,
 )
-from noeira.tasks.libero_categories import load_libero_table, DEFAULT_TABLE_PATH
+from noeira.envs.libero.categories import load_libero_table, DEFAULT_TABLE_PATH
 
 
 comptime DEFAULT_ROOT = "references/LIBERO-master/libero/libero/bddl_files"
@@ -52,7 +52,7 @@ comptime DEFAULT_ROOT = "references/LIBERO-master/libero/libero/bddl_files"
 # the LIBERO pack at the first path; the second is the same files where the
 # reference checkout keeps them. Same bytes either way (the pack is cut from
 # that tree), so the survey's answer does not depend on which one it found.
-comptime PACK_DIR = "noeira/tasks/libero/assets"
+comptime PACK_DIR = "noeira/envs/libero/assets"
 comptime UPSTREAM_ASSETS = "references/LIBERO-master/libero/libero/assets"
 
 
@@ -253,7 +253,7 @@ def main() raises:
         raise Error(
             "libero survey: " + String(len(files) - parsed) + " of "
             + String(len(files)) + " files did not PARSE. That is a defect in"
-            " `tasks/bddl.mojo`, not a limit of the goal language — the two"
+            " `envs/libero/bddl.mojo`, not a limit of the goal language — the two"
             " are separate columns for exactly this reason."
         )
     print("  ok: every file in the corpus parses")

@@ -5,7 +5,7 @@ CI checks it with: pixi run gen-libero-envs --check
 
     families/<family>.family          the slot table
     scenes/<family>.xml               composed from it
-    libero_envs/<family>_dims.mojo    MuJoCo's counts (gen-dims)
+    models/<family>_dims.mojo    MuJoCo's counts (gen-dims)
     placement/<family>.mojo           the device reset's table
     THIS FILE                         model def, config, env
 
@@ -19,10 +19,10 @@ from noeira.physics3d.parser import ModelDefFromXML
 from noeira.physics3d.types import ConeType
 from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from noeira.tasks.task_hooks import TASK_GOAL_WORDS
-from noeira.tasks.libero_osc_config import LiberoOscConfig
-from noeira.tasks.placement.libero_kitchen_scene8 import LiberoKitchenScene8Placement
-from noeira.tasks.libero_envs.budgets import LIBERO_KITCHEN_SCENE8_MAX_CONTACTS
-from noeira.tasks.libero_envs.libero_kitchen_scene8_dims import LIBERO_KITCHEN_SCENE8_DIMS
+from noeira.envs.libero.osc_config import LiberoOscConfig
+from noeira.envs.libero.placement.libero_kitchen_scene8 import LiberoKitchenScene8Placement
+from noeira.envs.libero.models.budgets import LIBERO_KITCHEN_SCENE8_MAX_CONTACTS
+from noeira.envs.libero.models.libero_kitchen_scene8_dims import LIBERO_KITCHEN_SCENE8_DIMS
 
 comptime _pm = LIBERO_KITCHEN_SCENE8_DIMS
 
@@ -33,7 +33,7 @@ comptime LIBERO_KITCHEN_SCENE8_OBS_DIM: Int = (
 free slot, the goal words."""
 
 comptime LiberoKitchenScene8Model = ModelDefFromXML[
-    xml_path="noeira/tasks/scenes/libero_kitchen_scene8.xml",
+    xml_path="noeira/envs/libero/scenes/libero_kitchen_scene8.xml",
     nbody=_pm.NBODY,
     njoint=_pm.NJOINT,
     nq=_pm.NQ,

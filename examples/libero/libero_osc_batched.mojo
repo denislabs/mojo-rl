@@ -1,7 +1,7 @@
 """THE BATCHED LIBERO ENV, DRIVEN BY OSC_POSE — L6's wiring, running.
 
-    pixi run -e nvidia mojo run -I . examples/tasks/libero_osc_batched.mojo
-    pixi run -e nvidia mojo run -I . examples/tasks/libero_osc_batched.mojo 20   # control steps; 16 lanes (comptime)
+    pixi run -e nvidia mojo run -I . examples/libero/libero_osc_batched.mojo
+    pixi run -e nvidia mojo run -I . examples/libero/libero_osc_batched.mojo 20   # control steps; 16 lanes (comptime)
 
 ⚠⚠ CORRECTED 2026-09-14: IT BUILDS AND STEPS ON APPLE TOO. The failure below
 was not the nv = 37 stack: it was eight `ScratchPool`-backed scratches in the
@@ -21,7 +21,7 @@ completion before Metal codegen, so a build that reaches the metallib error has
 type-checked every comptime branch the controller adds — the layouts
 `osc_control_step` binds, the `DynamicsScratch` in its `List`, the
 `apply_actions_kernel_gpu` call fed from `ctrl` instead of `actions`, and the
-`ACTION_DIM == 7` assert. `tests/tasks/test_libero_osc_env.mojo` keeps the
+`ACTION_DIM == 7` assert. `tests/libero/test_libero_osc_env.mojo` keeps the
 NVIDIA leg behind `comptime if has_nvidia_gpu_accelerator()` so the suite still
 runs on Apple; this one does not, deliberately.
 
@@ -34,11 +34,11 @@ actually closing its loop through the integrator, which is the one thing no
 CPU-side gate can show.
 
 ⚠ THE NUMBERS ARE NOT A FIDELITY CLAIM. What the controller computes is gated
-by `tests/tasks/test_osc_control_batched.mojo` (eight lanes against `OscPose`,
-1.7e-14 of the torque scale) and `tools/tasks/libero_demo_replay.py` (one lane
+by `tests/libero/test_osc_control_batched.mojo` (eight lanes against `OscPose`,
+1.7e-14 of the torque scale) and `tools/libero/libero_demo_replay.py` (one lane
 against MuJoCo, 1.5e-5 m over a recorded demo). This shows the WIRING carries
 those numbers into the physics; a lane-by-lane comparison against the CPU loop
-in `examples/tasks/libero_eval.mojo` is the gate that closes it, and it is owed
+in `examples/libero/libero_eval.mojo` is the gate that closes it, and it is owed
 on the box.
 
 ⚠ THE REWARD IS ZERO UNTIL A TAPE IS WRITTEN. `LiberoGoalOscConfig`'s reward
@@ -60,14 +60,14 @@ from noeira.physics3d.dynamics.osc_pose_gpu import (
 )
 from noeira.tasks.spec import load_family
 from noeira.tasks.family import scene_path
-from noeira.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
-from noeira.tasks.libero_goal_xml import LIBERO_GOAL_OBS_DIM
-from noeira.tasks.libero_goal_config import (
+from noeira.envs.libero.models.libero_goal_dims import LIBERO_GOAL_DIMS
+from noeira.envs.libero.models.libero_goal_xml import LIBERO_GOAL_OBS_DIM
+from noeira.envs.libero.libero_goal_config import (
     LiberoGoalOscConfig, LiberoGoalOscEnv, LIBERO_GOAL_FRAME_SKIP,
 )
 
 
-comptime FAMILY = "noeira/tasks/families/libero_goal.family"
+comptime FAMILY = "noeira/envs/libero/families/libero_goal.family"
 comptime N_ENVS = 16
 comptime NB = LIBERO_GOAL_DIMS.NBODY
 

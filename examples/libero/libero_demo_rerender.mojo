@@ -59,7 +59,7 @@ on a 50 ms lag and report a fine loss.
 
 ## ⚠ THE FIXTURES ARE THE DEMO'S, FROM THE DEMO-SUCCESS DUMP
 
-`tasks/libero_fixtures.mojo`: worth ~7 dB, read from
+`envs/libero/fixtures.mojo`: worth ~7 dB, read from
 `references/libero_demos/_dumps/<suite>/<task>.dump` when it exists. A missing
 dump is WARNED per task, not fatal — `libero-demo-dump` writes it.
 
@@ -88,7 +88,7 @@ from max.gpu.host import DeviceContext
 from noeira.io.hdf5.reader import H5File
 from noeira.data.column import ColumnSpec
 from noeira.data.store import TrajectoryStore, TrajectoryStoreWriter
-from noeira.data.libero_demos import (
+from noeira.envs.libero.demos import (
     CAM_H, CAM_W, N_CAMS, CAM_ELEMS, ACTION_DIM, QPOS_PROPRIO, QPOS_WORDS,
     COL_ACTION, COL_STATE, COL_QPOS, COL_TASK, COL_IMAGES,
 )
@@ -102,18 +102,18 @@ from noeira.physics3d.raytrace.visual import build_visual_model
 from noeira.tasks.spec import load_family, load_task
 from noeira.tasks.family import scene_path
 from noeira.tasks.predicates import joint_qpos_addresses
-from noeira.tasks.libero_goal_xml import LiberoGoalModel
-from noeira.tasks.libero_osc_config import LiberoOscConfig
-from noeira.tasks.placement.libero_goal import LiberoGoalPlacement
-from noeira.tasks.libero_visual import libero_site_conditions
-from noeira.tasks.libero_fixtures import patch_fixtures, fixtures_dump_path
+from noeira.envs.libero.models.libero_goal_xml import LiberoGoalModel
+from noeira.envs.libero.osc_config import LiberoOscConfig
+from noeira.envs.libero.placement.libero_goal import LiberoGoalPlacement
+from noeira.envs.libero.visual import libero_site_conditions
+from noeira.envs.libero.fixtures import patch_fixtures, fixtures_dump_path
 
 
 comptime DT = DType.float32
 """The device's type — the eval env's `Data` is float32 too."""
 comptime SUITE = "libero_goal"
-comptime FAMILY_DIR = "noeira/tasks/families/"
-comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime FAMILY_DIR = "noeira/envs/libero/families/"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
 comptime DEMO_DIR = "references/libero_demos/"
 comptime LANES = 64
 """Rows rendered per launch. Comptime: the kernel is instantiated per value."""
@@ -365,7 +365,7 @@ def main() raises:
         env_id=String("libero_rerender:") + suite,
         seed=0,
         source_commit=String("LIBERO-v1 demonstrations, states remapped by ")
-            + "noeira/tasks/libero/state_remap_" + suite + ".kv, images by"
+            + "noeira/envs/libero/tables/state_remap_" + suite + ".kv, images by"
             " noeira/physics3d/raytrace (batch.mojo) at " + String(CAM_W)
             + "x" + String(CAM_H) + " " + String(SAMPLES) + "x MSAA, group 1,"
             " row 0 = top, frame r = state r",

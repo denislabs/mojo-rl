@@ -2,8 +2,8 @@
 
     pixi run mojo run -I . tests/tasks/test_bc_policy.mojo
 
-`examples/tasks/libero_bc_train.mojo` fits a network and writes a checkpoint;
-`examples/tasks/libero_eval_batched.mojo` builds the network again and runs it.
+`examples/libero/libero_bc_train.mojo` fits a network and writes a checkpoint;
+`examples/libero/libero_eval_batched.mojo` builds the network again and runs it.
 Between them sits `tasks/bc_policy.mojo`. What can go wrong is not the fit:
 
 * the driver builds a DIFFERENT network and `load_params` fills the layers

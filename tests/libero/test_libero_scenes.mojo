@@ -1,6 +1,6 @@
 """LIBERO-10 AND LIBERO-90 — twenty scenes, ninety-nine tasks, one pass.
 
-    pixi run mojo run -I . tests/tasks/test_libero_scenes.mojo
+    pixi run mojo run -I . tests/libero/test_libero_scenes.mojo
 
 ## ⚠⚠ THE FAMILY IS THE SCENE, NOT THE SUITE
 
@@ -45,7 +45,7 @@ being true the union would quietly widen a scene.
 
 3. ⚠⚠ **EVERY PLACEMENT IS THE HEIGHT LIBERO'S OWN FROZEN STATES HOLD**, over
    all twenty scenes — `init_z_<family>.kv`, read out of the `.pruned_init`
-   files by `tools/tasks/libero_init_z.py` and keyed by the corpus' own
+   files by `tools/libero/libero_init_z.py` and keyed by the corpus' own
    (prop, region) names. This is the widest such comparison in the port and
    nothing of ours is consulted for the reference.
 
@@ -82,8 +82,8 @@ from noeira.tasks.spec import (
     FamilySpec,
 )
 from noeira.tasks.family import scene_path
-from noeira.tasks.bddl import parse_bddl
-from noeira.tasks.libero_init_z import load_init_z
+from noeira.envs.libero.bddl import parse_bddl
+from noeira.envs.libero.init_z import load_init_z
 from noeira.tasks.eval import region_sites
 from noeira.tasks.predicates import (
     parse_goal, bind_goal, require_tier_a, joint_qpos_addresses,
@@ -100,9 +100,9 @@ from noeira.tasks.reset import (
 
 
 comptime DT = DType.float64
-comptime FAMILY_DIR = "noeira/tasks/families"
-comptime TASK_DIR = "noeira/tasks/tasks/"
-comptime PACK = "noeira/tasks/libero/assets"
+comptime FAMILY_DIR = "noeira/envs/libero/families"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
+comptime PACK = "noeira/envs/libero/assets"
 comptime BDDL_ROOT = "references/LIBERO-master/libero/libero/bddl_files"
 comptime MAX_CONTACTS = 96
 comptime SEED: UInt64 = 7

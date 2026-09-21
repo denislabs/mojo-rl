@@ -187,7 +187,7 @@ from noeira.physics3d.gpu.constants import (
     CONTACT_IDX_FORCE_T2, CONTACT_IDX_FORCE_TORSION,
     MODEL_META_IDX_SOLVER_ITERATIONS,
 )
-from noeira.tasks.libero_envs.libero_living_room_scene3_xml import (
+from noeira.envs.libero.models.libero_living_room_scene3_xml import (
     LiberoLivingRoomScene3Model,
 )
 

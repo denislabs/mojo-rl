@@ -197,7 +197,7 @@ struct SiteCondition(Copyable, Movable):
     is visible in a lane when that lane's `qpos` at the joint's address is at
     least `min_qpos`; an empty `joint` makes it always visible. What decides
     which sites qualify is the benchmark's business, not the tracer's —
-    LIBERO's rule lives in `tasks/libero_visual.mojo`."""
+    LIBERO's rule lives in `envs/libero/visual.mojo`."""
 
     var site: String
     var joint: String
@@ -321,7 +321,7 @@ def build_visual_model[
     object is a group-1 visual mesh sitting on top of a pile of group-0
     collision boxes. Rendering MuJoCo's default set instead scores 10.8 dB
     against the recording where the visual set scores 43.9 (measured,
-    `tools/tasks/libero_camera_gate.py`): the collision primitives are opaque
+    `tools/libero/libero_camera_gate.py`): the collision primitives are opaque
     and they are in front.
 
     ⚠ `GEOM_IDX_RAY_VISIBLE` STILL APPLIES ON TOP OF THE MASK. It is MuJoCo's

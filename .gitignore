@@ -314,5 +314,5 @@ scratch/
 /lafan_g1_50hz_oracle.h5
 
 # LIBERO asset pack, materialised by `pixi run assets-pull libero` (assets.kv)
-noeira/tasks/libero/assets/
+noeira/envs/libero/assets/
 build/packs/

@@ -2,16 +2,16 @@
   <compiler angle="radian" inertiagrouprange="0 0" autolimits="true"/>
   <option timestep="0.002" impratio="20" cone="elliptic" density="1.2" viscosity="0.00002" />
   <asset>
-    <model name="panda_robosuite_nomount" file="../../envs/robots/assets/panda_robosuite_nomount.xml"/>
-    <model name="libero_living_room_tabletop_manipulation_arena" file="../libero/scenes/libero_living_room_tabletop_manipulation_arena.xml"/>
-    <model name="alphabet_soup_free" file="../libero/objects/alphabet_soup_free.xml"/>
-    <model name="cream_cheese_free" file="../libero/objects/cream_cheese_free.xml"/>
-    <model name="tomato_sauce_free" file="../libero/objects/tomato_sauce_free.xml"/>
-    <model name="ketchup_free" file="../libero/objects/ketchup_free.xml"/>
-    <model name="orange_juice_free" file="../libero/objects/orange_juice_free.xml"/>
-    <model name="milk_free" file="../libero/objects/milk_free.xml"/>
-    <model name="butter_free" file="../libero/objects/butter_free.xml"/>
-    <model name="basket_free" file="../libero/objects/basket_free.xml"/>
+    <model name="panda_robosuite_nomount" file="../../robots/assets/panda_robosuite_nomount.xml"/>
+    <model name="libero_living_room_tabletop_manipulation_arena" file="../arenas/libero_living_room_tabletop_manipulation_arena.xml"/>
+    <model name="alphabet_soup_free" file="../objects/alphabet_soup_free.xml"/>
+    <model name="cream_cheese_free" file="../objects/cream_cheese_free.xml"/>
+    <model name="tomato_sauce_free" file="../objects/tomato_sauce_free.xml"/>
+    <model name="ketchup_free" file="../objects/ketchup_free.xml"/>
+    <model name="orange_juice_free" file="../objects/orange_juice_free.xml"/>
+    <model name="milk_free" file="../objects/milk_free.xml"/>
+    <model name="butter_free" file="../objects/butter_free.xml"/>
+    <model name="basket_free" file="../objects/basket_free.xml"/>
   </asset>
   <worldbody>
     <frame pos="-0.51 0.0 0.42" quat="1.0 0.0 0.0 0.0">

@@ -3,7 +3,7 @@
     # FAMILY is a comptime constant; sed it like the other family drivers
     pixi run mojo run -I . tools/tasks/collision_at_pose.mojo build/diag/lr3_dev_states.txt
 
-Reads a state dumped by `examples/tasks/libero_family_batched.mojo --dump-state`
+Reads a state dumped by `examples/libero/libero_family_batched.mojo --dump-state`
 and runs, on the SAME model def the batch uses: FK + both broadphases, on CPU
 and on GPU, at that pose. No stepping, one lane.
 
@@ -44,13 +44,13 @@ from noeira.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS, CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
     CONTACT_IDX_DIST, CONTACT_IDX_POS_X,
 )
-from noeira.tasks.libero_envs.libero_living_room_scene3_xml import (
+from noeira.envs.libero.models.libero_living_room_scene3_xml import (
     LiberoLivingRoomScene3Model,
 )
-from noeira.tasks.libero_envs.libero_living_room_scene2_xml import (
+from noeira.envs.libero.models.libero_living_room_scene2_xml import (
     LiberoLivingRoomScene2Model,
 )
-from noeira.tasks.libero_envs.libero_kitchen_scene5_xml import (
+from noeira.envs.libero.models.libero_kitchen_scene5_xml import (
     LiberoKitchenScene5Model,
 )
 

@@ -11,11 +11,11 @@ keeps the `libero_goal` names every driver and gate already imports.
 """
 
 from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
-from noeira.tasks.libero_osc_config import (
+from noeira.envs.libero.osc_config import (
     LiberoOscConfig, LIBERO_FRAME_SKIP, LIBERO_HORIZON, LIBERO_TIMESTEP,
 )
-from noeira.tasks.placement.libero_goal import LiberoGoalPlacement
-from noeira.tasks.libero_goal_xml import LiberoGoalModel
+from noeira.envs.libero.placement.libero_goal import LiberoGoalPlacement
+from noeira.envs.libero.models.libero_goal_xml import LiberoGoalModel
 
 
 comptime LIBERO_GOAL_FRAME_SKIP: Int = LIBERO_FRAME_SKIP
@@ -35,4 +35,4 @@ function 'KGEN_CompilerRT_GetOrCreateGlobal'" were the elliptic Newton branch
 building eight `ScratchPool`-backed scratches in the kernel, because
 `cap[]` is 0 for a model with no tendons and no equalities
 (`newton_solve.mojo`, `EQ_CAP`). With that guarded,
-`examples/tasks/libero_osc_batched.mojo` builds and steps on an M1 Pro."""
+`examples/libero/libero_osc_batched.mojo` builds and steps on an M1 Pro."""

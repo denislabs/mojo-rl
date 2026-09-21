@@ -3,7 +3,7 @@
 `shade.mojo` was deliberately small and said so: "the COLOUR is not [gateable]"
 and "nothing that would only be justified by a pixel comparison that cannot be
 run". L5 runs that comparison
-(`tools/tasks/libero_camera_gate.py`), so the model here is no longer a
+(`tools/libero/libero_camera_gate.py`), so the model here is no longer a
 plausible ambient-plus-Lambert — it is `render_gl3.c` and the OpenGL fixed
 pipeline it drives, term by term, because every term is now measurable.
 

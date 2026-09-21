@@ -1,7 +1,7 @@
 """Our goals, evaluated on LIBERO's OWN successful demonstrations.
 
-    pixi run python tools/tasks/libero_demo_success.py --suite libero_goal
-    pixi run mojo run -I . examples/tasks/libero_demo_success.mojo \
+    pixi run python tools/libero/libero_demo_success.py --suite libero_goal
+    pixi run mojo run -I . examples/libero/libero_demo_success.mojo \
         references/libero_demos/_dumps/libero_goal/index.txt
 
 Every demonstration in the corpus is a successful human teleoperation of the
@@ -64,12 +64,12 @@ from noeira.tasks.predicates import (
 from noeira.tasks.eval import (
     eval_goal, HostState, region_sites, region_contact_bodies,
 )
-from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
-from noeira.tasks.libero_fixtures import dump_path_from_index
+from noeira.envs.libero.models.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.envs.libero.fixtures import dump_path_from_index
 
 
 comptime DT = DType.float64
-comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
 
 
 def _floats(s: String) raises -> List[Float64]:
@@ -87,7 +87,7 @@ def main() raises:
     if len(a) < 2:
         raise Error(
             "usage: libero_demo_success.mojo <index.txt>   (written by"
-            " tools/tasks/libero_demo_success.py)"
+            " tools/libero/libero_demo_success.py)"
         )
     var index_path = String(a[1])
     var index_text: String
@@ -125,7 +125,7 @@ def main() raises:
     # ⚠ A TEMPORARY: `x = String(x[...])` aliases the value being replaced.
     var suite_cut = String(suite[byte=0:cut])
     suite = suite_cut^
-    var f = load_family("noeira/tasks/families/" + suite + ".family")
+    var f = load_family("noeira/envs/libero/families/" + suite + ".family")
     var fmd = parse_model_runtime(scene_path(f))
     var verts = 32768
     var dims = dims_from_flat(

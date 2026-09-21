@@ -4,7 +4,7 @@
     ACT_STORE=build/demos/libero_goal.rendered.smoke.h5 ACT_STEPS=20 ACT_NO_MONITOR=1 \\
         pixi run -e apple libero-act-train                          # a Mac smoke
 
-`tasks/libero_act.mojo` is the shape (9 proprio words, 7 OSC_POSE words, two
+`envs/libero/act.mojo` is the shape (9 proprio words, 7 OSC_POSE words, two
 128x128 cameras, K = 2 s = 40 steps at 20 Hz, the `RUN_*` transformer); this
 file is the SO-101 GPU driver's loop on the LIBERO store — `ACTDataset` over
 `qpos`/`action`/`images`, the ImageNet ResNet18, validation on held-out
@@ -44,7 +44,7 @@ LIBERO's frozen inits, which are not demonstrations at all.
 
 | | |
 |---|---|
-| `ACT_STORE` | the `.h5` to train on; default `tasks/libero_act.LIBERO_ACT_STORE_RENDERED` |
+| `ACT_STORE` | the `.h5` to train on; default `envs/libero/act.LIBERO_ACT_STORE_RENDERED` |
 | `ACT_STEPS` | optimizer steps without a rebuild (default 50 000) |
 | `ACT_LR` | the learning rate (default `LIBERO_ACT_LR` = 1e-5, the paper's). An overfit at 1e-3 on a few episodes is the test of whether the graph can REPRESENT a per-position chunk at all (2026-09-20: the box fits' chunks were flat across the 40 positions after training even with unit-scale queries) |
 | `ACT_SHAPE` | weight of the chunk-shape term (L1 on first differences along the chunk; default `ACT_SHAPE_WEIGHT` = 0, the paper's loss). See `deep_agents/act/config.mojo` |
@@ -73,7 +73,7 @@ from noeira.deep_agents.act.norm_file import act_norm_from
 from noeira.deep_agents.act.trainer import ACTWindowMetrics
 from noeira.deep_agents.training.checkpoint import announce_checkpoint
 from noeira.io.artifact_sink import ArtifactSink, close_sink, sink_for_run
-from noeira.tasks.libero_act import (
+from noeira.envs.libero.act import (
     LiberoActDataset, LiberoActDeviceDataset, LiberoActTrainer,
     LIBERO_ACT_QPOS, LIBERO_ACT_ADIM, LIBERO_ACT_N_CAM, LIBERO_ACT_IMG_H,
     LIBERO_ACT_IMG_W, LIBERO_ACT_IMG_ELEMS, LIBERO_ACT_K, LIBERO_ACT_DIM,
@@ -229,7 +229,7 @@ def main() raises:
     )
     var run = RunContext(
         project=project,
-        driver=String("examples/tasks/libero_act_train.mojo"),
+        driver=String("examples/libero/libero_act_train.mojo"),
         slug=String("act-libero-goal"),
         env=String("builtin:libero_goal"),
         dataset=path,

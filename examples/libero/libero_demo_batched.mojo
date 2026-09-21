@@ -1,13 +1,13 @@
 """LIBERO'S OWN DEMONSTRATIONS, REPLAYED ON THE BATCH — a real task per lane.
 
-    pixi run mojo run -I . examples/tasks/libero_demo_batched.mojo
-    pixi run mojo run -I . examples/tasks/libero_demo_batched.mojo --demo-offset 2 --steps 100
-    pixi run -e nvidia mojo run -I . examples/tasks/libero_demo_batched.mojo
+    pixi run mojo run -I . examples/libero/libero_demo_batched.mojo
+    pixi run mojo run -I . examples/libero/libero_demo_batched.mojo --demo-offset 2 --steps 100
+    pixi run -e nvidia mojo run -I . examples/libero/libero_demo_batched.mojo
 
     # the throughput sweep — one lane count per build (see `LANES`)
     for n in 64 256 1024; do
         sed "s/^comptime LANES = .*/comptime LANES = $n/" \
-            examples/tasks/libero_demo_batched.mojo > /tmp/libero_lanes_$n.mojo
+            examples/libero/libero_demo_batched.mojo > /tmp/libero_lanes_$n.mojo
         pixi run -e nvidia mojo run -I . /tmp/libero_lanes_$n.mojo --timing-only
     done
     # and one checked run at scale, the success word on every lane
@@ -35,7 +35,7 @@ active mask in `meta`, the family's region table in `curriculum`, the demo's
 recorded initial state, and its recorded 7-word OSC_POSE actions fed step by
 step through the batched env. Beside it, ONE CPU lane per demo runs the same
 replay through `OscPose` and the host integrator — the loop
-`examples/tasks/libero_demo_replay.mojo` gated against MuJoCo.
+`examples/libero/libero_demo_replay.mojo` gated against MuJoCo.
 
 ## WHAT IT CHECKS, AND WHICH CHECK IS HARD
 
@@ -73,7 +73,7 @@ per-step curve of that lane is where to look.
 
 ## ⚠ THE PROTOCOL IS THE REPLAY GATE'S, NOT THE EVAL'S
 
-`tools/tasks/libero_demo_replay.py` sets `states[0]` and THEN builds the
+`tools/libero/libero_demo_replay.py` sets `states[0]` and THEN builds the
 controller, so OSC's nullspace target is the demo's own start pose; the eval
 protocol (`libero_eval.mojo`) anchors on the rest pose and restores the frozen
 row after. Both legs here take the replay order: the batch resets, writes the
@@ -137,18 +137,18 @@ from noeira.tasks.eval import (
 from noeira.tasks.tape import encode_goal, TAPE_WORDS
 from noeira.tasks.gpu_eval import region_table_words, require_gpu_regions
 from noeira.tasks.active import active_mask
-from noeira.tasks.libero_state_remap import load_state_remap
-from noeira.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
-from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
-from noeira.tasks.libero_goal_config import (
+from noeira.envs.libero.state_remap import load_state_remap
+from noeira.envs.libero.models.libero_goal_dims import LIBERO_GOAL_DIMS
+from noeira.envs.libero.models.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.envs.libero.libero_goal_config import (
     LiberoGoalOscEnv, LIBERO_GOAL_FRAME_SKIP,
 )
 
 
 comptime H = DType.float64
 comptime FAMILY = "libero_goal"
-comptime FAMILY_DIR = "noeira/tasks/families/"
-comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime FAMILY_DIR = "noeira/envs/libero/families/"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
 comptime DEMO_DIR = "references/libero_demos/libero_goal"
 comptime N_TASKS = 10
 comptime LANES = 20

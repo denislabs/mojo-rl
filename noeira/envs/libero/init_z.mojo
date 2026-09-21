@@ -1,6 +1,6 @@
 """LIBERO's own start height per (prop, region) — `init_z_<family>.kv`.
 
-    from noeira.tasks.libero_init_z import load_init_z
+    from noeira.envs.libero.init_z import load_init_z
     var z = load_init_z(String("libero_spatial"))
     var h = z.height(String("akita_black_bowl_1"),
                      String("wooden_cabinet_1_top_region"))   # 1.15063
@@ -11,7 +11,7 @@
 and the asset's `bottom_site`, and a gate that recomputed that formula would be
 checking the sampler against itself. These numbers come from LIBERO's
 `.pruned_init` files — the fifty frozen states the benchmark restores at reset
-— extracted by `tools/tasks/libero_init_z.py`, which validates its own column
+— extracted by `tools/libero/libero_init_z.py`, which validates its own column
 layout structurally (a free joint's quaternion must be unit norm) and never
 reads anything of ours.
 
@@ -42,7 +42,7 @@ from std.os.path import exists
 from noeira.core.kv import split_on
 
 
-comptime INIT_Z_DIR: String = "noeira/tasks/libero"
+comptime INIT_Z_DIR: String = "noeira/envs/libero/tables"
 comptime INIT_Z_SCHEMA: Int = 1
 
 

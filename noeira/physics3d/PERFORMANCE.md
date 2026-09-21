@@ -4728,12 +4728,12 @@ The port's own record is `docs/LIBERO_PORT_ASSESSMENT_2026_09_13.md` §6s-§6u
 (`docs/` is gitignored; the numbers below are complete without it).
 
 **The workload.** `libero_goal` on `LiberoGoalOscEnv`
-(`noeira/tasks/libero_goal_config.mojo`): a Panda under OSC_POSE, nq 41 /
+(`noeira/envs/libero/libero_goal_config.mojo`): a Panda under OSC_POSE, nq 41 /
 nv 37, 240 geoms (156 colliding, 11 of them meshes, 84 visual-only), 64
 contacts budget, **elliptic cone** (`impratio=20`, robosuite's `base.xml`),
 Euler, 2 ms timestep, 25 physics substeps per control step, `CRBA_TREEWALK`.
 The driver replays LIBERO's own demonstrations per lane:
-`examples/tasks/libero_demo_batched.mojo`. It needs the 10
+`examples/libero/libero_demo_batched.mojo`. It needs the 10
 `libero_goal` demo HDF5s in `references/libero_demos/libero_goal/`
 (HF `yifengzhu-hf/LIBERO-datasets`, ~5.9 GB) and `pixi run assets-pull
 libero`.
@@ -4803,7 +4803,7 @@ heightfield), tuned at the G1's operating point.
 
 **Correctness gates any change must keep:** `libero_demo_batched` (success
 word exact; first-10-step |dq| ≤ 1e-3 against the CPU replay),
-`tests/tasks/test_libero_osc_env.mojo`, the elliptic MuJoCo gates
+`tests/libero/test_libero_osc_env.mojo`, the elliptic MuJoCo gates
 (`tests/physics3d/test_elliptic_condim46_vs_mujoco.mojo`,
 `test_elliptic_linesearch_evals_vs_mujoco.mojo`,
 `test_noslip_elliptic_vs_mujoco.mojo`), and for (1) §13.52's collision csum
@@ -4817,7 +4817,7 @@ Metal).
 
     # on the box, after `assets-pull libero` and the demo download
     sed "s/^comptime LANES = .*/comptime LANES = 256/" \
-        examples/tasks/libero_demo_batched.mojo > /tmp/libero_lanes_256.mojo
+        examples/libero/libero_demo_batched.mojo > /tmp/libero_lanes_256.mojo
     pixi run -e nvidia mojo build -I . -o /tmp/libero_256 /tmp/libero_lanes_256.mojo
     pixi run -e nvidia /tmp/libero_256 --timing-only --steps 60          # throughput
     pixi run -e nvidia nsys profile -t cuda,osrt --sample=cpu \
@@ -4904,7 +4904,7 @@ span), differences the sums, and writes one row per (step, lane);
 lever-3-or-4 verdict.
 
     sed "s/^comptime LANES = .*/comptime LANES = 256/" \
-        examples/tasks/libero_demo_batched.mojo > /tmp/libero_lanes_256.mojo
+        examples/libero/libero_demo_batched.mojo > /tmp/libero_lanes_256.mojo
     pixi run -e nvidia mojo build -I . -o /tmp/libero_256 /tmp/libero_lanes_256.mojo
     pixi run -e nvidia /tmp/libero_256 --timing-only --steps 60 --solver-log /tmp/libero_256_solver.csv
     pixi run python tools/tasks/solver_log_summary.py /tmp/libero_256_solver.csv
@@ -4967,7 +4967,7 @@ Two things the distribution adds that the means hid:
    collision kernel's raw count and reads 77-89 on some lanes from t≈25
    (the grasp: mesh fingers on a mesh object), 32 of 15 360 last-substep
    samples at or above 64. The solve is handed 64 of them and drops the
-   rest silently (`tools/tasks/libero_contact_budget.mojo`'s warning, on
+   rest silently (`tools/libero/libero_contact_budget.mojo`'s warning, on
    the demonstrations it measured a RESTING count for). Which lanes, which
    tasks and whether they are the replay's 1-of-20 miss are in the CSV
    (`ncon_last > 64` by `task`, `t`); if they are, `LIBERO_GOAL_MAX_CONTACTS`
@@ -5081,7 +5081,7 @@ threadgroup limit), so the end-to-end replay gate is the box's:
 
     # the fidelity gate — success word exact, |dq| <= 1e-3 vs the CPU replay
     sed "s/^comptime LANES = .*/comptime LANES = 256/" \
-        examples/tasks/libero_demo_batched.mojo > /tmp/libero_lanes_256.mojo
+        examples/libero/libero_demo_batched.mojo > /tmp/libero_lanes_256.mojo
     pixi run -e nvidia mojo build -I . -o /tmp/libero_256 /tmp/libero_lanes_256.mojo
     pixi run -e nvidia /tmp/libero_256 --cpu-lanes 10
     # the number §13.53 priced: 1.706 s per batch control step at 256 lanes
@@ -5318,7 +5318,7 @@ equal to the unfiltered build's on every window). **Still the box's:** the
 end-to-end replay and the step time with it —
 
     sed "s/^comptime LANES = .*/comptime LANES = 256/" \
-        examples/tasks/libero_demo_batched.mojo > /tmp/libero_lanes_256.mojo
+        examples/libero/libero_demo_batched.mojo > /tmp/libero_lanes_256.mojo
     pixi run -e nvidia mojo build -I . -o /tmp/libero_256 /tmp/libero_lanes_256.mojo
     pixi run -e nvidia /tmp/libero_256 --cpu-lanes 10              # the gate
     pixi run -e nvidia /tmp/libero_256 --timing-only --steps 60   # was 801 ms
@@ -5507,7 +5507,7 @@ and CPU keep the cache and neither their numbers nor their timings move.
 `jt_ns`, its own full-size copy read from the workspace, so the two arenas are
 never live at once and that path is untouched.
 
-**The gate** (M1 Pro, `examples/tasks/libero_family_batched.mojo`, unmodified —
+**The gate** (M1 Pro, `examples/libero/libero_family_batched.mojo`, unmodified —
 `JT_PC` needs no flag to flip, which is why it is keyed on the target):
 
     reset          368 words | worst 8.118896488440441e-08 | over 2e-05: 0

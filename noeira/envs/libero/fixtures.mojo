@@ -1,11 +1,11 @@
 """A demonstration's FIXTURE poses, written into a built `Model` — once.
 
-    from noeira.tasks.libero_fixtures import patch_fixtures, fixtures_dump_path
+    from noeira.envs.libero.fixtures import patch_fixtures, fixtures_dump_path
     var placed = patch_fixtures(dump, demo, fmd.body_names, m)
 
 LIBERO re-draws every fixture's xy inside a 19-20 mm band at each reset, and
 the pose it drew lives in the `model_file` attribute of the recording, which
-`io/hdf5` cannot read (no `H5A`). `tools/tasks/libero_demo_success.py` extracts
+`io/hdf5` cannot read (no `H5A`). `tools/libero/libero_demo_success.py` extracts
 it with MuJoCo into `references/libero_demos/_dumps/<suite>/<task>.dump`, one
 `DEMO demo_<k>` block per demonstration with a `FIX body px py pz qw qx qy qz`
 line per fixture. This reads that file and writes the seven columns into

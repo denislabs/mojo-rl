@@ -56,7 +56,7 @@ XMLs, and writes what MuJoCo would have seen — minus what LIBERO never uses.
   carrying only the collision STLs renders an arm-shaped hole. That was
   invisible to every L2-L4 gate because all of them are physics gates, and it
   is 99.9% of the squared error the L5 camera gate opened with
-  (`tools/tasks/libero_camera_gate.py`: 26.5 dB, and the robot crop is 0.1%
+  (`tools/libero/libero_camera_gate.py`: 26.5 dB, and the robot crop is 0.1%
   of nothing else).
 * The gripper's `<sensor>` force/torque pair on `ft_frame`. LIBERO's policies
   and datasets never read them, and an unserved sensor kind is a load-time

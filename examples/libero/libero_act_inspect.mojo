@@ -1,7 +1,7 @@
 """ACT ON LIBERO — WHAT ONE CHECKPOINT PREDICTS FOR A STORE ROW, POSITION BY POSITION.
 
-    pixi run -e apple  mojo run -I . examples/tasks/libero_act_inspect.mojo --act runs/<id>/checkpoints --store build/demos/<store>.h5
-    pixi run -e nvidia mojo run -I . examples/tasks/libero_act_inspect.mojo --act runs/<id>/checkpoints --store build/demos/libero_goal.rendered.h5 --ckpt last
+    pixi run -e apple  mojo run -I . examples/libero/libero_act_inspect.mojo --act runs/<id>/checkpoints --store build/demos/<store>.h5
+    pixi run -e nvidia mojo run -I . examples/libero/libero_act_inspect.mojo --act runs/<id>/checkpoints --store build/demos/libero_goal.rendered.h5 --ckpt last
 
 Every ACT evaluation on the 5090 (2026-09-19/20) executed chunks whose 40
 positions were IDENTICAL to three decimals — the `--trace-lane` rows of one
@@ -47,7 +47,7 @@ from std.math import sqrt
 from max.gpu.host import DeviceContext
 
 from noeira.nn.constants import DT
-from noeira.tasks.libero_act import (
+from noeira.envs.libero.act import (
     LiberoActTrainer, LiberoActDataset, LIBERO_ACT_QPOS, LIBERO_ACT_ADIM,
     LIBERO_ACT_K, LIBERO_ACT_IMG_ELEMS, LIBERO_ACT_DIM,
 )

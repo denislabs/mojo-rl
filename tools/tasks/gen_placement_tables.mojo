@@ -1,6 +1,6 @@
 """Every generatable family's device placement table — GENERATED artifacts.
 
-    pixi run gen-placement-tables           # write noeira/tasks/placement/*.mojo
+    pixi run gen-placement-tables           # write <root>/placement/*.mojo (noeira/tasks, noeira/envs/libero)
     pixi run gen-placement-tables --check   # CI: fail if one is stale
 
 `placement/table.place_free_slots` is the device twin of
@@ -36,7 +36,7 @@ refuses, because the kernel runs before FK.
 from std.os import listdir
 from std.sys import argv
 
-from noeira.tasks.spec import load_family, FamilySpec, SLOT_FREE
+from noeira.tasks.spec import load_family, task_root_of, FamilySpec, SLOT_FREE
 from noeira.tasks.family import scene_path, park_pos
 from noeira.tasks.reset import free_slot_addresses
 from noeira.tasks.eval import region_sites
@@ -48,11 +48,11 @@ from noeira.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
 
 comptime DT = DType.float64
-comptime FAMILY_DIR = "noeira/tasks/families"
-comptime OUT_DIR = "noeira/tasks/placement"
+comptime TASK_ROOTS = "noeira/tasks,noeira/envs/libero"
+"""Every task root; a family's table is written to `<its root>/placement/`."""
 comptime GRIPPER_SITE_NAMES = "robot_grip_site,robot_grasp_center,robot_gripperframe"
 """The end-effector site, per base robot, first match wins: the vendored
-Panda's (the one OSC_POSE drives, `examples/tasks/libero_eval.mojo`), the
+Panda's (the one OSC_POSE drives, `examples/libero/libero_eval.mojo`), the
 tower follower's PINCH CENTRE (`grasp_center`, the bake's step 4c — where a
 held brick sits, 3 cm above the tip) and the stock SO-101's `gripperframe`
 (the jaw TIP, the tabletop family). The goal words' origin, and the reach
@@ -79,13 +79,15 @@ def _families() raises -> List[String]:
     non-LIBERO family with a full `slot_geom=` table, and a prefix list would
     have left it hand-written."""
     var out = List[String]()
-    for e in listdir(FAMILY_DIR):
-        var n = String(e)
-        if not n.endswith(".family"):
-            continue
-        var f = load_family(String(FAMILY_DIR) + "/" + n)
-        if _generatable(f):
-            out.append(String(n[byte = 0 : n.byte_length() - 7]))
+    for root in String(TASK_ROOTS).split(","):
+        var dir = String(root) + "/families"
+        for e in listdir(dir):
+            var n = String(e)
+            if not n.endswith(".family"):
+                continue
+            var f = load_family(dir + "/" + n)
+            if _generatable(f):
+                out.append(dir + "/" + n)
     for i in range(len(out)):
         for j in range(i + 1, len(out)):
             if out[j] < out[i]:
@@ -160,8 +162,16 @@ def _method(
     return s
 
 
-def generate(family: String) raises -> String:
-    var f = load_family(String(FAMILY_DIR) + "/" + family + ".family")
+def family_name(path: String) -> String:
+    """`<root>/families/<name>.family` -> `<name>`."""
+    var parts = path.split("/")
+    var base = String(parts[len(parts) - 1])
+    return String(base[byte = 0 : base.byte_length() - 7])
+
+
+def generate(family_path: String) raises -> String:
+    var f = load_family(family_path)
+    var family = f.name
     var fmd = parse_model_runtime(scene_path(f))
     # ⚠ `fmd.bodies` HAS NO WORLDBODY RECORD: model body id `bi` is
     # `fmd.bodies[bi - 1]` (`fields_build`), while `body_names`, a site's
@@ -375,7 +385,7 @@ def generate(family: String) raises -> String:
     o += '"""`' + family + "`'s device placement table — GENERATED, DO NOT EDIT.\n\n"
     o += "Regenerate with:  pixi run gen-placement-tables\n"
     o += "CI checks it with: pixi run gen-placement-tables --check\n\n"
-    o += "From `" + String(FAMILY_DIR) + "/" + family + ".family`,\n"
+    o += "From `" + family_path + "`,\n"
     o += "`" + scene_path(f) + "` and forward kinematics on it.\n"
     o += String(len(fslot)) + " free slots, " + String(len(f.regions))
     o += " regions (" + String(n_moves) + " moving, " + String(n_followed)
@@ -448,11 +458,14 @@ def main() raises:
             check = True
     var fams = _families()
     if len(fams) == 0:
-        raise Error("no generatable .family under " + FAMILY_DIR)
+        raise Error("no generatable .family under " + String(TASK_ROOTS))
     var stale = 0
     for i in range(len(fams)):
         var text = generate(fams[i])
-        var path = String(OUT_DIR) + "/" + fams[i] + ".mojo"
+        var path = (
+            task_root_of(fams[i]) + "/placement/" + family_name(fams[i])
+            + ".mojo"
+        )
         var old = String("")
         var have = True
         try:

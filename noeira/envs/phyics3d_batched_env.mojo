@@ -1702,7 +1702,7 @@ struct Phyics3dBatchedEnv[
                 # cadences are not interchangeable: `set_goal` adds the
                 # action's delta to the CURRENT end-effector pose, so calling
                 # it every substep applies a 5 cm command twenty-five times.
-                # `tests/tasks/test_osc_control_batched.mojo` measures what
+                # `tests/libero/test_osc_control_batched.mojo` measures what
                 # that costs (0.387 N·m against a 1.7e-14 agreement) precisely
                 # so this line cannot be changed silently.
                 self._osc_substep(c, _substep == 0)

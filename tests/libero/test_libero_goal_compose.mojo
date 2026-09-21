@@ -1,10 +1,10 @@
 """`libero_goal.family` composes to the checked-in scene, and OUR parser
 carries every slot — L2's Mojo half of the compose gate.
 
-    pixi run mojo run -I . tests/tasks/test_libero_goal_compose.mojo
+    pixi run mojo run -I . tests/libero/test_libero_goal_compose.mojo
 
 The ORACLE half is `pixi run python tools/tasks/check_family.py
-noeira/tasks/scenes/libero_goal.xml noeira/tasks/families/libero_goal.family`
+noeira/envs/libero/scenes/libero_goal.xml noeira/envs/libero/families/libero_goal.family`
 (MuJoCo loads the composed scene at `base_qpos`, counts ZERO contacts at
 rest, and sums the nine assets independently: nbody 38, njnt 17, nq 41,
 nv 37, ngeom 190). This file checks the same sums through our runtime
@@ -20,14 +20,14 @@ family's and assumes the composer's own floor; this family has `floor=0`
 from std.os.path import exists
 
 from noeira.tasks.spec import load_family, SLOT_FREE, SLOT_STATIC
-from noeira.tasks.family import compose_family, scene_path, SCENE_DIR
+from noeira.tasks.family import compose_family, scene_path, scene_dir
 from noeira.physics3d.parser.runtime_load import parse_model_runtime
-from noeira.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
-from noeira.tasks.libero_goal_xml import LiberoGoalModel, LIBERO_GOAL_N_FREE_SLOTS
+from noeira.envs.libero.models.libero_goal_dims import LIBERO_GOAL_DIMS
+from noeira.envs.libero.models.libero_goal_xml import LiberoGoalModel, LIBERO_GOAL_N_FREE_SLOTS
 
 
-comptime FAMILY = String("noeira/tasks/families/libero_goal.family")
-comptime PACK = String("noeira/tasks/libero/assets")
+comptime FAMILY = String("noeira/envs/libero/families/libero_goal.family")
+comptime PACK = String("noeira/envs/libero/assets")
 
 
 def main() raises:
@@ -64,7 +64,7 @@ def main() raises:
         bad += 1
 
     var out = scene_path(f)
-    var xml = compose_family(f, SCENE_DIR)
+    var xml = compose_family(f, scene_dir(f))
     var on_disk = String("")
     with open(out, "r") as fh:
         on_disk = fh.read()

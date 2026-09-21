@@ -1,6 +1,6 @@
 """Every LIBERO family on the batched GPU env, driven by OSC_POSE — ONE config.
 
-    from noeira.tasks.libero_scenes.libero_kitchen_scene3_xml import (
+    from noeira.envs.libero.models.libero_kitchen_scene3_xml import (
         LiberoKitchenScene3OscEnv,
     )
     var env = LiberoKitchenScene3OscEnv[N](ctx, seed)
@@ -29,7 +29,7 @@ frequent defect. What IS per family is the model def and its contact budget —
 
 ⚠ THE THREE CONSTANTS BELOW ARE RESTATED FROM EVERY `.family` AND EVERY
 GENERATED DIMS FILE, NOT READ — a config is a comptime type, a `.family` is a
-runtime file. `tests/tasks/test_libero_task_hooks.mojo` reads all 23 families
+runtime file. `tests/libero/test_libero_task_hooks.mojo` reads all 23 families
 and their dims and fails if one disagrees, so a family that ever runs at another
 `control_freq` is refused by a gate rather than silently stepped at 20 Hz.
 
@@ -274,7 +274,7 @@ struct LiberoOscConfig[P: PlacementTable](Phyics3dEnvConfig):
     ) -> Bool:
         """The single-env twin — `task_hooks.write_task_obs_host`. A batched
         run writes the checkpoint a single-env eval loads, so the two must agree
-        word for word; `tests/tasks/test_libero_task_hooks.mojo` demands it."""
+        word for word; `tests/libero/test_libero_task_hooks.mojo` demands it."""
         write_task_obs_host[Self.P, DTYPE, D](d, obs)
         _ = m_bodies
         _ = m_joints
@@ -453,7 +453,7 @@ struct LiberoOscConfig[P: PlacementTable](Phyics3dEnvConfig):
         task of a family. Wiring it here would be a second copy of the tape.
 
         A driver that trains on this config would see a flat zero curve, which
-        is why the header says so in as many words. `examples/tasks/libero_eval.mojo`
+        is why the header says so in as many words. `examples/libero/libero_eval.mojo`
         is the loop that evaluates the real goal, on the CPU, today.
         """
         _ = len(m_bodies) + len(m_joints) + len(m_geoms) + len(m_sites)

@@ -3,7 +3,7 @@
     pixi run libero-init-dump          # the Python leg: pickle, remap, verify
     pixi run libero-init-freeze        # this: mask, key, store
 
-`tools/tasks/libero_init_table.py` reads the `.pruned_init` pickles, remaps
+`tools/libero/libero_init_table.py` reads the `.pruned_init` pickles, remaps
 each row into our joint order BY NAME and verifies the result by driving both
 models through MuJoCo. It deliberately stops there. Everything below is a RULE
 this tree already owns exactly once:
@@ -58,10 +58,10 @@ from noeira.tasks.reset import free_slot_addresses
 from noeira.tasks.init_table import (
     write_init_table, load_init_table, family_key, INIT_TIME_WORDS,
 )
-from noeira.tasks.libero_fixtures import dump_path_from_index
+from noeira.envs.libero.fixtures import dump_path_from_index
 
 
-comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
 comptime OUT_DIR = "build/init"
 
 
@@ -87,7 +87,7 @@ def main() raises:
     if len(a) < 2:
         raise Error(
             "usage: libero_init_freeze.mojo <index.txt> [out.h5]   (the index is"
-            " written by tools/tasks/libero_init_table.py)"
+            " written by tools/libero/libero_init_table.py)"
         )
     var index_path = String(a[1])
     var index_text: String
@@ -127,7 +127,7 @@ def main() raises:
     var suite_cut = String(suite[byte=0:cut])
     suite = suite_cut^
 
-    var f = load_family("noeira/tasks/families/" + suite + ".family")
+    var f = load_family("noeira/envs/libero/families/" + suite + ".family")
     var fmd = parse_model_runtime(scene_path(f))
     var dims = dims_from_flat(fmd)
     var nq = dims.get_nq()

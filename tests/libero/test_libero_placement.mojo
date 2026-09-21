@@ -1,6 +1,6 @@
 """WHERE A RESET PUTS THINGS — the asset's numbers, and a contact-free scene.
 
-    pixi run mojo run -I . tests/tasks/test_libero_placement.mojo
+    pixi run mojo run -I . tests/libero/test_libero_placement.mojo
 
 `init=` used to place an object at `region_site_z + radius`, where `radius` was
 a number the CALLER invented — `0.02` in five drivers, a config constant in
@@ -63,7 +63,7 @@ from noeira.tasks.spec import (
     INIT_TARGET_SLOT, STACK_Z_OFFSET, TABLE_Z_OFFSET, has_stacked_init,
 )
 from noeira.tasks.placement.check import require_device_placement
-from noeira.tasks.placement.libero_spatial import LiberoSpatialPlacement
+from noeira.envs.libero.placement.libero_spatial import LiberoSpatialPlacement
 from noeira.tasks.family import scene_path
 from noeira.tasks.eval import region_sites
 from noeira.tasks.sampler import (
@@ -73,16 +73,16 @@ from noeira.tasks.reset import (
     free_slot_addresses, reset_slots,
     joint_init_addresses, joint_init_dof_addresses, apply_joint_inits,
 )
-from noeira.tasks.libero_spatial_xml import LIBERO_SPATIAL_MAX_CONTACTS
-from noeira.tasks.libero_init_z import load_init_z
-from noeira.tasks.bddl import parse_bddl
+from noeira.envs.libero.models.libero_spatial_xml import LIBERO_SPATIAL_MAX_CONTACTS
+from noeira.envs.libero.init_z import load_init_z
+from noeira.envs.libero.bddl import parse_bddl
 
 
 comptime DT = DType.float64
 comptime SUITE = "libero_spatial"
-comptime FAMILY = "noeira/tasks/families/libero_spatial.family"
-comptime TASK_DIR = "noeira/tasks/tasks/"
-comptime PACK = "noeira/tasks/libero/assets"
+comptime FAMILY = "noeira/envs/libero/families/libero_spatial.family"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
+comptime PACK = "noeira/envs/libero/assets"
 comptime BDDL_DIR = (
     "references/LIBERO-master/libero/libero/bddl_files/libero_spatial"
 )

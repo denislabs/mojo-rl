@@ -60,7 +60,7 @@ Whatever they then do, they do it in LIBERO too.
 bowl frozen inside a drawer is restored against a drawer up to a centimetre
 away. Measured over the fifty recorded draws of `libero_goal`, the band is
 19-20 mm wide per axis and our static fixture pose is its centre
-(`tools/tasks/libero_init_table.py`). The five zero-action steps are what let
+(`tools/libero/libero_init_table.py`). The five zero-action steps are what let
 the props fall the last millimetres onto whatever is actually there.
 
 ## ⚠ SUCCESS IS `ANY STEP`, AND IT IS EVALUATED AFTER A STEP, NEVER BEFORE
@@ -136,12 +136,12 @@ from noeira.tasks.eval import (
 from noeira.tasks.init_table import load_init_table, InitTable
 from noeira.tasks.eval_report import SuccessReport
 from noeira.tasks.reset import free_slot_addresses
-from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.envs.libero.models.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
 comptime DT = DType.float64
-comptime TASK_DIR = "noeira/tasks/tasks/"
-comptime FAMILY_DIR = "noeira/tasks/families/"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
+comptime FAMILY_DIR = "noeira/envs/libero/families/"
 comptime SUBSTEPS = 25
 """`control_freq=20` against the family's 2 ms timestep. robosuite's
 `Robot.control` runs the controller EVERY substep and gates only `set_goal` on

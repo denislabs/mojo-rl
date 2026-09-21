@@ -33,7 +33,7 @@ Run: pixi run mojo run -I . tests/tasks/test_family_compose_vs_mujoco.mojo
 
 from noeira.tasks.spec import load_family, SLOT_FREE
 from noeira.tasks.family import (
-    compose_family, park_pos, scene_path, SCENE_DIR, BASE_PREFIX,
+    compose_family, park_pos, scene_path, scene_dir, BASE_PREFIX,
 )
 from std.sys import argv
 from noeira.physics3d.parser.runtime_load import parse_model_runtime
@@ -78,7 +78,7 @@ def main() raises:
     # SCENE FILE's directory, so a composed scene dropped in /tmp looks for
     # `/tmp/noeira/envs/...`. This gate found exactly that on its first run.
     var out = scene_path(f)
-    var xml = compose_family(f, SCENE_DIR)
+    var xml = compose_family(f, scene_dir(f))
     var on_disk = String("")
     with open(out, "r") as fh:
         on_disk = fh.read()

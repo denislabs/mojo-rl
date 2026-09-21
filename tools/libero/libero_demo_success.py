@@ -5,7 +5,7 @@ that is not of my own making.
     pixi run libero-demo-success                     # dump, then run the Mojo leg
     pixi run libero-demo-success --suite libero_goal --demos 50
 
-`tests/tasks/test_libero_goal_eval.mojo` evaluates the ten goals on ELEVEN
+`tests/libero/test_libero_goal_eval.mojo` evaluates the ten goals on ELEVEN
 STATES I BUILT. That is the blind shape this tree keeps paying for
 (`_a_gate_that_shares_its_reference_implementation_is_blind`): I constructed
 each state to satisfy the predicate I had just written, so the two agree by
@@ -20,7 +20,7 @@ fire there, our goal is wrong — no interpretation needed.
 This half reads the HDF5 and writes one dump per task: for each demo, the
 final `states` row converted into OUR joint order BY NAME, and that demo's
 own fixture placement (LIBERO redraws it every episode; see the assessment's
-§6e). `examples/tasks/libero_demo_success.mojo` reads the dumps, drives our
+§6e). `examples/libero/libero_demo_success.mojo` reads the dumps, drives our
 engine to that state, runs collision, evaluates the bound goal, and prints a
 table. This file then has nothing left to check — the verdict is the Mojo
 leg's, so there is no second implementation of a predicate here to drift.
@@ -132,7 +132,7 @@ def main():
             fh.write(f"{a.suite}__{stem} {stem + '.dump'}\n")
     print(f"wrote {index}")
     print()
-    print("now:  pixi run mojo run -I . examples/tasks/libero_demo_success.mojo "
+    print("now:  pixi run mojo run -I . examples/libero/libero_demo_success.mojo "
           + index)
 
 

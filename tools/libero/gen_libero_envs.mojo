@@ -1,17 +1,17 @@
 """Every LIBERO family's batched model def and contact budget — GENERATED.
 
-    pixi run gen-libero-envs           # write noeira/tasks/libero_envs/*.mojo
+    pixi run gen-libero-envs           # write noeira/envs/libero/models/*.mojo
     pixi run gen-libero-envs --check   # CI: fail if one is stale
 
-Writes, from `noeira/tasks/libero/contact_budget.kv` and the `libero*.family`
+Writes, from `noeira/envs/libero/tables/contact_budget.kv` and the `libero*.family`
 files:
 
-    libero_envs/budgets.mojo          <FAMILY>_MAX_CONTACTS for all 23 families
-    libero_envs/<family>_xml.mojo     the model def, obs width, config and env —
+    models/budgets.mojo          <FAMILY>_MAX_CONTACTS for all 23 families
+    models/<family>_xml.mojo     the model def, obs width, config and env —
                                       for the 20 scene families
 
 `libero_goal`, `libero_object` and `libero_spatial` keep their hand-written
-`tasks/libero_<suite>_xml.mojo` (each carries a header about ITS scene), and
+`envs/libero/models/libero_<suite>_xml.mojo` (each carries a header about ITS scene), and
 import their budget from `budgets.mojo` like everyone else — one rule.
 
 ## ⚠⚠ THE BUDGET RULE: THE MEASURED PEAK + `GRASP_MARGIN`, UP TO A 16
@@ -54,9 +54,9 @@ from std.sys import argv
 
 from noeira.tasks.spec import load_family, SLOT_FREE
 
-comptime FAMILY_DIR = "noeira/tasks/families"
-comptime OUT_DIR = "noeira/tasks/libero_envs"
-comptime BUDGET_KV = "noeira/tasks/libero/contact_budget.kv"
+comptime FAMILY_DIR = "noeira/envs/libero/families"
+comptime OUT_DIR = "noeira/envs/libero/models"
+comptime BUDGET_KV = "noeira/envs/libero/tables/contact_budget.kv"
 comptime GRASP_MARGIN = 32
 comptime ROUND = 16
 
@@ -140,7 +140,7 @@ def render_budgets(rows: List[Measured]) -> String:
         "From `" + BUDGET_KV + "` (`pixi run libero-contact-budget`):\n"
         "the measured null-action peak + " + String(GRASP_MARGIN)
         + ", rounded up to a multiple of " + String(ROUND) + ".\n"
-        "`tools/tasks/gen_libero_envs.mojo` says why, and what it does not"
+        "`tools/libero/gen_libero_envs.mojo` says why, and what it does not"
         " prove.\n"
         '"""\n'
     )
@@ -163,7 +163,7 @@ def render_env(family: String, n_free: Int, b: Int, peak: Int) raises -> String:
         "CI checks it with: pixi run gen-libero-envs --check\n\n"
         "    families/<family>.family          the slot table\n"
         "    scenes/<family>.xml               composed from it\n"
-        "    libero_envs/<family>_dims.mojo    MuJoCo's counts (gen-dims)\n"
+        "    models/<family>_dims.mojo    MuJoCo's counts (gen-dims)\n"
         "    placement/<family>.mojo           the device reset's table\n"
         "    THIS FILE                         model def, config, env\n\n"
         "The config is `libero_osc_config.LiberoOscConfig` — OSC_POSE at 20 Hz,"
@@ -178,11 +178,11 @@ def render_env(family: String, n_free: Int, b: Int, peak: Int) raises -> String:
         "from noeira.physics3d.types import ConeType\n"
         "from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv\n"
         "from noeira.tasks.task_hooks import TASK_GOAL_WORDS\n"
-        "from noeira.tasks.libero_osc_config import LiberoOscConfig\n"
-        "from noeira.tasks.placement." + family + " import " + cm
+        "from noeira.envs.libero.osc_config import LiberoOscConfig\n"
+        "from noeira.envs.libero.placement." + family + " import " + cm
         + "Placement\n"
-        "from noeira.tasks.libero_envs.budgets import " + up + "_MAX_CONTACTS\n"
-        "from noeira.tasks.libero_envs." + family + "_dims import " + up
+        "from noeira.envs.libero.models.budgets import " + up + "_MAX_CONTACTS\n"
+        "from noeira.envs.libero.models." + family + "_dims import " + up
         + "_DIMS\n\n"
         "comptime _pm = " + up + "_DIMS\n\n"
         "comptime " + up + "_OBS_DIM: Int = (\n"
@@ -191,7 +191,7 @@ def render_env(family: String, n_free: Int, b: Int, peak: Int) raises -> String:
         '"""`task_hooks.write_task_obs`\'s layout: qpos, qvel, one active word'
         ' per\nfree slot, the goal words."""\n\n'
         "comptime " + cm + "Model = ModelDefFromXML[\n"
-        '    xml_path="noeira/tasks/scenes/' + family + '.xml",\n'
+        '    xml_path="noeira/envs/libero/scenes/' + family + '.xml",\n'
         "    nbody=_pm.NBODY,\n"
         "    njoint=_pm.NJOINT,\n"
         "    nq=_pm.NQ,\n"

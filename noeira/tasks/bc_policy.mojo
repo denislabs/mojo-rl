@@ -2,7 +2,7 @@
 
     from noeira.tasks.bc_policy import BcNet, BcNorm, bc_forward_host
 
-`examples/tasks/libero_bc_train.mojo` fits it; `examples/tasks/
+`examples/libero/libero_bc_train.mojo` fits it; `examples/tasks/
 libero_eval_batched.mojo` runs it. A network the trainer and the driver each
 spell for themselves is the shape `_a_rule_written_inline_twice_drifts` names:
 one side gains a layer, the checkpoint still LOADS by name and size for the

@@ -94,9 +94,9 @@ from noeira.physics3d.collision.ccd_workspace import (
 from noeira.physics3d.gpu.constants import (
     CONTACT_SIZE, METADATA_SIZE, META_IDX_NUM_CONTACTS,
 )
-from noeira.tasks.libero_state_remap import load_state_remap
-from noeira.tasks.libero_goal_xml import LiberoGoalModel
-from noeira.tasks.libero_goal_config import LiberoGoalOscConfig
+from noeira.envs.libero.state_remap import load_state_remap
+from noeira.envs.libero.models.libero_goal_xml import LiberoGoalModel
+from noeira.envs.libero.libero_goal_config import LiberoGoalOscConfig
 
 
 comptime DT = DType.float32
@@ -105,7 +105,7 @@ comptime LANES: Int = 256
 """The lane count — a compile-time constant, `sed`ed per build like
 `libero_demo_batched`'s."""
 comptime FAMILY = "libero_goal"
-comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
 comptime DEMO_DIR = "references/libero_demos/libero_goal"
 comptime N_TASKS = 10
 comptime DEMOS_PER_TASK = (LANES + N_TASKS - 1) // N_TASKS
@@ -254,7 +254,7 @@ def _load_poses(
                 raise Error(
                     "cannot open data/demo_" + String(di) + "/states in " + path
                     + " (" + String(e) + ") — `pixi run python"
-                    " tools/tasks/check_libero_demos.py`"
+                    " tools/libero/check_libero_demos.py`"
                 )
             var T = Int(ds.dims[0])
             var pi = ti * DEMOS_PER_TASK + k

@@ -26,7 +26,7 @@ them isolates one cause (`_a_third_column_makes_a_sim_to_sim_gate_decisive`):
              what our SCENE costs — assets, poses, composition — with the
              renderer held fixed.
   OURS-RT    our batched raytracer on our scene, printed by the Mojo leg
-             (`examples/tasks/libero_camera_gate.mojo`). OURS-MJ-vs-OURS-RT is
+             (`examples/libero/libero_camera_gate.mojo`). OURS-MJ-vs-OURS-RT is
              what our SHADING costs with everything else held fixed.
 
 This half writes the first three and a `.dump` the Mojo leg reads.
@@ -96,7 +96,7 @@ def visual_only():
 def libero_sites(m, d, opt):
     """LIBERO's runtime site visibility, applied to `m.site_rgba` for `d`.
 
-    The same rule as `noeira/tasks/libero_visual.mojo`: a `*burner` site is
+    The same rule as `noeira/envs/libero/visual.mojo`: a `*burner` site is
     visible when its sibling `*button` hinge is at 0.5 or more
     (`FlatStove.turn_on`), and every other site is hidden — robosuite hides the
     robot's at construction. Enables site group 0, where the burner lives."""
@@ -286,7 +286,7 @@ def main():
             fh.write(f"{a.suite}__{stem} {os.path.basename(dump)}\n")
     print()
     print(f"wrote {index}")
-    print("now:  pixi run mojo run -I . examples/tasks/libero_camera_gate.mojo "
+    print("now:  pixi run mojo run -I . examples/libero/libero_camera_gate.mojo "
           + index)
 
 

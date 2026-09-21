@@ -57,7 +57,7 @@ columns stay as recorded: `libero_demo_import.mojo`'s gate reads them and
 ## ⚠⚠ THE STORE'S ROW 0 IS THE TOP OF THE PICTURE — THE RECORDING'S IS THE BOTTOM
 
 LIBERO's `*_rgb` datasets are in OpenGL's row order (robosuite hands
-`mjr_readPixels`' buffer through unchanged; `tools/tasks/libero_camera_gate.py`
+`mjr_readPixels`' buffer through unchanged; `tools/libero/libero_camera_gate.py`
 measured it at 26 dB). Their policies train on the picture upside down and
 never notice, because a network has no "up". OURS DO: the same policy is
 evaluated on frames the batched tracer renders (`raytrace/batch.mojo`, row 0
@@ -74,8 +74,8 @@ An `actions`-and-images store is a dataset any BC codebase could build. The
 column only we can produce is `state`: their `(time, qpos, qvel)` remapped by
 joint NAME into our composed scene's addresses, so a row can be LOADED into our
 engine — for a replay, a re-render through our cameras, or a reset. The remap
-comes from `tasks/libero_state_remap`, i.e. from the checked-in `.kv` that
-`tools/tasks/libero_init_table.py` wrote after verifying it against MuJoCo.
+comes from `envs/libero/state_remap`, i.e. from the checked-in `.kv` that
+`tools/libero/libero_init_table.py` wrote after verifying it against MuJoCo.
 
 ⚠ THE TIME WORD IS DROPPED, so `state` is `nq + nv` wide and not `1 + nq + nv`.
 `StateRemap.convert` says why; an init TABLE keeps the word because LIBERO's own
@@ -112,7 +112,7 @@ from std.os.path import dirname, exists
 from noeira.io.hdf5.reader import H5File
 from noeira.data.column import ColumnSpec
 from noeira.data.store import TrajectoryStoreWriter
-from noeira.tasks.libero_state_remap import load_state_remap, StateRemap
+from noeira.envs.libero.state_remap import load_state_remap, StateRemap
 
 
 comptime CAM_H: Int = 128
@@ -153,7 +153,7 @@ struct DemoImportReport(Movable & Deinitable):
     ⚠ NOT DERIVABLE FROM THE STORE. Episodes are laid out task by task, so a
     consumer that wants "episode `k` of task `t`" needs the per-task counts —
     and with `max_demos` they are not all 50. The gate in
-    `examples/tasks/libero_demo_import.mojo` walks a dump of FIFTY demos against
+    `examples/libero/libero_demo_import.mojo` walks a dump of FIFTY demos against
     a store that may hold two, and without this it reads episode 5 of the store
     (which belongs to task 2) as demo 5 of task 0."""
 
@@ -243,7 +243,7 @@ def import_libero_demos(
         env_id=String("libero_demos:") + family,
         seed=0,
         source_commit=String("LIBERO-v1 demonstrations, states remapped by ")
-            + "noeira/tasks/libero/state_remap_" + family + ".kv",
+            + "noeira/envs/libero/tables/state_remap_" + family + ".kv",
     )
     for i in range(len(task_names)):
         w.add_task(i, String(task_text[i]))

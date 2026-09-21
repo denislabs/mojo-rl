@@ -12,7 +12,7 @@
 # state, and `build/` is gitignored (.gitignore:11) — so `build/diag/lr3_all.txt`
 # does not survive a clone and must be REGENERATED here (step 3). The LIBERO
 # meshes and textures are gitignored too (.gitignore:317, 364 of the 466 files
-# under noeira/tasks/libero); only the XML is tracked, so the asset pack has to
+# under noeira/envs/libero); only the XML is tracked, so the asset pack has to
 # be pulled (step 2) or the model will not parse.
 #
 # ⚠ THE TWO `sed`s ARE BOTH LOAD-BEARING and each is verified below:
@@ -59,15 +59,15 @@ command -v pixi >/dev/null || {
 pixi install
 
 say "2. the LIBERO asset pack (meshes + textures, gitignored)"
-if [ -d noeira/tasks/libero/assets/stable_hope_objects ]; then
+if [ -d noeira/envs/libero/assets/stable_hope_objects ]; then
     echo "already materialised, skipping"
 else
     # `assets.kv` carries the URL and the sha256 that is the pack's identity.
     pixi run assets-pull libero
 fi
-[ -d noeira/tasks/libero/assets/stable_hope_objects ] || {
+[ -d noeira/envs/libero/assets/stable_hope_objects ] || {
     echo "the asset pack did not materialise — check the network and" \
-         "noeira/tasks/libero/assets.kv" >&2; exit 1; }
+         "noeira/envs/libero/assets.kv" >&2; exit 1; }
 
 say "3. regenerate the dumped state ($DUMP)"
 if [ -s "$DUMP" ]; then
@@ -85,7 +85,7 @@ else
     trap 'rm -rf "$tmpd"' EXIT
     tmp="$tmpd/fam_$FAMILY.mojo"
     sed "s/^comptime FAMILY = .*/comptime FAMILY = \"$FAMILY\"/" \
-        examples/tasks/libero_family_batched.mojo > "$tmp"
+        examples/libero/libero_family_batched.mojo > "$tmp"
     grep -q "comptime FAMILY = \"$FAMILY\"" "$tmp" \
         || { echo "the FAMILY sed did not take" >&2; exit 1; }
     pixi run -e nvidia mojo run -I . "$tmp" \

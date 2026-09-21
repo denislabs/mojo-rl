@@ -1,6 +1,6 @@
 """THE BATCHED ENV COMPILES WITH OSC_POSE IN IT — L6's wiring, elaborated.
 
-    pixi run mojo run -I . tests/tasks/test_libero_osc_env.mojo
+    pixi run mojo run -I . tests/libero/test_libero_osc_env.mojo
 
 ## ⚠⚠ WHAT THIS CAN AND CANNOT CLAIM ON THIS MACHINE
 
@@ -19,9 +19,9 @@ every comptime branch the controller adds — the `OSC_LANES` fold, the
 type-checked at the real dimensions.
 
 ⚠ WHAT IS ACTUALLY GATED, AND WHERE. The controller's numbers are
-`tests/tasks/test_osc_control_batched.mojo` (eight lanes, three control steps,
+`tests/libero/test_osc_control_batched.mojo` (eight lanes, three control steps,
 against `OscPose`, 1.7e-14 of the torque scale) and
-`tests/tasks/test_osc_pose_gpu.mojo` (the kernel on device at float32). The
+`tests/libero/test_osc_pose_gpu.mojo` (the kernel on device at float32). The
 stepping leg of THIS file — that the env produces those numbers once wired
 through `apply_actions_kernel_gpu` and the integrator — is owed on NVIDIA and
 is listed as owed in the assessment. It is not claimed here.
@@ -47,15 +47,15 @@ from noeira.physics3d.dynamics.osc_pose_gpu import (
 )
 from noeira.tasks.spec import load_family
 from noeira.tasks.family import scene_path
-from noeira.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
-from noeira.tasks.libero_goal_xml import LiberoGoalModel
-from noeira.tasks.libero_goal_config import (
+from noeira.envs.libero.models.libero_goal_dims import LIBERO_GOAL_DIMS
+from noeira.envs.libero.models.libero_goal_xml import LiberoGoalModel
+from noeira.envs.libero.libero_goal_config import (
     LiberoGoalOscConfig, LiberoGoalOscEnv, LIBERO_GOAL_FRAME_SKIP,
 )
 
 
-comptime FAMILY = "noeira/tasks/families/libero_goal.family"
-comptime PACK = "noeira/tasks/libero/assets"
+comptime FAMILY = "noeira/envs/libero/families/libero_goal.family"
+comptime PACK = "noeira/envs/libero/assets"
 comptime N_ENVS = 4
 
 

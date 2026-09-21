@@ -2,11 +2,11 @@
   <compiler angle="radian" inertiagrouprange="0 0" autolimits="true"/>
   <option timestep="0.002" impratio="20" cone="elliptic" density="1.2" viscosity="0.00002" />
   <asset>
-    <model name="panda_robosuite" file="../../envs/robots/assets/panda_robosuite.xml"/>
-    <model name="libero_kitchen_tabletop_manipulation_arena" file="../libero/scenes/libero_kitchen_tabletop_manipulation_arena.xml"/>
-    <model name="microwave" file="../libero/objects/microwave.xml"/>
-    <model name="white_bowl_free" file="../libero/objects/white_bowl_free.xml"/>
-    <model name="plate_free" file="../libero/objects/plate_free.xml"/>
+    <model name="panda_robosuite" file="../../robots/assets/panda_robosuite.xml"/>
+    <model name="libero_kitchen_tabletop_manipulation_arena" file="../arenas/libero_kitchen_tabletop_manipulation_arena.xml"/>
+    <model name="microwave" file="../objects/microwave.xml"/>
+    <model name="white_bowl_free" file="../objects/white_bowl_free.xml"/>
+    <model name="plate_free" file="../objects/plate_free.xml"/>
   </asset>
   <worldbody>
     <frame pos="-0.66 0.0 0.912" quat="1.0 0.0 0.0 0.0">

@@ -1,7 +1,7 @@
 """LIBERO-Goal's TEN goals, evaluated on the composed scene — L3's gate.
 
-    pixi run mojo run -I . tests/tasks/test_libero_goal_eval.mojo              # host + kernel loop (f64)
-    pixi run -e apple mojo run -I . tests/tasks/test_libero_goal_eval.mojo     # + the device leg (f32)
+    pixi run mojo run -I . tests/libero/test_libero_goal_eval.mojo              # host + kernel loop (f64)
+    pixi run -e apple mojo run -I . tests/libero/test_libero_goal_eval.mojo     # + the device leg (f32)
 
 ## WHAT THIS ASSERTS
 
@@ -72,13 +72,13 @@ from noeira.tasks.tape import encode_goal, eval_tape, TAPE_WORDS
 from noeira.tasks.gpu_eval import (
     eval_tape_gpu, tape_distance_gpu, region_table_words, require_gpu_regions,
 )
-from noeira.tasks.libero_goal_dims import LIBERO_GOAL_DIMS
-from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.envs.libero.models.libero_goal_dims import LIBERO_GOAL_DIMS
+from noeira.envs.libero.models.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
-comptime FAMILY = "noeira/tasks/families/libero_goal.family"
-comptime TASK_DIR = "noeira/tasks/tasks/libero_goal__"
-comptime PACK = "noeira/tasks/libero/assets"
+comptime FAMILY = "noeira/envs/libero/families/libero_goal.family"
+comptime TASK_DIR = "noeira/envs/libero/tasks/libero_goal__"
+comptime PACK = "noeira/envs/libero/assets"
 
 comptime DT = DType.float64
 comptime F32 = DType.float32

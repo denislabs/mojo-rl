@@ -1,6 +1,6 @@
 """The tracer's appearance path, on cases whose answer is arithmetic.
 
-`examples/tasks/libero_camera_gate.mojo` is L5's real gate and it needs ~6 GB
+`examples/libero/libero_camera_gate.mojo` is L5's real gate and it needs ~6 GB
 of demonstrations. This file needs nothing: it drives `sample_texture`,
 `geom_uv` and `shade_lights` on hand-built tables whose answer is a closed
 form, so a clone with no assets still catches a broken sampler.

@@ -2,12 +2,12 @@
   <compiler angle="radian" inertiagrouprange="0 0" autolimits="true"/>
   <option timestep="0.002" impratio="20" cone="elliptic" density="1.2" viscosity="0.00002" />
   <asset>
-    <model name="panda_robosuite_nomount" file="../../envs/robots/assets/panda_robosuite_nomount.xml"/>
-    <model name="libero_living_room_tabletop_manipulation_arena" file="../libero/scenes/libero_living_room_tabletop_manipulation_arena.xml"/>
-    <model name="akita_black_bowl_free" file="../libero/objects/akita_black_bowl_free.xml"/>
-    <model name="new_salad_dressing_free" file="../libero/objects/new_salad_dressing_free.xml"/>
-    <model name="chocolate_pudding_free" file="../libero/objects/chocolate_pudding_free.xml"/>
-    <model name="wooden_tray_free" file="../libero/objects/wooden_tray_free.xml"/>
+    <model name="panda_robosuite_nomount" file="../../robots/assets/panda_robosuite_nomount.xml"/>
+    <model name="libero_living_room_tabletop_manipulation_arena" file="../arenas/libero_living_room_tabletop_manipulation_arena.xml"/>
+    <model name="akita_black_bowl_free" file="../objects/akita_black_bowl_free.xml"/>
+    <model name="new_salad_dressing_free" file="../objects/new_salad_dressing_free.xml"/>
+    <model name="chocolate_pudding_free" file="../objects/chocolate_pudding_free.xml"/>
+    <model name="wooden_tray_free" file="../objects/wooden_tray_free.xml"/>
   </asset>
   <worldbody>
     <frame pos="-0.51 0.0 0.42" quat="1.0 0.0 0.0 0.0">

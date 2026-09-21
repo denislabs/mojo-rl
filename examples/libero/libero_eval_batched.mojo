@@ -1,10 +1,10 @@
 """LIBERO'S OWN EVAL PROTOCOL, ON THE BATCH — the benchmark number's driver.
 
-    pixi run -e nvidia mojo run -I . examples/tasks/libero_eval_batched.mojo
-    pixi run -e nvidia mojo run -I . examples/tasks/libero_eval_batched.mojo --inits 20 --steps 600
-    pixi run -e apple  mojo run -I . examples/tasks/libero_eval_batched.mojo --steps 40   # a small family
+    pixi run -e nvidia mojo run -I . examples/libero/libero_eval_batched.mojo
+    pixi run -e nvidia mojo run -I . examples/libero/libero_eval_batched.mojo --inits 20 --steps 600
+    pixi run -e apple  mojo run -I . examples/libero/libero_eval_batched.mojo --steps 40   # a small family
 
-`examples/tasks/libero_eval.mojo` runs `lifelong/metric.py`'s loop one env at a
+`examples/libero/libero_eval.mojo` runs `lifelong/metric.py`'s loop one env at a
 time on the CPU. This is the same loop on the batched GPU env, lane per
 episode:
 
@@ -224,8 +224,8 @@ from noeira.physics3d.raytrace import BatchedCameraRenderer, RGB_CHANNELS
 from noeira.physics3d.fields.dims import DimsLike
 from max.gpu.host import HostBuffer
 from noeira.physics3d.raytrace.visual import build_visual_model
-from noeira.tasks.libero_visual import libero_site_conditions
-from noeira.tasks.libero_act import (
+from noeira.envs.libero.visual import libero_site_conditions
+from noeira.envs.libero.act import (
     LiberoActTrainer, LIBERO_ACT_QPOS, LIBERO_ACT_PROPRIO, LIBERO_ACT_ADIM,
     LIBERO_ACT_K,
     LIBERO_ACT_IMG_H, LIBERO_ACT_IMG_W, LIBERO_ACT_IMG_ELEMS, LIBERO_ACT_N_CAM,
@@ -237,24 +237,24 @@ from noeira.deep_agents.act.inference import (
 from noeira.deep_agents.act.config import ACT_TEMPORAL_ENSEMBLE_M
 from noeira.data.store import TrajectoryStore
 from noeira.render.video_recorder import VideoRecorder
-from noeira.tasks.libero_act import LIBERO_ACT_STORE_RENDERED
+from noeira.envs.libero.act import LIBERO_ACT_STORE_RENDERED
 from std.math import log10, sqrt
 from std.memory.alloc import unsafe_alloc
 from noeira.tasks.placement.table import PlacementTable
 from noeira.tasks.placement.check import (
     joint_init_words, require_device_placement,
 )
-from noeira.tasks.libero_osc_config import LiberoOscConfig, LIBERO_CONTROL_FREQ
-from noeira.tasks.placement.libero_goal import LiberoGoalPlacement
-from noeira.tasks.libero_goal_xml import LiberoGoalModel
-from noeira.tasks.placement.libero_object import LiberoObjectPlacement
-from noeira.tasks.libero_object_xml import LiberoObjectModel
-from noeira.tasks.placement.libero_spatial import LiberoSpatialPlacement
-from noeira.tasks.libero_spatial_xml import LiberoSpatialModel
-from noeira.tasks.placement.libero_kitchen_scene3 import LiberoKitchenScene3Placement
-from noeira.tasks.libero_envs.libero_kitchen_scene3_xml import LiberoKitchenScene3Model
-from noeira.tasks.placement.libero_kitchen_scene5 import LiberoKitchenScene5Placement
-from noeira.tasks.libero_envs.libero_kitchen_scene5_xml import LiberoKitchenScene5Model
+from noeira.envs.libero.osc_config import LiberoOscConfig, LIBERO_CONTROL_FREQ
+from noeira.envs.libero.placement.libero_goal import LiberoGoalPlacement
+from noeira.envs.libero.models.libero_goal_xml import LiberoGoalModel
+from noeira.envs.libero.placement.libero_object import LiberoObjectPlacement
+from noeira.envs.libero.models.libero_object_xml import LiberoObjectModel
+from noeira.envs.libero.placement.libero_spatial import LiberoSpatialPlacement
+from noeira.envs.libero.models.libero_spatial_xml import LiberoSpatialModel
+from noeira.envs.libero.placement.libero_kitchen_scene3 import LiberoKitchenScene3Placement
+from noeira.envs.libero.models.libero_kitchen_scene3_xml import LiberoKitchenScene3Model
+from noeira.envs.libero.placement.libero_kitchen_scene5 import LiberoKitchenScene5Placement
+from noeira.envs.libero.models.libero_kitchen_scene5_xml import LiberoKitchenScene5Model
 
 
 comptime H = DType.float64
@@ -267,8 +267,8 @@ instantiation per model and this driver is run on one family at a time;
 in `main` when a family gains an init table."""
 comptime LANES = 20
 comptime N_ENVS = LANES
-comptime FAMILY_DIR = "noeira/tasks/families/"
-comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime FAMILY_DIR = "noeira/envs/libero/families/"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
 comptime SETTLE_STEPS = 5
 """`metric.py`: `for _ in range(5): obs, _, _, _ = env.step(dummy)`."""
 comptime LIBERO_MAX_STEPS = 600

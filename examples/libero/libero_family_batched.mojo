@@ -1,12 +1,12 @@
 """ONE LIBERO FAMILY ON THE BATCH — its device reset, its hooks, its physics.
 
-    pixi run mojo run -I . examples/tasks/libero_family_batched.mojo
-    pixi run mojo run -I . examples/tasks/libero_family_batched.mojo --steps 40 --cpu-lanes 4
+    pixi run mojo run -I . examples/libero/libero_family_batched.mojo
+    pixi run mojo run -I . examples/libero/libero_family_batched.mojo --steps 40 --cpu-lanes 4
 
     # every family — one per build (see `FAMILY`)
-    for fam in $(ls noeira/tasks/families | sed -n 's/^\\(libero_.*\\)\\.family$/\\1/p'); do
+    for fam in $(ls noeira/envs/libero/families | sed -n 's/^\\(libero_.*\\)\\.family$/\\1/p'); do
         sed "s/^comptime FAMILY = .*/comptime FAMILY = \\"$fam\\"/" \\
-            examples/tasks/libero_family_batched.mojo > /tmp/libero_family_$fam.mojo
+            examples/libero/libero_family_batched.mojo > /tmp/libero_family_$fam.mojo
         pixi run mojo run -I . /tmp/libero_family_$fam.mojo
     done
 
@@ -113,53 +113,53 @@ from noeira.tasks.placement.table import PlacementTable
 from noeira.tasks.placement.check import (
     joint_init_words, require_device_placement,
 )
-from noeira.tasks.libero_osc_config import LiberoOscConfig
-from noeira.tasks.placement.libero_goal import LiberoGoalPlacement
-from noeira.tasks.libero_goal_xml import LiberoGoalModel
-from noeira.tasks.placement.libero_object import LiberoObjectPlacement
-from noeira.tasks.libero_object_xml import LiberoObjectModel
-from noeira.tasks.placement.libero_spatial import LiberoSpatialPlacement
-from noeira.tasks.libero_spatial_xml import LiberoSpatialModel
-from noeira.tasks.placement.libero_kitchen_scene1 import LiberoKitchenScene1Placement
-from noeira.tasks.libero_envs.libero_kitchen_scene1_xml import LiberoKitchenScene1Model
-from noeira.tasks.placement.libero_kitchen_scene2 import LiberoKitchenScene2Placement
-from noeira.tasks.libero_envs.libero_kitchen_scene2_xml import LiberoKitchenScene2Model
-from noeira.tasks.placement.libero_kitchen_scene3 import LiberoKitchenScene3Placement
-from noeira.tasks.libero_envs.libero_kitchen_scene3_xml import LiberoKitchenScene3Model
-from noeira.tasks.placement.libero_kitchen_scene4 import LiberoKitchenScene4Placement
-from noeira.tasks.libero_envs.libero_kitchen_scene4_xml import LiberoKitchenScene4Model
-from noeira.tasks.placement.libero_kitchen_scene5 import LiberoKitchenScene5Placement
-from noeira.tasks.libero_envs.libero_kitchen_scene5_xml import LiberoKitchenScene5Model
-from noeira.tasks.placement.libero_kitchen_scene6 import LiberoKitchenScene6Placement
-from noeira.tasks.libero_envs.libero_kitchen_scene6_xml import LiberoKitchenScene6Model
-from noeira.tasks.placement.libero_kitchen_scene7 import LiberoKitchenScene7Placement
-from noeira.tasks.libero_envs.libero_kitchen_scene7_xml import LiberoKitchenScene7Model
-from noeira.tasks.placement.libero_kitchen_scene8 import LiberoKitchenScene8Placement
-from noeira.tasks.libero_envs.libero_kitchen_scene8_xml import LiberoKitchenScene8Model
-from noeira.tasks.placement.libero_kitchen_scene9 import LiberoKitchenScene9Placement
-from noeira.tasks.libero_envs.libero_kitchen_scene9_xml import LiberoKitchenScene9Model
-from noeira.tasks.placement.libero_kitchen_scene10 import LiberoKitchenScene10Placement
-from noeira.tasks.libero_envs.libero_kitchen_scene10_xml import LiberoKitchenScene10Model
-from noeira.tasks.placement.libero_living_room_scene1 import LiberoLivingRoomScene1Placement
-from noeira.tasks.libero_envs.libero_living_room_scene1_xml import LiberoLivingRoomScene1Model
-from noeira.tasks.placement.libero_living_room_scene2 import LiberoLivingRoomScene2Placement
-from noeira.tasks.libero_envs.libero_living_room_scene2_xml import LiberoLivingRoomScene2Model
-from noeira.tasks.placement.libero_living_room_scene3 import LiberoLivingRoomScene3Placement
-from noeira.tasks.libero_envs.libero_living_room_scene3_xml import LiberoLivingRoomScene3Model
-from noeira.tasks.placement.libero_living_room_scene4 import LiberoLivingRoomScene4Placement
-from noeira.tasks.libero_envs.libero_living_room_scene4_xml import LiberoLivingRoomScene4Model
-from noeira.tasks.placement.libero_living_room_scene5 import LiberoLivingRoomScene5Placement
-from noeira.tasks.libero_envs.libero_living_room_scene5_xml import LiberoLivingRoomScene5Model
-from noeira.tasks.placement.libero_living_room_scene6 import LiberoLivingRoomScene6Placement
-from noeira.tasks.libero_envs.libero_living_room_scene6_xml import LiberoLivingRoomScene6Model
-from noeira.tasks.placement.libero_study_scene1 import LiberoStudyScene1Placement
-from noeira.tasks.libero_envs.libero_study_scene1_xml import LiberoStudyScene1Model
-from noeira.tasks.placement.libero_study_scene2 import LiberoStudyScene2Placement
-from noeira.tasks.libero_envs.libero_study_scene2_xml import LiberoStudyScene2Model
-from noeira.tasks.placement.libero_study_scene3 import LiberoStudyScene3Placement
-from noeira.tasks.libero_envs.libero_study_scene3_xml import LiberoStudyScene3Model
-from noeira.tasks.placement.libero_study_scene4 import LiberoStudyScene4Placement
-from noeira.tasks.libero_envs.libero_study_scene4_xml import LiberoStudyScene4Model
+from noeira.envs.libero.osc_config import LiberoOscConfig
+from noeira.envs.libero.placement.libero_goal import LiberoGoalPlacement
+from noeira.envs.libero.models.libero_goal_xml import LiberoGoalModel
+from noeira.envs.libero.placement.libero_object import LiberoObjectPlacement
+from noeira.envs.libero.models.libero_object_xml import LiberoObjectModel
+from noeira.envs.libero.placement.libero_spatial import LiberoSpatialPlacement
+from noeira.envs.libero.models.libero_spatial_xml import LiberoSpatialModel
+from noeira.envs.libero.placement.libero_kitchen_scene1 import LiberoKitchenScene1Placement
+from noeira.envs.libero.models.libero_kitchen_scene1_xml import LiberoKitchenScene1Model
+from noeira.envs.libero.placement.libero_kitchen_scene2 import LiberoKitchenScene2Placement
+from noeira.envs.libero.models.libero_kitchen_scene2_xml import LiberoKitchenScene2Model
+from noeira.envs.libero.placement.libero_kitchen_scene3 import LiberoKitchenScene3Placement
+from noeira.envs.libero.models.libero_kitchen_scene3_xml import LiberoKitchenScene3Model
+from noeira.envs.libero.placement.libero_kitchen_scene4 import LiberoKitchenScene4Placement
+from noeira.envs.libero.models.libero_kitchen_scene4_xml import LiberoKitchenScene4Model
+from noeira.envs.libero.placement.libero_kitchen_scene5 import LiberoKitchenScene5Placement
+from noeira.envs.libero.models.libero_kitchen_scene5_xml import LiberoKitchenScene5Model
+from noeira.envs.libero.placement.libero_kitchen_scene6 import LiberoKitchenScene6Placement
+from noeira.envs.libero.models.libero_kitchen_scene6_xml import LiberoKitchenScene6Model
+from noeira.envs.libero.placement.libero_kitchen_scene7 import LiberoKitchenScene7Placement
+from noeira.envs.libero.models.libero_kitchen_scene7_xml import LiberoKitchenScene7Model
+from noeira.envs.libero.placement.libero_kitchen_scene8 import LiberoKitchenScene8Placement
+from noeira.envs.libero.models.libero_kitchen_scene8_xml import LiberoKitchenScene8Model
+from noeira.envs.libero.placement.libero_kitchen_scene9 import LiberoKitchenScene9Placement
+from noeira.envs.libero.models.libero_kitchen_scene9_xml import LiberoKitchenScene9Model
+from noeira.envs.libero.placement.libero_kitchen_scene10 import LiberoKitchenScene10Placement
+from noeira.envs.libero.models.libero_kitchen_scene10_xml import LiberoKitchenScene10Model
+from noeira.envs.libero.placement.libero_living_room_scene1 import LiberoLivingRoomScene1Placement
+from noeira.envs.libero.models.libero_living_room_scene1_xml import LiberoLivingRoomScene1Model
+from noeira.envs.libero.placement.libero_living_room_scene2 import LiberoLivingRoomScene2Placement
+from noeira.envs.libero.models.libero_living_room_scene2_xml import LiberoLivingRoomScene2Model
+from noeira.envs.libero.placement.libero_living_room_scene3 import LiberoLivingRoomScene3Placement
+from noeira.envs.libero.models.libero_living_room_scene3_xml import LiberoLivingRoomScene3Model
+from noeira.envs.libero.placement.libero_living_room_scene4 import LiberoLivingRoomScene4Placement
+from noeira.envs.libero.models.libero_living_room_scene4_xml import LiberoLivingRoomScene4Model
+from noeira.envs.libero.placement.libero_living_room_scene5 import LiberoLivingRoomScene5Placement
+from noeira.envs.libero.models.libero_living_room_scene5_xml import LiberoLivingRoomScene5Model
+from noeira.envs.libero.placement.libero_living_room_scene6 import LiberoLivingRoomScene6Placement
+from noeira.envs.libero.models.libero_living_room_scene6_xml import LiberoLivingRoomScene6Model
+from noeira.envs.libero.placement.libero_study_scene1 import LiberoStudyScene1Placement
+from noeira.envs.libero.models.libero_study_scene1_xml import LiberoStudyScene1Model
+from noeira.envs.libero.placement.libero_study_scene2 import LiberoStudyScene2Placement
+from noeira.envs.libero.models.libero_study_scene2_xml import LiberoStudyScene2Model
+from noeira.envs.libero.placement.libero_study_scene3 import LiberoStudyScene3Placement
+from noeira.envs.libero.models.libero_study_scene3_xml import LiberoStudyScene3Model
+from noeira.envs.libero.placement.libero_study_scene4 import LiberoStudyScene4Placement
+from noeira.envs.libero.models.libero_study_scene4_xml import LiberoStudyScene4Model
 
 
 comptime H = DType.float64
@@ -196,8 +196,8 @@ comptime FAMILY = "libero_kitchen_scene3"
 """The family this build runs. ⚠ `sed` it — see the header."""
 comptime LANES = 16
 comptime SEED = 11
-comptime FAMILY_DIR = "noeira/tasks/families/"
-comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime FAMILY_DIR = "noeira/envs/libero/families/"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
 comptime SUBSTEPS = 25
 comptime WARMUP_STEPS = 3
 comptime RESET_TOL: Float64 = 2.0e-5
@@ -263,7 +263,7 @@ nothing (`prec_worst` at rounding), the ratio is meaningless and the absolute
 decoration. Tighten the bound below the observed ratio and confirm it fails:
 
     sed 's/^comptime IMPL_OVER_PREC_MAX: Float64 = 10.0$/comptime IMPL_OVER_PREC_MAX: Float64 = 1.0/' \\
-        examples/tasks/libero_family_batched.mojo > /tmp/fam_ctrl.mojo
+        examples/libero/libero_family_batched.mojo > /tmp/fam_ctrl.mojo
     # then sed FAMILY as usual and run /tmp/fam_ctrl.mojo
 
 It must print "the device is worse than float32 itself on lane N". That control
@@ -1130,7 +1130,7 @@ def run[T: PlacementTable, M: ModelDefLike](
                     # say whether the point count differs AT THAT POSE (a
                     # narrow-phase difference) or only because the two legs
                     # have drifted apart by then (downstream of an earlier
-                    # one). `tools/tasks/libero_contact_pairs.py` reads it.
+                    # one). `tools/libero/libero_contact_pairs.py` reads it.
                     if dump_state != "":
                         var line = String("QPOS lane ") + String(e) + " step "
                         line += String(step)

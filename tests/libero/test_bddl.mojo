@@ -8,7 +8,7 @@ there would test nothing on a fresh clone; and a fixture I WROTE would gate
 the parser against my own idea of the format, which is the shape
 `feedback_a_gate_that_shares_its_reference_implementation_is_blind` names.
 
-`examples/tasks/libero_survey.mojo` is the other half: all 130 real files when
+`examples/libero/libero_survey.mojo` is the other half: all 130 real files when
 the tree is present, skipping loudly when it is not.
 
 ## WHY THIS PARTICULAR FILE
@@ -25,11 +25,11 @@ It carries every construct that broke the reader while it was being written:
   predicate our language has no equivalent for.
 * `:yaw_rotation` blocks, which are parsed and then deliberately unused.
 
-Run: pixi run mojo run -I . tests/tasks/test_bddl.mojo
+Run: pixi run mojo run -I . tests/libero/test_bddl.mojo
 """
 
-from noeira.tasks.bddl import parse_bddl, tokenize_bddl
-from noeira.tasks.libero_import import (
+from noeira.envs.libero.bddl import parse_bddl, tokenize_bddl
+from noeira.envs.libero.importer import (
     classify_goal, translate_family, translate_task, family_todo_count,
     GAP_NONE, GAP_ARTICULATION, GAP_FIXTURE_REGION, GAP_OBJECT_TARGET,
     GAP_TAPE_TERMS,

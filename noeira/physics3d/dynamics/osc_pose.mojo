@@ -14,7 +14,7 @@ This struct owns four one-lane `TensorImpl`s and calls `osc_reset_gpu`,
 Every number the controller computes is computed by those functions, at
 `DType.float64`, from this file exactly as from a kernel — the pattern
 `tests/tasks/test_tape_gpu_parity.mojo` uses for the goal tape, and the
-reason the demo replay gate (`tools/tasks/libero_demo_replay.py`, 1.5e-5 m
+reason the demo replay gate (`tools/libero/libero_demo_replay.py`, 1.5e-5 m
 against MuJoCo over 80 policy steps) is a gate on the DEVICE code too.
 
 An earlier version of this file spelled the whole law a second time over

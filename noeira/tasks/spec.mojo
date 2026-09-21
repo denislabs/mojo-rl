@@ -249,7 +249,7 @@ _manipulation`'s `floor` and `libero_tabletop_manipulation`'s `table` to it.
 every one of them exactly while the rule without it misses every one by this
 centimetre. On the FLOOR family the cost was not cosmetic: the props started
 2.5 cm inside the ground plane, 14 to 96 contacts per reset
-(`tests/tasks/test_libero_object.mojo`).
+(`tests/libero/test_libero_object.mojo`).
 
 ⚠ NUMERICALLY EQUAL TO `STACK_Z_OFFSET` AND SEPARATELY SOURCED. Two different
 sampler classes in LIBERO declare 0.01 in two different signatures; folding

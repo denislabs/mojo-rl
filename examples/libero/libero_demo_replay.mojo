@@ -1,8 +1,8 @@
 """Replay a LIBERO demo's actions through OUR Panda + OUR OSC_POSE — L4's leg.
 
-    pixi run mojo run -I . examples/tasks/libero_demo_replay.mojo <dump.txt> <out.txt>
+    pixi run mojo run -I . examples/libero/libero_demo_replay.mojo <dump.txt> <out.txt>
 
-`tools/tasks/libero_demo_replay.py` writes `<dump.txt>` from one demo of a
+`tools/libero/libero_demo_replay.py` writes `<dump.txt>` from one demo of a
 LIBERO HDF5: the initial `qpos`/`qvel` converted into OUR joint order by
 NAME (their order is robot, gripper, objects, fixtures; ours is robot,
 gripper, then family slot order) and the `(T, 7)` actions. This runs them
@@ -32,11 +32,11 @@ from noeira.physics3d.dynamics.osc_pose import (
     OscPose, OscPoseConfig, ARM_DOF,
 )
 from noeira.physics3d.studio.stepping import StudioIntegEll
-from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.envs.libero.models.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
 comptime DT = DType.float64
-comptime SCENE = "noeira/tasks/scenes/libero_goal.xml"
+comptime SCENE = "noeira/envs/libero/scenes/libero_goal.xml"
 comptime SUBSTEPS = 25
 comptime ROBOT = "robot_"
 

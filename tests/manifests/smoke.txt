@@ -70,43 +70,43 @@ tests/tasks/test_so101_tower_cameras.mojo
 # The category table (38 corpus categories, 5 problem classes, the four
 # articulation directions QUOTED from LIBERO's Python), the `slot=` yaw
 # extension, and `resolve_family` against an inline fixture. No assets.
-tests/tasks/test_libero_categories.mojo
+tests/libero/test_libero_categories.mojo
 
-# ── noeira/tasks: libero_goal composes and our parser carries every slot (L2)
+# ── noeira/envs/libero: libero_goal composes and our parser carries every slot (L2)
 # SKIPS LOUDLY without the pulled pack (`pixi run assets-pull libero`). The
 # oracle half is `tools/tasks/check_family.py` on the composed scene.
-tests/tasks/test_libero_goal_compose.mojo
+tests/libero/test_libero_goal_compose.mojo
 # L3's gate: the ten libero_goal tasks bind with the L3 language (Joint,
 # On(obj, obj), box regions with a contact slot), three readers agree on
 # eleven simulated states, every goal shape flips, and — with an
 # accelerator — ten lanes in a kernel agree with the host at float32.
 # Skips (loudly) without the pack.
-tests/tasks/test_libero_goal_eval.mojo
+tests/libero/test_libero_goal_eval.mojo
 # L4's unit gate: OSC_POSE (robosuite 1.4.0, transcribed) on the composed
 # libero_goal scene — algebra, gripper ramp, hold (2.5e-12 m over 1 s) and
-# track. The decisive gate is `tools/tasks/libero_demo_replay.py` on a
+# track. The decisive gate is `tools/libero/libero_demo_replay.py` on a
 # recorded demo (needs the 426 MB HDF5; see its header).
-tests/tasks/test_osc_pose.mojo
+tests/libero/test_osc_pose.mojo
 # L4b: the SAME controller over eight lanes — bit-exact against one lane at
 # a time at float64 (the lane-indexing gate), and with an accelerator the
 # same eight inside a Metal/CUDA kernel at float32. The kernel keeps every
 # matrix in a global buffer; compiling it is half of what this proves.
-tests/tasks/test_osc_pose_gpu.mojo
-tests/tasks/test_osc_control_batched.mojo
-tests/tasks/test_libero_osc_env.mojo
-tests/tasks/test_libero_object.mojo
-tests/tasks/test_libero_scenes.mojo
-tests/tasks/test_libero_placement.mojo
+tests/libero/test_osc_pose_gpu.mojo
+tests/libero/test_osc_control_batched.mojo
+tests/libero/test_libero_osc_env.mojo
+tests/libero/test_libero_object.mojo
+tests/libero/test_libero_scenes.mojo
+tests/libero/test_libero_placement.mojo
 # The LIBERO viewer's HEADLESS path — reset, one policy step under the hold
 # action, and the goal read through the full L3 language. It is the only
 # check that runs the family's reset, the controller and the predicate in
 # one process the way the window does, and it needs no window.
 # ⚠ `--check` IS THE WHOLE ENTRY: without it this opens an SDL3 window and
 # blocks, which in CI is a hang and not a failure.
-examples/tasks/libero_viewer.mojo --check
+examples/libero/libero_viewer.mojo --check
 # L5's hermetic half: the tracer's texture sampler, its four `settexture`
 # texgen cases and the OpenGL lighting terms, on values that are arithmetic.
-# The REAL L5 gate is `examples/tasks/libero_camera_gate.mojo`, which needs
+# The REAL L5 gate is `examples/libero/libero_camera_gate.mojo`, which needs
 # ~6 GB of demonstrations; this one needs nothing and still catches a
 # half-texel offset, a wrap off by a column or a box face picked by position.
 tests/physics3d/test_appearance.mojo
@@ -225,9 +225,9 @@ tests/tasks/test_eval_report.mojo
 # ABLATED: typed list taking only the last name (3 of 23 fail), regions keyed
 # by BARE name (4 — the name is not unique in the corpus), the outer `And`
 # left wrapped (3), and an unranged region emitted with a 0,0,0,0 rect (2).
-# ⚠ The corpus-wide survey is `examples/tasks/libero_survey.mojo`, which
+# ⚠ The corpus-wide survey is `examples/libero/libero_survey.mojo`, which
 # SKIPS LOUDLY without the tree: 130/130 parse, 8/130 goals translate.
-tests/tasks/test_bddl.mojo
+tests/libero/test_bddl.mojo
 
 # ── noeira/tasks: is `reach` REACHABLE, and by how much ────────────
 # ⚠⚠ THE GATE NO OTHER TASK GATE CAN BE. Everything else here asks whether a

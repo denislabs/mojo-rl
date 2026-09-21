@@ -34,20 +34,20 @@ OUT=${OUT:-build/diag/axis_sweep.tsv}
 STEPS=${STEPS:-25}
 CPU_LANES=${CPU_LANES:-5}
 CTRL_FAMILY=${CTRL_FAMILY:-libero_living_room_scene3}
-GATE=examples/tasks/libero_family_batched.mojo
+GATE=examples/libero/libero_family_batched.mojo
 
 say() { printf '\n=== %s\n' "$*"; }
 
 command -v pixi >/dev/null || { echo "pixi is not on PATH" >&2; exit 1; }
 
 say "0. the LIBERO asset pack (meshes + textures are gitignored)"
-if [ -d noeira/tasks/libero/assets/stable_hope_objects ]; then
+if [ -d noeira/envs/libero/assets/stable_hope_objects ]; then
     echo "already materialised"
 else
     pixi run assets-pull libero
 fi
-[ -d noeira/tasks/libero/assets/stable_hope_objects ] || {
-    echo "the asset pack did not materialise — see noeira/tasks/libero/assets.kv" >&2
+[ -d noeira/envs/libero/assets/stable_hope_objects ] || {
+    echo "the asset pack did not materialise — see noeira/envs/libero/assets.kv" >&2
     exit 1; }
 
 # ── run one family, print "<ratio>\t<impl>\t<prec>\t<lane>\t<lanes>\t<verdict>" ──
@@ -133,7 +133,7 @@ else
     fams=()
     # ⚠ A GLOB, NOT `ls | sed`: `ls` here is proxied and prints sizes beside the
     # names, which silently yields an EMPTY family list.
-    for f in noeira/tasks/families/libero_*.family; do
+    for f in noeira/envs/libero/families/libero_*.family; do
         [ -e "$f" ] || continue
         fams+=("$(basename "$f" .family)")
     done

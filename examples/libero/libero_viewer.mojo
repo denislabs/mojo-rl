@@ -2,10 +2,10 @@
 
     pixi run build-imgui                                        # ONCE
     pixi run libero-viewer
-    pixi run mojo run -I . examples/tasks/libero_viewer.mojo libero_spatial
-    pixi run mojo run -I . examples/tasks/libero_viewer.mojo libero_goal put_the_bowl_on_the_plate 7
-    pixi run mojo run -I . examples/tasks/libero_viewer.mojo libero_goal --check
-    pixi run mojo run -I . examples/tasks/libero_viewer.mojo libero_goal --shot 30
+    pixi run mojo run -I . examples/libero/libero_viewer.mojo libero_spatial
+    pixi run mojo run -I . examples/libero/libero_viewer.mojo libero_goal put_the_bowl_on_the_plate 7
+    pixi run mojo run -I . examples/libero/libero_viewer.mojo libero_goal --check
+    pixi run mojo run -I . examples/libero/libero_viewer.mojo libero_goal --shot 30
 
 argv picks the FAMILY (first argument) and which of its tasks opens first;
 every task of that family is in the sidebar and switching is instant,
@@ -51,7 +51,7 @@ drawer is, and whether the goal flickers as a prop settles.
 `On(obj, obj)` all read state a pose alone does not carry — the site table,
 the contact list, `qpos` — so this evaluates through `HostState` with
 contacts from `detect_contacts`, exactly as
-`examples/tasks/libero_demo_success.mojo` does against the benchmark's own
+`examples/libero/libero_demo_success.mojo` does against the benchmark's own
 demonstrations.
 
 ⚠ RUN THIS ON THE LAPTOP. It opens an SDL3 window and blocks on it. CPU
@@ -125,14 +125,14 @@ from noeira.tasks.reset import (
     free_slot_addresses, reset_slots, SlotAddress,
     joint_init_addresses, joint_init_dof_addresses, apply_joint_inits,
 )
-from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.envs.libero.models.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
 comptime DT = DType.float64
 comptime Vec3 = Vec3G[DT]
 comptime Quat = QuatG[DT]
-comptime TASK_DIR = "noeira/tasks/tasks/"
-comptime FAMILY_DIR = "noeira/tasks/families/"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
+comptime FAMILY_DIR = "noeira/envs/libero/families/"
 comptime SIDEBAR_W: Float32 = 340.0
 comptime SUBSTEPS = 25
 """LIBERO's clocks: `control_freq` 20 against a 2 ms `timestep`."""

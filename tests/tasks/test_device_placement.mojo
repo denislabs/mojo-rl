@@ -51,7 +51,7 @@ from noeira.tasks.spec import (
     FamilySpec, TaskSpec, JointInitSpec, load_family, load_task, parse_family,
     parse_task, validate_task_against_family, SLOT_FREE, INIT_TARGET_SLOT,
 )
-from noeira.tasks.family import scene_path
+from noeira.tasks.family import scene_path, task_path
 from noeira.tasks.family_config import (
     So101TabletopConfig, So101TabletopPlacement,
 )
@@ -71,67 +71,67 @@ from noeira.tasks.placement.check import (
     require_device_placement, placement_table_drift, joint_init_words,
     SceneFacts,
 )
-from noeira.tasks.placement.libero_goal import LiberoGoalPlacement
-from noeira.tasks.placement.libero_kitchen_scene1 import (
+from noeira.envs.libero.placement.libero_goal import LiberoGoalPlacement
+from noeira.envs.libero.placement.libero_kitchen_scene1 import (
     LiberoKitchenScene1Placement,
 )
-from noeira.tasks.placement.libero_kitchen_scene2 import (
+from noeira.envs.libero.placement.libero_kitchen_scene2 import (
     LiberoKitchenScene2Placement,
 )
-from noeira.tasks.placement.libero_kitchen_scene3 import (
+from noeira.envs.libero.placement.libero_kitchen_scene3 import (
     LiberoKitchenScene3Placement,
 )
-from noeira.tasks.placement.libero_kitchen_scene4 import (
+from noeira.envs.libero.placement.libero_kitchen_scene4 import (
     LiberoKitchenScene4Placement,
 )
-from noeira.tasks.placement.libero_kitchen_scene5 import (
+from noeira.envs.libero.placement.libero_kitchen_scene5 import (
     LiberoKitchenScene5Placement,
 )
-from noeira.tasks.placement.libero_kitchen_scene6 import (
+from noeira.envs.libero.placement.libero_kitchen_scene6 import (
     LiberoKitchenScene6Placement,
 )
-from noeira.tasks.placement.libero_kitchen_scene7 import (
+from noeira.envs.libero.placement.libero_kitchen_scene7 import (
     LiberoKitchenScene7Placement,
 )
-from noeira.tasks.placement.libero_kitchen_scene8 import (
+from noeira.envs.libero.placement.libero_kitchen_scene8 import (
     LiberoKitchenScene8Placement,
 )
-from noeira.tasks.placement.libero_kitchen_scene9 import (
+from noeira.envs.libero.placement.libero_kitchen_scene9 import (
     LiberoKitchenScene9Placement,
 )
-from noeira.tasks.placement.libero_kitchen_scene10 import (
+from noeira.envs.libero.placement.libero_kitchen_scene10 import (
     LiberoKitchenScene10Placement,
 )
-from noeira.tasks.placement.libero_living_room_scene1 import (
+from noeira.envs.libero.placement.libero_living_room_scene1 import (
     LiberoLivingRoomScene1Placement,
 )
-from noeira.tasks.placement.libero_living_room_scene2 import (
+from noeira.envs.libero.placement.libero_living_room_scene2 import (
     LiberoLivingRoomScene2Placement,
 )
-from noeira.tasks.placement.libero_living_room_scene3 import (
+from noeira.envs.libero.placement.libero_living_room_scene3 import (
     LiberoLivingRoomScene3Placement,
 )
-from noeira.tasks.placement.libero_living_room_scene4 import (
+from noeira.envs.libero.placement.libero_living_room_scene4 import (
     LiberoLivingRoomScene4Placement,
 )
-from noeira.tasks.placement.libero_living_room_scene5 import (
+from noeira.envs.libero.placement.libero_living_room_scene5 import (
     LiberoLivingRoomScene5Placement,
 )
-from noeira.tasks.placement.libero_living_room_scene6 import (
+from noeira.envs.libero.placement.libero_living_room_scene6 import (
     LiberoLivingRoomScene6Placement,
 )
-from noeira.tasks.placement.libero_object import LiberoObjectPlacement
-from noeira.tasks.placement.libero_spatial import LiberoSpatialPlacement
-from noeira.tasks.placement.libero_study_scene1 import (
+from noeira.envs.libero.placement.libero_object import LiberoObjectPlacement
+from noeira.envs.libero.placement.libero_spatial import LiberoSpatialPlacement
+from noeira.envs.libero.placement.libero_study_scene1 import (
     LiberoStudyScene1Placement,
 )
-from noeira.tasks.placement.libero_study_scene2 import (
+from noeira.envs.libero.placement.libero_study_scene2 import (
     LiberoStudyScene2Placement,
 )
-from noeira.tasks.placement.libero_study_scene3 import (
+from noeira.envs.libero.placement.libero_study_scene3 import (
     LiberoStudyScene3Placement,
 )
-from noeira.tasks.placement.libero_study_scene4 import (
+from noeira.envs.libero.placement.libero_study_scene4 import (
     LiberoStudyScene4Placement,
 )
 from noeira.physics3d.gpu.constants import (
@@ -153,8 +153,8 @@ from noeira.nn.core.tensor import TensorImpl
 
 comptime DT = DType.float64
 comptime SO101_FAMILY = "noeira/tasks/families/so101_tabletop.family"
-comptime FAMILY_DIR = "noeira/tasks/families"
-comptime TASK_DIR = "noeira/tasks/tasks/"
+comptime FAMILY_DIR = "noeira/envs/libero/families"
+comptime TASK_DIR = "noeira/envs/libero/tasks/"
 comptime BATCH = 8
 comptime SEED = 7
 comptime TOL: Float64 = 1.0e-12
@@ -659,7 +659,7 @@ def _run_family[T: PlacementTable](
              " drawable joints and the nudge oracle")
 
     for i in range(len(tasks)):
-        var t = load_task(TASK_DIR + tasks[i] + ".task")
+        var t = load_task(task_path(f, tasks[i]))
         validate_task_against_family(t, f)
         st.tasks += 1
         var expect_refuse = False

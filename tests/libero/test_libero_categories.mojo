@@ -1,6 +1,6 @@
 """LIBERO's registry as data — L1's gate on the TABLE and the IMPORTER.
 
-    pixi run mojo run -I . tests/tasks/test_libero_categories.mojo
+    pixi run mojo run -I . tests/libero/test_libero_categories.mojo
 
 Pure text, no assets, no corpus. What could be wrong, and what each check
 is for:
@@ -29,12 +29,12 @@ is for:
 from std.os import makedirs
 from std.time import perf_counter_ns
 
-from noeira.tasks.bddl import parse_bddl
-from noeira.tasks.libero_categories import (
+from noeira.envs.libero.bddl import parse_bddl
+from noeira.envs.libero.categories import (
     parse_libero_table, load_libero_table, threshold_holds, Threshold,
     DEFAULT_TABLE_PATH, CMP_LT, CMP_GT, CMP_GE, KIND_WORKSPACE,
 )
-from noeira.tasks.libero_import import (
+from noeira.envs.libero.importer import (
     resolve_family, site_pos, family_todo_count,
 )
 from noeira.tasks.spec import (
@@ -344,9 +344,9 @@ def main() raises:
           and fam2.slots[0].kind == SLOT_STATIC
           and fam2.slots[0].asset == "arenas/libero_tabletop_manipulation_arena.xml",
           "arena is slot 0, static, at the generated path")
-    ta.check(fam2.slots[1].asset == "noeira/tasks/libero/objects/wooden_cabinet.xml",
+    ta.check(fam2.slots[1].asset == "noeira/envs/libero/objects/wooden_cabinet.xml",
           "fixture uses the generated copy (no joint)")
-    ta.check(fam2.slots[2].asset == "noeira/tasks/libero/objects/akita_black_bowl_free.xml",
+    ta.check(fam2.slots[2].asset == "noeira/envs/libero/objects/akita_black_bowl_free.xml",
           "object uses the generated _free copy")
     ta.check(fam2.regions[0].site == "arena_workspace", "regions anchor on arena_workspace")
     ta.check(abs(fam2.slots[1].pz - want_z) < 1e-12,

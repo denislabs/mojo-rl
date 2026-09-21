@@ -1,8 +1,8 @@
 """OSC_POSE on the composed `libero_goal` scene — L4's unit gate.
 
-    pixi run mojo run -I . tests/tasks/test_osc_pose.mojo
+    pixi run mojo run -I . tests/libero/test_osc_pose.mojo
 
-The DECISIVE gate is `tools/tasks/libero_demo_replay.py` (one recorded
+The DECISIVE gate is `tools/libero/libero_demo_replay.py` (one recorded
 LIBERO demo, our engine + `osc_pose.mojo` against MuJoCo 3.12 running the
 same transcription on the same model: 1.5e-5 m over 80 policy steps, and
 the same 1.6 cm to the 2022 recording that MuJoCo 3.12 itself shows). It
@@ -50,12 +50,12 @@ from noeira.physics3d.fields import DYN2, rl2
 from noeira.physics3d.studio.stepping import StudioIntegEll
 from noeira.tasks.spec import load_family
 from noeira.tasks.family import scene_path
-from noeira.tasks.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
+from noeira.envs.libero.models.libero_goal_xml import LIBERO_GOAL_MAX_CONTACTS
 
 
 comptime DT = DType.float64
-comptime FAMILY = "noeira/tasks/families/libero_goal.family"
-comptime PACK = "noeira/tasks/libero/assets"
+comptime FAMILY = "noeira/envs/libero/families/libero_goal.family"
+comptime PACK = "noeira/envs/libero/assets"
 comptime SUBSTEPS = 25
 comptime HOLD_STEPS = 20
 comptime HOLD_TOL = 0.003      # metres, 1 s of hold

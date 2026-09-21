@@ -13,7 +13,7 @@ matches, and it does not.
 ## ⚠⚠ THE TABLE IS DATA BECAUSE DERIVING IT NEEDS THE DEMONSTRATIONS
 
 The remap is by joint NAME, and THEIR names come from the `model_file` recorded
-inside each demo — the ~6 GB of gitignored HDF5. `tools/tasks/libero_init_table.py`
+inside each demo — the ~6 GB of gitignored HDF5. `tools/libero/libero_init_table.py`
 compiles that model with MuJoCo, builds the table, VERIFIES it by driving both
 models from all fifty frozen inits and comparing body poses, and only then
 writes the `.kv`. Everything downstream — the init freeze, the demo importer —
@@ -136,7 +136,7 @@ struct StateRemap(Movable & Deinitable):
 
 
 def load_state_remap(family: String) raises -> StateRemap:
-    """`noeira/tasks/libero/state_remap_<family>.kv`, refusing a partial table.
+    """`noeira/envs/libero/tables/state_remap_<family>.kv`, refusing a partial table.
 
     ⚠⚠ IT REFUSES UNLESS EVERY ADDRESS IS COVERED EXACTLY ONCE, on BOTH sides.
     A joint missing from the table leaves a hole in `qpos` that `convert` fills
@@ -145,7 +145,7 @@ def load_state_remap(family: String) raises -> StateRemap:
     same defect with two joints fighting over an address. Neither is visible in
     the output, so both are checked here.
     """
-    var path = String("noeira/tasks/libero/state_remap_") + family + ".kv"
+    var path = String("noeira/envs/libero/tables/state_remap_") + family + ".kv"
     var text: String
     with open(path, "r") as fh:
         text = fh.read()

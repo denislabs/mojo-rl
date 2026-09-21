@@ -3,8 +3,8 @@
 Regenerate with:  pixi run gen-placement-tables
 CI checks it with: pixi run gen-placement-tables --check
 
-From `noeira/tasks/families/libero_living_room_scene3.family`,
-`noeira/tasks/scenes/libero_living_room_scene3.xml` and forward kinematics on it.
+From `noeira/envs/libero/families/libero_living_room_scene3.family`,
+`noeira/envs/libero/scenes/libero_living_room_scene3.xml` and forward kinematics on it.
 6 free slots, 7 regions (1 moving, 0 followed on one slide), 0 drawable joints.
 See `placement/table.mojo` for what each method means.
 """
