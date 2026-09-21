@@ -355,7 +355,7 @@ def _check_checkpoint_resume() raises -> Int:
     for c in range(2):
         _ = w._enc[c].stop()  # release ffmpeg; nothing else is finished
 
-    if not exists(root + "/meta/noeira_writer_stats.json"):
+    if not exists(root + "/meta/mojo_rl_writer_stats.json"):
         raise Error("checkpoint: no resume state after two episodes")
     import_lerobot_v3(root, String("/tmp/noeira_lw_ckpt_crash.h5"), H, W, verbose=False)
     var e1 = List[Int]()

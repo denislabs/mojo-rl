@@ -19,8 +19,12 @@ from std.os.path import exists
 from noeira.io.json import load_json
 
 
-comptime WRITER_STATS = "meta/noeira_writer_stats.json"
-"""Present only in a checkpointed recording — see `LeRobotWriter`."""
+comptime WRITER_STATS = "meta/mojo_rl_writer_stats.json"
+"""Present only in a checkpointed recording — see `LeRobotWriter`.
+
+The name predates the noeira rename and is KEPT: it is an on-disk format name,
+already inside recordings and pushed datasets, and `resume` finds a recording's
+statistics by it."""
 
 
 def total_episodes(root: String) raises -> Int:

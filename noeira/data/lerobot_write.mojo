@@ -73,7 +73,7 @@ every episode. Without it, all rows and metadata lived in memory until
 rows, episode index and tasks are read back through the importer's own readers
 (`FrameTable`, `EpisodeIndex`, `read_task_table`); the per-episode statistics,
 which cannot be recomputed without decoding the videos, come from
-`meta/noeira_writer_stats.json`, written at every checkpoint. A directory
+`meta/mojo_rl_writer_stats.json`, written at every checkpoint. A directory
 written without checkpoints is refused: its episodes share video files, and a
 resumed writer would have to append to a closed mp4.
 
@@ -114,7 +114,7 @@ comptime STATS_STRIDE = 4
 1/16 of the pixels, the same rate LeRobot uses. See `_ImgStats.add_frame`:
 every pixel cost 45.8 ms of a 33.3 ms tick."""
 
-comptime RESUME_FILE = "meta/noeira_writer_stats.json"
+comptime RESUME_FILE = "meta/mojo_rl_writer_stats.json"
 """The per-episode statistics a resumed writer needs. See the module header."""
 
 comptime N_STATS = 10
