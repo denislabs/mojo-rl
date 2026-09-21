@@ -72,6 +72,9 @@ from noeira.nn.constants import DT as NN_DT
 from noeira.nn.core.tensor import TensorImpl
 from noeira.deep_agents.data.any_replay import AnyReplay
 from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
+from noeira.tasks.sac_family_policy import (
+    SacFamilyPolicy, HIDDEN as FAMILY_HIDDEN, POLICY_BATCH, POLICY_CAP,
+)
 from noeira.deep_agents.training.blocks import ReplaySampleStep
 
 from noeira.core.cont_action import ContAction
@@ -135,11 +138,11 @@ comptime OBS_DIM = So101TabletopModel.OBS_DIM
 is loaded by PARAMETER LAYOUT, so a stale OBS_DIM is a load error rather than
 a wrong policy — which is the good outcome."""
 comptime ACT_DIM = 6
-comptime HIDDEN = 256
-comptime BATCH = 256
-comptime CAP = 1000
-"""⚠ `BATCH`/`CAP` size a replay buffer this agent never fills; the checkpoint
-holds no replay. Only `HIDDEN` has to match the trainer."""
+comptime HIDDEN = FAMILY_HIDDEN
+"""The family SAC widths, from `noeira/tasks/sac_family_policy.mojo` — the
+driver trains with the same constants, so a `--policy` checkpoint loads."""
+comptime BATCH = POLICY_BATCH
+comptime CAP = POLICY_CAP
 
 comptime ACTION_SCALE = 1.0
 """⚠⚠ MUST MATCH `sac_task_gpu.mojo`. The greedy action is
@@ -196,12 +199,7 @@ struct TaskPolicy(Movable & Deinitable):
     `dm_walker_policy_viewer.mojo` both document.
     """
 
-    var agent: SACAgent[
-        "cpu",
-        ReplaySampleStep[AnyReplay["cpu", OBS_DIM, ACT_DIM, CAP], BATCH],
-        SACActorNet[OBS_DIM, ACT_DIM, HIDDEN],
-        SACCriticNet[OBS_DIM, ACT_DIM, HIDDEN],
-    ]
+    var agent: SacFamilyPolicy[OBS_DIM, ACT_DIM]
     var loaded_task: String
     var loaded: Bool
 

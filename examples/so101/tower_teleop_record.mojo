@@ -76,6 +76,9 @@ from noeira.io.proc import quote_arg, run_capture
 from noeira.deep_agents.data.any_replay import AnyReplay
 from noeira.deep_agents.demos.file import DemoSet, write_demo_file
 from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
+from noeira.tasks.sac_family_policy import (
+    SacFamilyPolicy, HIDDEN as FAMILY_HIDDEN, POLICY_BATCH, POLICY_CAP,
+)
 from noeira.deep_agents.training.blocks import ReplaySampleStep
 from noeira.envs.dm_control.viewer_core import (
     ActionSource, StepObserver, DRIVE_POLICY, ViewerState, run_view,
@@ -110,10 +113,11 @@ comptime DEMO_DIR = "projects/so101-tower/demos"
 
 comptime OBS_DIM = So101TowerModel.OBS_DIM
 comptime ACT_DIM = 6
-comptime HIDDEN = 256
-"""⚠ MUST MATCH `sac_family_driver.HIDDEN` for `--policy` to load."""
-comptime BATCH = 256
-comptime CAP = 1000
+comptime HIDDEN = FAMILY_HIDDEN
+"""The family SAC widths, from `noeira/tasks/sac_family_policy.mojo` — the
+driver trains with the same constants, so a `--policy` checkpoint loads."""
+comptime BATCH = POLICY_BATCH
+comptime CAP = POLICY_CAP
 comptime ACTION_SCALE = 1.0
 comptime GOAL_BASE = So101TowerConfig.OBS_GOAL_BASE
 comptime REACH_RADIUS_MM = So101TowerConfig.REACH_RADIUS * 1000.0
@@ -156,12 +160,7 @@ struct TowerTeleop(ActionSource, StepObserver, Movable):
     var last_action: List[Scalar[DT]]
 
     # ── the policy (HIL mode) ──
-    var agent: SACAgent[
-        "cpu",
-        ReplaySampleStep[AnyReplay["cpu", OBS_DIM, ACT_DIM, CAP], BATCH],
-        SACActorNet[OBS_DIM, ACT_DIM, HIDDEN],
-        SACCriticNet[OBS_DIM, ACT_DIM, HIDDEN],
-    ]
+    var agent: SacFamilyPolicy[OBS_DIM, ACT_DIM]
     var have_policy: Bool
     var policy_label: String
     var intervening: Bool

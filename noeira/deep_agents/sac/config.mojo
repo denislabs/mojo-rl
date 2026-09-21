@@ -202,6 +202,20 @@ def agent_from_config[
     )
 
 
+comptime SACPresetAgent[
+    target: StaticString,
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
+    HIDDEN: Int = 256,
+] = SACAgent[
+    target,
+    ReplaySampleStep[AnyReplay[target, OBS, ACT, CAP], BATCH],
+    SACActorNet[OBS, ACT, HIDDEN],
+    SACCriticNet[OBS, ACT, HIDDEN],
+]
+"""The type `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN](...)` returns — for a
+field or a `var` that holds one, so the four-part spelling lives here once."""
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Capitalized preset — single function, `target` as a parameter.
 # Reads like a constructor. Full tuning surface, defaults from the config.

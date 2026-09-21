@@ -220,6 +220,7 @@ from noeira.io.artifact_sink import close_sink, sink_for_run
 from noeira.deep_agents.primitives.stochastic_actor import StochasticActor
 from noeira.deep_agents.sac import SACAgent
 from noeira.deep_agents.hil_serl import HilSerlConfig, apply_hil_serl
+from noeira.tasks.sac_family_policy import HIDDEN
 from noeira.deep_agents.training.blocks import UniformSampleGpuStep
 from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from noeira.physics3d.gpu.constants import (
@@ -312,7 +313,6 @@ comptime EnvT[M: ModelDefLike, C: Phyics3dEnvConfig] = Phyics3dBatchedEnv[
 comptime OBS_DIM[M: ModelDefLike, C: Phyics3dEnvConfig] = EnvT[M, C].OBS_DIM
 # tabletop: 54 = NQ(27) + NV(24) + N_FREE(3); tower: 49 = 20 + 18 + 2 + 9
 comptime ACT_DIM = 6
-comptime HIDDEN = 256
 comptime BATCH = 256
 comptime REPLAY_CAPACITY = 1_000_000
 

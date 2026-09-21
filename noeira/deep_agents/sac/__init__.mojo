@@ -12,4 +12,5 @@ from .config import (
     SACCriticNet,
     agent_from_config,
     SAC,
+    SACPresetAgent,
 )

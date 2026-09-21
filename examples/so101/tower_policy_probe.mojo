@@ -42,6 +42,9 @@ from noeira.core.cont_action import ContAction
 from noeira.deep_agents.data.any_replay import AnyReplay
 from noeira.deep_agents.demos.file import DemoSet, read_demo_file
 from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
+from noeira.tasks.sac_family_policy import (
+    SacFamilyPolicy, HIDDEN as FAMILY_HIDDEN, POLICY_BATCH, POLICY_CAP,
+)
 from noeira.deep_agents.training.blocks import ReplaySampleStep
 from noeira.envs.phyics3d_env import Phyics3dEnv
 from noeira.physics3d.fields import actuator_column
@@ -68,18 +71,14 @@ comptime E = Phyics3dEnv[So101TowerModel, CFG, DType.float64, False]
 comptime NV = So101TowerModel.NV
 comptime OBS_DIM = So101TowerModel.OBS_DIM
 comptime ACT = 6
-comptime HIDDEN = 256
-"""⚠ MUST MATCH `sac_family_driver.HIDDEN` for the checkpoint to load."""
-comptime BATCH = 256
-comptime CAP = 1000
+comptime HIDDEN = FAMILY_HIDDEN
+"""The family SAC widths, from `noeira/tasks/sac_family_policy.mojo` — the
+driver trains with the same constants, so a `--policy` checkpoint loads."""
+comptime BATCH = POLICY_BATCH
+comptime CAP = POLICY_CAP
 comptime GB = So101TowerConfig.OBS_GOAL_BASE
 
-comptime Agent = SACAgent[
-    "cpu",
-    ReplaySampleStep[AnyReplay["cpu", OBS_DIM, ACT, CAP], BATCH],
-    SACActorNet[OBS_DIM, ACT, HIDDEN],
-    SACCriticNet[OBS_DIM, ACT, HIDDEN],
-]
+comptime Agent = SacFamilyPolicy[OBS_DIM, ACT]
 
 
 def _usage():

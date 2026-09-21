@@ -87,6 +87,9 @@ from noeira.io.proc import quote_arg, run_capture
 from noeira.deep_agents.demos.file import DemoSet, write_demo_file
 from noeira.deep_agents.data.any_replay import AnyReplay
 from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
+from noeira.tasks.sac_family_policy import (
+    SacFamilyPolicy, HIDDEN as FAMILY_HIDDEN, POLICY_BATCH, POLICY_CAP,
+)
 from noeira.deep_agents.training.blocks import ReplaySampleStep
 from noeira.envs.phyics3d_env import Phyics3dEnv
 from noeira.math3d import Quat, Vec3
@@ -122,16 +125,12 @@ comptime GB = So101TowerConfig.OBS_GOAL_BASE
 """The goal words: obs[GB+3..GB+5] is the jaw-to-brick vector (the reach)."""
 
 # ── DAgger: the policy drives to its own arrival, the expert takes over ──
-comptime HIDDEN = 256
-"""⚠ MUST MATCH `sac_family_driver.HIDDEN` for `--policy` to load."""
-comptime BATCH = 256
-comptime CAP = 1000
-comptime Agent = SACAgent[
-    "cpu",
-    ReplaySampleStep[AnyReplay["cpu", E.OBS_DIM, ACT, CAP], BATCH],
-    SACActorNet[E.OBS_DIM, ACT, HIDDEN],
-    SACCriticNet[E.OBS_DIM, ACT, HIDDEN],
-]
+comptime HIDDEN = FAMILY_HIDDEN
+"""The family SAC widths, from `noeira/tasks/sac_family_policy.mojo` — the
+driver trains with the same constants, so a `--policy` checkpoint loads."""
+comptime BATCH = POLICY_BATCH
+comptime CAP = POLICY_CAP
+comptime Agent = SacFamilyPolicy[E.OBS_DIM, ACT]
 comptime N_DESCEND_HANDOVER = 20
 """The expert's descent after a handover: the policy already brought the
 jaw near the brick, so a short ramp to the grasp pose from wherever it is."""

@@ -62,6 +62,9 @@ from std.sys import argv
 from noeira.nn.constants import DT
 from noeira.deep_agents.data.any_replay import AnyReplay
 from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
+from noeira.tasks.sac_family_policy import (
+    SacFamilyPolicy, HIDDEN as FAMILY_HIDDEN, POLICY_BATCH, POLICY_CAP,
+)
 from noeira.deep_agents.training.blocks import ReplaySampleStep
 from noeira.envs.dm_control.viewer_core import (
     ActionSource, DRIVE_POLICY, ViewerState, run_view, task_index,
@@ -84,11 +87,11 @@ comptime OBS_DIM = So101TowerModel.OBS_DIM
 """49 = qpos(20) + qvel(18) + active(2) + goal words(9). ⚠ FROM THE MODEL DEF,
 the number the trainer's env allocated."""
 comptime ACT_DIM = 6
-comptime HIDDEN = 256
-"""⚠ MUST MATCH `sac_family_driver.HIDDEN`: `nn-ckpt v2` loads by parameter
-layout, so a mismatch is a load error, the good outcome."""
-comptime BATCH = 256
-comptime CAP = 1000
+comptime HIDDEN = FAMILY_HIDDEN
+"""The family SAC widths, from `noeira/tasks/sac_family_policy.mojo` — the
+driver trains with the same constants, so a `--policy` checkpoint loads."""
+comptime BATCH = POLICY_BATCH
+comptime CAP = POLICY_CAP
 comptime ACTION_SCALE = 1.0
 """⚠ MUST MATCH the driver's `ACTION_SCALE` (1.0): the family's action space
 is NORMALIZED [-1, 1] per joint."""
@@ -136,12 +139,7 @@ struct TowerPolicy(ActionSource, Movable):
     `select_action` is the uniform-random warmup branch.
     """
 
-    var agent: SACAgent[
-        "cpu",
-        ReplaySampleStep[AnyReplay["cpu", OBS_DIM, ACT_DIM, CAP], BATCH],
-        SACActorNet[OBS_DIM, ACT_DIM, HIDDEN],
-        SACCriticNet[OBS_DIM, ACT_DIM, HIDDEN],
-    ]
+    var agent: SacFamilyPolicy[OBS_DIM, ACT_DIM]
     var paths: List[String]
     var labels: List[String]
     var current: Int
