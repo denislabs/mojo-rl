@@ -1,10 +1,10 @@
 """THE BC POLICY SURVIVES THE TRIP FROM THE TRAINER TO THE DRIVER.
 
-    pixi run mojo run -I . tests/tasks/test_bc_policy.mojo
+    pixi run mojo run -I . tests/deep_agents/test_bc_policy.mojo
 
 `examples/libero/libero_bc_train.mojo` fits a network and writes a checkpoint;
 `examples/libero/libero_eval_batched.mojo` builds the network again and runs it.
-Between them sits `tasks/bc_policy.mojo`. What can go wrong is not the fit:
+Between them sits `deep_agents/bc/policy.mojo`. What can go wrong is not the fit:
 
 * the driver builds a DIFFERENT network and `load_params` fills the layers
   whose names and sizes happen to match, leaving the rest at their init — a
@@ -39,7 +39,7 @@ from noeira.nn.core.tensor import Tensor
 from noeira.nn.core.tensor_refs import TensorRefs
 from noeira.nn.core.checkpoint import save_params, load_params
 from noeira.nn.core.initializer import Kaiming
-from noeira.tasks.bc_policy import (
+from noeira.deep_agents.bc.policy import (
     BcNet, BC_HID, BcNorm, load_bc_norm, write_bc_norm,
 )
 

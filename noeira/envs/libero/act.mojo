@@ -4,7 +4,7 @@
 
 `examples/libero/libero_act_train.mojo` fits it; `examples/tasks/
 libero_eval_batched.mojo --act DIR` runs it in the loop with the cameras.
-`tasks/bc_policy.mojo` exists for the same reason this file does: a network
+`deep_agents/bc/policy.mojo` exists for the same reason this file does: a network
 each driver spells for itself is `_a_rule_written_inline_twice_drifts`, and
 ACT has thirteen parameters to get wrong where the MLP had one.
 

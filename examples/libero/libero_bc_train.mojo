@@ -47,19 +47,11 @@ has to beat, and the thing that says whether the low-dimensional observation
 carries enough to imitate at all.
 """
 
-from std.os import listdir, makedirs
-from std.os.path import dirname, exists
-from std.random import seed as seed_rng, random_ui64
+from std.os import listdir
+from std.os.path import exists
 from std.sys import argv
 from std.time import perf_counter_ns
-from max.gpu.host import DeviceContext
 
-from noeira.nn.constants import DT
-from noeira.nn.core.tensor import Tensor
-from noeira.nn.core.tensor_refs import TensorRefs
-from noeira.nn.core.checkpoint import save_params, load_params
-from noeira.nn.core.initializer import Kaiming
-from noeira.nn.optimizer.adam import Adam
 
 from noeira.data.store import TrajectoryStore
 from noeira.physics3d.fields import Data, Model, DynDims
@@ -79,7 +71,9 @@ from noeira.tasks.predicates import (
 )
 from noeira.tasks.tape import encode_goal, TAPE_WORDS
 from noeira.tasks.active import active_mask
-from noeira.tasks.bc_policy import BcNet, BC_HID, write_bc_norm
+from noeira.deep_agents.bc.policy import BcNet, BC_HID
+from noeira.deep_agents.bc.dataset import BcDataset
+from noeira.deep_agents.bc.fit import fit_bc
 from noeira.tasks.task_hooks import write_task_obs_host
 from noeira.envs.libero.placement.libero_goal import LiberoGoalPlacement
 from noeira.envs.libero.models.libero_goal_xml import (
@@ -101,7 +95,7 @@ comptime BATCH = 256
 one batch size. `--batch` would be a second kernel instantiation, not a flag."""
 
 comptime NET = BcNet[OBS, ACT]
-"""⚠ THE SHAPE LIVES IN `tasks/bc_policy.mojo`, so the driver that RUNS this
+"""⚠ THE SHAPE LIVES IN `deep_agents/bc/policy.mojo`, so the driver that RUNS this
 checkpoint builds the same network from the same declaration rather than a
 second spelling of it."""
 
@@ -117,15 +111,6 @@ def _task_names(family: String) raises -> List[String]:
         for j in range(i + 1, len(out)):
             if out[j] < out[i]:
                 out[i], out[j] = out[j], out[i]
-    return out^
-
-
-def _pad(s: String, n: Int) -> String:
-    var out = String(s)
-    if out.byte_length() > n:
-        return String(out[byte = 0 : n])
-    while out.byte_length() < n:
-        out += " "
     return out^
 
 
@@ -266,12 +251,8 @@ def main() raises:
 
     # ── the observations, rebuilt frame by frame ──────────────────────────
     var t0 = perf_counter_ns()
-    var x_tr = List[Scalar[DT]]()
-    var y_tr = List[Scalar[DT]]()
-    var x_va = List[Scalar[DT]]()
-    var y_va = List[Scalar[DT]]()
-    var n_tr = 0
-    var n_va = 0
+    var data = BcDataset(OBS, ACT)
+    var arow = List[Scalar[DType.float32]](length=ACT, fill=0)
     for e in range(n_eps):
         if not use_ep[e]:
             continue
@@ -295,19 +276,11 @@ def main() raises:
                     + String(len(row)) + " words, the model def says "
                     + String(OBS)
                 )
-            if is_val[e]:
-                n_va += 1
-                for j in range(OBS):
-                    x_va.append(Scalar[DT](row[j]))
-                for j in range(ACT):
-                    y_va.append(Scalar[DT](act_col[r * ACT + j]))
-            else:
-                n_tr += 1
-                for j in range(OBS):
-                    x_tr.append(Scalar[DT](row[j]))
-                for j in range(ACT):
-                    y_tr.append(Scalar[DT](act_col[r * ACT + j]))
-    print("  frames:", n_tr, "train /", n_va, "val (held out the last",
+            for j in range(ACT):
+                arow[j] = act_col[r * ACT + j]
+            data.add(row, arow, is_val[e])
+    var n_tr = data.n_tr
+    print("  frames:", n_tr, "train /", data.n_va, "val (held out the last",
           val_demos, "demos of each task ) in",
           Float64(perf_counter_ns() - t0) / 1e9, "s")
     # ⚠ ANTI-VACUITY ON THE REBUILT OBSERVATION. A writer that produced a
@@ -318,10 +291,10 @@ def main() raises:
     var moved = 0
     var goal_nonzero = 0
     for j in range(OBS):
-        if x_tr[j] != x_tr[(n_tr - 1) * OBS + j]:
+        if data.x_tr[j] != data.x_tr[(n_tr - 1) * OBS + j]:
             moved += 1
     for j in range(OBS - 9, OBS):
-        if Float64(x_tr[j]) != 0.0:
+        if Float64(data.x_tr[j]) != 0.0:
             goal_nonzero += 1
     print("         first vs last training row:", moved, "of", OBS,
           "words differ |", goal_nonzero, "of the 9 goal words nonzero")
@@ -330,210 +303,9 @@ def main() raises:
             "libero bc train: the rebuilt observation is constant or has an"
             " empty goal block — the frames were not written"
         )
-    if n_tr == 0 or n_va == 0:
-        raise Error("libero bc train: an empty split — nothing to fit or score")
-
-    # ── normalisation, from the TRAINING rows only ────────────────────────
-    # ⚠ THE VALIDATION ROWS DO NOT CONTRIBUTE. A mean that saw them is a leak,
-    # small here and free to avoid.
-    var mu = List[Float64](length=OBS, fill=0.0)
-    var sd = List[Float64](length=OBS, fill=0.0)
-    for r in range(n_tr):
-        for j in range(OBS):
-            mu[j] += Float64(x_tr[r * OBS + j])
-    for j in range(OBS):
-        mu[j] /= Float64(n_tr)
-    for r in range(n_tr):
-        for j in range(OBS):
-            var dv = Float64(x_tr[r * OBS + j]) - mu[j]
-            sd[j] += dv * dv
-    for j in range(OBS):
-        sd[j] = (sd[j] / Float64(n_tr)) ** 0.5
-        # ⚠ A CONSTANT COLUMN KEEPS SCALE 1: dividing by its zero spread would
-        # write inf into every row. `libero_goal` has several (a mask word that
-        # is 1 on every task, a fixture's untouched joint).
-        if sd[j] < 1.0e-6:
-            sd[j] = 1.0
-    for r in range(n_tr):
-        for j in range(OBS):
-            x_tr[r * OBS + j] = Scalar[DT](
-                (Float64(x_tr[r * OBS + j]) - mu[j]) / sd[j]
-            )
-    for r in range(n_va):
-        for j in range(OBS):
-            x_va[r * OBS + j] = Scalar[DT](
-                (Float64(x_va[r * OBS + j]) - mu[j]) / sd[j]
-            )
-
-    # ── the two baselines every epoch is read against ─────────────────────
-    var mean_act = List[Float64](length=ACT, fill=0.0)
-    for r in range(n_tr):
-        for j in range(ACT):
-            mean_act[j] += Float64(y_tr[r * ACT + j])
-    for j in range(ACT):
-        mean_act[j] /= Float64(n_tr)
-    var mse_zero = 0.0
-    var mse_mean = 0.0
-    for r in range(n_va):
-        for j in range(ACT):
-            var a = Float64(y_va[r * ACT + j])
-            mse_zero += a * a
-            var dm = a - mean_act[j]
-            mse_mean += dm * dm
-    mse_zero /= Float64(n_va * ACT)
-    mse_mean /= Float64(n_va * ACT)
-    print("  baselines (val MSE): predict ZERO", mse_zero,
-          "| predict the TRAINING MEAN", mse_mean)
-
-    # ── the fit ───────────────────────────────────────────────────────────
-    seed_rng(7)
-    var ctx = DeviceContext()
-    var net = NET.make["gpu", Kaiming](Optional(ctx))
-    var opt = Adam(lr=Scalar[DT](lr))
-    # ⚠ HOST-BACKED WITH A DEVICE CELL: `Tensor.alloc(n)` then `upload`, the
-    # shape every nn driver uses — the batch is built on the host and pushed.
-    var bx = Tensor.alloc(BATCH * OBS)
-    var by = Tensor.alloc(BATCH * ACT)
-    var pred = Tensor.alloc(BATCH * ACT)
-    var gout = Tensor.alloc(BATCH * ACT)
-    var gin = Tensor.alloc(BATCH * OBS)
-    bx.upload(ctx)
-    by.upload(ctx)
-    pred.upload(ctx)
-    gout.upload(ctx)
-    gin.upload(ctx)
-    var n_batches = n_tr // BATCH
-    var best_val = 1.0e30
-    print("  net   : ", OBS, "->", HID, "->", HID, "->", ACT, "| Adam lr", lr,
-          "| batch", BATCH, "|", n_batches, "batches/epoch")
-
-    for ep in range(epochs):
-        var tr_loss = 0.0
-        for b in range(n_batches):
-            # a random contiguous-free draw: BC rows are i.i.d. only across
-            # demos, so the batch is sampled row-wise with replacement
-            for r in range(BATCH):
-                var src = Int(random_ui64(0, UInt64(n_tr - 1)))
-                for j in range(OBS):
-                    bx.data[r * OBS + j] = x_tr[src * OBS + j]
-                for j in range(ACT):
-                    by.data[r * ACT + j] = y_tr[src * ACT + j]
-            bx.upload(ctx)
-            by.upload(ctx)
-            net.forward["gpu", BATCH](TensorRefs[1](bx), pred, Optional(ctx))
-            pred.download(ctx)
-            ctx.synchronize()
-            # MSE and its gradient on the host: BATCH x 7 words per step, and
-            # it keeps the loss arithmetic in one readable place.
-            var loss = 0.0
-            for k in range(BATCH * ACT):
-                var e2 = Float64(pred.data[k]) - Float64(by.data[k])
-                loss += e2 * e2
-                gout.data[k] = Scalar[DT](2.0 * e2 / Float64(BATCH * ACT))
-            tr_loss += loss / Float64(BATCH * ACT)
-            gout.upload(ctx)
-            net.zero_grad["gpu"](Optional(ctx))
-            net.vjp["gpu", BATCH](
-                TensorRefs[1](bx), gout, TensorRefs[1](gin), Optional(ctx)
-            )
-            # ⚠⚠ `opt.step`, NOT A BARE PARAM WALK. `step` bumps every param
-            # value's `version` after updating it, and `Linear`'s GPU forward
-            # re-pads its cached weight ONLY when that version moves
-            # (`_ensure_w_pad`). Driving the walk directly updates `val` and
-            # leaves the pad at the INITIAL weights, so the padded layers
-            # (here the 91 -> 256 input, K_PAD 128) train against a frozen
-            # forward while `val` drifts away underneath — the loss still
-            # falls, because the unpadded layers learn, and the checkpoint
-            # then behaves like a different network everywhere else. Measured:
-            # reloaded val MSE 0.305 against the fit's 0.132, identical
-            # weights, different predictions.
-            opt.step["gpu"](net, Optional(ctx))
-
-        # ── validation, in whole batches ──────────────────────────────────
-        var va_loss = 0.0
-        var va_batches = n_va // BATCH
-        for b in range(va_batches):
-            for r in range(BATCH):
-                var src = b * BATCH + r
-                for j in range(OBS):
-                    bx.data[r * OBS + j] = x_va[src * OBS + j]
-                for j in range(ACT):
-                    by.data[r * ACT + j] = y_va[src * ACT + j]
-            bx.upload(ctx)
-            net.forward["gpu", BATCH](TensorRefs[1](bx), pred, Optional(ctx))
-            pred.download(ctx)
-            ctx.synchronize()
-            for k in range(BATCH * ACT):
-                var e2 = Float64(pred.data[k]) - Float64(by.data[k])
-                va_loss += e2 * e2
-        va_loss /= Float64(va_batches * BATCH * ACT)
-        print("   epoch", _pad(String(ep), 3), " train MSE",
-              tr_loss / Float64(n_batches), " val MSE", va_loss,
-              " (zero", mse_zero, ", mean", mse_mean, ")")
-        if va_loss < best_val:
-            best_val = va_loss
-
-    # ── the artefact ──────────────────────────────────────────────────────
-    var od = dirname(out_path)
-    if od != "" and not exists(od):
-        makedirs(od)
-    save_params["gpu"](net, out_path, Optional(ctx))
-    # ⚠ THE NORMALISATION IS PART OF THE POLICY. A checkpoint without it is a
-    # network fed raw metres where it was trained on standardised ones; the
-    # eval driver reads this sidecar and refuses a checkpoint without it.
-    write_bc_norm(out_path + ".norm", mu, sd, ACT)
-    print()
-    print("  wrote", out_path, "and", out_path + ".norm")
-
-    # ⚠⚠ THE CHECKPOINT IS RE-SCORED, ON THE CPU, THROUGH THE DRIVER'S PATH.
-    # The fit lives on the device; what the eval runs is this file reloaded
-    # into a CPU network. Anything between the two — a save that wrote the
-    # wrong copy, a load that filled nothing, a shape that drifted — leaves a
-    # policy that trains well and acts nothing like it, which is exactly the
-    # shape this run would otherwise report as a success.
-    var check = NET.make["cpu", Kaiming](None)
-    load_params["cpu"](check, out_path, None)
-    var cx = Tensor.alloc(BATCH * OBS)
-    var cy = Tensor.alloc(BATCH * ACT)
-    var cy_pred = Tensor.alloc(BATCH * ACT)
-    var re_loss = 0.0
-    var re_abs = 0.0
-    var re_batches = n_va // BATCH
-    for b in range(re_batches):
-        for r in range(BATCH):
-            var src = b * BATCH + r
-            for j in range(OBS):
-                cx.data[r * OBS + j] = x_va[src * OBS + j]
-            for j in range(ACT):
-                cy.data[r * ACT + j] = y_va[src * ACT + j]
-        check.forward["cpu", BATCH](TensorRefs[1](cx), cy_pred, None)
-        for k in range(BATCH * ACT):
-            var e2 = Float64(cy_pred.data[k]) - Float64(cy.data[k])
-            re_loss += e2 * e2
-            re_abs += abs(Float64(cy_pred.data[k]))
-    re_loss /= Float64(re_batches * BATCH * ACT)
-    re_abs /= Float64(re_batches * BATCH * ACT)
-    var tgt_abs = 0.0
-    for r in range(re_batches * BATCH):
-        for j in range(ACT):
-            tgt_abs += abs(Float64(y_va[r * ACT + j]))
-    tgt_abs /= Float64(re_batches * BATCH * ACT)
-    print("  reloaded on CPU: val MSE", re_loss, "| mean |a| predicted",
-          re_abs, "recorded", tgt_abs)
-
-    # ── the verdict ───────────────────────────────────────────────────────
-    print()
-    # ⚠ THE RELOADED NUMBER IS THE ONE THAT MATTERS: it is what the eval
-    # driver will run. A device fit that does not survive the round trip is a
-    # failure of this run, not a detail.
-    if re_loss > best_val * 1.5 + 1.0e-9:
-        print("  FAIL: the RELOADED checkpoint scores", re_loss,
-              "against the fit's", best_val, "— the file is not the network"
-              " that trained")
-        raise Error("libero bc train: the checkpoint does not reproduce the fit")
-    if best_val >= mse_mean:
-        print("  FAIL: val MSE", best_val, ">= the TRAINING-MEAN baseline",
-              mse_mean, "— the fit learned nothing")
-        raise Error("libero bc train: the fit does not beat its baseline")
-    print("=== best val MSE", best_val, "against zero", mse_zero, "and mean",
-          mse_mean, "===")
+    # ── normalise, baseline, fit, save, re-score (`deep_agents/bc/fit.mojo`) ─
+    var rep = fit_bc[OBS, ACT, BATCH](
+        data, epochs, lr, out_path, String("libero bc train")
+    )
+    print("=== best val MSE", rep.best_val, "against zero", rep.mse_zero,
+          "and mean", rep.mse_mean, "===")

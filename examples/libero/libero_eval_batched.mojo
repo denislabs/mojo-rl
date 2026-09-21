@@ -219,7 +219,7 @@ from noeira.tasks.init_table import load_init_table, InitTable
 from noeira.tasks.tape import encode_goal, TAPE_WORDS
 from noeira.tasks.gpu_eval import region_table_words, require_gpu_regions
 from noeira.tasks.active import active_mask, init_region_words
-from noeira.tasks.bc_policy import BcNet, BcNorm, load_bc_norm
+from noeira.deep_agents.bc.policy import BcNet, BcNorm, load_bc_norm
 from noeira.physics3d.raytrace import BatchedCameraRenderer, RGB_CHANNELS
 from noeira.physics3d.fields.dims import DimsLike
 from max.gpu.host import HostBuffer
@@ -745,7 +745,7 @@ def run[T: PlacementTable, M: ModelDefLike](
     print("  tasks :", n_tasks, "| rows", n_rows, "| horizon", SETTLE_STEPS,
           "settle +", max_steps, "steps", "(LIBERO's own)" if max_steps
           == LIBERO_MAX_STEPS else "(REDUCED)")
-    # ⚠⚠ THE POLICY IS BUILT FROM `tasks/bc_policy.BcNet`, the SAME
+    # ⚠⚠ THE POLICY IS BUILT FROM `deep_agents/bc/policy.BcNet`, the SAME
     # declaration `libero_bc_train` fitted, and `load_params` validates every
     # layer's name and size — a checkpoint of a different shape raises here
     # rather than loading the layers that happen to match.
@@ -762,7 +762,10 @@ def run[T: PlacementTable, M: ModelDefLike](
     var act_norm = ACTNorm()
     if have_bc:
         load_params["cpu"](net, policy_path, None)
-        norm = load_bc_norm(policy_path + ".norm", OD, OSC_ACTION_DIM)
+        norm = load_bc_norm(
+            policy_path + ".norm", OD, OSC_ACTION_DIM,
+            "Re-run libero-bc-train.",
+        )
         print("  policy:", policy_path, "| obs", OD, "-> 7, clamped to [-1, 1]")
     elif have_act:
         if not exists(act_dir + "/" + act_ckpt + ".ckpt") or not exists(act_dir + "/norm.json"):

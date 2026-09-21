@@ -1,9 +1,9 @@
 """The BC policy's SHAPE and its normalisation — written once, used by both.
 
-    from noeira.tasks.bc_policy import BcNet, BcNorm, bc_forward_host
+    from noeira.deep_agents.bc.policy import BcNet, BcNorm, bc_forward_host
 
-`examples/libero/libero_bc_train.mojo` fits it; `examples/tasks/
-libero_eval_batched.mojo` runs it. A network the trainer and the driver each
+A trainer fits it (`examples/libero/libero_bc_train.mojo` on LIBERO) and a
+driver runs it (`examples/libero/libero_eval_batched.mojo`). A network the trainer and the driver each
 spell for themselves is the shape `_a_rule_written_inline_twice_drifts` names:
 one side gains a layer, the checkpoint still LOADS by name and size for the
 layers that match, and the policy quietly scores worse than it trained.
@@ -33,8 +33,8 @@ comptime BcNet[OBS: Int, ACT: Int] = Sequential[
     Linear[OBS, BC_HID], ReLU[BC_HID], Linear[BC_HID, BC_HID], ReLU[BC_HID],
     Linear[BC_HID, ACT],
 ]
-"""`OBS -> 256 -> 256 -> ACT`, no output squash — the recorded LIBERO actions
-are already in [-1, 1] and a `tanh` head would put the fit's error where the
+"""`OBS -> 256 -> 256 -> ACT`, no output squash — recorded actions (LIBERO's
+OSC_POSE, a family's normalised targets) are already in [-1, 1] and a `tanh` head would put the fit's error where the
 gradient vanishes. The driver clamps at inference instead."""
 
 
@@ -74,7 +74,7 @@ def write_bc_norm(
     path: String, mu: List[Float64], sd: List[Float64], act_dim: Int
 ) raises:
     """The sidecar `<checkpoint>.norm` the trainer writes."""
-    var text = String("# libero bc normalisation — GENERATED\n")
+    var text = String("# bc normalisation — GENERATED\n")
     text += "obs_dim=" + String(len(mu)) + "\n"
     text += "act_dim=" + String(act_dim) + "\n"
     for j in range(len(mu)):
@@ -85,7 +85,10 @@ def write_bc_norm(
         fh.write(text)
 
 
-def load_bc_norm(path: String, obs_dim: Int, act_dim: Int) raises -> BcNorm:
+def load_bc_norm(
+    path: String, obs_dim: Int, act_dim: Int,
+    retrain_hint: String = "Re-run the BC trainer.",
+) raises -> BcNorm:
     """⚠ REFUSES A SIDECAR THAT IS NOT THIS MODEL'S. A policy run under the
     wrong normalisation produces plausible actions and a wrong rate, which is
     the failure this check exists to make impossible."""
@@ -93,7 +96,7 @@ def load_bc_norm(path: String, obs_dim: Int, act_dim: Int) raises -> BcNorm:
         raise Error(
             "bc policy: no normalisation beside the checkpoint at " + path
             + " — a checkpoint without it is a network fed raw metres where it"
-            " was trained on standardised ones. Re-run libero-bc-train."
+            " was trained on standardised ones. " + retrain_hint
         )
     var text: String
     with open(path, "r") as fh:
