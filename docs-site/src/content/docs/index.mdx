@@ -61,8 +61,9 @@ cloud is the same code that drives the arm from a Jetson.
 	</Card>
 	<Card title="Tasks and benchmarks" icon="list-format">
 		A declarative task layer — families, goals, placements — that runs many
-		tasks in one batched scene. LIBERO's suites are ported onto it; the
-		SO-101 has its own tabletop and tower families.
+		tasks in one batched scene. [LIBERO](/environments/libero/)'s suites are
+		ported onto it; the SO-101 has its own tabletop and tower families. See
+		[the task layer](/tasks/).
 	</Card>
 	<Card title="Learning" icon="star">
 		Reinforcement learning from tabular methods to SAC and PPO, world models
@@ -72,12 +73,13 @@ cloud is the same code that drives the arm from a Jetson.
 	<Card title="Imitation and VLAs" icon="random">
 		ACT and SmolVLA trained and run in Mojo, behaviour cloning, and
 		HIL-SERL with DAgger-style interventions — learning from demonstrations
-		recorded in simulation or on the real arm.
+		recorded in simulation or on the real arm. See
+		[imitation and VLAs](/algorithms/imitation/).
 	</Card>
 	<Card title="Robots" icon="rocket">
 		The SO-101 arm over its servo bus: calibration, teleoperation, recording
 		to LeRobot v3 datasets with cameras, and policies deployed on a Jetson
-		Orin.
+		Orin. See [robots](/robots/).
 	</Card>
 	<Card title="Infrastructure" icon="puzzle">
 		[`noeira.nn`](/nn/) — autodiff, 70+ primitives, fused and flash
@@ -96,6 +98,10 @@ cloud is the same code that drives the arm from a Jetson.
 	<Card title="Train in simulation" icon="approve-check">
 		[Train DQN on CartPole on the GPU](/start/quickstart-gpu/), or start
 		smaller with [Q-Learning on GridWorld](/start/quickstart-tabular/).
+	</Card>
+	<Card title="Bring up a robot" icon="rocket">
+		[Set up the SO-101](/robots/so101-setup/), record demonstrations, and
+		[deploy a policy](/robots/deployment/) — safety rules first.
 	</Card>
 	<Card title="New to the field?" icon="open-book">
 		[RL in five minutes](/start/rl-in-five-minutes/) — the agent and

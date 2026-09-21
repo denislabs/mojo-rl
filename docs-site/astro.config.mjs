@@ -87,6 +87,7 @@ export default defineConfig({
 						{ label: 'Traits', slug: 'concepts/traits' },
 						{ label: 'CPU and GPU paths', slug: 'concepts/cpu-gpu' },
 						{ label: 'Checkpoints', slug: 'concepts/checkpoints' },
+						{ label: 'Projects and runs', slug: 'concepts/projects' },
 					],
 				},
 				{
@@ -96,6 +97,8 @@ export default defineConfig({
 							label: 'Physics',
 							items: [
 								{ label: '3D engine', slug: 'physics/physics3d' },
+								{ label: 'Collision', slug: 'physics/collision' },
+								{ label: 'Constraints and tendons', slug: 'physics/constraints' },
 								{ label: '2D engine', slug: 'physics/physics2d' },
 								{ label: 'Validation', slug: 'physics/validation' },
 							],
@@ -114,8 +117,21 @@ export default defineConfig({
 								{ label: 'Atari 2600', slug: 'environments/atari' },
 								{ label: 'Board games', slug: 'environments/board-games' },
 								{ label: 'Procgen & Craftax', slug: 'environments/procgen' },
+								{ label: 'DeepMind Control', slug: 'environments/dm-control' },
+								{ label: 'LIBERO', slug: 'environments/libero' },
+								{ label: 'Robots and humanoids', slug: 'environments/robots' },
 								{ label: 'Gymnasium wrappers', slug: 'environments/gymnasium' },
 								{ label: 'Writing your own', slug: 'environments/custom' },
+							],
+						},
+						{
+							label: 'Tasks',
+							collapsed: true,
+							items: [
+								{ label: 'The task layer', slug: 'tasks' },
+								{ label: 'Goals', slug: 'tasks/goals' },
+								{ label: 'Placement and resets', slug: 'tasks/placement' },
+								{ label: 'Writing a family', slug: 'tasks/writing-a-family' },
 							],
 						},
 					],
@@ -181,6 +197,30 @@ export default defineConfig({
 									{ label: 'EfficientZero V2', slug: 'algorithms/efficient-zero-v2' },
 								],
 							},
+							{
+								label: '7 · Imitation and VLAs',
+								collapsed: true,
+								items: [
+									{ label: 'Overview', slug: 'algorithms/imitation' },
+									{ label: 'Behaviour cloning', slug: 'algorithms/imitation/bc' },
+									{ label: 'ACT', slug: 'algorithms/imitation/act' },
+									{ label: 'SmolVLA', slug: 'algorithms/imitation/smolvla' },
+								],
+							},
+							{
+								label: '8 · From demonstrations',
+								collapsed: true,
+								items: [
+									{ label: 'HIL-SERL and DAgger', slug: 'algorithms/imitation/hil-serl' },
+								],
+							},
+							{
+								label: '9 · Zero-shot',
+								collapsed: true,
+								items: [
+									{ label: 'Forward-Backward', slug: 'algorithms/forward-backward' },
+								],
+							},
 							{ label: 'Writing your own', slug: 'algorithms/custom' },
 							],
 						},
@@ -193,6 +233,18 @@ export default defineConfig({
 								{ label: 'Tree search', slug: 'planners/tree-search' },
 							],
 						},
+					],
+				},
+				{
+					label: 'Robots',
+					items: [
+						{ label: 'Overview and safety', slug: 'robots' },
+						{ label: 'SO-101 setup', slug: 'robots/so101-setup' },
+						{ label: 'Teleop and recording', slug: 'robots/teleop-recording' },
+						{ label: 'Cameras and calibration', slug: 'robots/cameras' },
+						{ label: 'The sim twin', slug: 'robots/sim-twin' },
+						{ label: 'Deployment', slug: 'robots/deployment' },
+						{ label: 'Jetson Orin', slug: 'robots/jetson' },
 					],
 				},
 				{
@@ -218,9 +270,18 @@ export default defineConfig({
 								{ label: 'Replay buffers', slug: 'data/replay' },
 								{ label: 'Trajectory store', slug: 'data/trajectory-store' },
 								{ label: 'Remote datasets', slug: 'data/remote' },
+								{ label: 'LeRobot datasets', slug: 'data/lerobot' },
 							],
 						},
-						{ label: 'Rendering', slug: 'rendering' },
+						{
+							label: 'Rendering',
+							collapsed: true,
+							items: [
+								{ label: 'Overview', slug: 'rendering' },
+								{ label: 'Ray-traced cameras', slug: 'rendering/cameras' },
+								{ label: 'Viewers and physics studio', slug: 'rendering/viewers' },
+							],
+						},
 						{
 							label: 'Tooling',
 							collapsed: true,
@@ -234,6 +295,8 @@ export default defineConfig({
 				{
 					label: 'Project',
 					items: [
+						{ label: 'Toolchain', slug: 'project/toolchain' },
+						{ label: 'Cloud GPU boxes', slug: 'project/cloud-gpu' },
 						{ label: 'Testing', slug: 'project/testing' },
 						{ label: 'Contributing', slug: 'project/contributing' },
 					],
