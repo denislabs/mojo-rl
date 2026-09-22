@@ -1,7 +1,7 @@
 """ACT ON THE SO-101 — WHAT ONE CHECKPOINT PREDICTS FOR A STORE ROW, POSITION BY POSITION.
 
     pixi run -e nvidia mojo run -I . examples/so101/act_so101_inspect.mojo \
-        --act projects/so101-tower/runs/<id>/checkpoints \
+        --act <run_id> \
         --store ~/.cache/noeira/act_so101/so101-tower__cube-in-bowl_240x320.h5
 
 The SO-101 twin of `examples/libero/libero_act_inspect.mojo` (read its header
@@ -15,16 +15,18 @@ chunk's, the per-position vs flat L1, and the query / decoder / action-head
 nodes' spread. A spread under a few % of the recorded one is the flat
 failure: do not arm the robot on it.
 
-Flags: `--act DIR` (best.ckpt + norm.json), `--store PATH`, `--ckpt best|last`,
+Flags: `--act RUN_ID|DIR` (a run id, found under `runs/` or
+`projects/*/runs/`, or a directory holding best.ckpt + norm.json), `--store PATH`, `--ckpt best|last`,
 `--ep E` (default 0), `--stride S` (default 30 = 1 s), `--rows N` (≤ 16,
 default 12), `--latent prior|posterior|sample`, `--no-load`. Normalised units.
 """
 
-from std.os.path import exists
+from std.os.path import exists, isdir
 from std.sys import argv
 from std.math import sqrt
 from max.gpu.host import DeviceContext
 
+from noeira.core.run import resolve_checkpoint
 from noeira.nn.constants import DT
 from noeira.deep_agents.act.config import (
     RUN_DEC_LAYERS, RUN_DIM, RUN_ENC_LAYERS, RUN_FF, RUN_HEADS, RUN_K,
@@ -158,6 +160,9 @@ def main() raises:
     if act_dir == "" or store == "":
         raise Error("so101 act inspect: --act DIR and --store PATH are required")
     var path = act_dir + "/" + ckpt + ".ckpt"
+    if not isdir(act_dir) and not no_load:
+        # a RUN ID: its `checkpoints/<best|last>.ckpt` (or a .ckpt file as is)
+        path = resolve_checkpoint(act_dir, ckpt)
     if not exists(path) and not no_load:
         raise Error("so101 act inspect: no " + path)
     if rows < 1 or rows > B:

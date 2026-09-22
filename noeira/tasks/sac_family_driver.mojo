@@ -1446,6 +1446,18 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
         # ⚠ IT IS SILENT. `log_scalar` after `close` neither raises nor warns;
         # the metric simply never appears, and a missing key reads as "the run
         # did not get that far".
+        #
+        # ⚠⚠ AND THE VERDICT GOES TO THE MONITOR BEFORE `close()`. `close()`
+        # sends `/finish` with `done` and an EMPTY outcome for any run that did
+        # not `finish` first, and the first finish wins — so setting the
+        # outcome on `run` below, after this, reached run.kv and never the
+        # dashboard. Every SAC-family run on the monitor had a blank outcome.
+        var outcome = (
+            String("success_rate=") + String(rate)
+            + " success_rate_final=" + String(rate_final)
+            + " shaped_return=" + String(shaped)
+        )
+        logger.finish(String("done"), outcome)
         logger.close()
         _ = logger        # keeps `logger_ptr` alive to here
 
@@ -1460,11 +1472,7 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
         # successful" is pain 1, and no naming convention fixes it — a written
         # `outcome=` does. ⚠ `success_rate` is NOT the return: this family's
         # `RETURN != SUCCESS`, and it is the rate the whole family is judged by.
-        run.set_outcome(
-            String("success_rate=") + String(rate)
-            + " success_rate_final=" + String(rate_final)
-            + " shaped_return=" + String(shaped)
-        )
+        run.set_outcome(outcome)
 
         print("  csv                :", csv_path)
         print("  checkpoint         :", ckpt_path)

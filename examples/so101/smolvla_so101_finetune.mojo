@@ -78,7 +78,7 @@ is read from `tools/vla/`.
 | `SMOLVLA_STEPS` | optimizer steps, without a rebuild. ⚠ **A SHORT RUN IS NOT A GENTLE RUN** — see below |
 | `SMOLVLA_ACCUM` | observations per optimizer step (default 64, the reference's batch size); a multiple of the build's `B` |
 | `SMOLVLA_LR` | default 1e-4 |
-| `SMOLVLA_CKPT` | checkpoint path prefix; default `/tmp/smolvla_so101` |
+| `SMOLVLA_CKPT` | checkpoint path prefix (`<prefix>_best.ckpt` / `_last.ckpt`); default the run's own `runs/<id>/checkpoints/best.ckpt` / `last.ckpt` |
 | `SMOLVLA_INIT` | a `*_best.ckpt` to start from, applied ON TOP of the base checkpoint |
 | `SMOLVLA_VAL_EPISODES` | episodes held out at the END of the recording; default one fifth. **`0` trains on every episode** — see below |
 | `SMOLVLA_PROFILE` | set to anything: per-phase wall times (host images / prefix / suffix forward / backward) in the log line, at the cost of three extra drains per observation |
@@ -95,7 +95,7 @@ from a curve that is actually held out; then `SMOLVLA_VAL_EPISODES=0` at that
 step count, for the checkpoint that goes on the arm. With `0` the "held-out"
 groups are drawn from the TRAINING rows and the line says so — that curve is
 a sanity number (finite, falling), not a generalisation measure, and `best`
-selected by it is not a held-out best. Deploy `_last.ckpt` from that run.
+selected by it is not a held-out best. Deploy `last.ckpt` from that run.
 
 ## What this run is, and what it is not
 
@@ -141,10 +141,11 @@ steps and means nothing.
 
 ### Checkpoints
 
-`$SMOLVLA_CKPT_best.ckpt` is written whenever the held-out loss improves and
-`..._last.ckpt` at every validation, so a killed run loses at most `VAL_EVERY`
-steps and never the best model. ⚠ `/tmp` by default — move them somewhere
-durable before rebooting a rented box.
+`runs/<id>/checkpoints/best.ckpt` (project `so101`) is written whenever the
+held-out loss improves and `last.ckpt` at every validation, so a killed run
+loses at most `VAL_EVERY` steps and never the best model. Both are uploaded
+through the run's artifact sink when `.env` names a monitor; `SMOLVLA_CKPT`
+overrides the location with `<prefix>_best.ckpt` / `<prefix>_last.ckpt`.
 
 ⚠ **Only the TRAINABLE set is saved**: the expert, the four action
 projections, and Adam's moments for them. The SigLIP tower, the sixteen VLM
@@ -196,8 +197,10 @@ from noeira.nn.core.checkpoint import CheckpointScalars
 from noeira.nn.core.initializer import Deterministic
 from noeira.nn.optimizer.adam import Adam
 from noeira.nn.primitives.linear import Linear
-from noeira.core.dotenv import load_dotenv
-from noeira.core.logger import RemoteLogger
+from noeira.core.run import RunContext, register_run
+from noeira.core.run_session import finish_run, run_logger
+from noeira.io.artifact_sink import ArtifactSink, sink_for_run
+from noeira.deep_agents.training.checkpoint import announce_checkpoint
 from noeira.io.hf import hf_download_file, HF_MODEL, HF_DATASET
 from noeira.io.hdf5 import H5Dataset
 
@@ -600,9 +603,22 @@ def main() raises:
     pol.load_stats(stats_path)
     print("  policy  loaded")
 
+    var run = RunContext(
+        project=String("so101"),
+        driver=String("examples/so101/smolvla_so101_finetune.mojo"),
+        slug=String("smolvla-so101"),
+        env=String("builtin:so_arm101"),
+        dataset=store_path,
+        device=String(ctx.name()),
+    )
+    print("  run     " + run.dir)
+    # The run's own directory unless `SMOLVLA_CKPT` names a prefix.
     var ckpt = getenv("SMOLVLA_CKPT")
-    if ckpt.byte_length() == 0:
-        ckpt = String("/tmp/smolvla_so101")
+    var last_ckpt = run.checkpoint_path(String("last"))
+    var best_ckpt = run.checkpoint_path(String("best"))
+    if ckpt.byte_length() > 0:
+        last_ckpt = ckpt + "_last.ckpt"
+        best_ckpt = ckpt + "_best.ckpt"
 
     var sam = Sampler(store_path, SmolVLAStats.from_stats_json(stats_path))
     var n_ep = sam.store.n_episodes()
@@ -648,17 +664,13 @@ def main() raises:
             " subset, NOT held out (SMOLVLA_VAL_EPISODES=0)"
         )
 
-    var env_vars = load_dotenv()
+    # `SMOLVLA_NO_MONITOR` points the logger at no `.env` at all, so its
+    # remote half is inert; `metrics.csv` is still written.
     var no_mon = getenv("SMOLVLA_NO_MONITOR")
-    var monitor_url = (
-        String("") if no_mon.byte_length() > 0
-        else env_vars.get("NOEIRA_CLOUD_URL", "")
-    )
-    var logger = RemoteLogger(
-        server_url=monitor_url,
-        run_name="SmolVLA SO-ARM101 fine-tune",
+    var logger = run_logger(
+        run,
         buffer_size=64,
-        api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
+        env_path=String("") if no_mon.byte_length() > 0 else String(".env"),
     )
     logger.set_config("algorithm", "SmolVLA")
     logger.set_config("robot", "SO-ARM101")
@@ -670,6 +682,12 @@ def main() raises:
     logger.set_config("peak_lr", String(PEAK_LR))
     logger.set_config("beta2", String(BETA2))
     logger.set_config("warmup", String(WARMUP_STEPS))
+    register_run(run, logger)
+    # ⚠ `SMOLVLA_NO_MONITOR` must silence the uploads too: `sink_for_run`
+    # reads `.env` itself.
+    var artifacts: Optional[ArtifactSink] = None
+    if no_mon.byte_length() == 0:
+        artifacts = sink_for_run(run.id, run.dir)
 
     var st = Step.make["gpu"](Optional(ctx))
     st.profile = profile
@@ -883,35 +901,43 @@ def main() raises:
                 "gpu", SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
                 SMOLLM_KV_W, PAD,
             ](
-                ckpt + "_last.ckpt", pol.expert, pol.action_in,
+                last_ckpt, pol.expert, pol.action_in,
                 pol.time_mlp_in, pol.time_mlp_out, pol.action_out, sp_frozen,
                 True, Optional(ctx), scalars=opt_sc,
             )
+            announce_checkpoint(last_ckpt, artifacts, run.dir)
             if vloss < best_val:
                 best_val = vloss
                 save_trainables[
                     "gpu", SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF,
                     SMOLLM_DIM, SMOLLM_KV_W, PAD,
                 ](
-                    ckpt + "_best.ckpt", pol.expert, pol.action_in,
+                    best_ckpt, pol.expert, pol.action_in,
                     pol.time_mlp_in, pol.time_mlp_out, pol.action_out,
                     sp_frozen, True, Optional(ctx), scalars=opt_sc,
                 )
-                print("      saved " + ckpt + "_best.ckpt")
+                announce_checkpoint(best_ckpt, artifacts, run.dir)
+                print("      saved " + best_ckpt)
             # ⚠ Validation ran `run_one`, which does a BACKWARD it does not
             # need — `SmolVLATrainStep.run` does both. The gradients it leaves
             # are discarded by the next step's `zero_trainable_grads`, above.
             # Correct, and about twice the cost it should be.
 
-    logger.flush()
+    finish_run(
+        run, logger, artifacts,
+        String("best_val_loss=") + String(best_val)
+        + " base_val_loss=" + String(base_val)
+        + " held_out=" + String(held_out),
+    )
     print("")
     print("  best " + val_label + " " + String(best_val) + "  vs baseline "
           + String(base_val) + "  ("
           + String(100.0 * (best_val - base_val) / base_val) + "%)")
-    print("  weights: " + ckpt + "_best.ckpt  /  " + ckpt + "_last.ckpt")
+    print("  weights: " + best_ckpt + "  /  " + last_ckpt)
+    print("  run:     " + run.kv_path())
     if not held_out:
         print("  ⚠ nothing was held out: `best` was picked by a TRAINING"
-              " subset. Deploy _last.ckpt, at the step count the held-out"
+              " subset. Deploy last.ckpt, at the step count the held-out"
               " run chose.")
     print("done")
 

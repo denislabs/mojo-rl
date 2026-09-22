@@ -7,6 +7,7 @@ action stream against what was actually recorded.
 
     pixi run mojo build -I . -Xlinker -ld_classic -o /tmp/act_eval \\
         examples/so101/act_so101_openloop_eval.mojo && /tmp/act_eval
+    ACT_CKPT=<run_id> /tmp/act_eval    # a training run's best.ckpt (or a .ckpt path)
 
 This is the whole inference path — chunked query, ring buffer, exponential
 weighting, denormalization back to lerobot units — exercised exactly as a
@@ -69,6 +70,7 @@ from noeira.deep_agents.act.config import (
 from noeira.deep_agents.act.data import ACTDataset
 from noeira.deep_agents.act.inference import TemporalEnsemble, denormalize
 from noeira.deep_agents.act.trainer import ACTTrainer
+from noeira.core.run import resolve_checkpoint
 
 
 comptime QPOS = SO101_QPOS
@@ -106,9 +108,9 @@ comptime T = ACTTrainer[
 ]
 comptime IMG_ELEMS = N_CAM * 3 * IMG_H * IMG_W
 comptime DEFAULT_CKPT = "act_so101_best_gpu.ckpt"
-"""The GPU run's best checkpoint. `ACT_CKPT` overrides — point it at
-`/tmp/act_so101_best.ckpt` for a CPU run, or at a `_last_` checkpoint to
-evaluate a run that was killed."""
+"""The GPU run's best checkpoint. `ACT_CKPT` overrides — a RUN ID (its
+`runs/<id>/checkpoints/best.ckpt`, what the trainers now write) or a checkpoint
+FILE, e.g. a run's `last.ckpt` to evaluate a run that was killed."""
 
 
 # Joint names, in the dataset's own order (meta/info.json `action.names`).
@@ -160,6 +162,9 @@ def main() raises:
     )
     if ckpt.byte_length() == 0:
         ckpt = String(DEFAULT_CKPT)
+    else:
+        # a RUN ID resolves to its checkpoints/best.ckpt; a file is used as is
+        ckpt = resolve_checkpoint(ckpt, String("best"))
     if not Bool(os.path.exists(PythonObject(ckpt))):
         print("MISSING CHECKPOINT: " + ckpt)
         print(

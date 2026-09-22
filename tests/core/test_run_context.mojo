@@ -20,9 +20,13 @@ repo's own `runs/`. A gate that wrote where the tool writes would be one
 from std.time import perf_counter_ns
 
 from noeira.core.kv import kv_lines
-from noeira.core.logger import CompositeLogger, CsvLogger, RemoteLogger
+from noeira.core.logger import CompositeLogger, CsvLogger, Logger, RemoteLogger
+from noeira.core.run_session import finish_run, run_logger
+from noeira.io.artifact_sink import ArtifactSink
 from noeira.core.run import (
     RunContext,
+    run_id_of_checkpoint,
+    resolve_checkpoint,
     civil_from_days,
     date_utc,
     derive_run_id,
@@ -329,6 +333,155 @@ def test_register_run_seeds_the_config_then_announces() raises:
     _ = run^
 
 
+def _write(path: String, text: String) raises:
+    with open(path, "w") as fh:
+        fh.write(text)
+
+
+def test_close_records_what_the_run_left() raises:
+    """⚠⚠ `add_artifact` HAD ZERO CALLERS, so every `run.kv` on disk carried no
+    `artifact=` line and `project-push` — which pushes what `run.kv` lists —
+    pushed nothing. `close()` now reads the run directory itself. Asserted:
+    checkpoints, eval files, the CSV and its config sidecar are recorded; a
+    `.tmp` (an atomic write caught mid-flight) is not; and a checkpoint
+    recorded twice is ONE entry describing the latest bytes."""
+    var root = _root()
+    var run = RunContext(project=String("p"), driver=String("d.mojo"), root=root)
+    var lg = run_logger(run, env_path=root + "/no.env")
+    lg.set_config(String("algorithm"), String("SAC"))
+    register_run(run, lg)
+    lg.log_scalar(String("loss"), 1.5, 1)
+    _write(run.checkpoint_path(String("best")), String("v1"))
+    run.add_artifact(String("checkpoints/best.ckpt"))
+    _write(run.checkpoint_path(String("best")), String("v2 is longer"))
+    _write(run.checkpoint_path(String("last")) + ".tmp", String("partial"))
+    _write(run.eval_dir() + "/report.kv", String("success_rate=0.5\n"))
+    lg.close()
+    run.close()
+    var rec = load_run(run.kv_path())
+    var rels = List[String]()
+    for a in rec.artifacts:
+        var s0 = String(a)
+        rels.append(String(s0[byte = 0 : s0.find(":")]))
+    print("  recorded:", len(rels), "artifacts")
+    var want = [
+        String("checkpoints/best.ckpt"), String("eval/report.kv"),
+        String("metrics.csv"), String("metrics.config.kv"),
+    ]
+    for w in want:
+        var n = 0
+        for r in rels:
+            if r == w:
+                n += 1
+        if n != 1:
+            raise Error(w + " recorded " + String(n) + " times, want 1")
+    for r in rels:
+        if r.endswith(".tmp"):
+            raise Error("a .tmp file was recorded: " + r)
+    # The best entry describes the SECOND write (12 bytes), not the first.
+    for a in rec.artifacts:
+        if String(a).startswith("checkpoints/best.ckpt:") and String(a).find(":12:") < 0:
+            raise Error("best.ckpt entry is stale: " + String(a))
+    # And the config reached its sidecar.
+    with open(run.dir + "/metrics.config.kv", "r") as fh:
+        var cfg = fh.read()
+        if cfg.find("algorithm=SAC") < 0 or cfg.find("project=p") < 0:
+            raise Error("config sidecar: " + cfg)
+    _ = run^
+
+
+@fieldwise_init
+struct _Rec(Logger):
+    """Records the order of the calls `finish_run` makes."""
+    var calls: List[String]
+
+    def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
+        pass
+
+    def log_scalars(
+        mut self, names: List[String], values: List[Float64], step: Int
+    ) raises:
+        pass
+
+    def flush(mut self) raises:
+        pass
+
+    def register(mut self) raises:
+        pass
+
+    def finish(mut self, status: String, outcome: String) raises:
+        self.calls.append("finish:" + status + ":" + outcome)
+
+    def close(mut self) raises:
+        self.calls.append(String("close"))
+
+    def set_config(mut self, key: String, value: String):
+        pass
+
+    def is_active(self) -> Bool:
+        return True
+
+
+def test_finish_run_sends_the_verdict_before_closing() raises:
+    """⚠⚠ THE ORDER IS THE BUG IT FIXES. The SAC family driver closed its logger
+    and then set the outcome; `close()` had already sent `/finish` with `done`
+    and an empty outcome, and the first finish wins. So: the logger must see
+    `finish(outcome)` BEFORE `close`, and run.kv must carry the same outcome."""
+    var root = _root()
+    var run = RunContext(project=String("p"), driver=String("d.mojo"), root=root)
+    var lg = _Rec(List[String]())
+    var none = Optional[ArtifactSink](None)
+    finish_run(run, lg, none, String("eval_return=812.5"))
+    print("  finish_run calls:", lg.calls[0], "then", lg.calls[1])
+    if len(lg.calls) != 2 or lg.calls[0] != "finish:done:eval_return=812.5" or lg.calls[1] != "close":
+        raise Error("finish_run order: " + lg.calls[0])
+    var rec = load_run(run.kv_path())
+    if rec.outcome != "eval_return=812.5" or rec.status != "done" or rec.finished.byte_length() == 0:
+        raise Error("run.kv: status=" + rec.status + " outcome=" + rec.outcome)
+    _ = run^
+
+
+def test_run_id_of_checkpoint() raises:
+    var cases = [
+        (String("runs/2026-09-22_bfm-zero_ab12cd34/checkpoints/step_5.ckpt"), String("2026-09-22_bfm-zero_ab12cd34")),
+        (String("projects/g1/runs/X_y_z/checkpoints/final.ckpt"), String("X_y_z")),
+        (String("/tmp/act_so101_best.ckpt"), String("")),
+        (String(""), String("")),
+    ]
+    for c in cases:
+        var got = run_id_of_checkpoint(c[0])
+        if got != c[1]:
+            raise Error("run_id_of_checkpoint(" + c[0] + ") = '" + got + "'")
+    print("  run_id_of_checkpoint:", len(cases), "cases")
+
+
+def test_resolve_checkpoint() raises:
+    """A file is used as is; a run id finds `<run>/checkpoints/<name>.ckpt`;
+    anything else RAISES rather than falling back to a default path."""
+    var root = _root()
+    var run = RunContext(project=String("p"), driver=String("d.mojo"), root=root)
+    _write(run.checkpoint_path(String("last")), String("x"))
+    var f = run.checkpoint_path(String("last"))
+    if resolve_checkpoint(f) != f:
+        raise Error("a file path was not returned as is")
+    # A run under the flat root, by id: make one there by symlink-free copy.
+    var flat = String("runs/") + run.id
+    _ = run_capture(String("mkdir -p ") + flat + "/checkpoints && cp " + f + " " + flat + "/checkpoints/", 4096)
+    var got = resolve_checkpoint(run.id)
+    _ = run_capture(String("rm -rf runs/") + run.id + " 2>&1", 4096)
+    if got != flat + "/checkpoints/last.ckpt":
+        raise Error("run id resolved to " + got)
+    var raised = False
+    try:
+        _ = resolve_checkpoint(String("no_such_run_xyz"))
+    except:
+        raised = True
+    if not raised:
+        raise Error("an unknown ref did not raise")
+    print("  resolve_checkpoint: file, run id, unknown -> raise")
+    _ = run^
+
+
 def main() raises:
     print("=" * 62)
     print("RunContext — one identifier, and a record written at t=0")
@@ -343,6 +496,10 @@ def main() raises:
     test_an_unknown_key_raises()
     test_the_record_is_rewritten_not_appended()
     test_register_run_seeds_the_config_then_announces()
+    test_close_records_what_the_run_left()
+    test_finish_run_sends_the_verdict_before_closing()
+    test_run_id_of_checkpoint()
+    test_resolve_checkpoint()
     # ⚠ THE PREFIX IS A LITERAL, NOT A VARIABLE. An `rm -rf` assembled from a
     # String is one empty value away from a very bad day; this one cannot
     # widen, and every root above is minted under exactly this prefix.

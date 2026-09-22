@@ -63,6 +63,9 @@ from noeira.data.sampler import UniformDeviceSampler
 from noeira.core.dotenv import load_dotenv
 from noeira.core.logger import CsvLogger, RemoteLogger, CompositeLogger
 from noeira.core.run import RunContext, register_run
+from noeira.core.run_session import finish_run
+from noeira.io.artifact_sink import sink_for_run
+from noeira.deep_agents.training.checkpoint import announce_checkpoint
 from noeira.cuda import CUDAGraph, maybe_capture_replay
 from noeira.deep_agents.fb.cpr import FBCPRTrainer, FBCPRLosses
 from noeira.deep_agents.fb.trainer import FBLosses
@@ -411,6 +414,9 @@ def main() raises:
     comptime SQRT_D = sqrt(Float64(D))
     # ⚠ AFTER the config, before step 0 — see `core/run.register_run`.
     register_run(run, logger)
+    # The uplink: `final` is uploaded (step_* only on request); None without
+    # a monitor in .env, and every call below is then a no-op.
+    var artifacts = sink_for_run(run.id, run.dir)
 
     var t_log = perf_counter_ns()
     var last_log_step = 0
@@ -567,9 +573,9 @@ def main() raises:
             print("      checkpoint ->", p, "(+ .cpr)")
     var pf = run.checkpoint_path(String("final"))
     t.save_state(pf)
-    logger.close()
+    announce_checkpoint(pf, artifacts, run.dir)
+    finish_run(run, logger, artifacts)
     print("[3] done. final checkpoint ->", pf, "(+ .cpr)")
-    run.close()
     print("      metrics CSV ->", csv_path)
     print("      run record  ->", run.kv_path())
 

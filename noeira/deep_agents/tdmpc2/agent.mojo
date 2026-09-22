@@ -20,6 +20,8 @@ targets (stop-grad) → WM BPTT → policy update on encoded latents → Polyak.
 Replay stays host; the steps upload/download internally via storage Tensors.
 """
 
+from noeira.io.artifact_sink import ArtifactSink
+from noeira.deep_agents.training.checkpoint import announce_checkpoint
 from noeira.nn.core.param import walk_params, ParamVisitorRef
 from std.math import tanh
 from std.random import random_float64
@@ -1037,6 +1039,8 @@ struct TDMPC2Agent[
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = String(""),
         checkpoint_every: Int = 0,
         eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
         eval_every: Int = 0,
@@ -1154,6 +1158,7 @@ struct TDMPC2Agent[
                 and checkpoint_path.byte_length() > 0
             ):
                 self.save_state(checkpoint_path)
+                announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
             var do_eval = (
                 eval_every > 0 and step > 0 and step % eval_every == 0
@@ -1197,6 +1202,7 @@ struct TDMPC2Agent[
 
         if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
             self.save_state(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
         return best
 
     # ── batched drivers (N_ENVS envs stepped in lockstep) ──────────────────
@@ -1373,6 +1379,8 @@ struct TDMPC2Agent[
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = String(""),
         checkpoint_every: Int = 0,
         base_step: Int = 0,
         eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
@@ -1649,6 +1657,7 @@ struct TDMPC2Agent[
                 and _crossed(prev, now, checkpoint_every)
             ):
                 self.save_state(checkpoint_path)
+                announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
             var do_eval = (
                 eval_every > 0
@@ -1693,6 +1702,7 @@ struct TDMPC2Agent[
 
         if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
             self.save_state(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
         return best
 
     def _stage_obs[

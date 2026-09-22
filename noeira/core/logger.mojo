@@ -66,6 +66,7 @@ from std.math import isnan, isinf
 
 from noeira.io.http_sink import HttpPostSink
 from noeira.io.json import JsonWriter
+from noeira.io.fileio import write_text_atomic
 
 # =============================================================================
 # MetricEntry — single buffered data point
@@ -237,6 +238,8 @@ struct CsvLogger(Logger):
     var _start_ns: Int
     var _file_header_written: Bool
     var _total_logged: Int
+    var _config_keys: List[String]
+    var _config_vals: List[String]
 
     def __init__(
         out self,
@@ -249,6 +252,8 @@ struct CsvLogger(Logger):
         self._start_ns = perf_counter_ns()
         self._file_header_written = False
         self._total_logged = 0
+        self._config_keys = List[String]()
+        self._config_vals = List[String]()
 
     def __init__(out self, *, deinit move: Self):
         self.file_path = move.file_path^
@@ -257,6 +262,34 @@ struct CsvLogger(Logger):
         self._start_ns = move._start_ns
         self._file_header_written = move._file_header_written
         self._total_logged = move._total_logged
+        self._config_keys = move._config_keys^
+        self._config_vals = move._config_vals^
+
+    def config_path(self) -> String:
+        """`<csv minus .csv>.config.kv` — `runs/<id>/metrics.config.kv` for a
+        run's CSV. Beside the file it describes, so the two travel together."""
+        var p = self.file_path
+        if p.endswith(".csv"):
+            return String(p[byte = 0 : p.byte_length() - 4]) + ".config.kv"
+        return p + ".config.kv"
+
+    def _write_config(mut self):
+        """⚠ NEVER RAISES: a config file that cannot be written must not stop
+        a run. It prints once instead, because a silently missing config is
+        the failure this file exists to end."""
+        if len(self._config_keys) == 0:
+            return
+        var out = String("")
+        for i in range(len(self._config_keys)):
+            # One line per pair; a newline inside a value would split it.
+            out += (
+                self._config_keys[i].replace("\n", " ") + "="
+                + self._config_vals[i].replace("\n", " ") + "\n"
+            )
+        try:
+            write_text_atomic(self.config_path(), out)
+        except e:
+            print("  [csv] could not write", self.config_path(), ":", e)
 
     def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
         if isnan(value) or isinf(value):
@@ -309,8 +342,9 @@ struct CsvLogger(Logger):
 
     def register(mut self) raises:
         """Nothing to announce — the file IS the registration, and it is created
-        by the first `flush`."""
-        pass
+        by the first `flush`. The config is written here, because this is the
+        point every driver has finished calling `set_config`."""
+        self._write_config()
 
     def finish(mut self, status: String, outcome: String) raises:
         """A CSV has no room for a terminal state.
@@ -322,9 +356,24 @@ struct CsvLogger(Logger):
 
     def close(mut self) raises:
         self.flush()
+        self._write_config()
 
     def set_config(mut self, key: String, value: String):
-        pass
+        """Recorded in `config_path()`, written at `register` and `close`.
+
+        ⚠⚠ THIS USED TO BE `pass`, AND THE DRIVERS WORKED AROUND IT BY LOGGING
+        THEIR CONFIG AS METRICS. `cfg/lanes`, `cfg/tau`, `cfg/seed` … went
+        into the CSV at step 0 as scalars (the SAC family driver, BFM,
+        HIL-SERL), because only the remote half kept a config and "a CSV that
+        cannot say what produced it" was worse. On the dashboard each became
+        a one-point chart. The config now has a file of its own.
+        """
+        for i in range(len(self._config_keys)):
+            if self._config_keys[i] == key:
+                self._config_vals[i] = value
+                return
+        self._config_keys.append(key)
+        self._config_vals.append(value)
 
     def is_active(self) -> Bool:
         return True

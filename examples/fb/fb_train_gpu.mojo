@@ -66,6 +66,9 @@ from noeira.data.sampler import UniformDeviceSampler
 from noeira.core.dotenv import load_dotenv
 from noeira.core.logger import CsvLogger, RemoteLogger, CompositeLogger
 from noeira.core.run import RunContext, register_run
+from noeira.core.run_session import finish_run
+from noeira.io.artifact_sink import sink_for_run
+from noeira.deep_agents.training.checkpoint import announce_checkpoint
 from noeira.cuda import CUDAGraph, maybe_capture_replay
 from noeira.deep_agents.fb.trainer import FBTrainer, FBLosses
 from noeira.envs.phyics3d_env import Phyics3dEnv
@@ -529,6 +532,9 @@ def main() raises:
     # `/runs` payload carries the config, and a run that dies before its first
     # metric batch would otherwise never appear on the dashboard at all.
     register_run(run, logger)
+    # The uplink: `final` is uploaded (step_* only on request); None without
+    # a monitor in .env, and every call below is then a no-op.
+    var artifacts = sink_for_run(run.id, run.dir)
 
     # Lazily captured on the first non-logging step; replayed thereafter.
     var train_graph = Optional[CUDAGraph](None)
@@ -734,13 +740,13 @@ def main() raises:
             print("      checkpoint ->", p)
     var pf = run.checkpoint_path(String("final"))
     t.save_state(pf)
+    announce_checkpoint(pf, artifacts, run.dir)
     if obs_norm_on:
         onorm.save(pf + ".norm")
     # ⚠ Without this the tail of the buffer is lost — CsvLogger flushes at
     # `buffer_size`, so up to 63 entries (the most recent ones) would never
     # reach disk on a clean exit.
-    logger.close()
-    run.close()
+    finish_run(run, logger, artifacts)
     print("[3] done. final checkpoint ->", pf)
     print("      metrics CSV ->", run.metrics_path())
     print("      run record   ->", run.kv_path())

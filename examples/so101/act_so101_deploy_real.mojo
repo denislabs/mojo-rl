@@ -16,6 +16,10 @@ same two cameras the demonstrations were recorded with.
     #   pixi run project-pull so101-tower --weights
     /tmp/act_deploy --project so101-tower --role act --devices 0,1
 
+    # a training run's own weights: a RUN ID (its checkpoints/best.ckpt, with
+    # norm.json beside it) or a .ckpt path
+    /tmp/act_deploy --ckpt <run_id> --devices 0,1
+
     # --arm is what actually moves the robot. Be at the desk, hand on the power.
     /tmp/act_deploy --project so101-tower --role act --devices 0,1 --arm --seconds 30
 
@@ -228,6 +232,7 @@ from noeira.robot.so101.deploy_shutdown import (
 from noeira.utils.fmt import col, fixed, pad_left, pad_right
 from noeira.vision.camera_thread import CameraReader, parse_camera_specs
 from noeira.core.policy import describe_policy, resolve_policy
+from noeira.core.run import resolve_checkpoint
 
 
 comptime DEPLOY_TARGET: StaticString = "gpu" if is_defined["ACT_GPU"]() else "cpu"
@@ -572,6 +577,11 @@ def main() raises:
         store = getenv("ACT_STORE")
     if undistort_dir.byte_length() > 0 and len(devices) == 0:
         raise Error("act deploy: --undistort needs --devices")
+    if ckpt != "":
+        # `--ckpt` takes a RUN ID too: the trainer writes
+        # `runs/<id>/checkpoints/best.ckpt` with `norm.json` beside it, which
+        # `norm_beside` below finds. A file path is used as given.
+        ckpt = resolve_checkpoint(ckpt, String("best"))
     if ckpt == "":
         # ⚠ THE ROLE BEFORE THE CONSTANT, and an explicit `--ckpt` before both.
         ckpt = resolve_policy(project, role, String(DEFAULT_CKPT))

@@ -26,6 +26,8 @@ grad sites 1+2) → policy update on encoded latents (site 3) → ONE embedding 
 step → Polyak. The embedding table's `zero_grad`/`step` bracket the whole step.
 """
 
+from noeira.io.artifact_sink import ArtifactSink
+from noeira.deep_agents.training.checkpoint import announce_checkpoint
 from noeira.nn.core.param import walk_params, ParamVisitorRef
 from std.math import tanh
 from std.random import random_float64
@@ -1305,6 +1307,8 @@ struct TDMPC2MultiTaskAgent[
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = String(""),
         checkpoint_every: Int = 0,
         base_step: Int = 0,
         eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
@@ -1577,6 +1581,7 @@ struct TDMPC2MultiTaskAgent[
                 and _crossed(prev, now, checkpoint_every)
             ):
                 self.save_state(checkpoint_path)
+                announce_checkpoint(checkpoint_path, artifacts, run_dir)
 
             var do_eval = (
                 eval_every > 0
@@ -1621,6 +1626,7 @@ struct TDMPC2MultiTaskAgent[
 
         if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
             self.save_state(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
         return best
 
     def _mt_stage_obs[

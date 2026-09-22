@@ -37,6 +37,8 @@ from std.memory import alloc, dealloc
 from std.random import random_float64
 from max.gpu.host import DeviceContext
 
+from noeira.io.artifact_sink import ArtifactSink
+from noeira.deep_agents.training.checkpoint import announce_checkpoint
 from noeira.core.env_traits import BoxDiscreteActionEnv, BoxContinuousActionEnv
 from noeira.core.logger import Logger, NoOpLogger
 from noeira.nn.constants import DT
@@ -244,6 +246,8 @@ struct DreamerV3Agent[
         verbose: Bool = True,
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         checkpoint_path: String = String(""),
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = String(""),
         checkpoint_every: Int = 0,
     ) raises -> Scalar[DT]:
         """Own the whole DreamerV3 single-env training loop for a DISCRETE env
@@ -451,11 +455,13 @@ struct DreamerV3Agent[
                     step % checkpoint_every == 0
                 ):
                     self.save(checkpoint_path)
+                    announce_checkpoint(checkpoint_path, artifacts, run_dir)
                 obs = env.reset_obs_list()
                 self.reset_belief()
 
         if checkpoint_path.byte_length() > 0:
             self.save(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
         var final_ev = self._greedy_eval[E](
             env, eval_episodes, ep_len, obsbuf, actbuf
         )
@@ -539,6 +545,8 @@ struct DreamerV3Agent[
         verbose: Bool = True,
         logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         checkpoint_path: String = String(""),
+        artifacts: Optional[ArtifactSink] = None,
+        run_dir: String = String(""),
         checkpoint_every: Int = 0,
         frame_repeat: Int = 1,
     ) raises -> Scalar[DT]:
@@ -698,11 +706,13 @@ struct DreamerV3Agent[
                     step % checkpoint_every == 0
                 ):
                     self.save(checkpoint_path)
+                    announce_checkpoint(checkpoint_path, artifacts, run_dir)
                 obs = self._reset_obs_dt[E](env)
                 self.reset_belief()
 
         if checkpoint_path.byte_length() > 0:
             self.save(checkpoint_path)
+            announce_checkpoint(checkpoint_path, artifacts, run_dir)
         var final_ev = self._greedy_eval_cont[E](
             env, eval_episodes, ep_len, obsbuf, actbuf, frame_repeat
         )

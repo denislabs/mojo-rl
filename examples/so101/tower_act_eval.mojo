@@ -1,7 +1,7 @@
 """THE VISION STUDENT, CLOSED LOOP — cube-in-bowl rate with the cameras in the loop.
 
     pixi run -e nvidia mojo run -I . examples/so101/tower_act_eval.mojo \\
-        --ckpt runs/<id>/checkpoints --episodes 128
+        --ckpt <run_id> --episodes 128
     pixi run -e nvidia mojo run -I . examples/so101/tower_act_eval.mojo \\
         --ckpt runs/<id>/checkpoints --dr full --dr-seed 1000   # held-out looks
     pixi run -e nvidia mojo run -I . examples/so101/tower_act_eval.mojo \\
@@ -130,6 +130,7 @@ from noeira.tasks.so101_tower_rig import (
 )
 from noeira.tasks.so101_tower_xml import So101TowerModel
 from noeira.tasks.spec import load_family
+from noeira.core.run import resolve_checkpoint
 
 
 comptime DT = RIG_DT
@@ -173,7 +174,7 @@ comptime NEAR_BOWL = 0.08
 
 def _usage() -> String:
     return String(
-        "usage: tower_act_eval.mojo [--ckpt DIR|FILE] [--ckpt-name best|last]"
+        "usage: tower_act_eval.mojo [--ckpt RUN_ID|DIR|FILE] [--ckpt-name best|last]"
         " [--norm FILE] [--policy act|hold] [--episodes N] [--seed0 S]"
         " [--steps N] [--exec N] [--m M] [--task NAME]"
         " [--dr off|light|full] [--dr-seed N] [--dr-draw0 N]"
@@ -273,8 +274,16 @@ def main() raises:
             ckpt_path = ckpt_arg + "/" + ckpt_name + ".ckpt"
             if norm_path.byte_length() == 0:
                 norm_path = ckpt_arg + "/norm.json"
-        else:
+        elif exists(ckpt_arg):
             ckpt_path = ckpt_arg
+        else:
+            # a RUN ID: its `checkpoints/<ckpt-name>.ckpt`, with the
+            # trainer's `norm.json` beside it
+            ckpt_path = resolve_checkpoint(ckpt_arg, ckpt_name)
+            if norm_path.byte_length() == 0:
+                norm_path = (
+                    String(ckpt_path[byte=0 : ckpt_path.rfind("/")]) + "/norm.json"
+                )
         if norm_path.byte_length() == 0:
             raise Error("--norm is required when --ckpt names a file")
         for pth in [ckpt_path, norm_path]:

@@ -106,10 +106,11 @@ from noeira.nn.core.tensor import Tensor
 from noeira.nn.core.tensor_refs import TensorRefs
 from noeira.nn.core.call import call_forward
 from noeira.nn.core.ptr import mptr
-from noeira.core.run import RunContext, register_run
+from noeira.core.run import RunContext, register_run, run_id_of_checkpoint
 from noeira.core.dotenv import load_dotenv
 from noeira.core.logger import CsvLogger, RemoteLogger, CompositeLogger
-from noeira.io.artifact_sink import close_sink, sink_for_run
+from noeira.io.artifact_sink import sink_for_run
+from noeira.core.run_session import finish_run
 from noeira.deep_agents.training.checkpoint import announce_checkpoint
 from noeira.data.store import TrajectoryStore
 from noeira.data.resident import IDX_DT
@@ -525,6 +526,7 @@ def main() raises:
         env=String("builtin:unitree_g1"),
         dataset=store_path,
         seed=seed_v,
+        resumed_from=run_id_of_checkpoint(resume_path),
     )
     run.set_tag(tag)
     print("run:", run.dir)
@@ -866,10 +868,7 @@ def main() raises:
     var n_batched = (total_env_steps - start_at) // N_ENVS
     if n_batched <= 0:
         print("nothing to do: --start-at", start_at, ">= --steps", total_env_steps)
-        run.set_outcome(String("noop_start_at_ge_steps"))
-        logger.close()
-        close_sink(artifacts)
-        run.close()
+        finish_run(run, logger, artifacts, String("noop_start_at_ge_steps"))
         return
     var last_measure = 0.0
     var last_rate = 0.0
@@ -1149,12 +1148,10 @@ def main() raises:
     # `run.kv` still saying `running` with an hour-old `started` IS a crashed
     # run — which is exactly what a 55-hour run needs a reader to be able to
     # tell without the terminal it was launched from.
-    run.set_outcome(
+    finish_run(
+        run, logger, artifacts,
         String("env_steps=") + String(start_at + n_batched * N_ENVS)
         + " updates=" + String(agent.total_train_steps())
         + " measure=" + String(last_measure)
-        + " env_st_s=" + String(last_rate)
+        + " env_st_s=" + String(last_rate),
     )
-    logger.close()
-    close_sink(artifacts)
-    run.close()

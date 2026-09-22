@@ -42,7 +42,8 @@ from noeira.core.concurrent.thread import OpaquePtr, null_opaque
 
 from noeira.core.kv import KvWriter, kv_lines
 from noeira.core.logger import Logger
-from noeira.core.project import runs_root_for
+from noeira.core.project import projects_root, runs_root_for
+from std.os.path import exists
 from noeira.io.fileio import file_size, write_text_atomic
 from noeira.io.proc import quote_arg, run_capture
 from noeira.io.sha256 import sha256_file, sha256_string
@@ -244,6 +245,61 @@ def _basename_noext(path: String) -> String:
     return String(path[byte=start:end])
 
 
+def resolve_checkpoint(handle: String, name: String = String("last")) raises -> String:
+    """The checkpoint a reader should load, from what a person typed.
+
+    `handle` is either a checkpoint FILE (used as is) or a RUN ID, found in the
+    flat `runs/` root or any `projects/*/runs/`, whose
+    `checkpoints/<name>.ckpt` is returned. Raises naming both roots when
+    neither matches — a viewer that silently fell back to a default path would
+    show the wrong policy.
+
+    ⚠⚠ WHY READERS NEED THIS. Training drivers write into their run directory
+    (`runs/<id>/checkpoints/last.ckpt`), so the fixed paths the eval, viewer
+    and deploy scripts used to hard-code stopped being written. A run id is
+    what `project-show` prints and what the dashboard shows; it is the handle
+    a person actually has.
+    """
+    if handle.byte_length() == 0:
+        raise Error(
+            "resolve_checkpoint: no checkpoint given — pass a run id (see"
+            " `pixi run project-show <project>`) or a .ckpt path"
+        )
+    if exists(handle):
+        return handle
+    var file = String("/checkpoints/") + name + ".ckpt"
+    if exists(String("runs/") + handle + file):
+        return String("runs/") + handle + file
+    var root = projects_root()
+    var listing = run_capture(
+        String("ls -d ") + quote_arg(root) + "/*/runs/" + quote_arg(handle)
+        + " 2>/dev/null; true",
+        1 << 16,
+    )
+    for line in listing.split("\n"):
+        var d = String(String(line).strip())
+        if d.byte_length() > 0 and exists(d + file):
+            return d + file
+    raise Error(
+        "resolve_checkpoint: '" + handle + "' is neither a file nor a run with "
+        + String(file[byte=1:]) + " under runs/ or " + root + "/*/runs/"
+    )
+
+
+def run_id_of_checkpoint(path: String) -> String:
+    """The run a checkpoint belongs to: `<id>` out of
+    `.../<id>/checkpoints/step_50000.ckpt`, or "" for a path that is not
+    inside a run directory. What a resuming driver passes as `resumed_from`,
+    so the new run's record names the run it continues rather than a file
+    path that stops meaning anything once the box is gone."""
+    var cut = path.find("/checkpoints/")
+    if cut <= 0:
+        return String("")
+    var head = String(path[byte=0:cut])
+    var slash = head.rfind("/")
+    return String(head[byte = slash + 1 :]) if slash >= 0 else head
+
+
 # =============================================================================
 # RunContext
 # =============================================================================
@@ -431,13 +487,53 @@ struct RunContext(Movable):
         loop that writes `best` every N steps. P3b's `ArtifactSink` is what
         moves the hashing off the training thread.
         """
-        var full = self.dir + "/" + rel_path
-        var digest = sha256_file(full)
-        self._artifacts.append(
-            rel_path + ":sha256:" + digest + ":" + String(file_size(full))
-            + ":local"
-        )
+        self._record(rel_path)
         self._flush()
+
+    def _record(mut self, rel_path: String) raises:
+        """One `artifact=` entry, REPLACING any earlier one for the same path:
+        `checkpoints/best.ckpt` is rewritten on every improvement, and the
+        record must describe the bytes on disk, not the first ones."""
+        var full = self.dir + "/" + rel_path
+        var entry = (
+            rel_path + ":sha256:" + sha256_file(full) + ":"
+            + String(file_size(full)) + ":local"
+        )
+        var prefix = rel_path + ":"
+        for i in range(len(self._artifacts)):
+            if self._artifacts[i].startswith(prefix):
+                self._artifacts[i] = entry
+                return
+        self._artifacts.append(entry)
+
+    def record_artifacts(mut self) raises:
+        """Record every file the run left in its directory: `checkpoints/`,
+        `eval/`, `metrics.csv` and its `metrics.config.kv`. `close()` calls
+        this.
+
+        ⚠⚠ THIS IS WHY `run.kv` HAS `artifact=` LINES AT ALL. `add_artifact`
+        existed from P0c and had ZERO callers: all 74 run records on disk
+        carried none, and `project-push` — which pushes exactly what `run.kv`
+        lists — pushed nothing for every one of them. Asking each driver to
+        remember a call per checkpoint is the rule-at-every-site shape that
+        failed; the run directory already IS the list, so it is read once, at
+        the end, in one place.
+
+        ⚠ IT HASHES EVERY FILE, once, at close — seconds for an ACT run's two
+        215 MB checkpoints. A run that dies before `close()` records nothing;
+        `project-push` scans the same directories for exactly that case.
+        """
+        var listing = run_capture(
+            String("cd ") + quote_arg(self.dir)
+            + " && { find checkpoints eval -type f ! -name '*.tmp' 2>/dev/null;"
+            + " for f in metrics.csv metrics.config.kv; do"
+            + " [ -f $f ] && echo $f; done; } | sort; true",
+            1 << 20,
+        )
+        for line in listing.split("\n"):
+            var rel = String(String(line).strip())
+            if rel.byte_length() > 0:
+                self._record(rel)
 
     def close(mut self, status: String = String("")) raises:
         """Write `finished` and the terminal status. Idempotent.
@@ -450,6 +546,12 @@ struct RunContext(Movable):
         if self._closed:
             return
         self._closed = True
+        # ⚠ Never fatal: a run that trained must still close with its status
+        # even if a file could not be hashed.
+        try:
+            self.record_artifacts()
+        except e:
+            print("  [run] could not record artifacts:", e)
         if status.byte_length() > 0:
             self._status = status
         elif self._status == String("running"):
