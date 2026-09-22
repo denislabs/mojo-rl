@@ -102,6 +102,41 @@ struct FisheyeLens(Copyable, ImplicitlyCopyable, Movable, Writable):
             scale = thd / r
         return (self.fx * a * scale + self.cx, self.fy * b * scale + self.cy)
 
+    def unproject(self, u: Float64, v: Float64) raises -> Tuple[Float64, Float64]:
+        """The ray `(a, b, 1)` pixel `(u, v)` sees — `project`'s inverse.
+
+        Solves `theta_d = theta (1 + k1 theta^2 + ...)` for `theta` by Newton
+        from `theta = theta_d` (the lens is near-equidistant), then
+        `(a, b) = tan(theta) * (x', y') / theta_d`. What the extrinsics fit
+        feeds a pinhole `solve_pnp` with `K = I`: the marker corners as
+        undistorted normalised coordinates. Raises past 89 degrees (no
+        pinhole ray) or if Newton does not converge."""
+        var xp = (u - self.cx) / self.fx
+        var yp = (v - self.cy) / self.fy
+        var thd = sqrt(xp * xp + yp * yp)
+        if thd < 1e-12:
+            return (xp, yp)
+        var th = thd
+        for _ in range(30):
+            var t2 = th * th
+            var f = th * (
+                1.0 + t2 * (self.k1 + t2 * (self.k2 + t2 * (self.k3 + t2 * self.k4)))
+            ) - thd
+            var df = 1.0 + t2 * (
+                3.0 * self.k1 + t2 * (5.0 * self.k2 + t2 * (7.0 * self.k3 + t2 * 9.0 * self.k4))
+            )
+            var step = f / df
+            th -= step
+            if abs(step) < 1e-14:
+                break
+        if not (th > 0.0 and th < 89.0 * pi / 180.0):
+            raise Error(
+                "FisheyeLens.unproject: pixel (" + String(u) + ", " + String(v)
+                + ") is not a ray in front of a pinhole (theta " + String(th) + ")"
+            )
+        var r = tan(th)
+        return (xp * r / thd, yp * r / thd)
+
     def k_matrix(self) -> List[Float64]:
         return [self.fx, 0.0, self.cx, 0.0, self.fy, self.cy, 0.0, 0.0, 1.0]
 

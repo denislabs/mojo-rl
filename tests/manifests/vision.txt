@@ -61,3 +61,9 @@ tests/vision/test_calib_file.mojo
 # equality like the entries above: the model is a PORT (float tolerances, each
 # stated in the file), and the calibration is a fit.
 tests/vision/test_fisheye.mojo
+# The extrinsics path for the rig's fisheye cameras: marker corners
+# undistorted through the lens then a K=I solve_pnp (vs raw pixels as a
+# pinhole, the control), and the measured-vs-sim comparison — the tower's own
+# `overhead_cam` must come back as the asset's `<camera pos xyaxes>` at 0 mm
+# / 0 deg, and a known perturbation as itself.
+tests/vision/test_extrinsics_fisheye.mojo

@@ -66,6 +66,24 @@ admits the far easier 3D-3D problem.
    picked 15 cm above that plane is then localised by a direction nobody
    measured.
 
+## Fisheye cameras (the so101-tower rig)
+
+A `model fisheye` calibration (`examples/vision/calibrate_fisheye.mojo`) is
+handled by UNDISTORTING the four marker corners through the lens
+(`FisheyeLens.unproject`) and solving the pinhole problem on the normalised
+coordinates (`K = I`, no distortion). Detection runs on a 2x upscale by
+default for a fisheye (`--detect-scale`), for the reason that tool gives:
+at 640x480 the lens makes a marker a few pixels wide.
+
+`--sim-camera NAME` (default `<camera>_cam`, e.g. `overhead_cam`) compares
+the fitted pose with the SIMULATOR's camera of that name in the
+`so101_tower` scene. The robot base sits at the family's `base_pos` in that
+scene, so the fit is moved there first. The tool prints the position and
+orientation error and the corrected `<camera pos=... xyaxes=...>`, in the
+camera's PARENT BODY frame, ready to paste into the asset. The pose is
+printed, not written: the scene is shared, and changing it changes every
+render.
+
 ## What it needs first
 
 An INTRINSICS calibration for this camera, as a
@@ -75,6 +93,7 @@ with a guessed focal length returns a pose with an unknown scale factor on it,
 and a scale error in the correspondences becomes a rotation error in the fit.
 """
 
+from std.math import acos
 from std.sys import argv
 from std.time import perf_counter_ns
 
@@ -112,6 +131,11 @@ from noeira.utils.fmt import fixed
 from noeira.vision.calib_file import CameraCalib, read_calib, write_calib
 from noeira.vision.extrinsics import RigidFit, fit_rigid
 from noeira.vision.camera_thread import open_camera_spec
+from noeira.vision.fisheye import FisheyeLens
+from noeira.vision.preprocess import pil_bilinear_u8
+from noeira.tasks.so101_tower_camera_pose import (
+    SimCamera, tower_sim_camera, camera_pose_vs_sim, fit_to_mujoco_rot,
+)
 from noeira.vision.opencv import (
     ArucoDetector,
     DICT_4X4_50,
@@ -171,6 +195,8 @@ def main() raises:
     var body = GRIPPER_BODY_IDX
     var off = Vec3d.zero()
     var port = follower_port()
+    var detect_scale = -1
+    var sim_cam_name = String("")
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
@@ -188,6 +214,10 @@ def main() raises:
             body = Int(String(args[i + 1]))
         elif a == "--port" and i + 1 < len(args):
             port = String(args[i + 1])
+        elif a == "--detect-scale" and i + 1 < len(args):
+            detect_scale = Int(String(args[i + 1]))
+        elif a == "--sim-camera" and i + 1 < len(args):
+            sim_cam_name = String(args[i + 1])
         elif a == "--offset" and i + 3 < len(args):
             off = Vec3d(
                 Float64(String(args[i + 1])),
@@ -312,18 +342,31 @@ def main() raises:
     var fit_msg = String("")
     var status = String("release the arm and show the marker")
 
-    if calib.model != "pinhole":
-        # ⚠ `solve_pnp` takes OpenCV's radial-tangential vector; a fisheye
-        # file's four Kannala-Brandt terms passed there are a different lens
-        # that still returns a pose. Undistort the marker corners through
-        # `vision/fisheye.mojo` first — not done yet, so refuse.
-        raise Error(
-            "calibrate_camera_extrinsics: '" + calib.name + "' is a "
-            + calib.model + " calibration; this tool's solve_pnp needs a"
-            " pinhole one"
-        )
+    # ⚠ `solve_pnp` takes OpenCV's radial-tangential vector; a fisheye file's
+    # four Kannala-Brandt terms passed there would be a different lens that
+    # still returns a pose. So a fisheye calibration undistorts the CORNERS
+    # (`FisheyeLens.unproject`) and solves on normalised coordinates, K = I.
+    var fisheye = calib.model == "fisheye"
+    var lens = FisheyeLens(1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, fw, fh)
     var k = calib.k_matrix()
     var dist = calib.dist.copy()
+    if fisheye:
+        lens = FisheyeLens.from_calib(calib)
+        k = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        dist = List[Float64]()
+    elif calib.model != "pinhole":
+        raise Error("calibrate_camera_extrinsics: unknown model " + calib.model)
+    if detect_scale < 1:
+        detect_scale = 2 if fisheye else 1
+    var up = List[UInt8]()
+    if sim_cam_name == "":
+        sim_cam_name = cam_name + "_cam"
+    var sim = tower_sim_camera(sim_cam_name)
+    if sim.found:
+        print("sim camera:", sim.name, "at", _fmt3(sim.pos, 1000.0, 1), "mm (world)")
+    else:
+        print("sim camera: none named *" + sim_cam_name + " in the tower scene — no comparison")
+    print("lens:", calib.model, "| detection at", detect_scale, "x")
     var obj = List[Float64]()
     var half = marker_mm / 2000.0
     obj.append(-half); obj.append(half); obj.append(0.0)
@@ -349,7 +392,15 @@ def main() raises:
                 rgba[i * 4 + 2] = bgr[i * 3 + 0]
                 rgba[i * 4 + 3] = 255
             _ = tex.upload(rgba)
-            var n_markers = det.detect(bgr, fw, fh, 3, ids, corners)
+            var n_markers: Int
+            if detect_scale > 1:
+                pil_bilinear_u8(bgr, fw, fh, 3, up, fw * detect_scale, fh * detect_scale)
+                n_markers = det.detect(up, fw * detect_scale, fh * detect_scale, 3, ids, corners)
+                var sc = Float32(detect_scale)
+                for q in range(n_markers * 8):
+                    corners[q] = (corners[q] + 0.5) / sc - 0.5
+            else:
+                n_markers = det.detect(bgr, fw, fh, 3, ids, corners)
 
             # ── which marker is on the gripper ─────────────────────────────
             #
@@ -374,9 +425,17 @@ def main() raises:
             var p_cam = Vec3d.zero()
             if pick >= 0:
                 var img_xy = List[Float64]()
-                for i in range(8):
-                    img_xy.append(Float64(corners[pick * 8 + i]))
                 try:
+                    for i in range(4):
+                        var u = Float64(corners[pick * 8 + i * 2])
+                        var v = Float64(corners[pick * 8 + i * 2 + 1])
+                        if fisheye:
+                            var ab = lens.unproject(u, v)
+                            img_xy.append(ab[0])
+                            img_xy.append(ab[1])
+                        else:
+                            img_xy.append(u)
+                            img_xy.append(v)
                     solve_pnp(
                         obj, img_xy, k, dist, rvec, tvec, SOLVEPNP_IPPE_SQUARE
                     )
@@ -573,6 +632,14 @@ def main() raises:
                     ig_text(String("spread ") + sp + " mm")
                     ig_text_disabled(String("(mm, three principal axes)"))
                 ig_text(String("origin ") + _fmt3(fit.trans, 1.0, 3) + " m")
+                if sim.found:
+                    var r_mj = fit_to_mujoco_rot(fit.rot)
+                    var dpos = (fit.trans + sim.base_off - sim.pos) * 1000.0
+                    var rel = sim.rot.transpose() @ r_mj
+                    var cc = (Float64(rel.trace()) - 1.0) / 2.0
+                    cc = 1.0 if cc > 1.0 else (-1.0 if cc < -1.0 else cc)
+                    ig_text(String("vs sim ") + fixed(Float64(dpos.length()), 1) + " mm, "
+                            + fixed(acos(cc) * 180.0 / 3.141592653589793, 2) + " deg")
             else:
                 ig_text_disabled(String("rms    -"))
                 ig_text_disabled(String("worst  -"))
@@ -593,6 +660,8 @@ def main() raises:
                     status = String("saved to ") + calib_path
                     print("saved", calib_path)
                     print(String(fit))
+                    if sim.found:
+                        print(camera_pose_vs_sim(sim, fit.rot, fit.trans))
                 except e:
                     status = String("COULD NOT SAVE: ") + String(e)
             if not enough:
@@ -641,4 +710,6 @@ def main() raises:
     if have_fit:
         print("")
         print(String(fit))
+        if sim.found:
+            print(camera_pose_vs_sim(sim, fit.rot, fit.trans))
         print("saved to", calib_path, "if you pressed save")

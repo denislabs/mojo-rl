@@ -15,6 +15,7 @@ against the tracer.
      map by many pixels (else "recovered" would be vacuous).
   5. `n_outside` is 0 at the rig's fovy and not at a fovy past the lens.
   6. `apply_hwc` on a linear ramp returns the map's own coordinate.
+  7. `unproject` inverts `project` (the extrinsics tool's corner path).
 
 Needs the OpenCV shim (`pixi run build-opencv`); no camera, no fixture.
 """
@@ -272,6 +273,17 @@ def main() raises:
         dramp = max(dramp, abs(Float64(Int(dst[i * 3])) - want))
     check(fails, "6 apply_hwc interpolates the source at the map's point",
           dramp <= 0.5 + 1e-6, "max |d| " + String(dramp) + " levels")
+
+    # ── 7. unproject inverts project (the extrinsics' corner path) ──────
+    var du = 0.0
+    for i in range(500):
+        var a = pts[i * 3] / pts[i * 3 + 2]
+        var b = pts[i * 3 + 1] / pts[i * 3 + 2]
+        var uv = lens.project(a, b)
+        var ab = lens.unproject(uv[0], uv[1])
+        du = max(du, max(abs(ab[0] - a), abs(ab[1] - b)) / max(1.0, sqrt(a * a + b * b)))
+    check(fails, "7 unproject(project(ray)) == ray, out to 85 deg",
+          du < 1e-9, "max relative |d| " + String(du))
 
     print("")
     if fails == 0:
