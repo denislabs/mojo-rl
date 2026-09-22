@@ -57,9 +57,21 @@ and the undistortion map to the sim pinhole moves by that much, rms, in
 640x480 pixels. On the synthetic lens of `tests/vision/test_fisheye.mojo` it
 tracked the true map error within 1.5x.
 
-    spread < 0.3 px    good
-    spread < 0.6 px    usable; more edge views would tighten it
-    otherwise          redo — more views, closer, at the edges
+The spread is reported in three parts, because they mean different things
+for a camera: a SHIFT of the undistorted image (the principal point) is a
+small camera rotation, a SCALE (the focal length) is a field-of-view change,
+and the SHAPE is the rest. The student is trained under +-2 deg of camera
+rotation and +-3 deg of fovy (`randomize.mojo` full), and the extrinsics
+calibration absorbs the shift, so each part is judged against those:
+
+    good      shift < 0.2 deg, focal < 0.4 %, shape < 0.3 px
+    usable    shift < 0.5 deg, focal < 1.0 %, shape < 0.6 px
+    otherwise redo — more views, closer, tilted, at the edges
+
+⚠ MEASURED: the rig's overhead camera (60 views, rigid board) had a TOTAL
+spread of 1.76 px, which a single 0.6 px threshold rejected. It was ~0.2 deg
+of shift and ~0.6 % of focal, with a well-determined shape — a good
+calibration.
 
 ## Detection on a 2x upscale (`--detect-scale`, default 2)
 
@@ -107,7 +119,7 @@ from noeira.io.png import save_png
 from noeira.vision.calib_file import CameraCalib, write_calib
 from noeira.vision.fisheye import FisheyeLens, Pinhole, UndistortMap
 from noeira.vision.fisheye_calib import (
-    CalibViews, calibrate_fisheye, undistort_spread,
+    CalibViews, calibrate_fisheye, undistort_spread_parts,
 )
 from noeira.vision.opencv import (
     CharucoBoard, VideoCapture, imread, opencv_shim_available,
@@ -523,17 +535,24 @@ def main() raises:
     print("  calibrating on", views.count(), "views ...")
     var fit = calibrate_fisheye(views, W, H)
     var pin = Pinhole.sim(SIM_FOVY, W, H)
-    var spread = undistort_spread(views, fit, pin)
+    var parts = undistort_spread_parts(views, fit, pin)
     var um = UndistortMap(fit.lens, pin)
     print("  lens  :", String(fit.lens))
     print("  rms   :", fit.rms, "px over", len(fit.used), "views")
     for j in range(len(fit.dropped)):
         print("  dropped view", fit.dropped[j] + 1, ":", fit.why[j])
-    print("  spread:", spread, "px (the undistortion map's rms movement under resampling)")
+    print("  spread:", String(parts))
+    print("          (the undistortion map's movement under resampling: a shift is a camera"
+          " rotation, a focal change a field-of-view change, `shape` the rest)")
     print("  out-of-lens pixels in the sim pinhole:", um.n_outside)
-    var verdict = String("GOOD") if spread < 0.3 else (
-        String("USABLE — more edge views would tighten it") if spread < 0.6
-        else String("REDO — more views, closer, at the edges")
+    # Judged against what the student is TRAINED under (randomize.mojo
+    # `full`: +-2 deg camera rotation, +-3 deg fovy ~ +-4% focal), at a
+    # tenth of each — plus the lens's own shape, which nothing randomizes.
+    var good = parts.shift_deg < 0.2 and parts.scale_pct < 0.4 and parts.shape_px < 0.3
+    var usable = parts.shift_deg < 0.5 and parts.scale_pct < 1.0 and parts.shape_px < 0.6
+    var verdict = String("GOOD") if good else (
+        String("USABLE — more varied views (tilt, distance) would tighten it")
+        if usable else String("REDO — more views, closer, tilted, at the edges")
     )
     print("  verdict:", verdict)
 
@@ -551,6 +570,6 @@ def main() raises:
         um.apply_hwc(last_rgb, 0, 3, und, 0)
         save_png(out_dir + "/" + name + "_preview_undistorted.png", und, W, H, 3)
         print("  wrote", out_dir + "/" + name + "_preview_{raw,undistorted}.png")
-    if spread >= 0.6:
-        raise Error("calibration spread " + String(spread) + " px — redo (see the header)")
+    if not usable:
+        raise Error("calibration spread " + String(parts) + " — redo (see the header)")
     print("=== OK ===")

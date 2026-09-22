@@ -301,3 +301,119 @@ def undistort_spread(
             se += ex * ex + ey * ey
         acc += sqrt(se / Float64(len(um.map_x)))
     return acc / Float64(n_boot)
+
+
+@fieldwise_init
+struct SpreadParts(Copyable, ImplicitlyCopyable, Movable, Writable):
+    """`undistort_spread`, decomposed into what each part MEANS for a camera.
+
+    Measured on the rig's overhead camera (60 views, rigid board): a total
+    spread of 1.76 px was ~1 px of global SHIFT (the principal point) plus a
+    radial SCALE (the focal length, +-0.6%), with the lens's shape itself
+    well determined. A shift of the undistorted image is a small camera
+    ROTATION and a scale is a FIELD-OF-VIEW change, and the render-time
+    randomization trains the student under both (`randomize.mojo` full:
+    +-2 deg rotation, +-3 deg fovy), while the extrinsics calibration
+    absorbs the shift anyway. So each part is judged against those ranges,
+    not the total against one pixel threshold."""
+
+    var total_px: Float64
+    """`undistort_spread`: rms map movement over the pinhole field."""
+    var shift_deg: Float64
+    """rms of the per-resample mean shift, as a camera rotation."""
+    var scale_pct: Float64
+    """rms focal-length change, percent — a field-of-view change."""
+    var shape_px: Float64
+    """What is left after removing each resample's shift and scale."""
+
+    def write_to(self, mut writer: Some[Writer]):
+        writer.write(
+            "total ", self.total_px, " px = shift ", self.shift_deg,
+            " deg + focal ", self.scale_pct, " % + shape ", self.shape_px,
+            " px",
+        )
+
+
+def undistort_spread_parts(
+    ref views: CalibViews, ref fit: FisheyeFit, pin: Pinhole, n_boot: Int = 16,
+    seed: UInt64 = 0x5EED,
+) raises -> SpreadParts:
+    """`undistort_spread`, with each resample's map change split into a mean
+    shift, a radial scale about the pinhole's centre (least squares), and the
+    remaining shape. See `SpreadParts`."""
+    var base = UndistortMap(fit.lens, pin)
+    var n = len(base.map_x)
+    var s = seed
+    var tot = 0.0
+    var sh = 0.0
+    var sc = 0.0
+    var shp = 0.0
+    for _ in range(n_boot):
+        var idx = List[Int]()
+        for _ in range(len(fit.used)):
+            s += UInt64(0x9E3779B97F4A7C15)
+            var z = s
+            z = (z ^ (z >> 30)) * UInt64(0xBF58476D1CE4E5B9)
+            z = (z ^ (z >> 27)) * UInt64(0x94D049BB133111EB)
+            z = z ^ (z >> 31)
+            idx.append(fit.used[Int(z % UInt64(len(fit.used)))])
+        var k = List[Float64]()
+        var d = List[Float64]()
+        var rv = List[Float64]()
+        var tv = List[Float64]()
+        _ = _fit(
+            views, idx, fit.lens.width, fit.lens.height, 0.0,
+            fit.lens.k_matrix(), fit.lens.d_vector(), k, d, rv, tv,
+        )
+        var um = UndistortMap(
+            FisheyeLens(k[0], k[4], k[2], k[5], d[0], d[1], d[2], d[3],
+                        fit.lens.width, fit.lens.height),
+            pin,
+        )
+        var mx = 0.0
+        var my = 0.0
+        var se = 0.0
+        for i in range(n):
+            var ex = Float64(um.map_x[i]) - Float64(base.map_x[i])
+            var ey = Float64(um.map_y[i]) - Float64(base.map_y[i])
+            mx += ex
+            my += ey
+            se += ex * ex + ey * ey
+        mx /= Float64(n)
+        my /= Float64(n)
+        tot += se / Float64(n)
+        sh += mx * mx + my * my
+        # radial scale about the base map's own centre: e ~ a * (p - centre)
+        var cx = 0.0
+        var cy = 0.0
+        for i in range(n):
+            cx += Float64(base.map_x[i])
+            cy += Float64(base.map_y[i])
+        cx /= Float64(n)
+        cy /= Float64(n)
+        var num = 0.0
+        var den = 0.0
+        for i in range(n):
+            var rx = Float64(base.map_x[i]) - cx
+            var ry = Float64(base.map_y[i]) - cy
+            num += (Float64(um.map_x[i]) - Float64(base.map_x[i]) - mx) * rx
+            num += (Float64(um.map_y[i]) - Float64(base.map_y[i]) - my) * ry
+            den += rx * rx + ry * ry
+        var a = num / den if den > 0.0 else 0.0
+        sc += (k[0] / fit.lens.fx - 1.0) ** 2
+        var rs = 0.0
+        for i in range(n):
+            var rx = Float64(base.map_x[i]) - cx
+            var ry = Float64(base.map_y[i]) - cy
+            var ex = Float64(um.map_x[i]) - Float64(base.map_x[i]) - mx - a * rx
+            var ey = Float64(um.map_y[i]) - Float64(base.map_y[i]) - my - a * ry
+            rs += ex * ex + ey * ey
+        shp += rs / Float64(n)
+    var nb = Float64(n_boot)
+    # a shift of `px` pixels in the SOURCE fisheye near its centre is a
+    # rotation of px / f radians
+    var shift_rad = sqrt(sh / nb) / fit.lens.fx
+    return SpreadParts(
+        sqrt(tot / nb), shift_rad * 180.0 / 3.141592653589793,
+        100.0 * sqrt(sc / nb), sqrt(shp / nb),
+    )
