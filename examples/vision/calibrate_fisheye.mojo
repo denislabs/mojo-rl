@@ -59,6 +59,18 @@ size the dataset was recorded at. It is not the studio's 1280x720 capture:
 that is a different sensor mode (16:9, likely another crop), and a
 calibration of it would not describe the recorded frames.
 
+## `--fourcc` (default MJPG) and `--snap DIR` — when few corners come back
+
+The recorder captures MJPG (`camera_thread.default_fourcc`, a USB-bandwidth
+decision), so that is the default here too. A cheap module's MJPEG at
+640x480 can smear markers a few pixels wide past decoding, and upscaling
+cannot bring back what the compression removed. `--fourcc none` asks for the
+camera's own default (typically uncompressed YUYV) at the SAME 640x480.
+The lens does not depend on the compression, so that calibration is valid for
+the MJPG recordings, as long as the negotiated size is the same (it is checked).
+`--snap DIR` keeps the latest frame as `DIR/live.png` (every ~2 s), to look at
+what the detector gets.
+
 ## Headless, over SSH
 
 No window: a progress line and an ASCII coverage map in the terminal.
@@ -106,6 +118,7 @@ def _usage() -> String:
         "usage: calibrate_fisheye.mojo (--camera PATH | --device N | --images DIR)"
         " --name NAME [--out DIR] [--views N] [--board 5x7] [--square-mm 30]"
         " [--marker-mm 22] [--preview] [--max-minutes M] [--detect-scale 2]"
+        " [--fourcc MJPG|none|XXXX] [--snap DIR]"
     )
 
 
@@ -258,6 +271,8 @@ def main() raises:
     var preview = False
     var max_minutes = 20.0
     var detect_scale = 2
+    var fourcc = String("MJPG")
+    var snap_dir = String("")
     var i = 1
     while i < len(args):
         var a = String(args[i])
@@ -292,6 +307,10 @@ def main() raises:
             max_minutes = Float64(v)
         elif a == "--detect-scale":
             detect_scale = Int(v)
+        elif a == "--fourcc":
+            fourcc = String("") if v == "none" else v
+        elif a == "--snap":
+            snap_dir = v
         else:
             raise Error("unknown option " + a + "\n" + _usage())
         i += 2
@@ -344,7 +363,12 @@ def main() raises:
             print("  ", f, ":", n, "corners", "" if n >= MIN_CORNERS else "(skipped)")
     else:
         # ── live: capture on novelty ────────────────────────────────────
-        var cap = VideoCapture.device_path(camera, W, H, 30.0, String("MJPG")) if camera.byte_length() > 0 else VideoCapture.device(device, W, H, 30.0)
+        var cap = VideoCapture.device_path(camera, W, H, 30.0, fourcc) if camera.byte_length() > 0 else VideoCapture.device(device, W, H, 30.0)
+        # ⚠ READ ONE FRAME BEFORE TRUSTING THE GEOMETRY: a camera often
+        # reports its size only once a frame has arrived (camera studio).
+        if not cap.read(frame):
+            cap.close()
+            raise Error("the camera opened but delivered no frame")
         if cap.width != W or cap.height != H:
             cap.close()
             raise Error(
@@ -352,8 +376,18 @@ def main() raises:
                 + ", not " + String(W) + "x" + String(H) + " — the size the dataset was"
                 " recorded at. Refusing rather than calibrating another crop."
             )
+        var got_fourcc = String("?")
+        try:
+            got_fourcc = cap.fourcc()
+        except:
+            pass
         print("  camera", camera if camera.byte_length() > 0 else String(device), "|",
-              cap.width, "x", cap.height, "| move the board; captures are automatic")
+              cap.width, "x", cap.height, "| format", got_fourcc,
+              "(asked", fourcc if fourcc.byte_length() > 0 else String("device default"),
+              ") | move the board; captures are automatic")
+        if snap_dir.byte_length() > 0:
+            makedirs(snap_dir, exist_ok=True)
+        var last_snap = 0
         var sigs = List[Signature]()
         var cov = Coverage()
         var t0 = perf_counter_ns()
@@ -370,6 +404,9 @@ def main() raises:
                     print("\n  time limit reached")
                     break
                 var n = _detect(board, frame, 3, detect_scale, up, corners, ids)
+                if snap_dir.byte_length() > 0 and now - last_snap > 2_000_000_000:
+                    last_snap = now
+                    save_png(snap_dir + "/live.png", _bgr_to_rgb(frame, W * H), W, H, 3)
                 var status = String("no board")
                 if n >= MIN_CORNERS:
                     var sg = Signature(corners, n)
