@@ -231,6 +231,9 @@ never applies it.
 ## What to expect
 
 40 training episodes / 10 held out, ~12,400 training frames, no augmentation.
+`ACT_AUGMENT=light|default` turns on the device-side image augmentation
+(`deep_agents/act/augment.mojo`, DR plan Phase 1) for TRAINING batches;
+validation is never augmented. GPU_DATA only.
 
 The FIRST 50-episode run, with a random backbone, is the baseline to beat:
 best val L1 **0.4076 at epoch 15.5**, then 26 consecutive validations all worse
@@ -277,6 +280,7 @@ from noeira.deep_agents.act.config import (
 )
 from noeira.deep_agents.act.data import ACTDataset
 from noeira.deep_agents.act.data_gpu import ACTDeviceDataset
+from noeira.deep_agents.act.augment import ImageAugConfig
 from noeira.deep_agents.act.trainer import (
     ACTTrainer,
     ACTWindowMetrics,
@@ -569,6 +573,15 @@ def main() raises:
     logger.set_config("steps", String(steps))
     logger.set_config("train_episodes", String(len(ds.train_eps)))
     logger.set_config("val_episodes", String(len(ds.val_eps)))
+    # `ACT_AUGMENT=off|light|default` — an unknown value raises rather than
+    # running an un-augmented experiment under an augmented name.
+    var aug = ImageAugConfig.parse(getenv("ACT_AUGMENT"))
+    if aug.enabled and not GPU_DATA:
+        raise Error(
+            "ACT_AUGMENT needs GPU_DATA: the host sampler has no augmentation"
+        )
+    logger.set_config("augment", String(aug))
+    print("  augment " + String(aug))
     print(
         "  metrics " + (
             "streaming to " + monitor_url if logger.is_active()
@@ -593,6 +606,7 @@ def main() raises:
     comptime if GPU_DATA:
         var u0 = perf_counter_ns()
         dev_ds = DDS.upload_from[BATCH](ds, ctx, seed=7)
+        dev_ds.set_augment(aug)
         var u1 = perf_counter_ns()
         print(
             "  device dataset    " + String(Float64(u1 - u0) / 1e9) + " s to"
