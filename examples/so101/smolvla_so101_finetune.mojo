@@ -192,6 +192,7 @@ from max.gpu.host import DeviceContext
 from noeira.nn.constants import DT
 from noeira.nn.core.ptr import mptr
 from noeira.nn.core.tensor import Tensor
+from noeira.nn.core.checkpoint import CheckpointScalars
 from noeira.nn.core.initializer import Deterministic
 from noeira.nn.optimizer.adam import Adam
 from noeira.nn.primitives.linear import Linear
@@ -693,14 +694,17 @@ def main() raises:
     # random prefix, with nothing to say so.
     var init_from = getenv("SMOLVLA_INIT")
     if init_from.byte_length() > 0:
-        load_trainables[
+        var init_sc = load_trainables[
             "gpu", SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
             SMOLLM_KV_W, PAD,
         ](
             init_from, pol.expert, pol.action_in, pol.time_mlp_in,
             pol.time_mlp_out, pol.action_out, sp_frozen, Optional(ctx),
         )
-        print("  resumed from " + init_from)
+        # The moments came back with the weights; their step count must too,
+        # or the bias correction restarts at step 1 against settled moments.
+        opt.take_step_state(init_sc, "opt")
+        print("  resumed from " + init_from + " (Adam t = " + String(opt.t) + ")")
 
     # ⚠ AFTER the base checkpoint and any resume, BEFORE the first step:
     # adopting rebinds every Param to a slice of one arena, so it must happen
@@ -873,13 +877,15 @@ def main() raises:
             # loses at most VAL_EVERY steps and never the best model — which
             # matters here because the curve PLATEAUS and then drifts up, so
             # the final weights are not the ones worth keeping.
+            var opt_sc = CheckpointScalars()
+            opt.put_step_state(opt_sc, "opt")
             save_trainables[
                 "gpu", SMOLLM_LAYERS, SMOLVLA_EXPERT_W, EXPERT_FF, SMOLLM_DIM,
                 SMOLLM_KV_W, PAD,
             ](
                 ckpt + "_last.ckpt", pol.expert, pol.action_in,
                 pol.time_mlp_in, pol.time_mlp_out, pol.action_out, sp_frozen,
-                True, Optional(ctx),
+                True, Optional(ctx), scalars=opt_sc,
             )
             if vloss < best_val:
                 best_val = vloss
@@ -889,7 +895,7 @@ def main() raises:
                 ](
                     ckpt + "_best.ckpt", pol.expert, pol.action_in,
                     pol.time_mlp_in, pol.time_mlp_out, pol.action_out,
-                    sp_frozen, True, Optional(ctx),
+                    sp_frozen, True, Optional(ctx), scalars=opt_sc,
                 )
                 print("      saved " + ckpt + "_best.ckpt")
             # ⚠ Validation ran `run_one`, which does a BACKWARD it does not

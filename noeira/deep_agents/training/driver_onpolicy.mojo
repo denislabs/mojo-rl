@@ -73,7 +73,14 @@ trait OnPolicyCheckpointable(Deinitable, Movable):
         pass
 
     def save_state(mut self, path: String) raises:
-        pass
+        """⚠ RAISES BY DEFAULT, on purpose. Drivers call this only when a
+        `checkpoint_path` was given; a `pass` default meant a trainer that did
+        not override it produced no file and no error, and the run looked
+        checkpointed until someone tried to resume it."""
+        raise Error(
+            "save_state: this trainer does not implement checkpointing, and a"
+            " checkpoint was requested at " + path
+        )
 
     def total_train_steps(self) -> Int:
         """Cumulative gradient-update count for the inter-log progress bar's
@@ -299,7 +306,7 @@ def run_onpolicy_train[
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
 
         # `checkpoint_every` — overwrite `checkpoint_path` with the
-        # trainer's one-file v2 envelope. Default trait impl is no-op.
+        # trainer's one-file v3 checkpoint. The trait default raises.
         if (
             checkpoint_every > 0
             and abs_step % checkpoint_every == 0
@@ -727,7 +734,7 @@ def _run_onpolicy_batched_body[
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
 
         # `checkpoint_every` — overwrite `checkpoint_path` with the
-        # trainer's one-file v2 envelope. Default trait impl is no-op.
+        # trainer's one-file v3 checkpoint. The trait default raises.
         if cad.ckpt_due(step_idx):
             trainer.save_state(checkpoint_path)
             announce_checkpoint(checkpoint_path, artifacts, run_dir)

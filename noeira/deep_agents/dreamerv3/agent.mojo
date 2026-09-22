@@ -181,7 +181,7 @@ struct DreamerV3Agent[
         self.trainer.record_terminal(obs)
 
     def save(mut self, path: String) raises:
-        """Write the full world model + actor-critic to one `nn-ckpt v2` file."""
+        """Write the full world model + actor-critic to one v3 `storage-ckpt` file."""
         self.trainer.save_state(path)
 
     def load(mut self, path: String) raises:

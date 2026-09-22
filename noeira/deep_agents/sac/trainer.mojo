@@ -45,6 +45,7 @@ from noeira.nn.optimizer.adam import Adam
 from noeira.nn.optimizer.scalar_adam import ScalarAdam
 from noeira.nn.core.checkpoint import (
     CheckpointReader,
+    CheckpointScalars,
     _is_v3_header,
     _read_file_bytes,
     _split_lines,
@@ -1091,8 +1092,14 @@ struct SACTrainer[
         """Write actor + the two ONLINE critics into a SINGLE v3 binary
         checkpoint (chunked + atomic tmp-rename I/O — the old v2 text path
         wrote the final file in one `f.write`, non-atomic and silently
-        truncated at the ~2 GiB write(2) cap). Optimizer moments + α are NOT
-        persisted (resume re-warms)."""
+        truncated at the ~2 GiB write(2) cap). α's whole optimizer
+        (`alpha.*`) and the train-step counter ride as `K` scalars; network
+        optimizer moments are NOT persisted (resume re-warms). α is, because
+        a resume that restarts it at its initial value undoes the part of the
+        run that tuned it."""
+        var sc = CheckpointScalars()
+        self.alpha_opt.put_state(sc, "alpha")
+        sc.set_int("total_train_steps", self._total_train_steps)
         save_params_multi[Self.train_target](
             path,
             self.ctx,
@@ -1100,6 +1107,7 @@ struct SACTrainer[
             self.actor,
             self.pair1.online,
             self.pair2.online,
+            scalars=sc,
         )
 
     def load_state(mut self, path: String) raises:
@@ -1107,12 +1115,16 @@ struct SACTrainer[
         `actor.`/`critic1.`/`critic2.`-prefixed v2 text envelope this trainer
         used to write), then hard-copy online → target."""
         if _is_v3_header(_read_file_bytes(path)):
-            load_params_multi[Self.train_target](
+            var sc = load_params_multi[Self.train_target](
                 path,
                 self.ctx,
                 self.actor,
                 self.pair1.online,
                 self.pair2.online,
+            )
+            self.alpha_opt.take_state(sc, "alpha")
+            self._total_train_steps = sc.get_int(
+                "total_train_steps", self._total_train_steps
             )
         else:
             var content: String
