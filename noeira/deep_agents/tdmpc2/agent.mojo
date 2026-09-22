@@ -1173,8 +1173,8 @@ struct TDMPC2Agent[
                     best = ret
                 if Bool(logger):
                     var lg = logger.value()
-                    lg[].log_scalar("eval/mean_return", Float64(ret), step)
-                    lg[].log_scalar("eval/best_return", Float64(best), step)
+                    lg[].log_scalar("eval_return", Float64(ret), step)
+                    lg[].log_scalar("eval_return_best", Float64(best), step)
                 if verbose:
                     var elapsed = (
                         Float64(perf_counter_ns() - t_start) / 1e9
@@ -1675,8 +1675,8 @@ struct TDMPC2Agent[
                     best = ret
                 if Bool(logger):
                     var lg = logger.value()
-                    lg[].log_scalar("eval/mean_return", Float64(ret), gstep)
-                    lg[].log_scalar("eval/best_return", Float64(best), gstep)
+                    lg[].log_scalar("eval_return", Float64(ret), gstep)
+                    lg[].log_scalar("eval_return_best", Float64(best), gstep)
                 if verbose:
                     var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
                     print(

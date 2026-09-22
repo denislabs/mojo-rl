@@ -663,25 +663,25 @@ def main() raises:
 
             var names = List[String]()
             var vals = List[Float64]()
-            names.append(String("fb/measure")); vals.append(l.measure)
-            names.append(String("fb/ortho")); vals.append(l.ortho)
-            names.append(String("fb/actor")); vals.append(l.actor)
-            names.append(String("fb/f_norm")); vals.append(l.f_norm)
-            names.append(String("fb/b_norm")); vals.append(l.b_norm)
+            names.append(String("fb_measure_loss")); vals.append(l.measure)
+            names.append(String("fb_ortho_loss")); vals.append(l.ortho)
+            names.append(String("policy_loss")); vals.append(l.actor)
+            names.append(String("f_norm")); vals.append(l.f_norm)
+            names.append(String("b_norm")); vals.append(l.b_norm)
             # Derived, because reading the raw numbers needed hand arithmetic
             # three separate times during the last run:
             #   b_norm_deficit — the sqrt(d) pin is exact, so ANY deficit is the
             #     eps floor being approached. Alarm at > 0.11 (|B| < 11.2).
             #   ortho_Q — L_ortho = Q - 2*||B||^2. With |B| pinned the anchor is
             #     a constant, so Q is the part that carries information.
-            names.append(String("fb/b_norm_deficit"))
+            names.append(String("b_norm_deficit"))
             vals.append(SQRT_D - l.b_norm)
-            names.append(String("fb/ortho_Q"))
+            names.append(String("fb_ortho_q"))
             vals.append(l.ortho + 2.0 * l.b_norm * l.b_norm)
-            names.append(String("fb/grad_norm_f1")); vals.append(gn_f1)
-            names.append(String("fb/grad_norm_f2")); vals.append(gn_f2)
-            names.append(String("fb/grad_norm_b")); vals.append(gn_b)
-            names.append(String("perf/steps_per_s")); vals.append(sps)
+            names.append(String("f1_grad_norm")); vals.append(gn_f1)
+            names.append(String("f2_grad_norm")); vals.append(gn_f2)
+            names.append(String("b_grad_norm")); vals.append(gn_b)
+            names.append(String("steps_per_s")); vals.append(sps)
             logger.log_scalars(names, vals, step)
 
             print(

@@ -524,12 +524,12 @@ struct FBCPROnlineAgent[
         if Bool(logger):
             var names = List[String]()
             var vals = List[Float64]()
-            names.append(String("cpr/d_pos")); vals.append(d_pos)
-            names.append(String("cpr/d_neg")); vals.append(d_neg)
-            names.append(String("cpr/r_mean")); vals.append(r_mean)
-            names.append(String("cpr/q_mean")); vals.append(q_mean)
-            names.append(String("cpr/q_loss")); vals.append(q_loss)
-            names.append(String("cpr/q_pi")); vals.append(q_pi)
+            names.append(String("disc_expert_loss")); vals.append(d_pos)
+            names.append(String("disc_policy_loss")); vals.append(d_neg)
+            names.append(String("disc_reward_mean")); vals.append(r_mean)
+            names.append(String("mean_q")); vals.append(q_mean)
+            names.append(String("critic_loss")); vals.append(q_loss)
+            names.append(String("policy_q_mean")); vals.append(q_pi)
             logger.value()[].log_scalars(names, vals, step)
         print(
             "   [cpr] step", step, " D+", d_pos, " D-", d_neg, " r", r_mean,

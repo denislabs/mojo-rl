@@ -768,7 +768,7 @@ struct REDQOFETrainer[
         if Bool(logger):
             var lg = logger.value()
             lg[].log_scalar("critic_loss", Float64(m.critic_loss), step)
-            lg[].log_scalar("actor_loss", Float64(m.actor_loss), step)
+            lg[].log_scalar("policy_loss", Float64(m.actor_loss), step)
             lg[].log_scalar("alpha", Float64(m.alpha), step)
             lg[].log_scalar("log_prob_mean", Float64(m.log_prob_mean), step)
             lg[].log_scalar("aux_loss", Float64(m.aux_loss), step)

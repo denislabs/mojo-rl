@@ -1209,19 +1209,19 @@ struct MBPOTrainer[
             done_mean = self._done_accum * inv
             act_abs_mean = self._action_abs_accum * inv
         var bundle = MBPOMetrics(
-            actor_loss=LogScalar[DT](actor_mean),
+            policy_loss=LogScalar[DT](actor_mean),
             critic_loss=LogScalar[DT](critic_mean),
             alpha=LogScalar[DT](alpha_val),
             mean_q=LogScalar[DT](q_mean),
-            mean_reward=LogScalar[DT](reward_mean),
-            td_target=LogScalar[DT](td_mean),
-            done_ratio=LogScalar[DT](done_mean),
-            mean_abs_action=LogScalar[DT](act_abs_mean),
+            reward_mean=LogScalar[DT](reward_mean),
+            mean_target=LogScalar[DT](td_mean),
+            mean_done=LogScalar[DT](done_mean),
+            action_abs_mean=LogScalar[DT](act_abs_mean),
             dyn_loss=LogScalar[DT](self._dyn_loss_last),
-            dyn_holdout_loss=LogScalar[DT](self._dyn_holdout_loss),
-            dyn_holdout_min=LogScalar[DT](self._dyn_holdout_min),
-            dyn_holdout_max=LogScalar[DT](self._dyn_holdout_max),
-            dyn_holdout_spread=LogScalar[DT](
+            dyn_holdout_mse_mean=LogScalar[DT](self._dyn_holdout_loss),
+            dyn_holdout_mse_min=LogScalar[DT](self._dyn_holdout_min),
+            dyn_holdout_mse_max=LogScalar[DT](self._dyn_holdout_max),
+            dyn_holdout_mse_spread=LogScalar[DT](
                 self._dyn_holdout_max - self._dyn_holdout_min
             ),
             dyn_input_std_mean=LogScalar[DT](self._dyn_input_std_mean),

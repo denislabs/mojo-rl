@@ -52,7 +52,7 @@ log both useful and small.
 `episodes`. Every 50,000 steps is typical for a 600,000-step run.
 
 **Diagnostic cadence** (`diag_every`) — the full metric bundle for the
-algorithm: `actor_loss`, `critic_loss`, `alpha`, `mean_q`, `train_steps`. Every
+algorithm: `policy_loss`, `critic_loss`, `alpha`, `mean_q`, `train_steps`. Every
 1,000 steps.
 
 Reward alone tells you *that* something is wrong. The bundle tells you what:
@@ -187,12 +187,28 @@ Each algorithm defines a metrics struct. Representative fields:
 
 | Algorithm | Metrics |
 |---|---|
-| DQN | `loss`, `mean_q`, `epsilon`, `train_steps` |
-| SAC | `actor_loss`, `critic_loss`, `alpha`, `mean_q`, `mean_next_q` |
-| PPO | `actor_loss`, `critic_loss`, `train_steps`, `n_updates` |
-| MuZero | policy / value / reward losses, search statistics |
+| DQN | `loss`, `mean_q`, `explore_rate`, `td_error_abs_mean`, `train_steps` |
+| SAC | `policy_loss`, `critic_loss`, `alpha`, `mean_q`, `mean_next_q`, `reward_mean` |
+| PPO | `policy_loss`, `critic_loss`, `approx_kl`, `clip_fraction`, `entropy` |
+| MuZero | `policy_loss`, `value_loss`, `reward_loss`, `avg_reward`, `buffer_size` |
+| FB / FB-CPR | `fb_measure_loss`, `fb_ortho_loss`, `policy_loss`, `disc_expert_loss`, `disc_policy_loss` |
+| ACT | `l1_loss`, `kl_loss`, `val_l1_loss`, `grad_norm`, `step_s` |
 
 The shared training drivers additionally emit `avg_reward` and `episodes` at the driver cadence.
+
+### Naming
+
+Metric names are flat `snake_case`, with no `/` namespaces, because the
+dashboard groups charts by exact name:
+
+- a loss ends in `_loss` (`policy_loss`, `value_loss`, `val_l1_loss`);
+- a statistic is `<quantity>_<stat>` (`reward_mean`, `action_abs_mean`);
+- an evaluation starts with `eval_` (`eval_return`, `eval_success_rate`);
+- a per-task series appends the task name (`eval_success_rate_<task>`).
+
+Settings are not metrics. A value that does not change during the run goes
+through `set_config`, which writes it to `metrics.config.kv` beside
+`metrics.csv`.
 
 ## What to watch
 

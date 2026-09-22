@@ -733,7 +733,7 @@ struct PPODiscreteTrainer[
             clip_mean = self._clip_accum * inv
             ev_mean = self._ev_accum * inv
         var bundle = PPOMetrics(
-            actor_loss=LogScalar[DT](self._actor_L_accum * inv),
+            policy_loss=LogScalar[DT](self._actor_L_accum * inv),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),

@@ -322,15 +322,15 @@ def main() raises:
     var acc_n = 0
 
     var names = List[String]()
-    names.append(String("train/l1"))
-    names.append(String("train/kl"))
-    names.append(String("train/epoch"))
+    names.append(String("l1_loss"))
+    names.append(String("kl_loss"))
+    names.append(String("epoch"))
 
     var val_names = List[String]()
-    val_names.append(String("val/l1"))
-    val_names.append(String("val/kl"))
-    val_names.append(String("perf/s_per_step"))
-    val_names.append(String("best/val_l1"))
+    val_names.append(String("val_l1_loss"))
+    val_names.append(String("val_kl_loss"))
+    val_names.append(String("step_s"))
+    val_names.append(String("val_l1_loss_best"))
 
     for s in range(steps):
         # Split, because "0.176 s/step" does not say WHICH half. `sample_batch`

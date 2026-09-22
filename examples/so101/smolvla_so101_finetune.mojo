@@ -807,7 +807,7 @@ def main() raises:
           + String(base_val))
     var bn = List[String]()
     var bv = List[Float64]()
-    bn.append(String("val/loss"))
+    bn.append(String("val_loss"))
     bv.append(base_val)
     logger.log_scalars(bn, bv, -1)
     # ⚠ The baseline ran a BACKWARD it does not need and left gradients in
@@ -863,7 +863,7 @@ def main() raises:
             )
             var names = List[String]()
             var vals = List[Float64]()
-            names.append(String("train/loss"))
+            names.append(String("loss"))
             vals.append(loss)
             logger.log_scalars(names, vals, s)
 
@@ -887,7 +887,7 @@ def main() raises:
             )
             var vn = List[String]()
             var vv = List[Float64]()
-            vn.append(String("val/loss"))
+            vn.append(String("val_loss"))
             vv.append(vloss)
             logger.log_scalars(vn, vv, s)
 

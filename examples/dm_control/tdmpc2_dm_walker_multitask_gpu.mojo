@@ -429,13 +429,13 @@ def main() raises:
         # nothing about the hypothesis — only that the mechanism never engaged.
         comptime if PER_TASK_PI_SCALE:
             logger.log_scalar(
-                "pi_scale/stand", Float64(ag.task_pi_scale(T_STAND)), at
+                "pi_scale_stand", Float64(ag.task_pi_scale(T_STAND)), at
             )
             logger.log_scalar(
-                "pi_scale/walk", Float64(ag.task_pi_scale(T_WALK)), at
+                "pi_scale_walk", Float64(ag.task_pi_scale(T_WALK)), at
             )
             logger.log_scalar(
-                "pi_scale/run", Float64(ag.task_pi_scale(T_RUN)), at
+                "pi_scale_run", Float64(ag.task_pi_scale(T_RUN)), at
             )
             print(
                 "     pi_scale — shared",

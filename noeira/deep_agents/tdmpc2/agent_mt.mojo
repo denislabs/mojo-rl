@@ -1569,7 +1569,7 @@ struct TDMPC2MultiTaskAgent[
                         for k in range(w_cnt):
                             acc += window[k]
                         lg[].log_scalar(
-                            String("avg_reward/") + tag,
+                            String("avg_reward_") + tag,
                             Float64(acc / Scalar[DT](w_cnt)),
                             gstep,
                         )
@@ -1600,7 +1600,7 @@ struct TDMPC2MultiTaskAgent[
                 if Bool(logger):
                     var lg = logger.value()
                     lg[].log_scalar(
-                        String("eval/") + tag, Float64(ret), gstep
+                        String("eval_return_") + tag, Float64(ret), gstep
                     )
                 if verbose:
                     var el = Float64(perf_counter_ns() - t_start) / 1e9

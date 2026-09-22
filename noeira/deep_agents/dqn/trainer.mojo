@@ -806,11 +806,11 @@ struct DQNTrainer[
             done_mean = self._done_accum * inv
         var bundle = DQNMetrics(
             loss=LogScalar[DT](loss_mean),
-            epsilon=LogScalar[DT](self.epsilon),
+            explore_rate=LogScalar[DT](self.epsilon),
             mean_q=LogScalar[DT](q_mean),
             mean_target=LogScalar[DT](target_mean),
-            mean_td_error=LogScalar[DT](td_error_mean),
-            mean_reward=LogScalar[DT](reward_mean),
+            td_error_abs_mean=LogScalar[DT](td_error_mean),
+            reward_mean=LogScalar[DT](reward_mean),
             mean_done=LogScalar[DT](done_mean),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),

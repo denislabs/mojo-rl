@@ -633,11 +633,11 @@ struct DDPGTrainer[
             mtgt = self._mean_target_accum * inv
             mr = self._mean_reward_accum * inv
         var bundle = DDPGMetrics(
-            actor_loss=LogScalar[DT](actor_val),
+            policy_loss=LogScalar[DT](actor_val),
             critic_loss=LogScalar[DT](critic_val),
             mean_q=LogScalar[DT](mq),
             mean_target=LogScalar[DT](mtgt),
-            mean_reward=LogScalar[DT](mr),
+            reward_mean=LogScalar[DT](mr),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )

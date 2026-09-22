@@ -407,16 +407,16 @@ struct DreamerV3Agent[
                         # imagination-health scalars (already computed, now
                         # surfaced): value spread + return spread + con floor.
                         lg[].log_scalar(
-                            "imag_val_mean", Float64(self.trainer.dbg_val_mean()), step
+                            "imagined_value_mean", Float64(self.trainer.dbg_val_mean()), step
                         )
                         lg[].log_scalar(
-                            "imag_val_std", Float64(self.trainer.dbg_val_std()), step
+                            "imagined_value_std", Float64(self.trainer.dbg_val_std()), step
                         )
                         lg[].log_scalar(
-                            "imag_ret_std", Float64(self.trainer.dbg_ret_std()), step
+                            "imagined_return_std", Float64(self.trainer.dbg_ret_std()), step
                         )
                         lg[].log_scalar(
-                            "imag_con_min", Float64(self.trainer.dbg_con_min()), step
+                            "imagined_continue_min", Float64(self.trainer.dbg_con_min()), step
                         )
                         lg[].log_scalar(
                             "train_steps", Float64(self.train_steps_done()), step
@@ -447,7 +447,7 @@ struct DreamerV3Agent[
                         lg[].log_scalar("avg_reward", Float64(avg_ret), step)
                         lg[].log_scalar("episode_reward", Float64(last_ep), step)
                         lg[].log_scalar("best_reward", Float64(best_ret), step)
-                        lg[].log_scalar("eval/mean_return", Float64(ev), step)
+                        lg[].log_scalar("eval_return", Float64(ev), step)
                         lg[].flush()
                 ep_acc = Scalar[DT](0.0)
                 ep_n = 0
@@ -698,7 +698,7 @@ struct DreamerV3Agent[
                         lg[].log_scalar("avg_reward", Float64(avg_ret), step)
                         lg[].log_scalar("episode_reward", Float64(last_ep), step)
                         lg[].log_scalar("best_reward", Float64(best_ret), step)
-                        lg[].log_scalar("eval/mean_return", Float64(ev), step)
+                        lg[].log_scalar("eval_return", Float64(ev), step)
                         lg[].flush()
                 ep_acc = Scalar[DT](0.0)
                 ep_n = 0
@@ -884,11 +884,11 @@ struct DreamerV3Agent[
                             lg[].log_scalar("avg_reward", Float64(avg), step)
                             lg[].log_scalar("episode_reward", Float64(last_ep), step)
                             lg[].log_scalar(
-                                "loss/world_model",
+                                "wm_loss",
                                 Float64(self.last_wm_loss()), step,
                             )
                             lg[].log_scalar(
-                                "loss/actor_critic",
+                                "ac_loss",
                                 Float64(self.last_ac_loss()), step,
                             )
 

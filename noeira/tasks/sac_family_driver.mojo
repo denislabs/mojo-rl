@@ -1397,24 +1397,27 @@ def run_sac[M: ModelDefLike, C: Phyics3dEnvConfig](
         # for a single-task run, because every chart and every comparison
         # made so far reads them.
         for i in range(n_tasks):
-            var k = String("eval/") + task_names[i] + String("/")
-            logger.log_scalar(k + String("success_rate"),
-                              any_rates[i], num_steps)
-            logger.log_scalar(k + String("success_rate_final"),
-                              fin_rates[i], num_steps)
-        if n_tasks == 1:
-            logger.log_scalar(String("eval/success_rate"), rate, num_steps)
             logger.log_scalar(
-                String("eval/success_rate_final"), rate_final, num_steps
+                String("eval_success_rate_") + task_names[i],
+                any_rates[i], num_steps,
             )
-        logger.log_scalar(String("eval/shaped_return"), shaped, num_steps)
+            logger.log_scalar(
+                String("eval_success_rate_final_") + task_names[i],
+                fin_rates[i], num_steps,
+            )
+        if n_tasks == 1:
+            logger.log_scalar(String("eval_success_rate"), rate, num_steps)
+            logger.log_scalar(
+                String("eval_success_rate_final"), rate_final, num_steps
+            )
+        logger.log_scalar(String("eval_shaped_return"), shaped, num_steps)
 
         # ⚠⚠ `close()` GOES **AFTER** THE LAST `log_scalar`, AND IT DID NOT.
         # It sat above the greedy eval, so the two metrics this run exists to
         # produce were logged to a CLOSED logger and dropped — `close()`
         # drains the queue and joins the POST thread, and anything queued
         # afterwards has nothing to carry it. The 990k-step run's
-        # `eval/success_rate` is missing from its CSV for exactly this reason
+        # `eval/success_rate` (now `eval_success_rate`) is missing from its CSV for exactly this reason
         # and NOT because the export was early, which is what I assumed.
         #
         # ⚠ IT IS SILENT. `log_scalar` after `close` neither raises nor warns;

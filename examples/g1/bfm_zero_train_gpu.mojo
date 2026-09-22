@@ -962,13 +962,13 @@ def main() raises:
             # stand makes the run go FASTER.
             var mn = List[String]()
             var mv = List[Float64]()
-            mn.append(String("loss/measure")); mv.append(measure)
-            mn.append(String("loss/ortho")); mv.append(ortho)
-            mn.append(String("loss/actor")); mv.append(actor)
-            mn.append(String("loss/fb_offdiag")); mv.append(fb_quad)
-            mn.append(String("loss/fb_diag")); mv.append(fb_anchor)
-            mn.append(String("loss/M1")); mv.append(m_mean)
-            mn.append(String("loss/q_fb_abs")); mv.append(q_fb_abs)
+            mn.append(String("fb_measure_loss")); mv.append(measure)
+            mn.append(String("fb_ortho_loss")); mv.append(ortho)
+            mn.append(String("policy_loss")); mv.append(actor)
+            mn.append(String("fb_offdiag")); mv.append(fb_quad)
+            mn.append(String("fb_diag")); mv.append(fb_anchor)
+            mn.append(String("fb_m1")); mv.append(m_mean)
+            mn.append(String("fb_q_abs_mean")); mv.append(q_fb_abs)
             # ── the CPR half ──────────────────────────────────────────
             # Runs 1-3 turned at the same step under three materially
             # different FB losses, and NOTHING logged inflected at the turn.
@@ -991,14 +991,14 @@ def main() raises:
             var q_loss = 0.0
             var q_pi = 0.0
             agent.head.read_diag(d_pos, d_neg, r_d, q_d, q_loss, q_pi)
-            mn.append(String("cpr/bce_expert")); mv.append(d_pos)
-            mn.append(String("cpr/bce_policy")); mv.append(d_neg)
-            mn.append(String("cpr/r_d")); mv.append(r_d)
-            mn.append(String("cpr/q_d")); mv.append(q_d)
-            mn.append(String("cpr/q_loss")); mv.append(q_loss)
-            mn.append(String("cpr/q_pi")); mv.append(q_pi)
-            mn.append(String("norm/F")); mv.append(f_norm)
-            mn.append(String("norm/B")); mv.append(b_norm)
+            mn.append(String("disc_expert_loss")); mv.append(d_pos)
+            mn.append(String("disc_policy_loss")); mv.append(d_neg)
+            mn.append(String("disc_reward_mean")); mv.append(r_d)
+            mn.append(String("mean_q")); mv.append(q_d)
+            mn.append(String("critic_loss")); mv.append(q_loss)
+            mn.append(String("policy_q_mean")); mv.append(q_pi)
+            mn.append(String("f_norm")); mv.append(f_norm)
+            mn.append(String("b_norm")); mv.append(b_norm)
             # `|B|` is pinned to sqrt(d) by the net's sphere projection, so it
             # is structurally incapable of showing a DIRECTIONAL collapse —
             # which is what killed run 1 (§12.12). `ortho` can, once unpacked.
@@ -1019,15 +1019,15 @@ def main() raises:
             var q = ortho + 2.0 * Float64(D)
             var nb = Float64(BATCH)
             var tr_c2 = (q - Float64(D) * Float64(D) / nb) * nb / (nb - 1.0)
-            mn.append(String("norm/B_rank_eff"))
+            mn.append(String("b_rank_eff"))
             mv.append(
                 Float64(D) * Float64(D) / tr_c2 if tr_c2 > 1e-9 else 0.0
             )
-            mn.append(String("env/st_s")); mv.append(rate)
-            mn.append(String("env/ring")); mv.append(Float64(agent.base.size))
-            mn.append(String("train/updates")); mv.append(Float64(agent.total_train_steps()))
-            mn.append(String("env/lie_down")); mv.append(lie_frac)
-            mn.append(String("env/elapsed_s")); mv.append(el)
+            mn.append(String("steps_per_s")); mv.append(rate)
+            mn.append(String("buffer_size")); mv.append(Float64(agent.base.size))
+            mn.append(String("train_steps")); mv.append(Float64(agent.total_train_steps()))
+            mn.append(String("lie_down_frac")); mv.append(lie_frac)
+            mn.append(String("wall_s")); mv.append(el)
             logger.log_scalars(mn, mv, env_steps + start_at)
         var ee = eval_every if eval_every > 0 else ckpt_every
         var do_ckpt = ckpt_every > 0 and s > 0 and s % ckpt_every == 0
@@ -1057,10 +1057,10 @@ def main() raises:
                 )
                 var en = List[String]()
                 var ev = List[Float64]()
-                en.append(String("eval/emd")); ev.append(sc.emd)
-                en.append(String("eval/distance")); ev.append(sc.distance)
-                en.append(String("eval/proximity")); ev.append(sc.proximity)
-                en.append(String("eval/segments")); ev.append(Float64(sc.n))
+                en.append(String("eval_emd")); ev.append(sc.emd)
+                en.append(String("eval_distance")); ev.append(sc.distance)
+                en.append(String("eval_proximity")); ev.append(sc.proximity)
+                en.append(String("eval_segments")); ev.append(Float64(sc.n))
 
                 # ── motion prioritization refresh ─────────────────────
                 if prio_on and env_steps + start_at >= next_prio:
@@ -1108,9 +1108,9 @@ def main() raises:
                         " weight spread",
                         g1_motion_priority(hi) / g1_motion_priority(lo),
                     )
-                    en.append(String("prio/emd_min")); ev.append(lo)
-                    en.append(String("prio/emd_max")); ev.append(hi)
-                    en.append(String("prio/spread"))
+                    en.append(String("prio_emd_min")); ev.append(lo)
+                    en.append(String("prio_emd_max")); ev.append(hi)
+                    en.append(String("prio_spread"))
                     ev.append(
                         g1_motion_priority(hi) / g1_motion_priority(lo)
                     )

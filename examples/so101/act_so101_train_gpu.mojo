@@ -779,19 +779,19 @@ def main() raises:
     takes both from the peeked window."""
 
     var names = List[String]()
-    names.append(String("train/l1"))
-    names.append(String("train/kl"))
-    names.append(String("train/loss"))
-    names.append(String("train/grad_norm"))
-    names.append(String("train/epoch"))
+    names.append(String("l1_loss"))
+    names.append(String("kl_loss"))
+    names.append(String("loss"))
+    names.append(String("grad_norm"))
+    names.append(String("epoch"))
 
     var val_names = List[String]()
-    val_names.append(String("val/l1"))
-    val_names.append(String("val/kl"))
-    val_names.append(String("perf/s_per_step"))
-    val_names.append(String("perf/s_data"))
-    val_names.append(String("perf/s_gpu"))
-    val_names.append(String("best/val_l1"))
+    val_names.append(String("val_l1_loss"))
+    val_names.append(String("val_kl_loss"))
+    val_names.append(String("step_s"))
+    val_names.append(String("data_s"))
+    val_names.append(String("gpu_s"))
+    val_names.append(String("val_l1_loss_best"))
 
     # Capture prerequisites: adopt the arena eagerly and force the padded /
     # bf16 weight caches to refresh every forward. WITHOUT the second, a replay

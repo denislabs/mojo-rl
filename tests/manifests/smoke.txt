@@ -430,6 +430,9 @@ tests/deep_agents/test_no_v2_checkpoint_writes.mojo
 # A SOURCE gate: a run's settings go through `set_config` (metrics.config.kv +
 # /runs), never as `cfg/*` scalars that the dashboard draws as one-point charts.
 tests/core/test_no_config_as_metrics.mojo
+# A SOURCE gate: metric names are flat snake_case, never `fb/measure`-style
+# namespaces — the dashboard groups charts by exact name.
+tests/core/test_metric_names_are_flat.mojo
 # A run's END is a signal it sends, and its START is not its first metric.
 # Offline like test_http_sink beside it: routes and payloads by value, plus the
 # idempotence latches and the inertness that a `close()` which now POSTs could

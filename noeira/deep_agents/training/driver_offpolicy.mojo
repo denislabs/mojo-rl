@@ -1524,7 +1524,7 @@ def run_offpolicy_train_batched[
             comptime if L.ENABLED:
                 if Bool(logger):
                     logger.value()[].log_scalar(
-                        "eval/mean_return",
+                        "eval_return",
                         Float64(eval_ret),
                         base_step + step_idx,
                     )

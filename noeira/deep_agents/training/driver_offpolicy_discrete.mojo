@@ -554,7 +554,7 @@ def run_offpolicy_discrete_train[
             comptime if L.ENABLED:
                 if Bool(logger):
                     logger.value()[].log_scalar(
-                        "eval/mean_return", Float64(eval_ret), abs_step
+                        "eval_return", Float64(eval_ret), abs_step
                     )
                     logger.value()[].flush()
 
@@ -956,7 +956,7 @@ def run_offpolicy_discrete_train_gpu_batched[
             comptime if L.ENABLED:
                 if Bool(logger):
                     logger.value()[].log_scalar(
-                        "eval/mean_return", Float64(eval_ret), abs_step
+                        "eval_return", Float64(eval_ret), abs_step
                     )
                     logger.value()[].flush()
             if verbose:
@@ -1233,7 +1233,7 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
             comptime if L.ENABLED:
                 if Bool(logger):
                     logger.value()[].log_scalar(
-                        "eval/mean_return", Float64(eval_ret), abs_step
+                        "eval_return", Float64(eval_ret), abs_step
                     )
                     logger.value()[].flush()
             if verbose:

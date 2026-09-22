@@ -666,11 +666,11 @@ struct TD3Trainer[
             reward_mean = self._reward_accum * inv_c
             done_mean = self._done_accum * inv_c
         var bundle = TD3Metrics(
-            actor_loss=LogScalar[DT](actor_mean),
+            policy_loss=LogScalar[DT](actor_mean),
             critic_loss=LogScalar[DT](critic_mean),
             mean_q=LogScalar[DT](q_mean),
             mean_target=LogScalar[DT](target_mean),
-            mean_reward=LogScalar[DT](reward_mean),
+            reward_mean=LogScalar[DT](reward_mean),
             mean_done=LogScalar[DT](done_mean),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_actor_updates=LogScalar[DT](Scalar[DT](self._actor_updates)),

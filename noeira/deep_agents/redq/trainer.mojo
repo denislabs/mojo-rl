@@ -814,15 +814,15 @@ struct REDQTrainer[
             alpha_v = self._alpha_accum * inv_a
 
         var bundle = REDQMetrics(
-            actor_loss=LogScalar[DT](actor_loss_v),
+            policy_loss=LogScalar[DT](actor_loss_v),
             critic_loss=LogScalar[DT](critic_loss_v),
             alpha=LogScalar[DT](alpha_v),
             mean_q=LogScalar[DT](q_mean),
             mean_target=LogScalar[DT](target_mean),
-            mean_reward=LogScalar[DT](reward_mean),
+            reward_mean=LogScalar[DT](reward_mean),
             mean_next_q=LogScalar[DT](Scalar[DT](0.0)),
             mean_done=LogScalar[DT](done_mean),
-            mean_abs_action=LogScalar[DT](abs_action_mean),
+            action_abs_mean=LogScalar[DT](abs_action_mean),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )

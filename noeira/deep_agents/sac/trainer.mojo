@@ -999,15 +999,15 @@ struct SACTrainer[
             alpha_val = self._alpha_accum * inv
             critic_val = self._critic_L_accum * inv
         var bundle = SACMetrics(
-            actor_loss=LogScalar[DT](actor_val),
+            policy_loss=LogScalar[DT](actor_val),
             critic_loss=LogScalar[DT](critic_val),
             alpha=LogScalar[DT](alpha_val),
             mean_q=LogScalar[DT](mq),
             mean_target=LogScalar[DT](mtgt),
-            mean_reward=LogScalar[DT](mr),
+            reward_mean=LogScalar[DT](mr),
             mean_next_q=LogScalar[DT](mnq),
             mean_done=LogScalar[DT](md),
-            mean_abs_action=LogScalar[DT](maa),
+            action_abs_mean=LogScalar[DT](maa),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )

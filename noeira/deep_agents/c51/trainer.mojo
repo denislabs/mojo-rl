@@ -865,11 +865,11 @@ struct C51Trainer[
             done_mean = self._done_accum * inv
         var bundle = C51Metrics(
             loss=LogScalar[DT](loss_mean),
-            epsilon=LogScalar[DT](self.epsilon),
+            explore_rate=LogScalar[DT](self.epsilon),
             mean_q=LogScalar[DT](q_mean),
             mean_target=LogScalar[DT](target_mean),
-            dist_entropy=LogScalar[DT](dist_entropy_mean),
-            mean_reward=LogScalar[DT](reward_mean),
+            dist_entropy_mean=LogScalar[DT](dist_entropy_mean),
+            reward_mean=LogScalar[DT](reward_mean),
             mean_done=LogScalar[DT](done_mean),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),

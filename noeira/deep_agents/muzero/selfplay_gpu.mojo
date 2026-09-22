@@ -389,9 +389,9 @@ def run_muzero_selfplay_gpu[
                 ravg /= Float64(rcnt)
             var rn = List[String]()
             var rv = List[Float64]()
-            rn.append(String("avg_return")); rv.append(ravg)
+            rn.append(String("avg_reward")); rv.append(ravg)
             rn.append(String("episodes")); rv.append(Float64(rb.num_episodes()))
-            rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
+            rn.append(String("buffer_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
     l_parts.unsafe_free(); h_diag_pred.unsafe_free()

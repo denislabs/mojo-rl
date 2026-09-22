@@ -102,7 +102,7 @@ pixi run -e apple mojo run -I . examples/tasks/sac_tower_gpu.mojo so101_tower_li
 
 The run records `demo_rows` and `demo_mean_reward` in its config
 (`metrics.config.kv`, beside `metrics.csv`). Early on, the demos'
-mean reward should sit above the online `mean_reward`; if it does not, the
+mean reward should sit above the online `reward_mean`; if it does not, the
 demos are not showing the policy anything better than what it already does.
 A `.demo` file recorded on another family is refused by its widths.
 
