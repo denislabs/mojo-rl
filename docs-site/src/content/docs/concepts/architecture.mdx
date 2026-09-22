@@ -105,7 +105,7 @@ through **`data`** and **`io`**.
 - **Combinators**: Sequential, Residual, Parallel, Repeat
 - **Pre-built models**: ResNet, GPT, ViT, LSTM
 - **Optimizers**: SGD, Adam, AdamW, with grouped multi-tensor apply
-- **Automatic fusion**: MatMul+Bias+Activation and Conv2D+Activation collapse into single GPU kernels
+- **Fused primitives**: `LinearAct` runs matmul, bias and activation as one GPU kernel — fusion is a module you choose, not a compiler pass
 - **Training**: supervised `Trainer` with AMP and CUDA-graph capture
 
 **`data`** is the trajectory store (HDF5), the replay buffers the off-policy

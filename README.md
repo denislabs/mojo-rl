@@ -58,7 +58,7 @@ that drives the robot.
 - **Deployment** — the training code runs the policy on the robot's own computer and GPU; ACT closes its loop at 30 Hz on a Jetson Orin NX
 
 **Infrastructure**
-- **`noeira.nn`** — Module / Param networks with autodiff, 70+ primitives, fused and flash attention, AMP, CUDA graphs
+- **`noeira.nn`** — Module / Param networks whose gradients compose at compile time (each module's VJP, no tape), 70+ primitives, fused kernels, fused and flash attention, AMP, CUDA graphs
 - **Data and I/O** — trajectory store (HDF5), replay buffers, Parquet, video, safetensors, HTTP
 - **Projects and runs** — runs recorded on disk and mirrored to [noeira cloud](https://cloud.noeira.ai)
 - **Rendering** — SDL3 renderers, ImGui viewers, a physics studio, video export
