@@ -548,21 +548,27 @@ def main() raises:
         buffer_size=64,
         api_key=env_vars.get("NOEIRA_CLOUD_API_KEY", ""),
     )
-    remote.set_config("algorithm", "BFM-Zero FB-CPR")
-    remote.set_config("env", "unitree_g1")
-    remote.set_config("target", "gpu")
-    remote.set_config("lanes", String(N_ENVS))
-    remote.set_config("obs", String(OBS))
-    remote.set_config("act", String(ACT))
-    remote.set_config("d", String(D))
-    remote.set_config("h", String(H))
-    remote.set_config("layers", String(L))
-    remote.set_config("updates_per_step", String(ups))
-    remote.set_config("seed_steps", String(SEED_STEPS))
-    remote.set_config("store", store_path)
-    remote.set_config("resume_from", resume_path)
-    remote.set_config("start_at", String(start_at))
-    var logger = CompositeLogger(CsvLogger(run.metrics_path()), remote)
+    # ⚠ THE CONFIG GOES TO BOTH HALVES: `/runs` for the dashboard and
+    # `metrics.config.kv` beside the CSV, so a CSV read a week later still says
+    # what produced it. Hence the composite is built BEFORE `set_config`.
+    var logger = CompositeLogger(CsvLogger(run.metrics_path()), remote^)
+    logger.set_config("algorithm", "BFM-Zero FB-CPR")
+    logger.set_config("env", "unitree_g1")
+    logger.set_config("target", "gpu")
+    logger.set_config("lanes", String(N_ENVS))
+    logger.set_config("obs", String(OBS))
+    logger.set_config("act", String(ACT))
+    logger.set_config("d", String(D))
+    logger.set_config("h", String(H))
+    logger.set_config("layers", String(L))
+    logger.set_config("updates_per_step", String(ups))
+    logger.set_config("seed_steps", String(SEED_STEPS))
+    logger.set_config("store", store_path)
+    logger.set_config("resume_from", resume_path)
+    logger.set_config("start_at", String(start_at))
+    logger.set_config("t_episode", String(T_EPISODE))
+    logger.set_config("track_len", String(TRACK_LEN))
+    logger.set_config("lie_prob", String(lie_prob))
     # ⚠ AFTER the config and before step 0 — `register_run` seeds the
     # dashboard from the run (id, project, commit, seed, host) and POSTs
     # `/runs`. A run that dies before step 0 otherwise never appears at all.
@@ -574,27 +580,6 @@ def main() raises:
     # monitor — a box with no credentials must still train — and every
     # `announce_checkpoint` below is a no-op on a None, so there is no branch.
     var artifacts = sink_for_run(run.id, run.dir)
-
-    # ⚠ THE SETTINGS GO OUT AS SCALARS TOO, SO THE CSV IS SELF-DESCRIBING.
-    # `set_config` reaches the dashboard and NOT the CSV — `CsvLogger` has
-    # nowhere to put a config field — so a CSV read a week later would carry
-    # the curves and none of the settings that produced them. As `cfg/*` so
-    # they sort together and cannot collide with a metric name.
-    logger.log_scalar(String("cfg/lanes"), Float64(N_ENVS), 0)
-    logger.log_scalar(String("cfg/obs"), Float64(OBS), 0)
-    logger.log_scalar(String("cfg/act"), Float64(ACT), 0)
-    logger.log_scalar(String("cfg/d"), Float64(D), 0)
-    logger.log_scalar(String("cfg/h"), Float64(H), 0)
-    logger.log_scalar(String("cfg/layers"), Float64(L), 0)
-    logger.log_scalar(String("cfg/updates_per_step"), Float64(ups), 0)
-    logger.log_scalar(String("cfg/seed_steps"), Float64(SEED_STEPS), 0)
-    logger.log_scalar(String("cfg/t_episode"), Float64(T_EPISODE), 0)
-    logger.log_scalar(String("cfg/track_len"), Float64(TRACK_LEN), 0)
-    logger.log_scalar(String("cfg/lie_prob"), lie_prob, 0)
-    logger.log_scalar(String("cfg/seed"), Float64(seed_v), 0)
-    logger.log_scalar(String("cfg/start_at"), Float64(start_at), 0)
-    logger.log_scalar(String("cfg/resumed"),
-                      1.0 if resume_path.byte_length() > 0 else 0.0, 0)
 
     var ctx = DeviceContext()
     print("BFM-Zero G1 privileged arm: lanes", N_ENVS, " obs", OBS, " act", ACT, " d", D, " h", H, " L", L)

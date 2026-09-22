@@ -426,6 +426,10 @@ tests/deep_agents/test_checkpoints_announce.mojo
 # `deep_agents/` writes a file in place (non-atomic, cut at 2 GiB). Globbed on
 # purpose — it checks an ABSENCE, so a new file must be scanned unasked.
 tests/deep_agents/test_no_v2_checkpoint_writes.mojo
+
+# A SOURCE gate: a run's settings go through `set_config` (metrics.config.kv +
+# /runs), never as `cfg/*` scalars that the dashboard draws as one-point charts.
+tests/core/test_no_config_as_metrics.mojo
 # A run's END is a signal it sends, and its START is not its first metric.
 # Offline like test_http_sink beside it: routes and payloads by value, plus the
 # idempotence latches and the inertness that a `close()` which now POSTs could

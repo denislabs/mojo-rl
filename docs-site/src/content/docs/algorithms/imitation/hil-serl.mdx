@@ -100,7 +100,8 @@ pixi run -e apple mojo run -I . examples/tasks/sac_tower_gpu.mojo so101_tower_li
 | `--init CKPT` | load actor and critics from a checkpoint (the second half of a warm start) |
 | `--warmup N` | random-action steps before learning. HIL-SERL starts learning after ~100 steps because the demos already cover the space; the driver warns if it is left at the default |
 
-The run logs `cfg/demo_rows` and `cfg/demo_mean_reward`. Early on, the demos'
+The run records `demo_rows` and `demo_mean_reward` in its config
+(`metrics.config.kv`, beside `metrics.csv`). Early on, the demos'
 mean reward should sit above the online `mean_reward`; if it does not, the
 demos are not showing the policy anything better than what it already does.
 A `.demo` file recorded on another family is refused by its widths.

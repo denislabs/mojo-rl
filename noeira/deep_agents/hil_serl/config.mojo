@@ -8,7 +8,7 @@ other settings, `log_config` on its remote logger, and `apply_hil_serl`
 """
 
 from noeira.nn.constants import DT
-from noeira.core.logger import RemoteLogger
+from noeira.core.logger import Logger
 from noeira.deep_agents.demos.filter import DemoFilter
 
 
@@ -117,8 +117,9 @@ struct HilSerlConfig(Copyable, Movable):
             print("  ⚠ --warmup is", warmup, "with demos loaded; HIL-SERL"
                   " starts learning after ~100 steps. Consider --warmup 1000.")
 
-    def log_config(self, mut remote: RemoteLogger):
-        remote.set_config("demos", self.demos)
-        remote.set_config("demo_filter", self.filter.name())
-        remote.set_config("bc_weight", String(self.bc_weight))
-        remote.set_config("bc_q_ratio", String(self.bc_q_ratio))
+    def log_config[L: Logger](self, mut logger: L):
+        logger.set_config("demos", self.demos)
+        logger.set_config("demo_filter", self.filter.name())
+        logger.set_config("bc_weight", String(self.bc_weight))
+        logger.set_config("bc_q_ratio", String(self.bc_q_ratio))
+        logger.set_config("bc_only", String(self.bc_only))
