@@ -231,9 +231,10 @@ never applies it.
 ## What to expect
 
 40 training episodes / 10 held out, ~12,400 training frames, no augmentation.
-`ACT_AUGMENT=light|default` turns on the device-side image augmentation
-(`deep_agents/act/augment.mojo`, DR plan Phase 1) for TRAINING batches;
-validation is never augmented. GPU_DATA only.
+`ACT_AUGMENT=light|default` turns on image augmentation
+(`deep_agents/act/augment.mojo`, DR plan Phase 1) for TRAINING batches, on
+either data path (device gather kernels, or the host sampler under
+`-D ACT_HOST_DATA`); validation is never augmented.
 
 The FIRST 50-episode run, with a random backbone, is the baseline to beat:
 best val L1 **0.4076 at epoch 15.5**, then 26 consecutive validations all worse
@@ -597,10 +598,11 @@ def main() raises:
     # `ACT_AUGMENT=off|light|default` — an unknown value raises rather than
     # running an un-augmented experiment under an augmented name.
     var aug = ImageAugConfig.parse(getenv("ACT_AUGMENT"))
-    if aug.enabled and not GPU_DATA:
-        raise Error(
-            "ACT_AUGMENT needs GPU_DATA: the host sampler has no augmentation"
-        )
+    # Both samplers augment: the device one in its gather kernels, the host
+    # one (`-D ACT_HOST_DATA`) through the same draw and per-pixel rules
+    # (`act/augment.mojo`). Validation is never augmented on either.
+    comptime if not GPU_DATA:
+        ds.set_augment(aug)
     logger.set_config("augment", String(aug))
     print("  augment " + String(aug))
     print(
