@@ -121,6 +121,13 @@ from noeira.tasks.family_config import So101TowerConfig
 from noeira.tasks.so101_tower_xml import (
     So101TowerModel, SO101_TOWER_MAX_CONTACTS, SO101_TOWER_NMESH_VERTS,
 )
+from noeira.nn.core.ptr import mptr
+from noeira.tasks.so101_tower_rig import (
+    TOWER_MD, RIG_CAM_W, RIG_CAM_H, RIG_N_CAMS, RIG_SAMPLES,
+    RIG_VISUAL_GROUP_MASK, RIG_DR_TARGET, TowerRenderer, make_tower_model,
+    make_tower_renderer, tower_cameras, pack_camera_u8, rig_byte,
+    So101TowerUnits,
+)
 from noeira.tasks.spec import load_family, load_task
 
 
@@ -130,9 +137,9 @@ comptime Vec3 = Vec3Generic[DT]
 comptime FAMILY_PATH = "noeira/tasks/families/so101_tower.family"
 comptime TASK_DIR = "noeira/tasks/tasks/"
 comptime DEFAULT_TASK = "so101_tower_cube_in_bowl"
-comptime MD = Phyics3dEnv[So101TowerModel, So101TowerConfig, DT, False].MD
-"""⚠ THE ENV'S OWN MODEL SHAPE, so the renderer below is the kernel a
-render-in-the-loop eval over the batched env instantiates."""
+comptime MD = TOWER_MD
+"""The env's own model shape — `tasks/so101_tower_rig.mojo`, shared with the
+closed-loop eval (`tower_act_eval.mojo`) so both render the same pixels."""
 comptime NQ = So101TowerModel.NQ
 comptime NV = So101TowerModel.NV
 comptime STATE_DIM = NQ + NV
@@ -140,23 +147,14 @@ comptime ACT = 6
 comptime GRIPPER = 5
 comptime LANES = 32
 """Rows rendered per launch. Comptime: the kernel is instantiated per value."""
-comptime CAM_W = 320
-comptime CAM_H = 240
-"""`act/config.mojo`'s `SO101_IMG_W` / `SO101_IMG_H` — the real import's
-working resolution."""
-comptime N_CAMS = 2
+comptime CAM_W = RIG_CAM_W
+comptime CAM_H = RIG_CAM_H
+comptime N_CAMS = RIG_N_CAMS
 comptime NPIX = CAM_W * CAM_H
 comptime CAM_ELEMS = 3 * NPIX
-comptime SAMPLES = 4
-"""MuJoCo's `offsamples`: 4x MSAA. One ray per pixel aliases the jaw and the
-brick's edges, the two things the student must localise."""
-comptime Renderer = BatchedCameraRenderer[
-    DT, MD, LANES, CAM_W, CAM_H, False, True, SAMPLES
-]
-comptime VISUAL_GROUP_MASK: Int = (1 << 0) | (1 << 2)
-"""Group 0 (the props) and 2 (the arm's and the stand's visual meshes); group
-3 — collision meshes, the stand's translucent boxes, the bowl's nine boxes —
-is not drawn (`tower_camera_preview.mojo`)."""
+comptime SAMPLES = RIG_SAMPLES
+comptime Renderer = TowerRenderer[LANES]
+comptime VISUAL_GROUP_MASK: Int = RIG_VISUAL_GROUP_MASK
 comptime MIN_PSNR_HOST = 30.0
 """Device vs host tracer, same pose, same float32. Anything below is a
 pipeline defect (pose, camera, mask), not shading."""
@@ -164,25 +162,11 @@ comptime MAX_PSNR_SWAPPED = 20.0
 """The device overhead frame against the host WRIST frame must score under
 this, or the host check is blind."""
 comptime DEFAULT_DEFLATE = 4
-comptime DR_TARGET = (0.32, 0.0, 0.0)
-"""What the extra spot lights aim at: the desk mat's centre
-(`scenes/so101_tower.xml`, the `desk_mat` frame)."""
+comptime DR_TARGET = RIG_DR_TARGET
 
 
 def _to_byte(x: Float64) -> UInt8:
-    var v = Int(x * 255.0 + 0.5)
-    if v < 0:
-        v = 0
-    if v > 255:
-        v = 255
-    return UInt8(v)
-
-
-def _camera(names: List[String], suffix: String) raises -> Int:
-    for i in range(len(names)):
-        if String(names[i]).endswith(suffix):
-            return i
-    raise Error("tower rerender: no camera named *" + suffix + " in the scene")
+    return rig_byte(x)
 
 
 def _usage() -> String:
@@ -282,22 +266,14 @@ def main() raises:
     var fmd = parse_model_runtime(scene_path(fam))
     var task = load_task(String(TASK_DIR) + task_name + ".task")
     var ctx = DeviceContext()
-    var m = Model[DT, MD]()
-    So101TowerModel.init_fields[DT](ctx, m)
-    m.upload_all(ctx)
+    var m = make_tower_model(ctx)
     var d = Data[DT, MD, LANES]()
     d.upload_all(ctx)
     ctx.synchronize()
-    var cam_over = _camera(fmd.camera_names, String("overhead_cam"))
-    var cam_wrist = _camera(fmd.camera_names, String("wrist_cam"))
-    var cams = List[Int]()
-    cams.append(cam_over)   # slot 0 — the real dataset's sorted key order
-    cams.append(cam_wrist)  # slot 1
-    var r = Renderer(ctx, m, cam_over)
-    r.set_visual(
-        ctx, build_visual_model[DT, MD](fmd, m, group_mask=VISUAL_GROUP_MASK)
-    )
-    r.background = Vec3(0.82, 0.86, 0.90)
+    var cams = tower_cameras(fmd)  # [overhead, wrist] — the real dataset's key order
+    var cam_over = cams[0]
+    var cam_wrist = cams[1]
+    var r = make_tower_renderer[LANES](ctx, fmd, m)
     print("  device :", ctx.name(), "|", LANES, "lanes |", CAM_W, "x", CAM_H,
           "|", SAMPLES, "samples | overhead", cam_over, "wrist", cam_wrist)
     print("  " + r.vis.describe())
@@ -311,14 +287,7 @@ def main() raises:
     print("  dr     :", String(dr_cfg))
 
     # the actuators' ctrlrange: the action map and the gripper's LeRobot unit
-    var sf = So101TowerModel.make_spec_fields[DType.float64]()
-    var lo_col = actuator_column(sf, ACT_IDX_CTRL_MIN, ACT)
-    var hi_col = actuator_column(sf, ACT_IDX_CTRL_MAX, ACT)
-    var lo = List[Float64]()
-    var hi = List[Float64]()
-    for k in range(ACT):
-        lo.append(Float64(lo_col[k]))
-        hi.append(Float64(hi_col[k]))
+    var units = So101TowerUnits()
 
     # ── the demonstrations: checked up front, read again one at a time ────
     var total_eps = 0
@@ -428,18 +397,7 @@ def main() raises:
                     var p = h_rgb.unsafe_ptr()
                     for l in range(n):
                         var dst = l * N_CAMS * CAM_ELEMS + slot * CAM_ELEMS
-                        var src = l * NPIX * RGB_CHANNELS
-                        var first = _to_byte(Float64(p[unsafe_offset=src]))
-                        var all_same = True
-                        for q in range(NPIX):
-                            for c in range(3):
-                                var b = _to_byte(
-                                    Float64(p[unsafe_offset = src + q * 3 + c])
-                                )
-                                im[unsafe_offset = dst + c * NPIX + q] = b
-                                if b != first:
-                                    all_same = False
-                        if all_same:
+                        if pack_camera_u8(mptr(p), l, im, dst):
                             constant_pictures += 1
                     if dr_on and launch < dr_preview:
                         var hwc = List[UInt8](length=CAM_ELEMS, fill=UInt8(0))
@@ -460,18 +418,13 @@ def main() raises:
                     for k in range(ACT):
                         var qk = Float64(ds.obs[rr * ds.obs_dim + k])
                         var ak = Float64(ds.act[rr * ACT + k])
-                        var tgt = lo[k] + (ak + 1.0) * 0.5 * (hi[k] - lo[k])
-                        var q_lr: Float64
-                        var a_lr: Float64
-                        if k == GRIPPER:
-                            var span = hi[k] - lo[k]
-                            q_lr = 100.0 * (qk - lo[k]) / span
-                            a_lr = 100.0 * (tgt - lo[k]) / span
-                        else:
-                            q_lr = qk * 180.0 / pi
-                            a_lr = tgt * 180.0 / pi
-                        qb[unsafe_offset = l * ACT + k] = Float32(q_lr)
-                        ab[unsafe_offset = l * ACT + k] = Float32(a_lr)
+                        var tgt = units.action_to_joint(k, ak)
+                        qb[unsafe_offset = l * ACT + k] = Float32(
+                            units.joint_to_lerobot(k, qk)
+                        )
+                        ab[unsafe_offset = l * ACT + k] = Float32(
+                            units.joint_to_lerobot(k, tgt)
+                        )
                         asb[unsafe_offset = l * ACT + k] = Float32(ak)
                     for k in range(STATE_DIM):
                         sb[unsafe_offset = l * STATE_DIM + k] = Float64(
