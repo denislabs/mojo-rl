@@ -155,6 +155,11 @@ plain `Sequential` Q-network and no `DeviceContext`.
 
 ## Monitoring a run
 
+:::note[Requires noeira cloud]
+[noeira cloud](/tooling/monitor/) is not open yet. To join the private beta,
+write to [denis@noeira.ai](mailto:denis@noeira.ai).
+:::
+
 Long runs stream metrics to a dashboard rather than scrolling a terminal. The
 example wires up `RemoteLogger`, which sends `actor_loss`, `critic_loss`,
 `alpha`, `mean_q` and episode returns to [noeira cloud](/tooling/monitor/).
