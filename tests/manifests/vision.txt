@@ -53,3 +53,11 @@ tests/vision/test_extrinsics_kabsch.mojo
 # looks entirely reasonable, and was undetectable in the six-float file this
 # replaces. Needs no shim, no camera, no fixture.
 tests/vision/test_calib_file.mojo
+# The fisheye -> sim-pinhole path (`vision/fisheye.mojo`, `fisheye_calib.mojo`):
+# the Mojo lens model and undistortion map against cv::fisheye, the target
+# pinhole against the TRACER's own camera ray, a synthetic 170-degree
+# calibration recovered (with a control that the lens terms matter and a check
+# that the bootstrap spread tracks the true error), the remap. ⚠ NOT bit
+# equality like the entries above: the model is a PORT (float tolerances, each
+# stated in the file), and the calibration is a fit.
+tests/vision/test_fisheye.mojo

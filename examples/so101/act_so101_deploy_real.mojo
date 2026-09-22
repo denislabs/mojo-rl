@@ -35,6 +35,11 @@ same two cameras the demonstrations were recorded with.
 `DEPLOY_TARGET`). `--devices` takes camera indices OR device paths, `--port`
 names the follower (else `$SOARM_FOLLOWER_PORT`, else the platform default),
 and `--fourcc` requests a pixel format from a path-opened V4L2 camera.
+`--undistort DIR` brings each fisheye frame to the SIMULATOR's pinhole camera
+(`vision/fisheye.mojo`, `DIR/camera_<name>.txt` from
+`examples/vision/calibrate_fisheye.mojo`) on the camera thread before the
+resize — required for a policy trained on sim frames or on a store imported
+with `--undistort`, and wrong for one trained on raw recordings.
 
 ⚠ The normalization comes from `norm.json` beside the weights
 (`policies/<role>.norm.json`, or `<run>/checkpoints/norm.json` for `--ckpt`),
@@ -278,6 +283,10 @@ comptime T = ACTTrainer[
 comptime CAM_ELEMS = 3 * IMG_H * IMG_W
 comptime IMG_ELEMS = N_CAM * CAM_ELEMS
 
+comptime UNDISTORT_FOVY = 73.7398
+"""The sim cameras' fovy (`so101_tower_stand.xml` / `so_arm101_tower.xml`) —
+the pinhole `--undistort` brings the fisheye to, as the importer does."""
+
 comptime CAM_W = 640
 comptime CAM_H = 480
 """⚠⚠ THE CAMERA'S NATIVE SIZE, AND IT MUST BE THE ONE THE DEMONSTRATIONS WERE
@@ -481,6 +490,7 @@ def main() raises:
     var smooth = 1.0
     var check_steps = 30
     var devices = List[String]()
+    var undistort_dir = String("")
     var port_arg = String("")
     var cam_fourcc = String("")
     var cam_w = CAM_W
@@ -544,6 +554,12 @@ def main() raises:
         elif a == "--devices" and i + 1 < len(args):
             # Indices, device PATHS, or a mix — see `parse_camera_specs`.
             devices = parse_camera_specs(String(args[i + 1]))
+        elif a == "--undistort" and i + 1 < len(args):
+            # A policy trained on a store imported with `--undistort DIR` (or
+            # on the SIMULATOR's frames) sees the sim's pinhole camera, not
+            # the raw fisheye: each frame goes through DIR/camera_<name>.txt
+            # (`vision/fisheye.mojo`) on the camera thread, before the resize.
+            undistort_dir = String(args[i + 1])
         elif a == "--port" and i + 1 < len(args):
             port_arg = String(args[i + 1])
         elif a == "--fourcc" and i + 1 < len(args):
@@ -554,6 +570,8 @@ def main() raises:
             cam_fourcc = String(args[i + 1])
     if store == "":
         store = getenv("ACT_STORE")
+    if undistort_dir.byte_length() > 0 and len(devices) == 0:
+        raise Error("act deploy: --undistort needs --devices")
     if ckpt == "":
         # ⚠ THE ROLE BEFORE THE CONSTANT, and an explicit `--ckpt` before both.
         ckpt = resolve_policy(project, role, String(DEFAULT_CKPT))
@@ -836,6 +854,16 @@ def main() raises:
             devices[i], cam_w, cam_h, Float64(SO101_FPS), rgb=False,
             fourcc=cam_fourcc, out_w=IMG_W, out_h=IMG_H,
         )
+        if undistort_dir.byte_length() > 0:
+            if i >= len(names):
+                raise Error(
+                    "act deploy: --undistort needs the policy's camera names"
+                    " (norm.json `cameras`) to find each slot's calibration"
+                )
+            var parts = names[i].split(".")
+            var cp = undistort_dir + "/camera_" + String(parts[len(parts) - 1]) + ".txt"
+            c.set_undistort(cp, UNDISTORT_FOVY)
+            print("            undistorted to the sim pinhole via " + cp)
         # ⚠ 8 s, NOT THE 4 s DEFAULT. Measured on this rig: a camera that has
         # been idle takes longer than 4 s to report ready on its first open,
         # and `CameraReader.start` reports that as "device 0 did not report

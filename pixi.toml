@@ -385,6 +385,7 @@ build-http = { cmd = "bash scripts/build_http.sh", description = "Build the HTTP
 # than `mojo run` -- it links ResNet-free but still takes ~40 s to compile.
 camera-studio = { cmd = "mojo run -I . examples/vision/camera_studio.mojo", depends-on = ["build-imgui", "build-opencv"], description = "Live camera + ArUco playground (examples/vision/camera_studio.mojo)" }
 build-opencv = { cmd = "bash scripts/build_opencv.sh", description = "Build the OpenCV shim (noeira/vision/opencv/)" }
+calibrate-fisheye = { cmd = "mojo run -I . examples/vision/calibrate_fisheye.mojo", depends-on = ["build-opencv"], description = "Headless fisheye intrinsics for a rig camera (-- --camera /dev/soarm_cam_overhead --name overhead --preview); runs over SSH"}
 build-qhull = { cmd = "bash scripts/build_qhull.sh", description = "Build the qhull shim (noeira/physics3d/collision/)" }
 # The SO-101 hardware gate: dump both arms from Mojo, diff against
 # `tools/soarm/so101_diag.py` (Python + lerobot). Read-only — writes no

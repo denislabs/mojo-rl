@@ -312,6 +312,16 @@ def main() raises:
     var fit_msg = String("")
     var status = String("release the arm and show the marker")
 
+    if calib.model != "pinhole":
+        # ⚠ `solve_pnp` takes OpenCV's radial-tangential vector; a fisheye
+        # file's four Kannala-Brandt terms passed there are a different lens
+        # that still returns a pose. Undistort the marker corners through
+        # `vision/fisheye.mojo` first — not done yet, so refuse.
+        raise Error(
+            "calibrate_camera_extrinsics: '" + calib.name + "' is a "
+            + calib.model + " calibration; this tool's solve_pnp needs a"
+            " pinhole one"
+        )
     var k = calib.k_matrix()
     var dist = calib.dist.copy()
     var obj = List[Float64]()
