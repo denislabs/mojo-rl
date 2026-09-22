@@ -47,6 +47,18 @@ tracked the true map error within 1.5x.
     spread < 0.6 px    usable; more edge views would tighten it
     otherwise          redo — more views, closer, at the edges
 
+## Detection on a 2x upscale (`--detect-scale`, default 2)
+
+⚠ MEASURED ON THE RIG: at 640x480 the fisheye makes the board's 22 mm
+markers a few pixels wide, the 4x4 ArUco codes stop decoding, and a board
+the studio sees with 20 corners (it opens the camera at 1280x720) came back
+with 1-3. So each frame is upscaled (PIL bilinear) for DETECTION ONLY and the
+corners mapped back, `u = (u' + 0.5) / s - 0.5` (pixel-centre convention).
+The calibration, the saved views and the size check stay at 640x480 — the
+size the dataset was recorded at. It is not the studio's 1280x720 capture:
+that is a different sensor mode (16:9, likely another crop), and a
+calibration of it would not describe the recorded frames.
+
 ## Headless, over SSH
 
 No window: a progress line and an ASCII coverage map in the terminal.
@@ -74,6 +86,7 @@ from noeira.vision.fisheye_calib import (
 from noeira.vision.opencv import (
     CharucoBoard, VideoCapture, imread, opencv_shim_available,
 )
+from noeira.vision.preprocess import pil_bilinear_u8
 
 comptime W = 640
 comptime H = 480
@@ -92,7 +105,7 @@ def _usage() -> String:
     return String(
         "usage: calibrate_fisheye.mojo (--camera PATH | --device N | --images DIR)"
         " --name NAME [--out DIR] [--views N] [--board 5x7] [--square-mm 30]"
-        " [--marker-mm 22] [--preview] [--max-minutes M]"
+        " [--marker-mm 22] [--preview] [--max-minutes M] [--detect-scale 2]"
     )
 
 
@@ -188,6 +201,22 @@ def _pad3(n: Int) -> String:
     return s^
 
 
+def _detect(
+    ref board: CharucoBoard, ref frame: List[UInt8], channels: Int, scale: Int,
+    mut up: List[UInt8], mut corners: List[Float32], mut ids: List[Int32],
+) raises -> Int:
+    """ChArUco detection on a `scale`x upscale, corners mapped back to the
+    native 640x480 pixel grid — see the header."""
+    if scale <= 1:
+        return board.detect(frame, W, H, channels, corners, ids)
+    pil_bilinear_u8(frame, W, H, channels, up, W * scale, H * scale)
+    var n = board.detect(up, W * scale, H * scale, channels, corners, ids)
+    var s = Float32(scale)
+    for i in range(n * 2):
+        corners[i] = (corners[i] + 0.5) / s - 0.5
+    return n
+
+
 def _bgr_to_rgb(ref bgr: List[UInt8], n: Int) -> List[UInt8]:
     var out = List[UInt8](length=n * 3, fill=0)
     for i in range(n):
@@ -228,6 +257,7 @@ def main() raises:
     var marker_mm = 22.0
     var preview = False
     var max_minutes = 20.0
+    var detect_scale = 2
     var i = 1
     while i < len(args):
         var a = String(args[i])
@@ -260,6 +290,8 @@ def main() raises:
             marker_mm = Float64(v)
         elif a == "--max-minutes":
             max_minutes = Float64(v)
+        elif a == "--detect-scale":
+            detect_scale = Int(v)
         else:
             raise Error("unknown option " + a + "\n" + _usage())
         i += 2
@@ -286,6 +318,7 @@ def main() raises:
     var corners = List[Float32]()
     var ids = List[Int32]()
     var frame = List[UInt8]()
+    var up = List[UInt8]()
     var last_rgb = List[UInt8]()
 
     if images.byte_length() > 0:
@@ -304,7 +337,7 @@ def main() raises:
             if whc[0] != W or whc[1] != H:
                 raise Error(f + " is " + String(whc[0]) + "x" + String(whc[1])
                             + ", the calibration is at " + String(W) + "x" + String(H))
-            var n = board.detect(frame, W, H, whc[2], corners, ids)
+            var n = _detect(board, frame, whc[2], detect_scale, up, corners, ids)
             if n >= MIN_CORNERS:
                 _add_view(views, board_xyz, corners, ids, n)
                 last_rgb = _bgr_to_rgb(frame, W * H)
@@ -336,7 +369,7 @@ def main() raises:
                 if Float64(now) / 60e9 > max_minutes:
                     print("\n  time limit reached")
                     break
-                var n = board.detect(frame, W, H, 3, corners, ids)
+                var n = _detect(board, frame, 3, detect_scale, up, corners, ids)
                 var status = String("no board")
                 if n >= MIN_CORNERS:
                     var sg = Signature(corners, n)
