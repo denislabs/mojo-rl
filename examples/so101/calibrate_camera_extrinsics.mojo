@@ -66,6 +66,16 @@ admits the far easier 3D-3D problem.
    picked 15 cm above that plane is then localised by a direction nobody
    measured.
 
+## Without `--offset`, the offset is SOLVED (`fit_rigid_with_offset`)
+
+Leave `--offset` out and the marker's position on the gripper is estimated
+together with the camera, from the captured poses themselves — the marker can
+then go anywhere rigid on the gripper body (the rig's wrist-camera mount is
+a good flat spot) without measuring anything but its printed size. It needs
+the WRIST TURNED between captures, roll AND pitch: with one orientation the
+offset is undetermined, and the fit says so instead of guessing (`wrist`
+spread below 10 deg is refused). 10+ poses.
+
 ## Fisheye cameras (the so101-tower rig)
 
 A `model fisheye` calibration (`examples/vision/calibrate_fisheye.mojo`) is
@@ -129,7 +139,7 @@ from noeira.robot.so101.ports import follower_port
 from noeira.robot.so101.sim_map import SimJointMap
 from noeira.utils.fmt import fixed
 from noeira.vision.calib_file import CameraCalib, read_calib, write_calib
-from noeira.vision.extrinsics import RigidFit, fit_rigid
+from noeira.vision.extrinsics import RigidFit, fit_rigid, fit_rigid_with_offset
 from noeira.vision.camera_thread import open_camera_spec
 from noeira.vision.fisheye import FisheyeLens
 from noeira.vision.preprocess import pil_bilinear_u8
@@ -173,6 +183,39 @@ comptime MIN_POSES = 6
 """⚠ THE SOLVER ACCEPTS 3 AND THREE PROVES NOTHING — it fits exactly, so the
 residual is 0 whatever the data says. This is the number at which `rms_mm`
 starts being a measurement rather than an identity."""
+comptime MIN_POSES_AUTO = 10
+"""With the offset SOLVED (no `--offset`): three more unknowns, so more poses
+before the residual means as much."""
+
+
+def _refit(
+    auto_off: Bool, ref cam_pts: List[Float64], ref grip_pos: List[Float64],
+    ref grip_rot: List[Float64], off: Vec3d, mut solved_off: Vec3d,
+    mut wrist_spread: Float64,
+) raises -> RigidFit:
+    """The fit over the captured poses: the offset SOLVED (`auto_off`) or
+    the given one applied."""
+    var n = len(cam_pts) // 3
+    if auto_off:
+        if n < 5:
+            raise String("offset solve: capture 5+ poses (turn the wrist between them)")
+        var of = fit_rigid_with_offset(cam_pts, grip_pos, grip_rot)
+        solved_off = of.offset
+        wrist_spread = of.rot_spread_deg
+        return of.fit.copy()
+    var base = List[Float64]()
+    for k in range(n):
+        var rk = Mat3d(
+            grip_rot[k * 9], grip_rot[k * 9 + 1], grip_rot[k * 9 + 2],
+            grip_rot[k * 9 + 3], grip_rot[k * 9 + 4], grip_rot[k * 9 + 5],
+            grip_rot[k * 9 + 6], grip_rot[k * 9 + 7], grip_rot[k * 9 + 8],
+        )
+        var b = Vec3d(grip_pos[k * 3], grip_pos[k * 3 + 1], grip_pos[k * 3 + 2]) + rk * off
+        base.append(b.x)
+        base.append(b.y)
+        base.append(b.z)
+    solved_off = off
+    return fit_rigid(cam_pts, base)
 
 
 def _fmt3(v: Vec3d, scale: Float64, digits: Int) -> String:
@@ -257,14 +300,14 @@ def main() raises:
             "poses) — saving will REPLACE them",
         )
 
-    if off.x == 0.0 and off.y == 0.0 and off.z == 0.0:
+    var auto_off = off.x == 0.0 and off.y == 0.0 and off.z == 0.0
+    if auto_off:
         print("")
-        print("⚠⚠ --offset IS ZERO, which asserts that the marker's centre is")
-        print("   at the gripper body's origin — inside the plastic. Measure")
-        print("   it and pass it, or every correspondence carries the error")
-        print("   and it ROTATES with the wrist, so no number of poses")
-        print("   averages it away.")
+        print("no --offset: the marker's position on the gripper is SOLVED with")
+        print("the camera. Turn the wrist (roll AND pitch) between captures;")
+        print(String(MIN_POSES_AUTO) + "+ poses. The solved offset is printed.")
         print("")
+    var min_poses = MIN_POSES_AUTO if auto_off else MIN_POSES
 
     # ── the camera ─────────────────────────────────────────────────────────
     var bgr = List[UInt8]()
@@ -333,7 +376,14 @@ def main() raises:
     var still = 0
 
     var cam_pts = List[Float64]()
-    var base_pts = List[Float64]()
+    # per pose: the gripper body's FK position (3) and rotation (9, row-major)
+    # — the marker is at `grip_pos + grip_rot * offset`
+    var grip_pos = List[Float64]()
+    var grip_rot = List[Float64]()
+    var solved_off = off
+    var wrist_spread = 0.0
+    var g_pos = Vec3d.zero()
+    var g_rot = Mat3d.identity()
     var fit = RigidFit(
         Mat3d.identity(), Vec3d.zero(), 0.0, 0.0, 0, 0,
         Array[Float64, 3](fill=0.0),
@@ -488,7 +538,9 @@ def main() raises:
                     Float64(env.d.xpos.data[body * 3 + 1]),
                     Float64(env.d.xpos.data[body * 3 + 2]),
                 )
-                p_base = bp + Mat3d.from_quat(bq) * off
+                g_pos = bp
+                g_rot = Mat3d.from_quat(bq)
+                p_base = bp + g_rot * solved_off
             else:
                 still = 0
 
@@ -552,11 +604,16 @@ def main() raises:
                 cam_pts.append(p_cam.x)
                 cam_pts.append(p_cam.y)
                 cam_pts.append(p_cam.z)
-                base_pts.append(p_base.x)
-                base_pts.append(p_base.y)
-                base_pts.append(p_base.z)
+                grip_pos.append(g_pos.x)
+                grip_pos.append(g_pos.y)
+                grip_pos.append(g_pos.z)
+                for rr in range(3):
+                    var row = g_rot.row(rr)
+                    grip_rot.append(row.x)
+                    grip_rot.append(row.y)
+                    grip_rot.append(row.z)
                 try:
-                    fit = fit_rigid(cam_pts, base_pts)
+                    fit = _refit(auto_off, cam_pts, grip_pos, grip_rot, off, solved_off, wrist_spread)
                     have_fit = True
                     fit_msg = String("")
                 except e:
@@ -573,18 +630,22 @@ def main() raises:
                 # looks nice is fitting the report.
                 var w = fit.worst
                 var keep_cam = List[Float64]()
-                var keep_base = List[Float64]()
+                var keep_gp = List[Float64]()
+                var keep_gr = List[Float64]()
                 for j in range(len(cam_pts) // 3):
                     if j == w:
                         continue
                     for c in range(3):
                         keep_cam.append(cam_pts[j * 3 + c])
-                        keep_base.append(base_pts[j * 3 + c])
+                        keep_gp.append(grip_pos[j * 3 + c])
+                    for c in range(9):
+                        keep_gr.append(grip_rot[j * 9 + c])
                 cam_pts = keep_cam^
-                base_pts = keep_base^
+                grip_pos = keep_gp^
+                grip_rot = keep_gr^
                 have_fit = False
                 try:
-                    fit = fit_rigid(cam_pts, base_pts)
+                    fit = _refit(auto_off, cam_pts, grip_pos, grip_rot, off, solved_off, wrist_spread)
                     have_fit = True
                     fit_msg = String("")
                 except e:
@@ -592,7 +653,9 @@ def main() raises:
                 status = String("dropped pose ") + String(w)
             if ig_button(String("clear")):
                 cam_pts = List[Float64]()
-                base_pts = List[Float64]()
+                grip_pos = List[Float64]()
+                grip_rot = List[Float64]()
+                solved_off = off
                 have_fit = False
                 fit_msg = String("")
                 status = String("cleared")
@@ -632,6 +695,9 @@ def main() raises:
                     ig_text(String("spread ") + sp + " mm")
                     ig_text_disabled(String("(mm, three principal axes)"))
                 ig_text(String("origin ") + _fmt3(fit.trans, 1.0, 3) + " m")
+                if auto_off:
+                    ig_text(String("offset ") + _fmt3(solved_off, 1000.0, 1) + " mm (solved)")
+                    ig_text(String("wrist  ") + fixed(wrist_spread, 0) + " deg spread")
                 if sim.found:
                     var r_mj = fit_to_mujoco_rot(fit.rot)
                     var dpos = (fit.trans + sim.base_off - sim.pos) * 1000.0
@@ -648,7 +714,7 @@ def main() raises:
             if fit_msg != "":
                 ig_text_colored(fit_msg, 1.0, 0.5, 0.3, 1.0)
 
-            var enough = have_fit and len(cam_pts) // 3 >= MIN_POSES
+            var enough = have_fit and len(cam_pts) // 3 >= min_poses
             if ig_button(String("save calibration"), 200.0, 30.0) and enough:
                 calib.has_extrinsics = True
                 calib.rot = fit.rot
@@ -660,13 +726,15 @@ def main() raises:
                     status = String("saved to ") + calib_path
                     print("saved", calib_path)
                     print(String(fit))
+                    print("marker offset", _fmt3(solved_off, 1000.0, 2), "mm (gripper frame)",
+                          "SOLVED, wrist spread " + fixed(wrist_spread, 1) + " deg" if auto_off else "given")
                     if sim.found:
                         print(camera_pose_vs_sim(sim, fit.rot, fit.trans))
                 except e:
                     status = String("COULD NOT SAVE: ") + String(e)
             if not enough:
                 ig_text_disabled(
-                    String("save needs ") + String(MIN_POSES) + "+ poses"
+                    String("save needs ") + String(min_poses) + "+ poses"
                 )
             ig_separator()
             ig_text(status)
