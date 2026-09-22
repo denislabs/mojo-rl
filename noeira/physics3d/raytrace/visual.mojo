@@ -117,6 +117,10 @@ struct VisualModel[DTYPE: DType](Movable):
     var ntexel_bytes: Int
     var mirror: Int
     """The one geom `mjr_render` lets reflect, or -1. See `APP_IDX_REFLECT`."""
+    var src_geom: List[Int]
+    """`[ngeom]` — the MODEL geom each visual row was built from (the build's
+    `keep` list), so a caller can name a visual row by its geom's name. The
+    domain randomizer (`randomize.mojo`) groups surfaces this way."""
 
     var geoms: TensorImpl[Self.DTYPE]
     """`[ngeom, MODEL_GEOM_SIZE]` — the solver's own record layout, so
@@ -152,6 +156,7 @@ struct VisualModel[DTYPE: DType](Movable):
         self.nlight = 0
         self.ntexel_bytes = 0
         self.mirror = -1
+        self.src_geom = List[Int]()
         self.geoms = TensorImpl[Self.DTYPE]()
         self.appearance = TensorImpl[Self.DTYPE]()
         self.mesh_meta = TensorImpl[Self.DTYPE]()
@@ -344,6 +349,7 @@ def build_visual_model[
             continue
         keep.append(g)
     vis.ngeom = len(keep)
+    vis.src_geom = keep.copy()
     if vis.ngeom == 0:
         raise Error(
             "build_visual_model: group mask " + String(group_mask)
@@ -884,6 +890,7 @@ def visual_model_from_model[
             continue
         keep.append(g)
     vis.ngeom = len(keep)
+    vis.src_geom = keep.copy()
 
     var grows = List[Scalar[DTYPE]](
         length=_pos1(vis.ngeom * MODEL_GEOM_SIZE), fill=Scalar[DTYPE](0)

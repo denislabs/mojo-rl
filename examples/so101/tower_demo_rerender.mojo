@@ -66,9 +66,25 @@ printed 99 dB, byte-identical, on both cameras).
 shrinks the sim's flat colours several-fold. Check free disk before a full
 file: the tool prints the running size.
 
-⚠ NO DOMAIN RANDOMISATION HERE (yet). `noeira-docs/DOMAIN_RANDOMIZATION_PLAN.md`
-adds `--dr` to THIS tool in its Phase 2; the render loop below is where the
-visual tables would be re-drawn between launches.
+## `--dr off|light|full` — render-time domain randomization
+
+`physics3d/raytrace/randomize.mojo` (DR plan, level L2). ONE appearance draw
+per LAUNCH: before each launch the lights, the surface groups' colours, both
+cameras' pose/fovy and the background are re-drawn from `(--dr-seed, launch
+index)` and the four tables re-uploaded in place; both cameras of a launch
+share the draw. A launch is at most `LANES` rows of ONE episode, so an
+episode's look changes every `LANES` rows — for ACT (one frame per sample)
+that is only more variety. With DR on the store gains a `dr_draw` (int32)
+column naming the draw each row was rendered under, so any row can be
+re-rendered; with `--dr off` (the default) every column and every frame is
+byte for byte what this tool wrote before DR existed (checked on 521 rows);
+only the manifest's provenance line gains "; dr off".
+
+The host check runs UNDER THE SAME DRAW: the runtime-built pair gets its own
+randomizer with the same config and applies launch 0's draw, so the check
+covers the randomized tables too. `--dr-preview K` also writes the overhead
+and wrist frames of the first row of the first K launches as PNGs — look at
+them before rendering hours of data.
 """
 
 from std.math import pi, log10
@@ -94,6 +110,12 @@ from noeira.physics3d.parser.runtime_load import (
 from noeira.physics3d.raytrace import BatchedCameraRenderer, RGB_CHANNELS
 from noeira.physics3d.raytrace.host_render import render_lane_cpu
 from noeira.physics3d.raytrace.visual import build_visual_model
+from noeira.physics3d.raytrace.randomize import (
+    DomainRandConfig,
+    VisualRandomizer,
+    geom_labels,
+    so101_tower_surface_groups,
+)
 from noeira.tasks.family import scene_path
 from noeira.tasks.family_config import So101TowerConfig
 from noeira.tasks.so101_tower_xml import (
@@ -142,6 +164,9 @@ comptime MAX_PSNR_SWAPPED = 20.0
 """The device overhead frame against the host WRIST frame must score under
 this, or the host check is blind."""
 comptime DEFAULT_DEFLATE = 4
+comptime DR_TARGET = (0.32, 0.0, 0.0)
+"""What the extra spot lights aim at: the desk mat's centre
+(`scenes/so101_tower.xml`, the `desk_mat` frame)."""
 
 
 def _to_byte(x: Float64) -> UInt8:
@@ -163,8 +188,10 @@ def _camera(names: List[String], suffix: String) raises -> Int:
 def _usage() -> String:
     return String(
         "usage: tower_demo_rerender.mojo --demos a.demo[,b.demo] [--out F]"
-        " [--task NAME] [--episodes N] [--all-episodes] [--deflate 0-9]"
-        " [--no-host-check]"
+        " [--task NAME] [--episodes N] [--per-file a,b] [--all-episodes]"
+        " [--deflate 0-9]"
+        " [--no-host-check] [--dr off|light|full] [--dr-seed N]"
+        " [--dr-preview K]"
     )
 
 
@@ -179,9 +206,13 @@ def main() raises:
     var out_path = String("")
     var task_name = String(DEFAULT_TASK)
     var max_eps = 0
+    var per_file_arg = String("")
     var success_only = True
     var deflate = DEFAULT_DEFLATE
     var host_check = True
+    var dr_name = String("off")
+    var dr_seed = 0
+    var dr_preview = 0
     var i = 1
     while i < len(args):
         var a = String(args[i])
@@ -201,8 +232,16 @@ def main() raises:
                 task_name = v
             elif a == "--episodes":
                 max_eps = Int(v)
+            elif a == "--per-file":
+                per_file_arg = v
             elif a == "--deflate":
                 deflate = Int(v)
+            elif a == "--dr":
+                dr_name = v
+            elif a == "--dr-seed":
+                dr_seed = Int(v)
+            elif a == "--dr-preview":
+                dr_preview = Int(v)
             else:
                 raise Error("unknown option " + a + "\n" + _usage())
             i += 1
@@ -219,6 +258,17 @@ def main() raises:
         if not exists(s):
             raise Error("--demos: no such file " + s)
         demo_paths.append(s^)
+    # `--per-file 120,80`: at most that many (successful) episodes from each
+    # file, in `--demos` order. ⚠ THE ACT GPU PATH HOLDS EVERY IMAGE ON THE
+    # DEVICE: 460 800 bytes a row, so a 32 GB card trains on ~50k rows at
+    # most. This is how a mixed training store is cut to fit.
+    var per_file = List[Int]()
+    if per_file_arg.byte_length() > 0:
+        for p in per_file_arg.split(","):
+            per_file.append(Int(String(String(p).strip())))
+        if len(per_file) != len(demo_paths):
+            raise Error("--per-file names " + String(len(per_file))
+                        + " caps for " + String(len(demo_paths)) + " files")
     if out_path.byte_length() == 0:
         var first = demo_paths[0]
         out_path = String(first[byte = 0 : first.byte_length() - 5]) + ".rendered.h5"
@@ -251,6 +301,14 @@ def main() raises:
     print("  device :", ctx.name(), "|", LANES, "lanes |", CAM_W, "x", CAM_H,
           "|", SAMPLES, "samples | overhead", cam_over, "wrist", cam_wrist)
     print("  " + r.vis.describe())
+    var dr_cfg = DomainRandConfig.parse(dr_name, UInt64(dr_seed))
+    var dr_on = dr_cfg.enabled
+    var labels = geom_labels(fmd)
+    var dr = VisualRandomizer[DT](
+        dr_cfg, so101_tower_surface_groups(), r.vis, m, labels, cams.copy(),
+        r.background, DR_TARGET,
+    )
+    print("  dr     :", String(dr_cfg))
 
     # the actuators' ctrlrange: the action map and the gripper's LeRobot unit
     var sf = So101TowerModel.make_spec_fields[DType.float64]()
@@ -283,6 +341,8 @@ def main() raises:
     cols.append(ColumnSpec(String("images"), DType.uint8, N_CAMS * CAM_ELEMS))
     cols.append(ColumnSpec(String("state"), DType.float64, STATE_DIM))
     cols.append(ColumnSpec(String("action_sim"), DType.float32, ACT))
+    if dr_on:
+        cols.append(ColumnSpec(String("dr_draw"), DType.int32, 1))
     var dd = dirname(out_path)
     if dd.byte_length() > 0:
         makedirs(dd, exist_ok=True)
@@ -294,7 +354,9 @@ def main() raises:
             + " noeira/physics3d/raytrace (batch.mojo) at " + String(CAM_W)
             + "x" + String(CAM_H) + " " + String(SAMPLES) + "x MSAA, groups"
             " 0+2, row 0 = top, slot 0 overhead / 1 wrist, frame r = obs r;"
-            " qpos/action in LeRobot units (deg, gripper 0..100)",
+            " qpos/action in LeRobot units (deg, gripper 0..100); dr "
+            + String(dr_cfg)
+            + (" (one draw per launch, see dr_draw)" if dr_on else ""),
         deflate=deflate,
     )
     w.add_task(0, String(task.language))
@@ -308,6 +370,8 @@ def main() raises:
     var ab = unsafe_alloc[Scalar[DType.float32]](LANES * ACT).as_unsafe_any_origin()
     var asb = unsafe_alloc[Scalar[DType.float32]](LANES * ACT).as_unsafe_any_origin()
     var sb = unsafe_alloc[Scalar[DType.float64]](LANES * STATE_DIM).as_unsafe_any_origin()
+    var drb = unsafe_alloc[Scalar[DType.int32]](LANES).as_unsafe_any_origin()
+    var launch = 0
     var first_frames = List[UInt8]()   # row 0, both cameras, for the host check
     var first_state = List[Float64]()
     var worst = 99.0
@@ -320,11 +384,15 @@ def main() raises:
 
     for si in range(len(demo_paths)):
         var ds = read_demo_file(demo_paths[si])
+        var file_eps = 0
         for e in range(len(ds.ep_len)):
             if max_eps > 0 and total_eps >= max_eps:
                 break
+            if len(per_file) > 0 and file_eps >= per_file[si]:
+                break
             if success_only and not ds.ep_success[e]:
                 continue
+            file_eps += 1
             var off = ds.ep_start[e]
             var T = ds.ep_len[e]
             var done = 0
@@ -345,6 +413,12 @@ def main() raises:
                 d.xpos.upload_resident(ctx)
                 d.xquat.upload_resident(ctx)
                 t_fk += perf_counter_ns() - tf
+                # ── the launch's appearance draw ─────────────────────────
+                if dr_on:
+                    r.background = dr.apply(launch, r.vis, m)
+                    dr.upload(ctx, r.vis, m)
+                    for l in range(n):
+                        drb[unsafe_offset=l] = Int32(launch)
                 # ── device: both cameras ─────────────────────────────────
                 var tr = perf_counter_ns()
                 for slot in range(N_CAMS):
@@ -367,6 +441,18 @@ def main() raises:
                                     all_same = False
                         if all_same:
                             constant_pictures += 1
+                    if dr_on and launch < dr_preview:
+                        var hwc = List[UInt8](length=CAM_ELEMS, fill=UInt8(0))
+                        for q in range(NPIX):
+                            for c in range(3):
+                                hwc[q * 3 + c] = _to_byte(
+                                    Float64(p[unsafe_offset = q * 3 + c])
+                                )
+                        save_png(
+                            out_path + ".dr" + String(launch) + "."
+                            + ("overhead" if slot == 0 else "wrist") + ".png",
+                            hwc, CAM_W, CAM_H, 3,
+                        )
                 t_render += perf_counter_ns() - tr
                 # ── the rows ─────────────────────────────────────────────
                 for l in range(n):
@@ -416,6 +502,17 @@ def main() raises:
                         var vis_h = build_visual_model[DT, DynDims](
                             fmd, mh, group_mask=VISUAL_GROUP_MASK
                         )
+                        # The same draw (launch 0) on the host pair, from its
+                        # own pristine base — so the check covers the
+                        # randomized tables, not only the pose.
+                        var bg_h = r.background
+                        if dr_on:
+                            var dr_h = VisualRandomizer[DT](
+                                dr_cfg, so101_tower_surface_groups(), vis_h,
+                                mh, labels, cams.copy(), dr.base_background,
+                                DR_TARGET,
+                            )
+                            bg_h = dr_h.apply(0, vis_h, mh)
                         var rgb = List[Scalar[DT]]()
                         var depth = List[Scalar[DT]]()
                         var seg = List[Scalar[DT]]()
@@ -428,7 +525,7 @@ def main() raises:
                         var host = List[UInt8](length=N_CAMS * CAM_ELEMS, fill=UInt8(0))
                         for slot in range(N_CAMS):
                             render_lane_cpu[DT, DynDims, 1, False, True, SAMPLES](
-                                dh, mh, vis_h, cams[slot], 0, CAM_W, CAM_H, r.background,
+                                dh, mh, vis_h, cams[slot], 0, CAM_W, CAM_H, bg_h,
                                 rgb, depth, seg, refl,
                             )
                             for q in range(NPIX):
@@ -483,8 +580,11 @@ def main() raises:
                 w.append[DType.uint8](String("images"), im, n)
                 w.append[DType.float64](String("state"), sb, n)
                 w.append[DType.float32](String("action_sim"), asb, n)
+                if dr_on:
+                    w.append[DType.int32](String("dr_draw"), drb, n)
                 t_io += perf_counter_ns() - tio
                 done += n
+                launch += 1
             w.end_episode()
             total_eps += 1
             total_rows += T

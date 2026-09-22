@@ -4,6 +4,8 @@
 #   bash scripts/so101_tower_vision_box.sh            # all three stages
 #   STAGES="render" bash scripts/so101_tower_vision_box.sh
 #   ACT_STEPS=20000 bash scripts/so101_tower_vision_box.sh
+#   DR=full DR_SEED=1 bash scripts/so101_tower_vision_box.sh   # a DR store
+#     (its own file name; the preview PNGs land beside it — look first)
 #
 # Run it from the repo root, inside tmux: the render and the training outlive
 # an SSH drop. Every stage skips work whose output already exists, so a rerun
@@ -33,7 +35,10 @@ cd "$(git rev-parse --show-toplevel)"
 STAGES="${STAGES:-demos render act}"
 D=projects/so101-tower/demos
 B=build/so101_vision
+DR="${DR:-off}"          # off | light | full — render-time domain randomization
+DR_SEED="${DR_SEED:-0}"
 STORE=$D/expert_cube_in_bowl_418.rendered.h5
+[[ $DR == off ]] || STORE=$D/expert_cube_in_bowl_418_dr${DR}_s${DR_SEED}.rendered.h5
 CLEAN=$D/expert_cube_in_bowl_clean_300.demo
 NOISY=$D/expert_cube_in_bowl_flat02_300.demo
 mkdir -p "$D" "$B"
@@ -77,6 +82,7 @@ if has render; then
         build examples/so101/tower_demo_rerender.mojo "$B/tower_rerender"
         log "render: $CLEAN + $NOISY -> $STORE"
         "$B/tower_rerender" --demos "$CLEAN,$NOISY" --out "$STORE.partial" \
+            --dr "$DR" --dr-seed "$DR_SEED" --dr-preview 8 \
             2>&1 | grep -v '^Warning: attached model' | tee "$B/render.log"
         mv "$STORE.partial" "$STORE"
         mv "$STORE.partial.overhead.row0.png" "$B/overhead.row0.png" 2>/dev/null || true
