@@ -256,6 +256,7 @@ at; it reports a `hold` baseline so "it produces plausible actions" cannot be
 mistaken for "it learned something".
 """
 from std.os import getenv
+from std.sys import is_defined
 from std.os.path import exists
 from std.time import perf_counter_ns
 
@@ -278,7 +279,7 @@ from noeira.deep_agents.act.config import (
     SO101_N_CAM,
     SO101_QPOS,
 )
-from noeira.deep_agents.act.data import ACTDataset
+from noeira.deep_agents.act.data import ACTDataset, IMAGES_RESIDENT_MAX_BYTES
 from noeira.deep_agents.act.data_gpu import ACTDeviceDataset
 from noeira.deep_agents.act.augment import ImageAugConfig
 from noeira.deep_agents.act.trainer import (
@@ -333,9 +334,16 @@ require rebuilding it."""
 # statistically the same; individual steps will not match.
 #
 # ⚠ Startup uploads the whole store as uint8 (7.1 GB for 50 episodes, ~13 s).
-# Set False on a machine where that does not fit; see
-# `docs/ACT_GPU_DATA_PATH.md` for the windowed design that would.
-comptime GPU_DATA = True
+# A store that does not fit the device is trained on the host path instead:
+# build with `-D ACT_HOST_DATA` (the images then STREAM from the store a row
+# at a time, `ACTDataset`'s own residency rule). Measured need: the so101_tower
+# vision student's DAgger store — 200 expert episodes + one round of expert
+# relabels, ~61k rows = 28 GB of uint8 — does not fit a 32 GB 5090 beside the
+# model, and capping the expert half to make room REPLACED data instead of
+# aggregating it (round 1 fell from 32% to 16% cube-in-bowl). See
+# `docs/ACT_GPU_DATA_PATH.md` for the windowed design that would keep the
+# device path.
+comptime GPU_DATA = not is_defined["ACT_HOST_DATA"]()
 
 
 # USE_CUDA_GRAPH — capture the per-step device kernel sequence into a CUDA
@@ -511,7 +519,20 @@ def main() raises:
         + String(IMG_W) + ", batch " + String(BATCH)
     )
 
-    var ds = ACTDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W](String(path), seed=7)
+    # `ACT_RESIDENT_GB`: how large an image column the HOST keeps in RAM
+    # (default `IMAGES_RESIDENT_MAX_BYTES`, 2 GiB); above it the images stream
+    # from the store a row at a time. ⚠ ON THE HOST PATH (`-D ACT_HOST_DATA`)
+    # THIS DECIDES THE SPEED: streaming a deflated 61k-row store measured
+    # ~0.6 s/step on the 5090 box (one core decompressing 460 KB rows), where
+    # a resident column pays only the host normalisation. Unused by the device
+    # path, which uploads the column whole either way.
+    var resident_gb = getenv("ACT_RESIDENT_GB")
+    var max_img = IMAGES_RESIDENT_MAX_BYTES
+    if resident_gb.byte_length() > 0:
+        max_img = Int(Float64(resident_gb) * Float64(1 << 30))
+    var ds = ACTDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W](
+        String(path), seed=7, max_image_bytes=max_img
+    )
     print(
         "  split   " + String(len(ds.train_eps)) + " train / "
         + String(len(ds.val_eps)) + " val episodes of "
