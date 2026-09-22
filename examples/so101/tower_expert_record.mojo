@@ -71,6 +71,19 @@ are those rows, HIL-SERL's human intervention with the expert as the human.
 First smoke (checkpoint 69b67456, stiff jaws): handover in 7 of 12, lifts
 in 11 of 12, 1113 of 2113 rows intervened.
 
+DAGGER FROM A RECORDED STUDENT (`--handover-from FILE.demo`): the vision
+student cannot run in this CPU recorder (it needs the device tracer), so its
+episodes are recorded by `tower_act_eval.mojo --record-demo` and handed over
+HERE, offline. Per recorded episode the handover row is the first row at or
+after `HANDOVER_MIN_STEPS` with the jaw within `--handover-mm` of the brick,
+MOVING OR NOT, else the student's closest row (`_handover_row` says why this
+is not the `--policy` rule), the sim is put in that row's full state
+(`obs_at` with its qpos + qvel words — brick and bowl included, so the
+placement comes with it), and the expert runs from there exactly as after a
+live handover. Only the expert's rows are written, all INTERVENED: the
+student's own actions are not labels. Each kept episode starts at the
+student's arrival — the "close from HERE" rows the student lacks.
+
 ⚠ THE IK SETS THE ARM'S qpos TO EVALUATE FK AND RESTORES THE STATE AFTER.
 It never steps physics. The props' qpos are untouched.
 """
@@ -85,6 +98,7 @@ from noeira.core.cont_action import ContAction
 from noeira.core.run import epoch_seconds, iso8601_utc
 from noeira.io.proc import quote_arg, run_capture
 from noeira.deep_agents.demos.ctrl_range import CtrlRange
+from noeira.deep_agents.demos.file import DemoSet, read_demo_file
 from noeira.deep_agents.demos.recorder import EpisodeRecorder, Handover
 from noeira.deep_agents.data.any_replay import AnyReplay
 from noeira.deep_agents.sac import SAC, SACAgent, SACActorNet, SACCriticNet
@@ -698,11 +712,52 @@ def _above(ref p: List[Float64], dz: Float64) -> List[Float64]:
     return t^
 
 
+def _row_reach_mm(ref d: DemoSet, r: Int) -> Float64:
+    """`Expert.reach_mm` read off a recorded row's observation."""
+    var b = r * d.obs_dim + GB
+    var x = Float64(d.obs[b + 3])
+    var y = Float64(d.obs[b + 4])
+    var z = Float64(d.obs[b + 5])
+    return sqrt(x * x + y * y + z * z) * 1000.0
+
+
+def _handover_row(
+    ref d: DemoSet, e: Int, handover_mm: Float64
+) -> Tuple[Int, Bool]:
+    """The row of episode `e` the expert takes over at: the FIRST row at or
+    after `HANDOVER_MIN_STEPS` with the jaw within `handover_mm` of the brick
+    (an arrival), else the row where the student came CLOSEST.
+
+    ⚠ NOT THE `--policy` RULE, AND ON PURPOSE. That rule also waits for the
+    arm to settle and falls back to a step cap. The first vision student
+    (ACT f4ef105f, 128 recorded episodes) arrives MOVING and closes at once:
+    its failed episodes reach a median 32 mm at step ~62 with the jaw still
+    open (0.91 rad), close, miss, lift away and hover 130-170 mm off — only
+    29 of 92 ever had a settled row under 36 mm, so the settled rule fell
+    back to the cap at row 140, AFTER the miss, and the expert labelled a
+    fresh approach from far away instead of the grasp the student gets
+    wrong. The first row under the radius is before the student's close."""
+    var start = d.ep_start[e]
+    var n = d.ep_len[e]
+    for k in range(HANDOVER_MIN_STEPS, n):
+        if _row_reach_mm(d, start + k) < handover_mm:
+            return (start + k, True)
+    var best = start
+    var best_r = _row_reach_mm(d, start)
+    for k in range(1, n):
+        var rk = _row_reach_mm(d, start + k)
+        if rk < best_r:
+            best_r = rk
+            best = start + k
+    return (best, False)
+
+
 def run_episode(
     mut env: E, mut ex: Expert, brick: Int, bowl: Int, place: Bool,
     ep: Int, verbose: Bool,
     agent: Optional[Pointer[Agent, MutAnyOrigin]] = None,
     handover_mm: Float64 = CLOSE_REACH_MM, policy_steps: Int = 140,
+    handed_in: Int = -1,
 ) raises -> Bool:
     """One scripted pick (and place). Returns success.
 
@@ -725,6 +780,10 @@ def run_episode(
         handed = res[0]
         done = res[1]
         policy_steps_used = ex.steps
+        ex.intervening = True
+    elif handed_in >= 0:
+        # `--handover-from`: the env is already in the student's state
+        handed = handed_in == 1
         ex.intervening = True
     for i in range(ACT):
         ex.q_cmd[i] = Float64(env.d.qpos.data[i])
@@ -798,6 +857,8 @@ def _usage():
           " [--noise SIGMA] [--flat-noise] [--close-steps N] [--z-grasp M] [--jaw-open RAD]\n"
           "       [--close-above-mm MM] [--feedback] [--out FILE]\n"
           "       [--policy CKPT [--handover-mm MM] [--policy-steps N]]   # DAgger\n"
+          "       [--handover-from STUDENT.demo [--handover-mm MM]]"
+          "   # DAgger from a recorded (vision) student\n"
           "       [--keep-failures] [--quiet]")
 
 
@@ -816,6 +877,7 @@ def main() raises:
     var policy_ckpt = String("")
     var handover_mm = CLOSE_REACH_MM
     var policy_steps = 140
+    var handover_from = String("")
     var out_path = String("")
     var keep_failures = False
     var verbose = True
@@ -864,6 +926,9 @@ def main() raises:
         elif a == "--handover-mm" and i + 1 < len(args):
             handover_mm = Float64(String(args[i + 1]))
             i += 2
+        elif a == "--handover-from" and i + 1 < len(args):
+            handover_from = String(args[i + 1])
+            i += 2
         elif a == "--policy-steps" and i + 1 < len(args):
             policy_steps = Int(String(args[i + 1]))
             i += 2
@@ -883,7 +948,8 @@ def main() raises:
     if out_path.byte_length() == 0:
         var stamp = iso8601_utc(epoch_seconds()).replace(":", "-")
         out_path = String(DEMO_DIR) + "/" + stamp + "_" + task + (
-            "_dagger.demo" if policy_ckpt.byte_length() > 0 else "_expert.demo"
+            "_dagger.demo" if policy_ckpt.byte_length() > 0
+            or handover_from.byte_length() > 0 else "_expert.demo"
         )
     if not Path(DEMO_DIR).exists():
         _ = run_capture(String("mkdir -p ") + quote_arg(String(DEMO_DIR)), 4096)
@@ -941,6 +1007,66 @@ def main() raises:
               " (handover under", handover_mm, "mm settled, cap",
               policy_steps, "steps); the expert closes and lifts from there,"
               " those rows flagged INTERVENED")
+    if handover_from.byte_length() > 0:
+        if policy_ckpt.byte_length() > 0:
+            raise Error("--handover-from and --policy are two DAgger sources; pick one")
+        if not Path(handover_from).exists():
+            raise Error("--handover-from: no such file " + handover_from)
+        var sd = read_demo_file(handover_from)
+        if sd.obs_dim != E.OBS_DIM or sd.act_dim != ACT:
+            raise Error(handover_from + ": obs " + String(sd.obs_dim) + " act "
+                        + String(sd.act_dim) + ", this env is obs "
+                        + String(E.OBS_DIM) + " act " + String(ACT))
+        var n_src = len(sd.ep_len)
+        print("  DAgger   : handing over from", n_src, "recorded student episodes (",
+              handover_from, ") — the first row under", handover_mm, "mm (moving"
+              " or not), else the closest row; only the expert's rows are"
+              " written, INTERVENED")
+        var n_ok_h = 0
+        var n_arrived = 0
+        var n_src_ok = 0
+        for ep in range(n_src):
+            if n_episodes > 0 and ep >= n_episodes:
+                break
+            if sd.ep_success[ep]:
+                n_src_ok += 1
+            var hr = _handover_row(sd, ep, handover_mm)
+            if hr[1]:
+                n_arrived += 1
+            _ = env.reset()
+            for k in range(len(mw[0])):
+                env.d.meta.data[mw[0][k]] = Scalar[DType.float64](mw[1][k])
+            var qh = List[Float64](length=NQ, fill=0.0)
+            var vh = List[Float64](length=NV, fill=0.0)
+            for k in range(NQ):
+                qh[k] = Float64(sd.obs[hr[0] * sd.obs_dim + k])
+            for k in range(NV):
+                vh[k] = Float64(sd.obs[hr[0] * sd.obs_dim + NQ + k])
+            var sh = env.obs_at(qh, vh)
+            for k in range(E.OBS_DIM):
+                ex.obs[k] = Scalar[DT](sh.data[k])
+            if verbose:
+                var src_ok = sd.ep_success[ep]
+                var h_row = hr[0] - sd.ep_start[ep]
+                var src_len = sd.ep_len[ep]
+                var h_reach = _row_reach_mm(sd, hr[0])
+                var how = String("(arrival)") if hr[1] else String("(closest)")
+                var st = String("succeeded") if src_ok else String("failed")
+                print("  ep", ep, " student", st, "| handover at row", h_row,
+                      "of", src_len, how, "reach", fixed(h_reach, 1), "mm")
+            var ok_h = run_episode(
+                env, ex, brick, bowl, place, ep, verbose, None, handover_mm,
+                policy_steps, handed_in=1 if hr[1] else 0,
+            )
+            _ = ex.rec.end(success=ok_h)
+            if ok_h:
+                n_ok_h += 1
+        print("-" * 66)
+        print("  student episodes", n_src, "| the student succeeded in", n_src_ok,
+              "| arrivals", n_arrived, "| the expert completed", n_ok_h, "->", out_path)
+        print("  ", ex.rec.demos.summary())
+        return
+
     var n_ok = 0
     for ep in range(n_episodes):
         _ = env.reset()
