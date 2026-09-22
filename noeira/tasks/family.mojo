@@ -260,6 +260,19 @@ def compose_family(f: FamilySpec, scene_dir: String) raises -> String:
         if header.byte_length() > 0:
             header += "\n"
         header += "  " + opt
+    if len(f.headlight) == 3:
+        # `headlight=` (see `FamilySpec.headlight`): the fill light a white
+        # part seen edge-on needs. Grey levels, written as MuJoCo's rgb.
+        var a = String(f.headlight[0])
+        var dd = String(f.headlight[1])
+        var sp = String(f.headlight[2])
+        if header.byte_length() > 0:
+            header += "\n"
+        header += (
+            '  <visual><headlight ambient="' + a + " " + a + " " + a
+            + '" diffuse="' + dd + " " + dd + " " + dd + '" specular="' + sp
+            + " " + sp + " " + sp + '"/></visual>'
+        )
     d.base_xml = header
 
     var base_key = _asset_key(f.base)

@@ -28,6 +28,16 @@ control_freq=30
 # sim grasp creeps out of the jaw under the defaults (see the bake).
 inherit_option=1
 
+# ⚠ A FILL LIGHT, SO THE WHITE PARTS STAY WHITE SEEN EDGE-ON. Under MuJoCo's
+# default headlight (.1 ambient) the jaws render nearly black from the wrist
+# camera: both lights graze them. The real room lights them from everywhere
+# and the recorded wrist frames show them light grey-white. Chosen against
+# the rig's undistorted real frames (2026-09-22): ambient .45 brings the jaws
+# to a light grey without washing out the overhead view's shading (.6 did);
+# the headlight's diffuse drops .4 -> .3 to keep the lit faces from clipping
+# harder than they already do. Randomized around by `randomize.mojo`.
+headlight=0.45,0.3,0.5
+
 # ⚠⚠ THE ROBOT SITS ON THE STAND'S BASE PLATE, 5 mm ABOVE THE DESK. The desk
 # is the floor plane; the tower's foot and plate rest on it. See
 # `props/so101_tower_stand.xml` for where the plate's hole pattern is.

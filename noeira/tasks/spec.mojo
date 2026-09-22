@@ -541,6 +541,17 @@ struct FamilySpec(Movable & Deinitable):
     density=1.2 viscosity=2e-5 timestep=0.002`, authored once in the vendored
     Panda; MuJoCo's `<attach>` ignores a child's `<option>`, so without this
     the composed scene would run robosuite's robot under our defaults."""
+    var headlight: List[Float64]
+    """`headlight=ambient,diffuse,specular` — the composed scene's
+    `<visual><headlight>` as three GREY levels. Empty (the default) leaves
+    MuJoCo's .1/.4/.5 and every existing family byte-identical.
+
+    ⚠ WHY A FAMILY SETS IT: the headlight's AMBIENT is the only light that
+    reaches a surface regardless of its angle. Under MuJoCo's defaults (one
+    light straight down + a .1-ambient headlight) the tower's WHITE jaws
+    render nearly black from the wrist camera — they are seen edge-on to both
+    lights — where the real room, lit from everywhere, shows them white
+    (MuJoCo's own renderer agrees with the tracer; checked 2026-09-22)."""
     var root: String
     """The TASK ROOT this family was loaded from: the directory holding its
     `families/`, `tasks/` and `scenes/`. `load_family(path)` sets it to the
@@ -581,6 +592,7 @@ struct FamilySpec(Movable & Deinitable):
         self.floor = True
         self.base_qpos = List[Float64]()
         self.inherit_option = False
+        self.headlight = List[Float64]()
         self.root = String(DEFAULT_TASK_ROOT)
 
     def __init__(out self, *, deinit move: Self):
@@ -600,6 +612,7 @@ struct FamilySpec(Movable & Deinitable):
         self.floor = move.floor
         self.base_qpos = move.base_qpos^
         self.inherit_option = move.inherit_option
+        self.headlight = move.headlight^
         self.root = move.root^
 
     def init_target_kind(self, name: String) raises -> Int:
@@ -684,6 +697,12 @@ struct FamilySpec(Movable & Deinitable):
             s += "\n"
         if self.inherit_option:
             s += "inherit_option=1\n"
+        if len(self.headlight) == 3:
+            s += (
+                "headlight=" + String(self.headlight[0]) + ","
+                + String(self.headlight[1]) + "," + String(self.headlight[2])
+                + "\n"
+            )
         for i in range(len(self.slots)):
             s += "slot=" + self.slots[i].describe() + "\n"
         # ⚠ A SEPARATE LINE, NOT A FIFTH FIELD ON `slot=`. The pose field is
@@ -1073,6 +1092,19 @@ def parse_family(text: String) raises -> FamilySpec:
                 raise Error("family spec: base_qpos is empty")
         elif key == "inherit_option":
             f.inherit_option = _parse_flag(val, String("inherit_option"))
+        elif key == "headlight":
+            var h = split_on(val, String(","))
+            if len(h) != 3:
+                raise Error(
+                    "family spec: headlight needs three grey levels"
+                    " 'ambient,diffuse,specular', got '" + val + "'"
+                )
+            f.headlight = List[Float64]()
+            for k in range(3):
+                var v = Float64(String(String(h[k]).strip()))
+                if v < 0.0 or v > 1.0:
+                    raise Error("family spec: headlight level outside [0, 1]: " + val)
+                f.headlight.append(v)
         elif key == "slot":
             f.slots.append(parse_slot(val))
         elif key == "slot_geom":
