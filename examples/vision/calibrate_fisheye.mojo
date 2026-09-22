@@ -30,8 +30,22 @@ you move it around until the progress line says it is done:
   * the camera stays mounted where it will be used (the wrist camera on the
     arm, the overhead on the tower) — the board moves, not the camera.
 
-It stops at `--views` captures (60) with the outer ring of the coverage map
-at least 80% covered, calibrates, and prints the verdict.
+It stops once it has `--views` captures (60) AND either the outer ring of
+the coverage map is 80% covered or the map has not gained a cell in the last
+15 captures, then calibrates and prints the verdict. (Or at `--max-minutes`,
+or Ctrl-C: every capture is already saved, so `--images <name>_views`
+calibrates from them.)
+
+⚠ THE OUTER RING OFTEN CANNOT BE FILLED, AND DOES NOT NEED TO BE. On the
+overhead camera the top row is the far wall and the bottom middle is the
+tower's mast; the rig reached 37% after 73 views. What the sim needs is the
+region its 73.74-degree pinhole samples, well inside the fisheye frame, and
+`spread` measures exactly that — hence the stall rule.
+
+Captures are never overwritten: new ones are numbered after the files
+already in `<name>_views`. `--resume` also LOADS those files first (and
+their coverage), so a second session adds to the first instead of starting
+over.
 
 ## The verdict, and why it is not `rms`
 
@@ -111,6 +125,9 @@ comptime GRID_Y = 6
 comptime DEFAULT_VIEWS = 60
 comptime EDGE_COVERAGE = 0.8
 comptime COOLDOWN_S = 0.6
+comptime STALL_CAPTURES = 15
+"""After `--views`, stop when the coverage map has not gained a cell in this
+many captures — see the header."""
 
 
 def _usage() -> String:
@@ -118,7 +135,7 @@ def _usage() -> String:
         "usage: calibrate_fisheye.mojo (--camera PATH | --device N | --images DIR)"
         " --name NAME [--out DIR] [--views N] [--board 5x7] [--square-mm 30]"
         " [--marker-mm 22] [--preview] [--max-minutes M] [--detect-scale 2]"
-        " [--fourcc MJPG|none|XXXX] [--snap DIR]"
+        " [--fourcc MJPG|none|XXXX] [--snap DIR] [--resume]"
     )
 
 
@@ -177,12 +194,17 @@ struct Coverage(Movable):
     def __init__(out self):
         self.hit = List[Bool](length=GRID_X * GRID_Y, fill=False)
 
-    def add(mut self, ref corners: List[Float32], n: Int):
+    def add(mut self, ref corners: List[Float32], n: Int) -> Int:
+        """Mark the cells these corners fall in; returns how many were NEW."""
+        var fresh = 0
         for i in range(n):
             var gx = Int(Float64(corners[i * 2]) * Float64(GRID_X) / Float64(W))
             var gy = Int(Float64(corners[i * 2 + 1]) * Float64(GRID_Y) / Float64(H))
             if gx >= 0 and gx < GRID_X and gy >= 0 and gy < GRID_Y:
+                if not self.hit[gy * GRID_X + gx]:
+                    fresh += 1
                 self.hit[gy * GRID_X + gx] = True
+        return fresh
 
     def edge_fraction(self) -> Float64:
         var n = 0
@@ -230,6 +252,33 @@ def _detect(
     return n
 
 
+def _pngs(dir: String) raises -> List[String]:
+    """The `.png` files in `dir`, sorted by name (capture order)."""
+    var files = List[String]()
+    if not exists(dir):
+        return files^
+    for e in listdir(dir):
+        if String(e).endswith(".png"):
+            files.append(String(e))
+    for a in range(len(files)):
+        for b in range(a + 1, len(files)):
+            if files[b] < files[a]:
+                files[a], files[b] = files[b], files[a]
+    return files^
+
+
+def _next_view_index(ref files: List[String]) -> Int:
+    """One past the highest `view_NNN.png` — new captures never overwrite."""
+    var m = 0
+    for f in files:
+        if f.startswith("view_") and f.byte_length() == 12:
+            try:
+                m = max(m, Int(String(f[byte=5:8])))
+            except:
+                pass
+    return m + 1
+
+
 def _bgr_to_rgb(ref bgr: List[UInt8], n: Int) -> List[UInt8]:
     var out = List[UInt8](length=n * 3, fill=0)
     for i in range(n):
@@ -273,11 +322,16 @@ def main() raises:
     var detect_scale = 2
     var fourcc = String("MJPG")
     var snap_dir = String("")
+    var resume = False
     var i = 1
     while i < len(args):
         var a = String(args[i])
         if a == "--preview":
             preview = True
+            i += 1
+            continue
+        if a == "--resume":
+            resume = True
             i += 1
             continue
         if i + 1 >= len(args):
@@ -342,15 +396,7 @@ def main() raises:
 
     if images.byte_length() > 0:
         # ── offline: every PNG in the directory, no novelty filter ──────
-        var names = listdir(images)
-        var files = List[String]()
-        for e in names:
-            if String(e).endswith(".png"):
-                files.append(String(e))
-        for a in range(len(files)):
-            for b in range(a + 1, len(files)):
-                if files[b] < files[a]:
-                    files[a], files[b] = files[b], files[a]
+        var files = _pngs(images)
         for f in files:
             var whc = imread(images + "/" + f, frame)
             if whc[0] != W or whc[1] != H:
@@ -390,6 +436,26 @@ def main() raises:
         var last_snap = 0
         var sigs = List[Signature]()
         var cov = Coverage()
+        var saved = _pngs(views_dir)
+        var next_idx = _next_view_index(saved)
+        if resume and len(saved) > 0:
+            for f in saved:
+                var whc = imread(views_dir + "/" + f, frame)
+                if whc[0] != W or whc[1] != H:
+                    continue
+                var n0 = _detect(board, frame, whc[2], detect_scale, up, corners, ids)
+                if n0 >= MIN_CORNERS:
+                    _add_view(views, board_xyz, corners, ids, n0)
+                    _ = cov.add(corners, n0)
+                    sigs.append(Signature(corners, n0))
+            print("  resumed", views.count(), "views from", views_dir, "| edge coverage",
+                  Int(100.0 * cov.edge_fraction()), "%")
+            print(cov.draw())
+        elif len(saved) > 0:
+            print("  ", len(saved), "earlier captures in", views_dir,
+                  "are kept but NOT used (--resume to add to them); new ones start at view",
+                  _pad3(next_idx))
+        var stall = 0
         var t0 = perf_counter_ns()
         var t_last = 0
         var frames = 0
@@ -419,19 +485,27 @@ def main() raises:
                         status = String(n) + " corners, hold on"
                     else:
                         _add_view(views, board_xyz, corners, ids, n)
-                        cov.add(corners, n)
+                        var fresh = cov.add(corners, n)
+                        stall = 0 if fresh > 0 else stall + 1
                         sigs.append(sg^)
                         t_last = now
                         last_rgb = _bgr_to_rgb(frame, W * H)
                         save_png(
-                            views_dir + "/view_" + _pad3(views.count()) + ".png",
+                            views_dir + "/view_" + _pad3(next_idx) + ".png",
                             last_rgb, W, H, 3,
                         )
+                        next_idx += 1
                         print("\n  captured view", views.count(), "(", n, "corners ) | edge coverage",
-                              Int(100.0 * cov.edge_fraction()), "%")
+                              Int(100.0 * cov.edge_fraction()), "% | new cells", fresh)
                         print(cov.draw())
-                        if views.count() >= target and cov.edge_fraction() >= EDGE_COVERAGE:
-                            break
+                        if views.count() >= target:
+                            if cov.edge_fraction() >= EDGE_COVERAGE:
+                                print("  stopping:", views.count(), "views, edge coverage reached")
+                                break
+                            if stall >= STALL_CAPTURES:
+                                print("  stopping:", views.count(), "views, coverage has not grown in",
+                                      STALL_CAPTURES, "captures")
+                                break
                         continue
                 elif n > 0:
                     status = String(n) + " corners (need " + String(MIN_CORNERS) + ")"
