@@ -32,4 +32,4 @@ active=brick
 # The recorded layout: bowl on the arm's left, brick on its right — see the
 # family for the strips and the guaranteed separation.
 init=bowl@desk_left
-init=brick@desk_right
+init=brick@desk_right:yaw
