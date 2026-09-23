@@ -85,23 +85,30 @@ student's own actions are not labels. Each kept episode starts at the
 student's arrival — the "close from HERE" rows the student lacks.
 
 HUMAN POSTURE (`--posture human`): per episode the IK targets a drawn TILT
-(the finger leaning outward, `--tilt-range`, default 10..55 deg) and a pinch
-on the cube's TANGENTIAL face pair with probability `--tangential-p` (0.8),
-wrist_roll seeded positive — the operator's measured grasp (tilt median 35,
-pinch 72 deg from radial, roll 77), where the default expert grasps vertical
-and radial. `Expert.draw_posture` has the numbers and why the pinch is
-snapped to a face normal. The default (`expert`) draws nothing, so its files
-are byte-identical to before (checked: 20/20 at seed 11000, same bytes).
-
-⚠ EXPERIMENTAL — THE GRASP DOES NOT YET WORK TILTED. 20-episode runs at seed
-11000, folded start, the tips aimed (`TIP_REACH`), sag integral on, all
-pooled: tilt < 20 deg 13/26, 20-30 9/30, 30-40 1/16, > 40 0/8 — and the
-operator's median is 35. What is left is structural: the approach descends
-VERTICALLY to the grasp pose and the close fires on `grasp_center`'s height
-(`Z_CLOSE_ABOVE_MM`), both designed for a vertical gripper; tilted, the
-half-open moving jaw meets the desk first and the arm rests ~30 mm high (wrist
-view, 2026-09-23). Next: approach ALONG the finger axis and close on the tip
-height.
+(the finger leaning outward, `--tilt-range`, default 10..55 deg) and a drawn
+PINCH from radial (`--pinch-range`, 35..85), snapped to the brick's nearest
+face normal; wrist_roll is seeded positive — the operator's measured grasp
+(`tools/soarm/grasp_posture.py`: tilt median 35, pinch 72, roll 77), where
+the default expert grasps vertical and radial. A tilted grasp needs its own
+mechanics, all active only in this mode:
+  - the IK aims the FINGERTIPS (`TIP_REACH` past `grasp_center`);
+  - the approach runs ALONG THE FINGER AXIS (`APPROACH_D`, through
+    `APPROACH_WAYPOINTS` IK solutions), not vertically;
+  - the close fires on the tips' distance to their grasp point
+    (`--tip-close-mm`), not on `grasp_center`'s height;
+  - integral action on the arm's tracking error (`SAG_KI`) takes out the
+    shoulder's sag in the loaded poses;
+  - the jaw opens to `HUMAN_JAW_OPEN` (0.6 rad) and the grasp is
+    `HUMAN_Z_GRASP` (15 mm) — both overridable.
+Measured, cube_in_bowl, folded start, 60 episodes at seed 21000: 30/60
+(tilt < 20 deg 9/11, 20-30 11/13, 30-40 4/10, > 40 6/26); the realised tilt
+matches the operator's (p5 / median / p95 13 / 34 / 59 against 9 / 35 / 60).
+The history, 20 episodes each: vertical approach 2/20, tips aimed 4/20,
+along the finger 14/20 at jaw 0.6 (5/20 at 0.9). ⚠ The pinch is MIRRORED
+(-65 median against +72) while the cube is axis-aligned: the operator's
+Duplo lies at arbitrary yaw; the task's opt-in brick yaw draw (DR session)
+is what lets the snap reproduce it. The default (`expert`) draws nothing
+and is byte-identical to before (20/20 at seed 11000, same bytes).
 
 ⚠ THE IK SETS THE ARM'S qpos TO EVALUATE FK AND RESTORES THE STATE AFTER.
 It never steps physics. The props' qpos are untouched.
@@ -161,6 +168,18 @@ comptime TIP_REACH: Float64 = 0.019
 `Z_GRASP` absorbs it; a grasp tilted by 35 deg moves the tips 11 mm sideways
 off the brick, which then meets one jaw and tips over (2/20, wrist view of
 the human-posture run, 2026-09-23). So a drawn tilt aims the tips."""
+comptime HUMAN_JAW_OPEN: Float64 = 0.6
+comptime HUMAN_Z_GRASP: Float64 = 0.015
+comptime APPROACH_D: Float64 = 0.07
+"""A tilted grasp's approach length (m): the pre-grasp pose puts the tips this
+far back ALONG THE FINGER AXIS from their grasp point (the vertical expert's
+`Z_PRE - Z_GRASP`), and the descent follows that line."""
+comptime APPROACH_WAYPOINTS = 3
+"""IK solutions along the approach line; the joints interpolate between them,
+so the tips stay near the line instead of cutting a chord."""
+comptime TIP_CLOSE_MM_DEFAULT: Float64 = 8.0
+"""A tilted grasp closes when the tips are this close to their grasp point and
+the arm has settled (`--tip-close-mm`)."""
 comptime SAG_KI: Float64 = 0.15
 """Integral gain on the arm's tracking error, per step (`Expert.integral`)."""
 comptime SAG_MAX: Float64 = 0.35
@@ -516,9 +535,11 @@ struct Expert(Movable):
     that cover the operator's measured grasps (see `draw_posture`)."""
     var tilt_lo: Float64
     var tilt_hi: Float64
-    var tangential_p: Float64
     var tilt: Float64       # this episode's drawn tilt (rad), 0 = vertical
-    var tangential: Bool    # this episode's face pair
+    var tangential: Bool    # kept for the log: the snapped face is closer to tangential than radial
+    var pinch_lo: Float64
+    var pinch_hi: Float64
+    var pinch_target: Float64  # this episode's drawn pinch from radial (rad), before the snap
     var integral: Bool
     """Integral action on the arm joints' tracking error (on with `--posture
     human`): the tilted poses load the shoulder, and the position servo rests
@@ -528,6 +549,11 @@ struct Expert(Movable):
     ramp's reference plus the bias — what a human on the leader arm does by
     eye."""
     var sag_bias: List[Float64]
+    var tip_trigger: Bool
+    """This episode's close fires on the TIP distance (a tilted grasp), not on
+    `grasp_center`'s height, which assumes a vertical finger."""
+    var tip_goal: List[Float64]
+    var tip_close_mm: Float64
     var q_ref: List[Float64]
     """The ramp's reference WITHOUT the bias — what `hold` holds, so the bias
     is not counted twice."""
@@ -562,11 +588,16 @@ struct Expert(Movable):
         self.human_posture = False
         self.tilt_lo = 10.0 * pi / 180.0
         self.tilt_hi = 55.0 * pi / 180.0
-        self.tangential_p = 0.8
         self.tilt = 0.0
         self.tangential = False
+        self.pinch_lo = 35.0 * pi / 180.0
+        self.pinch_hi = 85.0 * pi / 180.0
+        self.pinch_target = 0.0
         self.integral = False
         self.sag_bias = List[Float64](length=N_ARM, fill=0.0)
+        self.tip_trigger = False
+        self.tip_goal = List[Float64](length=3, fill=0.0)
+        self.tip_close_mm = TIP_CLOSE_MM_DEFAULT
         self.q_ref = List[Float64](length=N_ARM, fill=0.0)
         self.close_steps = N_CLOSE
         self.z_grasp = Z_GRASP
@@ -585,36 +616,38 @@ struct Expert(Movable):
         """The operator's grasp, drawn — `--posture human`.
 
         Measured on the 50 kept real cube-in-bowl episodes at the grasp frame
-        (`tools/soarm/grasp_posture.py`, the DR session, 2026-09-23), in the
-        expert's own IK features: TILT, the finger's angle from straight down
-        leaning outward, p5..p95 = 9..60 deg, median 35; PINCH, the pinch
-        axis from radial folded to (-90, 90], 34..86, median 72 — nearly
-        TANGENTIAL and always on the positive side (wrist_roll 35..103, median
-        77). The scripted expert was vertical (tilt 0.2) and radial (pinch 0),
-        so a student trained on it met real frames of postures it never saw
-        (40-47 deg mean action error on the real import, its own mean-action
-        baseline).
+        (`tools/soarm/grasp_posture.py`, 2026-09-23), in the expert's own IK
+        features: TILT, the finger's angle from straight down leaning
+        outward, p5..p95 = 9..60 deg, median 35; PINCH, the pinch axis from
+        radial folded to (-90, 90], 34..86, median 72 — always on the
+        positive side (wrist_roll 35..103, median 77). The vertical expert
+        was tilt 0.2 / pinch 0, and students trained on it ignored real
+        frames (40-47 deg mean action error on the real import).
 
-        Tilt ~ U(`tilt_lo`, `tilt_hi`). The pinch cannot take an arbitrary
-        angle: the sim cube is axis-aligned at reset and a pinch between its
-        faces' normals closes on its corners. So the pinch axis is SNAPPED to
-        a face normal — the tangential pair with probability `tangential_p`,
-        else the radial pair — which, for placements in front of the base,
-        gives pinch ~ 90 - |bearing| on the tangential pair (the operator's
-        60-90 bulk) and ~ |bearing| on the radial one."""
+        Tilt ~ U(`tilt_lo`, `tilt_hi`); pinch target ~ U(`pinch_lo`,
+        `pinch_hi`), then SNAPPED to the brick's nearest face normal
+        (`pinch_yaw`): a pinch between two face normals closes on corners.
+        With the cube axis-aligned (today's tasks) the snap moves a 45-deg
+        world line to 0 or 90, so the realised pinch is mirrored (-65 median,
+        measured) — the operator's real Duplo lies at arbitrary yaw; the
+        task's opt-in brick yaw draw makes the snap reproduce it."""
         self.tilt = random_float64(self.tilt_lo, self.tilt_hi)
-        self.tangential = random_float64(0.0, 1.0) < self.tangential_p
+        self.pinch_target = random_float64(self.pinch_lo, self.pinch_hi)
 
-    def pinch_yaw(self, bearing: Float64) -> Float64:
-        """The pinch axis's world yaw for a brick at `bearing` (rad): the
-        radial direction, or — in `--posture human` — the cube face normal
-        (0 or 90 deg, the cube being axis-aligned) of the drawn pair."""
+    def pinch_yaw(mut self, bearing: Float64, brick_yaw: Float64) -> Float64:
+        """The pinch axis's world yaw for a brick at `bearing` whose own yaw
+        is `brick_yaw` (rad): the radial direction, or — in `--posture
+        human` — the brick face normal nearest `bearing + pinch_target`."""
         if not self.human_posture:
             return bearing
-        # the face normal nearest the radial (or the tangential) direction
-        var want = bearing + (pi / 2.0 if self.tangential else 0.0)
-        var k = Float64(Int(floor(want / (pi / 2.0) + 0.5)))
-        return k * (pi / 2.0)
+        var want = bearing + self.pinch_target
+        var k = Float64(Int(floor((want - brick_yaw) / (pi / 2.0) + 0.5)))
+        var y = brick_yaw + k * (pi / 2.0)
+        var rel = y - bearing
+        # the log's "tangential": the snapped line is closer to 90 than to 0
+        var c = cos(rel)
+        self.tangential = c * c < 0.5
+        return y
 
     def _normalized(self, i: Int, q: Float64) -> Float64:
         return self.ctrl.normalize(i, q)
@@ -642,6 +675,20 @@ struct Expert(Movable):
         return self.rec.record(
             self.prev_obs, self.act_l, r, self.obs, rd[1], self.intervening
         )
+
+    def tip_dist_mm(self, mut env: E) -> Float64:
+        """The fingertip point (`grasp_center` + `TIP_REACH` along the finger)
+        to `tip_goal`, from the env's current FK."""
+        var o = GRIPPER_BODY * 4
+        var qw = Quat(
+            Float64(env.d.xquat.data[o + 3]), Float64(env.d.xquat.data[o]),
+            Float64(env.d.xquat.data[o + 1]), Float64(env.d.xquat.data[o + 2]),
+        )
+        var f = qw.rotate_vec(Vec3(0.0, 0.0, -1.0))
+        var dx = Float64(env.d.site_xpos.data[GS * 3]) + TIP_REACH * f.x - self.tip_goal[0]
+        var dy = Float64(env.d.site_xpos.data[GS * 3 + 1]) + TIP_REACH * f.y - self.tip_goal[1]
+        var dz = Float64(env.d.site_xpos.data[GS * 3 + 2]) + TIP_REACH * f.z - self.tip_goal[2]
+        return sqrt(dx * dx + dy * dy + dz * dz) * 1000.0
 
     def reach_mm(self) -> Float64:
         var x = Float64(self.obs[GB + 3])
@@ -794,7 +841,15 @@ struct Expert(Movable):
             # the descent: hand over to the close at the first settled row
             # at the grasp height — see `Z_CLOSE_ABOVE_MM`
             if (
-                close_on_height and self.close_above_mm > 0.0 and k + 1 >= 3
+                close_on_height and self.tip_trigger and k + 1 >= 3
+                and self.tip_dist_mm(env) < self.tip_close_mm
+                and self.settled()
+                and abs(self.q_cmd[5] - g_target) < 1e-9
+            ):
+                return False
+            if (
+                close_on_height and not self.tip_trigger
+                and self.close_above_mm > 0.0 and k + 1 >= 3
                 and Float64(self.obs[GB + 5]) * 1000.0 > -self.close_above_mm
                 and self.settled()
                 # and the jaw's command has reached its open target: after a
@@ -841,6 +896,17 @@ def _body_pos(mut env: E, b: Int) -> List[Float64]:
     for k in range(3):
         p.append(Float64(env.d.xpos.data[b * 3 + k]))
     return p^
+
+
+def _body_yaw(mut env: E, b: Int) -> Float64:
+    """Body `b`'s yaw about world z (rad), from its world quaternion."""
+    var o = b * 4
+    # xquat is stored (x, y, z, w)
+    var x = Float64(env.d.xquat.data[o])
+    var y = Float64(env.d.xquat.data[o + 1])
+    var z = Float64(env.d.xquat.data[o + 2])
+    var w = Float64(env.d.xquat.data[o + 3])
+    return atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
 def _above(ref p: List[Float64], dz: Float64) -> List[Float64]:
@@ -954,17 +1020,53 @@ def run_episode(
     var bearing = atan2(pb[1], pb[0])
     if ex.human_posture:
         ex.draw_posture()
-    var yaw = ex.pinch_yaw(bearing)
+    var yaw = ex.pinch_yaw(bearing, _body_yaw(env, brick))
     var tl = ex.tilt if ex.human_posture else 0.0
-    var rs = ROLL_SEED_HUMAN if ex.human_posture and ex.tangential else 0.0
-    var use_rs = ex.human_posture and ex.tangential
+    var rs = ROLL_SEED_HUMAN if ex.human_posture else 0.0
+    var use_rs = ex.human_posture
     var q = List[Float64]()
     for i in range(N_ARM):
         q.append(Float64(env.d.qpos.data[i]))
     var q1 = List[Float64](length=N_ARM, fill=0.0)
-    var e1 = ex.arm.ik(env, _above(pb, Z_PRE), q, yaw, q1, tl, rs, use_rs)
     var q2 = List[Float64](length=N_ARM, fill=0.0)
-    var e2 = ex.arm.ik(env, _above(pb, ex.z_grasp), q1, yaw, q2, tl, rs, use_rs)
+    var e1: Float64
+    var e2: Float64
+    # a tilted grasp approaches ALONG THE FINGER: IK targets on the line
+    # through the tips' grasp point, `APPROACH_D` back along the finger axis
+    var waypoints = List[List[Float64]]()
+    ex.tip_trigger = tl > 0.0
+    if tl > 0.0:
+        var fx = sin(tl) * cos(bearing)
+        var fy = sin(tl) * sin(bearing)
+        var fzv = -cos(tl)
+        ex.tip_goal[0] = pb[0]
+        ex.tip_goal[1] = pb[1]
+        ex.tip_goal[2] = pb[2] + ex.z_grasp - TIP_REACH
+        # the IK's tip mode aims `target - (0, 0, TIP_REACH)`: hand it the
+        # tip point lifted by TIP_REACH
+        var n_wp = APPROACH_WAYPOINTS
+        var prev = q.copy()
+        e1 = 0.0
+        e2 = 0.0
+        for j in range(n_wp + 1):
+            var sback = APPROACH_D * Float64(n_wp - j) / Float64(n_wp)
+            var t = List[Float64]()
+            t.append(ex.tip_goal[0] - sback * fx)
+            t.append(ex.tip_goal[1] - sback * fy)
+            t.append(ex.tip_goal[2] - sback * fzv + TIP_REACH)
+            var qj = List[Float64](length=N_ARM, fill=0.0)
+            var ej = ex.arm.ik(env, t, prev, yaw, qj, tl, rs, use_rs)
+            if j == 0:
+                e1 = ej
+            e2 = ej      # the last waypoint IS the grasp target
+            prev = qj.copy()
+            waypoints.append(qj^)
+        for i in range(N_ARM):
+            q1[i] = waypoints[0][i]
+            q2[i] = waypoints[n_wp][i]
+    else:
+        e1 = ex.arm.ik(env, _above(pb, Z_PRE), q, yaw, q1, tl, rs, use_rs)
+        e2 = ex.arm.ik(env, _above(pb, ex.z_grasp), q1, yaw, q2, tl, rs, use_rs)
     var q3 = List[Float64](length=N_ARM, fill=0.0)
     var e3 = ex.arm.ik(env, _above(pb, Z_LIFT), q2, yaw, q3, tl, rs, use_rs)
     if verbose and ex.human_posture:
@@ -981,7 +1083,19 @@ def run_episode(
               else "no arrival (cap), the expert does the full approach")
     if not done and not handed:
         done = ex.step_to(env, q1, True, N_PRE)
-    if not done:
+    if not done and len(waypoints) > 0 and not handed:
+        # the tilted descent: along the finger, one leg per waypoint, the
+        # close armed on the last
+        var n_wp = len(waypoints) - 1
+        var leg = N_DESCEND // n_wp
+        for j in range(1, n_wp + 1):
+            if done:
+                break
+            done = ex.step_to(
+                env, waypoints[j], True, leg, taper_noise=True,
+                close_on_height=j == n_wp,
+            )
+    elif not done:
         done = ex.step_to(
             env, q2, True, N_DESCEND_HANDOVER if handed else N_DESCEND,
             taper_noise=True, close_on_height=True,
@@ -1032,7 +1146,8 @@ def _usage():
           "       [--policy CKPT [--handover-mm MM] [--policy-steps N]]   # DAgger\n"
           "       [--handover-from STUDENT.demo [--handover-mm MM] [--handover-settled]]"
           "   # DAgger from a recorded (vision) student\n"
-          "       [--posture expert|human [--tilt-range LO,HI] [--tangential-p P]]\n"
+          "       [--posture expert|human [--tilt-range LO,HI] [--pinch-range LO,HI]"
+          " [--tip-close-mm MM]]\n"
           "       [--keep-failures] [--quiet]")
 
 
@@ -1046,6 +1161,7 @@ def main() raises:
     var flat_noise = False
     var close_steps = N_CLOSE
     var z_grasp = Z_GRASP
+    var z_grasp_set = False
     var close_above_mm = Z_CLOSE_ABOVE_MM
     var jaw_open = -1.0
     var policy_ckpt = String("")
@@ -1054,7 +1170,8 @@ def main() raises:
     var handover_from = String("")
     var posture = String("expert")
     var tilt_range = String("10,55")
-    var tangential_p = 0.8
+    var pinch_range = String("35,85")
+    var tip_close_mm = TIP_CLOSE_MM_DEFAULT
     var handover_settled = False
     var out_path = String("")
     var keep_failures = False
@@ -1091,6 +1208,7 @@ def main() raises:
             i += 2
         elif a == "--z-grasp" and i + 1 < len(args):
             z_grasp = Float64(String(args[i + 1]))
+            z_grasp_set = True
             i += 2
         elif a == "--close-above-mm" and i + 1 < len(args):
             close_above_mm = Float64(String(args[i + 1]))
@@ -1110,8 +1228,11 @@ def main() raises:
         elif a == "--tilt-range" and i + 1 < len(args):
             tilt_range = String(args[i + 1])
             i += 2
-        elif a == "--tangential-p" and i + 1 < len(args):
-            tangential_p = Float64(String(args[i + 1]))
+        elif a == "--tip-close-mm" and i + 1 < len(args):
+            tip_close_mm = Float64(String(args[i + 1]))
+            i += 2
+        elif a == "--pinch-range" and i + 1 < len(args):
+            pinch_range = String(args[i + 1])
             i += 2
         elif a == "--handover-settled":
             handover_settled = True
@@ -1188,15 +1309,29 @@ def main() raises:
         raise Error("--posture is expert or human, not " + posture)
     ex.human_posture = posture == "human"
     ex.integral = ex.human_posture
+    if ex.human_posture:
+        # the tilted grasp's own defaults (60-episode runs, seed 21000):
+        # the jaw half as open as the vertical expert's (the operator's
+        # opens 25-41 %; 0.9 rad hits the desk tilted, 5/20 against 14/20)
+        # and the tips 5 mm higher (the operator grasps ~1 cm higher)
+        if jaw_open <= 0.0:
+            ex.jaw_open = HUMAN_JAW_OPEN
+        if not z_grasp_set:
+            ex.z_grasp = HUMAN_Z_GRASP
     var tr = tilt_range.split(",")
     if len(tr) != 2:
         raise Error("--tilt-range needs lo,hi in degrees, got " + tilt_range)
     ex.tilt_lo = Float64(String(tr[0])) * pi / 180.0
     ex.tilt_hi = Float64(String(tr[1])) * pi / 180.0
-    ex.tangential_p = tangential_p
+    var prr = pinch_range.split(",")
+    if len(prr) != 2:
+        raise Error("--pinch-range needs lo,hi in degrees, got " + pinch_range)
+    ex.pinch_lo = Float64(String(prr[0])) * pi / 180.0
+    ex.pinch_hi = Float64(String(prr[1])) * pi / 180.0
+    ex.tip_close_mm = tip_close_mm
     if ex.human_posture:
-        print("  posture  : HUMAN — tilt ~ U(", tilt_range, ") deg outward,",
-              "tangential face pair with p", tangential_p, "(else radial)")
+        print("  posture  : HUMAN — tilt ~ U(", tilt_range, ") deg outward, pinch",
+              "~ U(", pinch_range, ") deg from radial, snapped to the brick's faces")
     var agent: Agent = SAC["cpu", E.OBS_DIM, ACT, BATCH, CAP, HIDDEN](
         action_scale=1.0, learning_starts=0,
     )
