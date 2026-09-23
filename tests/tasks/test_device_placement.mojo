@@ -44,12 +44,14 @@ body-chain walk.
 8. the refusals, on corpus tasks changed one way each
 """
 
+from std.math import cos, sin
 from std.os import listdir
 
 from noeira.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
 from noeira.tasks.spec import (
     FamilySpec, TaskSpec, JointInitSpec, load_family, load_task, parse_family,
-    parse_task, validate_task_against_family, SLOT_FREE, INIT_TARGET_SLOT,
+    parse_task, parse_init, validate_task_against_family, SLOT_FREE,
+    INIT_TARGET_SLOT,
 )
 from noeira.tasks.family import scene_path, task_path
 from noeira.tasks.family_config import (
@@ -210,6 +212,9 @@ struct Stats(Copyable, ImplicitlyCopyable, Movable):
     var base_jittered: Int
     """Rest words the family jitters that came out off the rest value — the
     vacuity guard for `base_qpos_jitter=` (0 on every family without it)."""
+    var yawed: Int
+    """Placements the host drew a nonzero `:yaw` for (the device's quaternion
+    is compared to it word for word above)."""
     # rule coverage, per placement the HOST made
     var geom: Int
     var table_off: Int
@@ -240,6 +245,7 @@ struct Stats(Copyable, ImplicitlyCopyable, Movable):
         self.base_words = 0
         self.base_bad = 0
         self.base_jittered = 0
+        self.yawed = 0
         self.geom = 0
         self.table_off = 0
         self.on_fixture = 0
@@ -479,10 +485,12 @@ def _parity[T: PlacementTable](
             want.append(placed[k].x)
             want.append(placed[k].y)
             want.append(placed[k].z)
-            want.append(1.0)
+            want.append(cos(0.5 * placed[k].yaw))
             want.append(0.0)
             want.append(0.0)
-            want.append(0.0)
+            want.append(sin(0.5 * placed[k].yaw))
+            if placed[k].yaw != 0.0:
+                st.yawed += 1
             var this_bad = False
             for w in range(7):
                 var got = Float64(qs.data[base + w])
@@ -524,9 +532,11 @@ def _run_family[T: PlacementTable](
     mut st: Stats,
     mut refused: List[String],
     mut should: List[String],
+    yaw_all: Bool = False,
 ) raises:
     """The table against an INDEPENDENTLY derived `SceneFacts`, then every task:
-    refused, or parity on BATCH lanes with the host's per-lane FK frames."""
+    refused, or parity on BATCH lanes with the host's per-lane FK frames.
+    `yaw_all` turns `:yaw` on for every region init of every task (2c)."""
     var fmd = parse_model_runtime(scene_path(f))
     var verts = verts0
     var dims = dims_from_flat(fmd, max_contacts=64, nmesh_verts=verts)
@@ -676,6 +686,10 @@ def _run_family[T: PlacementTable](
 
     for i in range(len(tasks)):
         var t = load_task(task_path(f, tasks[i]))
+        if yaw_all:
+            for k in range(len(t.inits)):
+                if f.init_target_kind(t.inits[k].region) != INIT_TARGET_SLOT:
+                    t.inits[k].yaw = True
         validate_task_against_family(t, f)
         st.tasks += 1
         var expect_refuse = False
@@ -1196,6 +1210,47 @@ def main() raises:
         "so101_tower: the draw moves with the lane and the seed, and a"
         " zero half-width (lift) is the rest exactly",
     )
+
+    # ── 2c. `:yaw` on the tower: the same tasks, every region init yawed ──
+    print()
+    print("--- 2c. so101_tower with :yaw on every init: device vs host ---")
+    var sty = Stats()
+    var ry = List[String]()
+    var shy = List[String]()
+    _run_family[So101TowerPlacement](
+        ft, tnames, SO101_TOWER_NMESH_VERTS, 0.02,
+        String("robot_grasp_center"), ta, sty, ry, shy, yaw_all=True,
+    )
+    print("      placements", sty.placements, " yawed", sty.yawed,
+          " worst", sty.worst)
+    ta.check(
+        sty.bad == 0 and sty.left_alone_bad == 0 and sty.other_written == 0
+        and len(ry) == 0 and sty.placements == stt.placements
+        and sty.yawed == sty.placements,
+        "so101_tower :yaw: every placement drew a yaw, the device's quaternion"
+        " is the host's, and the placements are the no-yaw ones' count",
+    )
+    ta.check(
+        stt.yawed == 0,
+        "so101_tower without :yaw: every quaternion is still the identity",
+    )
+    var pt = parse_task(String(
+        "schema_version=1\ntask=yaw_probe\nfamily=so101_tower\n"
+        "language=probe\ngoal=Near(brick, bowl, 0.045)\nactive=tower\n"
+        "active=desk\nactive=bowl\nactive=brick\n"
+        "init=bowl@desk_left\ninit=brick@desk_right:yaw\n"
+    ))
+    ta.check(
+        not pt.inits[0].yaw and pt.inits[1].yaw
+        and pt.inits[1].describe() == "brick@desk_right:yaw",
+        "':yaw' parses on its own init only and round-trips through describe",
+    )
+    var bad_order = False
+    try:
+        _ = parse_init(String("brick@desk_right:yaw:in"))
+    except:
+        bad_order = True
+    ta.check(bad_order, "':yaw:in' (suffixes out of order) is refused")
 
     # ── 3. an untouched meta writes nothing ───────────────────────────────
     #

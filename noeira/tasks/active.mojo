@@ -51,7 +51,7 @@ word of `METADATA_SIZE` and no signature anywhere.
 """
 
 from .spec import FamilySpec, TaskSpec, SLOT_FREE, INIT_TARGET_SLOT
-from .placement.table import INIT_WORD_IN_BIAS
+from .placement.table import INIT_WORD_IN_BIAS, INIT_WORD_YAW_BIAS
 from noeira.physics3d.gpu.constants import META_INIT_SLOTS
 from .obs import slot_active, write_free_slot_obs, FREE_JOINT_NQ, FREE_JOINT_NV
 
@@ -157,6 +157,11 @@ def init_region_words(t: TaskSpec, f: FamilySpec) raises -> List[Float64]:
                 # fall through `region_index` to -1 and write 0 — so a stacked
                 # prop was silently PARKED on the device, which is why
                 # `require_gpu_placement` had to refuse every task with one.
+                if it.yaw:
+                    raise Error(
+                        "task '" + t.name + "': init '" + it.describe()
+                        + "' stacks, and ':yaw' applies to a region draw"
+                    )
                 w = -(f.slot_index(it.region) + 1)
             else:
                 var ri = f.region_index(it.region)
@@ -170,6 +175,8 @@ def init_region_words(t: TaskSpec, f: FamilySpec) raises -> List[Float64]:
                 w = ri + 1
                 if it.inside:
                     w += INIT_WORD_IN_BIAS
+                if it.yaw:
+                    w += INIT_WORD_YAW_BIAS
         out.append(Float64(w))
     if len(out) > META_INIT_SLOTS:
         raise Error(

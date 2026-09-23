@@ -450,19 +450,37 @@ struct InitSpec(Copyable, ImplicitlyCopyable, Movable):
 
     ⚠ FALSE IS THE DEFAULT AND WRITES NOTHING, so every `.task` that predates
     this round-trips byte for byte."""
+    var yaw: Bool
+    """`:yaw` — the slot's yaw about +z is drawn uniformly on (-pi, pi] each
+    episode (`sampler.sample_placements`, `placement/table.YAW_AXIS_BASE`),
+    instead of the identity every other placement starts at.
+
+    ⚠ OPT-IN, PER INIT, BECAUSE IT CHANGES WHAT A POLICY SEES AT RESET. The
+    real rig's Duplo lies at any yaw and the operator closes the jaw on its
+    faces; an axis-aligned sim cube teaches a grasp the real cube does not
+    allow. A region draw only: the clash test compares circles, so the yaw
+    never changes WHERE a slot lands, and a STACK (no draw at all) refuses it.
+    False writes nothing, so every older `.task` round-trips byte for byte."""
 
     def __init__(out self, slot: String, region: String):
         self.slot = slot
         self.region = region
         self.inside = False
+        self.yaw = False
 
-    def __init__(out self, slot: String, region: String, inside: Bool):
+    def __init__(
+        out self, slot: String, region: String, inside: Bool, yaw: Bool = False
+    ):
         self.slot = slot
         self.region = region
         self.inside = inside
+        self.yaw = yaw
 
     def describe(self) -> String:
-        return self.slot + "@" + self.region + (":in" if self.inside else "")
+        return (
+            self.slot + "@" + self.region + (":in" if self.inside else "")
+            + (":yaw" if self.yaw else "")
+        )
 
 
 struct JointInitSpec(Copyable, ImplicitlyCopyable, Movable):
@@ -989,7 +1007,8 @@ def parse_region(spec: String) raises -> RegionSpec:
 
 
 def parse_init(spec: String) raises -> InitSpec:
-    """`<slot>@<region>[:in]` — see `InitSpec.inside` for the suffix."""
+    """`<slot>@<region>[:in|:on][:yaw]` — see `InitSpec.inside` and
+    `InitSpec.yaw` for the suffixes."""
     var parts = split_once(spec, String("@"))
     if len(parts) != 2:
         raise Error(
@@ -999,6 +1018,11 @@ def parse_init(spec: String) raises -> InitSpec:
     var slot = String(String(parts[0]).strip())
     var rest = String(String(parts[1]).strip())
     var inside = False
+    var yaw = False
+    if rest.endswith(":yaw"):
+        yaw = True
+        var head0 = String(rest[byte=0 : rest.byte_length() - 4])
+        rest = head0^
     var colon = rest.rfind(":")
     if colon >= 0:
         var tail = String(rest[byte = colon + 1 : rest.byte_length()])
@@ -1015,11 +1039,16 @@ def parse_init(spec: String) raises -> InitSpec:
         else:
             raise Error(
                 "tasks: init '" + spec + "' ends in ':" + tail + "'; the only"
-                " suffixes are ':in' and ':on' (see InitSpec.inside)"
+                " suffixes are ':in' / ':on', then ':yaw' (see InitSpec)"
             )
     if slot.byte_length() == 0 or rest.byte_length() == 0:
         raise Error("tasks: init has an empty slot or region: '" + spec + "'")
-    return InitSpec(slot^, rest^, inside)
+    if rest.find(":") >= 0:
+        raise Error(
+            "tasks: init '" + spec + "' — the suffixes go ':in' / ':on'"
+            " first, then ':yaw'; a region name has no colon"
+        )
+    return InitSpec(slot^, rest^, inside, yaw)
 
 
 def parse_joint_init(spec: String) raises -> JointInitSpec:

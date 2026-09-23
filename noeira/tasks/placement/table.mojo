@@ -55,6 +55,7 @@ drawer region stands in the drawer the draw just opened.
 """
 
 from layout import Layout, LayoutTensor
+from std.math import cos, sin, pi
 from std.random.philox import Random as PhiloxRandom
 
 from noeira.physics3d.gpu.constants import (
@@ -115,6 +116,16 @@ reason `_uniform01` uses the counter axes at all."""
 comptime INIT_WORD_IN_BIAS: Int = 4096
 """Added to `r + 1` for an `In`. Regions per family stay far below it, and
 `active.init_region_words` refuses one that does not. Exact in float32 (2^24)."""
+
+comptime INIT_WORD_YAW_BIAS: Int = 8192
+"""Added on top of a REGION word (`r + 1`, with or without the `In` bias) for
+an init with `:yaw` — the slot's yaw is drawn on axis `YAW_AXIS_BASE + si`.
+Above every region word, exact in float32; a stack never carries it."""
+
+comptime YAW_AXIS_BASE: Int = 0xA000
+"""Where a `:yaw` draw's Philox axis starts: family slot `si` draws on
+`YAW_AXIS_BASE + si`, attempt 0 — clear of the placement axes (`si * 2`,
+`si * 2 + 1`), of `JOINT_AXIS_BASE` and of `BASE_JITTER_AXIS_BASE`."""
 
 
 trait PlacementTable:
@@ -349,6 +360,9 @@ def place_free_slots[
     """Place lane `env`'s free slots from its init words. Writes `qpos`/`qvel`
     of the slots it places and nothing else — never `meta`, whose tape must
     survive the reset."""
+    # the evidence `sin`/`cos` of a generic `Scalar[DTYPE]` need (`:yaw`),
+    # given in the body so the reset hook's trait signature stays unconstrained
+    comptime assert DTYPE.is_floating_point(), "DTYPE must be floating point"
     comptime NF = T.N_FREE
     var kind = Array[Int, META_INIT_SLOTS](fill=_KIND_NONE)
     var target = Array[Int, META_INIT_SLOTS](fill=-1)
@@ -360,6 +374,10 @@ def place_free_slots[
         var w = Int(rebind[Scalar[DTYPE]](meta[env, META_IDX_INIT_REGION_0 + j]))
         if w > 0:
             kind[j] = _KIND_REGION
+            # `:yaw` is re-read from the word where the pose is written — a
+            # per-thread flag array here is the Metal miscompute shape
+            if w > INIT_WORD_YAW_BIAS:
+                w -= INIT_WORD_YAW_BIAS
             if w > INIT_WORD_IN_BIAS:
                 inside[j] = True
                 w -= INIT_WORD_IN_BIAS
@@ -512,8 +530,26 @@ def place_free_slots[
                         continue
                     clash = True
             if not clash:
+                # `:yaw` — `sampler.sample_placements`' draw, its own axis
+                var cz = Scalar[DTYPE](1)
+                var sz_ = Scalar[DTYPE](0)
+                var wj = Int(
+                    rebind[Scalar[DTYPE]](meta[env, META_IDX_INIT_REGION_0 + j])
+                )
+                if wj > INIT_WORD_YAW_BIAS:
+                    var ry = PhiloxRandom(
+                        seed=UInt64(seed) ^ PLACEMENT_SALT,
+                        subsequence=(UInt64(env) << 16) | UInt64(YAW_AXIS_BASE + si),
+                        offset=UInt64(0),
+                    )
+                    var uy = Scalar[DTYPE](Float64(ry.step_uniform()[0]))
+                    var half = (Scalar[DTYPE](2) * uy - Scalar[DTYPE](1)) * Scalar[
+                        DTYPE
+                    ](pi) * Scalar[DTYPE](0.5)
+                    cz = cos(half)
+                    sz_ = sin(half)
                 _write_pose[DTYPE, BATCH_SIZE, NQ_F, NV_F](
-                    qpos, qvel, env, qa, da, x, y, z
+                    qpos, qvel, env, qa, da, x, y, z, cz, sz_
                 )
                 px[n_placed] = x
                 py[n_placed] = y
@@ -629,17 +665,20 @@ def _write_pose[DTYPE: DType, BATCH_SIZE: Int, NQ_F: Int, NV_F: Int](
     x: Scalar[DTYPE],
     y: Scalar[DTYPE],
     z: Scalar[DTYPE],
+    qw: Scalar[DTYPE] = Scalar[DTYPE](1),
+    qz: Scalar[DTYPE] = Scalar[DTYPE](0),
 ):
-    """`reset.write_free_pose` + `write_free_vel_zero` on one lane.
+    """`reset.write_free_pose` + `write_free_vel_zero` on one lane; `(qw, qz)`
+    is a yaw about +z, the identity by default.
 
     ⚠ W-FIRST IN `qpos`: a free joint's seven words are (x, y, z, w, x, y, z),
     and the identity is (1, 0, 0, 0) — zeros are a degenerate rotation."""
     qpos[env, qa + 0] = x
     qpos[env, qa + 1] = y
     qpos[env, qa + 2] = z
-    qpos[env, qa + 3] = Scalar[DTYPE](1)
+    qpos[env, qa + 3] = qw
     qpos[env, qa + 4] = Scalar[DTYPE](0)
     qpos[env, qa + 5] = Scalar[DTYPE](0)
-    qpos[env, qa + 6] = Scalar[DTYPE](0)
+    qpos[env, qa + 6] = qz
     for k in range(FREE_JOINT_NV):
         qvel[env, da + k] = Scalar[DTYPE](0)

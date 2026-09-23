@@ -44,6 +44,7 @@ be compared at all. Counter-based, every draw is a pure function of its
 coordinates.
 """
 
+from std.math import pi
 from std.random.philox import Random as PhiloxRandom
 
 from .spec import (
@@ -62,6 +63,7 @@ from .spec import (
 # two names, where they used to be restated on the config and asserted equal.
 from .placement.table import (
     MAX_PLACE_ATTEMPTS, PLACEMENT_SALT, JOINT_AXIS_BASE, BASE_JITTER_AXIS_BASE,
+    YAW_AXIS_BASE,
 )
 
 
@@ -72,12 +74,18 @@ struct Placement(Copyable, ImplicitlyCopyable, Movable):
     var x: Float64
     var y: Float64
     var z: Float64
+    var yaw: Float64
+    """About +z, radians; 0 (the identity) unless the init says `:yaw`."""
 
-    def __init__(out self, slot: Int, x: Float64, y: Float64, z: Float64):
+    def __init__(
+        out self, slot: Int, x: Float64, y: Float64, z: Float64,
+        yaw: Float64 = 0.0,
+    ):
         self.slot = slot
         self.x = x
         self.y = y
         self.z = z
+        self.yaw = yaw
 
 
 struct RegionFrame(Copyable, ImplicitlyCopyable, Movable):
@@ -261,6 +269,11 @@ def sample_placements(
         # refuses a task whose stack precedes its reference and the importer
         # orders them topologically; this re-checks because the index is used.
         if f.init_target_kind(t.inits[i].region) == INIT_TARGET_SLOT:
+            if t.inits[i].yaw:
+                raise Error(
+                    "tasks: init '" + t.inits[i].describe() + "' stacks, and"
+                    " a stack is not drawn: ':yaw' applies to a region draw"
+                )
             var rsi = f.slot_index(t.inits[i].region)
             var found = -1
             for j in range(len(out)):
@@ -498,7 +511,13 @@ def sample_placements(
                             continue
                     clash = True
             if not clash:
-                out.append(Placement(si, x, y, z))
+                # `:yaw` — its own axis, attempt 0: the clash test is by
+                # circles, so the yaw never moves the placement above
+                var yaw = 0.0
+                if t.inits[i].yaw:
+                    var uy = _uniform01(seed, lane, YAW_AXIS_BASE + si, 0)
+                    yaw = (2.0 * uy - 1.0) * pi
+                out.append(Placement(si, x, y, z, yaw))
                 of_region.append(ri)
                 report.accepted += 1
                 placed = True
