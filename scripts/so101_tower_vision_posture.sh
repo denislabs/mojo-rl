@@ -136,7 +136,7 @@ score_one() {
     local pe=$!
     if [[ -s $REAL ]]; then
         $BIN/tower_real_check --ckpt "$run/checkpoints" --student-zero follower \
-            --store "$REAL" --store-zero follower > "$B/real_$tag.log" 2>&1 \
+            --store "$REAL" --store-zero follower --episodes 24 > "$B/real_$tag.log" 2>&1 \
             || { echo "real check $tag FAILED"; tail -20 "$B/real_$tag.log"; }
     fi
     wait $pe || { echo "eval $tag FAILED"; tail -20 "$B/eval_$tag.log"; return 1; }
