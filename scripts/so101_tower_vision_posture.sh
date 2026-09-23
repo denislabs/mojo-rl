@@ -130,15 +130,20 @@ score_one() {
     grep -q "^$a	$s	" "$RES" && return 0
     local run; run=$(tr '\r' '\n' < "$B/act_$tag.log" | grep -m1 '^  run ' | awk '{print $2}')
     local val; val=$(tr '\r' '\n' < "$B/act_$tag.log" | grep -m1 'best validation l1' | awk '{print $4}')
+    # the sim eval and the real check side by side (a GPU each is plenty)
     $BIN/tower_act_eval --ckpt "$run/checkpoints" --episodes 128 --joint-zero follower \
-        > "$B/eval_$tag.log" 2>&1 || { echo "eval $tag FAILED"; tail -20 "$B/eval_$tag.log"; return 1; }
-    local ok ng; ok=$(grep -m1 'SUCCESS' "$B/eval_$tag.log" | awk '{print $2}')
-    ng=$(grep -m1 'no grasp' "$B/eval_$tag.log" | awk '{print $3}')
-    local rm="-" rh="-"
+        > "$B/eval_$tag.log" 2>&1 &
+    local pe=$!
     if [[ -s $REAL ]]; then
         $BIN/tower_real_check --ckpt "$run/checkpoints" --student-zero follower \
             --store "$REAL" --store-zero follower > "$B/real_$tag.log" 2>&1 \
             || { echo "real check $tag FAILED"; tail -20 "$B/real_$tag.log"; }
+    fi
+    wait $pe || { echo "eval $tag FAILED"; tail -20 "$B/eval_$tag.log"; return 1; }
+    local ok ng; ok=$(grep -m1 'SUCCESS' "$B/eval_$tag.log" | awk '{print $2}')
+    ng=$(grep -m1 'no grasp' "$B/eval_$tag.log" | awk '{print $3}')
+    local rm="-" rh="-"
+    if [[ -s $REAL ]]; then
         rm=$(grep -m1 '^RESULT' "$B/real_$tag.log" | grep -o 'l1_all=[^ ]*' | cut -d= -f2 || echo "-")
         rh=$(grep -m1 '^RESULT' "$B/real_$tag.log" | grep -o 'hold_ens=[^ ]*' | cut -d= -f2 || echo "-")
     fi
