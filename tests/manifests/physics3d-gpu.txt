@@ -42,3 +42,4 @@ tests/physics3d/test_euler_finalize_gpu_parity.mojo
 # function of (seed, index), lights/colours never move `seg` and the camera
 # knob does. Self-contained: the tower scene from the tree, no dumps.
 tests/physics3d/test_domain_randomization_gpu.mojo
+tests/tasks/test_device_placement_gpu.mojo
