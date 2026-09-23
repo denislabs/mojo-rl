@@ -35,6 +35,13 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 export PATH=/workspace/.pixi-bin/bin:$PATH:$HOME/.pixi/bin
 
+# PAR: ACT runs at once. Each holds its store's image column in RAM (A 21 GB,
+# B 28, D 42), so PAR=3 needs ~100 GB; the default is chosen from the box's
+# RAM. With PAR=1 each run's eval overlaps the next run's training.
+# BUILD_PAR: builds at once (a Mojo build of the ACT graph takes GBs).
+MEM_GB=$(awk '/MemTotal/ {print int($2/1048576)}' /proc/meminfo 2>/dev/null || echo 64)
+PAR="${PAR:-$([[ $MEM_GB -ge 160 ]] && echo 3 || echo 1)}"
+BUILD_PAR="${BUILD_PAR:-$([[ $MEM_GB -ge 160 ]] && echo 4 || echo 1)}"
 ARMS="${ARMS:-A B D}"
 SEEDS="${SEEDS:-1 2 3}"
 STAGES="${STAGES:-build demos render train}"
@@ -62,16 +69,23 @@ build() {  # src out [defines...]
 if has build; then
     log "build"
     pixi install -e nvidia > /dev/null
-    build examples/so101/tower_expert_record.mojo $BIN/tower_expert &
-    P1=$!
-    build examples/so101/tower_demo_rerender.mojo $BIN/tower_rerender &
-    P2=$!
-    build examples/so101/tower_act_eval.mojo $BIN/tower_act_eval &
-    P3=$!
-    build examples/so101/act_so101_train_gpu.mojo $BIN/act_train_host -D ACT_HOST_DATA &
-    P4=$!
-    wait $P1 && wait $P2 && wait $P3 && wait $P4
-    log "build ok"
+    if [[ $BUILD_PAR -ge 4 ]]; then
+        build examples/so101/tower_expert_record.mojo $BIN/tower_expert &
+        P1=$!
+        build examples/so101/tower_demo_rerender.mojo $BIN/tower_rerender &
+        P2=$!
+        build examples/so101/tower_act_eval.mojo $BIN/tower_act_eval &
+        P3=$!
+        build examples/so101/act_so101_train_gpu.mojo $BIN/act_train_host -D ACT_HOST_DATA &
+        P4=$!
+        wait $P1 && wait $P2 && wait $P3 && wait $P4
+    else
+        build examples/so101/tower_expert_record.mojo $BIN/tower_expert
+        build examples/so101/tower_demo_rerender.mojo $BIN/tower_rerender
+        build examples/so101/act_so101_train_gpu.mojo $BIN/act_train_host -D ACT_HOST_DATA
+        build examples/so101/tower_act_eval.mojo $BIN/tower_act_eval
+    fi
+    log "build ok (PAR=$PAR BUILD_PAR=$BUILD_PAR, ${MEM_GB} GB RAM)"
 fi
 
 C1=$D/expert_cube_in_bowl_clean_300.demo
@@ -115,11 +129,17 @@ if has render; then
     for a in $ARMS; do [[ -s $(store_of "$a") ]] || { echo "render of arm $a failed"; exit 1; }; done
 fi
 
-one_run() {  # arm seed
+train_one() {  # arm seed — skips a run whose training log says it finished
     local a=$1 s=$2 tag="$1_s$2"
     grep -q "^$a	$s	" "$RES" && return 0
+    grep -q 'best validation l1' "$B/act_$tag.log" 2>/dev/null && return 0
     ACT_STORE=$(store_of "$a") ACT_SEED=$s ACT_NO_MONITOR=1 ACT_RESIDENT_GB=60 \
         $BIN/act_train_host > "$B/act_$tag.log" 2>&1 || { echo "train $tag FAILED"; tail -20 "$B/act_$tag.log"; return 1; }
+    log "trained $tag"
+}
+eval_one() {  # arm seed
+    local a=$1 s=$2 tag="$1_s$2"
+    grep -q "^$a	$s	" "$RES" && return 0
     local run; run=$(tr '\r' '\n' < "$B/act_$tag.log" | grep -m1 '^  run ' | awk '{print $2}')
     local val; val=$(tr '\r' '\n' < "$B/act_$tag.log" | grep -m1 'best validation l1' | awk '{print $4}')
     $BIN/tower_act_eval --ckpt "$run/checkpoints" --episodes 128 > "$B/eval_$tag.log" 2>&1 \
@@ -131,12 +151,25 @@ one_run() {  # arm seed
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$a" "$s" "$run" "$val" "$ok" "$ng" "$dr" >> "$RES"
     log "$tag: $ok/128 (val $val) $run"
 }
+one_run() { train_one "$1" "$2" && eval_one "$1" "$2"; }
 if has train; then
-    for s in $SEEDS; do
-        log "seed $s: arms $ARMS in parallel"
-        for a in $ARMS; do one_run "$a" "$s" & done
+    if [[ $PAR -ge 3 ]]; then
+        for s in $SEEDS; do
+            log "seed $s: arms $ARMS in parallel"
+            for a in $ARMS; do one_run "$a" "$s" & done
+            wait
+        done
+    else
+        # one training at a time; its eval runs beside the NEXT training
+        for s in $SEEDS; do
+            for a in $ARMS; do
+                log "train $a seed $s"
+                train_one "$a" "$s" || continue
+                eval_one "$a" "$s" &
+            done
+        done
         wait
-    done
+    fi
 fi
 
 log "results"
