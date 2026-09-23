@@ -60,7 +60,9 @@ from .spec import (
 # ⚠ `MAX_PLACE_ATTEMPTS` AND `PLACEMENT_SALT` ARE DEFINED IN
 # `placement/table.mojo` and re-exported here — the device kernel reads the same
 # two names, where they used to be restated on the config and asserted equal.
-from .placement.table import MAX_PLACE_ATTEMPTS, PLACEMENT_SALT, JOINT_AXIS_BASE
+from .placement.table import (
+    MAX_PLACE_ATTEMPTS, PLACEMENT_SALT, JOINT_AXIS_BASE, BASE_JITTER_AXIS_BASE,
+)
 
 
 struct Placement(Copyable, ImplicitlyCopyable, Movable):
@@ -186,6 +188,22 @@ def sample_joint_inits(
         ref j = t.joint_inits[k]
         var u = _uniform01(seed, lane, JOINT_AXIS_BASE + k, 0)
         out.append(j.lo + u * (j.hi - j.lo))
+    return out^
+
+
+def sample_base_qpos(f: FamilySpec, seed: UInt64, lane: Int) -> List[Float64]:
+    """The family's rest pose for one episode: `base_qpos[i] + h_i * (2u - 1)`
+    with `h` = `base_qpos_jitter=` and `u` on Philox axis
+    `BASE_JITTER_AXIS_BASE + i`, attempt 0 — `placement/table.reset_task_slots`
+    draws the same numbers on the device. A word without jitter (or a family
+    without the key) is `base_qpos[i]` exactly, and draws nothing."""
+    var out = List[Float64]()
+    for i in range(len(f.base_qpos)):
+        var q = f.base_qpos[i]
+        if i < len(f.base_qpos_jitter) and f.base_qpos_jitter[i] != 0.0:
+            var u = _uniform01(seed, lane, BASE_JITTER_AXIS_BASE + i, 0)
+            q += f.base_qpos_jitter[i] * (2.0 * u - 1.0)
+        out.append(q)
     return out^
 
 

@@ -533,6 +533,14 @@ struct FamilySpec(Movable & Deinitable):
     A Panda at all-zeros folds link 5 onto link 7 and reports 18 self
     contacts "at rest" — LIBERO never runs it there, and neither must a
     gate."""
+    var base_qpos_jitter: List[Float64]
+    """`base_qpos_jitter=h1,h2,...` — a per-episode draw around the rest:
+    joint i starts at `base_qpos[i] + h_i * (2u - 1)`, `u` uniform on its own
+    Philox axis (`placement/table.BASE_JITTER_AXIS_BASE + i`). Optional; the
+    same length as `base_qpos` when given; a half-width of 0 draws nothing.
+    The so101-tower follower's rest is folded on three hard stops with pan,
+    wrist roll and the jaw left wherever the last episode put them — one
+    fixed pose would show the student a single start it never meets."""
     var inherit_option: Bool
     """`inherit_option=0|1` — copy the base asset's `<option>` tag, and its
     `inertiagrouprange` / `autolimits` compiler attributes, into the
@@ -591,6 +599,7 @@ struct FamilySpec(Movable & Deinitable):
         self.base_z = 0.0
         self.floor = True
         self.base_qpos = List[Float64]()
+        self.base_qpos_jitter = List[Float64]()
         self.inherit_option = False
         self.headlight = List[Float64]()
         self.root = String(DEFAULT_TASK_ROOT)
@@ -611,6 +620,7 @@ struct FamilySpec(Movable & Deinitable):
         self.base_z = move.base_z
         self.floor = move.floor
         self.base_qpos = move.base_qpos^
+        self.base_qpos_jitter = move.base_qpos_jitter^
         self.inherit_option = move.inherit_option
         self.headlight = move.headlight^
         self.root = move.root^
@@ -694,6 +704,13 @@ struct FamilySpec(Movable & Deinitable):
                 if i > 0:
                     s += ","
                 s += String(self.base_qpos[i])
+            s += "\n"
+        if len(self.base_qpos_jitter) > 0:
+            s += "base_qpos_jitter="
+            for i in range(len(self.base_qpos_jitter)):
+                if i > 0:
+                    s += ","
+                s += String(self.base_qpos_jitter[i])
             s += "\n"
         if self.inherit_option:
             s += "inherit_option=1\n"
@@ -1090,6 +1107,17 @@ def parse_family(text: String) raises -> FamilySpec:
                 f.base_qpos.append(Float64(String(String(q[k]).strip())))
             if len(f.base_qpos) == 0:
                 raise Error("family spec: base_qpos is empty")
+        elif key == "base_qpos_jitter":
+            var q = split_on(val, String(","))
+            f.base_qpos_jitter = List[Float64]()
+            for k in range(len(q)):
+                var h = Float64(String(String(q[k]).strip()))
+                if not (h >= 0.0):
+                    raise Error(
+                        "family spec: base_qpos_jitter is a half-width, >= 0;"
+                        " got " + String(h)
+                    )
+                f.base_qpos_jitter.append(h)
         elif key == "inherit_option":
             f.inherit_option = _parse_flag(val, String("inherit_option"))
         elif key == "headlight":
@@ -1145,7 +1173,8 @@ def parse_family(text: String) raises -> FamilySpec:
             _unknown_key(
                 key, lines[i].lineno, String("family spec"),
                 String("schema_version, family, base, horizon, control_freq,"
-                       " park, base_pos, floor, base_qpos, inherit_option, slot,"
+                       " park, base_pos, floor, base_qpos, base_qpos_jitter,"
+                       " inherit_option, slot,"
                        " slot_geom, region"),
             )
 
@@ -1157,6 +1186,11 @@ def parse_family(text: String) raises -> FamilySpec:
         raise Error("family spec: no base= scene")
     if f.horizon <= 0:
         raise Error("family spec: horizon must be > 0, got " + String(f.horizon))
+    if len(f.base_qpos_jitter) > 0 and len(f.base_qpos_jitter) != len(f.base_qpos):
+        raise Error(
+            "family spec: base_qpos_jitter has " + String(len(f.base_qpos_jitter))
+            + " words but base_qpos has " + String(len(f.base_qpos))
+        )
 
     # ⚠ DUPLICATE NAMES ARE REFUSED. Slot ORDER is the observation layout and
     # the instance prefix is the identity, so two slots sharing a name is two

@@ -22,11 +22,35 @@ struct So101TowerPlacement(PlacementTable):
     comptime NBODY: Int = 13
     comptime NSITE: Int = 4
     comptime GRIPPER_SITE: Int = 2  # robot_grasp_center
-    comptime N_BASE_QPOS: Int = 0
+    comptime N_BASE_QPOS: Int = 6
 
     @staticmethod
     def base_qpos[DTYPE: DType](i: Int) -> Scalar[DTYPE]:
-        return Scalar[DTYPE](0.0)
+        if i == 0:
+            return Scalar[DTYPE](0.187632)
+        if i == 1:
+            return Scalar[DTYPE](-1.908661)
+        if i == 2:
+            return Scalar[DTYPE](1.542737)
+        if i == 3:
+            return Scalar[DTYPE](1.342561)
+        if i == 4:
+            return Scalar[DTYPE](1.140793)
+        return Scalar[DTYPE](0.223285)
+
+    @staticmethod
+    def base_qpos_jitter[DTYPE: DType](i: Int) -> Scalar[DTYPE]:
+        if i == 0:
+            return Scalar[DTYPE](0.432688)
+        if i == 1:
+            return Scalar[DTYPE](0.0)
+        if i == 2:
+            return Scalar[DTYPE](0.0)
+        if i == 3:
+            return Scalar[DTYPE](0.0)
+        if i == 4:
+            return Scalar[DTYPE](0.261608)
+        return Scalar[DTYPE](0.387465)
 
     @staticmethod
     def free_slot(j: Int) -> Int:

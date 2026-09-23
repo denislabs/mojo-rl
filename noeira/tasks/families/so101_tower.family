@@ -43,6 +43,21 @@ headlight=0.45,0.3,0.5
 # `props/so101_tower_stand.xml` for where the plate's hole pattern is.
 base_pos=0.0,0.0,0.005
 
+# ⚠⚠ EVERY EPISODE STARTS WHERE THE REAL ARM RESTS, NOT AT qpos0. MuJoCo's
+# qpos0 is the arm straight up — a pose the real follower never starts from.
+# Measured on the 50 kept cube-in-bowl episodes (frame 0, 2026-09-15), in
+# model radians through the measured joint zero
+# (`robot/so101/sim_map.tower_follower_zero_deg`): lift, elbow and wrist_flex
+# sit on their FOLDED hard stops (sd < 0.5 deg: the median, no jitter); pan,
+# wrist roll and the jaw are wherever the operator left them, so each episode
+# draws them uniformly over the observed span (pan -14..35.5 deg, roll
+# 50.4..80.4, jaw 0..41% open). Lift -109.4 deg is past the stock -100 limit:
+# the rig's model widens the JOINT (not the actuator) to -110
+# (`bake_so_arm101_tower.py` step 7). The draw is `sampler.sample_base_qpos`
+# on the host and `placement/table.reset_task_slots` on the device.
+base_qpos=0.187632,-1.908661,1.542737,1.342561,1.140793,0.223285
+base_qpos_jitter=0.432688,0.0,0.0,0.0,0.261608,0.387465
+
 # ⚠ THE FIXTURE CARRIES ITS POSE (see the tabletop family). The stand is
 # placed at the NEGATION of the arm's position on its plate — body (+0.019,
 # +0.077) — so the robot stays at the world origin and every SO-101 constant

@@ -69,6 +69,10 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 STOCK = "noeira/envs/robots/assets/so_arm101.xml"
 OUT = "noeira/envs/robots/assets/so_arm101_tower.xml"
+LIFT_REST_STOP = -110.0 * np.pi / 180.0
+"""shoulder_lift's lower joint limit on the rig (step 7): the real arm's rest
+hard stop, -106.0 LeRobot deg + the measured -3.6 deg zero = -109.6, rounded
+out to -110 deg."""
 MESHDIR = "noeira/envs/robots/assets/so_arm101"
 STOCK_MESH = "wrist_roll_follower_so101_v1"
 MOUNT_MESH = "wrist_cam_mount_32x32_uvc_module_so101"
@@ -414,6 +418,25 @@ def bake():
     n = src.count('rgba="1 0.82 0.12 1"')
     assert n == 11, "expected 11 orange materials, found %d" % n
     src = src.replace('rgba="1 0.82 0.12 1"', 'rgba="0.92 0.92 0.90 1"')
+    # 7. SHOULDER_LIFT REACHES THE REAL ARM'S REST. Folded at rest the real
+    #    follower sits on its lift hard stop at -106.0 LeRobot deg, which with
+    #    the measured zero (`robot/so101/sim_map.tower_follower_zero_deg`,
+    #    -3.6) is -109.6 deg in model terms — past the stock joint limit of
+    #    -100 deg, where 40% of the cube-in-bowl recording sits. The JOINT's
+    #    lower limit moves to -110 deg so the family's rest pose
+    #    (`so101_tower.family base_qpos=`) is a state the sim can hold. The
+    #    ACTUATOR's `ctrlrange` stays +-100 deg: it is the action map (every
+    #    recorded `.demo` word is normalised onto it, `So101TowerUnits`), and
+    #    the real arm too leaves the stop on its first command.
+    src = sub(
+        '<joint axis="0 0 1" name="shoulder_lift" type="hinge"'
+        ' range="-1.7453292519943224 1.7453292519943366" class="sts3215"/>',
+        "<!-- RIG DEVIATION: the lower limit is the real arm's rest hard stop"
+        " (-110 deg), see bake_so_arm101_tower.py step 7; ctrlrange unchanged -->\n"
+        '          <joint axis="0 0 1" name="shoulder_lift" type="hinge"'
+        ' range="%.16g 1.7453292519943366" class="sts3215"/>' % LIFT_REST_STOP,
+        "shoulder_lift joint",
+    )
     return src
 
 
@@ -436,6 +459,11 @@ def check(text):
     # box was already counted against the stock's follower collision mesh).
     assert m.ngeom == ref.ngeom + 5 and m.nmesh == ref.nmesh + 1, (m.ngeom, m.nmesh)
     assert m.nlight == ref.nlight - 1 and m.ntex == 0 and m.nmat == ref.nmat
+    # step 7: the lift JOINT reaches the real rest stop, its ACTUATOR does not
+    j = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, "shoulder_lift")
+    a = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, "shoulder_lift")
+    assert abs(m.jnt_range[j][0] - LIFT_REST_STOP) < 1e-12, m.jnt_range[j]
+    assert np.array_equal(m.actuator_ctrlrange[a], ref.actuator_ctrlrange[a])
     d = mujoco.MjData(m)
     mujoco.mj_forward(m, d)
     b = m.cam_bodyid[0]

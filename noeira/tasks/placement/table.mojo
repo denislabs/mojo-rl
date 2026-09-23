@@ -75,6 +75,12 @@ comptime PLACEMENT_SALT: UInt64 = 0x9E3779B97F4A7C15
 header; any value that is not the env's own works."""
 
 
+comptime BASE_JITTER_AXIS_BASE: Int = 0xC000
+"""Where the rest-pose jitter's Philox axes start: word `i` of `base_qpos`
+draws on axis `BASE_JITTER_AXIS_BASE + i`, attempt 0 — clear of the
+placement axes and of `JOINT_AXIS_BASE`'s `jinit=` block, and below the
+16-bit axis field (`_uniform01`)."""
+
 comptime JOINT_AXIS_BASE: Int = 0x8000
 """Where a `jinit=` draw's Philox axis starts, clear of every placement axis.
 
@@ -153,6 +159,17 @@ trait PlacementTable:
         """The `.family`'s `base_qpos=` — the base asset's joint positions at
         REST, which the reset writes into `qpos[0 .. N_BASE_QPOS)`."""
         ...
+
+    @staticmethod
+    def base_qpos_jitter[DTYPE: DType](i: Int) -> Scalar[DTYPE]:
+        """The `.family`'s `base_qpos_jitter=` half-width for word `i`; the
+        reset draws `base_qpos(i) + h * (2u - 1)`. 0 = no draw.
+
+        ⚠ A DEFAULT OF 0, so the families without the key (every LIBERO one,
+        the tabletop) need not restate it — and so a table that FORGETS it is
+        silent here. `placement/check.check_table` compares it word for word
+        with the family's, which is where a missing override fails."""
+        return Scalar[DTYPE](0)
 
     # ── per free slot ──
     @staticmethod
@@ -563,8 +580,8 @@ def reset_task_slots[
     env: Int,
     seed: Int,
 ):
-    """The task layer's whole reset for one lane: the base asset's rest pose,
-    the joint draws, THEN the placements.
+    """The task layer's whole reset for one lane: the base asset's rest pose
+    (with its `base_qpos_jitter=` draw), the joint draws, THEN the placements.
 
     ⚠⚠ THE REST POSE, BECAUSE `qpos0` IS NOT IT. `_reset_env_lane` restores
     the composed scene's `qpos0`, which for the Panda is every joint at ZERO —
@@ -580,7 +597,18 @@ def reset_task_slots[
     drawer's drawn `qpos`, so the draw must be written first — the host's order
     too (draw, FK, frames, sample)."""
     for i in range(T.N_BASE_QPOS):
-        qpos[env, i] = T.base_qpos[DTYPE](i)
+        var q = T.base_qpos[DTYPE](i)
+        var h = T.base_qpos_jitter[DTYPE](i)
+        if h != Scalar[DTYPE](0):
+            # `sampler.sample_base_qpos`'s draw: axis BASE_JITTER_AXIS_BASE + i
+            var ru = PhiloxRandom(
+                seed=UInt64(seed) ^ PLACEMENT_SALT,
+                subsequence=(UInt64(env) << 16) | UInt64(BASE_JITTER_AXIS_BASE + i),
+                offset=UInt64(0),
+            )
+            var u = Scalar[DTYPE](Float64(ru.step_uniform()[0]))
+            q = q + h * (Scalar[DTYPE](2) * u - Scalar[DTYPE](1))
+        qpos[env, i] = q
         if i < NV_F:
             qvel[env, i] = Scalar[DTYPE](0)
     draw_joint_inits[T, DTYPE, BATCH_SIZE, NQ_F, NV_F](

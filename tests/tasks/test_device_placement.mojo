@@ -55,6 +55,8 @@ from noeira.tasks.family import scene_path, task_path
 from noeira.tasks.family_config import (
     So101TabletopConfig, So101TabletopPlacement,
 )
+from noeira.tasks.placement.so101_tower import So101TowerPlacement
+from noeira.tasks.so101_tower_xml import SO101_TOWER_NMESH_VERTS
 from noeira.tasks.active import init_region_words
 from noeira.tasks.eval import region_sites
 from noeira.tasks.reset import (
@@ -62,7 +64,8 @@ from noeira.tasks.reset import (
     joint_init_dof_addresses,
 )
 from noeira.tasks.sampler import (
-    sample_placements, sample_joint_inits, RegionFrame, SampleReport,
+    sample_placements, sample_joint_inits, sample_base_qpos, RegionFrame,
+    SampleReport,
 )
 from noeira.tasks.placement.table import (
     PlacementTable, reset_task_slots,
@@ -204,6 +207,9 @@ struct Stats(Copyable, ImplicitlyCopyable, Movable):
     var jinit_bad: Int
     var base_words: Int
     var base_bad: Int
+    var base_jittered: Int
+    """Rest words the family jitters that came out off the rest value — the
+    vacuity guard for `base_qpos_jitter=` (0 on every family without it)."""
     # rule coverage, per placement the HOST made
     var geom: Int
     var table_off: Int
@@ -233,6 +239,7 @@ struct Stats(Copyable, ImplicitlyCopyable, Movable):
         self.jinit_bad = 0
         self.base_words = 0
         self.base_bad = 0
+        self.base_jittered = 0
         self.geom = 0
         self.table_off = 0
         self.on_fixture = 0
@@ -395,11 +402,20 @@ def _parity[T: PlacementTable](
     for lane in range(BATCH):
         var qseen = List[Bool](length=NQ, fill=False)
         var vseen = List[Bool](length=NV, fill=False)
-        # ── the base asset's rest pose ──
+        # ── the base asset's rest pose, with the family's per-episode draw ──
+        var rest = sample_base_qpos(f, UInt64(SEED), lane)
         for i in range(T.N_BASE_QPOS):
             st.base_words += 1
-            if Float64(qs.data[lane * NQ + i]) != f.base_qpos[i]:
+            var got_q = Float64(qs.data[lane * NQ + i])
+            if abs(got_q - rest[i]) > TOL:
                 st.base_bad += 1
+                print("      ", t.name, "lane", lane, "rest", i, ": device",
+                      got_q, "host", rest[i])
+            var h = f.base_qpos_jitter[i] if len(f.base_qpos_jitter) > 0 else 0.0
+            if abs(got_q - f.base_qpos[i]) > h + TOL:
+                st.base_bad += 1
+            if h > 0.0 and got_q != f.base_qpos[i]:
+                st.base_jittered += 1
             if i < NV and Float64(vs.data[lane * NV + i]) != 0.0:
                 st.base_bad += 1
             qseen[i] = True
@@ -1135,6 +1151,51 @@ def main() raises:
             ok_rad = True
     ta.check(ok_rad,
              "SLOT_RADIUS is the prop asset's own half-size (resting height)")
+
+    # ── 2b. so101_tower: the generated table, and the rest-pose DRAW ──────
+    # The one family with `base_qpos_jitter=` (the follower starts folded,
+    # pan / roll / jaw drawn per episode): the device's draw must be the
+    # host's on every lane, inside the half-width, and actually drawn.
+    print()
+    print("--- 2b. so101_tower: generated table, rest draw device vs host ---")
+    var ft = load_family(String("noeira/tasks/families/so101_tower.family"))
+    var tnames = List[String]()
+    tnames.append(String("so101_tower_cube_in_bowl"))
+    tnames.append(String("so101_tower_lift_brick"))
+    tnames.append(String("so101_tower_reach_clear"))
+    var stt = Stats()
+    var rt = List[String]()
+    var sht = List[String]()
+    _run_family[So101TowerPlacement](
+        ft, tnames, SO101_TOWER_NMESH_VERTS, 0.02,
+        String("robot_grasp_center"), ta, stt, rt, sht,
+    )
+    print("      placements", stt.placements, " rest words", stt.base_words,
+          " jittered", stt.base_jittered, " worst", stt.worst)
+    ta.check(
+        stt.bad == 0 and stt.base_bad == 0 and stt.left_alone_bad == 0
+        and stt.meta_touched == 0 and stt.other_written == 0 and len(rt) == 0,
+        "so101_tower: placements and the drawn rest agree device vs host,"
+        " nothing else is written, nothing refused",
+    )
+    # 3 of the 6 rest words are drawn; every drawn word on every lane of
+    # every task must have moved (a u of exactly 1/2 has probability 0)
+    ta.check(
+        stt.base_words == len(tnames) * BATCH * 6
+        and stt.base_jittered == len(tnames) * BATCH * 3,
+        "so101_tower: the rest is 6 words and pan / roll / jaw are drawn on"
+        " every lane (" + String(stt.base_jittered) + " of "
+        + String(len(tnames) * BATCH * 3) + ")",
+    )
+    var d0 = sample_base_qpos(ft, UInt64(SEED), 0)
+    var d1 = sample_base_qpos(ft, UInt64(SEED), 1)
+    var d0b = sample_base_qpos(ft, UInt64(SEED + 1), 0)
+    ta.check(
+        d0[0] != d1[0] and d0[0] != d0b[0] and d0[1] == d1[1]
+        and d0[1] == ft.base_qpos[1],
+        "so101_tower: the draw moves with the lane and the seed, and a"
+        " zero half-width (lift) is the rest exactly",
+    )
 
     # ── 3. an untouched meta writes nothing ───────────────────────────────
     #

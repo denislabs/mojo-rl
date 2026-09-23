@@ -63,7 +63,8 @@
         <!-- Link upper_arm -->
         <body name="upper_arm" pos="-0.0303992 -0.0182778 -0.0542" quat="0.5 -0.5 -0.5 -0.5">
           <!-- Joint from shoulder to upper_arm -->
-          <joint axis="0 0 1" name="shoulder_lift" type="hinge" range="-1.7453292519943224 1.7453292519943366" class="sts3215"/>
+          <!-- RIG DEVIATION: the lower limit is the real arm's rest hard stop (-110 deg), see bake_so_arm101_tower.py step 7; ctrlrange unchanged -->
+          <joint axis="0 0 1" name="shoulder_lift" type="hinge" range="-1.919862177193763 1.7453292519943366" class="sts3215"/>
           <inertial pos="-0.0898471 -0.00838224 0.0184089" quat="0.45319470400751516 0.4540628989723458 0.5418911076086945 0.5429507081964211" mass="0.103" diaginertia="0.00015087316030509306 0.000142486983402127 3.724505629278006e-05"/><!-- DEVIATION: fullinertia diagonalised, see so_arm_bake.py -->
           <!-- Part sts3215_03a_v1_3 -->
           <geom type="mesh" class="visual" pos="-0.11257 -0.0155 0.0187" quat="4.56308e-16 -0.707107 0.707107 -1.37383e-16" mesh="sts3215_03a_v1" material="sts3215_03a_v1_material"/>
