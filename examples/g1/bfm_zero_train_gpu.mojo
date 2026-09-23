@@ -529,6 +529,9 @@ def main() raises:
         resumed_from=run_id_of_checkpoint(resume_path),
     )
     run.set_tag(tag)
+    # `project-resume <run_id>` continues this run from its last checkpoint,
+    # at the env step it saved (the replay re-warms from the store).
+    run.set_resume_args(String("--resume {ckpt}"))
     print("run:", run.dir)
 
     # ── the run's own record: a CSV that outlives the ssh session ─────────

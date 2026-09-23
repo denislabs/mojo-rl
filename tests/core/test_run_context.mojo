@@ -34,6 +34,9 @@ from noeira.core.run import (
     load_run,
     parse_run,
     register_run,
+    resume_args_for,
+    run_command,
+    shell_word,
     slugify,
 )
 from noeira.io.proc import run_capture
@@ -242,7 +245,7 @@ def test_an_unknown_key_raises() raises:
         refused = True
     if not refused:
         raise Error("a typo'd key was accepted — status= would be silently lost")
-    var future = String("schema_version=2\nrun_id=r\n")
+    var future = String("schema_version=3\nrun_id=r\n")
     var refused2 = False
     try:
         _ = parse_run(future, String("gate"))
@@ -482,6 +485,206 @@ def test_resolve_checkpoint() raises:
     _ = run^
 
 
+# =============================================================================
+# A run is a recipe: its command, its source, how it continues
+# =============================================================================
+
+
+def test_shell_word_round_trips_through_sh() raises:
+    """⚠ CHECKED BY THE SHELL, NOT BY A SECOND COPY OF THE RULE. Each word is
+    handed to `/bin/sh` and must come back byte-identical — a quoting rule
+    compared with itself would pass whatever it got wrong."""
+    var cases = [
+        String("--steps"), String("200000"), String("so101_reach_clear"),
+        String("runs/a-b_c/checkpoints/last.ckpt"), String("a b"),
+        String("it's"), String("$HOME"), String("x;rm"), String(""),
+        String("--note=8/10 on the arm"),
+    ]
+    for c in cases:
+        var w = shell_word(c)
+        var back = run_capture(String("printf %s ") + w, 4096)
+        if back != c:
+            raise Error("shell_word(" + c + ") = " + w + " came back as " + back)
+    if shell_word(String("--steps")) != String("--steps"):
+        raise Error("a plain flag was quoted: " + shell_word(String("--steps")))
+    if shell_word(String("x\ny")) != String("'x y'"):
+        raise Error("newline: " + shell_word(String("x\ny")))
+    print("  shell_word:", len(cases), "words round-trip through /bin/sh")
+
+
+def test_the_record_carries_its_command() raises:
+    """argv, the pixi env and the schema survive `run.kv`, and the command is
+    rebuilt from them by the one builder."""
+    var root = _root()
+    var run = RunContext(
+        project=String("so101"),
+        driver=String("examples/tasks/sac_task_gpu.mojo"),
+        seed=3,
+        root=root,
+    )
+    # This test's own argv is empty; set the list a driver would have had.
+    run.args = [
+        String("so101_lift_brick"), String("--steps"), String("2000"),
+        shell_word(String("a b")), shell_word(String("it's")),
+    ]
+    run.pixi_env = String("nvidia")
+    run.set_tag(String("recipe"))  # any mutator rewrites run.kv
+    var rec = load_run(run.kv_path())
+    if rec.schema_version != 2:
+        raise Error("schema_version read back " + String(rec.schema_version))
+    if len(rec.args) != 5 or rec.args[3] != String("'a b'"):
+        raise Error("args did not survive: " + String(len(rec.args)))
+    var cmd = run_command(rec.driver, rec.pixi_env, rec.args)
+    var want = (
+        "pixi run -e nvidia mojo run -I . examples/tasks/sac_task_gpu.mojo"
+        " so101_lift_brick --steps 2000 'a b' 'it'\\''s'"
+    )
+    if cmd != want or run.reproduce_command() != want:
+        raise Error("command:\n  got  " + cmd + "\n  want " + want)
+    # The default env adds no `-e` (a box with one env has no name for it).
+    if run_command(rec.driver, String("default"), List[String]()) != String(
+        "pixi run mojo run -I . examples/tasks/sac_task_gpu.mojo"
+    ):
+        raise Error("default env grew a -e")
+    print("  recipe:", cmd)
+    run.close()
+    _ = run^
+
+
+def _words(s: String) -> List[String]:
+    var out = List[String]()
+    for w in s.split(" "):
+        if String(w).byte_length() > 0:
+            out.append(String(w))
+    return out^
+
+
+def _expect_words(got: List[String], want: String, what: String) raises:
+    var g = String("")
+    for x in got:
+        g += (" " if g.byte_length() > 0 else "") + x
+    if g != want:
+        raise Error(what + ":\n  got  " + g + "\n  want " + want)
+
+
+def test_resume_args_for_both_driver_shapes() raises:
+    """The two declared shapes: BFM's `--resume {ckpt}` (flag with a value)
+    and the SO-ARM driver's `--resume --ckpt {ckpt}` (bare flag + valued
+    flag). A run that was ITSELF a resume must not carry two `--resume`s."""
+    var ck = String("runs/r1/checkpoints/last.ckpt")
+    _expect_words(
+        resume_args_for(
+            _words("--steps 5 --resume old.ckpt --tag x"),
+            String("--resume {ckpt}"), ck,
+        ),
+        "--steps 5 --tag x --resume " + ck, "BFM shape",
+    )
+    _expect_words(
+        resume_args_for(
+            _words("--resume --ckpt a.ckpt --steps 3"),
+            String("--resume --ckpt {ckpt}"), ck,
+        ),
+        "--steps 3 --resume --ckpt " + ck, "SO-ARM shape",
+    )
+    # A checkpoint path with a space is quoted, not split.
+    _expect_words(
+        resume_args_for(List[String](), String("--resume {ckpt}"),
+                        String("my runs/last.ckpt")),
+        "--resume 'my runs/last.ckpt'", "quoted ckpt",
+    )
+    print("  resume_args_for: both templates, and a resumed run's own flags")
+
+
+def test_a_dirty_tree_saves_its_patch() raises:
+    """⚠ CONDITIONAL ON THE TREE, AND IT SAYS WHICH BRANCH RAN. On a dirty
+    tree the patch must be exactly `git diff HEAD --binary`; on a clean one
+    there must be none."""
+    var root = _root()
+    var run = RunContext(
+        project=String("so101"),
+        driver=String("examples/tasks/sac_task_gpu.mojo"),
+        root=root,
+    )
+    if not run.dirty:
+        if run.source_patch.byte_length() != 0:
+            raise Error("clean tree wrote a patch: " + run.source_patch)
+        print("  source.patch: tree CLEAN here — only the no-patch branch ran")
+    elif run.source_patch.startswith("too_large:"):
+        print("  source.patch: tree dirty past the cap —", run.source_patch)
+    else:
+        if run.source_patch != String("source.patch"):
+            raise Error("dirty tree, source_patch=" + run.source_patch)
+        var mine = run_capture(
+            String("wc -c < ") + run.dir + "/source.patch", 64
+        ).strip()
+        var head = run_capture(
+            String("git diff HEAD --binary | wc -c"), 64
+        ).strip()
+        if String(mine) != String(head):
+            raise Error("patch is " + String(mine) + " bytes, git diff "
+                        + String(head))
+        print("  source.patch: dirty tree,", String(mine), "bytes = git diff")
+    run.close()
+    var rec = load_run(run.kv_path())
+    if run.source_patch == String("source.patch"):
+        var listed = False
+        for a in rec.artifacts:
+            if a.startswith("source.patch:"):
+                listed = True
+        if not listed:
+            raise Error("source.patch is not an artifact — it would not be pushed")
+    _ = run^
+
+
+def test_register_run_sends_the_command() raises:
+    var root = _root()
+    var run = RunContext(
+        project=String("so101"),
+        driver=String("examples/tasks/sac_task_gpu.mojo"),
+        root=root,
+    )
+    run.set_resume_args(String("--resume {ckpt}"))
+    var remote = RemoteLogger(
+        server_url=String("http://127.0.0.1:9"), run_id=run.id
+    )
+    var lg = CompositeLogger(CsvLogger(run.metrics_path()), remote)
+    register_run(run, lg)
+    var payload = lg.b._register_payload()
+    for w in [String('"command":"pixi run'), String('"dirty":"'),
+              String('"resume_args":"--resume {ckpt}"')]:
+        if payload.find(w) < 0:
+            raise Error("register payload lacks " + w)
+    var raised = False
+    try:
+        run.set_resume_args(String("--resume"))
+    except:
+        raised = True
+    if not raised:
+        raise Error("a resume template without {ckpt} was accepted")
+    print("  register_run: command, dirty and resume_args reach the dashboard")
+    lg.close()
+    run.close()
+    _ = run^
+
+
+def test_a_schema_1_record_still_reads() raises:
+    var text = String(
+        "schema_version=1\nrun_id=r\nproject=p\ndriver=d.mojo\n"
+        "status=done\n"
+    )
+    var rec = parse_run(text, String("old"))
+    if rec.schema_version != 1 or len(rec.args) != 0:
+        raise Error("schema 1 record misread")
+    var raised = False
+    try:
+        _ = parse_run(String("schema_version=3\nrun_id=r\n"), String("new"))
+    except:
+        raised = True
+    if not raised:
+        raise Error("a schema 3 record was accepted")
+    print("  schema: 1 still reads (and is known to have no arguments); 3 refused")
+
+
 def main() raises:
     print("=" * 62)
     print("RunContext — one identifier, and a record written at t=0")
@@ -500,6 +703,12 @@ def main() raises:
     test_finish_run_sends_the_verdict_before_closing()
     test_run_id_of_checkpoint()
     test_resolve_checkpoint()
+    test_shell_word_round_trips_through_sh()
+    test_the_record_carries_its_command()
+    test_resume_args_for_both_driver_shapes()
+    test_a_dirty_tree_saves_its_patch()
+    test_register_run_sends_the_command()
+    test_a_schema_1_record_still_reads()
     # ⚠ THE PREFIX IS A LITERAL, NOT A VARIABLE. An `rm -rf` assembled from a
     # String is one empty value away from a very bad day; this one cannot
     # widen, and every root above is minted under exactly this prefix.

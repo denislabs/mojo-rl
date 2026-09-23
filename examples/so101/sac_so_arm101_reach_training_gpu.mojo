@@ -58,7 +58,7 @@ from std.random import seed
 from std.sys import argv
 from std.time import perf_counter_ns
 
-from noeira.core.run import RunContext, register_run
+from noeira.core.run import RunContext, register_run, run_id_of_checkpoint
 from noeira.core.run_session import RunLogger, finish_run, run_logger
 from noeira.io.artifact_sink import sink_for_run
 from noeira.nn.constants import DT
@@ -189,8 +189,14 @@ def main() raises:
         slug=String("sac-so101-reach"),
         env=String("builtin:so_arm101/reach"),
         seed=42,
-        resumed_from=ckpt_path if resume else String(""),
+        resumed_from=(
+            run_id_of_checkpoint(ckpt_path) if resume else String("")
+        ),
     )
+    # `project-resume <run_id>` continues this run from its last checkpoint.
+    # ⚠ This driver's `--resume` re-warms and resets alpha (see the header):
+    # it is a continuation, not a bit-exact resume.
+    run.set_resume_args(String("--resume --ckpt {ckpt}"))
     var out_ckpt = run.checkpoint_path(String("last"))
     print("  run              =", run.dir)
     print("=" * 70)

@@ -455,6 +455,8 @@ project-prune = { cmd = "mojo run -I . tools/project/project_cli.mojo prune", de
 project-promote = { cmd = "mojo run -I . tools/project/project_cli.mojo promote", description = 'Promote a run checkpoint to a named role: project-promote <run_id> best --as reach --note "..."' }
 project-push = { cmd = "mojo run -I . tools/project/project_cli.mojo push", description = "Send a project's run artifacts to the monitor (needs NOEIRA_CLOUD_*)" }
 project-pull = { cmd = "mojo run -I . tools/project/project_cli.mojo pull", description = "Bring a run's artifacts back onto this box (needs NOEIRA_CLOUD_*)" }
+project-rerun = { cmd = "mojo run -I . tools/project/project_cli.mojo rerun", description = "How to run a run again exactly (commit, patch, command): project-rerun <run_id> [--exec]" }
+project-resume = { cmd = "mojo run -I . tools/project/project_cli.mojo resume", description = "Continue a run from its last checkpoint with its own arguments: project-resume <run_id> [--from last] [--dry-run]" }
 run-tag = { cmd = "mojo run -I . tools/project/project_cli.mojo tag", description = 'Tag a run: run-tag <run_id> "free text"' }
 
 # Record teleoperation into a LeRobot v3 dataset. ⚠ SAFE BY DEFAULT: without
