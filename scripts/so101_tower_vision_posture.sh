@@ -2,7 +2,7 @@
 # so101_tower vision student, series 2: does the HUMAN-POSTURE expert make a
 # student that uses REAL frames?
 #
-#   bash scripts/so101_tower_vision_posture.sh                  # arms V H G, seeds 1 2
+#   bash scripts/so101_tower_vision_posture.sh                  # arms V H, seeds 1 2 3
 #   ARMS="V H" SEEDS="1 2 3" bash scripts/so101_tower_vision_posture.sh
 #   STAGES="build" bash scripts/so101_tower_vision_posture.sh    # compile + the yaw GPU test
 #
@@ -15,7 +15,8 @@
 # THE ARMS
 #   V  200 episodes of the DEFAULT (vertical) expert — the control
 #   H  200 episodes of `--posture human` (b971ad6fc, 4635d325a)
-#   G  400 episodes of `--posture human` (series 1: 400 vs 200 = 55 vs 52%)
+#   G  400 episodes of `--posture human` — OFF by default: series 1 measured
+#      400 vs 200 expert episodes at 49.2 +- 10.2 vs 52.3 +- 9.2 % (3 seeds)
 # (120 clean + 80 noisy per 200, as series 1.) Each arm x seed: ACT on the
 # host data path, then TWO scores:
 #   sim   tower_act_eval, 128 held-out placements (seeds 30000+), follower zero
@@ -35,8 +36,8 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 export PATH=/workspace/.pixi-bin/bin:$PATH:$HOME/.pixi/bin
 
-ARMS="${ARMS:-V H G}"
-SEEDS="${SEEDS:-1 2}"
+ARMS="${ARMS:-V H}"
+SEEDS="${SEEDS:-1 2 3}"
 STAGES="${STAGES:-build demos render train}"
 REAL="${REAL:-$HOME/.cache/noeira/act_so101/so101-tower__cube-in-bowl_240x320_undist.h5}"
 D=projects/so101-tower/demos
