@@ -77,24 +77,25 @@ if has build; then
     log "build ok"
 fi
 
-VC=$D/p2_vertical_clean.demo;  VN=$D/p2_vertical_noisy.demo
-HC=$D/p2_human_clean.demo;     HN=$D/p2_human_noisy.demo
+# `_rr`: recorded with --return-rest (dc25c8b38) — the episodes end folded, as the real ones do
+VC=$D/p2_vertical_clean_rr.demo;  VN=$D/p2_vertical_noisy_rr.demo
+HC=$D/p2_human_clean_rr.demo;     HN=$D/p2_human_noisy_rr.demo
 if has demos; then
     log "demos (CPU, four in parallel)"
     [[ -s $VC ]] || $BIN/tower_expert so101_tower_cube_in_bowl --episodes 300 --seed 51000 \
-        --quiet --out $VC > $B/gen_vc.log 2>&1 &
+        --return-rest --quiet --out $VC > $B/gen_vc.log 2>&1 &
     [[ -s $VN ]] || $BIN/tower_expert so101_tower_cube_in_bowl --episodes 300 --seed 54000 \
-        --noise 0.02 --flat-noise --quiet --out $VN > $B/gen_vn.log 2>&1 &
+        --noise 0.02 --flat-noise --return-rest --quiet --out $VN > $B/gen_vn.log 2>&1 &
     # human: ~50 % clean, ~30 % with noise (measured) — enough for arm G's 240 + 160
     [[ -s $HC ]] || $BIN/tower_expert so101_tower_cube_in_bowl --episodes 600 --seed 41000 \
-        --posture human --quiet --out $HC > $B/gen_hc.log 2>&1 &
+        --posture human --return-rest --quiet --out $HC > $B/gen_hc.log 2>&1 &
     [[ -s $HN ]] || $BIN/tower_expert so101_tower_cube_in_bowl --episodes 700 --seed 44000 \
-        --posture human --noise 0.02 --flat-noise --quiet --out $HN > $B/gen_hn.log 2>&1 &
+        --posture human --noise 0.02 --flat-noise --return-rest --quiet --out $HN > $B/gen_hn.log 2>&1 &
     wait
     for f in $B/gen_*.log; do echo "$(basename $f): $(tail -n 2 $f | head -1)"; done
 fi
 
-store_of() { echo "$D/p2_$1.rendered.h5"; }
+store_of() { echo "$D/p2rr_$1.rendered.h5"; }
 render_arm() {
     local out; out=$(store_of "$1")
     [[ -s $out ]] && return 0
