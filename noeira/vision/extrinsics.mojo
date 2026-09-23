@@ -432,9 +432,6 @@ def fit_rigid_with_offset(
     # ── alternate ───────────────────────────────────────────────────────
     var off = Vec3d.zero()
     var base = List[Float64](length=n * 3, fill=0.0)
-    var fit = RigidFit(
-        Mat3d.identity(), Vec3d.zero(), 0.0, 0.0, 0, 0, Array[Float64, 3](fill=0.0)
-    )
     var it = 0
     while it < max_iter:
         it += 1
@@ -448,7 +445,7 @@ def fit_rigid_with_offset(
             base[k * 3] = b.x
             base[k * 3 + 1] = b.y
             base[k * 3 + 2] = b.z
-        fit = fit_rigid(cam_xyz, base)
+        var fit_i = fit_rigid(cam_xyz, base)
         var acc = Vec3d.zero()
         for k in range(n):
             var rk = Mat3d(
@@ -456,7 +453,7 @@ def fit_rigid_with_offset(
                 grip_rot[k * 9 + 3], grip_rot[k * 9 + 4], grip_rot[k * 9 + 5],
                 grip_rot[k * 9 + 6], grip_rot[k * 9 + 7], grip_rot[k * 9 + 8],
             )
-            var y = fit.apply(Vec3d(cam_xyz[k * 3], cam_xyz[k * 3 + 1], cam_xyz[k * 3 + 2])) - Vec3d(
+            var y = fit_i.apply(Vec3d(cam_xyz[k * 3], cam_xyz[k * 3 + 1], cam_xyz[k * 3 + 2])) - Vec3d(
                 grip_pos[k * 3], grip_pos[k * 3 + 1], grip_pos[k * 3 + 2]
             )
             acc = acc + rk.transpose() * y
@@ -476,5 +473,5 @@ def fit_rigid_with_offset(
         base[k * 3] = b.x
         base[k * 3 + 1] = b.y
         base[k * 3 + 2] = b.z
-    fit = fit_rigid(cam_xyz, base)
+    var fit = fit_rigid(cam_xyz, base)
     return OffsetFit(fit^, off, spread_deg, it)

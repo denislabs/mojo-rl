@@ -66,6 +66,18 @@ admits the far easier 3D-3D problem.
    picked 15 cm above that plane is then localised by a direction nobody
    measured.
 
+## Every capture is written to `<calib>.poses.txt`
+
+One line per pose, rewritten at each capture/drop/clear: the marker in the
+camera frame, the gripper's FK position and rotation, the six joint values
+(model radians) and raw servo ticks, and the marker's four corner pixels.
+So a residual that will not come down can be diagnosed OFFLINE — a scale
+(marker size, focal length), a joint zero offset, distance-dependent depth
+noise, the lens edge — instead of by recapturing. The panel's `scale` line
+is the first of those: the least-squares scale between the camera-side and
+arm-side point sets at the fitted rotation. It should read 1.000; a
+systematic scale error grows the residual with the spread.
+
 ## Without `--offset`, the offset is SOLVED (`fit_rigid_with_offset`)
 
 Leave `--offset` out and the marker's position on the gripper is estimated
@@ -216,6 +228,81 @@ def _refit(
         base.append(b.z)
     solved_off = off
     return fit_rigid(cam_pts, base)
+
+
+def _dump_poses(
+    path: String, ref cam: List[Float64], ref gp: List[Float64],
+    ref gr: List[Float64], ref q: List[Float64], ref raw: List[Int],
+    ref px: List[Float64],
+):
+    """`<calib>.poses.txt` — every capture, rewritten whole (see the header).
+    A failure to write is printed, never raised: the capture itself stands."""
+    var s = String(
+        "# extrinsics captures: cam_x cam_y cam_z (m, camera frame) | grip_x"
+        " grip_y grip_z (m, base) | grip_rot r00..r22 (row-major) | q0..q5"
+        " (model rad) | raw0..raw5 (ticks) | u0 v0 .. u3 v3 (marker corners, px)\n"
+    )
+    var n = len(cam) // 3
+    for k in range(n):
+        for c in range(3):
+            s += String(cam[k * 3 + c]) + " "
+        s += "| "
+        for c in range(3):
+            s += String(gp[k * 3 + c]) + " "
+        s += "| "
+        for c in range(9):
+            s += String(gr[k * 9 + c]) + " "
+        s += "| "
+        for c in range(SO101_N):
+            s += String(q[k * SO101_N + c]) + " "
+        s += "| "
+        for c in range(SO101_N):
+            s += String(raw[k * SO101_N + c]) + " "
+        s += "| "
+        for c in range(8):
+            s += String(px[k * 8 + c]) + " "
+        s += "\n"
+    try:
+        with open(path, "w") as f:
+            f.write(s)
+    except e:
+        print("could not write", path, "-", e)
+
+
+def _fit_scale(
+    fit: RigidFit, ref cam: List[Float64], ref gp: List[Float64],
+    ref gr: List[Float64], off: Vec3d,
+) -> Float64:
+    """Least-squares scale between the camera-side points (rotated by the
+    fit) and the arm-side points, both centred: 1.0 when the marker size and
+    the focal length are right."""
+    var n = len(cam) // 3
+    if n < 2:
+        return 1.0
+    var cc = Vec3d.zero()
+    var cb = Vec3d.zero()
+    var pc = List[Vec3d]()
+    var pb = List[Vec3d]()
+    for k in range(n):
+        var rk = Mat3d(
+            gr[k * 9], gr[k * 9 + 1], gr[k * 9 + 2], gr[k * 9 + 3], gr[k * 9 + 4],
+            gr[k * 9 + 5], gr[k * 9 + 6], gr[k * 9 + 7], gr[k * 9 + 8],
+        )
+        var c = fit.rot * Vec3d(cam[k * 3], cam[k * 3 + 1], cam[k * 3 + 2])
+        var b = Vec3d(gp[k * 3], gp[k * 3 + 1], gp[k * 3 + 2]) + rk * off
+        pc.append(c)
+        pb.append(b)
+        cc = cc + c
+        cb = cb + b
+    cc = cc / Float64(n)
+    cb = cb / Float64(n)
+    var num = 0.0
+    var den = 0.0
+    for k in range(n):
+        var dc = pc[k] - cc
+        num += Float64(dc.dot(pb[k] - cb))
+        den += Float64(dc.dot(dc))
+    return num / den if den > 0.0 else 1.0
 
 
 def _fmt3(v: Vec3d, scale: Float64, digits: Int) -> String:
@@ -381,6 +468,12 @@ def main() raises:
     var grip_pos = List[Float64]()
     var grip_rot = List[Float64]()
     var solved_off = off
+    # per pose, for `<calib>.poses.txt` (see the header)
+    var pose_q = List[Float64]()
+    var pose_raw = List[Int]()
+    var pose_px = List[Float64]()
+    var marker_px = List[Float64](length=8, fill=0.0)
+    var poses_path = calib_path + ".poses.txt"
     var wrist_spread = 0.0
     var g_pos = Vec3d.zero()
     var g_rot = Mat3d.identity()
@@ -490,6 +583,8 @@ def main() raises:
                         obj, img_xy, k, dist, rvec, tvec, SOLVEPNP_IPPE_SQUARE
                     )
                     p_cam = Vec3d(tvec[0], tvec[1], tvec[2])
+                    for q in range(8):
+                        marker_px[q] = Float64(corners[pick * 8 + q])
                     have_marker = True
                 except:
                     have_marker = False
@@ -612,6 +707,12 @@ def main() raises:
                     grip_rot.append(row.x)
                     grip_rot.append(row.y)
                     grip_rot.append(row.z)
+                for jq in range(SO101_N):
+                    pose_q.append(qp[jq])
+                    pose_raw.append(Int(raw[jq]))
+                for q in range(8):
+                    pose_px.append(marker_px[q])
+                _dump_poses(poses_path, cam_pts, grip_pos, grip_rot, pose_q, pose_raw, pose_px)
                 try:
                     fit = _refit(auto_off, cam_pts, grip_pos, grip_rot, off, solved_off, wrist_spread)
                     have_fit = True
@@ -632,6 +733,9 @@ def main() raises:
                 var keep_cam = List[Float64]()
                 var keep_gp = List[Float64]()
                 var keep_gr = List[Float64]()
+                var keep_q = List[Float64]()
+                var keep_raw = List[Int]()
+                var keep_px = List[Float64]()
                 for j in range(len(cam_pts) // 3):
                     if j == w:
                         continue
@@ -640,9 +744,18 @@ def main() raises:
                         keep_gp.append(grip_pos[j * 3 + c])
                     for c in range(9):
                         keep_gr.append(grip_rot[j * 9 + c])
+                    for c in range(SO101_N):
+                        keep_q.append(pose_q[j * SO101_N + c])
+                        keep_raw.append(pose_raw[j * SO101_N + c])
+                    for c in range(8):
+                        keep_px.append(pose_px[j * 8 + c])
                 cam_pts = keep_cam^
                 grip_pos = keep_gp^
                 grip_rot = keep_gr^
+                pose_q = keep_q^
+                pose_raw = keep_raw^
+                pose_px = keep_px^
+                _dump_poses(poses_path, cam_pts, grip_pos, grip_rot, pose_q, pose_raw, pose_px)
                 have_fit = False
                 try:
                     fit = _refit(auto_off, cam_pts, grip_pos, grip_rot, off, solved_off, wrist_spread)
@@ -655,6 +768,9 @@ def main() raises:
                 cam_pts = List[Float64]()
                 grip_pos = List[Float64]()
                 grip_rot = List[Float64]()
+                pose_q = List[Float64]()
+                pose_raw = List[Int]()
+                pose_px = List[Float64]()
                 solved_off = off
                 have_fit = False
                 fit_msg = String("")
@@ -695,6 +811,8 @@ def main() raises:
                     ig_text(String("spread ") + sp + " mm")
                     ig_text_disabled(String("(mm, three principal axes)"))
                 ig_text(String("origin ") + _fmt3(fit.trans, 1.0, 3) + " m")
+                ig_text(String("scale  ") + fixed(_fit_scale(fit, cam_pts, grip_pos, grip_rot, solved_off), 4)
+                        + "  (1.000 = no scale error)")
                 if auto_off:
                     ig_text(String("offset ") + _fmt3(solved_off, 1000.0, 1) + " mm (solved)")
                     ig_text(String("wrist  ") + fixed(wrist_spread, 0) + " deg spread")
