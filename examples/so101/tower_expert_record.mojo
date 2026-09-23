@@ -168,6 +168,12 @@ comptime TIP_REACH: Float64 = 0.019
 `Z_GRASP` absorbs it; a grasp tilted by 35 deg moves the tips 11 mm sideways
 off the brick, which then meets one jaw and tips over (2/20, wrist view of
 the human-posture run, 2026-09-23). So a drawn tilt aims the tips."""
+comptime IK_ROWS = 7
+"""Position (3), the finger's horizontal components (2), the pinch axis's
+yaw (sin, 1) and its direction (1 - cos, 1; weighted only in `--posture
+human`, where the wrist roll's SIGN matters: the wrist camera turns with it,
+and an unweighted fold left a quarter of the grasps at roll -79 against the
+operator's +77)."""
 comptime HUMAN_JAW_OPEN: Float64 = 0.6
 comptime HUMAN_Z_GRASP: Float64 = 0.015
 comptime APPROACH_D: Float64 = 0.07
@@ -346,11 +352,14 @@ struct Arm(Movable):
         out[4] = fz[1]
         # sin of the yaw error between the pinch axis and the wanted axis
         out[5] = gx[0] * sin(yaw) - gx[1] * cos(yaw)
+        # 1 - cos of it: zero only when the axis points the WANTED WAY, so
+        # it picks the wrist roll's sign (weighted only when `directed`)
+        out[6] = 1.0 - (gx[0] * cos(yaw) + gx[1] * sin(yaw))
 
     def _ik_once(
         self, mut env: E, ref target: List[Float64], ref q0: List[Float64],
         yaw: Float64, w_tilt: Float64, w_yaw: Float64, iters: Int,
-        mut q_out: List[Float64], tilt: Float64 = 0.0,
+        mut q_out: List[Float64], tilt: Float64 = 0.0, directed: Bool = False,
     ) -> Float64:
         """Damped least squares from `q0`; returns the position error.
         `tilt` (rad): the finger's wanted angle from straight down, leaning
@@ -375,16 +384,19 @@ struct Arm(Movable):
         W.append(w_tilt)
         W.append(w_tilt)
         W.append(w_yaw)
-        var f = List[Float64](length=6, fill=0.0)
-        var f2 = List[Float64](length=6, fill=0.0)
-        var e = List[Float64](length=6, fill=0.0)
-        var J = List[Float64](length=6 * N_ARM, fill=0.0)
+        # the directed-pinch row: weight 0 unless `directed`, so the default
+        # expert's normal system is unchanged, bit for bit
+        W.append(w_yaw if directed else 0.0)
+        var f = List[Float64](length=IK_ROWS, fill=0.0)
+        var f2 = List[Float64](length=IK_ROWS, fill=0.0)
+        var e = List[Float64](length=IK_ROWS, fill=0.0)
+        var J = List[Float64](length=IK_ROWS * N_ARM, fill=0.0)
         var H = List[Float64](length=N_ARM * N_ARM, fill=0.0)
         var g = List[Float64](length=N_ARM, fill=0.0)
         var perr = 1.0
         for _ in range(iters):
             self._feats(env, q, yaw, f, tip)
-            for r in range(6):
+            for r in range(IK_ROWS):
                 var goal = tgt[r] if r < 3 else (
                     fgoal_x if r == 3 else (fgoal_y if r == 4 else 0.0)
                 )
@@ -401,17 +413,17 @@ struct Arm(Movable):
                     dq.append(q[i])
                 dq[j] += eps
                 self._feats(env, dq, yaw, f2, tip)
-                for r in range(6):
+                for r in range(IK_ROWS):
                     J[r * N_ARM + j] = (f2[r] - f[r]) * W[r] / eps
             # H = J^T J + lambda I,  g = J^T e
             for a in range(N_ARM):
                 g[a] = 0.0
                 for b in range(N_ARM):
                     var s = 0.0
-                    for r in range(6):
+                    for r in range(IK_ROWS):
                         s += J[r * N_ARM + a] * J[r * N_ARM + b]
                     H[a * N_ARM + b] = s + (1e-5 if a == b else 0.0)
-                for r in range(6):
+                for r in range(IK_ROWS):
                     g[a] += J[r * N_ARM + a] * e[r]
             var step = _solve5(H, g)
             for i in range(N_ARM):
@@ -461,7 +473,8 @@ struct Arm(Movable):
                 if use_roll_seed and s > 0:
                     s0[4] = roll_seed
                 var err = self._ik_once(
-                    env, target, s0, yaw, weights[wi], 0.02, 100, q_try, tilt
+                    env, target, s0, yaw, weights[wi], 0.02, 100, q_try, tilt,
+                    use_roll_seed,
                 )
                 if err < best - 1e-4:
                     best = err
