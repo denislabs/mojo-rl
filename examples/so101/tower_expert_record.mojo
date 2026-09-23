@@ -265,6 +265,12 @@ comptime N_CARRY = 50
 comptime N_PLACE = 25
 comptime N_OPEN = 20
 comptime N_RETREAT = 20
+comptime N_RETURN_REST = 60
+"""`--return-rest`: steps to fold from the retreat pose back to the start
+(~1.9 s; the real fold takes 1-3 s)."""
+comptime N_REST_HOLD = 15
+"""Steps held at rest after the fold (0.5 s of the real ~3 s): enough to
+show "stay folded", short of teaching the idle."""
 comptime N_HOLD_MAX = 120
 """Steps to wait for the predicate to hold after the last leg."""
 
@@ -562,6 +568,15 @@ struct Expert(Movable):
     ramp's reference plus the bias — what a human on the leader arm does by
     eye."""
     var sag_bias: List[Float64]
+    var return_rest: Bool
+    """`--return-rest`: after a success, fold the arm back to the episode's
+    own start pose and hold it — every real episode ends that way (50/50,
+    then ~3 s at rest), and without it a student meets the fold back and the
+    rest on real frames with no row that shows them (the DR session's phase
+    split of H seed 1's real error: rest + return = 54 % of the rows, roll
+    error 46-48 deg there). No idle START is recorded: it could freeze a
+    policy at rest on the arm."""
+    var q_home: List[Float64]
     var tip_trigger: Bool
     """This episode's close fires on the TIP distance (a tilted grasp), not on
     `grasp_center`'s height, which assumes a vertical finger."""
@@ -608,6 +623,8 @@ struct Expert(Movable):
         self.pinch_target = 0.0
         self.integral = False
         self.sag_bias = List[Float64](length=N_ARM, fill=0.0)
+        self.return_rest = False
+        self.q_home = List[Float64](length=N_ARM, fill=0.0)
         self.tip_trigger = False
         self.tip_goal = List[Float64](length=3, fill=0.0)
         self.tip_close_mm = TIP_CLOSE_MM_DEFAULT
@@ -739,7 +756,7 @@ struct Expert(Movable):
     def step_to(
         mut self, mut env: E, ref q_target: List[Float64], grip_open: Bool,
         n_steps: Int, taper_noise: Bool = False, until_held: Bool = False,
-        close_on_height: Bool = False,
+        close_on_height: Bool = False, past_success: Bool = False,
     ) raises -> Bool:
         """Drive the joints to `q_target` and the gripper open/closed;
         record each transition. Returns True when the goal held
@@ -839,7 +856,7 @@ struct Expert(Movable):
                     if v < -1.0:
                         v = -1.0
                 self.act_l[i] = v
-            if self._apply(env):
+            if self._apply(env) and not past_success:
                 return True
             if self.integral and not self.feedback:
                 for i in range(N_ARM):
@@ -896,12 +913,15 @@ struct Expert(Movable):
 
     def hold(
         mut self, mut env: E, grip_open: Bool, n_steps: Int,
-        until_held: Bool = False,
+        until_held: Bool = False, past_success: Bool = False,
     ) raises -> Bool:
         var q = List[Float64]()
         for i in range(N_ARM):
             q.append(self.q_ref[i] if self.integral else self.q_cmd[i])
-        return self.step_to(env, q, grip_open, n_steps, until_held=until_held)
+        return self.step_to(
+            env, q, grip_open, n_steps, until_held=until_held,
+            past_success=past_success,
+        )
 
 
 def _body_pos(mut env: E, b: Int) -> List[Float64]:
@@ -1029,6 +1049,10 @@ def run_episode(
     for i in range(N_ARM):
         ex.q_ref[i] = Float64(env.d.qpos.data[i])
         ex.sag_bias[i] = 0.0
+    var from_reset = not agent and handed_in < 0
+    if from_reset:
+        for i in range(N_ARM):
+            ex.q_home[i] = Float64(env.d.qpos.data[i])
     var pb = _body_pos(env, brick)
     var bearing = atan2(pb[1], pb[0])
     if ex.human_posture:
@@ -1142,6 +1166,12 @@ def run_episode(
             done = ex.step_to(env, q4, True, N_RETREAT)
     if not done:
         done = ex.hold(env, not place, N_HOLD_MAX, until_held=True)
+    if done and ex.return_rest and from_reset:
+        # the fold back, then a short rest: recorded PAST the success test,
+        # which already holds here (the brick is in the bowl)
+        var home = ex.q_home.copy()
+        _ = ex.step_to(env, home, False, N_RETURN_REST, past_success=True)
+        _ = ex.hold(env, False, N_REST_HOLD, past_success=True)
     ex.intervening = False
     var brick_z = Float64(env.d.xpos.data[brick * 3 + 2])
     print(
@@ -1160,7 +1190,7 @@ def _usage():
           "       [--handover-from STUDENT.demo [--handover-mm MM] [--handover-settled]]"
           "   # DAgger from a recorded (vision) student\n"
           "       [--posture expert|human [--tilt-range LO,HI] [--pinch-range LO,HI]"
-          " [--tip-close-mm MM]]\n"
+          " [--tip-close-mm MM]] [--return-rest]\n"
           "       [--keep-failures] [--quiet]")
 
 
@@ -1185,6 +1215,7 @@ def main() raises:
     var tilt_range = String("10,55")
     var pinch_range = String("35,85")
     var tip_close_mm = TIP_CLOSE_MM_DEFAULT
+    var return_rest = False
     var handover_settled = False
     var out_path = String("")
     var keep_failures = False
@@ -1241,6 +1272,9 @@ def main() raises:
         elif a == "--tilt-range" and i + 1 < len(args):
             tilt_range = String(args[i + 1])
             i += 2
+        elif a == "--return-rest":
+            return_rest = True
+            i += 1
         elif a == "--tip-close-mm" and i + 1 < len(args):
             tip_close_mm = Float64(String(args[i + 1]))
             i += 2
@@ -1342,6 +1376,7 @@ def main() raises:
     ex.pinch_lo = Float64(String(prr[0])) * pi / 180.0
     ex.pinch_hi = Float64(String(prr[1])) * pi / 180.0
     ex.tip_close_mm = tip_close_mm
+    ex.return_rest = return_rest
     if ex.human_posture:
         print("  posture  : HUMAN — tilt ~ U(", tilt_range, ") deg outward, pinch",
               "~ U(", pinch_range, ") deg from radial, snapped to the brick's faces")
