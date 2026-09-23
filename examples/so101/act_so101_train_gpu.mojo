@@ -113,6 +113,7 @@ binary aborts with `symbol not found: H5PLprepend` anywhere else. It also reads
 | `ACT_STORE` | the `.h5` to train on; default is the 5-episode recording |
 | `ACT_PRETRAINED` | **defaults to `hub`** — the ImageNet backbone, fetched with no PyTorch and cached. A `dump_resnet18_imagenet.py` directory uses the torchvision dump; `random` trains a from-scratch backbone |
 | `ACT_STEPS` | step count, **without a rebuild** — the graph takes ~6 min to compile, so "run it longer" must not mean "build it again" |
+| `ACT_SEED` | the run's seed (default 7): the weight init, the episode split and the batch draws. ⚠ One run per recipe cannot rank recipes: the so101_tower vision student scored 32 / 56% on the SAME recipe (a data subset), so compare >= 3 seeds per arm |
 | `ACT_NO_MONITOR` | force the logger inert with the keys present; what a smoke run should use so it does not land in the dashboard beside a real one |
 | `ACT_CKPT` | read by `act_so101_openloop_eval.mojo`, not by this file |
 
@@ -257,6 +258,7 @@ at; it reports a `hold` baseline so "it produces plausible actions" cannot be
 mistaken for "it learned something".
 """
 from std.os import getenv
+from std.random import seed as seed_rng
 from std.sys import is_defined
 from std.os.path import exists
 from std.time import perf_counter_ns
@@ -531,8 +533,15 @@ def main() raises:
     var max_img = IMAGES_RESIDENT_MAX_BYTES
     if resident_gb.byte_length() > 0:
         max_img = Int(Float64(resident_gb) * Float64(1 << 30))
+    var run_seed = 7
+    var env_seed = getenv("ACT_SEED")
+    if env_seed.byte_length() > 0:
+        run_seed = Int(env_seed)
+    seed_rng(run_seed)
+    print("  seed    " + String(run_seed)
+          + ("" if env_seed.byte_length() == 0 else " (ACT_SEED)"))
     var ds = ACTDataset[QPOS, ADIM, N_CAM, IMG_H, IMG_W](
-        String(path), seed=7, max_image_bytes=max_img
+        String(path), seed=UInt64(run_seed), max_image_bytes=max_img
     )
     print(
         "  split   " + String(len(ds.train_eps)) + " train / "
@@ -566,6 +575,7 @@ def main() raises:
         env=String("builtin:so_arm101"),
         dataset=path,
         device=String(ctx.name()),
+        seed=run_seed,
     )
     print("  run     " + run.dir)
     var logger = RemoteLogger(
@@ -628,7 +638,7 @@ def main() raises:
     var dev_ds = DDS()
     comptime if GPU_DATA:
         var u0 = perf_counter_ns()
-        dev_ds = DDS.upload_from[BATCH](ds, ctx, seed=7)
+        dev_ds = DDS.upload_from[BATCH](ds, ctx, seed=UInt64(run_seed))
         dev_ds.set_augment(aug)
         var u1 = perf_counter_ns()
         print(
