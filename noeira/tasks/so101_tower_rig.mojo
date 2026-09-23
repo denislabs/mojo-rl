@@ -32,8 +32,19 @@ the same into its own `Data`, so frame t is the picture of state t in both.
 
 The store's `qpos` / `action` are LeRobot's: the five body joints in DEGREES,
 the gripper 0..100 by FRACTION of its range (`robot/so101/sim_map.mojo`, sign
-+1, offset 0). The env's action is each joint TARGET normalised onto the
-actuator's `ctrlrange` to [-1, 1]. Both directions of both maps live here.
++1). The env's action is each joint TARGET normalised onto the actuator's
+`ctrlrange` to [-1, 1]. Both directions of both maps live here.
+
+⚠⚠ THE JOINT ZERO IS A CHOICE THE STORE AND THE EVAL MUST SHARE
+(`RIG_JOINT_ZERO_*`). `none`: body degrees = radians x 180/pi, the lerobot
+reference's map, what every store before 2026-09-23 was written with.
+`follower`: the so101-tower follower's MEASURED zero
+(`sim_map.tower_follower_zero_deg`: pan -10.7, lift -3.6, elbow -7.3 deg), so
+a store's degrees are the ones the REAL arm reports at that pose and a
+student trained on it commands the real arm where the sim arm went. Either
+is self-consistent in the sim; a store written under one and evaluated under
+the other puts the arm ~10 degrees off in pan, and nothing raises. The
+images do not depend on it (they are rendered from the sim state).
 """
 
 from std.math import pi
@@ -49,6 +60,8 @@ from noeira.physics3d.raytrace import BatchedCameraRenderer
 from noeira.physics3d.raytrace.visual import build_visual_model
 from noeira.tasks.family_config import So101TowerConfig
 from noeira.tasks.so101_tower_xml import So101TowerModel
+from noeira.robot.so101.sim_map import tower_follower_zero_deg
+from noeira.utils.fmt import fixed
 
 
 comptime RIG_DT = DType.float32
@@ -161,36 +174,68 @@ def pack_camera_u8(
     return all_same
 
 
+comptime RIG_JOINT_ZERO_NONE = "none"
+comptime RIG_JOINT_ZERO_FOLLOWER = "follower"
+
+
 struct So101TowerUnits(Copyable, Movable):
     """LeRobot units <-> the model's joint values <-> the env's action word.
 
     `lo` / `hi` are the actuators' `ctrlrange`, read from the MODEL (for a
     `<position>` servo it is the joint's range) — never a copy of the numbers.
+    `zero_rad` is the joint-zero choice (the module header):
+    `model_rad = deg2rad(lerobot_deg) + zero_rad`.
     """
 
     var lo: List[Float64]
     var hi: List[Float64]
+    var zero_rad: List[Float64]
+    var joint_zero: String
 
-    def __init__(out self) raises:
+    def __init__(out self, joint_zero: String = RIG_JOINT_ZERO_NONE) raises:
+        if joint_zero != RIG_JOINT_ZERO_NONE and joint_zero != RIG_JOINT_ZERO_FOLLOWER:
+            raise Error(
+                "So101TowerUnits: joint zero '" + joint_zero + "' — expected '"
+                + RIG_JOINT_ZERO_NONE + "' or '" + RIG_JOINT_ZERO_FOLLOWER + "'"
+            )
         var sf = So101TowerModel.make_spec_fields[DType.float64]()
         var lo_col = actuator_column(sf, ACT_IDX_CTRL_MIN, RIG_ACT)
         var hi_col = actuator_column(sf, ACT_IDX_CTRL_MAX, RIG_ACT)
         self.lo = List[Float64]()
         self.hi = List[Float64]()
+        self.zero_rad = List[Float64]()
+        self.joint_zero = joint_zero
         for k in range(RIG_ACT):
             self.lo.append(Float64(lo_col[k]))
             self.hi.append(Float64(hi_col[k]))
+            var z = 0.0
+            if joint_zero == RIG_JOINT_ZERO_FOLLOWER and k != RIG_GRIPPER:
+                z = tower_follower_zero_deg(k) * pi / 180.0
+            self.zero_rad.append(z)
+
+    def describe(self) -> String:
+        """The provenance words: the choice and, when not `none`, its degrees."""
+        if self.joint_zero == RIG_JOINT_ZERO_NONE:
+            return String("joint zero none")
+        var out = String("joint zero ") + self.joint_zero + " ("
+        for k in range(RIG_ACT):
+            if k == RIG_GRIPPER:
+                continue
+            if k > 0:
+                out += " "
+            out += fixed(self.zero_rad[k] * 180.0 / pi, 2)
+        return out + " deg)"
 
     def joint_to_lerobot(self, k: Int, q: Float64) -> Float64:
         """Radians (body) / the gripper hinge -> degrees / 0..100."""
         if k == RIG_GRIPPER:
             return 100.0 * (q - self.lo[k]) / (self.hi[k] - self.lo[k])
-        return q * 180.0 / pi
+        return (q - self.zero_rad[k]) * 180.0 / pi
 
     def lerobot_to_joint(self, k: Int, v: Float64) -> Float64:
         if k == RIG_GRIPPER:
             return self.lo[k] + v / 100.0 * (self.hi[k] - self.lo[k])
-        return v * pi / 180.0
+        return v * pi / 180.0 + self.zero_rad[k]
 
     def action_to_joint(self, k: Int, a: Float64) -> Float64:
         """The env's normalised action word -> the joint target it commands."""

@@ -54,6 +54,14 @@ Per failed lane, from the brick's and bowl's body positions after the settle
     goal not held   the goal bit was set at some step but not HOLD_STEPS in a row
     held to end     lifted and still in the air when the steps ran out
 
+## `--joint-zero none|follower` — THE TRAINING STORE'S UNIT MAP
+
+The joint zero the store was rendered with (`tower_demo_rerender.mojo
+--joint-zero`, recorded in the store manifest's provenance line; absent =
+`none`). The student's degrees mean nothing without it: evaluated under the
+other map, every commanded pan is ~10 degrees off and the rate collapses with
+nothing raising (`tasks/so101_tower_rig.mojo`).
+
 ## `--dr off|light|full` — held-out appearance
 
 `physics3d/raytrace/randomize.mojo` on the rig's tables, ONE draw per ROUND
@@ -127,6 +135,7 @@ from noeira.tasks.so101_tower_rig import (
     RIG_DT, TOWER_MD, RIG_CAM_W, RIG_CAM_H, RIG_N_CAMS, RIG_NPIX,
     RIG_CAM_ELEMS, RIG_IMG_ELEMS, RIG_ACT, RIG_DR_TARGET, make_tower_model,
     make_tower_renderer, tower_cameras, pack_camera_u8, So101TowerUnits,
+    RIG_JOINT_ZERO_NONE,
 )
 from noeira.tasks.so101_tower_xml import So101TowerModel
 from noeira.tasks.spec import load_family
@@ -178,7 +187,7 @@ def _usage() -> String:
         " [--norm FILE] [--policy act|hold] [--episodes N] [--seed0 S]"
         " [--steps N] [--exec N] [--m M] [--task NAME]"
         " [--dr off|light|full] [--dr-seed N] [--dr-draw0 N]"
-        " [--record-demo FILE] [--snap DIR]"
+        " [--record-demo FILE] [--snap DIR] [--joint-zero none|follower]"
     )
 
 
@@ -218,6 +227,7 @@ def main() raises:
     var dr_draw0 = 0
     var demo_out = String("")
     var snap_dir = String("")
+    var joint_zero = String(RIG_JOINT_ZERO_NONE)
     var i = 1
     while i < len(args):
         var a = String(args[i])
@@ -254,6 +264,8 @@ def main() raises:
             demo_out = v
         elif a == "--snap":
             snap_dir = v
+        elif a == "--joint-zero":
+            joint_zero = v
         else:
             raise Error("unknown option " + a + "\n" + _usage())
         i += 2
@@ -328,7 +340,7 @@ def main() raises:
             bowl = b
     if brick < 0 or bowl < 0:
         raise Error("brick_brick / bowl_bowl not found in the composed scene")
-    var units = So101TowerUnits()
+    var units = So101TowerUnits(joint_zero)
 
     # ── the rig: the store's renderer, its own model and Data ───────────
     var rm = make_tower_model(ctx)
@@ -342,6 +354,7 @@ def main() raises:
         cams.copy(), r.background, RIG_DR_TARGET,
     )
     print("  dr     :", String(dr_cfg), "(one draw per round, from", dr_draw0, ")")
+    print("  units  :", units.describe(), "— must be the training store's")
     var h_rgb = ctx.enqueue_create_host_buffer[DT](LANES * RIG_NPIX * 3)
     var img_u8 = List[Scalar[DType.uint8]](length=LANES * RIG_IMG_ELEMS, fill=0)
 

@@ -66,6 +66,7 @@ tests/tasks/test_spec_roundtrip.mojo
 # composition cannot pass vacuously.
 tests/tasks/test_so101_tower_config.mojo
 tests/tasks/test_so101_tower_cameras.mojo
+tests/tasks/test_so101_tower_units.mojo
 
 # ── noeira/tasks: LIBERO's registry as data + the resolved import (L1) ──
 # The category table (38 corpus categories, 5 problem classes, the four

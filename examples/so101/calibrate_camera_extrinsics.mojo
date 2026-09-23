@@ -88,6 +88,15 @@ the WRIST TURNED between captures, roll AND pitch: with one orientation the
 offset is undetermined, and the fit says so instead of guessing (`wrist`
 spread below 10 deg is refused). 10+ poses.
 
+## The arm's joint zero (`--joint-zero follower|none`)
+
+The fit trusts the arm's FK, so it trusts the servo -> model joint map. The
+so101-tower follower's calibrated zero is NOT the model's (pan -10.7 deg,
+`robot/so101/sim_map.mojo`), and with the reference map (`none`) the fit
+absorbs that into a camera 12 deg off and a 12 mm residual — measured, on
+this rig, 2026-09-22. `follower` (the default) applies the measured zero and
+REFUSES an arm whose calibration is not the one it was measured against.
+
 ## Fisheye cameras (the so101-tower rig)
 
 A `model fisheye` calibration (`examples/vision/calibrate_fisheye.mojo`) is
@@ -327,6 +336,7 @@ def main() raises:
     var port = follower_port()
     var detect_scale = -1
     var sim_cam_name = String("")
+    var joint_zero = String("follower")
     var args = argv()
     for i in range(1, len(args)):
         var a = String(args[i])
@@ -348,6 +358,8 @@ def main() raises:
             detect_scale = Int(String(args[i + 1]))
         elif a == "--sim-camera" and i + 1 < len(args):
             sim_cam_name = String(args[i + 1])
+        elif a == "--joint-zero" and i + 1 < len(args):
+            joint_zero = String(args[i + 1])
         elif a == "--offset" and i + 3 < len(args):
             off = Vec3d(
                 Float64(String(args[i + 1])),
@@ -439,7 +451,14 @@ def main() raises:
     for i in range(SO101_N):
         lo[i] = Float64(lo_col[i])
         hi[i] = Float64(hi_col[i])
-    var jmap = SimJointMap.identity(lo^, hi^)
+    var jmap: SimJointMap
+    if joint_zero == "follower":
+        jmap = SimJointMap.tower_follower(arm.cal, lo^, hi^)
+    elif joint_zero == "none":
+        jmap = SimJointMap.identity(lo^, hi^)
+    else:
+        raise Error("--joint-zero none|follower, not '" + joint_zero + "'")
+    print("  " + jmap.describe())
 
     # ── the window ─────────────────────────────────────────────────────────
     var r = Renderer3D(WIN_W, WIN_H)

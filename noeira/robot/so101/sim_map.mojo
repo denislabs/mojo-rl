@@ -42,10 +42,72 @@ MJCF ranges are byte-identical to
 `references/SO-ARM100-main/Simulation/SO101/so101_new_calib.xml`, so the model
 is a faithful port; three body joints simply have more CALIBRATED travel than
 it accepts, and `wrist_roll` is a continuous joint meeting a bounded one.
+
+## ⚠⚠ THE TOWER FOLLOWER'S ZERO IS NOT THE MODEL'S (`tower_follower_zero_deg`)
+
+The reference's `offset = 0` assumes the calibrated MIDDLE OF RANGE is the
+model's zero. It is not a physical landmark: `lerobot-calibrate` takes the
+middle of however far each joint was swept, so it moves with every
+recalibration. MEASURED on the so101-tower follower, calibration of
+2026-09-14 (the one the 2026-09-15 cube-in-bowl dataset was recorded with),
+in the sense `model_rad = deg2rad(lerobot_deg) + zero`:
+
+    joint           extrinsics fit      recorded-frame fit     used
+    shoulder_pan    -10.25 (+-0.7)      -11.2                  -10.7
+    shoulder_lift    -3.2  (+-1.2)      -3.6 .. -4.6            -3.6
+    elbow_flex       -7.3               -7.3                    -7.3
+    wrist_flex       +7.6  (+-3.7)      not observable           0
+    wrist_roll       not observable     not observable           0
+
+The two fits share no data: (1) 30 marker captures of
+`calibrate_camera_extrinsics.mojo` with the camera HELD at the asset's pose
+and the joint zeros free (rms 24.3 -> 12.2 mm); (2) the servos' dark pixels
+of the sim drawn at the dataset's recorded state against 40 undistorted real
+overhead frames (overlap 0.29 -> 0.62). The "used" column on a fresh draw of
+40 frames: 0.27 -> 0.59, better than zero on 40/40. The asset camera itself was checked separately on the static
+scene, so a camera yaw cannot be what the pan zero is absorbing (a yaw it
+could be would move the pan zero by <= 3 deg, not to 0).
+`tools/soarm/check_joint_zero.py` re-runs (2) on any dataset.
+
+⚠ Tied to THAT calibration: a `lerobot-calibrate` re-run moves every mid and
+voids these numbers. `tower_follower_zero_matches` compares the live mids
+with the ones measured against, and a tick-level caller refuses on mismatch;
+a caller in LeRobot degrees (a dataset, a rendered store) cannot see the
+calibration and must carry the choice itself.
 """
+
+from std.math import pi
 
 from noeira.robot.so101.arm import GRIPPER, SO101Calibration, SO101_N, joint_name
 from noeira.utils.fmt import col, fixed, pad_left, pad_right
+
+
+# Functions, not `comptime` arrays: a comptime `Array` is not
+# `ImplicitlyCopyable` and cannot be materialised at runtime.
+def tower_follower_zero_deg(i: Int) -> Float64:
+    """The so101-tower follower's measured zero, degrees, joint `i` (the
+    gripper 0: it is fraction-mapped). See the module docstring."""
+    var v: List[Float64] = [-10.7, -3.6, -7.3, 0.0, 0.0, 0.0]
+    return v[i]
+
+
+def tower_follower_calib_mid(i: Int) -> Float64:
+    """The calibrated mid (ticks) of each joint in the calibration the zero was
+    measured against — `projects/so101-tower/calibration/follower.json`,
+    2026-09-14."""
+    var v: List[Float64] = [1987.0, 2064.0, 1896.5, 2079.0, 2047.0, 2773.0]
+    return v[i]
+
+
+def tower_follower_zero_matches(cal: SO101Calibration) -> Bool:
+    """True when `cal` is the calibration `tower_follower_zero_deg` was
+    measured against (every body joint's mid within half a tick)."""
+    for i in range(SO101_N):
+        if i == GRIPPER:
+            continue
+        if abs(cal.mid(i) - tower_follower_calib_mid(i)) > 0.5:
+            return False
+    return True
 
 
 @fieldwise_init
@@ -76,6 +138,32 @@ struct SimJointMap(Copyable, Movable):
         var s = Array[Float64, SO101_N](fill=1.0)
         var o = Array[Float64, SO101_N](fill=0.0)
         return Self(s^, o^, sim_lo^, sim_hi^)
+
+    @staticmethod
+    def tower_follower(
+        cal: SO101Calibration,
+        var sim_lo: Array[Float64, SO101_N],
+        var sim_hi: Array[Float64, SO101_N],
+    ) raises -> Self:
+        """The reference mapping plus the tower follower's measured zero.
+
+        Raises when `cal` is not the calibration the zero was measured
+        against: after a recalibration the numbers are someone else's arm."""
+        if not tower_follower_zero_matches(cal):
+            var got = String("")
+            for i in range(SO101_N):
+                got += " " + String(cal.mid(i))
+            raise Error(
+                "SimJointMap.tower_follower: this arm's calibrated mids"
+                + got + " are not the ones the zero was measured against"
+                " (sim_map.tower_follower_calib_mid) — it was recalibrated;"
+                " re-measure the zero (tools/soarm/check_joint_zero.py)"
+            )
+        var m = Self.identity(sim_lo^, sim_hi^)
+        for i in range(SO101_N):
+            if i != GRIPPER:
+                m.offset_rad[i] = tower_follower_zero_deg(i) * pi / 180.0
+        return m^
 
     def differs_from_lerobot(self) -> Bool:
         """True once someone has moved a sign or an offset off the reference.

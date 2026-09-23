@@ -32,10 +32,15 @@ normalisation statistics' meaning, as one trained on the real recordings, and
 The sim-only columns (`state`, `action_sim`) ride along for the sim eval and
 for DAgger; the ACT loader never reads them.
 
-The unit map is `robot/so101/sim_map.mojo`'s for this arm (sign +1, offset 0,
-the gripper by FRACTION of its range): body joint degrees = radians x 180/pi;
+The unit map is `tasks/so101_tower_rig.So101TowerUnits` (sign +1, the gripper
+by FRACTION of its range): body joint degrees = (radians - zero) x 180/pi;
 gripper = 100 x (q - lo) / (hi - lo) over the actuator's ctrlrange, which is
-the joint's range on this model. The action is the target the expert
+the joint's range on this model. `--joint-zero` picks `zero`: `none` (the
+default, 0, what every store before 2026-09-23 was written with) or
+`follower`, the real follower's measured zero, so the store's degrees are
+what the REAL arm reports at that pose — the choice a student meant for the
+real arm needs. ⚠ `tower_act_eval.mojo` must be given the SAME choice (the
+rig module says why); the manifest's provenance line records it. The action is the target the expert
 commanded — the `.demo` word denormalised onto the ctrlrange — which is what a
 leader arm's position is on the real recording.
 
@@ -126,7 +131,7 @@ from noeira.tasks.so101_tower_rig import (
     TOWER_MD, RIG_CAM_W, RIG_CAM_H, RIG_N_CAMS, RIG_SAMPLES,
     RIG_VISUAL_GROUP_MASK, RIG_DR_TARGET, TowerRenderer, make_tower_model,
     make_tower_renderer, tower_cameras, pack_camera_u8, rig_byte,
-    So101TowerUnits,
+    So101TowerUnits, RIG_JOINT_ZERO_NONE,
 )
 from noeira.tasks.spec import load_family, load_task
 
@@ -175,7 +180,7 @@ def _usage() -> String:
         " [--task NAME] [--episodes N] [--per-file a,b] [--all-episodes]"
         " [--deflate 0-9]"
         " [--no-host-check] [--dr off|light|full] [--dr-seed N]"
-        " [--dr-preview K]"
+        " [--dr-preview K] [--joint-zero none|follower]"
     )
 
 
@@ -197,6 +202,7 @@ def main() raises:
     var dr_name = String("off")
     var dr_seed = 0
     var dr_preview = 0
+    var joint_zero = String(RIG_JOINT_ZERO_NONE)
     var i = 1
     while i < len(args):
         var a = String(args[i])
@@ -226,6 +232,8 @@ def main() raises:
                 dr_seed = Int(v)
             elif a == "--dr-preview":
                 dr_preview = Int(v)
+            elif a == "--joint-zero":
+                joint_zero = v
             else:
                 raise Error("unknown option " + a + "\n" + _usage())
             i += 1
@@ -287,7 +295,8 @@ def main() raises:
     print("  dr     :", String(dr_cfg))
 
     # the actuators' ctrlrange: the action map and the gripper's LeRobot unit
-    var units = So101TowerUnits()
+    var units = So101TowerUnits(joint_zero)
+    print("  units  :", units.describe())
 
     # ── the demonstrations: checked up front, read again one at a time ────
     var total_eps = 0
@@ -323,7 +332,8 @@ def main() raises:
             + " noeira/physics3d/raytrace (batch.mojo) at " + String(CAM_W)
             + "x" + String(CAM_H) + " " + String(SAMPLES) + "x MSAA, groups"
             " 0+2, row 0 = top, slot 0 overhead / 1 wrist, frame r = obs r;"
-            " qpos/action in LeRobot units (deg, gripper 0..100); dr "
+            " qpos/action in LeRobot units (deg, gripper 0..100), "
+            + units.describe() + "; dr "
             + String(dr_cfg)
             + (" (one draw per launch, see dr_draw)" if dr_on else ""),
         deflate=deflate,
