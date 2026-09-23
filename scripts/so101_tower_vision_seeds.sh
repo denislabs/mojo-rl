@@ -137,9 +137,12 @@ train_one() {  # arm seed — skips a run whose training log says it finished
         $BIN/act_train_host > "$B/act_$tag.log" 2>&1 || { echo "train $tag FAILED"; tail -20 "$B/act_$tag.log"; return 1; }
     log "trained $tag"
 }
-eval_one() {  # arm seed
+eval_one() {  # arm seed — deferred (not failed) when the eval binary is missing
     local a=$1 s=$2 tag="$1_s$2"
     grep -q "^$a	$s	" "$RES" && return 0
+    if [[ ! -x $BIN/tower_act_eval ]]; then
+        log "no eval binary: $tag's eval deferred (STAGES=eval later)"; return 0
+    fi
     local run; run=$(tr '\r' '\n' < "$B/act_$tag.log" | grep -m1 '^  run ' | awk '{print $2}')
     local val; val=$(tr '\r' '\n' < "$B/act_$tag.log" | grep -m1 'best validation l1' | awk '{print $4}')
     $BIN/tower_act_eval --ckpt "$run/checkpoints" --episodes 128 > "$B/eval_$tag.log" 2>&1 \
@@ -170,6 +173,14 @@ if has train; then
         done
         wait
     fi
+fi
+
+# STAGES="eval": evaluate every trained run that has no result yet (after the
+# eval binary exists — it needs > 62 GB of RAM to compile at 6208ae25e)
+if has eval; then
+    for s in $SEEDS; do for a in $ARMS; do
+        [[ -f $B/act_${a}_s$s.log ]] && eval_one "$a" "$s"
+    done; done
 fi
 
 log "results"
