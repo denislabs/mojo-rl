@@ -721,8 +721,16 @@ def _row_reach_mm(ref d: DemoSet, r: Int) -> Float64:
     return sqrt(x * x + y * y + z * z) * 1000.0
 
 
+def _row_settled(ref d: DemoSet, r: Int) -> Bool:
+    """`Expert.settled` read off a recorded row's observation."""
+    for i in range(ACT):
+        if abs(Float64(d.obs[r * d.obs_dim + NQ + i])) > SETTLED_VEL:
+            return False
+    return True
+
+
 def _handover_row(
-    ref d: DemoSet, e: Int, handover_mm: Float64
+    ref d: DemoSet, e: Int, handover_mm: Float64, settled: Bool = False
 ) -> Tuple[Int, Bool]:
     """The row of episode `e` the expert takes over at: the FIRST row at or
     after `HANDOVER_MIN_STEPS` with the jaw within `handover_mm` of the brick
@@ -736,9 +744,22 @@ def _handover_row(
     29 of 92 ever had a settled row under 36 mm, so the settled rule fell
     back to the cap at row 140, AFTER the miss, and the expert labelled a
     fresh approach from far away instead of the grasp the student gets
-    wrong. The first row under the radius is before the student's close."""
+    wrong. The first row under the radius is before the student's close.
+
+    `settled` (`--handover-settled`): the first row under the radius WITH
+    every joint slower than `SETTLED_VEL`, and NO fallback — an episode with
+    no such row returns row -1 and is skipped. The arm, not the rule, is the
+    experiment here: the moving-arrival rows are the leading suspect for the
+    first DAgger round's result (ACT sees joint positions and images, no
+    velocities, so a moving and a settled arrival can look alike while their
+    labels differ), and these rows are the unambiguous half."""
     var start = d.ep_start[e]
     var n = d.ep_len[e]
+    if settled:
+        for k in range(HANDOVER_MIN_STEPS, n):
+            if _row_reach_mm(d, start + k) < handover_mm and _row_settled(d, start + k):
+                return (start + k, True)
+        return (-1, False)
     for k in range(HANDOVER_MIN_STEPS, n):
         if _row_reach_mm(d, start + k) < handover_mm:
             return (start + k, True)
@@ -857,7 +878,7 @@ def _usage():
           " [--noise SIGMA] [--flat-noise] [--close-steps N] [--z-grasp M] [--jaw-open RAD]\n"
           "       [--close-above-mm MM] [--feedback] [--out FILE]\n"
           "       [--policy CKPT [--handover-mm MM] [--policy-steps N]]   # DAgger\n"
-          "       [--handover-from STUDENT.demo [--handover-mm MM]]"
+          "       [--handover-from STUDENT.demo [--handover-mm MM] [--handover-settled]]"
           "   # DAgger from a recorded (vision) student\n"
           "       [--keep-failures] [--quiet]")
 
@@ -878,6 +899,7 @@ def main() raises:
     var handover_mm = CLOSE_REACH_MM
     var policy_steps = 140
     var handover_from = String("")
+    var handover_settled = False
     var out_path = String("")
     var keep_failures = False
     var verbose = True
@@ -926,6 +948,9 @@ def main() raises:
         elif a == "--handover-mm" and i + 1 < len(args):
             handover_mm = Float64(String(args[i + 1]))
             i += 2
+        elif a == "--handover-settled":
+            handover_settled = True
+            i += 1
         elif a == "--handover-from" and i + 1 < len(args):
             handover_from = String(args[i + 1])
             i += 2
@@ -1018,10 +1043,17 @@ def main() raises:
                         + String(sd.act_dim) + ", this env is obs "
                         + String(E.OBS_DIM) + " act " + String(ACT))
         var n_src = len(sd.ep_len)
-        print("  DAgger   : handing over from", n_src, "recorded student episodes (",
-              handover_from, ") — the first row under", handover_mm, "mm (moving"
-              " or not), else the closest row; only the expert's rows are"
-              " written, INTERVENED")
+        if handover_settled:
+            print("  DAgger   : handing over from", n_src, "recorded student episodes (",
+                  handover_from, ") — the first SETTLED row under", handover_mm,
+                  "mm, episodes without one SKIPPED; only the expert's rows are"
+                  " written, INTERVENED")
+        else:
+            print("  DAgger   : handing over from", n_src, "recorded student episodes (",
+                  handover_from, ") — the first row under", handover_mm, "mm (moving"
+                  " or not), else the closest row; only the expert's rows are"
+                  " written, INTERVENED")
+        var n_skipped = 0
         var n_ok_h = 0
         var n_arrived = 0
         var n_src_ok = 0
@@ -1030,7 +1062,10 @@ def main() raises:
                 break
             if sd.ep_success[ep]:
                 n_src_ok += 1
-            var hr = _handover_row(sd, ep, handover_mm)
+            var hr = _handover_row(sd, ep, handover_mm, handover_settled)
+            if hr[0] < 0:
+                n_skipped += 1
+                continue
             if hr[1]:
                 n_arrived += 1
             _ = env.reset()
@@ -1063,7 +1098,8 @@ def main() raises:
                 n_ok_h += 1
         print("-" * 66)
         print("  student episodes", n_src, "| the student succeeded in", n_src_ok,
-              "| arrivals", n_arrived, "| the expert completed", n_ok_h, "->", out_path)
+              "| arrivals", n_arrived, "| skipped (no settled row)", n_skipped,
+              "| the expert completed", n_ok_h, "->", out_path)
         print("  ", ex.rec.demos.summary())
         return
 
