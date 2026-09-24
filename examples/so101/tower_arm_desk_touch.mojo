@@ -77,6 +77,8 @@ comptime Mat3d = Mat3Generic[DType.float64]
 comptime TIP_STILL = 0.0015
 comptime NEAR_DESK = 0.06
 """FK tip below this (world z) counts as a touch candidate."""
+comptime REARM = 0.02
+"""Lift the tip this far above the last touch before the next one counts."""
 comptime NEW_XY = 0.03
 comptime NEW_TILT_DEG = 15.0
 comptime MAX_TILT_DEG = 50.0
@@ -458,6 +460,7 @@ def main() raises:
     var log = String("# tip_x tip_y tip_z | tilt_deg reach_m | q0..q5 (model rad, 1 s mean) | raw0..raw5\n")
     var t0 = perf_counter_ns()
     var armed = True
+    var last_z = -1.0
     print("\nTOUCH 1/", n_touch, ": fixed jaw's tip on the bare desk, hold still ~1 s")
     try:
         while len(T.q) < n_touch:
@@ -474,11 +477,16 @@ def main() raises:
             var p = fk.site_pos(tip)
             var r = fk.site_body_rot(tip)
             var tilt = acos(min(1.0, max(-1.0, Float64(r.col(2).z)))) * 180.0 / pi
+            # re-armed once the tip has been lifted REARM above the last
+            # touch (it was "above NEAR_DESK" — 6 cm in FK — which a vertical
+            # touch-to-touch move rarely reached: the rig session of
+            # 2026-09-24 could not trigger vertical touches)
+            if not armed and Float64(p.z) > last_z + REARM:
+                armed = True
             if Float64(p.z) > NEAR_DESK:
                 win_t.clear()
                 win_p.clear()
                 win_q.clear()
-                armed = True
                 _ = sleep_us(10000)
                 continue
             win_t.append(now)
@@ -523,6 +531,7 @@ def main() raises:
                         MAX_TILT_DEG, "the jaw's FLANK touches, not its tip)",
                     )
                 armed = False
+                last_z = mz
                 continue
             var qm = List[Float64](length=6, fill=0.0)
             for qs in win_q:
@@ -541,6 +550,7 @@ def main() raises:
                 log += " " + String(Int(raw[k]))
             log += "\n"
             armed = False
+            last_z = mz
             # written after EVERY touch: a Ctrl-C must not lose the session
             with open(out_path, "w") as fh:
                 fh.write(log)
