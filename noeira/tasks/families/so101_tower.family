@@ -106,3 +106,17 @@ region=desk_top:site:desk_surface:-0.14,-0.16,0.06,0.16:0.03
 # so `Near(brick, bowl, 0.045)` is FALSE at reset for every draw.
 region=desk_left:site:desk_surface:-0.14,0.06,0.06,0.16
 region=desk_right:site:desk_surface:-0.14,-0.16,0.06,-0.06
+
+# THE REAL LAYOUTS (24 Sep): the printed-props recording's start poses, from the
+# overhead pose estimator over all 70 episodes (`tower_pose_real_check`,
+# projects/so101-tower/poses/cube-in-bowl-printed_start_poses.csv), world mm:
+# brick x 104..370, y -239..+207; bowl x 134..456, y -228..+189, on EITHER side
+# of the brick. The strips above hold 20/70 bricks and 17/68 bowls. These two
+# cover them; APPENDED so desk_top stays region 0. Two different unanchored
+# regions are clash-tested (h_radius sum 0.079 > Near's 0.045: the goal is false
+# at reset). |y| <= 0.24: the bowl's rim stays inside the real desk (+y 0.29).
+# The bowl stops at x 0.38 (95% of the real ones): beyond ~0.40 m from the base
+# the expert's place IK misses by 7-23 mm (measured on 150 draws to x 0.46,
+# where only 2/68 real bowls are).
+region=desk_brick:site:desk_surface:-0.22,-0.24,0.05,0.21
+region=desk_bowl:site:desk_surface:-0.19,-0.23,0.06,0.19

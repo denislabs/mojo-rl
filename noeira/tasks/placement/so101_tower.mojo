@@ -5,7 +5,7 @@ CI checks it with: pixi run gen-placement-tables --check
 
 From `noeira/tasks/families/so101_tower.family`,
 `noeira/tasks/scenes/so101_tower.xml` and forward kinematics on it.
-2 free slots, 3 regions (0 moving, 0 followed on one slide), 0 drawable joints.
+2 free slots, 5 regions (0 moving, 0 followed on one slide), 0 drawable joints.
 See `placement/table.mojo` for what each method means.
 """
 
@@ -15,7 +15,7 @@ from noeira.tasks.placement.table import PlacementTable
 struct So101TowerPlacement(PlacementTable):
     comptime N_SLOTS: Int = 4
     comptime N_FREE: Int = 2
-    comptime N_REGIONS: Int = 3
+    comptime N_REGIONS: Int = 5
     comptime NQ: Int = 20
     comptime NV: Int = 18
     comptime N_JOINTS: Int = 0
@@ -134,11 +134,23 @@ struct So101TowerPlacement(PlacementTable):
             return True  # desk_top
         if r == 1:
             return True  # desk_left
-        return True  # desk_right
+        if r == 2:
+            return True  # desk_right
+        if r == 3:
+            return True  # desk_brick
+        return True  # desk_bowl
 
     @staticmethod
     def region_x0[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
-        return Scalar[DTYPE](-0.14)
+        if r == 0:
+            return Scalar[DTYPE](-0.14)
+        if r == 1:
+            return Scalar[DTYPE](-0.14)
+        if r == 2:
+            return Scalar[DTYPE](-0.14)
+        if r == 3:
+            return Scalar[DTYPE](-0.22)
+        return Scalar[DTYPE](-0.19)
 
     @staticmethod
     def region_y0[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
@@ -146,10 +158,22 @@ struct So101TowerPlacement(PlacementTable):
             return Scalar[DTYPE](-0.16)
         if r == 1:
             return Scalar[DTYPE](0.06)
-        return Scalar[DTYPE](-0.16)
+        if r == 2:
+            return Scalar[DTYPE](-0.16)
+        if r == 3:
+            return Scalar[DTYPE](-0.24)
+        return Scalar[DTYPE](-0.23)
 
     @staticmethod
     def region_x1[DTYPE: DType](r: Int) -> Scalar[DTYPE]:
+        if r == 0:
+            return Scalar[DTYPE](0.06)
+        if r == 1:
+            return Scalar[DTYPE](0.06)
+        if r == 2:
+            return Scalar[DTYPE](0.06)
+        if r == 3:
+            return Scalar[DTYPE](0.05)
         return Scalar[DTYPE](0.06)
 
     @staticmethod
@@ -158,7 +182,11 @@ struct So101TowerPlacement(PlacementTable):
             return Scalar[DTYPE](0.16)
         if r == 1:
             return Scalar[DTYPE](0.16)
-        return Scalar[DTYPE](-0.06)
+        if r == 2:
+            return Scalar[DTYPE](-0.06)
+        if r == 3:
+            return Scalar[DTYPE](0.21)
+        return Scalar[DTYPE](0.19)
 
     @staticmethod
     def region_anchored(r: Int) -> Bool:
