@@ -27,21 +27,21 @@ struct So101TowerPlacement(PlacementTable):
     @staticmethod
     def base_qpos[DTYPE: DType](i: Int) -> Scalar[DTYPE]:
         if i == 0:
-            return Scalar[DTYPE](0.187632)
+            return Scalar[DTYPE](0.39477)
         if i == 1:
             return Scalar[DTYPE](-1.908661)
         if i == 2:
-            return Scalar[DTYPE](1.542737)
+            return Scalar[DTYPE](1.544271)
         if i == 3:
             return Scalar[DTYPE](1.342561)
         if i == 4:
-            return Scalar[DTYPE](1.140793)
+            return Scalar[DTYPE](1.17148)
         return Scalar[DTYPE](0.223285)
 
     @staticmethod
     def base_qpos_jitter[DTYPE: DType](i: Int) -> Scalar[DTYPE]:
         if i == 0:
-            return Scalar[DTYPE](0.432688)
+            return Scalar[DTYPE](0.639826)
         if i == 1:
             return Scalar[DTYPE](0.0)
         if i == 2:
@@ -49,7 +49,7 @@ struct So101TowerPlacement(PlacementTable):
         if i == 3:
             return Scalar[DTYPE](0.0)
         if i == 4:
-            return Scalar[DTYPE](0.261608)
+            return Scalar[DTYPE](0.303035)
         return Scalar[DTYPE](0.387465)
 
     @staticmethod

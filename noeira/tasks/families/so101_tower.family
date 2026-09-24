@@ -45,18 +45,21 @@ base_pos=0.0,0.0,0.005
 
 # ⚠⚠ EVERY EPISODE STARTS WHERE THE REAL ARM RESTS, NOT AT qpos0. MuJoCo's
 # qpos0 is the arm straight up — a pose the real follower never starts from.
-# Measured on the 50 kept cube-in-bowl episodes (frame 0, 2026-09-15), in
+# Measured on the kept episodes of BOTH rig recordings (frame 0:
+# cube-in-bowl, 50, 2026-09-15; cube-in-bowl-printed, 70, 2026-09-24), in
 # model radians through the measured joint zero
 # (`robot/so101/sim_map.tower_follower_zero_deg`): lift, elbow and wrist_flex
 # sit on their FOLDED hard stops (sd < 0.5 deg: the median, no jitter); pan,
 # wrist roll and the jaw are wherever the operator left them, so each episode
-# draws them uniformly over the observed span (pan -14..35.5 deg, roll
-# 50.4..80.4, jaw 0..41% open). Lift -109.4 deg is past the stock -100 limit:
-# the rig's model widens the JOINT (not the actuator) to -110
+# draws them uniformly over the observed span (real-arm degrees: pan
+# -3.3..70.0, roll 49.8..84.5; jaw 0..41% open). The second recording started
+# at pan 28..70, past the first's -3..46, which is why the span is the union.
+# Lift -109.4 deg is past the stock -100 limit: the rig's model widens the
+# JOINT (not the actuator) to -110
 # (`bake_so_arm101_tower.py` step 7). The draw is `sampler.sample_base_qpos`
 # on the host and `placement/table.reset_task_slots` on the device.
-base_qpos=0.187632,-1.908661,1.542737,1.342561,1.140793,0.223285
-base_qpos_jitter=0.432688,0.0,0.0,0.0,0.261608,0.387465
+base_qpos=0.394770,-1.908661,1.544271,1.342561,1.171480,0.223285
+base_qpos_jitter=0.639826,0.0,0.0,0.0,0.303035,0.387465
 
 # ⚠ THE FIXTURE CARRIES ITS POSE (see the tabletop family). The stand is
 # placed at the NEGATION of the arm's position on its plate — body (+0.019,

@@ -1230,9 +1230,19 @@ def main() raises:
         "so101_tower :yaw: every placement drew a yaw, the device's quaternion"
         " is the host's, and the placements are the no-yaw ones' count",
     )
+    # 2b ran the tasks as written: only their own `:yaw` inits may draw a yaw
+    # (cube_in_bowl's brick since ce11b131f), one per lane each
+    var n_yaw_inits = 0
+    for k in range(len(tnames)):
+        var tk = load_task(task_path(ft, tnames[k]))
+        for q in range(len(tk.inits)):
+            if tk.inits[q].yaw:
+                n_yaw_inits += 1
     ta.check(
-        stt.yawed == 0,
-        "so101_tower without :yaw: every quaternion is still the identity",
+        stt.yawed == n_yaw_inits * BATCH,
+        "so101_tower as written: exactly the tasks' own :yaw inits drew a yaw ("
+        + String(stt.yawed) + " = " + String(n_yaw_inits) + " x "
+        + String(BATCH) + " lanes), every other quaternion the identity",
     )
     var pt = parse_task(String(
         "schema_version=1\ntask=yaw_probe\nfamily=so101_tower\n"
