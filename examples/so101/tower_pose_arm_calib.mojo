@@ -83,6 +83,8 @@ comptime TOUCH_RADIUS = 0.04
 """The jaw tip must be within this of the brick's estimate (xy) to count."""
 comptime TOUCH_MAX_Z = 0.07
 """... and below this height (world): the brick's top is at 0.027."""
+comptime TIP_STILL = 0.0015
+"""The jaw tip stays within this of its 1 s mean (3D) to be captured."""
 comptime MOVED = 0.03
 """A new brick place is this far from the last one."""
 
@@ -216,7 +218,7 @@ def main() raises:
     var ty = List[Float64]()
     var tz = List[Float64]()
     var log = String(
-        "# est_x est_y est_yaw_deg | tip_x tip_y tip_z | q0..q5 (model rad) | raw0..raw5\n"
+        "# est_x est_y est_yaw_deg | tip_x tip_y tip_z (1 s mean) | q0..q5 (model rad, same window's mean) | raw0..raw5 (last sample)\n"
     )
 
     # state: 0 BRICK, 1 TOUCH, 2 MOVE
@@ -229,6 +231,8 @@ def main() raises:
     var wy = List[Float64]()
     var wyaw = List[Float64]()
     var tip_acc = List[Vec3d]()
+    var tip_t = List[Float64]()
+    var q_acc = List[List[Float64]]()
     var t0 = perf_counter_ns()
     print("\n[pair 1/", n_pairs, "] BRICK: put the brick down, arm out of the way, hands off")
     try:
@@ -317,22 +321,45 @@ def main() raises:
             if not arm_ok:
                 continue
             var dxy = sqrt((tip_p.x - bx) ** 2 + (tip_p.y - by) ** 2)
-            if dxy > TOUCH_RADIUS or Float64(tip_p.z) > TOUCH_MAX_Z or arm_still_s < 0.3:
+            if dxy > TOUCH_RADIUS or Float64(tip_p.z) > TOUCH_MAX_Z:
                 tip_acc.clear()
+                tip_t.clear()
+                q_acc.clear()
                 continue
+            # a sliding 1 s window of the TIP itself: the per-step tick test
+            # above misses a slow drift (2026-09-24, pair 8 moved ~13 mm
+            # inside a "still" second), so stillness is judged on the tip
             tip_acc.append(tip_p)
-            if arm_still_s >= 1.0 and len(tip_acc) >= 10:
-                var mx = 0.0
-                var my = 0.0
-                var mz = 0.0
-                for p in tip_acc:
-                    mx += Float64(p.x)
-                    my += Float64(p.y)
-                    mz += Float64(p.z)
-                var nn = Float64(len(tip_acc))
-                mx /= nn
-                my /= nn
-                mz /= nn
+            tip_t.append(now)
+            q_acc.append(q.copy())
+            while len(tip_t) > 0 and tip_t[0] < now - 1.0:
+                _ = tip_acc.pop(0)
+                _ = tip_t.pop(0)
+                _ = q_acc.pop(0)
+            var wmx = 0.0
+            var wmy = 0.0
+            var wmz = 0.0
+            for p in tip_acc:
+                wmx += Float64(p.x)
+                wmy += Float64(p.y)
+                wmz += Float64(p.z)
+            var wn = Float64(len(tip_acc))
+            var drift = 0.0
+            for p in tip_acc:
+                drift = max(drift, sqrt(
+                    (Float64(p.x) - wmx / wn) ** 2 + (Float64(p.y) - wmy / wn) ** 2
+                    + (Float64(p.z) - wmz / wn) ** 2
+                ))
+            if now - tip_t[0] >= 0.9 and len(tip_acc) >= 10 and drift <= TIP_STILL:
+                var mx = wmx / wn
+                var my = wmy / wn
+                var mz = wmz / wn
+                # the joints logged are the SAME window's mean (they were the
+                # last sample's, which disagreed with the averaged tip)
+                var qm = List[Float64](length=6, fill=0.0)
+                for qs in q_acc:
+                    for k in range(6):
+                        qm[k] += qs[k] / wn
                 ex.append(bx)
                 ey.append(by)
                 tx.append(mx)
@@ -343,7 +370,7 @@ def main() raises:
                     + " | " + fixed(mx, 5) + " " + fixed(my, 5) + " " + fixed(mz, 5) + " |"
                 )
                 for k in range(6):
-                    log += " " + fixed(q[k], 5)
+                    log += " " + fixed(qm[k], 5)
                 log += " |"
                 for k in range(6):
                     log += " " + String(Int(raw[k]))
