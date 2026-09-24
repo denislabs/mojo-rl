@@ -19,10 +19,12 @@ through `Pinhole.sim`, the tracer's convention (`vision/fisheye.mojo`).
 
 Printed per placement and summarised: brick xy error (mm) and yaw error
 (deg, modulo 90), bowl xy error (mm), and the confidence (`coverage`,
-`residual`). Scored on CONFIDENT estimates only (the real check's rule —
-what the rig acts on); low-confidence ones are counted. The object-pose
-plan's target: brick <= 3 mm / 5 deg, bowl <= 5 mm, and >= 90% of placements
-confident. The process exits 1 otherwise, so it can sit in a manifest.
+`residual`), and the object's TRUE visibility from the tracer's segmentation.
+The gate: every object >= 95% visible is estimated CONFIDENTLY (the real
+check's rule — what the rig acts on), and EVERY confident estimate, visible
+or not, is within the plan's target (brick <= 3 mm / 5 deg, bowl <= 5 mm) —
+so a hidden object may be flagged, never confidently wrong. The process exits
+1 otherwise, so it can sit in a manifest.
 `--brick-hsv` / `--bowl-hsv` override the colour classes (the sim materials
 are being moved toward the real props' colours).
 
@@ -54,7 +56,7 @@ from noeira.tasks.so101_tower_xml import (
 from noeira.vision.fisheye import Pinhole
 from noeira.vision.tabletop_pose import (
     RigCamera, ColorClass, PrismModel, DeskROI, PoseEstimate,
-    estimate_prism_pose,
+    estimate_prism_pose, expected_area_px,
 )
 from noeira.utils.fmt import fixed
 
@@ -68,9 +70,13 @@ comptime BRICK_HALF = 0.0125
 comptime TARGET_BRICK_MM = 3.0
 comptime TARGET_BRICK_DEG = 5.0
 comptime TARGET_BOWL_MM = 5.0
-comptime MIN_CONFIDENT_RATE = 0.9
-"""Placements whose estimate must be CONFIDENT (the rule below). A brick
-under the folded arm's wrist is hidden (coverage ~0.57): flagged, not wrong."""
+comptime VISIBLE = 0.95
+"""An object at least this visible in the tracer's SEGMENTATION (its pixels
+over its unoccluded projected area) must be estimated CONFIDENTLY."""
+comptime HIDDEN = 0.75
+"""Below this it is hidden (the folded arm covers it — the family's rest pan
+is drawn -3..70 deg, so where varies per placement); its estimate may be
+low-confidence, but a CONFIDENT one is still held to the targets."""
 
 
 def _confident(e: PoseEstimate) -> Bool:
@@ -187,6 +193,14 @@ def main() raises:
         adr += fmd.joints[j].nq
     if brick_adr < 0 or bowl_adr < 0:
         raise Error("the tower scene has no brick_free / bowl_free joint")
+    var brick_body = -1
+    var bowl_body = -1
+    for j in range(len(fmd.joints)):
+        var name = String(fmd.joint_names[j])
+        if name == "brick_free":
+            brick_body = fmd.joints[j].body_id
+        elif name == "bowl_free":
+            bowl_body = fmd.joints[j].body_id
 
     # the desk surface site and the two strips the task places in
     forward_kinematics["cpu", DT, DynDims, 1](d, m)
@@ -230,6 +244,10 @@ def main() raises:
     print("roi", roi)
 
     var vis = build_visual_model[DT, DynDims](fmd, m, group_mask=VISUAL_GROUP_MASK)
+    # the tracer's `seg` is the VISUAL row; `src_geom` names its model geom
+    var row_body = List[Int]()
+    for r in range(len(vis.src_geom)):
+        row_body.append(fmd.geoms[vis.src_geom[r]].body_id)
     var rgb = List[Scalar[DT]]()
     var depth = List[Scalar[DT]]()
     var seg = List[Scalar[DT]]()
@@ -247,8 +265,13 @@ def main() raises:
     var max_o = 0.0
     var n_b = 0
     var n_o = 0
-    var low_b = 0
-    var low_o = 0
+    var n_vis_b = 0
+    var n_vis_o = 0
+    var n_hid_b = 0
+    var n_hid_o = 0
+    var n_scored_b = 0
+    var n_scored_o = 0
+    var min_vis_seen = 1.0e30
     for k in range(n):
         # the two regions overlap: redraw until the brick clears the bowl
         # (outer circumradius 0.0606 + the brick's half-diagonal 0.0177 + 1 cm)
@@ -286,6 +309,20 @@ def main() raises:
             save_png(out_dir + "/overhead_" + String(k) + ".png", px, width, height, 3)
         var eb = estimate_prism_pose(px, cam, cls_brick, brick, roi)
         var eo = estimate_prism_pose(px, cam, cls_bowl, bowl, roi)
+        # GROUND-TRUTH visibility: the object's pixels in the tracer's
+        # segmentation over the area its silhouette projects to unoccluded
+        var seg_b = 0
+        var seg_o = 0
+        for q in range(width * height):
+            var g = Int(seg[q])
+            if g < 0 or g >= len(row_body):
+                continue
+            if row_body[g] == brick_body:
+                seg_b += 1
+            elif row_body[g] == bowl_body:
+                seg_o += 1
+        var vis_b = Float64(seg_b) / expected_area_px(cam, brick, sz, bx, by, byaw)
+        var vis_o = Float64(seg_o) / expected_area_px(cam, bowl, sz, ox, oy, oyaw)
         var e_b = _mm(eb.x, eb.y, bx, by) if eb.found else -1.0
         var e_y = _yaw_err_deg(eb.yaw, byaw, brick.period) if eb.found else -1.0
         var e_o = _mm(eo.x, eo.y, ox, oy) if eo.found else -1.0
@@ -293,48 +330,63 @@ def main() raises:
         var co = _confident(eo)
         print(
             "  [", k, "] brick (", fixed(bx, 3), fixed(by, 3), fixed(byaw * 180.0 / pi, 1),
-            "deg ) err", fixed(e_b, 2), "mm", fixed(e_y, 2), "deg, cov",
-            fixed(eb.coverage, 2), "res", fixed(eb.residual, 2),
-            "" if cb else " LOW-CONFIDENCE", "| bowl err", fixed(e_o, 2), "mm, cov",
-            fixed(eo.coverage, 2), "res", fixed(eo.residual, 2),
-            "" if co else " LOW-CONFIDENCE",
+            "deg ) visible", fixed(vis_b, 2), "err", fixed(e_b, 2), "mm", fixed(e_y, 2),
+            "deg, cov", fixed(eb.coverage, 2), "res", fixed(eb.residual, 2),
+            "" if cb else " LOW-CONFIDENCE", "| bowl visible", fixed(vis_o, 2), "err",
+            fixed(e_o, 2), "mm, cov", fixed(eo.coverage, 2), "res",
+            fixed(eo.residual, 2), "" if co else " LOW-CONFIDENCE",
         )
+        # brick
+        if vis_b >= VISIBLE:
+            n_vis_b += 1
+            if cb:
+                n_b += 1
+        elif vis_b < HIDDEN:
+            n_hid_b += 1
         if cb:
-            n_b += 1
             sum_b += e_b
             sum_y += e_y
+            n_scored_b += 1
             max_b = max(max_b, e_b)
             max_y = max(max_y, e_y)
-        else:
-            low_b += 1
+        # bowl
+        if vis_o >= VISIBLE:
+            n_vis_o += 1
+            if co:
+                n_o += 1
+        elif vis_o < HIDDEN:
+            n_hid_o += 1
         if co:
-            n_o += 1
             sum_o += e_o
+            n_scored_o += 1
             max_o = max(max_o, e_o)
-        else:
-            low_o += 1
+        min_vis_seen = min(min_vis_seen, max(vis_b, vis_o))
 
     print()
-    if n_b > 0:
+    if n_scored_b > 0:
         print(
-            "brick (confident, ", n_b, "of", n, ") xy mean", fixed(sum_b / Float64(n_b), 2),
-            "max", fixed(max_b, 2), "mm (target <=", TARGET_BRICK_MM, "); yaw mean",
-            fixed(sum_y / Float64(n_b), 2), "max", fixed(max_y, 2), "deg (target <=",
-            TARGET_BRICK_DEG, ")",
+            "brick: confident on", n_b, "of", n_vis_b, "VISIBLE placements (",
+            n_hid_b, "hidden >", fixed((1.0 - HIDDEN) * 100.0, 0), "% by the arm);",
+            "every confident estimate:", n_scored_b, "xy mean",
+            fixed(sum_b / Float64(n_scored_b), 2), "max", fixed(max_b, 2),
+            "mm (<=", TARGET_BRICK_MM, "), yaw mean", fixed(sum_y / Float64(n_scored_b), 2),
+            "max", fixed(max_y, 2), "deg (<=", TARGET_BRICK_DEG, ")",
         )
-    if n_o > 0:
+    if n_scored_o > 0:
         print(
-            "bowl  (confident, ", n_o, "of", n, ") xy mean", fixed(sum_o / Float64(n_o), 2),
-            "max", fixed(max_o, 2), "mm (target <=", TARGET_BOWL_MM, ")",
+            "bowl:  confident on", n_o, "of", n_vis_o, "VISIBLE placements (",
+            n_hid_o, "hidden); every confident estimate:", n_scored_o, "xy mean",
+            fixed(sum_o / Float64(n_scored_o), 2), "max", fixed(max_o, 2),
+            "mm (<=", TARGET_BOWL_MM, ")",
         )
-    print(
-        "low-confidence (flagged, not scored): brick", low_b, "bowl", low_o,
-        "— the caller discards these; the gate needs >=", MIN_CONFIDENT_RATE,
-        "confident",
-    )
+    # a segmentation that never matched would call everything hidden: refuse
+    if n_vis_b + n_vis_o < n:
+        raise Error(
+            "fewer than half the objects read as visible in the tracer's"
+            " segmentation — the seg -> body mapping is wrong, not the estimator"
+        )
     if (
-        Float64(n_b) < MIN_CONFIDENT_RATE * Float64(n)
-        or Float64(n_o) < MIN_CONFIDENT_RATE * Float64(n)
+        n_b < n_vis_b or n_o < n_vis_o
         or max_b > TARGET_BRICK_MM or max_y > TARGET_BRICK_DEG
         or max_o > TARGET_BOWL_MM
     ):

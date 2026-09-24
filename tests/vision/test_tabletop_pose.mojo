@@ -51,8 +51,10 @@ comptime DESK_Z = 0.002
 comptime RENDER_SUB = 3
 
 comptime RGB = Tuple[Float64, Float64, Float64]
-comptime BRICK_RGB: RGB = (0.0, 0.471, 0.749)
-comptime BOWL_RGB: RGB = (0.996, 0.776, 0.0)
+comptime BRICK_RGB: RGB = (0.17, 0.474, 0.662)
+"""`brick_pla` of the calibrated look (26a862992)."""
+comptime BOWL_RGB: RGB = (1.0, 0.66, 0.09)
+"""`bowl_pla` of the calibrated look (26a862992)."""
 comptime DESK_RGB: RGB = (0.93, 0.93, 0.91)
 comptime DARK_RGB: RGB = (0.12, 0.12, 0.12)
 

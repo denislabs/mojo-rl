@@ -23,7 +23,7 @@ float64, no OpenCV and no GPU: it runs in the deploy process on the Jetson.
 
 1. A colour mask (HSV box, `ColorClass`), kept only where the pixel's ray
    meets the desk plane inside a world-frame ROI (`DeskROI`). The ROI is what
-   keeps the blue tower stand — 15 degrees of hue from the brick — and
+   keeps the blue tower stand — the brick's hue in the overhead view — and
    everything off the desk out of the mask.
 2. Connected components (4-connected); the object's is the one whose area is
    closest, in log ratio, to the area the model projects to where the
@@ -190,18 +190,22 @@ struct ColorClass(Copyable, ImplicitlyCopyable, Movable, Writable):
 
     @staticmethod
     def tower_brick_sim() -> Self:
-        """The sim brick's `brick_pla` (0.0, 0.471, 0.749): hue 202.3 deg.
-        The stand's `stand_pla` (0.20, 0.45, 0.85) is hue 216.9 — 14.6 deg
-        away, so the hue band alone does not separate them: the ROI does."""
-        return Self(202.0, 12.0, 0.45, 0.12, 1.0)
+        """The sim brick under the calibrated look (26a862992): `brick_pla`
+        (0.17, 0.474, 0.662) is hue 203; the tracer renders it hue 217 in the
+        overhead camera and 203 in the wrist camera, s 0.68-0.76, v 0.51-0.56
+        (noeira-26's medians). The real brick is 195..216. ⚠ The stand's
+        `stand_pla` renders at the SAME hue (216.9): the hue band cannot
+        separate them — the ROI does."""
+        return Self(210.0, 14.0, 0.35, 0.15, 1.0)
 
     @staticmethod
     def tower_bowl_sim() -> Self:
-        """The sim bowl's `bowl_pla` (0.996, 0.776, 0.0): hue 46.7 deg in the
-        shade, but a LIT face saturates red and green together — the tracer
-        writes (255, 255, 7), hue 60 — so the band runs 36..64. An overexposed
-        real camera clips the same way."""
-        return Self(50.0, 14.0, 0.45, 0.20, 1.0)
+        """The sim bowl under the calibrated look (26a862992): `bowl_pla`
+        (1.0, 0.66, 0.09) is hue 37.6, rendered hue 38 (s 0.88, v 0.82). A lit
+        face that clips red first moves toward yellow (the pre-calibration
+        material clipped to hue 60), so the band runs 24..52 — which also
+        holds the real printed bowl (29..42 on `cube-in-bowl-printed`)."""
+        return Self(38.0, 14.0, 0.45, 0.20, 1.0)
 
     def write_to(self, mut writer: Some[Writer]):
         writer.write(
