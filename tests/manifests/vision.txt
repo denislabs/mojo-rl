@@ -72,3 +72,10 @@ tests/vision/test_extrinsics_fisheye.mojo
 # on the same data > 20 mm off (the control), and a wrist turned about ONE
 # axis refused rather than answered.
 tests/vision/test_extrinsics_offset.mojo
+# The tabletop pose estimator (`vision/tabletop_pose.mojo`: colour mask ->
+# component -> fit of the known prism), on frames drawn by an EXACT ray caster
+# that shares only the lens with it, through the sim pinhole AND the rig's
+# measured fisheye: brick <= 1.5 mm / 2 deg, bowl <= 2 mm; a control that the
+# lens matters (the bowl read as a pinhole is > 10 mm off); occlusion lowers
+# `coverage`; a brick-coloured box outside the ROI is not taken. Needs no shim.
+tests/vision/test_tabletop_pose.mojo
