@@ -63,6 +63,12 @@ log() { printf '\n=== %s  %s\n' "$(date +%H:%M:%S)" "$*"; }
 has() { [[ " $STAGES " == *" $1 "* ]]; }
 arm_on() { [[ " $ARMS " == *" $1 "* ]]; }
 MEM_GB=$(awk '/MemTotal/ {print int($2/1048576)}' /proc/meminfo 2>/dev/null || echo 64)
+# ⚠ A container's limit is its cgroup's, not the host's /proc/meminfo: on 24 Sep
+# a vast box showed 188 GB in `free` and killed the third 30 GB training at 79.
+CG_MAX=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo max)
+if [[ $CG_MAX =~ ^[0-9]+$ ]] && (( CG_MAX / 1073741824 < MEM_GB )); then
+    MEM_GB=$(( CG_MAX / 1073741824 ))
+fi
 
 grep -q ':yaw' noeira/tasks/tasks/so101_tower_cube_in_bowl.task || {
     echo "cube_in_bowl does not draw the brick's yaw: this checkout predates ce11b131f"; exit 1; }
