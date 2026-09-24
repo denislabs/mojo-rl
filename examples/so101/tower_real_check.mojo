@@ -73,9 +73,10 @@ from noeira.deep_agents.act.inference import (
     TemporalEnsemble, normalize_camera_chw, denormalize,
 )
 from noeira.core.run import resolve_checkpoint
+from noeira.io.png import save_png
 from noeira.tasks.so101_tower_rig import (
     RIG_DT, RIG_IMG_ELEMS, RIG_CAM_ELEMS, RIG_CAM_H, RIG_CAM_W, RIG_N_CAMS,
-    So101TowerUnits,
+    RIG_NPIX, So101TowerUnits,
 )
 from noeira.utils.fmt import col, pad_right
 
@@ -107,6 +108,8 @@ def _usage() -> String:
         " [--norm FILE] --student-zero none|follower --store FILE.h5"
         " --store-zero none|follower [--split all|val] [--split-seed S]"
         " [--episodes N] [--m M] [--dump FILE.csv] [--moving-only]"
+        " [--mask-overhead x0,y0,x1,y1] [--mask-wrist x0,y0,x1,y1]"
+        " [--mask-rgb r,g,b] [--mask-preview F.png]"
     )
 
 
@@ -140,6 +143,10 @@ def main() raises:
     var ens_m = ACT_TEMPORAL_ENSEMBLE_M
     var dump_path = String("")
     var moving_only = False
+    var mask = List[Int]()
+    var mask_w = List[Int]()
+    var mask_rgb: List[Int] = [205, 205, 200]
+    var mask_preview = String("")
     var i = 1
     while i < len(args):
         var a = String(args[i])
@@ -172,6 +179,22 @@ def main() raises:
             ens_m = Float64(v)
         elif a == "--dump":
             dump_path = v
+        elif a == "--mask-overhead":
+            for w in v.split(","):
+                mask.append(Int(String(w).strip()))
+            if len(mask) != 4:
+                raise Error("--mask-overhead takes x0,y0,x1,y1")
+        elif a == "--mask-wrist":
+            for w in v.split(","):
+                mask_w.append(Int(String(w).strip()))
+            if len(mask_w) != 4:
+                raise Error("--mask-wrist takes x0,y0,x1,y1")
+        elif a == "--mask-rgb":
+            mask_rgb = List[Int]()
+            for w in v.split(","):
+                mask_rgb.append(Int(String(w).strip()))
+        elif a == "--mask-preview":
+            mask_preview = v
         else:
             raise Error("unknown option " + a + "\n" + _usage())
         i += 2
@@ -229,6 +252,12 @@ def main() raises:
     print("  store  :", store_path, "|", ds.store.n_episodes(), "episodes,",
           ds.store.n_rows(), "rows | scoring", len(eps), "(" + split + ")")
     print("  ens    : m =", ens_m, "| chunk", K, "| lanes", LANES)
+    if len(mask_w) == 4:
+        print("  mask   : wrist x", mask_w[0], "..", mask_w[2], " y", mask_w[1], "..",
+              mask_w[3], "painted", mask_rgb[0], mask_rgb[1], mask_rgb[2])
+    if len(mask) == 4:
+        print("  mask   : overhead x", mask[0], "..", mask[2], " y", mask[1], "..",
+              mask[3], "painted", mask_rgb[0], mask_rgb[1], mask_rgb[2])
     if moving_only:
         print("  rows   : MOVING ONLY — rows with the arm folded at rest (idle"
               " before / after the task) are queried but not scored")
@@ -307,6 +336,25 @@ def main() raises:
                 var o = l * RIG_IMG_ELEMS
                 for k in range(RIG_IMG_ELEMS):
                     img_u8[o + k] = slabs[src_l][tt * RIG_IMG_ELEMS + k]
+                if len(mask) == 4:
+                    # slot 0 = overhead, CHW; the rectangle painted flat
+                    for c in range(3):
+                        for y in range(max(0, mask[1]), min(RIG_CAM_H, mask[3])):
+                            for x in range(max(0, mask[0]), min(RIG_CAM_W, mask[2])):
+                                img_u8[o + c * RIG_NPIX + y * RIG_CAM_W + x] = UInt8(mask_rgb[c])
+                if len(mask_w) == 4:
+                    # slot 1 = wrist
+                    for c in range(3):
+                        for y in range(max(0, mask_w[1]), min(RIG_CAM_H, mask_w[3])):
+                            for x in range(max(0, mask_w[0]), min(RIG_CAM_W, mask_w[2])):
+                                img_u8[o + RIG_CAM_ELEMS + c * RIG_NPIX + y * RIG_CAM_W + x] = UInt8(mask_rgb[c])
+                if len(mask) == 4:
+                    if mask_preview.byte_length() > 0 and l == 0 and t == 0 and r0 == 0:
+                        var hwc = List[UInt8](length=RIG_NPIX * 3, fill=0)
+                        for q in range(RIG_NPIX):
+                            for c in range(3):
+                                hwc[q * 3 + c] = img_u8[o + c * RIG_NPIX + q]
+                        save_png(mask_preview, hwc, RIG_CAM_W, RIG_CAM_H, 3)
                 for c in range(RIG_N_CAMS):
                     var oc = o + c * RIG_CAM_ELEMS
                     normalize_camera_chw[RIG_CAM_H, RIG_CAM_W](img_u8, oc, images_n, oc)
@@ -389,6 +437,11 @@ def main() raises:
     print("RESULT ckpt=" + ckpt_path + " store=" + store_path + " split=" + split
           + " student_zero=" + student_zero + " store_zero=" + store_zero
           + " moving_only=" + String(moving_only)
+          + " mask=" + (String(mask[0]) + "," + String(mask[1]) + "," + String(mask[2])
+                        + "," + String(mask[3]) if len(mask) == 4 else String("none"))
+          + " mask_wrist=" + (String(mask_w[0]) + "," + String(mask_w[1]) + ","
+                              + String(mask_w[2]) + "," + String(mask_w[3])
+                              if len(mask_w) == 4 else String("none"))
           + " rows=" + String(n_scored) + " l1_all=" + String(tot[0] / n6)
           + " hold_ens=" + String(tot[1] / n6) + " mean=" + String(tot[3] / n6))
     if tot[0] < tot[1]:
