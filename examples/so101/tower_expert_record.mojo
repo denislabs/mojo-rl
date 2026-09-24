@@ -1154,9 +1154,13 @@ def run_episode(
     if place and not done:
         var pw = _body_pos(env, bowl)
         var q4 = List[Float64](length=N_ARM, fill=0.0)
-        _ = ex.arm.ik(env, _above(pw, Z_CARRY), q3, yaw, q4, tl, rs, use_rs)
+        var e4 = ex.arm.ik(env, _above(pw, Z_CARRY), q3, yaw, q4, tl, rs, use_rs)
         var q5 = List[Float64](length=N_ARM, fill=0.0)
-        _ = ex.arm.ik(env, _above(pw, Z_PLACE), q4, yaw, q5, tl, rs, use_rs)
+        var e5 = ex.arm.ik(env, _above(pw, Z_PLACE), q4, yaw, q5, tl, rs, use_rs)
+        if verbose:
+            print("  ep", ep, "bowl", fixed(pw[0], 3), fixed(pw[1], 3),
+                  " ik err mm: carry", fixed(e4 * 1000.0, 1), "place",
+                  fixed(e5 * 1000.0, 1))
         done = ex.step_to(env, q4, False, N_CARRY)
         if not done:
             done = ex.step_to(env, q5, False, N_PLACE)
@@ -1299,9 +1303,10 @@ def main() raises:
         else:
             task = a
             i += 1
-    var place = task == "so101_tower_cube_in_bowl"
+    # cube_in_bowl and its variants (`_wide`: the real layouts' regions)
+    var place = task.startswith("so101_tower_cube_in_bowl")
     if task != "so101_tower_lift_brick" and not place:
-        raise Error("the expert knows so101_tower_lift_brick and so101_tower_cube_in_bowl, not " + task)
+        raise Error("the expert knows so101_tower_lift_brick and so101_tower_cube_in_bowl*, not " + task)
     seed_rng(seed0)
     if out_path.byte_length() == 0:
         var stamp = iso8601_utc(epoch_seconds()).replace(":", "-")
