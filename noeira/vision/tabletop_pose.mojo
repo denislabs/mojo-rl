@@ -27,7 +27,8 @@ float64, no OpenCV and no GPU: it runs in the deploy process on the Jetson.
    everything off the desk out of the mask.
 2. Connected components (4-connected); the object's is the one whose area is
    closest, in log ratio, to the area the model projects to where the
-   component back-projects. Holes are filled (the cube in the bowl is a hole
+   component back-projects, among those within [`min_coverage`,
+   `max_coverage`] of it (0.15..2: occluded yes, a bigger blob no). Holes are filled (the cube in the bowl is a hole
    in the yellow).
 3. Analysis by synthesis: the object is a convex PRISM (a footprint polygon
    extruded from the desk up to its height). For a candidate (x, y, yaw) its
@@ -577,7 +578,7 @@ def _wrap(yaw: Float64, period: Float64) -> Float64:
 
 def estimate_prism_pose(
     frame: List[UInt8], cam: RigCamera, color: ColorClass, model: PrismModel,
-    roi: DeskROI, min_coverage: Float64 = 0.15,
+    roi: DeskROI, min_coverage: Float64 = 0.15, max_coverage: Float64 = 2.0,
 ) raises -> PoseEstimate:
     """The pose of `model` in `frame` (RGB HWC uint8 at the camera's size);
     see the module header."""
@@ -659,7 +660,11 @@ def estimate_prism_pose(
         if expect <= 0.0:
             continue
         var ratio = Float64(cnt) / expect
-        if ratio < min_coverage:
+        # a blob more than twice the model's own projected area is not the
+        # object — on the rig, blue floor seen past the desk's edge, whose
+        # rays meet the desk plane inside the ROI, beat a brick half hidden
+        # by the bowl's wall on |log ratio| alone
+        if ratio < min_coverage or ratio > max_coverage:
             continue
         var score = abs(log(ratio))
         if score < best_score:
