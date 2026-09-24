@@ -57,7 +57,12 @@ from noeira.physics3d.fields import Model, actuator_column
 from noeira.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
 from noeira.physics3d.parser.flat_model import FlatModelDef
 from noeira.physics3d.raytrace import BatchedCameraRenderer
-from noeira.physics3d.raytrace.visual import build_visual_model
+from noeira.physics3d.raytrace.visual import build_visual_model, VisualModel
+from noeira.physics3d.raytrace.visual_records import (
+    VIS_GEOM_APPEARANCE, VIS_LIGHT_WORDS, APP_IDX_R, APP_IDX_G, APP_IDX_B,
+    LIGHT_IDX_AMBIENT_R, LIGHT_IDX_DIFFUSE_R,
+)
+from noeira.physics3d.raytrace.randomize import geom_labels
 from noeira.tasks.family_config import So101TowerConfig
 from noeira.tasks.so101_tower_xml import So101TowerModel
 from noeira.robot.so101.sim_map import tower_follower_zero_deg
@@ -123,20 +128,106 @@ def make_tower_model(ctx: DeviceContext) raises -> Model[RIG_DT, TOWER_MD]:
     return m^
 
 
+comptime RIG_LOOK_CALIBRATED = "calibrated"
+comptime RIG_LOOK_LEGACY = "legacy"
+
+
+def apply_tower_look[
+    DTYPE: DType
+](mut vis: VisualModel[DTYPE], fmd: FlatModelDef, look: String) raises:
+    """The rig's LOOK — the lights and the surface colours the tracer draws.
+
+    `calibrated` (the default) is the scene as composed: lights and albedos
+    fitted to the rig's recorded frames (`so101_tower.family`, 2026-09-24).
+    `legacy` puts back what every store before that was rendered with — the
+    headlight at .45 ambient / .3 diffuse, the floor light's .7 sun, the desk
+    at .93, the white arm parts at .92 and the props' filament colours — so a
+    student can be compared on the SAME demos under both looks, the arms
+    differing in the look alone. It rewrites the tracer's tables only (no
+    physics), and must run BEFORE a `VisualRandomizer` takes its base copy, so
+    `--dr` jitters around whichever look was chosen.
+
+    ⚠ THE STORE AND ITS EVAL MUST SHARE IT, like the joint zero: the rerender
+    records it in the store's provenance line and `tower_act_eval` takes the
+    same flag."""
+    if look == RIG_LOOK_CALIBRATED:
+        return
+    if look != RIG_LOOK_LEGACY:
+        raise Error(
+            "so101 tower rig: look '" + look + "' — expected '"
+            + RIG_LOOK_CALIBRATED + "' or '" + RIG_LOOK_LEGACY + "'"
+        )
+    if vis.nlight != 2:
+        raise Error(
+            "so101 tower rig: the legacy look expects the headlight and the"
+            " floor's sun (2 light rows), the scene has " + String(vis.nlight)
+        )
+    # the lights: row 0 the headlight, row 1 the floor's directional sun
+    for c in range(3):
+        vis.lights.data[LIGHT_IDX_AMBIENT_R + c] = Scalar[DTYPE](0.45)
+        vis.lights.data[LIGHT_IDX_DIFFUSE_R + c] = Scalar[DTYPE](0.3)
+        vis.lights.data[VIS_LIGHT_WORDS + LIGHT_IDX_DIFFUSE_R + c] = Scalar[DTYPE](0.7)
+    # the colours, by the geom's `<body>/<geom>` label, on its APPEARANCE
+    # row: the shader colours a hit from `APP_IDX_R..B` (the parser resolves a
+    # material's rgba into `geom_rgba`), the material row only carries its
+    # specular / shininess / texture — so the material rows are not touched
+    var labels = geom_labels(fmd)
+    var desk = 0
+    var white = 0
+    var bowl = 0
+    var brick = 0
+    for k in range(vis.ngeom):
+        var lab = labels[vis.src_geom[k]]
+        var o = k * VIS_GEOM_APPEARANCE
+        var r = Float64(vis.appearance.data[o + APP_IDX_R])
+        var g = Float64(vis.appearance.data[o + APP_IDX_G])
+        var b = Float64(vis.appearance.data[o + APP_IDX_B])
+        var rgb = List[Float64]()
+        if lab.startswith("desk_"):
+            rgb = [0.93, 0.93, 0.91]
+            desk += 1
+        elif lab.startswith("robot_") and _near(r, 0.78) and _near(g, 0.78) and _near(b, 0.76):
+            rgb = [0.92, 0.92, 0.90]
+            white += 1
+        elif lab.startswith("bowl_") and _near(r, 1.0) and _near(g, 0.66) and _near(b, 0.09):
+            rgb = [0.996, 0.776, 0.0]
+            bowl += 1
+        elif lab.startswith("brick_") and _near(r, 0.17) and _near(g, 0.474) and _near(b, 0.662):
+            rgb = [0.0, 0.471, 0.749]
+            brick += 1
+        if len(rgb) == 3:
+            vis.appearance.data[o + APP_IDX_R] = Scalar[DTYPE](rgb[0])
+            vis.appearance.data[o + APP_IDX_G] = Scalar[DTYPE](rgb[1])
+            vis.appearance.data[o + APP_IDX_B] = Scalar[DTYPE](rgb[2])
+    if desk == 0 or white == 0 or bowl == 0 or brick == 0:
+        raise Error(
+            "so101 tower rig: the legacy look found desk " + String(desk)
+            + ", white arm " + String(white) + ", bowl " + String(bowl)
+            + ", brick " + String(brick) + " geoms — the calibrated scene"
+            " changed under it"
+        )
+
+
+@always_inline
+def _near(x: Float64, y: Float64) -> Bool:
+    return abs(x - y) < 1e-4
+
+
 def make_tower_renderer[
     LANES: Int
 ](
-    ctx: DeviceContext, fmd: FlatModelDef, mut m: Model[RIG_DT, TOWER_MD]
+    ctx: DeviceContext, fmd: FlatModelDef, mut m: Model[RIG_DT, TOWER_MD],
+    look: String = RIG_LOOK_CALIBRATED,
 ) raises -> TowerRenderer[LANES]:
-    """The renderer with the rig's visual set and background, camera slot 0."""
+    """The renderer with the rig's visual set, look and background, camera
+    slot 0."""
     var cams = tower_cameras(fmd)
     var r = TowerRenderer[LANES](ctx, m, cams[0])
-    r.set_visual(
-        ctx,
-        build_visual_model[RIG_DT, TOWER_MD](
-            fmd, m, group_mask=RIG_VISUAL_GROUP_MASK
-        ),
+    var vis = build_visual_model[RIG_DT, TOWER_MD](
+        fmd, m, group_mask=RIG_VISUAL_GROUP_MASK
     )
+    apply_tower_look(vis, fmd, look)
+    r.set_visual(ctx, vis^)
     r.background = rig_background()
     return r^
 

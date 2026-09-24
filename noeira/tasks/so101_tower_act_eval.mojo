@@ -67,6 +67,7 @@ from noeira.tasks.so101_tower_rig import (
     RIG_CAM_ELEMS, RIG_IMG_ELEMS, RIG_ACT, RIG_DR_TARGET, RIG_JOINT_ZERO_NONE,
     TowerRenderer, make_tower_model, make_tower_renderer, tower_cameras,
     pack_camera_u8, So101TowerUnits,
+    RIG_LOOK_CALIBRATED,
 )
 from noeira.tasks.so101_tower_xml import So101TowerModel
 from noeira.tasks.spec import load_family
@@ -116,6 +117,9 @@ struct TowerEvalConfig(Copyable, Movable):
     var demo_out: String
     var snap_dir: String
     var joint_zero: String
+    var look: String
+    """The rig's look (`so101_tower_rig.apply_tower_look`) — the training
+    store's, recorded in its provenance line."""
 
     def __init__(out self):
         self.use_act = True
@@ -133,6 +137,7 @@ struct TowerEvalConfig(Copyable, Movable):
         self.demo_out = String("")
         self.snap_dir = String("")
         self.joint_zero = String(RIG_JOINT_ZERO_NONE)
+        self.look = String(RIG_LOOK_CALIBRATED)
 
 
 struct TowerEvalTally(Copyable, Movable):
@@ -321,7 +326,7 @@ struct TowerActEval[LANES: Int](Movable):
         self.rm = make_tower_model(ctx)
         self.rd = Data[RIG_DT, TOWER_MD, Self.LANES]()
         self.rd.upload_all(ctx)
-        self.r = make_tower_renderer[Self.LANES](ctx, fmd, self.rm)
+        self.r = make_tower_renderer[Self.LANES](ctx, fmd, self.rm, cfg.look)
         self.dr = VisualRandomizer[RIG_DT](
             dr_cfg, so101_tower_surface_groups(), self.r.vis, self.rm, labels,
             cams.copy(), self.r.background, RIG_DR_TARGET,
@@ -384,6 +389,7 @@ struct TowerActEval[LANES: Int](Movable):
             + " (one draw per round, from " + String(self.cfg.dr_draw0) + ")"
             + "\n  units  : " + self.units.describe()
             + " — must be the training store's"
+            + "\n  look   : " + self.cfg.look + " — must be the training store's"
         )
 
     # ── one round ───────────────────────────────────────────────────────

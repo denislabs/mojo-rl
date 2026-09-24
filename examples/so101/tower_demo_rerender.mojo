@@ -71,6 +71,17 @@ printed 99 dB, byte-identical, on both cameras).
 shrinks the sim's flat colours several-fold. Check free disk before a full
 file: the tool prints the running size.
 
+## `--look calibrated|legacy` — the rig's lights and colours
+
+`calibrated` (the default since 2026-09-24) renders the scene as composed:
+lights and albedos fitted to the rig's recorded frames, so the desk and the
+props come out at the real cameras' grey levels and hues instead of clipped
+white / yellow / cyan (`so101_tower.family`). `legacy` puts back the look
+every earlier store was rendered with (`so101_tower_rig.apply_tower_look`),
+so the same demos can be rendered both ways and the students compared on the
+look alone. Recorded in the provenance line; `tower_act_eval.mojo --look`
+must match.
+
 ## `--dr off|light|full` — render-time domain randomization
 
 `physics3d/raytrace/randomize.mojo` (DR plan, level L2). ONE appearance draw
@@ -131,7 +142,7 @@ from noeira.tasks.so101_tower_rig import (
     TOWER_MD, RIG_CAM_W, RIG_CAM_H, RIG_N_CAMS, RIG_SAMPLES,
     RIG_VISUAL_GROUP_MASK, RIG_DR_TARGET, TowerRenderer, make_tower_model,
     make_tower_renderer, tower_cameras, pack_camera_u8, rig_byte,
-    So101TowerUnits, RIG_JOINT_ZERO_NONE,
+    So101TowerUnits, RIG_JOINT_ZERO_NONE, RIG_LOOK_CALIBRATED, apply_tower_look,
 )
 from noeira.tasks.spec import load_family, load_task
 
@@ -181,6 +192,7 @@ def _usage() -> String:
         " [--deflate 0-9]"
         " [--no-host-check] [--dr off|light|full] [--dr-seed N]"
         " [--dr-preview K] [--joint-zero none|follower]"
+        " [--look calibrated|legacy]"
     )
 
 
@@ -203,6 +215,7 @@ def main() raises:
     var dr_seed = 0
     var dr_preview = 0
     var joint_zero = String(RIG_JOINT_ZERO_NONE)
+    var look = String(RIG_LOOK_CALIBRATED)
     var i = 1
     while i < len(args):
         var a = String(args[i])
@@ -234,6 +247,8 @@ def main() raises:
                 dr_preview = Int(v)
             elif a == "--joint-zero":
                 joint_zero = v
+            elif a == "--look":
+                look = v
             else:
                 raise Error("unknown option " + a + "\n" + _usage())
             i += 1
@@ -281,7 +296,7 @@ def main() raises:
     var cams = tower_cameras(fmd)  # [overhead, wrist] — the real dataset's key order
     var cam_over = cams[0]
     var cam_wrist = cams[1]
-    var r = make_tower_renderer[LANES](ctx, fmd, m)
+    var r = make_tower_renderer[LANES](ctx, fmd, m, look)
     print("  device :", ctx.name(), "|", LANES, "lanes |", CAM_W, "x", CAM_H,
           "|", SAMPLES, "samples | overhead", cam_over, "wrist", cam_wrist)
     print("  " + r.vis.describe())
@@ -297,6 +312,7 @@ def main() raises:
     # the actuators' ctrlrange: the action map and the gripper's LeRobot unit
     var units = So101TowerUnits(joint_zero)
     print("  units  :", units.describe())
+    print("  look   :", look)
 
     # ── the demonstrations: checked up front, read again one at a time ────
     var total_eps = 0
@@ -333,7 +349,7 @@ def main() raises:
             + "x" + String(CAM_H) + " " + String(SAMPLES) + "x MSAA, groups"
             " 0+2, row 0 = top, slot 0 overhead / 1 wrist, frame r = obs r;"
             " qpos/action in LeRobot units (deg, gripper 0..100), "
-            + units.describe() + "; dr "
+            + units.describe() + "; look " + look + "; dr "
             + String(dr_cfg)
             + (" (one draw per launch, see dr_draw)" if dr_on else ""),
         deflate=deflate,
@@ -465,6 +481,7 @@ def main() raises:
                         var vis_h = build_visual_model[DT, DynDims](
                             fmd, mh, group_mask=VISUAL_GROUP_MASK
                         )
+                        apply_tower_look(vis_h, fmd, look)
                         # The same draw (launch 0) on the host pair, from its
                         # own pristine base — so the check covers the
                         # randomized tables, not only the pose.

@@ -62,6 +62,13 @@ The joint zero the store was rendered with (`tower_demo_rerender.mojo
 other map, every commanded pan is ~10 degrees off and the rate collapses with
 nothing raising (`tasks/so101_tower_rig.mojo`).
 
+## `--look calibrated|legacy` — THE TRAINING STORE'S LOOK
+
+The rig's lights and colours the store was rendered with
+(`tower_demo_rerender.mojo --look`, in its provenance line; a store without
+it predates the calibration and is `legacy`). A student evaluated under the
+other look sees a different scene than it trained on.
+
 ## `--dr off|light|full` — held-out appearance
 
 `physics3d/raytrace/randomize.mojo` on the rig's tables, ONE draw per ROUND
@@ -100,7 +107,7 @@ from max.gpu.host import DeviceContext
 
 from noeira.deep_agents.act.config import ACT_TEMPORAL_ENSEMBLE_M
 from noeira.core.run import resolve_checkpoint
-from noeira.tasks.so101_tower_rig import RIG_JOINT_ZERO_NONE
+from noeira.tasks.so101_tower_rig import RIG_JOINT_ZERO_NONE, RIG_LOOK_CALIBRATED
 from noeira.tasks.so101_tower_act_eval import (
     TowerActEval, TowerEvalConfig, TOWER_EVAL_DEFAULT_SEED0,
     TOWER_EVAL_DEFAULT_STEPS,
@@ -122,6 +129,7 @@ def _usage() -> String:
         " [--steps N] [--exec N] [--m M] [--task NAME]"
         " [--dr off|light|full] [--dr-seed N] [--dr-draw0 N]"
         " [--record-demo FILE] [--snap DIR] [--joint-zero none|follower]"
+        " [--look calibrated|legacy]"
     )
 
 
@@ -149,6 +157,7 @@ def main() raises:
     var demo_out = String("")
     var snap_dir = String("")
     var joint_zero = String(RIG_JOINT_ZERO_NONE)
+    var look = String(RIG_LOOK_CALIBRATED)
     var i = 1
     while i < len(args):
         var a = String(args[i])
@@ -187,6 +196,8 @@ def main() raises:
             snap_dir = v
         elif a == "--joint-zero":
             joint_zero = v
+        elif a == "--look":
+            look = v
         else:
             raise Error("unknown option " + a + "\n" + _usage())
         i += 2
@@ -232,6 +243,7 @@ def main() raises:
     cfg.demo_out = demo_out
     cfg.snap_dir = snap_dir
     cfg.joint_zero = joint_zero
+    cfg.look = look
     print("=" * 78)
     print("so101_tower — vision student, CLOSED LOOP —", task)
     print("=" * 78)
