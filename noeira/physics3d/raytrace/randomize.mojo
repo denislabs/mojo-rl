@@ -164,9 +164,18 @@ struct DomainRandConfig(Copyable, ImplicitlyCopyable, Movable, Writable):
     @staticmethod
     def full(seed: UInt64) -> Self:
         """The plan's §2 ranges. Camera ±10 mm / ±2° / ±3° assumes CALIBRATED
-        extrinsics; before the desk session, widen `cam_*` (plan §6)."""
+        extrinsics; before the desk session, widen `cam_*` (plan §6).
+
+        ⚠ RE-CENTRED ON THE CALIBRATED LOOK (2026-09-24). The ranges only ADD
+        light twice — the ambient `U(0, a)` and the extra spots — so around
+        the tower's calibrated scene the frame mean's MEDIAN sat 15 / 28 grey
+        levels above the base (overhead / wrist) and 34 / 39 above the real
+        frames. Added ambient .15 -> .05 and the spots' diffuse .5 -> .3 bring
+        the median back to the base. The headlight-off draw (was 10%) is 0:
+        the calibrated headlight carries the scene's ambient (.6), so "off"
+        rendered a nearly black frame no room in the recordings looks like."""
         return Self(
-            True, seed, 1.0, 40.0, 0.5, 0.10, 0.15, 0.6, 0.1, 2, 0.5,
+            True, seed, 1.0, 40.0, 0.5, 0.10, 0.05, 0.6, 0.0, 2, 0.3,
             0.010, 2.0, 3.0, 0.10,
         )
 
