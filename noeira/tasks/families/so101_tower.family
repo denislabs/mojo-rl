@@ -36,7 +36,26 @@ inherit_option=1
 # to a light grey without washing out the overhead view's shading (.6 did);
 # the headlight's diffuse drops .4 -> .3 to keep the lit faces from clipping
 # harder than they already do. Randomized around by `randomize.mojo`.
-headlight=0.45,0.3,0.5
+#
+# ⚠⚠ SUPERSEDED 2026-09-24 BY AN APPEARANCE CALIBRATION against the printed
+# recording (cube-in-bowl-printed, both cameras, surfaces labelled by MuJoCo
+# segmentation at the recorded arm states). With the .7 sun and the headlight
+# above, the desk rendered CLIPPED WHITE (255) on both cameras against the
+# real 183 overhead / 155 wrist, the white arm parts 255 against 143, and
+# `--dr full`'s darkest wrist frames never reached the real brightness (for
+# series-2 H s1, blanking the real wrist image improved its roll 52.8 -> 39.5
+# deg; a later student recovered the roll without this, so it is a fidelity
+# fix, not THE roll fix). Fitted in MuJoCo, whose light model the tracer
+# matches: ambient .6 from everywhere, NO headlight diffuse, a .2 sun — the
+# room is lit diffusely — with the desk / arm / prop albedos lowered to the
+# real grey levels (`desk_mat.xml`, bake step 6, `gen_tower_props.py`).
+# Measured on the TRACER's frames after (real in brackets): frame mean
+# overhead 130 (127), wrist 164 (146); desk 170 (183 / 155); arm 147 (143);
+# bowl hue 38 (35); brick hue 217 / 203 (204 / 203). `--look legacy`
+# (`so101_tower_rig.apply_tower_look`) renders the pre-calibration look,
+# byte for byte, for an A/B.
+headlight=0.6,0.0,0.5
+sunlight=0.2
 
 # ⚠⚠ THE ROBOT SITS ON THE STAND'S BASE PLATE, 5 mm ABOVE THE DESK. The desk
 # is the floor plane; the tower's foot and plate rest on it. See

@@ -415,9 +415,14 @@ def bake():
     #    white (every recorded frame), where the reference model's material
     #    is the SO-ARM100's orange. The tracer renders what the material
     #    says, and a sim-to-real frame should not differ by the arm's colour.
+    #    ⚠ 0.78, NOT 0.92: the grey the rig's cameras record the white parts
+    #    at under the family's calibrated lights (so101_tower.family,
+    #    2026-09-24: real arm 143 / jaw 146 overhead, jaw 130 wrist; albedo =
+    #    real / light level, the cameras' geometric mean). 0.92 rendered
+    #    clipped white.
     n = src.count('rgba="1 0.82 0.12 1"')
     assert n == 11, "expected 11 orange materials, found %d" % n
-    src = src.replace('rgba="1 0.82 0.12 1"', 'rgba="0.92 0.92 0.90 1"')
+    src = src.replace('rgba="1 0.82 0.12 1"', 'rgba="0.78 0.78 0.76 1"')
     # 7. SHOULDER_LIFT REACHES THE REAL ARM'S REST. Folded at rest the real
     #    follower sits on its lift hard stop at -106.0 LeRobot deg, which with
     #    the measured zero (`robot/so101/sim_map.tower_follower_zero_deg`,

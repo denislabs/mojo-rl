@@ -578,6 +578,16 @@ struct FamilySpec(Movable & Deinitable):
     render nearly black from the wrist camera — they are seen edge-on to both
     lights — where the real room, lit from everywhere, shows them white
     (MuJoCo's own renderer agrees with the tracer; checked 2026-09-22)."""
+    var sunlight: Float64
+    """`sunlight=g` — the composed floor light's (the directional light
+    straight down) diffuse GREY level. Negative (the default) leaves MuJoCo's
+    .7 and every existing family byte-identical.
+
+    ⚠ AN APPEARANCE CALIBRATION, NOT A LOOK: with the .7 sun plus a lit
+    headlight the tower desk rendered CLIPPED WHITE on both cameras (255
+    against the real 183 overhead / 155 wrist, 2026-09-24), so no randomized
+    look around it could reach the real exposure. The so101_tower values are
+    fitted against the rig's recorded frames, see its `.family`."""
     var root: String
     """The TASK ROOT this family was loaded from: the directory holding its
     `families/`, `tasks/` and `scenes/`. `load_family(path)` sets it to the
@@ -620,6 +630,7 @@ struct FamilySpec(Movable & Deinitable):
         self.base_qpos_jitter = List[Float64]()
         self.inherit_option = False
         self.headlight = List[Float64]()
+        self.sunlight = -1.0
         self.root = String(DEFAULT_TASK_ROOT)
 
     def __init__(out self, *, deinit move: Self):
@@ -641,6 +652,7 @@ struct FamilySpec(Movable & Deinitable):
         self.base_qpos_jitter = move.base_qpos_jitter^
         self.inherit_option = move.inherit_option
         self.headlight = move.headlight^
+        self.sunlight = move.sunlight
         self.root = move.root^
 
     def init_target_kind(self, name: String) raises -> Int:
@@ -738,6 +750,8 @@ struct FamilySpec(Movable & Deinitable):
                 + String(self.headlight[1]) + "," + String(self.headlight[2])
                 + "\n"
             )
+        if self.sunlight >= 0.0:
+            s += "sunlight=" + String(self.sunlight) + "\n"
         for i in range(len(self.slots)):
             s += "slot=" + self.slots[i].describe() + "\n"
         # ⚠ A SEPARATE LINE, NOT A FIFTH FIELD ON `slot=`. The pose field is
@@ -1162,6 +1176,11 @@ def parse_family(text: String) raises -> FamilySpec:
                 if v < 0.0 or v > 1.0:
                     raise Error("family spec: headlight level outside [0, 1]: " + val)
                 f.headlight.append(v)
+        elif key == "sunlight":
+            var g = Float64(String(val.strip()))
+            if g < 0.0 or g > 1.0:
+                raise Error("family spec: sunlight grey level outside [0, 1]: " + val)
+            f.sunlight = g
         elif key == "slot":
             f.slots.append(parse_slot(val))
         elif key == "slot_geom":
@@ -1202,7 +1221,7 @@ def parse_family(text: String) raises -> FamilySpec:
             _unknown_key(
                 key, lines[i].lineno, String("family spec"),
                 String("schema_version, family, base, horizon, control_freq,"
-                       " park, base_pos, floor, base_qpos, base_qpos_jitter,"
+                       " park, base_pos, floor, base_qpos, base_qpos_jitter, sunlight,"
                        " inherit_option, slot,"
                        " slot_geom, region"),
             )

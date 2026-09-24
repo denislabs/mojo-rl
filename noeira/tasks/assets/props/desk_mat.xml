@@ -25,6 +25,10 @@
        recordings have — a 2 cm platform would move every grasp height;
        (2) the tracer draws it, and the recorded frames show a white desk,
        not a brown slab. `rgba` is the desk's colour for that reason.
+       ⚠ 0.81, NOT 0.93: the grey the rig's CAMERAS record the desk at under
+       the family's calibrated lights (so101_tower.family, 2026-09-24:
+       real median 183 overhead / 155 wrist; albedo = real / light level,
+       the two cameras' geometric mean). A whiter desk rendered clipped.
 
        ⚠⚠ 2 cm THICK, EXTENDING BELOW THE FLOOR PLANE, WITH ITS TOP STILL AT
        z = 0.002. It was a 2 mm slab, and the printed bowl FELL THROUGH IT
@@ -47,7 +51,7 @@
   <worldbody>
     <body name="mat">
       <geom name="geom" type="box" pos="-0.055 0 -0.009" size="0.325 0.325 0.010" density="800"
-            rgba="0.93 0.93 0.91 1" solref="0.01 1" solimp="0.998 0.998 0.001"/>
+            rgba="0.81 0.81 0.79 1" solref="0.01 1" solimp="0.998 0.998 0.001"/>
       <!-- THE SITE THE REGIONS ATTACH TO, on the top face — see
            `fixture.xml` for why it is site-relative and `group="3"`. -->
       <site name="surface" pos="0 0 0.001" size="0.005" group="3"/>
