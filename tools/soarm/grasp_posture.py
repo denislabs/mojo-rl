@@ -20,8 +20,10 @@ episode's grasp, the same two quantities in the expert's own terms:
 plus the six joints (real-arm degrees; the jaw 0..100).
 
 THE GRASP FRAME, real: the first frame, with the arm off its rest (lift above
--90 deg), whose jaw STATE is within 1.5 of the episode's minimum — the closed
-plateau on the brick. Expert: the first row whose jaw ACTION falls 0.3 below
+-90 deg), where the jaw STATE has closed at least 8 below its running maximum
+and then holds within 1 for 6 frames — the closed plateau on the brick
+(`_grasp_row`; the episode's minimum is not it, the operator may close the
+jaw fully on the way back to rest). Expert: the first row whose jaw ACTION falls 0.3 below
 its running maximum (the close command). Joints go through the measured zero
 (`robot/so101/sim_map.tower_follower_zero_deg`, read from the source).
 """
@@ -71,6 +73,23 @@ class Fk:
         return tilt, ang, np.linalg.norm(p[:2]), p[2]
 
 
+def _grasp_row(x):
+    """The first row, off rest, where the jaw has closed at least 8 below its
+    running maximum and then HOLDS (within 1 for the next 6 rows) — closed on
+    the object. -1 if none. (The episode's minimum jaw is not it: an operator
+    may close the jaw fully on the way back to rest.)"""
+    jaw = x[:, 5]
+    away = x[:, 1] > -90.0
+    run_max = -1e9
+    for i in range(len(x) - 6):
+        if not away[i]:
+            continue
+        run_max = max(run_max, jaw[i])
+        if jaw[i] < run_max - 8.0 and np.all(np.abs(jaw[i + 1:i + 7] - jaw[i]) <= 1.0):
+            return i
+    return -1
+
+
 def real_grasps(dataset, zero_deg, fk):
     t = pq.read_table(
         dataset / "data/chunk-000/file-000.parquet",
@@ -83,14 +102,10 @@ def real_grasps(dataset, zero_deg, fk):
     joints, feats = [], []
     for e in sorted(set(ep.tolist()) - rej):
         x = s[ep == e]
-        away = x[:, 1] > -90.0
-        if not away.any():
+        g = _grasp_row(x)
+        if g < 0:
             continue
-        jaw_min = x[away, 5].min()
-        idx = np.where(away & (x[:, 5] <= jaw_min + 1.5))[0]
-        if len(idx) == 0:
-            continue
-        r = x[idx[0]]
+        r = x[g]
         q = np.radians(r[:5] + zero_deg)
         g = fk.lo + r[5] / 100.0 * (fk.hi - fk.lo)
         joints.append(r)
