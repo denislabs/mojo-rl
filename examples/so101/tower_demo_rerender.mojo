@@ -143,6 +143,7 @@ from noeira.tasks.so101_tower_rig import (
     RIG_VISUAL_GROUP_MASK, RIG_DR_TARGET, TowerRenderer, make_tower_model,
     make_tower_renderer, tower_cameras, pack_camera_u8, rig_byte,
     So101TowerUnits, RIG_JOINT_ZERO_NONE, RIG_LOOK_CALIBRATED, apply_tower_look,
+    rig_visual_group_mask,
 )
 from noeira.tasks.spec import load_family, load_task
 
@@ -479,7 +480,7 @@ def main() raises:
                             dh.qpos.data[k] = Scalar[DT](first_state[k])
                         forward_kinematics["cpu", DT, DynDims, 1](dh, mh)
                         var vis_h = build_visual_model[DT, DynDims](
-                            fmd, mh, group_mask=VISUAL_GROUP_MASK
+                            fmd, mh, group_mask=rig_visual_group_mask(look)
                         )
                         apply_tower_look(vis_h, fmd, look)
                         # The same draw (launch 0) on the host pair, from its

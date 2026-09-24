@@ -9,7 +9,10 @@ The tracer's tables for the composed tower scene, built on the host:
    .3 diffuse, the floor's sun .7, the desk .93, every calibrated-white arm
    geom .92, the props' filament colours — and touches no other word
    (geometry, materials, the other geoms' colours);
-3. an unknown look is refused.
+3. an unknown look is refused;
+4. the desk asset's BACKDROP (group 4: floor, desk skin, +y floor strip, -y
+   clutter extension, wall) and the room-grey background belong to the
+   calibrated look only.
 
 The end-to-end check is a render: `tower_demo_rerender --look legacy` of a
 demo reproduces a store rendered before the calibration byte for byte
@@ -33,7 +36,7 @@ from noeira.tasks.family import scene_path
 from noeira.tasks.spec import load_family
 from noeira.tasks.so101_tower_rig import (
     apply_tower_look, RIG_LOOK_CALIBRATED, RIG_LOOK_LEGACY,
-    RIG_VISUAL_GROUP_MASK,
+    RIG_VISUAL_GROUP_MASK, rig_visual_group_mask, rig_background,
 )
 from noeira.tasks.so101_tower_xml import SO101_TOWER_NMESH_VERTS
 
@@ -121,6 +124,26 @@ def main() raises:
         if vl.materials.data[i] != mat0[i]:
             mats_same = False
     check(fails, "2e the material rows are not touched (the shader colours from the appearance row)", mats_same)
+
+    # 4. the backdrop (group 4) is the calibrated look's only
+    var vcal = build_visual_model[DT, DynDims](
+        fmd, m, group_mask=rig_visual_group_mask(String(RIG_LOOK_CALIBRATED))
+    )
+    var vleg = build_visual_model[DT, DynDims](
+        fmd, m, group_mask=rig_visual_group_mask(String(RIG_LOOK_LEGACY))
+    )
+    var backdrop = 0
+    for k in range(vcal.ngeom):
+        var lab = labels[vcal.src_geom[k]]
+        if lab.find("floor_cover") >= 0 or lab.find("desk_skin") >= 0 or lab.find("floor_strip") >= 0 or lab.find("desk_ext") >= 0 or lab.find("desk_wall") >= 0:
+            backdrop += 1
+    check(fails, "4 the calibrated look draws the 5 backdrop geoms, legacy none",
+          backdrop == 5 and vcal.ngeom == vleg.ngeom + 5 and vleg.ngeom == vl.ngeom,
+          String(vcal.ngeom) + " vs " + String(vleg.ngeom) + " visual geoms")
+    var bg_c = rig_background(String(RIG_LOOK_CALIBRATED))
+    var bg_l = rig_background(String(RIG_LOOK_LEGACY))
+    check(fails, "4b the background: calibrated room grey, legacy blue-grey",
+          near(bg_c.x, 0.59) and near(bg_l.z, 0.90))
 
     # 3. unknown look
     var refused = False

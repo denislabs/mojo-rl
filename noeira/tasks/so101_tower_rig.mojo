@@ -113,10 +113,32 @@ def tower_cameras(fmd: FlatModelDef) raises -> List[Int]:
     return cams^
 
 
-def rig_background() -> Vec3Generic[RIG_DT]:
+comptime RIG_BACKDROP_GROUP: Int = 4
+"""The desk asset's BACKDROP geoms (visual only: the floor past the real
+desk's +y edge, the desk's -y extension, the wall — `desk_mat.xml`). Drawn by
+the calibrated look only."""
+
+
+def rig_visual_group_mask(look: String) -> Int:
+    """Groups 0+2 (props, the arm's and stand's visual meshes), plus the
+    backdrop (group 4) under the calibrated look. `legacy` keeps the pre-
+    calibration set, so its stores stay byte-identical."""
+    if look == RIG_LOOK_LEGACY:
+        return RIG_VISUAL_GROUP_MASK
+    return RIG_VISUAL_GROUP_MASK | (1 << RIG_BACKDROP_GROUP)
+
+
+def rig_background(look: String = RIG_LOOK_CALIBRATED) -> Vec3Generic[RIG_DT]:
+    """What a ray that hits nothing shows. Legacy: the preview's blue-grey
+    (.82,.86,.90). Calibrated: the room the wrist camera sees past the wall's
+    top (median 151,155,144 on the real wrist frames, 2026-09-24)."""
+    if look == RIG_LOOK_LEGACY:
+        return Vec3Generic[RIG_DT](
+            Scalar[RIG_DT](RIG_BACKGROUND_R), Scalar[RIG_DT](RIG_BACKGROUND_G),
+            Scalar[RIG_DT](RIG_BACKGROUND_B),
+        )
     return Vec3Generic[RIG_DT](
-        Scalar[RIG_DT](RIG_BACKGROUND_R), Scalar[RIG_DT](RIG_BACKGROUND_G),
-        Scalar[RIG_DT](RIG_BACKGROUND_B),
+        Scalar[RIG_DT](0.59), Scalar[RIG_DT](0.61), Scalar[RIG_DT](0.56),
     )
 
 
@@ -224,11 +246,11 @@ def make_tower_renderer[
     var cams = tower_cameras(fmd)
     var r = TowerRenderer[LANES](ctx, m, cams[0])
     var vis = build_visual_model[RIG_DT, TOWER_MD](
-        fmd, m, group_mask=RIG_VISUAL_GROUP_MASK
+        fmd, m, group_mask=rig_visual_group_mask(look)
     )
     apply_tower_look(vis, fmd, look)
     r.set_visual(ctx, vis^)
-    r.background = rig_background()
+    r.background = rig_background(look)
     return r^
 
 
