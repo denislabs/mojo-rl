@@ -41,6 +41,12 @@ shown a different input than the one it was trained on.
   (hold the measured joints, through the same ensemble); `mean` predicts the
   student's training mean action. A student that does not beat `hold ens.` on
   real frames is not using what it sees there.
+* `--moving-only` scores only the rows with the arm off its folded rest.
+  Every real episode idles at rest ~2 s before moving and folds back to rest
+  for ~3 s after (the operator's reaction time and the recording's tail —
+  ~40% of the rows); the same frame then carries "hold" and "move", and no
+  sim expert demonstrates the idle. The student is still queried every step,
+  so its ensemble is the one a deployment runs.
 * The real recording is TELEOP of a different scene (another cube and bowl,
   the leader arm and the operator in the overhead view): the demonstrator is
   not the sim expert. The number RANKS students on the same frames (the plan's
@@ -86,6 +92,11 @@ comptime T = ACTTrainer[
     LANES, target="gpu",
 ]
 comptime DS = ACTDataset[QPOS, ADIM, SO101_N_CAM, SO101_IMG_H, SO101_IMG_W]
+comptime REST_LIFT_RAD: Float64 = -93.6 * 3.141592653589793 / 180.0
+"""`--moving-only`: a row whose recorded shoulder_lift, in MODEL radians, is
+below this is the arm folded at rest — -90 LeRobot deg on the rig's follower
+(zero -3.6); the rest itself sits at -109.4. `tools/soarm/grasp_posture.py`'s
+"off rest" rule."""
 comptime DEFAULT_SPLIT_SEED = 7
 """The trainer's default `ACT_SEED`: the episode split `--split val` reproduces."""
 
@@ -95,7 +106,7 @@ def _usage() -> String:
         "usage: tower_real_check.mojo --ckpt RUN_ID|DIR|FILE [--ckpt-name best|last]"
         " [--norm FILE] --student-zero none|follower --store FILE.h5"
         " --store-zero none|follower [--split all|val] [--split-seed S]"
-        " [--episodes N] [--m M]"
+        " [--episodes N] [--m M] [--dump FILE.csv] [--moving-only]"
     )
 
 
@@ -127,9 +138,15 @@ def main() raises:
     var split_seed = DEFAULT_SPLIT_SEED
     var max_eps = 0
     var ens_m = ACT_TEMPORAL_ENSEMBLE_M
+    var dump_path = String("")
+    var moving_only = False
     var i = 1
     while i < len(args):
         var a = String(args[i])
+        if a == "--moving-only":
+            moving_only = True
+            i += 1
+            continue
         if not a.startswith("--") or i + 1 >= len(args):
             raise Error("bad argument " + a + "\n" + _usage())
         var v = String(args[i + 1])
@@ -153,6 +170,8 @@ def main() raises:
             max_eps = Int(v)
         elif a == "--m":
             ens_m = Float64(v)
+        elif a == "--dump":
+            dump_path = v
         else:
             raise Error("unknown option " + a + "\n" + _usage())
         i += 2
@@ -210,6 +229,9 @@ def main() raises:
     print("  store  :", store_path, "|", ds.store.n_episodes(), "episodes,",
           ds.store.n_rows(), "rows | scoring", len(eps), "(" + split + ")")
     print("  ens    : m =", ens_m, "| chunk", K, "| lanes", LANES)
+    if moving_only:
+        print("  rows   : MOVING ONLY — rows with the arm folded at rest (idle"
+              " before / after the task) are queried but not scored")
 
     var ctx = DeviceContext()
     var act = T.make(ctx=Optional[DeviceContext](ctx))
@@ -238,6 +260,17 @@ def main() raises:
         )
     var t0 = perf_counter_ns()
     var ns_io = 0
+    # `--dump`: one line per scored row, store units, for a per-phase look
+    var dump = String("")
+    if dump_path.byte_length() > 0:
+        dump = String("episode,t")
+        for j in range(ADIM):
+            dump += ",pred" + String(j)
+        for j in range(ADIM):
+            dump += ",act" + String(j)
+        for j in range(QPOS):
+            dump += ",qpos" + String(j)
+        dump += "\n"
 
     var r0 = 0
     while r0 < len(eps):
@@ -289,10 +322,25 @@ def main() raises:
                 ens[l].push(t, chunk, l * K * ADIM)
                 if t >= lens[l]:
                     continue
+                var row = starts[l] + t
+                if moving_only and u_store.lerobot_to_joint(
+                    1, Float64(ds.qpos_raw[row * QPOS + 1])
+                ) < REST_LIFT_RAD:
+                    continue
                 ens[l].action_at(t, pred_n, 0)
                 denormalize(pred_n, 0, nm.action_mean, nm.action_std, pred, 0, ADIM)
-                var row = starts[l] + t
                 var i_min = t - K + 1 if t - K + 1 > 0 else 0
+                if dump_path.byte_length() > 0:
+                    var line = String(eps[r0 + l]) + "," + String(t)
+                    for j in range(ADIM):
+                        line += "," + String(u_store.joint_to_lerobot(
+                            j, u_student.lerobot_to_joint(j, Float64(pred[j]))
+                        ))
+                    for j in range(ADIM):
+                        line += "," + String(Float64(ds.action_raw[row * ADIM + j]))
+                    for j in range(QPOS):
+                        line += "," + String(Float64(ds.qpos_raw[row * QPOS + j]))
+                    dump += line + "\n"
                 for j in range(ADIM):
                     var p = u_store.joint_to_lerobot(
                         j, u_student.lerobot_to_joint(j, Float64(pred[j]))
@@ -334,8 +382,13 @@ def main() raises:
     print("")
     print("  " + String(n_scored) + " rows in " + String(Int(secs)) + " s (image io "
           + String(Int(Float64(ns_io) / 1e9)) + " s)")
+    if dump_path.byte_length() > 0:
+        with open(dump_path, "w") as fh:
+            fh.write(dump)
+        print("  dump   :", dump_path, "(" + String(n_scored) + " rows)")
     print("RESULT ckpt=" + ckpt_path + " store=" + store_path + " split=" + split
           + " student_zero=" + student_zero + " store_zero=" + store_zero
+          + " moving_only=" + String(moving_only)
           + " rows=" + String(n_scored) + " l1_all=" + String(tot[0] / n6)
           + " hold_ens=" + String(tot[1] / n6) + " mean=" + String(tot[3] / n6))
     if tot[0] < tot[1]:
