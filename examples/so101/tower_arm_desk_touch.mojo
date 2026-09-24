@@ -34,10 +34,13 @@ Put the tip of the FIXED jaw (the jaw that does not move) on the bare desk
 and hold still ~1 s; the tool prints `TOUCH n`. Lift the arm, go to the next
 pose. A new touch must be >= 3 cm from the previous one or tilted >= 15 deg
 differently. Aim for (the tool prints what is still missing):
-- gripper VERTICAL at NEAR (~12-18 cm from the shoulder), MID (~22-28) and
-  FAR (~32-40) reach, on the left, centre and right;
-- gripper TILTED ~30-45 deg (forward, backward, sideways) at mid reach.
-Jaws closed or open does not matter (the fixed jaw's tip is what is measured).
+- gripper VERTICAL (< 15 deg) as NEAR as the arm allows (~20 cm from the
+  shoulder) and as FAR (~28-32 cm), on the left, centre and right;
+- gripper TILTED 25-50 deg (forward, backward, sideways).
+Past 50 deg the jaw's FLANK, not its tip, meets the desk: such touches are
+ignored. The suggestions are not requirements: `--touches` of any poses end
+the session. The file is rewritten after every touch (Ctrl-C loses nothing;
+the fit then runs offline from it). Jaws closed or open does not matter.
 
 ## The fit
 
@@ -76,6 +79,14 @@ comptime NEAR_DESK = 0.06
 """FK tip below this (world z) counts as a touch candidate."""
 comptime NEW_XY = 0.03
 comptime NEW_TILT_DEG = 15.0
+comptime MAX_TILT_DEG = 50.0
+"""Past this the jaw's flank, not its tip, meets the desk (2026-09-24: touches
+at 74-102 deg read 26-55 mm above the desk)."""
+comptime VERT_DEG = 15.0
+comptime NEAR_REACH = 0.22
+comptime FAR_REACH = 0.28
+"""Reachable with a vertical gripper: not much closer than ~0.20 m to the
+shoulder, and not past ~0.30-0.33 m (the expert's own IK note)."""
 comptime PAN_AXIS_X = 0.0388353
 """World x of the shoulder-pan axis (`so_arm101_tower.xml` body `shoulder`)."""
 
@@ -344,6 +355,43 @@ def _report(
         )
 
 
+def _offline(path: String, desk_z: Float64) raises:
+    """`--from FILE`: the report on a saved session, touches past
+    MAX_TILT_DEG dropped (their jaw FLANK met the desk)."""
+    var fk = TowerArmFK()
+    var tip = fk.site_index("gripperframe")
+    var T = Touches()
+    var tilts = List[Float64]()
+    var reaches = List[Float64]()
+    var dropped = 0
+    with open(path, "r") as fh:
+        var text = fh.read()
+        for line in text.split("\n"):
+            var l = String(line).strip()
+            if l.byte_length() == 0 or l.startswith("#"):
+                continue
+            var parts = l.split("|")
+            var tr = parts[1].strip().split(" ")
+            var tilt = Float64(String(tr[0]))
+            var reach = Float64(String(tr[len(tr) - 1]))
+            if tilt > MAX_TILT_DEG:
+                dropped += 1
+                continue
+            var q = List[Float64]()
+            for s in parts[2].strip().split(" "):
+                var st = String(s).strip()
+                if st.byte_length() > 0:
+                    q.append(Float64(st))
+            T.q.append(q^)
+            tilts.append(tilt)
+            reaches.append(reach)
+    print(path, ":", len(T.q), "touches kept,", dropped, "dropped (tilt >", MAX_TILT_DEG, "deg)")
+    if len(T.q) < 4:
+        print("too few touches to fit")
+        return
+    _report(fk, tip, T, tilts, reaches, desk_z)
+
+
 def main() raises:
     var args = argv()
     var port = String("")
@@ -351,6 +399,7 @@ def main() raises:
     var seconds = 900.0
     var desk_z = 0.0
     var out_path = String("projects/so101-tower/calibration/desk_touch.txt")
+    var from_path = String("")
     var i = 1
     while i < len(args):
         var a = String(args[i])
@@ -370,9 +419,15 @@ def main() raises:
         elif a == "--selftest":
             _selftest(v)
             return
+        elif a == "--from":
+            from_path = v
         else:
             raise Error("unknown flag " + a)
         i += 2
+
+    if from_path != "":
+        _offline(from_path, desk_z)
+        return
 
     var fk = TowerArmFK()
     var tip = fk.site_index("gripperframe")
@@ -461,6 +516,14 @@ def main() raises:
                     fresh = False
             if not fresh:
                 continue
+            if tilt > MAX_TILT_DEG:
+                if armed:
+                    print(
+                        "  (ignored: gripper tilted", fixed(tilt, 0), "deg — past",
+                        MAX_TILT_DEG, "the jaw's FLANK touches, not its tip)",
+                    )
+                armed = False
+                continue
             var qm = List[Float64](length=6, fill=0.0)
             for qs in win_q:
                 for k in range(6):
@@ -478,6 +541,9 @@ def main() raises:
                 log += " " + String(Int(raw[k]))
             log += "\n"
             armed = False
+            # written after EVERY touch: a Ctrl-C must not lose the session
+            with open(out_path, "w") as fh:
+                fh.write(log)
             print(
                 "  TOUCH", len(T.q), ": FK tip z", fixed((mz - desk_z) * 1000.0, 1),
                 "mm above the desk | reach", fixed(reach * 100.0, 1), "cm, tilt",
@@ -489,23 +555,26 @@ def main() raises:
             var nnear = 0
             var nfar = 0
             for k in range(len(tilts)):
-                if tilts[k] < 12.0:
+                if tilts[k] < VERT_DEG:
                     nv += 1
-                    if reaches[k] < 0.19:
+                    if reaches[k] < NEAR_REACH:
                         nnear += 1
-                    if reaches[k] > 0.31:
+                    if reaches[k] > FAR_REACH:
                         nfar += 1
                 elif tilts[k] > 25.0:
                     nt += 1
             var need = String("")
             if nnear < 3:
-                need += " vertical-NEAR(" + String(nnear) + "/3)"
+                need += " vertical<15deg-reach<22cm(" + String(nnear) + "/3)"
             if nfar < 3:
-                need += " vertical-FAR(" + String(nfar) + "/3)"
+                need += " vertical<15deg-reach>28cm(" + String(nfar) + "/3)"
             if nt < 3:
-                need += " TILTED>25deg(" + String(nt) + "/3)"
+                need += " tilted-25..50deg(" + String(nt) + "/3)"
             if len(T.q) < n_touch:
-                print("  lift the arm; next pose." + (" still wanted:" + need if need != "" else ""))
+                print(
+                    "  lift the arm; next pose (" + String(n_touch - len(T.q))
+                    + " to go — any pose counts; suggestions:" + (need if need != "" else " none") + ")"
+                )
     finally:
         try:
             arm.set_torque(False)
