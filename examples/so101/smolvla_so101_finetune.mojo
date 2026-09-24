@@ -84,6 +84,7 @@ is read from `tools/vla/`.
 | `SMOLVLA_PROFILE` | set to anything: per-phase wall times (host images / prefix / suffix forward / backward) in the log line, at the cost of three extra drains per observation |
 | `SMOLVLA_VISION_CACHE` | path of the vision cache; default `<store>.vision.bin`; `off` recomputes the tower every observation (the pre-cache path, kept for A/B) |
 | `SMOLVLA_NO_MONITOR` | force the metrics logger inert |
+| `SMOLVLA_PROJECT` | the project the run is filed under (default `so101`); must exist on the box. `project-promote` promotes into the run's project |
 
 ⚠ **The held-out fifth is never trained on, and the deployed checkpoint is the
 model that never saw it.** The reference recipe trains on all 50 episodes. If
@@ -198,6 +199,7 @@ from noeira.nn.core.initializer import Deterministic
 from noeira.nn.optimizer.adam import Adam
 from noeira.nn.primitives.linear import Linear
 from noeira.core.run import RunContext, register_run
+from noeira.core.project import project_exists
 from noeira.core.run_session import finish_run, run_logger
 from noeira.io.artifact_sink import ArtifactSink, sink_for_run
 from noeira.deep_agents.training.checkpoint import announce_checkpoint
@@ -603,8 +605,20 @@ def main() raises:
     pol.load_stats(stats_path)
     print("  policy  loaded")
 
+    # `SMOLVLA_PROJECT` files the run under a project (`project-promote`
+    # promotes into the RUN's project); unset keeps the historical `so101`.
+    # An explicit name that is not on this box refuses, as `ACT_PROJECT` does.
+    var project = getenv("SMOLVLA_PROJECT")
+    if project.byte_length() == 0:
+        project = String("so101")
+    elif not project_exists(project):
+        raise Error(
+            "SMOLVLA_PROJECT=" + project + " but there is no projects/"
+            + project + "/project.kv on this box — run `pixi run project-pull "
+            + project + "` first"
+        )
     var run = RunContext(
-        project=String("so101"),
+        project=project,
         driver=String("examples/so101/smolvla_so101_finetune.mojo"),
         slug=String("smolvla-so101"),
         env=String("builtin:so_arm101"),
