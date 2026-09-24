@@ -123,12 +123,13 @@ JAW_CONTACT = 'solref="0.01 1" solimp="0.998 0.998 0.001"'
 # FIXED JAW in the gripper body frame — the moving jaw is on +x, so the fixed
 # finger's inner face is its max-x face: x -8 mm at the tip (z -104), -13 at
 # z -64, -15 at z -42, then the servo pocket. Slices of the mesh:
-#   z -104..-70  x -22..-9   y +-7.5     the finger tip segment
+#   z -104..-70  x -22..-9   y +-7.5     the finger tip segment (the mesh's
+#                                         tip is at z -104.4: the box reaches it)
 #   z  -70..-42  x -33..-13  y +-12      the finger base (outer side slopes)
 #   z  -42..-12  x -35..+12  y +-24      the pocket, lower half
 #   z  -12..0    x -17..+30  y -28..+24  the pocket, upper half (the servo)
 FIXED_JAW_BOXES = [
-    ("fixed_finger_tip",  (-0.0155,  0.000, -0.087), (0.0065, 0.0075, 0.017)),
+    ("fixed_finger_tip",  (-0.0155,  0.000, -0.0872), (0.0065, 0.0075, 0.0172)),
     ("fixed_finger_base", (-0.02325, 0.000, -0.056), (0.00975, 0.012, 0.014)),
     ("gripper_pocket_low", (-0.0115, 0.000, -0.027), (0.0235, 0.024, 0.015)),
     ("gripper_pocket_top", (0.0065, -0.002, -0.006), (0.0235, 0.026, 0.006)),
@@ -367,6 +368,19 @@ def bake():
         ' fovy="%.4f"/>' % (_fmt(pos), _fmt(xy), FOVY_DEG)
     )
     src = sub(STOCK_CAM, cam, "stock wrist camera")
+    # 4b. `gripperframe` AT THE JAW'S TIP. Upstream puts the site at z -98.1
+    #     in the gripper frame; the fixed finger's mesh (the stock part's and
+    #     the mount's alike) ends at z -104.4 (x -13.6..-7.9 there), measured
+    #     off the mesh in MuJoCo. So a tool that reads the site as "the tip"
+    #     was 6.3 mm short: on the rig, FK of hand-guided touches read the
+    #     tip ~13 mm high, half of it this (noeira-72, 2026-09-24; the rest is
+    #     unresolved — a longer print, a lift zero, or the desk reference).
+    #     x stays at the tip's inner face (-7.9), the orientation unchanged.
+    src = sub(
+        '<site group="3" name="gripperframe" pos="-0.0079 -0.000218121 -0.0981274"',
+        '<site group="3" name="gripperframe" pos="-0.0079 -0.000218121 -0.1044"',
+        "gripperframe site",
+    )
     # 4c. THE PINCH CENTRE, as a site. `gripperframe` is the fixed jaw's TIP;
     #    a brick held by this jaw sits 3 cm above it and 2 cm towards the
     #    fixed jaw — (0.0221, 0.0012, -0.0681) in the gripper body, measured
