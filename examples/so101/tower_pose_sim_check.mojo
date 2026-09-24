@@ -9,16 +9,22 @@ synthetic prisms (`tests/vision/test_tabletop_pose.mojo`). This puts it on
 the frames the simulator actually renders: the tower scene's lights and
 materials, the bowl's printed MESH (hollow, with an inner wall, not a solid
 prism), the arm folded at the family's rest pose, the stand at the image's
-bottom edge. Per placement the brick is drawn in `desk_right` with a yaw and
-the bowl in `desk_left` — the task's own regions, read from the family — and
+bottom edge. Per placement the brick is drawn in `desk_brick` with a yaw and
+the bowl in `desk_bowl` — the task's own regions since 8082616e5 (the real
+layouts), read from the family; `--brick-region` / `--bowl-region` pick
+others — and
 the overhead camera is rendered at W x H by `render_lane_cpu` (the GPU
 kernel's own pixel function, float64 host leg). The estimator reads the frame
 through `Pinhole.sim`, the tracer's convention (`vision/fisheye.mojo`).
 
 Printed per placement and summarised: brick xy error (mm) and yaw error
 (deg, modulo 90), bowl xy error (mm), and the confidence (`coverage`,
-`residual`). The object-pose plan's target: brick <= 3 mm / 5 deg, bowl
-<= 5 mm. The process exits 1 above that, so it can sit in a manifest.
+`residual`). Scored on CONFIDENT estimates only (the real check's rule —
+what the rig acts on); low-confidence ones are counted. The object-pose
+plan's target: brick <= 3 mm / 5 deg, bowl <= 5 mm, and >= 90% of placements
+confident. The process exits 1 otherwise, so it can sit in a manifest.
+`--brick-hsv` / `--bowl-hsv` override the colour classes (the sim materials
+are being moved toward the real props' colours).
 
 ⚠ A POSE, NOT A SIMULATION: nothing is stepped; the props are placed at their
 resting heights (as `tower_camera_preview.mojo` does).
@@ -47,8 +53,10 @@ from noeira.tasks.so101_tower_xml import (
 )
 from noeira.vision.fisheye import Pinhole
 from noeira.vision.tabletop_pose import (
-    RigCamera, ColorClass, PrismModel, DeskROI, estimate_prism_pose,
+    RigCamera, ColorClass, PrismModel, DeskROI, PoseEstimate,
+    estimate_prism_pose,
 )
+from noeira.utils.fmt import fixed
 
 comptime DT = DType.float64
 comptime Vec3 = Vec3Generic[DT]
@@ -60,6 +68,15 @@ comptime BRICK_HALF = 0.0125
 comptime TARGET_BRICK_MM = 3.0
 comptime TARGET_BRICK_DEG = 5.0
 comptime TARGET_BOWL_MM = 5.0
+comptime MIN_CONFIDENT_RATE = 0.9
+"""Placements whose estimate must be CONFIDENT (the rule below). A brick
+under the folded arm's wrist is hidden (coverage ~0.57): flagged, not wrong."""
+
+
+def _confident(e: PoseEstimate) -> Bool:
+    """`tower_pose_real_check.mojo`'s rule: coverage in [0.75, 1.3], residual
+    < 0.35 — what the rig trusts."""
+    return e.found and e.coverage >= 0.75 and e.coverage <= 1.3 and e.residual < 0.35
 
 
 struct Rng:
@@ -102,6 +119,10 @@ def main() raises:
     var seed = 1
     var width = 640
     var out_dir = String("")
+    var brick_region = String("desk_brick")
+    var bowl_region = String("desk_bowl")
+    var cls_brick = ColorClass.tower_brick_sim()
+    var cls_bowl = ColorClass.tower_bowl_sim()
     var i = 1
     while i < len(args):
         var a = String(args[i])
@@ -116,6 +137,21 @@ def main() raises:
             width = Int(v)
         elif a == "--out-dir":
             out_dir = v
+        elif a == "--brick-region":
+            brick_region = v
+        elif a == "--bowl-region":
+            bowl_region = v
+        elif a == "--brick-hsv" or a == "--bowl-hsv":
+            var hv = List[Float64]()
+            for p in v.split(","):
+                hv.append(Float64(String(String(p).strip())))
+            if len(hv) != 5:
+                raise Error(a + " is hue,tol,s_min,v_min,v_max")
+            var c = ColorClass(hv[0], hv[1], hv[2], hv[3], hv[4])
+            if a == "--brick-hsv":
+                cls_brick = c
+            else:
+                cls_bowl = c
         else:
             raise Error("unknown flag " + a)
         i += 2
@@ -163,10 +199,10 @@ def main() raises:
     var sx = Float64(d.site_xpos.data[site * 3])
     var sy = Float64(d.site_xpos.data[site * 3 + 1])
     var sz = Float64(d.site_xpos.data[site * 3 + 2])
-    var ri = f.region_index("desk_right")
-    var li = f.region_index("desk_left")
+    var ri = f.region_index(brick_region)
+    var li = f.region_index(bowl_region)
     if ri < 0 or li < 0:
-        raise Error("the family has no desk_right / desk_left region")
+        raise Error("the family has no " + brick_region + " / " + bowl_region + " region")
     var rr = f.regions[ri]
     var rl = f.regions[li]
     print("desk surface at (", sx, sy, sz, ")")
@@ -185,11 +221,11 @@ def main() raises:
         if String(fmd.camera_names[c]) == sim_cam.name:
             cam_idx = c
     var cam = RigCamera(Pinhole.sim(FOVY, width, height), sim_cam.pos, sim_cam.rot)
-    var roi = DeskROI(sz, 0.10, 0.50, -0.25, 0.25)
+    # the real check's ROI (tower_pose_real_check.mojo), so the two agree
+    var roi = DeskROI(sz, 0.08, 0.57, -0.28, 0.28)
     var brick = PrismModel.tower_brick()
     var bowl = PrismModel.tower_bowl()
-    var cls_brick = ColorClass.tower_brick_sim()
-    var cls_bowl = ColorClass.tower_bowl_sim()
+    print("brick hsv", cls_brick, "| bowl hsv", cls_bowl)
     print("camera", sim_cam.name, "at", sim_cam.pos, "->", width, "x", height, "pinhole")
     print("roi", roi)
 
@@ -209,14 +245,25 @@ def main() raises:
     var max_b = 0.0
     var max_y = 0.0
     var max_o = 0.0
-    var n_ok = 0
-    var n_miss = 0
+    var n_b = 0
+    var n_o = 0
+    var low_b = 0
+    var low_o = 0
     for k in range(n):
-        var bx = sx + rr.x_min + rng.u() * (rr.x_max - rr.x_min)
-        var by = sy + rr.y_min + rng.u() * (rr.y_max - rr.y_min)
+        # the two regions overlap: redraw until the brick clears the bowl
+        # (outer circumradius 0.0606 + the brick's half-diagonal 0.0177 + 1 cm)
+        var bx = 0.0
+        var by = 0.0
+        var ox = 0.0
+        var oy = 0.0
+        while True:
+            bx = sx + rr.x_min + rng.u() * (rr.x_max - rr.x_min)
+            by = sy + rr.y_min + rng.u() * (rr.y_max - rr.y_min)
+            ox = sx + rl.x_min + rng.u() * (rl.x_max - rl.x_min)
+            oy = sy + rl.y_min + rng.u() * (rl.y_max - rl.y_min)
+            if sqrt((bx - ox) ** 2 + (by - oy) ** 2) > 0.088:
+                break
         var byaw = rng.u() * 2.0 * pi
-        var ox = sx + rl.x_min + rng.u() * (rl.x_max - rl.x_min)
-        var oy = sy + rl.y_min + rng.u() * (rl.y_max - rl.y_min)
         var oyaw = rng.u() * 2.0 * pi
         d.qpos.data[brick_adr] = Scalar[DT](bx)
         d.qpos.data[brick_adr + 1] = Scalar[DT](by)
@@ -239,44 +286,56 @@ def main() raises:
             save_png(out_dir + "/overhead_" + String(k) + ".png", px, width, height, 3)
         var eb = estimate_prism_pose(px, cam, cls_brick, brick, roi)
         var eo = estimate_prism_pose(px, cam, cls_bowl, bowl, roi)
-        if not eb.found or not eo.found:
-            n_miss += 1
-            print("  [", k, "] MISSED  brick:", eb, " bowl:", eo)
-            continue
-        var e_b = _mm(eb.x, eb.y, bx, by)
-        var e_y = _yaw_err_deg(eb.yaw, byaw, brick.period)
-        var e_o = _mm(eo.x, eo.y, ox, oy)
+        var e_b = _mm(eb.x, eb.y, bx, by) if eb.found else -1.0
+        var e_y = _yaw_err_deg(eb.yaw, byaw, brick.period) if eb.found else -1.0
+        var e_o = _mm(eo.x, eo.y, ox, oy) if eo.found else -1.0
+        var cb = _confident(eb)
+        var co = _confident(eo)
         print(
-            "  [", k, "] brick (", bx, by, byaw * 180.0 / pi, "deg ) err", e_b,
-            "mm", e_y, "deg, px", eb.n_px, "cov", eb.coverage, "res",
-            eb.residual, "| bowl err", e_o, "mm, px", eo.n_px, "cov",
-            eo.coverage, "res", eo.residual,
+            "  [", k, "] brick (", fixed(bx, 3), fixed(by, 3), fixed(byaw * 180.0 / pi, 1),
+            "deg ) err", fixed(e_b, 2), "mm", fixed(e_y, 2), "deg, cov",
+            fixed(eb.coverage, 2), "res", fixed(eb.residual, 2),
+            "" if cb else " LOW-CONFIDENCE", "| bowl err", fixed(e_o, 2), "mm, cov",
+            fixed(eo.coverage, 2), "res", fixed(eo.residual, 2),
+            "" if co else " LOW-CONFIDENCE",
         )
-        n_ok += 1
-        sum_b += e_b
-        sum_y += e_y
-        sum_o += e_o
-        max_b = max(max_b, e_b)
-        max_y = max(max_y, e_y)
-        max_o = max(max_o, e_o)
+        if cb:
+            n_b += 1
+            sum_b += e_b
+            sum_y += e_y
+            max_b = max(max_b, e_b)
+            max_y = max(max_y, e_y)
+        else:
+            low_b += 1
+        if co:
+            n_o += 1
+            sum_o += e_o
+            max_o = max(max_o, e_o)
+        else:
+            low_o += 1
 
     print()
-    if n_ok > 0:
+    if n_b > 0:
         print(
-            "brick xy  mean", sum_b / Float64(n_ok), "max", max_b, "mm (target <=",
-            TARGET_BRICK_MM, ")",
-        )
-        print(
-            "brick yaw mean", sum_y / Float64(n_ok), "max", max_y, "deg (target <=",
+            "brick (confident, ", n_b, "of", n, ") xy mean", fixed(sum_b / Float64(n_b), 2),
+            "max", fixed(max_b, 2), "mm (target <=", TARGET_BRICK_MM, "); yaw mean",
+            fixed(sum_y / Float64(n_b), 2), "max", fixed(max_y, 2), "deg (target <=",
             TARGET_BRICK_DEG, ")",
         )
+    if n_o > 0:
         print(
-            "bowl xy   mean", sum_o / Float64(n_ok), "max", max_o, "mm (target <=",
-            TARGET_BOWL_MM, ")",
+            "bowl  (confident, ", n_o, "of", n, ") xy mean", fixed(sum_o / Float64(n_o), 2),
+            "max", fixed(max_o, 2), "mm (target <=", TARGET_BOWL_MM, ")",
         )
-    print("found", n_ok, "of", n, "placements")
+    print(
+        "low-confidence (flagged, not scored): brick", low_b, "bowl", low_o,
+        "— the caller discards these; the gate needs >=", MIN_CONFIDENT_RATE,
+        "confident",
+    )
     if (
-        n_miss > 0 or max_b > TARGET_BRICK_MM or max_y > TARGET_BRICK_DEG
+        Float64(n_b) < MIN_CONFIDENT_RATE * Float64(n)
+        or Float64(n_o) < MIN_CONFIDENT_RATE * Float64(n)
+        or max_b > TARGET_BRICK_MM or max_y > TARGET_BRICK_DEG
         or max_o > TARGET_BOWL_MM
     ):
         print("FAIL")
