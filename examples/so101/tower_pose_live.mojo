@@ -25,8 +25,9 @@ residual; bowl x, y) and, with `--log FILE`, written as CSV.
 
 The camera thread delivers RGB24 at 640x480 (the calibration's size — refused
 otherwise), newest frame first (`take_latest`: a stale frame is a stale
-pose). The lens is `--calib` (default the overhead calibration), the pose is
-the asset's `overhead_cam` (see `tower_pose_real_check.mojo` for why).
+pose). The lens is `--calib` (default the overhead calibration); the pose is
+the asset's `overhead_cam`, or `--extrinsics FILE` from
+`tower_pose_arm_calib.mojo` (`tasks/so101_tower_overhead.mojo`).
 
 Colours default to the PRINTED props as measured on `cube-in-bowl-printed`
 (bowl hue 36, brick 205 — the real bowl is ~11 deg more orange than the sim
@@ -41,7 +42,10 @@ from std.time import perf_counter_ns
 
 from noeira.core.concurrent.thread import sleep_us
 from noeira.math3d import Vec3 as Vec3Generic
-from noeira.tasks.so101_tower_camera_pose import tower_sim_camera
+from noeira.tasks.so101_tower_overhead import (
+    OVERHEAD_CALIB, DESK_Z, tower_overhead_pose, tower_desk_roi,
+    printed_brick_hsv, printed_bowl_hsv, pose_confident,
+)
 from noeira.utils.fmt import fixed
 from noeira.vision.calib_file import read_calib
 from noeira.vision.camera_thread import CameraReader
@@ -52,7 +56,6 @@ from noeira.vision.tabletop_pose import (
     estimate_prism_pose,
 )
 
-comptime DESK_Z = 0.002
 comptime STILL_MM = 1.5
 comptime PAN_AXIS_X = 0.0388353
 """World x of the shoulder-pan axis (`so_arm101_tower.xml`, body `shoulder`
@@ -73,23 +76,20 @@ def _hsv_arg(s: String) raises -> ColorClass:
     return ColorClass(v[0], v[1], v[2], v[3], v[4])
 
 
-def _confident(e: PoseEstimate) -> Bool:
-    return e.found and e.coverage >= 0.75 and e.coverage <= 1.3 and e.residual < 0.35
-
-
 def main() raises:
     var args = argv()
     var camera = String("")
-    var calib_path = String("projects/so101-tower/cameras/camera_overhead.txt")
+    var calib_path = String(OVERHEAD_CALIB)
+    var extr_path = String("")
     var seconds = 120.0
     var print_hz = 2.0
     var still_s = 1.0
     var log_path = String("")
     var measured_s = String("")
     var measured_from = String("pan")
-    var cls_brick = ColorClass(205.0, 13.0, 0.3, 0.2, 1.0)
-    var cls_bowl = ColorClass(36.0, 10.0, 0.35, 0.3, 1.0)
-    var roi = DeskROI(DESK_Z, 0.08, 0.57, -0.28, 0.28)
+    var cls_brick = printed_brick_hsv()
+    var cls_bowl = printed_bowl_hsv()
+    var roi = tower_desk_roi()
     var i = 1
     while i < len(args):
         var a = String(args[i])
@@ -100,6 +100,8 @@ def main() raises:
             camera = v
         elif a == "--calib":
             calib_path = v
+        elif a == "--extrinsics":
+            extr_path = v
         elif a == "--seconds":
             seconds = Float64(v)
         elif a == "--print-hz":
@@ -147,10 +149,9 @@ def main() raises:
     var cal = read_calib(calib_path)
     cal.require_size(640, 480)
     var lens = FisheyeLens.from_calib(cal)
-    var sim = tower_sim_camera("overhead_cam")
-    if not sim.found:
-        raise Error("no overhead_cam in the tower scene")
-    var cam = RigCamera(lens, sim.pos, sim.rot)
+    var pose = tower_overhead_pose(extr_path)
+    var cam = RigCamera(lens, pose.pos, pose.rot_mj)
+    print("camera pose:", pose.source)
     var brick = PrismModel.tower_brick()
     var bowl = PrismModel.tower_bowl()
     print("lens", lens)
@@ -216,7 +217,7 @@ def main() raises:
             print(s)
 
         # the still detector
-        if not _confident(eb):
+        if not pose_confident(eb):
             continue
         wt.append(now)
         wx.append(eb.x)

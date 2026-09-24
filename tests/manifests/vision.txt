@@ -79,3 +79,9 @@ tests/vision/test_extrinsics_offset.mojo
 # lens matters (the bowl read as a pinhole is > 10 mm off); occlusion lowers
 # `coverage`; a brick-coloured box outside the ROI is not taken. Needs no shim.
 tests/vision/test_tabletop_pose.mojo
+# The so101-tower overhead reader's camera pose sources
+# (`tasks/so101_tower_overhead.mojo`): no --extrinsics = the asset pose; an
+# arm calibration written as calibration extrinsics moves every desk-plane
+# point by exactly R p + d (with a flipped-rotation control that fails by
+# ~38 mm); a non-`*_armcal` file (the lens file's stale extrinsics) refused.
+tests/tasks/test_so101_tower_overhead.mojo

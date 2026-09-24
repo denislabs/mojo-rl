@@ -70,7 +70,9 @@ from noeira.physics3d.parser.runtime_load import (
 from noeira.robot.so101.sim_map import tower_follower_zero_deg
 from noeira.tasks.family import scene_path
 from noeira.tasks.spec import load_family
-from noeira.tasks.so101_tower_camera_pose import tower_sim_camera
+from noeira.tasks.so101_tower_overhead import (
+    OVERHEAD_CALIB, DESK_Z, tower_overhead_pose, tower_desk_roi, pose_confident,
+)
 from noeira.tasks.so101_tower_xml import (
     SO101_TOWER_MAX_CONTACTS, SO101_TOWER_NMESH_VERTS,
 )
@@ -89,8 +91,6 @@ comptime Quatd = QuatGeneric[DT]
 comptime FAMILY = "noeira/tasks/families/so101_tower.family"
 comptime N_ARM = 6
 comptime GRIPPER = 5
-comptime DESK_Z = 0.002
-"""The desk mat's surface (`desk_mat.xml` surface site, world)."""
 comptime NEAR_GOAL = 0.045
 """`so101_tower_cube_in_bowl.task`: `Near(brick, bowl, 0.045)`."""
 comptime MOVE_EPS = 1.5
@@ -171,10 +171,6 @@ def _pct(var xs: List[Float64], q: Float64) -> Float64:
 
 def _mm(ax: Float64, ay: Float64, bx: Float64, by: Float64) -> Float64:
     return sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by)) * 1000.0
-
-
-def _confident(e: PoseEstimate) -> Bool:
-    return e.found and e.coverage >= 0.75 and e.coverage <= 1.3 and e.residual < 0.35
 
 
 # ─── drawing ───────────────────────────────────────────────────────────────
@@ -349,19 +345,15 @@ def main() raises:
     var max_idle = 90
     var snap = String("")
     var hue_hist = False
-    var calib_path = String("projects/so101-tower/cameras/camera_overhead.txt")
+    var calib_path = String(OVERHEAD_CALIB)
+    var extr_path = String("")
     var camera_key = String("observation.images.overhead")
     var joint_zero = String("follower")
     var cls_brick = ColorClass.tower_brick_sim()
     var cls_bowl = ColorClass.tower_bowl_sim()
     var brick = PrismModel.tower_brick()
     var bowl = PrismModel.tower_bowl()
-    # the desk short of its edges and of x = 0.08 (the tower's foot and the
-    # arm's base). ⚠ y is +-0.28, not the sim mat's +-0.325: on the rig the
-    # desk's +y edge is at ~0.29, and the blue floor seen past it meets the
-    # desk plane at y 0.294..0.302 (`cube-in-bowl-printed`, 7 end frames).
-    # Real placements reach +-0.24.
-    var roi = DeskROI(DESK_Z, 0.08, 0.57, -0.28, 0.28)
+    var roi = tower_desk_roi()
     var i = 1
     while i < len(args):
         var a = String(args[i])
@@ -386,6 +378,8 @@ def main() raises:
             snap = v
         elif a == "--calib":
             calib_path = v
+        elif a == "--extrinsics":
+            extr_path = v
         elif a == "--camera":
             camera_key = v
         elif a == "--joint-zero":
@@ -430,13 +424,11 @@ def main() raises:
     var cal = read_calib(calib_path)
     cal.require_size(640, 480)
     var lens = FisheyeLens.from_calib(cal)
-    var sim = tower_sim_camera("overhead_cam")
-    if not sim.found:
-        raise Error("no overhead_cam in the tower scene")
-    var cam = RigCamera(lens, sim.pos, sim.rot)
+    var pose = tower_overhead_pose(extr_path)
+    var cam = RigCamera(lens, pose.pos, pose.rot_mj)
     var arm = ArmFK(joint_zero)
     print("lens", lens)
-    print("camera at the asset pose", sim.pos, "| roi", roi)
+    print("camera pose:", pose.source, "| roi", roi)
     print("brick", brick, "hsv", cls_brick)
     print("bowl ", bowl, "hsv", cls_bowl)
     print("joint zero", joint_zero)
@@ -493,7 +485,7 @@ def main() raises:
             if not (in_idle or pre_grasp or t % stride == 0 or t == length - 1):
                 continue
             var eb = estimate_prism_pose(stream.raw, cam, cls_brick, brick, roi)
-            if _confident(eb):
+            if pose_confident(eb):
                 if in_idle:
                     bx.append(eb.x)
                     by.append(eb.y)
@@ -514,7 +506,7 @@ def main() raises:
                 save_png(snap + "/ep" + String(e) + "_end.png", img, cam.width, cam.height, 3)
             if in_idle or near_end:
                 var eo = estimate_prism_pose(stream.raw, cam, cls_bowl, bowl, roi)
-                if _confident(eo):
+                if pose_confident(eo):
                     if in_idle:
                         ox.append(eo.x)
                         oy.append(eo.y)
