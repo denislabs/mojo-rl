@@ -51,8 +51,9 @@ none | jaw length | lift | lift+elbow | lift+elbow+wflex | length+lift |
 length+lift+wflex. A model earns its parameters only if its leave-one-out
 residual drops. ⚠ A constant desk-height error looks like a jaw-length error
 on vertical touches: the tilted touches separate them, and a RULER on the
-printed jaw (wrist_flex horn axis -> fixed jaw tip; the model says 159.4 mm,
-±1 mm over the roll) settles the length directly.
+printed jaw (wrist_flex horn AXIS -> fixed jaw tip; the model says 165.7 mm
+since e9bd63b00 put `gripperframe` at the mesh tip, 159.4 before) settles the
+length directly — measured from the axis, not the horn's outer face.
 
 Written: `--out` (default `projects/so101-tower/calibration/desk_touch.txt`), one line
 per touch: tip xyz, tilt, reach, the joints (model rad, the 1 s window's
@@ -602,6 +603,6 @@ def main() raises:
     _report(fk, tip, T, tilts, reaches, desk_z)
     print(
         "\nA model earns its parameters only if its LEAVE-ONE-OUT drops. Compare"
-        " the jaw length with a ruler: wrist_flex horn axis -> fixed jaw tip,"
-        " model 159.4 mm."
+        " the jaw length with a ruler: wrist_flex horn AXIS -> fixed jaw tip,"
+        " model 165.7 mm (gripperframe at the mesh tip, e9bd63b00)."
     )
