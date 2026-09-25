@@ -268,11 +268,14 @@ comptime SPOT_MIN_BOWL_M: Float64 = 0.12
 """Task 2's target spot at least this far from the bowl's centre."""
 comptime TASK2_LANGUAGE = "Take the blue cube out of the yellow octogonal bowl and put it on the desk"
 """Task 2's instruction (`--task2`), worded like the printed set's."""
-comptime BOWL_JAW: Float64 = 0.35
+comptime BOWL_JAW: Float64 = 0.30
 """The jaw (model rad, the gripper's measured line since dbd873e15) for
-everything done INSIDE the bowl — the task-1 release and the task-2 pick:
-0.6 swings the moving jaw into the floor and the walls (planning, 340 picks:
-27 clean at 0.6 against 110 at 0.35 with the 12 mm aim offset)."""
+the task-2 pick INSIDE the bowl: 0.6 swings the moving jaw into the floor
+and the walls (planning, 340 picks: 27 clean at 0.6 against 110 at 0.35
+with the 12 mm aim offset); 0.30 with the bowl's lift tolerance
+(`plan_bowl_pick`): 318/340 (off the centre 92 %, against 55 % at 0.35) —
+~39 mm between the pads around the 25 mm brick, enough now that the wrist
+camera corrects the aim."""
 comptime BOWL_RELEASE_JAW: Float64 = 0.25
 """Task 1's release INSIDE the bowl opens only this far (`--bowl-release-jaw`):
 at 0.35 the bowl was pushed 9-14 mm in every task 1 of the first cycle run
@@ -290,9 +293,6 @@ far (a direction drawn per layout) and turned 15 deg."""
 comptime REAIM_IK_ITERS = 100
 comptime REAIM_IK_OK_MM: Float64 = 3.0
 """The fast re-aim's IK must reach every approach waypoint to this."""
-comptime REAIM_LIFT_OK_MM: Float64 = 30.0
-"""... and the lift to this: it is the pose 15 cm up, in the air (out of
-the bowl the arm has already backed out along its approach)."""
 comptime REAIM_MIN_STEPS = 6
 comptime REAIM_DEG_PER_STEP: Float64 = 1.0
 """The move to the re-aimed pre-grasp: this many degrees per step at most
@@ -330,6 +330,8 @@ comptime BOWL_PICK_MAX_OFF_M: Float64 = 0.03
 floor leaves the brick's centre ~37 mm at most; nearer the wall the pick
 plans clean less often)."""
 comptime SPOT_TRIES = 12
+comptime BOWL_LIFT_OK_MM: Float64 = 60.0
+"""A bowl pick's lift pose may miss by this (see `plan_bowl_pick`)."""
 comptime PICK_DRAWS = 8
 """Postures drawn per plan (each with the planner's own collision redraws)
 before giving up: the planner does not redraw a posture the IK misses."""
@@ -1008,7 +1010,7 @@ def _reaim_face(
     for j in range(n_wp + 1):
         pen = max(pen, _pose_penetration_mm(env, p.waypoints[j], jaw, planner.arm_bodies, planner.obstacles))
     env.set_state(qs_new, v0)
-    var ok = worst * 1000.0 <= REAIM_IK_OK_MM and el * 1000.0 <= REAIM_LIFT_OK_MM and pen <= PLAN_PEN_OK_MM
+    var ok = worst * 1000.0 <= REAIM_IK_OK_MM and el * 1000.0 <= BOWL_LIFT_OK_MM and pen <= PLAN_PEN_OK_MM
     var why = (
         "IK " + fixed(worst * 1000.0, 1) + " mm (lift " + fixed(el * 1000.0, 1) + ") | penetration "
         + fixed(pen, 1) + " mm"
@@ -1386,7 +1388,7 @@ def plan_task(
     var pb: List[Float64] = [px, py, bz]
     var qb = with_brick(qs, brick_adr, px, py, bz, pyaw)
     tp.pick_seed0 = seed + draw
-    var pk = plan_clean(env, planner, body_names, qb, pb, pyaw, q5, cfg_bowl_pick, seed + draw, PICK_DRAWS)
+    var pk = plan_bowl_pick(env, planner, body_names, qb, pb, pyaw, q5, cfg_bowl_pick, seed + draw)
     draw += pk.draws
     # the spot: drawn in the brick's region, clear of the bowl, with a clean
     # release plan
@@ -1648,6 +1650,49 @@ def brick_in_bowl_z(
     return z
 
 
+def plan_bowl_pick(
+    mut env: E, mut planner: TowerGraspPlanner, ref body_names: List[String],
+    ref qs: List[Float64], ref pb: List[Float64], yaw: Float64, ref q5: List[Float64],
+    cfg: PlanCfg, seed: Int,
+) raises -> Planned:
+    """`plan_clean` for a pick IN the bowl, with the LIFT held to
+    `BOWL_LIFT_OK_MM` instead of 10: out of the bowl the arm first backs up
+    its approach, and the lift is then a pose 15 cm up, in the air — near the
+    wall the steep bowl postures miss it by 15-60 mm, and cycle run 5 found no
+    pick at all for bricks 15-20 mm off the centre (the grasp itself clean to
+    < 1 mm). The collision veto and the grasp's IK are unchanged."""
+    var v0 = List[Float64](length=NV, fill=0.0)
+    var saved_clear = planner.desk_clear_m
+    var saved_lo = planner.posture.tilt_lo
+    var saved_hi = planner.posture.tilt_hi
+    planner.desk_clear_m = cfg.clear_m
+    planner.posture.tilt_lo = cfg.tilt_lo_deg * pi / 180.0
+    planner.posture.tilt_hi = cfg.tilt_hi_deg * pi / 180.0
+    var support: List[String] = [cfg.support]
+    planner.set_support(body_names, support, cfg.support != "desk_mat")
+    var plan = TowerGraspPlan()
+    var ok = False
+    var n = 0
+    for d in range(PICK_DRAWS):
+        env.set_state(qs, v0)
+        seed_rng(seed + d)
+        plan = planner.plan_grasp(env, pb, yaw, q5, cfg.jaw)
+        n = d + 1
+        ok = (
+            plan.pen_mm <= PLAN_PEN_OK_MM and plan.e_grasp * 1000.0 <= IK_OK_MM
+            and plan.e_lift * 1000.0 <= BOWL_LIFT_OK_MM and plan.close_on_tip
+        )
+        if ok:
+            break
+    var desk: List[String] = ["desk_mat"]
+    planner.set_support(body_names, desk, False)
+    planner.desk_clear_m = saved_clear
+    planner.posture.tilt_lo = saved_lo
+    planner.posture.tilt_hi = saved_hi
+    env.set_state(qs, v0)
+    return Planned(plan^, ok, n, seed + n - 1)
+
+
 def plan_bowl_picks(
     path: String, mut env: E, mut planner: TowerGraspPlanner,
     ref q_scene: List[Float64], brick_adr: Int, bowl_adr: Int, seed0: Int,
@@ -1689,11 +1734,11 @@ def plan_bowl_picks(
             var q5 = List[Float64]()
             for k in range(N_ARM):
                 q5.append(qs[k])
-            var pl = plan_clean(env, planner, names, qs, pb, 0.0, q5, cfg, seed0 + 1000 * n, PICK_DRAWS)
+            var pl = plan_bowl_pick(env, planner, names, qs, pb, 0.0, q5, cfg, seed0 + 1000 * n)
             var plan = pl.plan.copy()
             var ok = pl.ok
             var draws = pl.draws
-            var worst_ik = max(plan.e_grasp, plan.e_lift) * 1000.0
+            var worst_ik = plan.e_grasp * 1000.0
             env.set_state(qs, v0)
             n_draws += draws
             n += 1
@@ -1701,7 +1746,12 @@ def plan_bowl_picks(
             if ok:
                 n_clean += 1
                 tilt_ok.append(plan.tilt * 180.0 / pi)
-            if o == 0 and not ok and n < 60:
+            if o > 0 and not ok:
+                print(
+                    "    off-centre FAIL: pen", fixed(plan.pen_mm, 1), "mm | IK grasp",
+                    fixed(plan.e_grasp * 1000.0, 1), "lift", fixed(plan.e_lift * 1000.0, 1), "mm | tilt", _deg(plan.tilt),
+                )
+            if o == 0 and not ok and n < 0:
                 # what the grasp pose (jaw open) penetrates: body pair, depth,
                 # contact height and distance from the bowl's axis
                 var qg = plan.waypoints[len(plan.waypoints) - 1].copy() if len(plan.waypoints) > 0 else plan.q_grasp.copy()
@@ -2428,7 +2478,11 @@ def main() raises:
                                     how = "re-aimed (same posture; " + ra[2] + ")"
                                 else:
                                     print("    look    the re-aim is not clean (" + ra[2] + ") — re-planning")
-                                    var pk2 = plan_clean(env, planner, body_names, qb2, pb2, lk.yaw, q5, cfg_pk, pick_seed0, PICK_DRAWS)
+                                    var pk2 = (
+                                        plan_bowl_pick(env, planner, body_names, qb2, pb2, lk.yaw, q5, cfg_pk, pick_seed0)
+                                        if in_bowl_pick
+                                        else plan_clean(env, planner, body_names, qb2, pb2, lk.yaw, q5, cfg_pk, pick_seed0, PICK_DRAWS)
+                                    )
                                     if pk2.ok:
                                         new_legs = splice_pick(pk2.plan, legs, jaws, jaw_pk, in_bowl_pick, new_jaws)
                                         new_tip = pk2.plan.tip_goal.copy()
