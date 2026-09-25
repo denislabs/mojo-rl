@@ -1432,11 +1432,18 @@ struct FBOnlineAgent[
             self.t.g_f2, self.t.g_bsn2, q2, a2, True, self.ctx,
         )
         measure = 0.5 * (l1 + l2)
-        # HALVED into the reference's scale, so these read directly against
-        # `references/BFM-Zero-main/released/new_model/train_log.txt`'s
-        # `fb_offdiag` / `fb_diag` at the same timestep. See `loss.mojo`.
-        fb_quad = 0.5 * 0.5 * (q1 + q2)
-        fb_anchor = 0.5 * 0.5 * (a1 + a2)
+        # The MEAN over the two F heads, and nothing else — these read directly
+        # against `train_log.txt`'s `fb_offdiag` / `fb_diag` at the same
+        # timestep. ⚠ There used to be a SECOND 0.5 here, "halving into the
+        # reference's scale", and it was wrong: `agent.py:243` reduces
+        # `diff` over BOTH heads (`Ms` is `num_parallel x B x B`) while
+        # dividing by `off_diag_sum = B*(B-1)`, a SINGLE matrix's count — so
+        # their leading 0.5 already IS the per-head mean at num_parallel 2.
+        # Likewise `agent.py:244`'s `* Ms.shape[0]` is `num_parallel` = 2, not
+        # BATCH. Both of our metrics were logged at exactly HALF scale, which
+        # is what §12.21 read as "the magnitudes do not match" (docs §12.27).
+        fb_quad = 0.5 * (q1 + q2)
+        fb_anchor = 0.5 * (a1 + a2)
         # `M1` in the reference's log: the mean ENTRY of `M = F·B(s+)^T`. It
         # sits at ~49 and flat there from 2.3 M steps to 200 M, which makes it
         # the cheapest check that our M is not drifting in scale.

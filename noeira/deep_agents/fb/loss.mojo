@@ -371,9 +371,13 @@ def fb_measure_loss_into[
         out_quad   = sum_{i!=j} (M-Mt)^2 / (BATCH*(BATCH-1))
         out_anchor = -2 * mean_i (M_ii - Mt_ii)
 
-    the reference's `fb_offdiag` / `fb_diag` exactly, at our uniform 2x scale,
-    so halving them makes `train_log.txt` a step-by-step gate rather than a
-    ballpark. Both are 0 when `want_loss` is False.
+    the reference's `fb_offdiag` / `fb_diag` PER HEAD. `online.mojo` averages
+    the two heads and that is the whole conversion — `agent.py:243` sums `diff`
+    over both heads while dividing by one matrix's `off_diag_sum`, so its
+    leading 0.5 already is that mean. ⚠ This docstring used to claim "our
+    uniform 2x scale, so halve them"; that halving was spurious and put both
+    metrics at HALF the reference's (docs §12.27). Both are 0 when `want_loss`
+    is False.
 
     THE DIAGONAL IS EXCLUDED FROM THE SQUARE and carries the linear anchor
     instead, so its upstream gradient is the constant `-2/BATCH`. That is the
