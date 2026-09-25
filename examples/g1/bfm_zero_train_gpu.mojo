@@ -118,10 +118,18 @@ from noeira.data.store import TrajectoryStore
 from noeira.data.resident import IDX_DT
 from noeira.deep_agents.fb import FBCPROnlineAgent
 from noeira.deep_agents.fb.loss import fb_rank_eff_from_ortho
+from noeira.envs.robots.unitree_g1_history import (
+    UNITREE_G1_FULL_OBS_DIM, G1_ACTOR_EXTRA, G1_HIST_DIM, G1_N_ACT,
+    G1_HIST_STEP, G1_HIST_MAX_AGE,
+    g1_pack_full_obs_kernel, g1_hist_push_kernel, g1_hist_reset_kernel,
+    g1_build_tail_spec, g1_scale_clip_kernel,
+)
+from noeira.envs.robots.unitree_g1_pd import G1_NORMALIZE_TO, G1_ACTION_CLIP
 from noeira.deep_agents.fb.bfm_towers import (
-    BFMFTower, BFMActorTower, BFMBNet, BFMDNet,
+    BFMFTower, BFMBNetFiltered, BFMActorTowerFiltered, BFMDNetFiltered,
 )
 from noeira.deep_agents.fb.kernels import (
+    gather_rows_into_kernel,
     gather_rows_kernel, project_sphere_kernel, ensure_t, _blocks,
 )
 from noeira.deep_agents.fb.kernels import uniform01_kernel
@@ -149,7 +157,13 @@ from noeira.envs.robots.unitree_g1_rsi import (
 
 # ── the recipe ────────────────────────────────────────────────────────────
 comptime N_ENVS: Int = 1024
-comptime OBS: Int = UNITREE_G1_OBS_DIM        # 527
+# ⚠ TWO widths (docs §12.34-12.36). `SP` is what the ENV produces and what
+# `b` / `discriminator` consume — `state 64 | privileged 463`. `OBS` is the
+# packed row `f`, `critic` and (filtered) the actor see; its last 401 are
+# `last_action 29 | history 372`, maintained per lane during the rollout and
+# DERIVED from the ring during training, never stored.
+comptime SP: Int = UNITREE_G1_OBS_DIM         # 527
+comptime OBS: Int = UNITREE_G1_FULL_OBS_DIM   # 928
 comptime ACT: Int = UnitreeG1Model.ACTION_DIM  # 29
 comptime D: Int = G1_D
 comptime H: Int = G1_H
@@ -202,12 +216,15 @@ comptime B_CHUNK: Int = 4096                  # rows per B forward while encodin
 
 comptime EnvT = UnitreeG1Batched[N_ENVS]
 comptime FNet = BFMFTower[OBS, ACT, D, H, L, D]
-comptime BNet = BFMBNet[OBS, D, HB]
-comptime ANet = BFMActorTower[OBS, D, H, L, ACT]
-comptime DNet = BFMDNet[OBS, D, HD]
+comptime BNet = BFMBNetFiltered[OBS, SP, D, HB]
+comptime ANet = BFMActorTowerFiltered[
+    OBS, UNITREE_G1_STATE_DIM, G1_ACTOR_EXTRA, D, H, L, ACT
+]
+comptime DNet = BFMDNetFiltered[OBS, SP, D, HD]
 comptime QNet = BFMFTower[OBS, ACT, D, H, L, 1]
 comptime Agent = FBCPROnlineAgent[
-    FNet, BNet, ANet, DNet, QNet, OBS, ACT, D, BATCH, CAP, N_ENVS, SEQ, ZBUF
+    FNet, BNet, ANet, DNet, QNet, OBS, ACT, D, BATCH, CAP, N_ENVS, SEQ, ZBUF,
+    G1_ACTOR_EXTRA,   # DERIVED_TAIL — the 401 the ring does NOT store (§12.36)
 ]
 comptime NQ = UnitreeG1Model.NQ
 comptime NV = UnitreeG1Model.NV
@@ -621,12 +638,17 @@ def main() raises:
     # prioritization refresh — where `upload` would ALSO hand the RSI kernel a
     # new pointer every 9.6 M steps.
     var eobs = Tensor()
-    ensure_t["gpu"](eobs, n_rows * OBS, Optional(ctx))
+    # ⚠ SP-wide, not OBS-wide. The expert rows are only ever read by `b` (the
+    # window encoding) and the discriminator, whose reference filters are both
+    # `state + privileged_state` — so the derived tail would be 0.7 GB of
+    # columns nothing reads. The B forward takes an OBS-wide row, so the
+    # CHUNK is widened and its tail zeroed once, not the table.
+    ensure_t["gpu"](eobs, n_rows * SP, Optional(ctx))
     for r in range(n_rows):
         for i in range(UNITREE_G1_STATE_DIM):
-            eobs.data[r * OBS + i] = Scalar[DT](st[r * UNITREE_G1_STATE_DIM + i])
+            eobs.data[r * SP + i] = Scalar[DT](st[r * UNITREE_G1_STATE_DIM + i])
         for i in range(UNITREE_G1_PRIV_DIM):
-            eobs.data[r * OBS + UNITREE_G1_STATE_DIM + i] = Scalar[DT](pv[r * UNITREE_G1_PRIV_DIM + i])
+            eobs.data[r * SP + UNITREE_G1_STATE_DIM + i] = Scalar[DT](pv[r * UNITREE_G1_PRIV_DIM + i])
     eobs.upload_resident(ctx)
     var starts8 = _valid_starts(store, SEQ)
     var starts250 = _valid_starts(store, TRACK_LEN + 1)
@@ -711,6 +733,12 @@ def main() raises:
         z_hold=Z_HOLD, zbuf_frac=1.0, keep_frac=0.2, p_goal=0.2, p_expert=0.6,
         seed=UInt64(seed_v), normalize_obs=True,
     )
+    # ⚠ The agent derives a tail it cannot interpret (§12.36): the env hands
+    # it the layout, and the scaling its PD chain applies to a stored action.
+    var tail_spec = List[Int32]()
+    g1_build_tail_spec(tail_spec)
+    agent.attach_tail_spec(tail_spec)
+    agent.set_action_norm(G1_NORMALIZE_TO, G1_ACTION_CLIP)
     agent.attach_expert_windows(eobs^, starts8_dev^, len(starts8))
     if track_on:
         agent.base.enable_z_pin()
@@ -737,7 +765,56 @@ def main() raises:
             return
 
     # ── rollout buffers ───────────────────────────────────────────────
+    # `prev_obs` is the PACKED row the action was chosen from — that is what
+    # the ring must store the stored head of, and what the eval reproduces.
     var prev_obs = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
+    var prev_env_obs = ctx.enqueue_create_buffer[DT](N_ENVS * SP)
+    # ── the actor's other 401, per lane (docs §12.34-12.36) ──────────
+    var full_obs = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
+    var h_last = ctx.enqueue_create_buffer[DT](N_ENVS * G1_N_ACT)
+    var h_hist = ctx.enqueue_create_buffer[DT](N_ENVS * G1_HIST_DIM)
+    var h_live = ctx.enqueue_create_buffer[DT](N_ENVS)
+    var h_all = ctx.enqueue_create_buffer[DT](N_ENVS)
+    h_last.enqueue_fill(Scalar[DT](0.0))
+    h_hist.enqueue_fill(Scalar[DT](0.0))
+    h_live.enqueue_fill(Scalar[DT](0.0))   # the reset row is never pushed
+    h_all.enqueue_fill(Scalar[DT](1.0))    # a mask selecting every lane
+
+    def _hist_reset() capturing raises:
+        """Zero `last_action` and the history, and skip the next push.
+
+        Every lane resets together under `_rsi_reset`, so the mask is all
+        ones. Clearing `live` is what implements "the reset observation is
+        never pushed"."""
+        ctx.enqueue_function[g1_hist_reset_kernel[N_ENVS]](
+            mptr(h_last.unsafe_ptr()), mptr(h_hist.unsafe_ptr()),
+            mptr(h_live.unsafe_ptr()), mptr(h_all.unsafe_ptr()),
+            grid_dim=_blocks(N_ENVS * (G1_N_ACT + G1_HIST_DIM)), block_dim=TPB,
+        )
+
+    def _pack_obs() capturing raises:
+        """`full_obs = [env._obs 527 | last_action 29 | history 372]`."""
+        ctx.enqueue_function[g1_pack_full_obs_kernel[N_ENVS]](
+            mptr(env._obs.unsafe_ptr()), mptr(h_last.unsafe_ptr()),
+            mptr(h_hist.unsafe_ptr()), mptr(full_obs.unsafe_ptr()),
+            grid_dim=_blocks(N_ENVS * OBS), block_dim=TPB,
+        )
+
+    def _hist_advance() capturing raises:
+        """Push this step's state with the PREVIOUS action, then take the new
+        one — the reference's order (`_push` then `last_action =`), which the
+        history gate caught an off-by-one in once."""
+        ctx.enqueue_function[g1_hist_push_kernel[N_ENVS]](
+            mptr(env._obs.unsafe_ptr()), mptr(h_last.unsafe_ptr()),
+            mptr(h_hist.unsafe_ptr()), mptr(h_live.unsafe_ptr()),
+            grid_dim=_blocks(N_ENVS * G1_HIST_STEP), block_dim=TPB,
+        )
+        h_live.enqueue_fill(Scalar[DT](1.0))
+        ctx.enqueue_function[g1_scale_clip_kernel[N_ENVS * G1_N_ACT]](
+            mptr(h_last.unsafe_ptr()), mptr(env._action.unsafe_ptr()),
+            Scalar[DT](G1_NORMALIZE_TO), Scalar[DT](G1_ACTION_CLIP),
+            grid_dim=_blocks(N_ENVS * G1_N_ACT), block_dim=TPB,
+        )
     var reward0 = ctx.enqueue_create_buffer[DT](N_ENVS)
     var done0 = ctx.enqueue_create_buffer[DT](N_ENVS)
     var ao = ctx.enqueue_create_buffer[DT](N_ENVS * 2 * ACT)
@@ -773,6 +850,9 @@ def main() raises:
     var chunk_in = Tensor()
     var chunk_out = Tensor()
     ensure_t["gpu"](chunk_in, B_CHUNK * OBS, Optional(ctx))
+    # the derived tail of these rows is never gathered into; zero it ONCE so
+    # `b` is not fed whatever the allocator left behind
+    chunk_in.dev.value().enqueue_fill(Scalar[DT](0.0))
     ensure_t["gpu"](chunk_out, B_CHUNK * D, Optional(ctx))
     var track_b = ctx.enqueue_create_buffer[DT](N_PAD * D)
     var track_z = ctx.enqueue_create_buffer[DT](N_TRACK * TRACK_LEN * D)
@@ -833,10 +913,12 @@ def main() raises:
                 mptr(track_idx.unsafe_ptr()), Int32(c * B_CHUNK), mptr(chunk_idx.unsafe_ptr()),
                 grid_dim=_blocks(B_CHUNK), block_dim=TPB,
             )
-            ctx.enqueue_function[gather_rows_kernel[OBS, B_CHUNK]](
+            # SP-wide source into OBS-wide rows; the tail was zeroed once at
+            # allocation and `b` filters it out anyway (§12.34)
+            ctx.enqueue_function[gather_rows_into_kernel[SP, OBS, B_CHUNK]](
                 mptr(agent.exp_obs.dev.value().unsafe_ptr()), mptr(chunk_idx.unsafe_ptr()),
                 mptr(chunk_in.dev.value().unsafe_ptr()),
-                grid_dim=_blocks(B_CHUNK * OBS), block_dim=TPB,
+                grid_dim=_blocks(B_CHUNK * SP), block_dim=TPB,
             )
             agent.base.obs_ema.apply[B_CHUNK](chunk_in)
             call_forward["gpu", B_CHUNK](
@@ -890,6 +972,7 @@ def main() raises:
         if s % T_EPISODE == 0:
             var sign = 1.0 if random_float64() < 0.5 else -1.0
             _rsi_reset(sign)
+            _hist_reset()
             if smoke or s % (T_EPISODE * 20) == 0:
                 # diagnostics: which rows the lanes got, and how many lie down
                 ctx.enqueue_copy(h_row_got, row_got)
@@ -920,20 +1003,33 @@ def main() raises:
         if track_on:
             _pin_step(s % TRACK_LEN)
 
-        ctx.enqueue_copy(prev_obs, env._obs)
+        # read: pack the actor's view BEFORE acting
+        ctx.enqueue_copy(prev_env_obs, env._obs)   # the STORED head, pre-step
+        _pack_obs()
+        ctx.enqueue_copy(prev_obs, full_obs)
         agent.select_action_batched[N_ENVS](
-            LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin](env._obs),
+            LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin](full_obs),
             LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin](env._action),
             LayoutTensor[DT, Layout.row_major(N_ENVS, 2 * ACT), MutAnyOrigin](ao),
             LayoutTensor[DT, Layout.row_major(N_ENVS, ACT + 1), MutAnyOrigin](alp),
             env_steps,
         )
+        # push(state_t, a_{t-1}) then last_action = a_t, before the env moves
+        _hist_advance()
         env.step_batch[N_ENVS](Optional(ctx), UInt64(seed_v) + UInt64(s))
+        # steps since the reset, for the DERIVED tail's back-step bound
+        var age = s % T_EPISODE
+        agent.set_age(age if age < G1_HIST_MAX_AGE else G1_HIST_MAX_AGE)
         # The reset runs at the START of a step, so it is THIS transition
         # whose successor row will hold a post-reset observation — the ring
         # derives `s'` from the next row and must be told to skip this one.
         agent.set_boundary((s + 1) % T_EPISODE == 0)
-        agent.record_batch_gpu[N_ENVS](ctx, prev_obs, env._action, reward0, env._obs, done0)
+        # ⚠ `prev_obs` is the PACKED 928 row; `record_batch_gpu` stores
+        # `STORE_OBS` = 527 columns per row and would MIS-STRIDE a packed one.
+        # `prev_env_obs` is the same row's stored head, captured before the
+        # step — identical to `prev_obs[0:527]` by construction, and correctly
+        # strided.
+        agent.record_batch_gpu[N_ENVS](ctx, prev_env_obs, env._action, reward0, env._obs, done0)
 
         if env_steps >= SEED_STEPS:
             if no_graph:

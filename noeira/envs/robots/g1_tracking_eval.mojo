@@ -40,8 +40,14 @@ from noeira.core.assignment import emd_uniform
 from noeira.deep_agents.fb.trainer import FBTrainer
 from noeira.deep_agents.fb.obs_norm import ObsNorm
 from noeira.envs.robots import UnitreeG1
+from noeira.envs.robots.unitree_g1_history import (
+    G1_HIST_DIM, G1_HIST_LEN, G1_N_ACT, G1_LAST_ACTION_DIM,
+    g1_hist_key_offset, g1_hist_key_dim, g1_hist_key_state_offset,
+)
+from noeira.envs.robots.unitree_g1_pd import G1_NORMALIZE_TO, G1_ACTION_CLIP
 from noeira.envs.robots.unitree_g1_xml import (
     UnitreeG1Model, UNITREE_G1_STATE_DIM, UNITREE_G1_PRIV_DIM,
+    UNITREE_G1_OBS_DIM,
 )
 from noeira.envs.robots.unitree_g1_rsi import G1RsiTable, G1_RSI_NQ, G1_RSI_NV
 
@@ -219,6 +225,15 @@ def g1_score_segment[
             b_in.data[j * OBS + UNITREE_G1_STATE_DIM + k] = Scalar[DT](
                 pv[(r0 + j) * UNITREE_G1_PRIV_DIM + k]
             )
+    # ⚠ `b_in` is OBS-wide but only the stored head means anything here: `b`'s
+    # reference filter is `state + privileged_state` (§12.34). Zero the derived
+    # tail rather than leave it holding the previous segment's numbers — `b`
+    # ignores it today, and a live tensor full of stale values is one widened
+    # filter away from being read.
+    comptime if OBS > UNITREE_G1_OBS_DIM:
+        for j in range(T):
+            for k in range(UNITREE_G1_OBS_DIM, OBS):
+                b_in.data[j * OBS + k] = Scalar[DT](0.0)
     if norm:
         norm.value().apply_rows(b_in, T)
     t.backward_embed[T](b_in, b_out)
@@ -245,10 +260,25 @@ def g1_score_segment[
     for k in range(ACT):
         ach[nrec * ACT + k] = qp[7 + k]
     nrec += 1
+    # ── `last_action` + `history_actor`, the actor's other 401 (§12.34) ──
+    # Host-side and single-lane here, but the SAME rules as the batched
+    # rollout: zero at reset, the reset observation is never pushed, the push
+    # happens AFTER the step's history is read and BEFORE `last_action` is
+    # updated — so the newest `actions` entry is the action applied one step
+    # earlier, not the one about to be applied.
+    var last_a = List[Float64](length=G1_N_ACT, fill=0.0)
+    var hist = List[Float64](length=G1_HIST_DIM, fill=0.0)
     for step in range(T - 1):
         var o = env.get_obs_list()
-        for k in range(OBS):
+        for k in range(UNITREE_G1_OBS_DIM):
             obs_t.data[k] = Scalar[DT](Float64(o[k]))
+        comptime if OBS > UNITREE_G1_OBS_DIM:
+            for k in range(G1_N_ACT):
+                obs_t.data[UNITREE_G1_OBS_DIM + k] = Scalar[DT](last_a[k])
+            for k in range(G1_HIST_DIM):
+                obs_t.data[
+                    UNITREE_G1_OBS_DIM + G1_LAST_ACTION_DIM + k
+                ] = Scalar[DT](hist[k])
         if norm:
             norm.value().apply_row(obs_t)
         for k in range(D):
@@ -264,6 +294,31 @@ def g1_score_segment[
             elif v < -1.0:
                 v = -1.0
             a.data[k] = v
+        # push BEFORE `last_a` is updated: the newest `actions` entry is the
+        # PREVIOUS step's action (the oracle's `_push` then `last_action =`)
+        comptime if OBS > UNITREE_G1_OBS_DIM:
+            if step >= 1:                      # the reset row is never pushed
+                for key in range(5):
+                    var kb = g1_hist_key_offset(key)
+                    var kd = g1_hist_key_dim(key)
+                    var so = g1_hist_key_state_offset(key)
+                    var jj = G1_HIST_LEN - 1
+                    while jj > 0:
+                        for e in range(kd):
+                            hist[kb + jj * kd + e] = hist[kb + (jj - 1) * kd + e]
+                        jj -= 1
+                    for e in range(kd):
+                        if so < 0:
+                            hist[kb + e] = last_a[e]
+                        else:
+                            hist[kb + e] = Float64(o[so + e])
+            for k in range(G1_N_ACT):
+                var v = Float64(act_out.data[k]) * G1_NORMALIZE_TO
+                if v > G1_ACTION_CLIP:
+                    v = G1_ACTION_CLIP
+                elif v < -G1_ACTION_CLIP:
+                    v = -G1_ACTION_CLIP
+                last_a[k] = v
         _ = env.step(a)
         for i in range(NQ):
             qp[i] = Float64(env.d.qpos.data[i])

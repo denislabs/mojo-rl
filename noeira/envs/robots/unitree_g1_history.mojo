@@ -400,3 +400,28 @@ def g1_build_tail_spec(mut spec: List[Int32]):
                     spec.append(Int32(j + 1))
                     spec.append(Int32(so + e))
                 spec.append(Int32(j + 2))          # min_age, both kinds
+
+
+def g1_scale_clip_kernel[N: Int](
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    scale: Scalar[DT],
+    clip: Scalar[DT],
+):
+    """`dst = clip(src * scale, +-clip)` — the action as the PD chain took it.
+
+    The actor emits a `tanh` output in `[-1, 1]`; `unitree_g1_config`'s chain
+    then does `a *= 5`, clips to `+-5`, and only afterwards scales by
+    `action_scale * effort / kp`. `last_action` and the history's `actions`
+    key hold the value AFTER the scale and clip — what the policy saw, not
+    what the net emitted — so this runs between the two.
+    """
+    var i = Int(global_idx.x)
+    if i >= N:
+        return
+    var v = src[unsafe_offset=i] * scale
+    if v > clip:
+        v = clip
+    if v < -clip:
+        v = -clip
+    dst[unsafe_offset=i] = v
