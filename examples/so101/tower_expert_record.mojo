@@ -165,7 +165,7 @@ from noeira.tasks.placement.so101_tower import So101TowerPlacement
 from noeira.tasks.posed_reset import posed_qpos, task_meta_words
 from noeira.tasks.so101_tower_xml import So101TowerModel
 from noeira.tasks.so101_tower_expert_plan import (
-    TowerExpertEnv, TowerGraspPlanner, TowerGraspPlan, ACT, N_ARM, NQ, GS,
+    TowerExpertEnv, TowerGraspPlanner, TowerGraspPlan, ACT, N_ARM, NQ, GS, N_VIA,
     GRIPPER_BODY, TIP_REACH, HUMAN_JAW_OPEN, HUMAN_Z_GRASP, CLEAR_PLAN_TILT,
     Z_GRASP, N_PRE, N_DESCEND, N_CLOSE, N_LIFT, N_CARRY, N_PLACE, N_OPEN,
     N_RETREAT, N_HOLD_MAX,
@@ -806,6 +806,9 @@ def run_episode(
         print("  ep", ep, " policy drove", policy_steps_used, "steps ->",
               "handover at reach " + fixed(ex.reach_mm(), 1) + " mm" if handed
               else "no arrival (cap), the expert does the full approach")
+    if not done and not handed and len(plan.q_via) > 0:
+        # up and over first (`--via`), then down to the pre-grasp
+        done = ex.step_to(env, plan.q_via, True, N_VIA)
     if not done and not handed:
         done = ex.step_to(env, q1, True, N_PRE)
     if not done and len(waypoints) > 0 and not handed:
@@ -954,7 +957,8 @@ def _usage():
           "   # DAgger from a recorded (vision) student\n"
           "       [--posture expert|human [--tilt-range LO,HI] [--pinch-range LO,HI]"
           " [--tip-close-mm MM] [--clear-plan [--desk-clear-mm MM] [--pinch-offset-mm MM]"
-          " [--desk-jaw RAD]]] [--return-rest]\n"
+          " [--desk-jaw RAD] [--via none|auto|always] [--path-check] [--path-report]]]"
+          " [--return-rest]\n"
           "       [--print-plan] [--dump-close DIR] [--keep-failures] [--quiet]")
 
 
@@ -975,6 +979,7 @@ def main() raises:
     var desk_jaw = -10.0
     var path_report = False
     var path_check = False
+    var via_mode = -1
     var pinch_offset_mm = 0.0
     var pinch_offset_set = False
     var desk_clear_mm = 0.0
@@ -1028,6 +1033,17 @@ def main() raises:
         elif a == "--pinch-offset-mm" and i + 1 < len(args):
             pinch_offset_mm = Float64(String(args[i + 1]))
             pinch_offset_set = True
+            i += 2
+        elif a == "--via" and i + 1 < len(args):
+            var vm = String(args[i + 1])
+            if vm == "none":
+                via_mode = 0
+            elif vm == "auto":
+                via_mode = 1
+            elif vm == "always":
+                via_mode = 2
+            else:
+                raise Error("--via is none, auto or always, not " + vm)
             i += 2
         elif a == "--path-check":
             path_check = True
@@ -1173,6 +1189,11 @@ def main() raises:
     ex.planner.desk_jaw = desk_jaw
     ex.planner.path_report = path_report
     ex.planner.path_check = path_check
+    # `--clear-plan` defaults to `--via auto`: 300 draws on dbd873e15 (desk
+    # friction 0.4), none 209, auto 225, always 201 — pushed bricks 26 -> 12
+    if via_mode < 0:
+        via_mode = 1 if clear_plan else 0
+    ex.planner.via_mode = via_mode
     if path_check and not clear_plan:
         raise Error("--path-check extends --clear-plan's collision pass: add --clear-plan")
     if clear_plan and not pinch_offset_set:

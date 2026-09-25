@@ -127,6 +127,13 @@ closed, vs obstacles minus the brick), 3 carry and 4 place (the arm AND the
 carried brick vs obstacles minus the brick, plus the desk)."""
 comptime PATH_SAMPLES = 6
 """Points per leg (the leg's end included, its start not)."""
+comptime VIA_DZ: Float64 = 0.10
+"""`via_mode`: the via-point is the pre-grasp point this much higher (m), same
+tilt and pinch — the arm unfolds UP and over, then comes down to the pre-grasp
+pose, instead of sweeping low from the fold (the pre leg's joint-space line
+crossed the bowl or the brick in 7/10 bowl and 7/14 pushed-brick failures)."""
+comptime N_VIA = 30
+"""The via leg's step budget (the pre leg keeps `N_PRE` after it)."""
 comptime PLAN_PEN_OK_MM: Float64 = 1.0
 """`--clear-plan`: a plan whose poses penetrate an obstacle by more is
 redrawn."""
@@ -518,6 +525,8 @@ struct PlanLeg(Copyable, Movable):
 struct TowerGraspPlan(Copyable, Movable):
     var q_start: List[Float64]
     var q_pre: List[Float64]
+    var q_via: List[Float64]
+    """The via-point before the pre-grasp (`via_mode`); empty: none."""
     var waypoints: List[List[Float64]]
     """The tilted approach ALONG THE FINGER: `waypoints[0]` is `q_pre`, the
     last is `q_grasp`; empty for a vertical grasp."""
@@ -555,6 +564,7 @@ struct TowerGraspPlan(Copyable, Movable):
     def __init__(out self):
         self.q_start = List[Float64](length=N_ARM, fill=0.0)
         self.q_pre = List[Float64](length=N_ARM, fill=0.0)
+        self.q_via = List[Float64]()
         self.waypoints = List[List[Float64]]()
         self.q_grasp = List[Float64](length=N_ARM, fill=0.0)
         self.q_lift = List[Float64](length=N_ARM, fill=0.0)
@@ -585,6 +595,8 @@ struct TowerGraspPlan(Copyable, Movable):
         and `--return-rest` are the recorder's own."""
         var out = List[PlanLeg]()
         var none = List[Float64]()
+        if len(self.q_via) > 0:
+            out.append(PlanLeg("via", self.q_via.copy(), True, N_VIA, False, False))
         out.append(PlanLeg("pre", self.q_pre.copy(), True, N_PRE, False, False))
         if len(self.waypoints) > 0:
             var n_wp = len(self.waypoints) - 1
@@ -671,6 +683,9 @@ struct TowerGraspPlanner(Movable):
     desk by default; `set_support` names another (the bowl, to pick the brick
     OUT of it)."""
     var support_by_normal: Bool
+    var via_mode: Int
+    """0 none; 1 a via-point (`VIA_DZ` above the pre-grasp) when the direct
+    pre leg's joint-space path collides; 2 always."""
     var path_check: Bool
     """`clear_plan` + this: a posture is also redrawn when a leg's JOINT-SPACE
     path (pre, descent, lift, and — given the bowl — carry and place) collides,
@@ -707,6 +722,7 @@ struct TowerGraspPlanner(Movable):
         self.support = self.desk.copy()
         self.support_by_normal = False
         self.path_check = False
+        self.via_mode = 0
         self.path_report = False
         self.brick = -1
         for b in range(len(body_names)):
@@ -874,6 +890,29 @@ struct TowerGraspPlanner(Movable):
             e1 = self.arm.ik(env, _above(pb, Z_PRE), q, yaw, plan.q_pre, tl, rs, use_rs)
             e2 = self.arm.ik(env, _above(pb, self.z_grasp), plan.q_pre, yaw, plan.q_grasp, tl, rs, use_rs)
         plan.e_lift = self.arm.ik(env, _above(pb, Z_LIFT), plan.q_grasp, yaw, plan.q_lift, tl, rs, use_rs)
+        if self.via_mode > 0:
+            var use_via = self.via_mode == 2
+            if not use_via:
+                var with_desk = self.obstacles.copy()
+                for b in self.desk:
+                    with_desk.append(b)
+                use_via = _path_pen(
+                    env, q.copy(), plan.q_pre.copy(), Float64(env.d.qpos.data[N_ARM]),
+                    jaw_open, self.arm_bodies.copy(), with_desk.copy(),
+                ) > PLAN_PEN_OK_MM
+            if use_via:
+                # the pre-grasp's own IK target, raised: for a tilted grasp
+                # the tip point APPROACH_D back along the finger (+TIP_REACH,
+                # the IK's tip mode), for a vertical one Z_PRE above the brick
+                var t = List[Float64]()
+                if tl > 0.0:
+                    t.append(plan.tip_goal[0] - APPROACH_D * sin(tl) * cos(plan.bearing))
+                    t.append(plan.tip_goal[1] - APPROACH_D * sin(tl) * sin(plan.bearing))
+                    t.append(plan.tip_goal[2] + APPROACH_D * cos(tl) + TIP_REACH + VIA_DZ)
+                else:
+                    t = _above(pb, Z_PRE + VIA_DZ)
+                plan.q_via = List[Float64](length=N_ARM, fill=0.0)
+                _ = self.arm.ik(env, t, plan.q_pre, yaw, plan.q_via, tl, rs, use_rs)
         plan.e_pre = e1
         plan.e_grasp = e2
         plan.yaw = yaw
