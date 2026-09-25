@@ -135,6 +135,14 @@ pose, instead of sweeping low from the fold (the pre leg's joint-space line
 crossed the bowl or the brick in 7/10 bowl and 7/14 pushed-brick failures)."""
 comptime N_VIA = 30
 """The via leg's step budget (the pre leg keeps `N_PRE` after it)."""
+comptime FALLBACK_TILT_DEG: Float64 = 15.0
+comptime FALLBACK_STEPS = 3
+"""`fallback`: when none of the `PLAN_TRIES` drawn postures is clear, the
+near-vertical tilts 15, 10, 5 deg (`FALLBACK_TILT_DEG` down by 5 per step),
+`FALLBACK_PINCHES` pinch draws each, before the
+least-colliding one is taken. Not 0: a vertical grasp switches the
+executor's close to the height trigger, a live brick read (sim only)."""
+comptime FALLBACK_PINCHES = 3
 comptime PLAN_PEN_OK_MM: Float64 = 1.0
 """`--clear-plan`: a plan whose poses penetrate an obstacle by more is
 redrawn."""
@@ -684,6 +692,14 @@ struct TowerGraspPlanner(Movable):
     desk by default; `set_support` names another (the bowl, to pick the brick
     OUT of it)."""
     var support_by_normal: Bool
+    var fallback: Bool
+    """`clear_plan`: try the near-vertical tilts (`FALLBACK_TILT_DEG`) when no
+    drawn posture is clear. ⚠ MEASURED, NOT A WIN (300 draws on b8f668315):
+    217 vs 225/300 without. It reaches 45 episodes and finds a clear plan in 35,
+    but those fail in the EXECUTION (16/45 succeed vs 19/49 on the least-
+    colliding drawn posture): near the base a steep grasp needs the elbow and
+    wrist far out (they lag 20-36 deg at the close) and the fingers push the
+    brick (11) or pinch nothing (6). Off by default."""
     var via_mode: Int
     """0 none; 1 a via-point (`VIA_DZ` above the pre-grasp) when the direct
     pre leg's joint-space path collides; 2 always."""
@@ -724,6 +740,7 @@ struct TowerGraspPlanner(Movable):
         self.support_by_normal = False
         self.path_check = False
         self.via_mode = 0
+        self.fallback = False
         self.path_report = False
         self.brick = -1
         for b in range(len(body_names)):
@@ -802,11 +819,21 @@ struct TowerGraspPlanner(Movable):
                 var best_pen = 1.0e9
                 var best_tilt = self.posture.tilt
                 var best_pinch = self.posture.pinch_target
-                for attempt in range(PLAN_TRIES + 1):
-                    if attempt == PLAN_TRIES:
+                comptime N_FB = FALLBACK_STEPS * FALLBACK_PINCHES
+                var n_fb = N_FB if self.fallback else 0
+                var last = PLAN_TRIES + n_fb
+                for attempt in range(last + 1):
+                    if attempt == last:
                         # none was clear: re-plan the least-colliding posture
                         self.posture.tilt = best_tilt
                         self.posture.pinch_target = best_pinch
+                    elif attempt >= PLAN_TRIES:
+                        # the near-vertical fallback (`fallback`)
+                        var k = attempt - PLAN_TRIES
+                        self.posture.tilt = (
+                            FALLBACK_TILT_DEG - 5.0 * Float64(k // FALLBACK_PINCHES)
+                        ) * pi / 180.0
+                        self.posture.draw_pinch()
                     elif attempt > 0 and attempt <= PLAN_PINCH_TRIES:
                         self.posture.draw_pinch()
                     elif attempt > 0:
@@ -878,7 +905,7 @@ struct TowerGraspPlanner(Movable):
                     plan.raise_mm = raise_m * 1000.0
                     plan.pen_mm = pen
                     plan.tries = attempt + 1
-                    if pen <= PLAN_PEN_OK_MM or attempt == PLAN_TRIES:
+                    if pen <= PLAN_PEN_OK_MM or attempt == last:
                         break
                     if pen < best_pen:
                         best_pen = pen

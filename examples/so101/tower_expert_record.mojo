@@ -980,6 +980,8 @@ def main() raises:
     var path_report = False
     var path_check = False
     var via_mode = -1
+    var fallback = False
+    var fallback_set = False
     var pinch_offset_mm = 0.0
     var pinch_offset_set = False
     var desk_clear_mm = 0.0
@@ -1044,6 +1046,10 @@ def main() raises:
                 via_mode = 2
             else:
                 raise Error("--via is none, auto or always, not " + vm)
+            i += 2
+        elif a == "--fallback" and i + 1 < len(args):
+            fallback = String(args[i + 1]) == "on"
+            fallback_set = True
             i += 2
         elif a == "--path-check":
             path_check = True
@@ -1194,6 +1200,7 @@ def main() raises:
     if via_mode < 0:
         via_mode = 1 if clear_plan else 0
     ex.planner.via_mode = via_mode
+    ex.planner.fallback = fallback
     if path_check and not clear_plan:
         raise Error("--path-check extends --clear-plan's collision pass: add --clear-plan")
     if clear_plan and not pinch_offset_set:
