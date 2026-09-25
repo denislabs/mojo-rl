@@ -1514,7 +1514,7 @@ struct FBOnlineAgent[
             names.append(String("b_norm_deficit"))
             vals.append(sqrt(Float64(Self.D)) - bnorm)
             names.append(String("fb_ortho_q"))
-            vals.append(ortho + 2.0 * bnorm * bnorm)
+            vals.append(ortho + bnorm * bnorm)
             names.append(String("f1_grad_norm")); vals.append(gf1)
             names.append(String("f2_grad_norm")); vals.append(gf2)
             names.append(String("b_grad_norm")); vals.append(gb)

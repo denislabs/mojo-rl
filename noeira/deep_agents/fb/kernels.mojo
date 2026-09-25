@@ -318,6 +318,30 @@ def fb_diag_override_kernel[BATCH: Int](
         go[unsafe_offset=i * BATCH + i] = diag_scale
 
 
+def diag_sumsq_kernel[BATCH: Int](
+    m: Pointer[Scalar[DT], MutAnyOrigin],
+    acc: Pointer[Scalar[DT], MutAnyOrigin],
+):
+    """`acc[0] = sum_i m[i,i]^2` on a `[BATCH, BATCH]` matrix.
+
+    `L_ortho`'s quadratic runs over the OFF-DIAGONAL only (`agent.py:249`
+    masks `Cov` with `off_diag`), and the cheap way to that sum is the full
+    sum of squares minus the diagonal's own. Unlike `fb_diag_stats_kernel`
+    there is no target to subtract here: the ortho target IS zero, so the
+    residual is `O` itself.
+    """
+    var t = Int(thread_idx.x)
+    var s2: Scalar[DT] = 0.0
+    var k = t
+    while k < BATCH:
+        var v = m[unsafe_offset=k * BATCH + k]
+        s2 += v * v
+        k += TPB_REDUCE
+    var t2 = block.sum[block_size=TPB_REDUCE, broadcast=False](val=s2)
+    if t == 0:
+        acc[unsafe_offset=0] = t2[0]
+
+
 def fb_diag_stats_kernel[BATCH: Int](
     m: Pointer[Scalar[DT], MutAnyOrigin],
     mt: Pointer[Scalar[DT], MutAnyOrigin],

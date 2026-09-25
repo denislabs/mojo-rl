@@ -38,7 +38,7 @@ flat for 200 M steps — a ~10x balance error, measured at the same timestep.
 
 ## The orthonormality regulariser
 
-    L_ortho = E_ij[ (B(s+_i)·B(s+_j))^2 ] - 2·E_i[ ||B(s+_i)||^2 ]
+    L_ortho = 0.5·E_{i!=j}[ (B(s+_i)·B(s+_j))^2 ] - E_i[ ||B(s+_i)||^2 ]
 
 ONE batch, against ITSELF. Both indices range over the SAME tensor, and that is
 load-bearing — see the warning below.
@@ -78,8 +78,8 @@ All three are exact, not approximations:
     dL_FB/dM     = 2(M - Mtarget)/BATCH^2          M = F·B(s+)^T
     dL_FB/dF    += -2/BATCH · B(s')                 (anchor)
     dL_FB/dB(s') = -2/BATCH · F
-    dL_ortho/dO  = 2·O/BATCH^2                     O = B(s+)·B(s+)^T
-    dL_ortho/dB(s+) += -4/BATCH · B(s+)
+    dL_ortho/dO  = O/(BATCH·(BATCH-1)), ZERO on the diagonal   O = B(s+)·B(s+)^T
+    dL_ortho/dB(s+) += -2/BATCH · B(s+)
 
 `B(s+)` appears on BOTH sides of `O`, so its total derivative is the SUM of the
 pairwise-dot vjp's two input gradients. They are equal here (`O` is symmetric),
@@ -101,6 +101,7 @@ from noeira.nn.primitives.pairwise_dot import PairwiseDot, RowDot
 
 from .kernels import (
     fb_diag_override_kernel,
+    diag_sumsq_kernel,
     fb_diag_stats_kernel,
     residual_grad_kernel,
     sq_diff_reduce_kernel,
@@ -302,14 +303,19 @@ def fb_ortho_loss[
     var o = Tensor.alloc(BATCH * BATCH)
     op.forward["cpu", BATCH](TensorRefs[2, MutAnyOrigin](ins[0], ins[1]), o, None)
 
-    var n2 = Float64(BATCH) * Float64(BATCH)
+    # OFF-DIAGONAL only, normalised by the reference's `off_diag_sum`
+    # (`agent.py:249`): `0.5*(Cov*off_diag).pow(2).sum()/off_diag_sum`.
+    var inv_od = 1.0 / (Float64(BATCH) * (Float64(BATCH) - 1.0))
     var loss = Float64(0)
     var go = Tensor.alloc(BATCH * BATCH)
     for i in range(BATCH * BATCH):
         var v = Float64(o.data[i])
-        loss += v * v
-        go.data[i] = Scalar[DT](2.0 * v / n2)
-    loss /= n2
+        if (i // BATCH) == (i % BATCH):
+            go.data[i] = Scalar[DT](0.0)   # the diagonal is masked out
+        else:
+            loss += v * v
+            go.data[i] = Scalar[DT](v * inv_od)
+    loss *= 0.5 * inv_od
 
     var grads = TensorPack[2]()
     op.vjp["cpu", BATCH](
@@ -322,13 +328,14 @@ def fb_ortho_loss[
     for i in range(BATCH * D):
         g_b.data[i] = grads[0].data[i] + grads[1].data[i]
 
-    # -2·mean_i ||B(s+_i)||^2, gradient -4/BATCH · B(s+).
+    # -mean_i ||B(s+_i)||^2, gradient -2/BATCH · B(s+)
+    # (`agent.py:248`: `orth_loss_diag = -Cov.diag().mean()`).
     var sq = Float64(0)
     for i in range(BATCH * D):
         var v = Float64(b.data[i])
         sq += v * v
-    loss += -2.0 * sq / Float64(BATCH)
-    var c = -4.0 / Float64(BATCH)
+    loss += -sq / Float64(BATCH)
+    var c = -2.0 / Float64(BATCH)
     for i in range(BATCH * D):
         g_b.data[i] = Scalar[DT](
             Float64(g_b.data[i]) + c * Float64(b.data[i])
@@ -507,31 +514,46 @@ def fb_ortho_loss_into[
     ws.prepare[target](ctx)
     comptime NN = BATCH * BATCH
     comptime ND = BATCH * D
-    var inv_n = Scalar[DT](1.0 / (Float64(BATCH) * Float64(BATCH)))
+    # the reference's `off_diag_sum` — the quadratic runs over i != j only
+    var inv_od = Scalar[DT](
+        1.0 / (Float64(BATCH) * (Float64(BATCH) - 1.0))
+    )
 
     ws.pd.forward[target, BATCH](TensorRefs[2, MutAnyOrigin](b, b), ws.m, ctx)
 
     var loss = Float64(0)
     comptime if target == "cpu":
+        var all_sq = Float64(0)
         for i in range(NN):
             var v = Float64(ws.m.data[i])
             if want_loss:
-                loss += v * v
-            ws.go.data[i] = Scalar[DT](2.0 * v * Float64(inv_n))
+                all_sq += v * v
+            ws.go.data[i] = Scalar[DT](v * Float64(inv_od))
+        var diag_sq = Float64(0)
+        for i in range(BATCH):
+            var v = Float64(ws.m.data[i * BATCH + i])
+            if want_loss:
+                diag_sq += v * v
+            ws.go.data[i * BATCH + i] = Scalar[DT](0.0)
         if want_loss:
-            loss *= Float64(inv_n)
+            loss = 0.5 * (all_sq - diag_sq) * Float64(inv_od)
     else:
         var c = ctx.value()
         # The ortho target is ZERO, so the residual IS O and the gradient is
-        # just a scaling: `go = 2·O/BATCH^2`. Reusing `residual_grad_kernel`
-        # here would mean passing `go` as both its output and its zeroed
-        # `mt` input — safe per-thread, but an aliased read/write that the
-        # next person to touch this file has to re-derive. One scale instead.
+        # just a scaling: `go = O/off_diag_sum`, then the diagonal is masked
+        # to zero. Reusing `residual_grad_kernel` here would mean passing `go`
+        # as both its output and its zeroed `mt` input — safe per-thread, but
+        # an aliased read/write the next person has to re-derive. One scale.
         c.enqueue_function[scale_kernel[NN]](
             ws.go.dev.value().unsafe_ptr(),
             ws.m.dev.value().unsafe_ptr(),
-            Scalar[DT](2.0 * Float64(inv_n)),
+            Scalar[DT](inv_od),
             grid_dim=(NN + TPB - 1) // TPB,
+            block_dim=TPB,
+        )
+        c.enqueue_function[fb_diag_override_kernel[BATCH]](
+            ws.go.dev.value().unsafe_ptr(), Scalar[DT](0.0),
+            grid_dim=(BATCH + TPB - 1) // TPB,
             block_dim=TPB,
         )
         if want_loss:
@@ -542,7 +564,16 @@ def fb_ortho_loss_into[
                 block_dim=TPB_REDUCE,
             )
             ws.acc.download(c)
-            loss = Float64(ws.acc.data[0])
+            # the kernel returns the MEAN over NN
+            var all_sq = Float64(ws.acc.data[0]) * Float64(NN)
+            c.enqueue_function[diag_sumsq_kernel[BATCH]](
+                ws.m.dev.value().unsafe_ptr(),
+                ws.acc2.dev.value().unsafe_ptr(),
+                grid_dim=1,
+                block_dim=TPB_REDUCE,
+            )
+            ws.acc2.download(c)
+            loss = 0.5 * (all_sq - Float64(ws.acc2.data[0])) * Float64(inv_od)
 
     # `b` is BOTH inputs of `O`, so its total derivative is the SUM of the two
     # input gradients — `ws.gb2` catches the mirrored half.
@@ -550,15 +581,15 @@ def fb_ortho_loss_into[
         TensorRefs[2, MutAnyOrigin](b, b), ws.go, TensorRefs[2, MutAnyOrigin](g_b, ws.gb2), ctx
     )
 
-    # -2·mean_i ||B(s+_i)||^2 ; gradient -4/BATCH · B(s+).
-    var c4 = Scalar[DT](-4.0 / Float64(BATCH))
+    # -mean_i ||B(s+_i)||^2 ; gradient -2/BATCH · B(s+).
+    var c4 = Scalar[DT](-2.0 / Float64(BATCH))
     comptime if target == "cpu":
         if want_loss:
             var sq = Float64(0)
             for i in range(ND):
                 var v = Float64(b.data[i])
                 sq += v * v
-            loss += -2.0 * sq / Float64(BATCH)
+            loss += -sq / Float64(BATCH)
         for i in range(ND):
             g_b.data[i] = Scalar[DT](
                 Float64(g_b.data[i]) + Float64(ws.gb2.data[i])
@@ -575,7 +606,7 @@ def fb_ortho_loss_into[
             )
             ws.acc.download(c)
             # the kernel returns the MEAN over ND, so scale back to per-ROW
-            loss += -2.0 * Float64(ws.acc.data[0]) * Float64(D)
+            loss += -Float64(ws.acc.data[0]) * Float64(D)
         c.enqueue_function[axpy_kernel[ND]](
             g_b.dev.value().unsafe_ptr(),
             ws.gb2.dev.value().unsafe_ptr(),
