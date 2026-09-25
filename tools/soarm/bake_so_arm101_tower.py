@@ -39,9 +39,8 @@ from its opposite face: the plate. Both facts are recomputed from the STL by
 
 Mesh frame -> `gripper` body frame is the stock geom's transform,
 `quat="0 1 0 0"` (a half-turn about x: y and z flip) plus its `pos`. The
-entrance pupil is 15.6 mm along the plate normal from the plate face (adapter
-3.0 + standoffs 5.0 + PCB 1.6 + ~6 mm to the pupil, §4) — a ±3 mm estimate
-that extrinsic calibration (§7) is expected to refine.
+entrance pupil is 19.0 mm along the plate normal from the plate face
+(`PUPIL_ALONG_NORMAL_MM`, measured 2026-09-25: see there).
 
 Image orientation: the board's hole pattern is symmetric, so "up" is how it was
 screwed on. Read off the RECORDED frames (`projects/so101-tower/datasets/
@@ -89,7 +88,16 @@ MOUNT_MESH = "wrist_cam_mount_32x32_uvc_module_so101"
 # `camera-rig.md` §4, in the mount's mesh frame, millimetres.
 PLATE_FACE_MM = np.array([2.50, 71.85, -3.21])
 PLATE_NORMAL = np.array([0.0, -0.4243, 0.9055])
-PUPIL_ALONG_NORMAL_MM = 15.6
+PUPIL_ALONG_NORMAL_MM = 19.0
+"""The camera's projection centre, from the plate face along its normal. Was
+15.6 (adapter 3.0 + standoffs 5.0 + PCB 1.6 + ~6 guessed to the pupil).
+MEASURED 2026-09-25: plate face -> the lens's front glass 24 mm (ruler, on
+the tower's identical module + adapter); a small fisheye's entrance pupil
+sits a few mm behind its front element (19-22). The overhead camera's
+extrinsics fit (62 captures) put its projection centre 2.0 mm beyond the
+15.6 stack (17.6, +-2-3 mm with the stand's push-fit slop in it). 19.0,
++-2. The wrist frames cannot settle it: the fixed finger runs radially from
+the image centre, so its silhouette slides along itself with depth."""
 PLATE_THICKNESS_MM = 4.0
 
 # THE ARUCO MARKER taped on the back of the wrist camera's plate (step 8).

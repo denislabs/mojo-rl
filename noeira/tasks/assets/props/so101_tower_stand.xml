@@ -57,7 +57,9 @@
 
        THE OVERHEAD CAMERA: plate face centre (28.94, 361.98, 0) in the top's
        frame, outward normal (0.4243, -0.9055, 0); entrance pupil 15.6 mm
-       along it (adapter 3 + standoffs 5 + PCB 1.6 + ~6 to the pupil, §4);
+       along it (adapter 3 + standoffs 5 + PCB 1.6 + ~6 to the pupil, §4;
+       19.0 measured since — the bake's `PUPIL_ALONG_NORMAL_MM` — and the
+       calibrated pose below supersedes the whole derivation);
        plus the (18.7, 188, 36.5) frame offset; y-up -> z-up. Image-up is
        FORWARD (the far edge of the desk at the top of the recorded frames),
        image-right is the robot's right (-y). `fovy` is the virtual pinhole

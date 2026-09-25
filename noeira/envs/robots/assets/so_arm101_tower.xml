@@ -118,7 +118,7 @@
                 <!-- Frame gripperframe -->
                 <site group="3" name="gripperframe" pos="-0.0079 -0.000218121 -0.1044" quat="0.707107 -0 0.707107 -2.37788e-17"/>
                 <!-- RIG CAMERA: the IMX335 on the wrist mount's plate, entrance pupil, image-up away from the wrist — tools/soarm/bake_so_arm101_tower.py, docs/camera-rig.md §4 -->
-                <camera name="wrist_cam" pos="0.0025 -0.065449 -0.00996637" xyaxes="-1 0 0 0 -0.905518 -0.424308" fovy="73.7398"/>
+                <camera name="wrist_cam" pos="0.0025 -0.0640064 -0.0130451" xyaxes="-1 0 0 0 -0.905518 -0.424308" fovy="73.7398"/>
                 <!-- RIG ADDITION: the pinch centre — see bake_so_arm101_tower.py step 4c -->
                 <site group="3" name="grasp_center" pos="0.0221 0.0012 -0.0681" size="0.004"/>
                 <!-- RIG ADDITION: the ArUco marker (DICT_4X4_50 id 7, 30 mm) on the back of the camera plate, visual only, group 5 — bake_so_arm101_tower.py step 8 -->
