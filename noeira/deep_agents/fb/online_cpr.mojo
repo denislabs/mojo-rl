@@ -96,6 +96,7 @@ struct FBCPROnlineAgent[
     LANES: Int,
     SEQ: Int,
     ZBUF: Int = 10_000,
+    DERIVED_TAIL: Int = 0,
 ](OffPolicyAgentGpu):
     comptime AGENT_TRAIN_TARGET: StaticString = "gpu"
     comptime AGENT_OBS_DIM: Int = Self.OBS
@@ -103,6 +104,7 @@ struct FBCPROnlineAgent[
     comptime Base = FBOnlineAgent[
         Self.FNET, Self.BNET, Self.ANET, Self.OBS, Self.ACT, Self.D,
         Self.BATCH, Self.CAP, Self.LANES, Self.ZBUF, 0,
+        Self.DERIVED_TAIL,
     ]
     comptime Head = FBCPRHead[
         Self.FNET, Self.BNET, Self.ANET, Self.DNET, Self.QNET,
@@ -461,6 +463,23 @@ struct FBCPROnlineAgent[
         """Forwarded to the ring — see `FBOnlineAgent.set_boundary`. The
         driver calls this on the agent it holds, which is this one."""
         self.base.set_boundary(b)
+
+    def set_age(mut self, a: Int):
+        """Forwarded — see `FBOnlineAgent.set_age` (docs §12.36)."""
+        self.base.set_age(a)
+
+    def attach_tail_spec(mut self, ref spec: List[Int32]) raises:
+        """Forwarded — see `FBOnlineAgent.attach_tail_spec`."""
+        self.base.attach_tail_spec(spec)
+
+    def set_action_norm(mut self, scale: Float64, clip: Float64):
+        """The scaling the DERIVED tail applies to stored actions.
+
+        The G1 stores the actor's RAW output and its PD chain consumes
+        `clip(a * 5, +-5)`; the tail must reproduce what the policy actually
+        saw, not what the net emitted (docs §12.36)."""
+        self.base.act_norm = Scalar[DT](scale)
+        self.base.act_clip = Scalar[DT](clip)
 
     def record_batch_gpu_nstep[
         N_ENVS: Int, NS: Int

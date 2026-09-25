@@ -37,8 +37,9 @@ from noeira.envs.robots.unitree_g1_history import (
     UNITREE_G1_FULL_OBS_DIM, G1_LAST_ACTION_DIM,
     G1_S_DOFPOS, G1_S_DOFVEL, G1_S_GRAV, G1_S_ANGVEL,
     g1_hist_push_kernel, g1_hist_reset_kernel, g1_pack_full_obs_kernel,
-    g1_hist_gather_kernel,
+    g1_hist_gather_kernel, g1_build_tail_spec,
 )
+from noeira.deep_agents.fb.kernels import derive_tail_kernel
 from noeira.data.resident import IDX_DT
 
 comptime LANES = 2
@@ -374,6 +375,73 @@ def main() raises:
         nonzero > NDRAW * G1_ACTOR_EXTRA // 3,
         "vacuous: most of the expected tail is zero, so agreeing with it"
         " proves little — the fixture must run past the age ramp",
+    )
+    print("      OK")
+
+    # ── [7] the GENERIC derive == the G1-specific one ────────────────
+    # `derive_tail_kernel` fills a tail it cannot interpret, from a spec the
+    # env builds (§12.36). That indirection is what keeps the G1's observation
+    # layout out of `online.mojo`, which the walker path also runs — and it is
+    # exactly the kind of table that can be built plausibly and wrongly, so it
+    # is checked against the SAME incremental expectation, not against the
+    # G1-specific kernel it replaces.
+    print("[7] generic derive_tail_kernel from the G1 spec ...")
+    var spec = List[Int32]()
+    g1_build_tail_spec(spec)
+    print("      spec entries", len(spec) // 4, "of", G1_ACTOR_EXTRA)
+    assert_true(
+        len(spec) == G1_ACTOR_EXTRA * 4,
+        "the spec must carry 4 int32 per tail element, got "
+        + String(len(spec)),
+    )
+    var d_spec = c.enqueue_create_buffer[DType.int32](G1_ACTOR_EXTRA * 4)
+    var h_spec = c.enqueue_create_host_buffer[DType.int32](G1_ACTOR_EXTRA * 4)
+    for i in range(G1_ACTOR_EXTRA * 4):
+        h_spec[i] = spec[i]
+    c.enqueue_copy(d_spec, h_spec)
+
+    comptime OBSF2 = UNITREE_G1_OBS_DIM + G1_ACTOR_EXTRA
+    var d_batch = c.enqueue_create_buffer[DT](NDRAW * OBSF2)
+    d_batch.enqueue_fill(Scalar[DT](-7.0))      # poison: unwritten stays visible
+    c.enqueue_function[
+        derive_tail_kernel[
+            NDRAW, RCAP, LANES, UNITREE_G1_OBS_DIM, G1_N_ACT,
+            G1_ACTOR_EXTRA, OBSF2,
+        ]
+    ](
+        mptr(r_obs.unsafe_ptr()), mptr(r_act.unsafe_ptr()),
+        mptr(r_age.unsafe_ptr()), mptr(d_idx.unsafe_ptr()),
+        d_spec.unsafe_ptr(),
+        Scalar[DT](5.0), Scalar[DT](5.0),
+        mptr(d_batch.unsafe_ptr()), Int32(0),
+        grid_dim=_blk(NDRAW * G1_ACTOR_EXTRA), block_dim=TPB,
+    )
+    var h_batch = c.enqueue_create_host_buffer[DT](NDRAW * OBSF2)
+    c.enqueue_copy(h_batch, d_batch)
+    c.synchronize()
+    var gwrong = 0
+    var head_touched = 0
+    for i in range(NDRAW):
+        for k in range(G1_ACTOR_EXTRA):
+            var g = Float64(h_batch[i * OBSF2 + UNITREE_G1_OBS_DIM + k])
+            var w = want[i * G1_ACTOR_EXTRA + k]
+            if abs(g - w) > 1e-5:
+                gwrong += 1
+        # the 527 HEAD is the caller's business and must be left alone
+        for k in range(0, UNITREE_G1_OBS_DIM, 37):
+            if Float64(h_batch[i * OBSF2 + k]) != -7.0:
+                head_touched += 1
+    print("      wrong tail elements", gwrong, "of", NDRAW * G1_ACTOR_EXTRA,
+          "   head columns disturbed", head_touched)
+    assert_true(
+        gwrong == 0,
+        "the generic derive disagrees with the incremental path at "
+        + String(gwrong) + " elements — the spec table is wrong",
+    )
+    assert_true(
+        head_touched == 0,
+        "derive_tail_kernel wrote into the 527 head, which the plain row"
+        " gather owns",
     )
     print("      OK")
 

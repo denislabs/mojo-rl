@@ -356,3 +356,47 @@ def g1_hist_gather_kernel[
         dst[unsafe_offset=t] = r_obs[
             unsafe_offset=r * UNITREE_G1_OBS_DIM + state_off + elem
         ]
+
+
+def g1_build_tail_spec(mut spec: List[Int32]):
+    """The 401-element spec `derive_tail_kernel` reads — built ONCE, on the host.
+
+    Four int32 per output element: `kind` (0 = `r_obs`, 1 = `r_act` scaled and
+    clipped), lane-aligned `steps` back, `src_off` within that row, and the
+    `min_age` below which the element is zero.
+
+    This is where the layout lives. The agent stays generic: it derives a tail
+    it cannot interpret, which is what keeps one env's observation format out
+    of code the walker path also runs (docs §12.36).
+
+    ⚠ THE AGE RULE. `last_action` is valid from age 1; `history[j]` from age
+    `j + 2` — the same bound for the action keys and the state keys, which is
+    not obvious. The actions lag the state by one push (`buf[0] =
+    last_action`, set at the END of the previous step) and the reset
+    observation is never pushed; the two cancel exactly.
+
+    ⚠ THE ACTION LAG. `history actions[j]` comes from `j + 2` steps back while
+    `history <state key>[j]` comes from `j + 1`. Same `j`, different row.
+    """
+    spec.clear()
+    # last_action 29: one step back, the whole action row, valid from age 1
+    for e in range(G1_LAST_ACTION_DIM):
+        spec.append(Int32(1))      # kind: action
+        spec.append(Int32(1))      # steps back
+        spec.append(Int32(e))
+        spec.append(Int32(1))      # min_age
+    # history 372, KEY-MAJOR, newest first within a key
+    for key in range(5):
+        var d = g1_hist_key_dim(key)
+        var so = g1_hist_key_state_offset(key)
+        for j in range(G1_HIST_LEN):
+            for e in range(d):
+                if so < 0:
+                    spec.append(Int32(1))          # actions
+                    spec.append(Int32(j + 2))      # ⚠ one further back
+                    spec.append(Int32(e))
+                else:
+                    spec.append(Int32(0))          # a state key of r_obs
+                    spec.append(Int32(j + 1))
+                    spec.append(Int32(so + e))
+                spec.append(Int32(j + 2))          # min_age, both kinds

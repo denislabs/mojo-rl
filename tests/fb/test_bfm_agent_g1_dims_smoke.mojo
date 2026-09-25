@@ -41,6 +41,7 @@ from noeira.deep_agents.fb.bfm_towers import (
     BFMFTower, BFMBNetFiltered, BFMActorTowerFiltered, BFMDNetFiltered,
 )
 from noeira.deep_agents.fb.kernels import ensure_t
+from noeira.envs.robots.unitree_g1_history import g1_build_tail_spec
 
 
 # ⚠ TWO widths now (§12.34-12.36). `SP` is `state + privileged_state`, the
@@ -72,7 +73,8 @@ comptime ANet = BFMActorTowerFiltered[OBS, SD, EX, D, H, L, ACT]
 comptime DNet = BFMDNetFiltered[OBS, SP, D, HD]
 comptime QNet = BFMFTower[OBS, ACT, D, H, L, 1]
 comptime Agent = FBCPROnlineAgent[
-    FNet, BNet, ANet, DNet, QNet, OBS, ACT, D, BATCH, CAP, LANES, SEQ, ZBUF
+    FNet, BNet, ANet, DNet, QNet, OBS, ACT, D, BATCH, CAP, LANES, SEQ, ZBUF,
+    EX,   # DERIVED_TAIL: the 401 the ring does NOT store (docs §12.36)
 ]
 
 
@@ -93,8 +95,8 @@ def test_agent_instantiates_and_trains_finite() raises:
     # expert table: N_EXPERT random 527-D rows, one episode, every window
     # start that keeps `start + SEQ` inside it
     var eobs = Tensor()
-    ensure_t["gpu"](eobs, N_EXPERT * OBS, Optional(ctx))
-    _fill(eobs, N_EXPERT * OBS, 3, 2.0)
+    ensure_t["gpu"](eobs, N_EXPERT * SP, Optional(ctx))
+    _fill(eobs, N_EXPERT * SP, 3, 2.0)
     eobs.upload(ctx)
     var n_starts = N_EXPERT - SEQ
     var h_starts = ctx.enqueue_create_host_buffer[IDX_DT](n_starts)
@@ -105,14 +107,25 @@ def test_agent_instantiates_and_trains_finite() raises:
     ctx.synchronize()
     agent.attach_expert_windows(eobs^, starts^, n_starts)
 
+    # ⚠ With DERIVED_TAIL the ring stores SP columns and the batch row is OBS
+    # wide; the last EX are derived from the SAME lane's earlier rows
+    # (§12.36). Two things the agent cannot infer and the env must hand it:
+    # the spec table, and the scaling the G1's PD chain applies to a stored
+    # action (`clip(a * 5, +-5)`) — the tail must reproduce what the policy
+    # SAW, not what the net emitted.
+    var spec = List[Int32]()
+    g1_build_tail_spec(spec)
+    agent.attach_tail_spec(spec)
+    agent.set_action_norm(5.0, 5.0)
+
     # rollout buffers
     var obs = Tensor()
     var prev = Tensor()
     var act = Tensor()
     var rew = Tensor()
     var done = Tensor()
-    ensure_t["gpu"](obs, LANES * OBS, Optional(ctx))
-    ensure_t["gpu"](prev, LANES * OBS, Optional(ctx))
+    ensure_t["gpu"](obs, LANES * SP, Optional(ctx))
+    ensure_t["gpu"](prev, LANES * SP, Optional(ctx))
     ensure_t["gpu"](act, LANES * ACT, Optional(ctx))
     ensure_t["gpu"](rew, LANES, Optional(ctx))
     ensure_t["gpu"](done, LANES, Optional(ctx))
@@ -127,8 +140,9 @@ def test_agent_instantiates_and_trains_finite() raises:
     var n_steps = (BATCH // LANES) * 2 + N_TRAIN * 2
     var n_trained = 0
     for t in range(n_steps):
-        _fill(prev, LANES * OBS, 10 + t, 3.0)
-        _fill(obs, LANES * OBS, 11 + t, 3.0)
+        agent.set_age(t if t < 6 else 6)
+        _fill(prev, LANES * SP, 10 + t, 3.0)
+        _fill(obs, LANES * SP, 11 + t, 3.0)
         prev.upload(ctx)
         obs.upload(ctx)
         agent.select_action_batched[LANES](
