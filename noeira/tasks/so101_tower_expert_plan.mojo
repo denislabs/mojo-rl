@@ -119,6 +119,14 @@ comptime SUPPORT_UP_COS: Float64 = 0.8
 (the height loop) when its normal is within ~37 deg of vertical, and as a wall
 (the veto) otherwise. Our contact rows carry bodies, not geoms, so the bowl's
 floor and its walls are told apart by the normal."""
+comptime PATH_LEGS = 5
+"""The legs `path_report` samples: 0 pre (start -> pre-grasp, jaw start ->
+open, vs obstacles + desk), 1 descent (the approach waypoints, jaw open, vs
+obstacles incl. the brick, not the desk — the press is intended), 2 lift (jaw
+closed, vs obstacles minus the brick), 3 carry and 4 place (the arm AND the
+carried brick vs obstacles minus the brick, plus the desk)."""
+comptime PATH_SAMPLES = 6
+"""Points per leg (the leg's end included, its start not)."""
 comptime PLAN_PEN_OK_MM: Float64 = 1.0
 """`--clear-plan`: a plan whose poses penetrate an obstacle by more is
 redrawn."""
@@ -540,6 +548,9 @@ struct TowerGraspPlan(Copyable, Movable):
     """`clear_plan` only: the grasp height's raise, the worst obstacle
     penetration left, the postures drawn."""
     var placed: Bool
+    var path_pen_mm: List[Float64]
+    """`path_report`: the worst penetration along each leg's JOINT-SPACE path
+    (the executor ramps linearly), in `PATH_LEGS` order; -1 = not checked."""
 
     def __init__(out self):
         self.q_start = List[Float64](length=N_ARM, fill=0.0)
@@ -564,6 +575,7 @@ struct TowerGraspPlan(Copyable, Movable):
         self.pen_mm = 0.0
         self.tries = 0
         self.placed = False
+        self.path_pen_mm = List[Float64](length=PATH_LEGS, fill=-1.0)
 
     def legs(self, place: Bool, close_steps: Int = N_CLOSE) -> List[PlanLeg]:
         """The sequence `tower_expert_record.mojo` runs from a reset, as
@@ -659,6 +671,15 @@ struct TowerGraspPlanner(Movable):
     desk by default; `set_support` names another (the bowl, to pick the brick
     OUT of it)."""
     var support_by_normal: Bool
+    var path_check: Bool
+    """`clear_plan` + this: a posture is also redrawn when a leg's JOINT-SPACE
+    path (pre, descent, lift, and — given the bowl — carry and place) collides,
+    not only its waypoints (`PATH_LEGS`). Measured: successes' paths almost
+    never collide; pushed bricks, bowl hits and shoulder/stand hits mostly do."""
+    var path_report: Bool
+    """Measure each leg's joint-space path against the obstacles into
+    `TowerGraspPlan.path_pen_mm` (report only: nothing is redrawn)."""
+    var brick: Int
     """Count only the support's near-vertical contacts as the support, and
     keep its other contacts (walls) in the veto — see `SUPPORT_UP_COS`."""
 
@@ -685,6 +706,12 @@ struct TowerGraspPlanner(Movable):
                 self.desk.append(b)
         self.support = self.desk.copy()
         self.support_by_normal = False
+        self.path_check = False
+        self.path_report = False
+        self.brick = -1
+        for b in range(len(body_names)):
+            if body_names[b] == "brick_brick":
+                self.brick = b
         if len(self.arm_bodies) != 5 or len(self.obstacles) != 5 or len(self.desk) != 1:
             raise Error("the planner did not find its 5 arm bodies, 5 obstacles and the desk")
 
@@ -707,9 +734,17 @@ struct TowerGraspPlanner(Movable):
             self.support.append(found)
         self.support_by_normal = by_normal
 
+    def _obst_without_brick(self) -> List[Int]:
+        var o = List[Int]()
+        for b in self.obstacles:
+            if b != self.brick:
+                o.append(b)
+        return o^
+
     def plan_grasp(
         mut self, mut env: E, ref pb: List[Float64], brick_yaw: Float64,
         ref q: List[Float64], jaw_open: Float64,
+        pw: List[Float64] = List[Float64](),
     ) raises -> TowerGraspPlan:
         """The pick: pre-grasp, the approach, the grasp and the lift, for a
         brick at `pb` (world m) with yaw `brick_yaw`, from the arm at `q`.
@@ -722,7 +757,12 @@ struct TowerGraspPlanner(Movable):
         mm off target), then every waypoint is checked against the base,
         shoulder, stand, bowl and brick with the jaw open; a colliding posture
         is redrawn, up to PLAN_TRIES, and the least-colliding one is kept if
-        none is clear."""
+        none is clear.
+
+        `path_check` (with `clear_plan`) also rejects a posture whose legs'
+        joint-space PATHS collide; `pw` (the bowl, world m) adds the carry and
+        place legs to that check (their plan is provisional: the sim executor
+        re-plans the place after the lift, `plan_place`)."""
         var plan = TowerGraspPlan()
         for i in range(N_ARM):
             plan.q_start[i] = q[i]
@@ -776,6 +816,48 @@ struct TowerGraspPlanner(Movable):
                             self.obstacles, 2 if self.support_by_normal else 0,
                             self.support.copy(),
                         ))
+                    if self.path_check:
+                        var j0 = Float64(env.d.qpos.data[N_ARM])
+                        var with_desk = self.obstacles.copy()
+                        for b in self.desk:
+                            with_desk.append(b)
+                        pen = max(pen, _path_pen(
+                            env, q.copy(), plan.waypoints[0].copy(), j0, jaw_open,
+                            self.arm_bodies.copy(), with_desk.copy(),
+                        ))
+                        for j in range(1, n_wp + 1):
+                            pen = max(pen, _path_pen(
+                                env, plan.waypoints[j - 1].copy(),
+                                plan.waypoints[j].copy(), jaw_open, jaw_open,
+                                self.arm_bodies.copy(), self.obstacles.copy(),
+                            ))
+                        var nb = List[Int]()
+                        for b in self.obstacles:
+                            if b != self.brick:
+                                nb.append(b)
+                        var ql = List[Float64](length=N_ARM, fill=0.0)
+                        _ = self.arm.ik(env, _above(pb, Z_LIFT), plan.waypoints[n_wp], yaw, ql, tl, rs, use_rs)
+                        pen = max(pen, _path_pen(
+                            env, plan.waypoints[n_wp].copy(), ql.copy(),
+                            self.arm.lo[5], self.arm.lo[5], self.arm_bodies.copy(),
+                            nb.copy(),
+                        ))
+                        if len(pw) == 3:
+                            var nd = nb.copy()
+                            for b in self.desk:
+                                nd.append(b)
+                            var qc = List[Float64](length=N_ARM, fill=0.0)
+                            _ = self.arm.ik(env, _above(pw, Z_CARRY), ql, yaw, qc, tl, rs, use_rs)
+                            var qp = List[Float64](length=N_ARM, fill=0.0)
+                            _ = self.arm.ik(env, _above(pw, Z_PLACE), qc, yaw, qp, tl, rs, use_rs)
+                            pen = max(pen, _path_pen(
+                                env, ql.copy(), qc.copy(), self.arm.lo[5],
+                                self.arm.lo[5], self.arm_bodies.copy(), nd.copy(),
+                            ))
+                            pen = max(pen, _path_pen(
+                                env, qc.copy(), qp.copy(), self.arm.lo[5],
+                                self.arm.lo[5], self.arm_bodies.copy(), nd.copy(),
+                            ))
                     plan.raise_mm = raise_m * 1000.0
                     plan.pen_mm = pen
                     plan.tries = attempt + 1
@@ -797,11 +879,26 @@ struct TowerGraspPlanner(Movable):
         plan.yaw = yaw
         plan.tilt = tl
         plan.tangential = self.posture.tangential
+        if self.path_report:
+            var j0 = Float64(env.d.qpos.data[N_ARM])
+            var with_desk = self.obstacles.copy()
+            for b in self.desk:
+                with_desk.append(b)
+            plan.path_pen_mm[0] = _path_pen(env, plan.q_start.copy(), plan.q_pre.copy(), j0, jaw_open, self.arm_bodies.copy(), with_desk.copy())
+            var dmax = 0.0
+            if len(plan.waypoints) > 0:
+                for j in range(1, len(plan.waypoints)):
+                    dmax = max(dmax, _path_pen(env, plan.waypoints[j - 1].copy(), plan.waypoints[j].copy(), jaw_open, jaw_open, self.arm_bodies.copy(), self.obstacles.copy()))
+            else:
+                dmax = _path_pen(env, plan.q_pre.copy(), plan.q_grasp.copy(), jaw_open, jaw_open, self.arm_bodies.copy(), self.obstacles.copy())
+            plan.path_pen_mm[1] = dmax
+            var nb = self._obst_without_brick()
+            plan.path_pen_mm[2] = _path_pen(env, plan.q_grasp.copy(), plan.q_lift.copy(), self.arm.lo[5], self.arm.lo[5], self.arm_bodies.copy(), nb.copy())
         return plan^
 
     def plan_place(
         mut self, mut env: E, mut plan: TowerGraspPlan, ref pw: List[Float64],
-    ):
+    ) raises:
         """The place, for a bowl at `pw` (world m): carry above it, lower
         into it; retreat reuses the carry pose. Seeded from the plan's lift."""
         var tl = plan.tilt
@@ -810,6 +907,17 @@ struct TowerGraspPlanner(Movable):
         plan.e_carry = self.arm.ik(env, _above(pw, Z_CARRY), plan.q_lift, plan.yaw, plan.q_carry, tl, rs, use_rs)
         plan.e_place = self.arm.ik(env, _above(pw, Z_PLACE), plan.q_carry, plan.yaw, plan.q_place, tl, rs, use_rs)
         plan.placed = True
+        if self.path_report:
+            # the carried brick moves with the gripper: check it too. Its
+            # pose in the sim env is where it lies NOW, so this checks the
+            # ARM against the scene and the brick only as a static obstacle
+            # removed from the set — the brick-in-hand vs the bowl rim is
+            # the executor's to see (a static pass cannot move a free body)
+            var nb = self._obst_without_brick()
+            for b in self.desk:
+                nb.append(b)
+            plan.path_pen_mm[3] = _path_pen(env, plan.q_lift.copy(), plan.q_carry.copy(), self.arm.lo[5], self.arm.lo[5], self.arm_bodies.copy(), nb.copy())
+            plan.path_pen_mm[4] = _path_pen(env, plan.q_carry.copy(), plan.q_place.copy(), self.arm.lo[5], self.arm.lo[5], self.arm_bodies.copy(), nb.copy())
 
 
 def _plan_tilted(
@@ -849,6 +957,24 @@ def _plan_tilted(
         prev = qj.copy()
         waypoints.append(qj^)
     return e
+
+
+def _path_pen(
+    mut env: E, qa: List[Float64], qb: List[Float64], ja: Float64,
+    jb: Float64, arm: List[Int], obst: List[Int],
+) raises -> Float64:
+    """The worst penetration (mm) along the straight joint-space line from
+    (qa, ja) to (qb, jb), at `PATH_SAMPLES` points — the executor's ramp."""
+    var worst = 0.0
+    for k in range(1, PATH_SAMPLES + 1):
+        var t = Float64(k) / Float64(PATH_SAMPLES)
+        var q = List[Float64]()
+        for i in range(N_ARM):
+            q.append(qa[i] + (qb[i] - qa[i]) * t)
+        worst = max(worst, _pose_penetration_mm(
+            env, q, ja + (jb - ja) * t, arm, obst
+        ))
+    return worst
 
 
 def _pose_penetration_mm(

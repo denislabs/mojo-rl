@@ -764,7 +764,10 @@ def run_episode(
         q.append(Float64(env.d.qpos.data[i]))
     # THE PLAN (`tasks/so101_tower_expert_plan.mojo`): posture draw, IK,
     # and with --clear-plan the collision pass; this function executes it
-    var plan = ex.planner.plan_grasp(env, pb, _body_yaw(env, brick), q, ex.jaw_open)
+    var pw0 = _body_pos(env, bowl) if place and ex.planner.path_check else List[Float64]()
+    var plan = ex.planner.plan_grasp(
+        env, pb, _body_yaw(env, brick), q, ex.jaw_open, pw0
+    )
     for k in range(3):
         ex.tip_goal[k] = plan.tip_goal[k]
     ex.tip_trigger = plan.close_on_tip
@@ -908,6 +911,11 @@ def run_episode(
         ex.planner.plan_place(env, plan, pw)
         var q4 = plan.q_carry.copy()
         var q5 = plan.q_place.copy()
+        if verbose and ex.planner.path_report:
+            var ps = String("")
+            for k in range(len(plan.path_pen_mm)):
+                ps += " " + fixed(plan.path_pen_mm[k], 1)
+            print("  ep", ep, "path pen mm (pre descent lift carry place):" + ps)
         if verbose:
             print("  ep", ep, "bowl", fixed(pw[0], 3), fixed(pw[1], 3),
                   " ik err mm: carry", fixed(plan.e_carry * 1000.0, 1), "place",
@@ -965,6 +973,8 @@ def main() raises:
     var print_plan = False
     var dump_dir = String("")
     var desk_jaw = -10.0
+    var path_report = False
+    var path_check = False
     var pinch_offset_mm = 0.0
     var pinch_offset_set = False
     var desk_clear_mm = 0.0
@@ -1019,6 +1029,12 @@ def main() raises:
             pinch_offset_mm = Float64(String(args[i + 1]))
             pinch_offset_set = True
             i += 2
+        elif a == "--path-check":
+            path_check = True
+            i += 1
+        elif a == "--path-report":
+            path_report = True
+            i += 1
         elif a == "--desk-jaw" and i + 1 < len(args):
             desk_jaw = Float64(String(args[i + 1]))
             i += 2
@@ -1155,6 +1171,10 @@ def main() raises:
     ex.print_plan = print_plan
     ex.dump_dir = dump_dir
     ex.planner.desk_jaw = desk_jaw
+    ex.planner.path_report = path_report
+    ex.planner.path_check = path_check
+    if path_check and not clear_plan:
+        raise Error("--path-check extends --clear-plan's collision pass: add --clear-plan")
     if clear_plan and not pinch_offset_set:
         pinch_offset_mm = CLEAR_PLAN_PINCH_OFFSET_MM
     ex.planner.pinch_offset_m = pinch_offset_mm / 1000.0
