@@ -167,12 +167,17 @@ comptime BATCH: Int = 1024
 # transition rather than 5360. At CAP 2 M that frees 3.92 GiB, which is what
 # pays for the CAP raise below.
 #
-# CAP is 2.0 M and the tower is the REFERENCE'S OWN 2048/6 (docs §12.25): with
-# `r_nxt` gone that tower fits for the first time. Budget anchored on the
-# MEASURED 1536/4 + CAP 4 M = 27.1 GB (so non-ring 14.1 GB) plus the
-# model+Adam+activation delta of +4.2 GB: non-ring ~18.2 GB, ring 6.51 GB,
-# total ~24.7 GB of 31.8. The same CAP on the OLD ring was 29.0 GB — which is
-# exactly where §12.22 OOM'd.
+# CAP stays 2.0 M and the tower is back to 1024/3 (docs §12.30): the
+# reference's own 2048/6 ran to 10.24 M and PLATEAUED at the same EMD as
+# 1024/3 (mean 1.342 vs 1.338 over 5.12-10.24 M), having got there faster.
+# Capacity buys early speed, not the final level.
+#
+# ⚠ CAP is held at 2.0 M ON PURPOSE. The 09-15 long run was 1024/3 at CAP
+# 2 M, so keeping it makes the ortho change (§12.28) a SINGLE-AXIS difference
+# against that run. There is headroom to raise it — at 1024/3 the budget is
+# ~12.3 GB non-ring, so CAP 4 M is ~25.3 GB and even the reference's 5.12 M
+# is ~28.9 GB of 31.8 — but spending it here would confound the one question
+# this run is launched to answer, exactly as §12.21's tower/CAP tangle did.
 #
 # ⚠ THAT ESTIMATE IS THE FOURTH ONE IN THIS TRACK AND THE FIRST THREE WERE
 # WRONG (18.3, 23.3, 26 GiB against a 25.9 GiB measurement). Read the
