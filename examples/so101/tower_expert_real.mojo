@@ -147,7 +147,7 @@ outcome were read from).
 """
 
 from std.builtin.sort import sort
-from std.math import atan2, cos, sin, sqrt, pi
+from std.math import atan2, cos, floor, sin, sqrt, pi
 from std.os import makedirs
 from std.random import seed as seed_rng, random_float64
 from std.sys import argv
@@ -184,7 +184,7 @@ from noeira.tasks.so101_tower_expert_plan import (
     TowerExpertEnv, TowerGraspPlanner, TowerGraspPlan, PlanLeg, fingertip_point,
     ACT, N_ARM, NQ, HUMAN_JAW_OPEN, HUMAN_Z_GRASP, CLEAR_PLAN_TILT,
     PLAN_PEN_OK_MM, IK_OK_MM, PlanCfg, Planned, plan_clean, with_brick, pick_place_legs,
-    N_OPEN,
+    N_OPEN, N_DESCEND, APPROACH_D, TIP_REACH, Z_LIFT, _pose_penetration_mm,
 )
 from noeira.tasks.so101_tower_overhead import (
     OVERHEAD_CALIB, tower_overhead_pose, tower_desk_roi, printed_brick_hsv,
@@ -282,15 +282,32 @@ comptime JAW_EMPTY_RAD: Float64 = 0.0
 """After the close, a jaw below this closed on nothing (or on a corner): the
 pick is abandoned. Measured (the gripper's measured line): holding the brick
 0.116-0.121 rad, empty -0.149, a corner grip -0.095 (dropped on the carry)."""
-comptime LOOK_TICKS = 8
-"""The wrist look's hold at the pre-grasp (~0.27 s at 30 Hz)."""
-comptime LOOK_MIN_CONF = 4
+comptime LOOK_TICKS = 6
+"""The wrist look's hold at the pre-grasp (0.2 s at 30 Hz)."""
+comptime REAIM_TEST_MM: Float64 = 10.0
+"""`--plan-cycle`'s offline check of the fast re-aim: the brick moved this
+far (a direction drawn per layout) and turned 15 deg."""
+comptime REAIM_IK_ITERS = 100
+comptime REAIM_IK_OK_MM: Float64 = 3.0
+"""The fast re-aim's IK must reach every approach waypoint to this."""
+comptime REAIM_LIFT_OK_MM: Float64 = 30.0
+"""... and the lift to this: it is the pose 15 cm up, in the air (out of
+the bowl the arm has already backed out along its approach)."""
+comptime REAIM_MIN_STEPS = 6
+comptime REAIM_DEG_PER_STEP: Float64 = 1.0
+"""The move to the re-aimed pre-grasp: this many degrees per step at most
+(the descent runs ~0.8), at least REAIM_MIN_STEPS."""
+comptime N_PRE_FULL = 40
+comptime LOOK_MIN_CONF = 3
 comptime LOOK_MAX_CORR_MM: Float64 = 25.0
-"""The wrist correction acts (task 2) when at least LOOK_MIN_CONF of the
+"""The wrist correction acts (both tasks) when at least LOOK_MIN_CONF of the
 look's frames read the brick confidently and it moves the aim by at most
 this. Cycle run 3: the two in-bowl misses were the wrist's two largest
 offsets from the aim (12.7, 13.6 mm, the yaw 20-44 deg off), the two
-successes 7.7 and 3.7."""
+successes 7.7 and 3.7; with the correction (run 4) task 2 went 4/4. Run 4's
+two task-1 failures (flung, empty) had the wrist 13 mm off the aim: every
+desk pick read +8..+20 mm in x (the arm's sag, which the overhead-planned
+aim carries and the wrist read relative to the gripper does not)."""
 comptime LOOK_ROI_M: Float64 = 0.08
 """The wrist look searches within this of the planned brick: the camera
 also sees the blue tower stand."""
@@ -925,6 +942,135 @@ def wrist_look(
     return out^
 
 
+def _ik_from(
+    mut env: E, mut planner: TowerGraspPlanner, ref t: List[Float64], ref q0: List[Float64],
+    yaw: Float64, tilt: Float64, mut q_out: List[Float64],
+) -> Float64:
+    """Damped least squares from `q0` over the planner's own relaxing tilt
+    weights (`TowerArm.ik`'s), no restarts: the best position error."""
+    var weights: List[Float64] = [0.3, 0.12, 0.05, 0.02]
+    var best = 1e9
+    var qt = List[Float64](length=N_ARM, fill=0.0)
+    for w in weights:
+        var e = planner.arm._ik_once(env, t, q0, yaw, w, 0.02, REAIM_IK_ITERS, qt, tilt, True)
+        if e < best - 1e-5:
+            best = e
+            for i in range(N_ARM):
+                q_out[i] = qt[i]
+        if best < 1e-3:
+            break
+    return best
+
+
+def _reaim_face(
+    mut env: E, mut planner: TowerGraspPlanner, plan: TowerGraspPlan,
+    ref qs_new: List[Float64], new_x: Float64, new_y: Float64, pick_z: Float64,
+    yaw_n: Float64, jaw: Float64,
+) raises -> Tuple[TowerGraspPlan, Bool, String, Float64]:
+    """The re-aim for ONE pinch face (`yaw_n`): (plan, ok, why, penetration)."""
+    var p = plan.copy()
+    var tip = List[Float64]()
+    tip.append(new_x + planner.pinch_offset_m * cos(yaw_n))
+    tip.append(new_y + planner.pinch_offset_m * sin(yaw_n))
+    tip.append(plan.tip_goal[2])
+    var bearing = atan2(new_y, new_x)
+    var tl = plan.tilt
+    var fx = sin(tl) * cos(bearing)
+    var fy = sin(tl) * sin(bearing)
+    var fzv = -cos(tl)
+    var n_wp = len(plan.waypoints) - 1
+    var worst = 0.0
+    for j in range(n_wp + 1):
+        var sback = APPROACH_D * Float64(n_wp - j) / Float64(n_wp)
+        var t = List[Float64]()
+        t.append(tip[0] - sback * fx)
+        t.append(tip[1] - sback * fy)
+        t.append(tip[2] - sback * fzv + TIP_REACH)
+        var qj = List[Float64](length=N_ARM, fill=0.0)
+        var e = _ik_from(env, planner, t, plan.waypoints[j], yaw_n, tl, qj)
+        worst = max(worst, e)
+        p.waypoints[j] = qj^
+    var tlift: List[Float64] = [new_x, new_y, pick_z + Z_LIFT]
+    var ql = List[Float64](length=N_ARM, fill=0.0)
+    var el = _ik_from(env, planner, tlift, plan.q_lift, yaw_n, tl, ql)
+    for i in range(N_ARM):
+        p.q_pre[i] = p.waypoints[0][i]
+        p.q_grasp[i] = p.waypoints[n_wp][i]
+        p.q_lift[i] = ql[i]
+    for k in range(3):
+        p.tip_goal[k] = tip[k]
+    p.yaw = yaw_n
+    p.bearing = bearing
+    # the obstacles, with the brick where the wrist saw it, the jaw open
+    var v0 = List[Float64](length=NV, fill=0.0)
+    env.set_state(qs_new, v0)
+    var pen = 0.0
+    for j in range(n_wp + 1):
+        pen = max(pen, _pose_penetration_mm(env, p.waypoints[j], jaw, planner.arm_bodies, planner.obstacles))
+    env.set_state(qs_new, v0)
+    var ok = worst * 1000.0 <= REAIM_IK_OK_MM and el * 1000.0 <= REAIM_LIFT_OK_MM and pen <= PLAN_PEN_OK_MM
+    var why = (
+        "IK " + fixed(worst * 1000.0, 1) + " mm (lift " + fixed(el * 1000.0, 1) + ") | penetration "
+        + fixed(pen, 1) + " mm"
+    )
+    return (p^, ok, why, pen)
+
+
+def reaim_pick(
+    mut env: E, mut planner: TowerGraspPlanner, plan: TowerGraspPlan,
+    ref qs_new: List[Float64], new_x: Float64, new_y: Float64, pick_z: Float64,
+    brick_yaw: Float64, jaw: Float64,
+) raises -> Tuple[TowerGraspPlan, Bool, String]:
+    """THE FAST WRIST CORRECTION: the pick KEEPS its posture (the tilt, the
+    grasp height) and the approach line moves to the brick the wrist camera
+    saw; each waypoint is re-solved from the old one over the planner's tilt
+    weights (ms, where a re-plan draws postures for seconds) and checked
+    against the obstacles with the jaw open. The pinch goes on the brick
+    face nearest the old pinch, or the next one if that one collides (a
+    wall, in the bowl). Returns (plan, ok, why)."""
+    var k = Float64(Int(floor((plan.yaw - brick_yaw) / (pi / 2.0) + 0.5)))
+    var y1 = brick_yaw + k * (pi / 2.0)
+    # the second-nearest face: the other side of the old pinch
+    var y2 = y1 + (pi / 2.0 if plan.yaw > y1 else -pi / 2.0)
+    var r1 = _reaim_face(env, planner, plan, qs_new, new_x, new_y, pick_z, y1, jaw)
+    if r1[1]:
+        return (r1[0].copy(), True, r1[2])
+    var r2 = _reaim_face(env, planner, plan, qs_new, new_x, new_y, pick_z, y2, jaw)
+    if r2[1]:
+        return (r2[0].copy(), True, r2[2] + " (the next face)")
+    return (r1[0].copy(), False, r1[2] + " / next face: " + r2[2])
+
+
+def splice_pick(
+    pick: TowerGraspPlan, ref old_legs: List[PlanLeg], ref old_jaws: List[Float64],
+    jaw_pick: Float64, pick_in_bowl: Bool, mut jaws: List[Float64],
+) -> List[PlanLeg]:
+    """The re-aimed pick's legs, then the OLD legs from the carry on (the
+    place is unchanged — its legs need no new IK)."""
+    var out = List[PlanLeg]()
+    jaws.clear()
+    for leg in pick.legs(place=False, close_steps=1):
+        if leg.name == "hold":
+            continue
+        if leg.name == "lift" and pick_in_bowl:
+            var n_pw = len(pick.waypoints) - 1
+            for j in range(n_pw - 1, -1, -1):
+                out.append(PlanLeg("out", pick.waypoints[j].copy(), False, N_DESCEND // n_pw, False, False))
+                jaws.append(jaw_pick)
+        out.append(leg.copy())
+        jaws.append(jaw_pick)
+    var start = -1
+    for i in range(len(old_legs)):
+        if old_legs[i].name == "carry":
+            start = i
+            break
+    if start >= 0:
+        for i in range(start, len(old_legs)):
+            out.append(old_legs[i].copy())
+            jaws.append(old_jaws[i])
+    return out^
+
+
 def scene_unchanged(
     mut reader: CameraReader, cam: RigCamera, mut frame: List[UInt8], sc: Scene,
 ) raises -> String:
@@ -1168,6 +1314,7 @@ def plan_task(
     var rest_z = q_scene[brick_adr + 2]
     if task_n == 1:
         var pb: List[Float64] = [sc.brick_x, sc.brick_y, rest_z]
+        tp.pick_seed0 = seed + draw
         var pk = plan_clean(env, planner, body_names, qs, pb, sc.brick_yaw, q5, cfg_desk_pick, seed + draw, PICK_DRAWS)
         draw += pk.draws
         var pc: List[Float64] = [sc.bowl_x, sc.bowl_y, bz]
@@ -1175,6 +1322,8 @@ def plan_task(
         var pl = plan_clean(env, planner, body_names, qv, pc, pk.plan.yaw, pk.plan.q_lift, cfg_bowl_release, seed + draw, PICK_DRAWS)
         draw += pl.draws
         tp.legs = pick_place_legs(env, planner, pk.plan, pl.plan, jaw_open, cfg_bowl_release.jaw, False, tp.jaws)
+        tp.pick_plan = pk.plan.copy()
+        tp.place_plan = pl.plan.copy()
         for k in range(3):
             tp.tip_goal[k] = pk.plan.tip_goal[k]
         tp.tx = sc.bowl_x
@@ -1318,6 +1467,9 @@ def plan_cycles(
     var ok2 = 0
     var both = 0
     var draws = 0
+    var reaim1 = 0
+    var reaim2 = 0
+    var reaim_ms = 0.0
     print("  ep  brick mm      bowl mm       task1 tilts   task2 tilts   spot mm       ok")
     for li in range(1, len(lines)):
         var cols = lines[li].split(",")
@@ -1343,6 +1495,24 @@ def plan_cycles(
             cfg_desk_pick, cfg_desk_release, cfg_bowl_pick, cfg_bowl_release,
             jaw_open, bowl_jaw, True, sc.bowl_x, sc.bowl_y, t1.place_yaw, seed0 + 100 * n + 50, n == 0,
         )
+        # the fast re-aim, as if the wrist saw each brick REAIM_TEST_MM off
+        # (a direction drawn per layout) and turned 15 deg
+        seed_rng(seed0 + 7000 + n)
+        var ang = random_float64(0.0, 2.0 * pi)
+        var ox = REAIM_TEST_MM / 1000.0 * cos(ang)
+        var oy = REAIM_TEST_MM / 1000.0 * sin(ang)
+        var t_a = perf_counter_ns()
+        var qa = with_brick(qs, brick_adr, t1.pick_x + ox, t1.pick_y + oy, t1.pick_z, sc.brick_yaw + 0.26)
+        var ra1 = reaim_pick(env, planner, t1.pick_plan, qa, t1.pick_x + ox, t1.pick_y + oy, t1.pick_z, sc.brick_yaw + 0.26, jaw_open)
+        var qb = with_brick(qs2, brick_adr, t2.pick_x + ox, t2.pick_y + oy, t2.pick_z, t1.place_yaw + 0.26)
+        var ra2 = reaim_pick(env, planner, t2.pick_plan, qb, t2.pick_x + ox, t2.pick_y + oy, t2.pick_z, t1.place_yaw + 0.26, bowl_jaw)
+        reaim_ms += Float64(perf_counter_ns() - t_a) * 1e-6 / 2.0
+        if t1.ok and ra1[1]:
+            reaim1 += 1
+        if t2.ok and ra2[1]:
+            reaim2 += 1
+        if n < 3:
+            print("    re-aim task 1:", ra1[2], "| task 2:", ra2[2])
         n += 1
         draws += t1.draws + t2.draws
         if t1.ok:
@@ -1361,6 +1531,10 @@ def plan_cycles(
     print(
         "  layouts", n, "| task 1 clean", ok1, "| task 2 clean", ok2, "| both", both,
         "| draws per layout", fixed(Float64(draws) / Float64(max(n, 1)), 1),
+    )
+    print(
+        "  fast re-aim (", fixed(REAIM_TEST_MM, 0), "mm off, +15 deg): clean for task 1", reaim1, "/", ok1,
+        "| task 2", reaim2, "/", ok2, "| mean", fixed(reaim_ms / Float64(max(n, 1)), 1), "ms per pick",
     )
 
 
@@ -2062,7 +2236,7 @@ def main() raises:
             var pick_y = sc.brick_y
             var pick_z = q_scene[brick_adr + 2]
             var pick_yaw = sc.brick_yaw
-            var place_plan = TowerGraspPlan()
+            var pick_plan = TowerGraspPlan()
             var pick_seed0 = 0
             var tx = sc.bowl_x
             var ty = sc.bowl_y
@@ -2113,7 +2287,7 @@ def main() raises:
                     for k in range(3):
                         tip_goal[k] = tp.tip_goal[k]
                     tx = tp.tx
-                    place_plan = tp.place_plan.copy()
+                    pick_plan = tp.pick_plan.copy()
                     pick_seed0 = tp.pick_seed0
                     pick_x = tp.pick_x
                     pick_y = tp.pick_y
@@ -2217,7 +2391,7 @@ def main() raises:
                             look_yaw = lk.yaw
                             var corr = sqrt((lk.x - pick_x) ** 2 + (lk.y - pick_y) ** 2) * 1000.0
                             var use = (
-                                wrist_correct and task_n == 2 and cycle and lk.n_conf >= LOOK_MIN_CONF
+                                wrist_correct and cycle and lk.n_conf >= LOOK_MIN_CONF
                                 and corr <= LOOK_MAX_CORR_MM
                             )
                             print(
@@ -2229,34 +2403,58 @@ def main() raises:
                                 "-> CORRECTING" if use else "(LOG ONLY)",
                             )
                             if use:
-                                # THE WRIST CORRECTION (task 2, in the bowl):
-                                # the brick where the wrist camera sees it,
-                                # the pick re-planned from the same seed (the
-                                # same posture draw), the place kept. The
-                                # wrist read and the plan's brick go through
-                                # the SAME FK camera pose, so the arm's model
-                                # error mostly cancels over the 7 cm left.
+                                # THE WRIST CORRECTION: the brick where the
+                                # wrist camera sees it. The read and the
+                                # plan's brick go through the SAME FK camera
+                                # pose, so the arm's model error (the sag)
+                                # mostly cancels over the 7 cm left. First
+                                # the fast re-aim (same posture, ms); if not
+                                # clean, a full re-plan from the same seed;
+                                # else the plan as it was.
+                                var t_re = perf_counter_ns()
+                                var in_bowl_pick = task_n == 2
+                                var jaw_pk = bowl_jaw if in_bowl_pick else jaw_open
+                                var cfg_pk = cfg_bowl_pick.copy() if in_bowl_pick else cfg_desk_pick.copy()
                                 var pb2: List[Float64] = [lk.x, lk.y, pick_z]
                                 var qb2 = with_brick(qs, brick_adr, lk.x, lk.y, pick_z, lk.yaw)
-                                var pk2 = plan_clean(env, planner, body_names, qb2, pb2, lk.yaw, q5, cfg_bowl_pick, pick_seed0, PICK_DRAWS)
-                                if pk2.ok:
-                                    var jaws2 = List[Float64]()
-                                    var legs2 = pick_place_legs(env, planner, pk2.plan, place_plan, bowl_jaw, jaw_open, True, jaws2)
-                                    legs = legs2^
-                                    jaws = jaws2^
+                                var ra = reaim_pick(env, planner, pick_plan, qb2, lk.x, lk.y, pick_z, lk.yaw, jaw_pk)
+                                var new_legs = List[PlanLeg]()
+                                var new_jaws = List[Float64]()
+                                var new_tip = List[Float64]()
+                                var how = String("")
+                                if ra[1]:
+                                    new_legs = splice_pick(ra[0], legs, jaws, jaw_pk, in_bowl_pick, new_jaws)
+                                    new_tip = ra[0].tip_goal.copy()
+                                    how = "re-aimed (same posture; " + ra[2] + ")"
+                                else:
+                                    print("    look    the re-aim is not clean (" + ra[2] + ") — re-planning")
+                                    var pk2 = plan_clean(env, planner, body_names, qb2, pb2, lk.yaw, q5, cfg_pk, pick_seed0, PICK_DRAWS)
+                                    if pk2.ok:
+                                        new_legs = splice_pick(pk2.plan, legs, jaws, jaw_pk, in_bowl_pick, new_jaws)
+                                        new_tip = pk2.plan.tip_goal.copy()
+                                        how = "re-planned (tilt " + _deg(pk2.plan.tilt) + ")"
+                                if len(new_legs) > 0:
+                                    # the move to the new pre-grasp is short:
+                                    # its ramp scaled to it, not 40 steps
+                                    var dq = 0.0
+                                    for k in range(N_ARM):
+                                        dq = max(dq, abs(new_legs[0].q[k] - rig.q_ref[k]))
+                                    var n_pre = max(REAIM_MIN_STEPS, min(N_PRE_FULL, Int(dq * 180.0 / pi / REAIM_DEG_PER_STEP) + 1))
+                                    new_legs[0] = PlanLeg("pre", new_legs[0].q.copy(), new_legs[0].grip_open, n_pre, False, False)
+                                    legs = new_legs^
+                                    jaws = new_jaws^
                                     for k in range(3):
-                                        rig.tip_goal[k] = pk2.plan.tip_goal[k]
+                                        rig.tip_goal[k] = new_tip[k]
                                     li = -1
                                     look_used = True
                                     print(
-                                        "    look    re-planned: tilt", _deg(pk2.plan.tilt), "| pinch",
-                                        fixed((pk2.plan.yaw - pk2.plan.bearing) * 180.0 / pi, 1),
-                                        "deg from radial | tip_goal moved",
-                                        fixed(sqrt((pk2.plan.tip_goal[0] - tip_goal[0]) ** 2 + (pk2.plan.tip_goal[1] - tip_goal[1]) ** 2) * 1000.0, 1),
-                                        "mm — back to its pre-grasp, then down",
+                                        "    look    " + how + " | tip_goal moved",
+                                        fixed(sqrt((new_tip[0] - tip_goal[0]) ** 2 + (new_tip[1] - tip_goal[1]) ** 2) * 1000.0, 1),
+                                        "mm | computed in", fixed(Float64(perf_counter_ns() - t_re) * 1e-6, 0),
+                                        "ms | to the new pre-grasp in", n_pre, "steps",
                                     )
                                 else:
-                                    print("    look    no clean re-plan at the wrist's brick — keeping the plan")
+                                    print("    look    no clean re-aim or re-plan at the wrist's brick — keeping the plan")
                         else:
                             print("    look    wrist: no confident brick in", lk.n_frames, "frames (LOG ONLY)")
                         if len(lk.frame) > 0:

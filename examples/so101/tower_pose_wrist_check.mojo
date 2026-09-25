@@ -201,6 +201,11 @@ struct Samples(Movable):
     var q: List[List[Float64]]
     """The frame's model joints (the follower zero)."""
     var speed: List[Float64]
+    var arm_lift: List[Float64]
+    var arm_elbow: List[Float64]
+    """The horizontal reach (m) from the upper arm's / the lower arm's origin
+    to the gripper at the frame's pose: the gravity load's lever about the
+    lift / the elbow (a SAG proxy, noeira-26)."""
 
     def __init__(out self):
         self.u = List[Float64]()
@@ -212,6 +217,8 @@ struct Samples(Movable):
         self.ep = List[Int]()
         self.q = List[List[Float64]]()
         self.speed = List[Float64]()
+        self.arm_lift = List[Float64]()
+        self.arm_elbow = List[Float64]()
 
 
 def _rot_small(a: Float64, b: Float64, c: Float64) -> Mat3d:
@@ -335,7 +342,8 @@ def _jz_residual(
     a plate-angle error, which moves the camera's view like a flex-zero error
     but not its position (noeira-26's question)."""
     var qq = smp.q[i].copy()
-    qq[2] += p[0]
+    qq[1] += p[7] + p[8] * smp.arm_lift[i]
+    qq[2] += p[0] + p[9] * smp.arm_elbow[i]
     qq[3] += p[1]
     qq[4] += p[2]
     fk.set_qpos(qq)
@@ -355,12 +363,53 @@ def _jz_residual(
     return (pt[0] - (smp.rx[i] + p[4]), pt[1] - (smp.ry[i] + p[5]))
 
 
+def _droop_mm(ref smp: Samples, mut fk: TowerArmFK, wci: Int, ref p: List[Float64]) raises -> Float64:
+    """How much the fitted offsets LOWER the gripper at the median-reach
+    sample (mm, negative = droops, what sag must do)."""
+    var best = 0
+    var ms = 0.0
+    var reaches = List[Float64]()
+    for i in range(len(smp.u)):
+        reaches.append(smp.arm_lift[i])
+    var med = _pct(reaches, 0.5)
+    var dbest = 1e9
+    for i in range(len(smp.u)):
+        if abs(smp.arm_lift[i] - med) < dbest:
+            dbest = abs(smp.arm_lift[i] - med)
+            best = i
+    _ = ms
+    var q0 = smp.q[best].copy()
+    fk.set_qpos(q0)
+    var z0 = fk.camera_body_pose(wci)[0].z
+    var q1 = q0.copy()
+    q1[1] += p[7] + p[8] * smp.arm_lift[best]
+    q1[2] += p[0] + p[9] * smp.arm_elbow[best]
+    q1[3] += p[1]
+    fk.set_qpos(q1)
+    var z1 = fk.camera_body_pose(wci)[0].z
+    return (Float64(z1) - Float64(z0)) * 1000.0
+
+
 def _jz_free(model: Int) -> List[Int]:
     """0 shift; 1 + wrist_flex; 2 + wrist_roll; 3 + the camera's roll;
     4 + elbow; 5 shift + the camera's TILT (plate angle) instead of flex;
-    6 + wrist_roll; 7 flex AND tilt together."""
+    6 + wrist_roll; 7 flex AND tilt together; 8 shift + elbow (flex pinned
+    at 0: the straight edge measured it); 9 shift + shoulder_lift; 10 shift +
+    lift + elbow."""
     if model == 0:
         return [4, 5]
+    if model == 8:
+        return [0, 4, 5]
+    if model == 9:
+        return [7, 4, 5]
+    if model == 10:
+        return [7, 0, 4, 5]
+    if model == 11:
+        return [9, 4, 5]
+    if model == 12:
+        return [8, 4, 5]
+    if model == 13:
+        return [8, 9, 4, 5]
     if model == 5:
         return [6, 4, 5]
     if model == 6:
@@ -382,7 +431,7 @@ def _jz_fit(
 ) raises -> List[Float64]:
     var free = _jz_free(model)
     var n_par = len(free)
-    var p = List[Float64](length=7, fill=0.0)
+    var p = List[Float64](length=10, fill=0.0)
     for _ in range(10):
         var H = List[Float64](length=36, fill=0.0)
         var g = List[Float64](length=6, fill=0.0)
@@ -535,6 +584,8 @@ def main() raises:
     var brick = PrismModel.tower_brick()
     var fk = TowerArmFK()
     var wcam_i = fk.camera_index("wrist_cam")
+    var ub = fk.body_index("robot_upper_arm")
+    var lb = fk.body_index("robot_lower_arm")
     var units = So101TowerUnits(String(RIG_JOINT_ZERO_FOLLOWER))
     print("dataset", root, ":", index.n_episodes(), "episodes | checking", ep_lo, "..", ep_hi - 1)
     print("wrist lens", wlens, "| hsv", cls_w, "|", units.describe())
@@ -652,6 +703,11 @@ def main() raises:
                 smp.ep.append(e)
                 smp.q.append(q.copy())
                 smp.speed.append(spd)
+                var gpos = bpose[0]
+                var ua = fk.body_pos(ub)
+                var la = fk.body_pos(lb)
+                smp.arm_lift.append(sqrt((gpos.x - ua.x) ** 2 + (gpos.y - ua.y) ** 2))
+                smp.arm_elbow.append(sqrt((gpos.x - la.x) ** 2 + (gpos.y - la.y) ** 2))
             # the wrist estimate in the gripper frame AT THE GRASP (the far
             # frames only: near the grasp the jaws may already push it)
             if t <= t_c - 10 and d <= rel_max_d:
@@ -776,7 +832,7 @@ def main() raises:
         var tilt_axis = R0.transpose() * aw
         tilt_axis = tilt_axis * (1.0 / tilt_axis.length())
         print("  the flex axis in the gripper frame:", fixed(tilt_axis.x, 3), fixed(tilt_axis.y, 3), fixed(tilt_axis.z, 3))
-        var zero6 = List[Float64](length=7, fill=0.0)
+        var zero6 = List[Float64](length=10, fill=0.0)
         var e0 = _jz_err(smp, fk, wcam_i, wlens, slow, zero6, tilt_axis)
         print(
             "JOINT-ZERO FIT on", e0[2], "slow frames (<", SLOW_DEG, "deg/frame): before median",
@@ -785,8 +841,10 @@ def main() raises:
         var mnames: List[String] = [
             "shift", "+ wrist_flex", "+ wrist_roll", "+ camera roll", "+ elbow",
             "shift + camera TILT (not flex)", "shift + camera TILT + wrist_roll", "shift + flex + camera TILT",
+            "shift + ELBOW (flex 0)", "shift + LIFT (flex 0)", "shift + lift + elbow (flex 0)",
+            "shift + elbow SAG k*reach", "shift + lift SAG k*reach", "shift + lift SAG + elbow SAG",
         ]
-        var models: List[Int] = [0, 1, 2, 5, 6, 7]
+        var models: List[Int] = [0, 8, 11, 12, 13]
         for model in models:
             var pf = _jz_fit(smp, fk, wcam_i, wlens, slow, model, tilt_axis)
             var ef = _jz_err(smp, fk, wcam_i, wlens, slow, pf, tilt_axis)
@@ -807,7 +865,9 @@ def main() raises:
                 "| leave-one-episode-out median of episode medians", fixed(_pct(lo, 0.5), 1),
                 "mm | elbow", fixed(pf[0] * 180.0 / pi, 2), "flex", fixed(pf[1] * 180.0 / pi, 2),
                 "roll", fixed(pf[2] * 180.0 / pi, 2), "cam roll", fixed(pf[3] * 180.0 / pi, 2),
-                "cam tilt", fixed(pf[6] * 180.0 / pi, 2),
+                "cam tilt", fixed(pf[6] * 180.0 / pi, 2), "lift", fixed(pf[7] * 180.0 / pi, 2),
+                "| k_lift", fixed(pf[8] * 180.0 / pi / 10.0, 2), "k_elbow", fixed(pf[9] * 180.0 / pi / 10.0, 2),
+                "deg per 10 cm reach | droop at the median pose", fixed(_droop_mm(smp, fk, wcam_i, pf), 1), "mm",
                 "deg | shift", fixed(pf[4] * 1000.0, 1), fixed(pf[5] * 1000.0, 1), "mm",
             )
 

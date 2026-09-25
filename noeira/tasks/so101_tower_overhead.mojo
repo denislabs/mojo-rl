@@ -147,6 +147,7 @@ struct TowerArmFK(Movable):
     var d: Data[DType.float64, DynDims, 1]
     var site_names: List[String]
     var site_body: List[Int]
+    var body_names: List[String]
     var cam_names: List[String]
     var cam_body: List[Int]
     var cam_pos: List[Vec3d]
@@ -179,6 +180,9 @@ struct TowerArmFK(Movable):
         for s in range(len(fmd.site_names)):
             names.append(String(fmd.site_names[s]))
             bodies.append(fmd.sites[s].body_id)
+        var bnames = List[String]()
+        for b in range(len(fmd.body_names)):
+            bnames.append(String(fmd.body_names[b]))
         var cnames = List[String]()
         var cbody = List[Int]()
         var cpos = List[Vec3d]()
@@ -193,6 +197,7 @@ struct TowerArmFK(Movable):
         self.d = d^
         self.site_names = names^
         self.site_body = bodies^
+        self.body_names = bnames^
         self.cam_names = cnames^
         self.cam_body = cbody^
         self.cam_pos = cpos^
@@ -223,6 +228,19 @@ struct TowerArmFK(Movable):
             Float64(self.d.site_xpos.data[s * 3]),
             Float64(self.d.site_xpos.data[s * 3 + 1]),
             Float64(self.d.site_xpos.data[s * 3 + 2]),
+        )
+
+    def body_index(self, name: String) raises -> Int:
+        for b in range(len(self.body_names)):
+            if self.body_names[b] == name:
+                return b
+        raise Error("the tower scene has no body '" + name + "'")
+
+    def body_pos(self, b: Int) -> Vec3d:
+        """Body `b`'s world origin at the last `set_qpos`."""
+        return Vec3d(
+            Float64(self.d.xpos.data[b * 3]), Float64(self.d.xpos.data[b * 3 + 1]),
+            Float64(self.d.xpos.data[b * 3 + 2]),
         )
 
     def camera_index(self, suffix: String) raises -> Int:
