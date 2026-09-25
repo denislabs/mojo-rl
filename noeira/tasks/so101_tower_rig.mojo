@@ -160,12 +160,18 @@ preset's camera ranges: under `full`, +-4 mm / +-0.75 deg / +-0.75 deg. It is
 CALIBRATED (`so101_tower_stand.xml`, 62 marker captures, 2026-09-25):
 leave-one-out sd 2-3 mm, the fit's variants within 0.3-0.6 deg; the margin
 is for the tower being bumped between sessions."""
-comptime RIG_DR_WRIST_CAM_SCALE = (0.4, 1.0, 0.25)
-"""The wrist camera's: +-4 mm / +-2 deg / +-0.75 deg under `full`. Its
+comptime RIG_DR_WRIST_CAM_SCALE = (0.4, 1.75, 0.25)
+"""The wrist camera's: +-4 mm / +-3.5 deg / +-0.75 deg under `full`. Its
 position is the mount's STL plus the measured lens depth (19.0 +-2 mm, bake
-`PUPIL_ALONG_NORMAL_MM`); its ROTATION keeps the preset's +-2 deg because
-it rides the arm's FK, and the wrist_flex zero is not settled (the two
-captures fit +3.7 and +5.7 deg; `sim_map` keeps 0).
+`PUPIL_ALONG_NORMAL_MM`); its ROTATION is WIDER than the preset's +-2 deg
+because the real arm SAGS under load and the camera rides it: two camera
+instruments (the marker captures; noeira-72's wrist-vs-overhead fit, 826
+slow frames of 70 episodes) see the wrist camera pitched ~3-4 deg low in
+working poses, while the joint zeros are right (a straight-edge across the
+wrist reads flex +0.4 deg, and the real meshes at the folded rest allow no
+extra fold of any pitch joint). Best fit: a lift-joint droop proportional to
+reach, ~9 mm at the gripper at typical reach — beyond the servo encoders,
+so FK cannot see it; DR covers it (2026-09-25).
 
 FOVY, both: the real frames are undistorted to the sim's exact pinhole
 through a 0.18 px rms fisheye calibration, so the preset's +-3 deg is not a

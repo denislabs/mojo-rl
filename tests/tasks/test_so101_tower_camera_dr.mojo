@@ -11,7 +11,8 @@ alone and the preset with the rig's camera scales, applied at the same draws:
 2. nothing else a draw writes (lights, colours, background) moves: a scale
    shifts no other draw of the stream;
 3. over 200 draws the overhead camera stays inside +-4 mm / +-0.75 deg and the
-   wrist camera inside +-4 mm / +-2 deg, both fovy inside +-0.75 deg;
+   wrist camera inside +-4 mm / +-3.5 deg (the arm's sag), both fovy inside
+   +-0.75 deg;
 4. a camera that is not the rig's, and a negative scale, are refused.
 """
 
@@ -142,11 +143,11 @@ def main() raises:
     check(fails, "3a overhead within +-4 mm / 0.75 deg / fovy 0.75 over 200 draws",
           max_pos[0] <= 0.004 + 1e-6 and max_rot[0] <= 0.75 + 0.02 and max_fov[0] <= 0.75 + 1e-4,
           String(max_pos[0] * 1000.0) + " mm, " + String(max_rot[0]) + " deg, fovy " + String(max_fov[0]))
-    check(fails, "3b wrist within +-4 mm / 2 deg / fovy 0.75 over 200 draws",
-          max_pos[1] <= 0.004 + 1e-6 and max_rot[1] <= 2.0 + 0.02 and max_fov[1] <= 0.75 + 1e-4,
+    check(fails, "3b wrist within +-4 mm / 3.5 deg / fovy 0.75 over 200 draws",
+          max_pos[1] <= 0.004 + 1e-6 and max_rot[1] <= 3.5 + 0.02 and max_fov[1] <= 0.75 + 1e-4,
           String(max_pos[1] * 1000.0) + " mm, " + String(max_rot[1]) + " deg, fovy " + String(max_fov[1]))
     check(fails, "3c the draws reach most of the range (not a zeroed knob)",
-          max_pos[0] > 0.003 and max_rot[1] > 1.5 and max_fov[1] > 0.5)
+          max_pos[0] > 0.003 and max_rot[1] > 3.0 and max_fov[1] > 0.5)
 
     var refused_neg = False
     try:
