@@ -164,10 +164,12 @@ comptime BATCH: Int = 1024
 # transition rather than 5360. At CAP 2 M that frees 3.92 GiB, which is what
 # pays for the CAP raise below.
 #
-# CAP went 2.0 -> 1.5 M to make room for a 2048/6 tower, back to 2.0 M when
-# that tower turned out not to fit at ANY CAP, and is now 4.0 M on the freed
-# space. Budget at 1536/4: ring 12.15 GiB + the rest ~13.2 GiB = 25.3 GiB,
-# ~27 GB as the vast dashboard reports it, against 31.8 GB.
+# CAP is 2.0 M and the tower is the REFERENCE'S OWN 2048/6 (docs §12.25): with
+# `r_nxt` gone that tower fits for the first time. Budget anchored on the
+# MEASURED 1536/4 + CAP 4 M = 27.1 GB (so non-ring 14.1 GB) plus the
+# model+Adam+activation delta of +4.2 GB: non-ring ~18.2 GB, ring 6.51 GB,
+# total ~24.7 GB of 31.8. The same CAP on the OLD ring was 29.0 GB — which is
+# exactly where §12.22 OOM'd.
 #
 # ⚠ THAT ESTIMATE IS THE FOURTH ONE IN THIS TRACK AND THE FIRST THREE WERE
 # WRONG (18.3, 23.3, 26 GiB against a 25.9 GiB measurement). Read the
@@ -177,7 +179,7 @@ comptime BATCH: Int = 1024
 # where this card has already OOM'd once — it is reachable only paired with
 # the 1024/3 tower (§12.21 says 40 M params tracked BETTER than 111 M), which
 # is a separate experiment and is NOT bundled into this change.
-comptime CAP: Int = 4_000_000
+comptime CAP: Int = 2_000_000
 comptime SEQ: Int = 8
 comptime ZBUF: Int = 8192
 comptime T_EPISODE: Int = 500
