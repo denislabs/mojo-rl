@@ -117,6 +117,7 @@ from noeira.deep_agents.training.checkpoint import announce_checkpoint
 from noeira.data.store import TrajectoryStore
 from noeira.data.resident import IDX_DT
 from noeira.deep_agents.fb import FBCPROnlineAgent
+from noeira.deep_agents.fb.loss import fb_rank_eff_from_ortho
 from noeira.deep_agents.fb.bfm_towers import (
     BFMFTower, BFMActorTower, BFMBNet, BFMDNet,
 )
@@ -1025,26 +1026,16 @@ def main() raises:
             # is structurally incapable of showing a DIRECTIONAL collapse —
             # which is what killed run 1 (§12.12). `ortho` can, once unpacked.
             #
-            # `tr(C) = d` always, so `Q := ortho + 2d` is the whole pairwise
-            # sum `mean_ij (B_i·B_j)^2`. That sum INCLUDES i=j, and each of
-            # those is `||B_i||^4 = d^2`, contributing a constant `d^2/BATCH`
-            # that has nothing to do with isotropy — subtract it before
-            # reading anything, or a perfectly isotropic B reports rank 205
-            # instead of 256:
+            # The participation-ratio effective rank of `E[B B^T]`, derived
+            # from `L_ortho`. d = 256 means isotropic; the reference holds
+            # ~255.7 (§12.13). THIS is the number to watch, not `b_norm`.
             #
-            #     tr(C^2)  = (Q - d^2/BATCH) · BATCH/(BATCH-1)
-            #     rank_eff = tr(C)^2 / tr(C^2) = d^2 / tr(C^2)
-            #
-            # the participation-ratio effective rank of `E[B B^T]`. d = 256
-            # means isotropic; the reference holds it there for 200 M steps
-            # (§12.13). THIS is the number to watch, not `norm/B`.
-            var q = ortho + 2.0 * Float64(D)
-            var nb = Float64(BATCH)
-            var tr_c2 = (q - Float64(D) * Float64(D) / nb) * nb / (nb - 1.0)
+            # ⚠ The conversion lives in `loss.mojo` BESIDE the loss it depends
+            # on. It used to be inline here and was missed when `L_ortho`
+            # moved to the reference's scale (§12.28), logging 200.8 where the
+            # truth was 244.3 — the shape of a B collapse, from a metric bug.
             mn.append(String("b_rank_eff"))
-            mv.append(
-                Float64(D) * Float64(D) / tr_c2 if tr_c2 > 1e-9 else 0.0
-            )
+            mv.append(fb_rank_eff_from_ortho[D, BATCH](ortho))
             mn.append(String("steps_per_s")); mv.append(rate)
             mn.append(String("buffer_size")); mv.append(Float64(agent.base.size))
             mn.append(String("train_steps")); mv.append(Float64(agent.total_train_steps()))

@@ -277,6 +277,49 @@ def fb_measure_loss[
     return loss
 
 
+def fb_rank_eff_from_ortho[D: Int, BATCH: Int](ortho: Float64) -> Float64:
+    """Participation-ratio effective rank of `C = B^T B / BATCH`, from
+    `L_ortho` alone. EXACT — gated against a rank computed from B itself.
+
+    `|B|` is pinned to sqrt(d) by the net's sphere projection, so it is
+    STRUCTURALLY incapable of showing a directional collapse — which is what
+    killed run 1 (§12.12). This is the number that can, and it comes free from
+    the ortho loss because every row's norm is known:
+
+        L_ortho  = 0.5·E_{i!=j}[(B_i·B_j)^2] - E_i[||B_i||^2] = 0.5·E_off - d
+        E_off    = 2·(L_ortho + d)
+        tr(C)    = d
+        tr(C^2)  = (1/n^2)·sum_ij (B_i·B_j)^2 = (d^2 + (n-1)·E_off) / n
+        rank_eff = tr(C)^2 / tr(C^2) = d^2·n / (d^2 + (n-1)·E_off)
+
+    ⚠ `BATCH` is NOT optional. The `i==j` self-pairs contribute `d^2/n` to
+    `tr(C^2)` — at d 256 / n 1024 that is 64 against an `E_off` near 260, a
+    fifth of the total. The first version of this helper dropped it and read
+    32.2 where the truth was 25.9; `test_fb_ortho_fixed_point` [0] caught it
+    by computing the same quantity from B directly.
+
+    ⚠⚠ THE SCALE CHANGED HERE. `bfm_zero_train_gpu.mojo` used to compute
+    `d^2 / E_off` inline, which reads ~341 at true isotropy rather than d, so
+    every `b_rank_eff` in a CSV before docs §12.31 is on that other scale:
+    the runs logging 248-256 were near 200 on this one, and so was the
+    reference. RELATIVE comparisons between them still hold — both sides went
+    through the same formula — but the absolute numbers do not transfer.
+
+    The conversion lives beside `L_ortho` because it depends on its exact
+    definition: it was inline in the driver, correct only for the pre-§12.28
+    form, and when the loss moved to the reference's scale that site was
+    missed (`_a_rule_written_inline_twice_drifts`).
+
+    The reference sits at ~204 (its `orth_loss` -127.83 at 11.1 M).
+    """
+    var e_off = 2.0 * (ortho + Float64(D))
+    var d2 = Float64(D) * Float64(D)
+    var tr_c2 = (d2 + (Float64(BATCH) - 1.0) * e_off) / Float64(BATCH)
+    if tr_c2 <= 1e-12:
+        return 0.0
+    return d2 / tr_c2
+
+
 def fb_ortho_loss[
     D: Int, BATCH: Int
 ](
