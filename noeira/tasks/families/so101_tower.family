@@ -68,7 +68,9 @@ base_pos=0.0,0.0,0.005
 # cube-in-bowl, 50, 2026-09-15; cube-in-bowl-printed, 70, 2026-09-24), in
 # model radians through the measured joint zero
 # (`robot/so101/sim_map.tower_follower_zero_deg`; the roll centre moved +5 deg
-# with that zero's roll on 2026-09-25): lift, elbow and wrist_flex
+# with that zero's roll on 2026-09-25, and the jaw's centre and half-span with
+# the gripper's measured line the same day — the same real 0.5..41% span):
+# lift, elbow and wrist_flex
 # sit on their FOLDED hard stops (sd < 0.5 deg: the median, no jitter); pan,
 # wrist roll and the jaw are wherever the operator left them, so each episode
 # draws them uniformly over the observed span (real-arm degrees: pan
@@ -78,8 +80,8 @@ base_pos=0.0,0.0,0.005
 # JOINT (not the actuator) to -110
 # (`bake_so_arm101_tower.py` step 7). The draw is `sampler.sample_base_qpos`
 # on the host and `placement/table.reset_task_slots` on the device.
-base_qpos=0.394770,-1.908661,1.544271,1.342561,1.258746,0.223285
-base_qpos_jitter=0.639826,0.0,0.0,0.0,0.303035,0.387465
+base_qpos=0.394770,-1.908661,1.544271,1.342561,1.258746,0.310346
+base_qpos_jitter=0.639826,0.0,0.0,0.0,0.303035,0.459539
 
 # ⚠ THE FIXTURE CARRIES ITS POSE (see the tabletop family). The stand is
 # placed at the NEGATION of the arm's position on its plate — body (+0.019,

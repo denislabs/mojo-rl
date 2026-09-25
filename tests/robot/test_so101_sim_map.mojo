@@ -31,6 +31,7 @@ from noeira.physics3d.gpu.constants import ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN
 from noeira.robot.so101.arm import GRIPPER, SO101Calibration, SO101_N
 from noeira.robot.so101.sim_map import (
     SimJointMap, tower_follower_zero_deg, tower_follower_zero_matches,
+    TOWER_FOLLOWER_GRIPPER_ZERO_RAD, tower_follower_gripper_span_rad,
 )
 
 # Measured on the follower, 2026-08-25. `ofs` is sign-magnitude-decoded, which
@@ -442,11 +443,16 @@ def test_tower_follower_applies_the_measured_zero() raises:
         var raw = Int32(Int(cal.mid(i)))
         var frac = cal.mid(i) - Float64(Int(cal.mid(i)))
         if i == GRIPPER:
-            assert_almost_equal(
-                m.to_sim_unclamped(cal, i, raw),
-                ref_map.to_sim_unclamped(cal, i, raw),
-                atol=1e-12,
-                msg="the gripper has no zero",
+            # the measured LINE, not the fraction of the model's range: the
+            # mid is half of 130.46 deg past -9.25 deg (the two differ by
+            # ~10 deg here — the reference would be 45 deg)
+            var want_g = TOWER_FOLLOWER_GRIPPER_ZERO_RAD + (
+                (Float64(raw) - Float64(TOWER_LO(i))) / Float64(TOWER_HI(i) - TOWER_LO(i))
+            ) * tower_follower_gripper_span_rad()
+            assert_almost_equal(m.to_sim_unclamped(cal, i, raw), want_g, atol=1e-12)
+            assert_true(
+                abs(m.to_sim_unclamped(cal, i, raw) - ref_map.to_sim_unclamped(cal, i, raw)) > 0.1,
+                "the tower gripper is the fraction map",
             )
             continue
         # a half-tick mid is read at the tick below it
@@ -473,6 +479,21 @@ def test_tower_follower_round_trips() raises:
                 abs(Int(back) - Int(t)) <= 1,
                 "joint " + String(i) + ": " + String(t) + " -> " + String(back),
             )
+
+
+def test_tower_follower_gripper_line_is_the_measured_one() raises:
+    """The gripper map is pinned by value: 130.46 deg over the 1484-tick
+    span (the arm's 360/4095 per tick), and the printed 25 mm cube's real
+    grasp reading 13.1 lands at 0.1368 rad — the angle where the model's tip
+    boxes are 25.0 mm apart (`sim_map` docstring, measured 2026-09-25)."""
+    assert_almost_equal(tower_follower_gripper_span_rad() * 180.0 / pi, 130.46, atol=0.01)
+    var cal = _tower_cal()
+    var ref_map = _map()
+    var m = SimJointMap.tower_follower(
+        cal, ref_map.sim_lo.copy(), ref_map.sim_hi.copy()
+    )
+    var raw = Int32(Int(Float64(TOWER_LO(GRIPPER)) + 0.131 * Float64(TOWER_HI(GRIPPER) - TOWER_LO(GRIPPER)) + 0.5))
+    assert_almost_equal(m.to_sim_unclamped(cal, GRIPPER, raw), 0.1368, atol=0.002)
 
 
 def test_tower_follower_refuses_another_calibration() raises:

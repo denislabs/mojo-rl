@@ -40,8 +40,9 @@ the gripper 0..100 by FRACTION of its range (`robot/so101/sim_map.mojo`, sign
 reference's map, what every store before 2026-09-23 was written with.
 `follower`: the so101-tower follower's MEASURED zero
 (`sim_map.tower_follower_zero_deg`: pan -10.7, lift -3.6, elbow -7.3, roll
-+5.0 deg — the roll since 2026-09-25: a `follower` store written before that
-carries roll 0 and reads 5 deg of roll off under today's map), so
++5.0 deg — the roll since 2026-09-25 — and the gripper on its measured line,
+-9.25 + 130.46 deg over LeRobot 0..100, not the fraction of the model's 110;
+a `follower` store written before then is `follower-v1`), so
 a store's degrees are the ones the REAL arm reports at that pose and a
 student trained on it commands the real arm where the sim arm went. Either
 is self-consistent in the sim; a store written under one and evaluated under
@@ -67,7 +68,10 @@ from noeira.physics3d.raytrace.visual_records import (
 from noeira.physics3d.raytrace.randomize import geom_labels, VisualRandomizer
 from noeira.tasks.family_config import So101TowerConfig
 from noeira.tasks.so101_tower_xml import So101TowerModel
-from noeira.robot.so101.sim_map import tower_follower_zero_deg
+from noeira.robot.so101.sim_map import (
+    tower_follower_zero_deg, TOWER_FOLLOWER_GRIPPER_ZERO_RAD,
+    tower_follower_gripper_span_rad,
+)
 from noeira.utils.fmt import fixed
 
 
@@ -354,10 +358,12 @@ def pack_camera_u8(
 comptime RIG_JOINT_ZERO_NONE = "none"
 comptime RIG_JOINT_ZERO_FOLLOWER = "follower"
 comptime RIG_JOINT_ZERO_FOLLOWER_V1 = "follower-v1"
-"""`follower` as it was until 2026-09-25: the same zero with the roll at 0
-(before the marker captures measured +5.0). Every `follower` store and
-checkpoint written before then (the 5cc24a9b / ce84f398 series among them)
-reads in these units — name it to reproduce their numbers."""
+"""`follower` as it was until 2026-09-25: the same body zero with the roll
+at 0 (before the marker captures measured +5.0), and the gripper by FRACTION
+of the model's range (before the measured line, `sim_map.
+tower_follower_gripper_span_rad`). Every `follower` store and checkpoint
+written before then (the 5cc24a9b / ce84f398 series among them) reads in
+these units — name it to reproduce their numbers."""
 
 
 struct So101TowerUnits(Copyable, Movable):
@@ -373,6 +379,11 @@ struct So101TowerUnits(Copyable, Movable):
     var hi: List[Float64]
     var zero_rad: List[Float64]
     var joint_zero: String
+    var grip_lo: Float64
+    """The gripper's model angle at LeRobot 0; `grip_span` over 0..100.
+    `none` / `follower-v1`: the ctrlrange (the fraction map); `follower`: the
+    measured line."""
+    var grip_span: Float64
 
     def __init__(out self, joint_zero: String = RIG_JOINT_ZERO_NONE) raises:
         if (
@@ -392,6 +403,11 @@ struct So101TowerUnits(Copyable, Movable):
         self.hi = List[Float64]()
         self.zero_rad = List[Float64]()
         self.joint_zero = joint_zero
+        self.grip_lo = Float64(lo_col[RIG_GRIPPER])
+        self.grip_span = Float64(hi_col[RIG_GRIPPER]) - Float64(lo_col[RIG_GRIPPER])
+        if joint_zero == RIG_JOINT_ZERO_FOLLOWER:
+            self.grip_lo = TOWER_FOLLOWER_GRIPPER_ZERO_RAD
+            self.grip_span = tower_follower_gripper_span_rad()
         for k in range(RIG_ACT):
             self.lo.append(Float64(lo_col[k]))
             self.hi.append(Float64(hi_col[k]))
@@ -413,17 +429,21 @@ struct So101TowerUnits(Copyable, Movable):
             if k > 0:
                 out += " "
             out += fixed(self.zero_rad[k] * 180.0 / pi, 2)
-        return out + " deg)"
+        out += " deg"
+        if self.joint_zero == RIG_JOINT_ZERO_FOLLOWER:
+            out += "; gripper " + fixed(self.grip_lo * 180.0 / pi, 2) + " + "
+            out += fixed(self.grip_span * 180.0 / pi, 2) + " deg over 0..100"
+        return out + ")"
 
     def joint_to_lerobot(self, k: Int, q: Float64) -> Float64:
         """Radians (body) / the gripper hinge -> degrees / 0..100."""
         if k == RIG_GRIPPER:
-            return 100.0 * (q - self.lo[k]) / (self.hi[k] - self.lo[k])
+            return 100.0 * (q - self.grip_lo) / self.grip_span
         return (q - self.zero_rad[k]) * 180.0 / pi
 
     def lerobot_to_joint(self, k: Int, v: Float64) -> Float64:
         if k == RIG_GRIPPER:
-            return self.lo[k] + v / 100.0 * (self.hi[k] - self.lo[k])
+            return self.grip_lo + v / 100.0 * self.grip_span
         return v * pi / 180.0 + self.zero_rad[k]
 
     def action_to_joint(self, k: Int, a: Float64) -> Float64:

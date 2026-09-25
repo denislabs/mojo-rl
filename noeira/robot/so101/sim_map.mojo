@@ -36,6 +36,10 @@ it maps by FRACTION OF RANGE, and `offset_rad` does not apply to it. The
 reference's gripper limits — `SO101_GRIPPER_LIMITS_RAD = (-10 deg, 100 deg)` —
 agree with our model's `ctrlrange` to 1e-16, which is a pleasing independent
 confirmation that we are pointing at the same joint.
+The fraction lands on a LINE (`grip_lo_rad`, `grip_span_rad`): the
+reference's is the model's hinge range; the tower follower's is the measured
+one (`tower_follower_gripper_span_rad`), because the fraction map squeezes
+130.5 deg of real travel into 110.
 
 ⚠ **Range still disagrees, and that is measured** — see `range_report`. Our
 MJCF ranges are byte-identical to
@@ -101,6 +105,34 @@ def tower_follower_zero_deg(i: Int) -> Float64:
     return v[i]
 
 
+comptime TOWER_FOLLOWER_GRIPPER_ZERO_RAD: Float64 = -0.16147
+"""The tower follower's gripper hinge angle at LeRobot 0 (its calibrated
+minimum), model radians — the gripper's own line, see
+`tower_follower_gripper_span_rad`."""
+comptime TOWER_FOLLOWER_GRIPPER_SPAN_TICKS: Int = 1484
+"""The gripper's calibrated span in the calibration the map was measured
+against (`follower.json`, 2031..3515)."""
+
+
+def tower_follower_gripper_span_rad() -> Float64:
+    """The angle the gripper turns over its calibrated span: the ticks at
+    the arm's own 360/4095 degrees per tick — 130.46 deg, NOT the model's
+    110 deg ctrlrange.
+
+    ⚠⚠ THE REFERENCE MAPS THE GRIPPER BY FRACTION OF RANGE onto the model's
+    hinge range, which squeezes the real 130.5 deg of travel into 110: every
+    percent of real opening became 16% too little model angle. Measured
+    2026-09-25 against the recordings' grasp plateaus: the printed 25 mm cube
+    at 13.1 (n 70) and the ~31.8 mm Duplo at 17.3 (n 53) put the sim's tip
+    boxes 21.3 and 26.3 mm apart through the fraction map — an error that
+    GROWS with the width, so a scale, not pad thickness or an offset. The
+    physical line with ONE fitted offset (`TOWER_FOLLOWER_GRIPPER_ZERO_RAD`,
+    the 25 mm cube at the sim's 25.0 mm gap) puts the Duplo at 30.9 mm.
+    Closed on nothing (0.6) the sim still shows 4.5 mm: the tip boxes cannot
+    close below 2.4 mm even at the joint limit."""
+    return Float64(TOWER_FOLLOWER_GRIPPER_SPAN_TICKS) * 2.0 * pi / 4095.0
+
+
 def tower_follower_calib_mid(i: Int) -> Float64:
     """The calibrated mid (ticks) of each joint in the calibration the zero was
     measured against — `projects/so101-tower/calibration/follower.json`,
@@ -133,6 +165,12 @@ struct SimJointMap(Copyable, Movable):
     var offset_rad: Array[Float64, SO101_N]
     var sim_lo: Array[Float64, SO101_N]
     var sim_hi: Array[Float64, SO101_N]
+    var grip_lo_rad: Float64
+    """The gripper's hinge angle at its calibrated minimum (fraction 0)."""
+    var grip_span_rad: Float64
+    """The angle over its calibrated span. The reference: `sim_lo` and
+    `sim_hi - sim_lo` (the fraction map); `tower_follower`: the measured
+    line."""
 
     @staticmethod
     def identity(
@@ -147,7 +185,9 @@ struct SimJointMap(Copyable, Movable):
         """
         var s = Array[Float64, SO101_N](fill=1.0)
         var o = Array[Float64, SO101_N](fill=0.0)
-        return Self(s^, o^, sim_lo^, sim_hi^)
+        var glo = sim_lo[GRIPPER]
+        var gspan = sim_hi[GRIPPER] - sim_lo[GRIPPER]
+        return Self(s^, o^, sim_lo^, sim_hi^, glo, gspan)
 
     @staticmethod
     def tower_follower(
@@ -169,10 +209,18 @@ struct SimJointMap(Copyable, Movable):
                 " (sim_map.tower_follower_calib_mid) — it was recalibrated;"
                 " re-measure the zero (tools/soarm/check_joint_zero.py)"
             )
+        if cal.span(GRIPPER) != TOWER_FOLLOWER_GRIPPER_SPAN_TICKS:
+            raise Error(
+                "SimJointMap.tower_follower: the gripper spans "
+                + String(cal.span(GRIPPER)) + " ticks, the map was measured on "
+                + String(TOWER_FOLLOWER_GRIPPER_SPAN_TICKS)
+            )
         var m = Self.identity(sim_lo^, sim_hi^)
         for i in range(SO101_N):
             if i != GRIPPER:
                 m.offset_rad[i] = tower_follower_zero_deg(i) * pi / 180.0
+        m.grip_lo_rad = TOWER_FOLLOWER_GRIPPER_ZERO_RAD
+        m.grip_span_rad = tower_follower_gripper_span_rad()
         return m^
 
     def differs_from_lerobot(self) -> Bool:
@@ -186,7 +234,10 @@ struct SimJointMap(Copyable, Movable):
         for i in range(SO101_N):
             if self.sign[i] != 1.0 or self.offset_rad[i] != 0.0:
                 return True
-        return False
+        return (
+            self.grip_lo_rad != self.sim_lo[GRIPPER]
+            or self.grip_span_rad != self.sim_hi[GRIPPER] - self.sim_lo[GRIPPER]
+        )
 
     # ── real -> sim ────────────────────────────────────────────────────────
 
@@ -219,7 +270,7 @@ struct SimJointMap(Copyable, Movable):
             var frac = (Float64(raw) - lo_t) / span_t if span_t != 0.0 else 0.0
             if self.sign[i] < 0.0:
                 frac = 1.0 - frac
-            return self.sim_lo[i] + frac * (self.sim_hi[i] - self.sim_lo[i])
+            return self.grip_lo_rad + frac * self.grip_span_rad
         return self.sign[i] * cal.radians(i, raw) + self.offset_rad[i]
 
     def to_sim(self, cal: SO101Calibration, i: Int, raw: Int32) -> Float64:
@@ -237,8 +288,8 @@ struct SimJointMap(Copyable, Movable):
         round trip through both is the identity up to tick quantisation.
         """
         if i == GRIPPER:
-            var span = self.sim_hi[i] - self.sim_lo[i]
-            var frac = (value - self.sim_lo[i]) / span if span != 0.0 else 0.0
+            var span = self.grip_span_rad
+            var frac = (value - self.grip_lo_rad) / span if span != 0.0 else 0.0
             if self.sign[i] < 0.0:
                 frac = 1.0 - frac
             return cal.raw_from_degrees(i, frac * 100.0)

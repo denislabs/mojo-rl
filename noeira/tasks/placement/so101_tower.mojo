@@ -36,7 +36,7 @@ struct So101TowerPlacement(PlacementTable):
             return Scalar[DTYPE](1.342561)
         if i == 4:
             return Scalar[DTYPE](1.258746)
-        return Scalar[DTYPE](0.223285)
+        return Scalar[DTYPE](0.310346)
 
     @staticmethod
     def base_qpos_jitter[DTYPE: DType](i: Int) -> Scalar[DTYPE]:
@@ -50,7 +50,7 @@ struct So101TowerPlacement(PlacementTable):
             return Scalar[DTYPE](0.0)
         if i == 4:
             return Scalar[DTYPE](0.303035)
-        return Scalar[DTYPE](0.387465)
+        return Scalar[DTYPE](0.459539)
 
     @staticmethod
     def free_slot(j: Int) -> Int:

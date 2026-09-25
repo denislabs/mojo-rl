@@ -12,8 +12,9 @@ be exact inverses under either choice:
    model's `zero`;
 3. both round-trip (LeRobot -> joint -> LeRobot) to 1e-12 over each joint's
    range, and the env action word round-trips too;
-4. the gripper is fraction-mapped and the SAME under both choices;
-5. the two choices differ by exactly the zero on the body joints — the ~10
+4. the gripper: `none` and `follower-v1` by fraction of the ctrlrange,
+   `follower` on its measured line (13.1 -> 0.1368 rad, the 25 mm cube);
+5. the choices differ by exactly the zero on the body joints — the ~10
    degree pan gap a store / eval mismatch would silently cost;
 6. an unknown choice is refused, and `describe` names the choice (the
    store's provenance line).
@@ -69,14 +70,21 @@ def test_both_choices_round_trip() raises:
                 assert_almost_equal(u.action_to_joint(k, a), q, atol=1e-12)
 
 
-def test_the_choices_differ_by_the_zero_and_not_on_the_gripper() raises:
+def test_the_choices_differ_by_the_zero_and_the_gripper_line() raises:
     var n = So101TowerUnits(RIG_JOINT_ZERO_NONE)
     var f = So101TowerUnits(RIG_JOINT_ZERO_FOLLOWER)
+    var v = So101TowerUnits(RIG_JOINT_ZERO_FOLLOWER_V1)
     var q = 0.3
     for k in range(RIG_ACT):
         var gap = n.joint_to_lerobot(k, q) - f.joint_to_lerobot(k, q)
         if k == RIG_GRIPPER:
-            assert_almost_equal(gap, 0.0, atol=1e-15, msg="the gripper has no zero")
+            assert_almost_equal(
+                n.joint_to_lerobot(k, q), v.joint_to_lerobot(k, q), atol=1e-15,
+                msg="none and follower-v1 share the fraction map",
+            )
+            # the printed cube's real grasp reading, on the measured line
+            assert_almost_equal(f.lerobot_to_joint(k, 13.1), 0.1368, atol=0.002)
+            assert_almost_equal(n.lerobot_to_joint(k, 13.1), 0.0770, atol=0.002)
         else:
             assert_almost_equal(gap, tower_follower_zero_deg(k), atol=1e-12)
     # the gap a mismatch costs on the pan: ~10 degrees, not a rounding
@@ -95,6 +103,7 @@ def test_follower_v1_is_follower_with_the_roll_at_zero() raises:
         else:
             assert_almost_equal(v.zero_rad[k], f.zero_rad[k], atol=1e-15)
     assert_true(v.describe().find("0.00 deg)") >= 0, v.describe())
+    assert_true(f.describe().find("gripper -9.25 + 130.46 deg") >= 0, f.describe())
 
 
 def test_unknown_choice_is_refused_and_describe_names_it() raises:
