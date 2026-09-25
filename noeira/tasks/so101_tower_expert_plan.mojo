@@ -50,7 +50,7 @@ demo's bytes.
 """
 
 from std.math import atan2, cos, floor, pi, sin, sqrt
-from std.random import random_float64
+from std.random import random_float64, seed as seed_rng
 
 from noeira.envs.phyics3d_env import Phyics3dEnv
 from noeira.math3d import Quat, Vec3
@@ -70,6 +70,7 @@ comptime TowerExpertEnv = Phyics3dEnv[
 """The host env the planner (and the sim executor) runs on."""
 comptime E = TowerExpertEnv
 comptime NQ = So101TowerModel.NQ
+comptime NV = So101TowerModel.NV
 comptime ACT = 6
 comptime N_ARM = 5
 comptime GS = So101TowerTeleopConfig.GRIPPER_SITE
@@ -1059,3 +1060,176 @@ def _pose_penetration_mm(
     env._fields_fk()
     detect_contacts_auto["cpu", DType.float64, BATCH=1](env.d, env.mf, None)
     return worst * 1000.0
+
+
+# ── clean plans, and a place as a reversed grasp (from the rig executor) ──
+#
+# Ported from `examples/so101/tower_expert_real.mojo` (noeira-72, 2133be64e):
+# its reference numbers are the check — `--plan-cycle` 64/68 both tasks,
+# `--plan-bowl-pick` centre 66/68 (jaw 0.35, tilt 5..35, offset 12),
+# `--plan-only` 64/68 on the printed set's layouts.
+
+
+comptime IK_OK_MM: Float64 = 10.0
+"""A plan whose IK misses a leg's target by more needs `force` to run."""
+comptime ABOVE_M: Float64 = 0.06
+"""A place's way in and out: this far above its pre-grasp tip point, so the
+held brick clears the bowl's 45 mm rim."""
+
+
+@fieldwise_init
+struct PlanCfg(Copyable, Movable):
+    """One grasp plan's settings: the tilt draw, the jaw the collision pass
+    opens, the support surface and the fingers' height against it."""
+
+    var tilt_lo_deg: Float64
+    var tilt_hi_deg: Float64
+    var jaw: Float64
+    var support: String
+    """`desk_mat` (the desk, every contact) or `bowl_bowl` (its FLOOR, by the
+    contact normal: the walls stay in the veto — `set_support`)."""
+    var clear_m: Float64
+    """`desk_clear_m`: the fingers' lowest point against the support,
+    negative = pressed into it."""
+
+
+struct Planned(Movable):
+    var plan: TowerGraspPlan
+    var ok: Bool
+    var draws: Int
+    var seed: Int
+
+    def __init__(out self, var plan: TowerGraspPlan, ok: Bool, draws: Int, seed: Int):
+        self.plan = plan^
+        self.ok = ok
+        self.draws = draws
+        self.seed = seed
+
+
+def plan_is_clean(plan: TowerGraspPlan) -> Bool:
+    return (
+        plan.pen_mm <= PLAN_PEN_OK_MM and max(plan.e_grasp, plan.e_lift) * 1000.0 <= IK_OK_MM
+        and plan.close_on_tip
+    )
+
+
+def plan_clean(
+    mut env: E, mut planner: TowerGraspPlanner, ref body_names: List[String],
+    ref qs: List[Float64], ref pb: List[Float64], yaw: Float64,
+    ref q_seed: List[Float64], cfg: PlanCfg, seed: Int, draws: Int,
+) raises -> Planned:
+    """A grasp plan for a brick at `pb` in the scene `qs`, redrawn (up to
+    `draws` postures, seeds `seed`, `seed + 1`, ...) until clean: the planner
+    redraws a COLLIDING posture itself, not one the IK cannot reach. The
+    planner's settings are restored."""
+    var v0 = List[Float64](length=NV, fill=0.0)
+    var saved_clear = planner.desk_clear_m
+    var saved_lo = planner.posture.tilt_lo
+    var saved_hi = planner.posture.tilt_hi
+    planner.desk_clear_m = cfg.clear_m
+    planner.posture.tilt_lo = cfg.tilt_lo_deg * pi / 180.0
+    planner.posture.tilt_hi = cfg.tilt_hi_deg * pi / 180.0
+    var support: List[String] = [cfg.support]
+    planner.set_support(body_names, support, cfg.support != "desk_mat")
+    var plan = TowerGraspPlan()
+    var ok = False
+    var n = 0
+    for d in range(draws):
+        env.set_state(qs, v0)
+        seed_rng(seed + d)
+        plan = planner.plan_grasp(env, pb, yaw, q_seed, cfg.jaw)
+        n = d + 1
+        ok = plan_is_clean(plan)
+        if ok:
+            break
+    var desk: List[String] = ["desk_mat"]
+    planner.set_support(body_names, desk, False)
+    planner.desk_clear_m = saved_clear
+    planner.posture.tilt_lo = saved_lo
+    planner.posture.tilt_hi = saved_hi
+    env.set_state(qs, v0)
+    return Planned(plan^, ok, n, seed + n - 1)
+
+
+def with_brick(
+    ref qs: List[Float64], brick_adr: Int, x: Float64, y: Float64, z: Float64, yaw: Float64,
+) -> List[Float64]:
+    var q = qs.copy()
+    q[brick_adr] = x
+    q[brick_adr + 1] = y
+    q[brick_adr + 2] = z
+    q[brick_adr + 3] = cos(yaw / 2.0)
+    q[brick_adr + 4] = 0.0
+    q[brick_adr + 5] = 0.0
+    q[brick_adr + 6] = sin(yaw / 2.0)
+    return q^
+
+
+def above_pose(
+    mut env: E, mut planner: TowerGraspPlanner, plan: TowerGraspPlan, dz: Float64,
+) -> Tuple[List[Float64], Float64]:
+    """The joints that put the plan's pre-grasp tip point `dz` HIGHER, with
+    the plan's tilt and pinch (IK seeded from its pre-grasp): the way in and
+    out of the bowl passes over its rim, not through it. Returns (joints, IK
+    error in m)."""
+    var fx = sin(plan.tilt) * cos(plan.bearing)
+    var fy = sin(plan.tilt) * sin(plan.bearing)
+    var fz = -cos(plan.tilt)
+    var t = List[Float64]()
+    t.append(plan.tip_goal[0] - APPROACH_D * fx)
+    t.append(plan.tip_goal[1] - APPROACH_D * fy)
+    # the IK's tip mode aims `target - (0, 0, TIP_REACH)` (`_plan_tilted`)
+    t.append(plan.tip_goal[2] - APPROACH_D * fz + dz + TIP_REACH)
+    var q = List[Float64](length=N_ARM, fill=0.0)
+    var e = planner.arm.ik(env, t, plan.q_pre, plan.yaw, q, plan.tilt, ROLL_SEED_HUMAN, True)
+    return (q^, e)
+
+
+def pick_place_legs(
+    mut env: E, mut planner: TowerGraspPlanner,
+    pick: TowerGraspPlan, place: TowerGraspPlan, jaw_pick: Float64, jaw_place: Float64,
+    pick_in_bowl: Bool, mut jaws: List[Float64],
+) -> List[PlanLeg]:
+    """A pick and a PLACE made of a second grasp plan run backwards: the
+    pick's pre, descent and close; out of a bowl, back UP the approach
+    before the lift (a joint-space lift from its floor can sweep into the
+    wall); the lift; carried to `ABOVE_M` over the place plan's pre-grasp,
+    down to it, LOWERED along its approach (jaw closed), opened, retreated
+    back up the approach and to the pose above. `jaws`: each leg's open-jaw
+    target."""
+    var out = List[PlanLeg]()
+    jaws.clear()
+    var none = List[Float64]()
+    for leg in pick.legs(place=False, close_steps=1):
+        if leg.name == "hold":
+            continue
+        if leg.name == "lift" and pick_in_bowl:
+            var n_pw = len(pick.waypoints) - 1
+            for j in range(n_pw - 1, -1, -1):
+                out.append(PlanLeg("out", pick.waypoints[j].copy(), False, N_DESCEND // n_pw, False, False))
+                jaws.append(jaw_pick)
+        out.append(leg.copy())
+        jaws.append(jaw_pick)
+    var ab = above_pose(env, planner, place, ABOVE_M)
+    var above_ok = ab[1] * 1000.0 <= IK_OK_MM
+    if above_ok:
+        out.append(PlanLeg("carry", ab[0].copy(), False, N_CARRY, False, False))
+        jaws.append(jaw_place)
+        out.append(PlanLeg("down", place.q_pre.copy(), False, N_DESCEND // 2, False, False))
+        jaws.append(jaw_place)
+    else:
+        out.append(PlanLeg("carry", place.q_pre.copy(), False, N_CARRY, False, False))
+        jaws.append(jaw_place)
+    var n_wp = len(place.waypoints) - 1
+    for j in range(1, n_wp + 1):
+        out.append(PlanLeg("lower", place.waypoints[j].copy(), False, N_DESCEND // n_wp, False, False))
+        jaws.append(jaw_place)
+    out.append(PlanLeg("open", none.copy(), True, N_OPEN, False, False))
+    jaws.append(jaw_place)
+    for j in range(n_wp - 1, -1, -1):
+        out.append(PlanLeg("retreat", place.waypoints[j].copy(), True, N_DESCEND // n_wp, False, False))
+        jaws.append(jaw_place)
+    if above_ok:
+        out.append(PlanLeg("up", ab[0].copy(), True, N_DESCEND // 2, False, False))
+        jaws.append(jaw_place)
+    return out^
