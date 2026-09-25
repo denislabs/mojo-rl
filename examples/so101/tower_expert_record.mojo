@@ -188,7 +188,12 @@ real-layout regions): 0 mm 140, 6 mm 177, 9 mm 171, 12 mm 179, 16 mm 164,
 19 mm 47/150 (the fixed finger lands on the brick). At 0 every grasp is the
 moving jaw sweeping the brick 18 mm across the desk into the fixed finger; the
 sim's brick-desk friction (1.5 — MuJoCo takes the larger of the two geoms')
-tips or jams it (slips 36 -> 18 of 149 at 12 mm)."""
+tips or jams it (slips 36 -> 18 of 149 at 12 mm).
+
+⚠ AFTER dbd873e15 (the desk's own friction 0.4, the gripper's measured map)
+the sweep works, as it does on the rig: 0 mm 200, 6 mm 197, 12 mm 209 / 300
+— within noise. 12 stays (the best measured); the offset is no longer what
+carries the rate."""
 comptime NV = So101TowerModel.NV
 comptime NB = So101TowerModel.NBODY
 comptime TIP_CLOSE_MM_DEFAULT: Float64 = 8.0

@@ -13,6 +13,7 @@ triggers, recording).
     var planner = TowerGraspPlanner(env, body_names)     # the arm's FK/IK on `env`
     planner.posture.human = True                        # the operator's grasp, drawn
     planner.clear_plan = True                           # a grasp the arm can reach
+    planner.set_support(body_names, ["bowl_bowl"])       # optional: pick OUT of the bowl
     var plan = planner.plan_grasp(env, brick_pos, brick_yaw, q_start, jaw_open)
     planner.plan_place(env, plan, bowl_pos)
     for leg in plan.legs(place=True, close_steps=1):     # the sequence the recorder runs
@@ -57,7 +58,7 @@ from noeira.physics3d.collision.broadphase_sap import detect_contacts_auto
 from noeira.physics3d.fields import actuator_column
 from noeira.physics3d.gpu.constants import (
     ACT_IDX_CTRL_MAX, ACT_IDX_CTRL_MIN, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
-    CONTACT_IDX_DIST, CONTACT_SIZE, META_IDX_NUM_CONTACTS,
+    CONTACT_IDX_DIST, CONTACT_IDX_NZ, CONTACT_SIZE, META_IDX_NUM_CONTACTS,
 )
 from noeira.tasks.family_config import So101TowerTeleopConfig
 from noeira.tasks.so101_tower_xml import So101TowerModel
@@ -113,6 +114,11 @@ target, but the close shoves the hovering arm aside), pressed 3 mm 57, 8 mm
 73, 12 mm 67, 16 mm 60, 22 mm 57; the fixed height (no flag) 55. The press
 is what lets the moving jaw squeeze the brick against a fixed finger that
 does not yield. `--desk-clear-mm` overrides it."""
+comptime SUPPORT_UP_COS: Float64 = 0.8
+"""`support_by_normal`: a contact with a SUPPORT body counts as the support
+(the height loop) when its normal is within ~37 deg of vertical, and as a wall
+(the veto) otherwise. Our contact rows carry bodies, not geoms, so the bowl's
+floor and its walls are told apart by the normal."""
 comptime PLAN_PEN_OK_MM: Float64 = 1.0
 """`--clear-plan`: a plan whose poses penetrate an obstacle by more is
 redrawn."""
@@ -647,7 +653,14 @@ struct TowerGraspPlanner(Movable):
     """What they must not pass through at all: base, shoulder, the tower
     stand, the bowl, and the brick while the jaw is open."""
     var desk: List[Int]
-    """The desk: the grasp height is set against it."""
+    """The desk (its body)."""
+    var support: List[Int]
+    """What the grasp height is set against (`desk_clear_m` into it): the
+    desk by default; `set_support` names another (the bowl, to pick the brick
+    OUT of it)."""
+    var support_by_normal: Bool
+    """Count only the support's near-vertical contacts as the support, and
+    keep its other contacts (walls) in the veto — see `SUPPORT_UP_COS`."""
 
     def __init__(out self, mut env: E, ref body_names: List[String]) raises:
         """`body_names`: the composed scene's bodies in index order (the
@@ -670,8 +683,29 @@ struct TowerGraspPlanner(Movable):
                 self.obstacles.append(b)
             elif bn == "desk_mat":
                 self.desk.append(b)
+        self.support = self.desk.copy()
+        self.support_by_normal = False
         if len(self.arm_bodies) != 5 or len(self.obstacles) != 5 or len(self.desk) != 1:
             raise Error("the planner did not find its 5 arm bodies, 5 obstacles and the desk")
+
+    def set_support(
+        mut self, ref body_names: List[String], ref names: List[String],
+        by_normal: Bool = True,
+    ) raises:
+        """Set the grasp height against these bodies (by name) instead of the
+        desk — e.g. `["bowl_bowl"]` to pick the brick out of the bowl: its
+        FLOOR sets the height (`by_normal`), its WALLS stay in the veto (a
+        support body may also be an obstacle)."""
+        self.support = List[Int]()
+        for n in names:
+            var found = -1
+            for b in range(len(body_names)):
+                if body_names[b] == n:
+                    found = b
+            if found < 0:
+                raise Error("set_support: no body named " + n)
+            self.support.append(found)
+        self.support_by_normal = by_normal
 
     def plan_grasp(
         mut self, mut env: E, ref pb: List[Float64], brick_yaw: Float64,
@@ -727,7 +761,9 @@ struct TowerGraspPlanner(Movable):
                     var dj = jaw_open if self.desk_jaw < -1.0 else self.desk_jaw
                     for _ in range(3):
                         var dp = _pose_penetration_mm(
-                            env, plan.waypoints[n_wp], dj, self.arm_bodies, self.desk
+                            env, plan.waypoints[n_wp], dj, self.arm_bodies,
+                            self.support, 1 if self.support_by_normal else 0,
+                            self.support.copy(),
                         )
                         if dp <= 0.0:
                             break
@@ -736,7 +772,9 @@ struct TowerGraspPlanner(Movable):
                     var pen = 0.0
                     for j in range(n_wp + 1):
                         pen = max(pen, _pose_penetration_mm(
-                            env, plan.waypoints[j], jaw_open, self.arm_bodies, self.obstacles
+                            env, plan.waypoints[j], jaw_open, self.arm_bodies,
+                            self.obstacles, 2 if self.support_by_normal else 0,
+                            self.support.copy(),
                         ))
                     plan.raise_mm = raise_m * 1000.0
                     plan.pen_mm = pen
@@ -816,10 +854,15 @@ def _plan_tilted(
 def _pose_penetration_mm(
     mut env: E, ref q: List[Float64], jaw: Float64,
     ref arm_bodies: List[Int], ref obstacles: List[Int],
+    normal_mode: Int = 0, normal_bodies: List[Int] = List[Int](),
 ) raises -> Float64:
     """The deepest penetration (mm) between an ARM body and an OBSTACLE with
     the arm at joints `q` and the jaw at `jaw` — a static collision check of
-    a planned pose. The env's qpos, FK and contact set are restored."""
+    a planned pose. The env's qpos, FK and contact set are restored.
+
+    `normal_mode` (contacts whose other body is in `normal_bodies`): 0 all
+    count; 1 only the near-VERTICAL ones (a floor, `SUPPORT_UP_COS`); 2 all
+    but those (the walls)."""
     var saved = List[Float64]()
     for i in range(NQ):
         saved.append(Float64(env.d.qpos.data[i]))
@@ -837,6 +880,12 @@ def _pose_penetration_mm(
         var hit = (ba in arm_bodies and bb in obstacles) or (
             bb in arm_bodies and ba in obstacles
         )
+        if hit and normal_mode != 0:
+            var other = bb if ba in arm_bodies else ba
+            if other in normal_bodies:
+                var up = abs(Float64(env.d.contacts.data[o + CONTACT_IDX_NZ])) >= SUPPORT_UP_COS
+                if (normal_mode == 1 and not up) or (normal_mode == 2 and up):
+                    hit = False
         var d = Float64(env.d.contacts.data[o + CONTACT_IDX_DIST])
         if hit and -d > worst:
             worst = -d
