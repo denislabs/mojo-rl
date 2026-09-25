@@ -67,7 +67,9 @@ from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
 from noeira.physics3d.parser.runtime_load import (
     parse_model_runtime, dims_from_flat, build_model_runtime,
 )
-from noeira.robot.so101.sim_map import tower_follower_zero_deg
+from noeira.tasks.so101_tower_rig import (
+    So101TowerUnits, RIG_JOINT_ZERO_FOLLOWER, RIG_JOINT_ZERO_NONE,
+)
 from noeira.tasks.family import scene_path
 from noeira.tasks.spec import load_family
 from noeira.tasks.so101_tower_overhead import (
@@ -227,9 +229,9 @@ struct ArmFK(Movable):
     var site: Int
     var body: Int
     """The gripper body — its -z is the jaws' approach axis."""
-    var zero_rad: List[Float64]
-    var g_lo: Float64
-    var g_hi: Float64
+    var units: So101TowerUnits
+    """LeRobot units -> model joints: the one map the rig's tools share
+    (the joint zero, and the gripper on its measured line since dbd873e15)."""
 
     def __init__(out self, joint_zero: String) raises:
         var f = load_family(String(FAMILY))
@@ -256,22 +258,13 @@ struct ArmFK(Movable):
             raise Error("the tower scene has no grasp_center site")
         if joint_zero != "follower" and joint_zero != "none":
             raise Error("--joint-zero is follower or none, got " + joint_zero)
-        var zero_rad = List[Float64]()
-        for k in range(N_ARM):
-            var z = 0.0
-            if joint_zero == "follower" and k != GRIPPER:
-                z = tower_follower_zero_deg(k) * pi / 180.0
-            zero_rad.append(z)
         self.m = m^
         self.d = d^
         self.site = site
         self.body = fmd.sites[site].body_id
-        self.zero_rad = zero_rad^
-        # the gripper's LeRobot 0..100 is a fraction of its range; it does
-        # not move `grasp_center` (on the fixed jaw's body), so the joint
-        # range stands in for the ctrlrange here
-        self.g_lo = fmd.joints[GRIPPER].range_min
-        self.g_hi = fmd.joints[GRIPPER].range_max
+        self.units = So101TowerUnits(
+            String(RIG_JOINT_ZERO_FOLLOWER) if joint_zero == "follower" else String(RIG_JOINT_ZERO_NONE)
+        )
 
     def grasp_center(mut self, state: List[Float64]) raises -> Vec3d:
         """`grasp_center` in the world (the state's FK)."""
@@ -281,12 +274,7 @@ struct ArmFK(Movable):
         """(`grasp_center`, the approach axis = the gripper body's -z) in the
         world."""
         for k in range(N_ARM):
-            var q: Float64
-            if k == GRIPPER:
-                q = self.g_lo + state[k] / 100.0 * (self.g_hi - self.g_lo)
-            else:
-                q = state[k] * pi / 180.0 + self.zero_rad[k]
-            self.d.qpos.data[k] = Scalar[DT](q)
+            self.d.qpos.data[k] = Scalar[DT](self.units.lerobot_to_joint(k, state[k]))
         forward_kinematics["cpu", DT, DynDims, 1](self.d, self.m)
         var s = self.site
         var b = self.body

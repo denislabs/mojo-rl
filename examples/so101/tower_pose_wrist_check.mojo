@@ -71,6 +71,9 @@ comptime MOVE_EPS = 1.5
 comptime GRASP_DROP = 6.0
 comptime GRASP_SETTLE = 0.6
 comptime MAX_IDLE = 60
+comptime SLOW_DEG: Float64 = 1.0
+"""`--fit-zeros` uses frames where no arm joint moved more than this since
+the previous frame (deg): a moving arm adds frame/state skew."""
 
 
 def _floats(s: String) raises -> List[Float64]:
@@ -195,6 +198,9 @@ struct Samples(Movable):
     var rx: List[Float64]
     var ry: List[Float64]
     var ep: List[Int]
+    var q: List[List[Float64]]
+    """The frame's model joints (the follower zero)."""
+    var speed: List[Float64]
 
     def __init__(out self):
         self.u = List[Float64]()
@@ -204,6 +210,8 @@ struct Samples(Movable):
         self.rx = List[Float64]()
         self.ry = List[Float64]()
         self.ep = List[Int]()
+        self.q = List[List[Float64]]()
+        self.speed = List[Float64]()
 
 
 def _rot_small(a: Float64, b: Float64, c: Float64) -> Mat3d:
@@ -315,6 +323,125 @@ def _rms_mm(
     return (sqrt(s / Float64(max(n, 1))) * 1000.0, n)
 
 
+def _jz_residual(
+    ref smp: Samples, i: Int, mut fk: TowerArmFK, wci: Int, lens: FisheyeLens,
+    ref p: List[Float64],
+) raises -> Tuple[Float64, Float64]:
+    """Sample i's (x, y) error (m) with joint-zero offsets p[0..2] (rad) on
+    elbow_flex, wrist_flex, wrist_roll, the camera rolled p[3] (rad) about
+    its optical axis, and the reference shifted p[4..5] (the overhead's own
+    offset)."""
+    var qq = smp.q[i].copy()
+    qq[2] += p[0]
+    qq[3] += p[1]
+    qq[4] += p[2]
+    fk.set_qpos(qq)
+    var bpose = fk.camera_body_pose(wci)
+    # MuJoCo's camera looks down its -z: a roll about the optical axis is a
+    # rotation about its local z
+    var c = cos(p[3])
+    var sn = sin(p[3])
+    var rz = Mat3d.from_cols(Vec3d(c, sn, 0.0), Vec3d(-sn, c, 0.0), Vec3d(0.0, 0.0, 1.0))
+    var pos = bpose[0] + bpose[1] * fk.cam_pos[wci]
+    var rot = bpose[1] @ (fk.cam_rot[wci] @ rz)
+    var cam = RigCamera(lens, pos, rot)
+    var pt = cam.plane_point(smp.u[i], smp.v[i], DESK_Z + 0.0125)
+    if not pt[2]:
+        return (1.0, 1.0)
+    return (pt[0] - (smp.rx[i] + p[4]), pt[1] - (smp.ry[i] + p[5]))
+
+
+def _jz_free(model: Int) -> List[Int]:
+    """0 shift; 1 + wrist_flex; 2 + wrist_roll; 3 + the camera's roll;
+    4 + elbow."""
+    if model == 0:
+        return [4, 5]
+    if model == 1:
+        return [1, 4, 5]
+    if model == 2:
+        return [1, 2, 4, 5]
+    if model == 3:
+        return [1, 2, 3, 4, 5]
+    return [0, 1, 2, 3, 4, 5]
+
+
+def _jz_fit(
+    ref smp: Samples, mut fk: TowerArmFK, wci: Int, lens: FisheyeLens, ref use: List[Bool],
+    model: Int,
+) raises -> List[Float64]:
+    var free = _jz_free(model)
+    var n_par = len(free)
+    var p = List[Float64](length=6, fill=0.0)
+    for _ in range(10):
+        var H = List[Float64](length=36, fill=0.0)
+        var g = List[Float64](length=6, fill=0.0)
+        for i in range(len(smp.u)):
+            if not use[i]:
+                continue
+            var r0 = _jz_residual(smp, i, fk, wci, lens, p)
+            # a robust weight: residuals past 30 mm are the estimator's
+            # misses, not the model's
+            var rr = sqrt(r0[0] * r0[0] + r0[1] * r0[1])
+            var w = 1.0 if rr < 0.03 else 0.03 / rr
+            var J = List[Float64](length=12, fill=0.0)
+            for j in range(n_par):
+                var pj = p.copy()
+                var h = 1e-5
+                pj[free[j]] += h
+                var r1 = _jz_residual(smp, i, fk, wci, lens, pj)
+                J[j] = (r1[0] - r0[0]) / h
+                J[6 + j] = (r1[1] - r0[1]) / h
+            for a in range(n_par):
+                g[a] += w * (J[a] * r0[0] + J[6 + a] * r0[1])
+                for b in range(n_par):
+                    H[a * 6 + b] += w * (J[a] * J[b] + J[6 + a] * J[6 + b])
+        for a in range(n_par):
+            H[a * 6 + a] += 1e-9
+        var A = List[Float64](length=n_par * (n_par + 1), fill=0.0)
+        for a in range(n_par):
+            for b in range(n_par):
+                A[a * (n_par + 1) + b] = H[a * 6 + b]
+            A[a * (n_par + 1) + n_par] = -g[a]
+        for cc in range(n_par):
+            var piv = cc
+            for r in range(cc + 1, n_par):
+                if abs(A[r * (n_par + 1) + cc]) > abs(A[piv * (n_par + 1) + cc]):
+                    piv = r
+            for k in range(n_par + 1):
+                var t = A[cc * (n_par + 1) + k]
+                A[cc * (n_par + 1) + k] = A[piv * (n_par + 1) + k]
+                A[piv * (n_par + 1) + k] = t
+            var dd = A[cc * (n_par + 1) + cc]
+            for k in range(n_par + 1):
+                A[cc * (n_par + 1) + k] /= dd
+            for r in range(n_par):
+                if r == cc:
+                    continue
+                var f = A[r * (n_par + 1) + cc]
+                for k in range(n_par + 1):
+                    A[r * (n_par + 1) + k] -= f * A[cc * (n_par + 1) + k]
+        for a in range(n_par):
+            p[free[a]] += A[a * (n_par + 1) + n_par]
+    return p^
+
+
+def _jz_err(
+    ref smp: Samples, mut fk: TowerArmFK, wci: Int, lens: FisheyeLens, ref use: List[Bool],
+    ref p: List[Float64],
+) raises -> Tuple[Float64, Float64, Int]:
+    """(median, rms clipped at 30 mm) of the used samples' errors, mm."""
+    var es = List[Float64]()
+    var s = 0.0
+    for i in range(len(smp.u)):
+        if not use[i]:
+            continue
+        var r = _jz_residual(smp, i, fk, wci, lens, p)
+        var e = min(0.03, sqrt(r[0] * r[0] + r[1] * r[1]))
+        es.append(e * 1000.0)
+        s += e * e
+    return (_pct(es, 0.5), sqrt(s / Float64(max(len(es), 1))) * 1000.0, len(es))
+
+
 def main() raises:
     var args = argv()
     var root = String("")
@@ -326,6 +453,7 @@ def main() raises:
     var roi_mm = 80.0
     var cls_w = printed_brick_hsv()
     var do_fit = False
+    var fit_zeros = False
     var rel_max_d = 1.0
     var i = 1
     while i < len(args):
@@ -336,6 +464,10 @@ def main() raises:
             continue
         if a == "--fit":
             do_fit = True
+            i += 1
+            continue
+        if a == "--fit-zeros":
+            fit_zeros = True
             i += 1
             continue
         if i + 1 >= len(args):
@@ -507,6 +639,8 @@ def main() raises:
                 smp.rx.append(bx)
                 smp.ry.append(by)
                 smp.ep.append(e)
+                smp.q.append(q.copy())
+                smp.speed.append(spd)
             # the wrist estimate in the gripper frame AT THE GRASP (the far
             # frames only: near the grasp the jaws may already push it)
             if t <= t_c - 10 and d <= rel_max_d:
@@ -604,6 +738,45 @@ def main() raises:
         " y", fixed(_pct(wy_, 0.5), 1), "(", fixed(_pct(wy_, 0.9) - _pct(wy_, 0.1), 1), ")",
         " z", fixed(_pct(wz_, 0.5), 1), "(", fixed(_pct(wz_, 0.9) - _pct(wz_, 0.1), 1), ")",
     )
+
+    # ── joint zeros + the camera's roll, fitted to the overhead reference ──
+    if fit_zeros:
+        # the slow frames only: a moving arm adds frame/state skew
+        var slow = List[Bool]()
+        var eps2 = List[Int]()
+        for i in range(len(smp.u)):
+            slow.append(smp.speed[i] < SLOW_DEG)
+            if smp.ep[i] not in eps2:
+                eps2.append(smp.ep[i])
+        var zero6 = List[Float64](length=6, fill=0.0)
+        var e0 = _jz_err(smp, fk, wcam_i, wlens, slow, zero6)
+        print(
+            "JOINT-ZERO FIT on", e0[2], "slow frames (<", SLOW_DEG, "deg/frame): before median",
+            fixed(e0[0], 1), "mm, rms(clip 30)", fixed(e0[1], 1), "mm",
+        )
+        var mnames: List[String] = ["shift", "+ wrist_flex", "+ wrist_roll", "+ camera roll", "+ elbow"]
+        for model in range(5):
+            var pf = _jz_fit(smp, fk, wcam_i, wlens, slow, model)
+            var ef = _jz_err(smp, fk, wcam_i, wlens, slow, pf)
+            # leave one episode out: fit on the others, score the held-out one
+            var lo = List[Float64]()
+            for ek in eps2:
+                var tr_use = List[Bool]()
+                var te_use = List[Bool]()
+                for i in range(len(smp.u)):
+                    tr_use.append(slow[i] and smp.ep[i] != ek)
+                    te_use.append(slow[i] and smp.ep[i] == ek)
+                var pl = _jz_fit(smp, fk, wcam_i, wlens, tr_use, model)
+                var el = _jz_err(smp, fk, wcam_i, wlens, te_use, pl)
+                if el[2] > 0:
+                    lo.append(el[0])
+            print(
+                "  " + mnames[model] + ": median", fixed(ef[0], 1), "mm, rms", fixed(ef[1], 1),
+                "| leave-one-episode-out median of episode medians", fixed(_pct(lo, 0.5), 1),
+                "mm | elbow", fixed(pf[0] * 180.0 / pi, 2), "flex", fixed(pf[1] * 180.0 / pi, 2),
+                "roll", fixed(pf[2] * 180.0 / pi, 2), "cam roll", fixed(pf[3] * 180.0 / pi, 2),
+                "deg | shift", fixed(pf[4] * 1000.0, 1), fixed(pf[5] * 1000.0, 1), "mm",
+            )
 
     # ── the camera-in-gripper correction, fitted to the overhead reference ──
     if do_fit:
