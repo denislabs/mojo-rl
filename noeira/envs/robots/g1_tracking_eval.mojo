@@ -102,6 +102,32 @@ def g1_n_segments(ep_len: Int) -> Int:
     return (ep_len - G1_SEG_ROWS) // G1_SEG_STRIDE + 1
 
 
+def g1_segment_pick(n_avail: Int, n_take: Int, k: Int) -> Int:
+    """The `k`-th of `n_take` segments spread evenly over `n_avail`.
+
+    ⚠ Scoring the FIRST `n_take` segments of every clip is a BIASED sample of
+    the clip, and the bias is not small: the same checkpoint reads 1.398 over
+    40 segments (one per clip) and 1.587 over 200 — the later windows of a
+    motion are harder than its opening seconds. The reference evaluates all
+    862 10 s windows (`humanoidverse_tracking_eval.csv`), so a truncated eval
+    that starts every clip from row 0 is not comparable to its numbers at any
+    `n_take` (docs §12.29).
+
+    Stratified MIDPOINT sampling: `((2k+1)·n_avail) // (2·n_take)`. It is the
+    identity when `n_take == n_avail`, so full coverage still scores exactly
+    every segment, and at `n_take == 1` it picks the MIDDLE of the clip rather
+    than its first ten seconds.
+
+    Written here, once, because both the in-loop eval in
+    `bfm_zero_train_gpu.mojo` and the oracle-gated standalone eval select
+    segments — and a selection rule that drifts between them would make the
+    two report different numbers for the same checkpoint.
+    """
+    if n_take >= n_avail:
+        return k
+    return ((2 * k + 1) * n_avail) // (2 * n_take)
+
+
 def g1_segment_row(ep_offset: Int, seg: Int) -> Int:
     """The store row this segment starts at."""
     return ep_offset + seg * G1_SEG_STRIDE

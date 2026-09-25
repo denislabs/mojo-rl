@@ -21,10 +21,12 @@ dashboard gets the same points when `.env` names one (`RemoteLogger`, inert
 without a URL), `run.kv` records `status`/`outcome` WRITTEN and never inferred,
 and each checkpoint is offered to the artifact sink so a box that dies at hour
 40 does not take the weights with it. A 30-minute check-up is therefore
-`tail -3 runs/<id>/metrics.csv` plus `run.kv`, from anywhere — read `eval/emd`
-and `norm/B_rank_eff` first. `eval/*` is the TRACKING EVAL, run in the loop over
-the checkpoint just written (`--eval-segments`, default 1 = one segment per
-clip, ~35 s); run 1 had to be scored by hand hours after it ended, which is how
+`tail -3 runs/<id>/metrics.csv` plus `run.kv`, from anywhere — read `eval_emd`
+and `b_rank_eff` first. `eval_*` is the TRACKING EVAL, run in the loop over
+the checkpoint just written (`--eval-segments`, default 5 = five segments per
+clip STRATIFIED across it, ~200 of the store's ~862 windows, ~3 min; the old
+default of 1 scored the opening ten seconds of each clip and read ~0.19 low
+against the reference, §12.29); run 1 had to be scored by hand hours after it ended, which is how
 a divergence at 4 M steps went unnoticed until 8 M (§12.14). `norm/B` is sqrt(d) = 16 BY CONSTRUCTION and cannot
 move, so it can never warn you about anything; `norm/B_rank_eff` is the
 effective rank of `E[B B^T]` and must sit at d = 256. Run 1 died with it at
@@ -135,7 +137,8 @@ from noeira.envs.robots.g1_motion_priority import (
 )
 from noeira.envs.robots.g1_tracking_eval import (
     G1_D, G1_H, G1_L, G1_HB, G1_HD,
-    G1_SEG_ROWS, G1TrackScore, g1_n_segments, g1_segment_row, g1_score_segment,
+    G1_SEG_ROWS, G1TrackScore, g1_n_segments, g1_segment_row, g1_segment_pick,
+    g1_score_segment,
 )
 from noeira.envs.robots.unitree_g1_rsi import (
     G1RsiTable, rsi_inject_kernel, G1_RSI_NQ, G1_RSI_NV, G1_LIE_DOWN_PROB,
@@ -431,10 +434,14 @@ def _score_tracking(
     for clip in range(rsi.n_ep):
         var clip_e = 0.0
         var clip_n = 0
-        var n_seg = g1_n_segments(Int(rsi.ep_len.data[clip]))
+        var n_avail = g1_n_segments(Int(rsi.ep_len.data[clip]))
+        var n_seg = n_avail
         if n_seg > max_segments:
             n_seg = max_segments
-        for seg in range(n_seg):
+        for k in range(n_seg):
+            # spread across the clip, not the first `n_seg` — see
+            # `g1_segment_pick`; taking the opening windows reads ~0.19 low
+            var seg = g1_segment_pick(n_avail, n_seg, k)
             var r0 = g1_segment_row(Int(rsi.ep_offset.data[clip]), seg)
             var sc = g1_score_segment[FNet, BNet, ANet, OBS, ACT, D, 64](
                 t, env, rsi, st, pv, qpos_col, norm, r0,
@@ -496,7 +503,12 @@ def main() raises:
     # 0 turns the in-loop tracking eval off. 1 is one segment per clip (40
     # segments, ~35 s) — ~3 % of a 20-minute checkpoint interval, and the only
     # number in the file that measures the thing the run is FOR.
-    var eval_segments = atol(_flag(String("--eval-segments"), String(1)))
+    # 5 per clip = ~200 of the store's ~862 windows, STRATIFIED across each
+    # clip (`g1_segment_pick`). The old default of 1 scored 40 — the opening
+    # ten seconds of every motion, which reads ~0.19 low against the
+    # reference's all-862 number (docs §12.29). 5 is the coverage the mid and
+    # ring runs already paid for, so the cost is known.
+    var eval_segments = atol(_flag(String("--eval-segments"), String(5)))
     # The eval used to run ONLY at checkpoints, so the curve was three points
     # and "the peak is at 4000" partly meant "4000 was the best of the three
     # we sampled". `--eval-every` (batched steps) decouples the two; it
