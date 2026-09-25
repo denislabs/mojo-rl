@@ -52,6 +52,7 @@ demo's bytes.
 from std.math import atan2, cos, floor, pi, sin, sqrt
 from std.random import random_float64, seed as seed_rng
 
+from noeira.core.cont_action import ContAction
 from noeira.envs.phyics3d_env import Phyics3dEnv
 from noeira.math3d import Quat, Vec3
 from noeira.physics3d.collision.broadphase_sap import detect_contacts_auto
@@ -1260,3 +1261,52 @@ def pick_place_legs(
         out.append(PlanLeg("up", ab[0].copy(), True, N_DESCEND // 2, False, False))
         jaws.append(jaw_place)
     return out^
+
+
+# ── the LOW release in the bowl (the rig's task 1, shared with the sim) ───
+
+
+comptime RELEASE_GAP_M: Float64 = 0.005
+"""A place plan's fingers this far ABOVE the support at the release (the
+pick pressed them into it, so the brick's bottom is ~8 mm up)."""
+comptime BOWL_RELEASE_JAW: Float64 = 0.25
+"""The release INSIDE the bowl opens only this far: at 0.35 the rig's bowl
+was pushed 9-14 mm in every task 1 of the first cycle run (the moving jaw
+swinging out toward the wall as it opens); the 25 mm brick is free from
+~0.14 (noeira-72, 50023f549)."""
+comptime PLACE_DRAWS = 8
+"""Postures drawn for a clean place plan (`plan_clean`)."""
+comptime BRICK_QADR = 13
+comptime BOWL_QADR = 6
+"""The free joints' qpos addresses in the tower scene (`placement/so101_tower`
+`free_qadr`: bowl, then brick)."""
+
+
+def bowl_release_cfg() -> PlanCfg:
+    """The low release in the bowl: tilt 5..35, the jaw opened to
+    `BOWL_RELEASE_JAW`, the bowl's FLOOR as the support (by the contact normal;
+    the walls stay in the veto), the fingers `RELEASE_GAP_M` above it — the
+    rig executor's `cfg_bowl_release`."""
+    return PlanCfg(5.0, 35.0, BOWL_RELEASE_JAW, String("bowl_bowl"), RELEASE_GAP_M)
+
+
+def brick_rest_in_bowl_z(
+    mut env: E, ref q_scene: List[Float64], ref lo: List[Float64],
+    ref hi: List[Float64],
+) raises -> Float64:
+    """The brick's resting height IN the bowl (world m): dropped 2 cm above
+    the floor at the bowl's centre in the sim scene and settled, the arm held
+    where `q_scene` has it. ⚠ Steps `env`: the caller restores its state."""
+    var qs = q_scene.copy()
+    qs[BRICK_QADR] = qs[BOWL_QADR]
+    qs[BRICK_QADR + 1] = qs[BOWL_QADR + 1]
+    qs[BRICK_QADR + 2] = qs[BOWL_QADR + 2] + 0.045
+    var v0 = List[Float64](length=NV, fill=0.0)
+    env.set_state(qs, v0)
+    var hold = ContAction[ACT]()
+    for k in range(ACT):
+        hold.data[k] = 2.0 * (qs[k] - lo[k]) / (hi[k] - lo[k]) - 1.0
+    for _ in range(60):
+        _ = env.step(hold)
+    return Float64(env.d.qpos.data[BRICK_QADR + 2])
+

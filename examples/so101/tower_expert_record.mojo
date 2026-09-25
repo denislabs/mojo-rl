@@ -168,7 +168,9 @@ from noeira.tasks.so101_tower_expert_plan import (
     TowerExpertEnv, TowerGraspPlanner, TowerGraspPlan, ACT, N_ARM, NQ, GS, N_VIA,
     GRIPPER_BODY, TIP_REACH, HUMAN_JAW_OPEN, HUMAN_Z_GRASP, CLEAR_PLAN_TILT,
     Z_GRASP, N_PRE, N_DESCEND, N_CLOSE, N_LIFT, N_CARRY, N_PLACE, N_OPEN,
-    N_RETREAT, N_HOLD_MAX,
+    N_RETREAT, N_HOLD_MAX, PLACE_DRAWS, BOWL_RELEASE_JAW, BRICK_QADR, BOWL_QADR,
+    plan_clean, pick_place_legs, with_brick, bowl_release_cfg,
+    brick_rest_in_bowl_z, PlanLeg,
 )
 from noeira.tasks.spec import load_family
 from noeira.utils.fmt import fixed
@@ -319,6 +321,18 @@ struct Expert(Movable):
                               # so a half-open approach makes the close a short swing
     var frame_skip: Int
     var timestep: Float64
+    var low_place: Bool
+    """`--place low`: the place is the rig executor's — a second grasp plan
+    for a virtual brick at the bowl's centre, run backwards, released LOW
+    (the fingers `RELEASE_GAP_M` above the floor, the jaw opened only to
+    `BOWL_RELEASE_JAW`), entering and leaving `ABOVE_M` over the approach
+    (`pick_place_legs`). `drop` (the old place): carried 16 cm above the bowl,
+    lowered to 10 cm, opened — the brick falls and bounces off the wall."""
+    var bowl_dz: Float64
+    """The brick's resting height in the bowl above the bowl body's origin
+    (m), measured once in the sim (`brick_rest_in_bowl_z`)."""
+    var body_names: List[String]
+    var place_seed: Int
     var dump_dir: String
     """`--dump-close DIR`: per episode, the state at the close and every
     control step of the close and the lift — `DIR/ep_<k>.txt`, the input of
@@ -368,6 +382,10 @@ struct Expert(Movable):
         self.frame_skip = CFG.FRAME_SKIP
         self.timestep = So101TowerModel.TIMESTEP
         self.print_plan = False
+        self.low_place = False
+        self.bowl_dz = 0.0
+        self.body_names = body_names.copy()
+        self.place_seed = 0
         self.dump_dir = String("")
         self.dump_rows = List[String]()
         self.dumping = False
@@ -907,7 +925,50 @@ def run_episode(
             var pl = _body_pos(env, brick)
             print("  ep", ep, "after lift: brick dz", fixed((pl[2] - pb[2]) * 1000.0, 1),
                   "mm | jaw", fixed(Float64(env.d.qpos.data[5]), 3), "rad")
-    if place and not done:
+    if place and not done and ex.low_place:
+        # THE RIG'S PLACE (`pick_place_legs`), planned HERE from the bowl
+        # where it is after the lift. ⚠ The planner's collision pass works on
+        # the env: the live state is saved and restored around it.
+        var pw = _body_pos(env, bowl)
+        var qsave = List[Float64]()
+        for i in range(NQ):
+            qsave.append(Float64(env.d.qpos.data[i]))
+        var vsave = List[Float64]()
+        for i in range(NV):
+            vsave.append(Float64(env.d.qvel.data[i]))
+        var pc: List[Float64] = [pw[0], pw[1], pw[2] + ex.bowl_dz]
+        var qv = with_brick(qsave, BRICK_QADR, pc[0], pc[1], pc[2], plan.yaw)
+        var pl = plan_clean(
+            env, ex.planner, ex.body_names, qv, pc, plan.yaw, plan.q_lift,
+            bowl_release_cfg(), ex.place_seed + ep * 101, PLACE_DRAWS,
+        )
+        var jaws = List[Float64]()
+        var legs = pick_place_legs(
+            env, ex.planner, plan, pl.plan, ex.jaw_open, BOWL_RELEASE_JAW,
+            False, jaws,
+        )
+        env.set_state(qsave, vsave)
+        if verbose:
+            print("  ep", ep, "low place: clean", pl.ok, "| draws", pl.draws,
+                  "| tilt", fixed(pl.plan.tilt * 180.0 / pi, 1), "| pen",
+                  fixed(pl.plan.pen_mm, 1), "mm")
+        # the legs after the pick's lift (the recorder ran those already)
+        var after_lift = False
+        var jaw_saved = ex.jaw_open
+        for k in range(len(legs)):
+            if not after_lift:
+                if legs[k].name == "lift":
+                    after_lift = True
+                continue
+            if done:
+                break
+            ex.jaw_open = jaws[k]
+            if len(legs[k].q) == 0:
+                done = ex.hold(env, legs[k].grip_open, legs[k].steps)
+            else:
+                done = ex.step_to(env, legs[k].q, legs[k].grip_open, legs[k].steps)
+        ex.jaw_open = jaw_saved
+    elif place and not done:
         # the place is planned HERE, from the bowl where it is after the
         # lift (a grasp can nudge it) — see the library's header
         var pw = _body_pos(env, bowl)
@@ -957,7 +1018,8 @@ def _usage():
           "   # DAgger from a recorded (vision) student\n"
           "       [--posture expert|human [--tilt-range LO,HI] [--pinch-range LO,HI]"
           " [--tip-close-mm MM] [--clear-plan [--desk-clear-mm MM] [--pinch-offset-mm MM]"
-          " [--desk-jaw RAD] [--via none|auto|always] [--path-check] [--path-report]]]"
+          " [--desk-jaw RAD] [--via none|auto|always] [--path-check] [--path-report]"
+          " [--fallback on|off] [--place low|drop]]]"
           " [--return-rest]\n"
           "       [--print-plan] [--dump-close DIR] [--keep-failures] [--quiet]")
 
@@ -981,6 +1043,7 @@ def main() raises:
     var path_check = False
     var via_mode = -1
     var fallback = False
+    var place_mode = String("")
     var fallback_set = False
     var pinch_offset_mm = 0.0
     var pinch_offset_set = False
@@ -1046,6 +1109,12 @@ def main() raises:
                 via_mode = 2
             else:
                 raise Error("--via is none, auto or always, not " + vm)
+            i += 2
+        elif a == "--place" and i + 1 < len(args):
+            var pm = String(args[i + 1])
+            if pm != "low" and pm != "drop":
+                raise Error("--place is low or drop, not " + pm)
+            place_mode = pm
             i += 2
         elif a == "--fallback" and i + 1 < len(args):
             fallback = String(args[i + 1]) == "on"
@@ -1201,6 +1270,14 @@ def main() raises:
         via_mode = 1 if clear_plan else 0
     ex.planner.via_mode = via_mode
     ex.planner.fallback = fallback
+    # `--clear-plan` defaults to the rig's LOW place (synced with
+    # tower_expert_real's task 1)
+    if place_mode == "":
+        place_mode = String("low") if clear_plan else String("drop")
+    ex.low_place = place_mode == "low" and task.startswith("so101_tower_cube_in_bowl")
+    if ex.low_place and not ex.human_posture:
+        raise Error("--place low plans a tilted grasp backwards: it needs --posture human")
+    ex.place_seed = seed0 * 7 + 1
     if path_check and not clear_plan:
         raise Error("--path-check extends --clear-plan's collision pass: add --clear-plan")
     if clear_plan and not pinch_offset_set:
@@ -1321,6 +1398,32 @@ def main() raises:
         print("  ", ex.rec.demos.summary())
         return
 
+    if ex.low_place:
+        # the brick's resting height in the bowl, once (the bowl sits on the
+        # same desk in every layout); every episode resets the env after it
+        _ = env.reset()
+        for k in range(len(mw[0])):
+            env.d.meta.data[mw[0][k]] = Scalar[DType.float64](mw[1][k])
+        var qz = posed_qpos[So101TowerPlacement](
+            task, String(FAMILY), So101TowerConfig.SLOT_RADIUS, UInt64(seed0),
+        )
+        # ⚠ AT A CLEAR SPOT, NOT THE LAYOUT'S: a bowl drawn near the base
+        # (x 0.14 at seed 61000) meets the FOLDED arm, which lifts it during
+        # the settle (-10.8 mm measured); the height does not depend on where
+        # the bowl stands, only that nothing else touches it
+        qz[BOWL_QADR] = 0.30
+        qz[BOWL_QADR + 1] = 0.10
+        qz[BOWL_QADR + 3] = 1.0
+        qz[BOWL_QADR + 4] = 0.0
+        qz[BOWL_QADR + 5] = 0.0
+        qz[BOWL_QADR + 6] = 0.0
+        var zr = brick_rest_in_bowl_z(env, qz, ex.planner.arm.lo, ex.planner.arm.hi)
+        # against the bowl's SETTLED height: the placement starts props a
+        # little above the desk, and they fall during the settle
+        var zb = Float64(env.d.qpos.data[BOWL_QADR + 2])
+        ex.bowl_dz = zr - zb
+        print("  place    : LOW in the bowl (the rig's) — brick rests",
+              fixed(ex.bowl_dz * 1000.0, 1), "mm above the bowl's origin")
     var n_ok = 0
     for ep in range(n_episodes):
         _ = env.reset()
