@@ -184,6 +184,18 @@ comptime HUMAN_Z_GRASP: Float64 = 0.015
 comptime PLAN_TRIES = 12
 """`--clear-plan`: postures drawn per episode before the least-colliding one
 is taken anyway."""
+comptime PLAN_PINCH_TRIES = 0
+"""`--clear-plan`: redraws that change only the PINCH and keep the drawn tilt.
+0: measured, it does not undo the low-tilt skew (successes' median tilt 23 ->
+26 deg) and cost 73 -> 62/150 on the same seeds; the skew is compensated in
+the tilt RANGE instead (see `CLEAR_PLAN_TILT`)."""
+comptime CLEAR_PLAN_TILT = "20,65"
+"""`--clear-plan`'s tilt DRAW (deg), unless `--tilt-range` is given: the
+collision redraws reject steep tilts more often, so the drawn range sits above
+the operator's for the KEPT episodes to match it. Measured (150 draws, seed
+61000): draw 10..55 -> successes' tilt median 23 (73/150); 20..65 -> median 35,
+p5..p95 22..58 (67/150; the operator: median 35, printed set 43); 25..70 -> 36
+(60/150); 30..70 -> 40 (56/150)."""
 comptime DESK_CLEAR_M: Float64 = -0.008
 """`--clear-plan`: where the fingers' lowest point is planned relative to the
 desk at the grasp — NEGATIVE = pressed INTO it by that much (the finger boxes
@@ -708,6 +720,10 @@ struct Expert(Movable):
         self.tilt = random_float64(self.tilt_lo, self.tilt_hi)
         self.pinch_target = random_float64(self.pinch_lo, self.pinch_hi)
 
+    def draw_pinch(mut self):
+        """Redraw the pinch only, keeping the drawn tilt (`--clear-plan`)."""
+        self.pinch_target = random_float64(self.pinch_lo, self.pinch_hi)
+
     def pinch_yaw(mut self, bearing: Float64, brick_yaw: Float64) -> Float64:
         """The pinch axis's world yaw for a brick at `bearing` whose own yaw
         is `brick_yaw` (rad): the radial direction, or — in `--posture
@@ -1206,6 +1222,8 @@ def run_episode(
                     # none was clear: re-plan the least-colliding posture
                     ex.tilt = best_tilt
                     ex.pinch_target = best_pinch
+                elif attempt > 0 and attempt <= PLAN_PINCH_TRIES:
+                    ex.draw_pinch()
                 elif attempt > 0:
                     ex.draw_posture()
                 yaw = ex.pinch_yaw(bearing, _body_yaw(env, brick))
@@ -1392,6 +1410,7 @@ def main() raises:
     var handover_from = String("")
     var posture = String("expert")
     var tilt_range = String("10,55")
+    var tilt_range_set = False
     var pinch_range = String("35,85")
     var tip_close_mm = TIP_CLOSE_MM_DEFAULT
     var return_rest = False
@@ -1457,6 +1476,7 @@ def main() raises:
             i += 2
         elif a == "--tilt-range" and i + 1 < len(args):
             tilt_range = String(args[i + 1])
+            tilt_range_set = True
             i += 2
         elif a == "--return-rest":
             return_rest = True
@@ -1572,6 +1592,8 @@ def main() raises:
             ex.jaw_open = HUMAN_JAW_OPEN
         if not z_grasp_set:
             ex.z_grasp = HUMAN_Z_GRASP
+    if clear_plan and not tilt_range_set:
+        tilt_range = String(CLEAR_PLAN_TILT)
     var tr = tilt_range.split(",")
     if len(tr) != 2:
         raise Error("--tilt-range needs lo,hi in degrees, got " + tilt_range)
