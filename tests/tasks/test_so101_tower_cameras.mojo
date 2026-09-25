@@ -57,7 +57,9 @@ comptime FAMILY = "noeira/tasks/families/so101_tower.family"
 comptime TOL = 1.0e-6
 
 # `tools/tasks/check_tower_cameras.py`, MuJoCo 3.12.0 — pos, then the x, y, z
-# columns of cam_xmat, for (pose, camera).
+# columns of cam_xmat, for (pose, camera). Regenerated 2026-09-25 when the
+# gripper body moved 6.5 mm out along its roll axis (bake step 4a): the wrist
+# camera rides it, so only its two positions changed.
 comptime N_POSE = 2
 comptime N_CAM = 2
 
@@ -82,7 +84,7 @@ def _oracle(p: Int, c: Int, k: Int) -> Vec3:
     """k: 0 pos, 1 xaxis, 2 yaxis, 3 zaxis."""
     if p == 0 and c == 0:
         if k == 0:
-            return Vec3(0.303200870, -0.065670928, 0.238682271)
+            return Vec3(0.309700870, -0.065670928, 0.238682271)
         if k == 1:
             return Vec3(-0.000000000, 0.048660291, -0.998815386)
         if k == 2:
@@ -99,7 +101,7 @@ def _oracle(p: Int, c: Int, k: Int) -> Vec3:
         return Vec3(-0.424308329, 0.000000000, 0.905517775)
     # moved, wrist
     if k == 0:
-        return Vec3(0.202276819, -0.019411677, 0.250981248)
+        return Vec3(0.207900746, -0.021464571, 0.248450029)
     if k == 1:
         return Vec3(-0.086090245, -0.858716797, 0.505167232)
     if k == 2:

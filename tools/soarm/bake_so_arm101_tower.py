@@ -69,6 +69,15 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 STOCK = "noeira/envs/robots/assets/so_arm101.xml"
 OUT = "noeira/envs/robots/assets/so_arm101_tower.xml"
+GRIPPER_STACK_EXTRA_M = 0.0065
+"""How much further from the wrist_flex axis the rig's gripper body sits than
+upstream's (bake step 4a). Measured 2026-09-24/25 on the rig: the fixed jaw's
+tip is 172 mm from the wrist_flex axis by ruler against the model's 165.9, a
+desk-touch fit reads +6.7 mm, while the FINGER itself matches the STL (the
+moving jaw's hinge -> the fixed jaw's tip: 86 mm on the part, 85.7 in the
+model; and the tip sits at the mesh tip in the median of 420 wrist frames,
+where camera and jaw ride the same body). So the extra length is in the roll
+servo / horn / mount stack: the whole body goes out, not the finger."""
 LIFT_REST_STOP = -110.0 * np.pi / 180.0
 """shoulder_lift's lower joint limit on the rig (step 7): the real arm's rest
 hard stop, -106.0 LeRobot deg + the measured -3.6 deg zero = -109.6, rounded
@@ -368,6 +377,16 @@ def bake():
         ' fovy="%.4f"/>' % (_fmt(pos), _fmt(xy), FOVY_DEG)
     )
     src = sub(STOCK_CAM, cam, "stock wrist camera")
+    # 4a. THE GRIPPER BODY 6.5 mm FURTHER OUT along its roll axis
+    #     (`GRIPPER_STACK_EXTRA_M`). The body's -z is the wrist frame's -y
+    #     (from its quat), so only pos.y moves: -0.0611 -> -0.0676. Everything
+    #     on the body — jaw, wrist camera, grasp_center, gripperframe — moves
+    #     with it, and the roll axis stays the same line.
+    src = sub(
+        '<body name="gripper" pos="5.55112e-17 -0.0611 0.0181"',
+        '<body name="gripper" pos="5.55112e-17 %.4f 0.0181"' % (-0.0611 - GRIPPER_STACK_EXTRA_M),
+        "gripper body",
+    )
     # 4b. `gripperframe` AT THE JAW'S TIP. Upstream puts the site at z -98.1
     #     in the gripper frame; the fixed finger's mesh (the stock part's and
     #     the mount's alike) ends at z -104.4 (x -13.6..-7.9 there), measured
@@ -478,6 +497,10 @@ def check(text):
     # box was already counted against the stock's follower collision mesh).
     assert m.ngeom == ref.ngeom + 5 and m.nmesh == ref.nmesh + 1, (m.ngeom, m.nmesh)
     assert m.nlight == ref.nlight - 1 and m.ntex == 0 and m.nmat == ref.nmat
+    # step 4a: the gripper body sits GRIPPER_STACK_EXTRA_M further out
+    gb = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "gripper")
+    rb = mujoco.mj_name2id(ref, mujoco.mjtObj.mjOBJ_BODY, "gripper")
+    assert abs((m.body_pos[gb][1] - ref.body_pos[rb][1]) + GRIPPER_STACK_EXTRA_M) < 1e-9, m.body_pos[gb]
     # step 7: the lift JOINT reaches the real rest stop, its ACTUATOR does not
     j = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, "shoulder_lift")
     a = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, "shoulder_lift")
