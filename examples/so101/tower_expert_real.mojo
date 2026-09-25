@@ -2266,6 +2266,12 @@ def main() raises:
                             if lk.n_conf > 0:
                                 _draw_outline(img, lcam, PrismModel.tower_brick(), pick_z - 0.0125, lk.x, lk.y, lk.yaw, 255, 0, 0)
                             look_img = img^
+                        if li < 0:
+                            # the legs were replaced by the wrist correction:
+                            # nothing below may read the old index (cycle run
+                            # 4 crashed on legs[-1] here — a hard abort, no
+                            # shutdown, the arm left energised)
+                            continue
                     if legs[li].close_on_tip:
                         tip_close = rig.tip_dist_mm()
                         close_how = String("trigger") if rep.find("TRIGGERED") >= 0 else String("timeout")
