@@ -38,12 +38,20 @@ from noeira.nn.core.tensor import Tensor
 from noeira.data.resident import IDX_DT
 from noeira.deep_agents.fb import FBCPROnlineAgent
 from noeira.deep_agents.fb.bfm_towers import (
-    BFMFTower, BFMActorTower, BFMBNet, BFMDNet,
+    BFMFTower, BFMBNetFiltered, BFMActorTowerFiltered, BFMDNetFiltered,
 )
 from noeira.deep_agents.fb.kernels import ensure_t
 
 
-comptime OBS = 527
+# ⚠ TWO widths now (§12.34-12.36). `SP` is `state + privileged_state`, the
+# 527 that `b` and `discriminator` consume — unchanged. `OBS` is the PACKED
+# row `f`, `critic` and (filtered) the actor see: `SP + last_action 29 +
+# history 372`. The env still produces SP; the 401 is assembled by the driver
+# or derived from the ring.
+comptime SP = 527
+comptime SD = 64
+comptime EX = 401
+comptime OBS = SP + EX
 comptime ACT = 29
 comptime D = 256
 comptime H = 64
@@ -59,9 +67,9 @@ comptime N_EXPERT = 512
 comptime N_TRAIN = 6
 
 comptime FNet = BFMFTower[OBS, ACT, D, H, L, D]
-comptime BNet = BFMBNet[OBS, D, HB]
-comptime ANet = BFMActorTower[OBS, D, H, L, ACT]
-comptime DNet = BFMDNet[OBS, D, HD]
+comptime BNet = BFMBNetFiltered[OBS, SP, D, HB]
+comptime ANet = BFMActorTowerFiltered[OBS, SD, EX, D, H, L, ACT]
+comptime DNet = BFMDNetFiltered[OBS, SP, D, HD]
 comptime QNet = BFMFTower[OBS, ACT, D, H, L, 1]
 comptime Agent = FBCPROnlineAgent[
     FNet, BNet, ANet, DNet, QNet, OBS, ACT, D, BATCH, CAP, LANES, SEQ, ZBUF

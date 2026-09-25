@@ -104,6 +104,40 @@ comptime BFMActorTower[OBS: Int, D: Int, H: Int, L: Int, ACT: Int] = Sequential[
     Tanh[ACT],
 ]
 
+# ── the per-net observation FILTERS (docs §12.34-12.35) ───────────────
+#
+# `released/new_model/config.json` gives each net its own key list. With the
+# packed row laid out
+#
+#     [ state 64 | privileged 463 | last_action 29 | history 372 | z 256 ]
+#       \________ SD + PRIV = 527 ________/ \_____ EX = 401 _____/
+#
+# the four filters are:
+#
+#     f, critic     everything            -> the row as it is
+#     b             [0, 527)              -> BFMBNetFiltered
+#     discriminator [0, 527) ++ z         -> BFMDNetFiltered
+#     actor         [0, 64) ++ [527, +z)  -> BFMActorTowerFiltered
+#
+# `b` and `discriminator` take the 527 PREFIX, which is why the privileged
+# block sits in the middle rather than at the end: their filters are exactly
+# our pre-existing observation, so their weights and their inputs are
+# unchanged by the extension.
+#
+# ⚠ `discriminator` needs `z` too, and `z` is at the END of the packed row, so
+# its filter is a two-slice concat like the actor's — NOT a prefix.
+
+# `BackwardMap` on `state + privileged_state` only.
+comptime BFMBNetFiltered[OBSF: Int, SP: Int, D: Int, HB: Int] = Sequential[
+    Slice[OBSF, 0, SP], BFMBNet[SP, D, HB]
+]
+
+# `Discriminator` on `[state + privileged_state | z]`.
+comptime BFMDNetFiltered[OBSF: Int, SP: Int, D: Int, HD: Int] = Sequential[
+    Parallel[Slice[OBSF + D, 0, SP], Slice[OBSF + D, OBSF, OBSF + D]],
+    BFMDNet[SP, D, HD],
+]
+
 # ── the actor's VIEW of the packed row (docs §12.34) ──────────────────
 #
 # `released/new_model/config.json` filters the observation dict per net, and
