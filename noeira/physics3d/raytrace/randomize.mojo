@@ -164,7 +164,10 @@ struct DomainRandConfig(Copyable, ImplicitlyCopyable, Movable, Writable):
     @staticmethod
     def full(seed: UInt64) -> Self:
         """The plan's §2 ranges. Camera ±10 mm / ±2° / ±3° assumes CALIBRATED
-        extrinsics; before the desk session, widen `cam_*` (plan §6).
+        extrinsics; before the desk session, widen `cam_*` (plan §6). A scene
+        whose cameras are known better narrows them per camera
+        (`VisualRandomizer.scale_camera`; the tower rig does,
+        `so101_tower_rig.scale_tower_camera_dr`).
 
         ⚠ RE-CENTRED ON THE CALIBRATED LOOK (2026-09-24). The ranges only ADD
         light twice — the ambient `U(0, a)` and the extra spots — so around
@@ -334,6 +337,12 @@ struct VisualRandomizer[DTYPE: DType](Movable):
     var base_appearance: List[Scalar[Self.DTYPE]]
     var base_cameras: List[Scalar[Self.DTYPE]]
     var cams: List[Int]
+    var cam_scale: List[Float64]
+    """Per listed camera (3 words: position, rotation, fovy): a multiplier on
+    the preset's camera ranges, 1 by default (`scale_camera`). A calibrated
+    fixed camera and an arm-mounted one are known to different accuracies;
+    the preset stays the one knob, the scene says how each camera sits in
+    it."""
     var geom_group: List[Int]
     """Per visual row: its group, or -1."""
     var mat_group: List[Int]
@@ -358,6 +367,7 @@ struct VisualRandomizer[DTYPE: DType](Movable):
         self.cfg = cfg
         self.groups = groups^
         self.cams = cams^
+        self.cam_scale = List[Float64](length=3 * len(self.cams), fill=1.0)
         self.base_background = background
         self.target = target
         self.base_lights = vis.lights.data.copy()
@@ -566,14 +576,18 @@ struct VisualRandomizer[DTYPE: DType](Movable):
             vis.nlight += 1
 
         # ── cameras, around their base rows ─────────────────────────────
-        for cam in self.cams:
+        # (every draw is taken whatever the scale, so a scale moves no
+        # other draw of the stream)
+        for ki in range(len(self.cams)):
+            var cam = self.cams[ki]
+            var sp = self.cam_scale[3 * ki]
             var cb = cam * MODEL_CAM_SIZE
-            var dpx = st.sym(c.cam_pos_m)
-            var dpy = st.sym(c.cam_pos_m)
-            var dpz = st.sym(c.cam_pos_m)
+            var dpx = st.sym(c.cam_pos_m * sp)
+            var dpy = st.sym(c.cam_pos_m * sp)
+            var dpz = st.sym(c.cam_pos_m * sp)
             var ax = st.unit_vec()
-            var ang = st.sym(c.cam_rot_deg) * pi / 180.0
-            var dfov = st.sym(c.cam_fovy_deg)
+            var ang = st.sym(c.cam_rot_deg * self.cam_scale[3 * ki + 1]) * pi / 180.0
+            var dfov = st.sym(c.cam_fovy_deg * self.cam_scale[3 * ki + 2])
             m.cameras.data[cb + CAM_IDX_POS_X] += Scalar[Self.DTYPE](dpx)
             m.cameras.data[cb + CAM_IDX_POS_Y] += Scalar[Self.DTYPE](dpy)
             m.cameras.data[cb + CAM_IDX_POS_Z] += Scalar[Self.DTYPE](dpz)
@@ -609,6 +623,19 @@ struct VisualRandomizer[DTYPE: DType](Movable):
             Scalar[Self.DTYPE](_clamp01(Float64(self.base_background.y) + b1)),
             Scalar[Self.DTYPE](_clamp01(Float64(self.base_background.z) + b2)),
         )
+
+    def scale_camera(
+        mut self, k: Int, pos: Float64, rot: Float64, fovy: Float64
+    ) raises:
+        """Multiply the preset's camera ranges for `cams[k]` (position,
+        rotation, fovy). Set BEFORE the first `apply`; 1 is the preset."""
+        if k < 0 or k >= len(self.cams):
+            raise Error("VisualRandomizer.scale_camera: no listed camera " + String(k))
+        if pos < 0.0 or rot < 0.0 or fovy < 0.0:
+            raise Error("VisualRandomizer.scale_camera: a scale is >= 0")
+        self.cam_scale[3 * k] = pos
+        self.cam_scale[3 * k + 1] = rot
+        self.cam_scale[3 * k + 2] = fovy
 
     def upload[
         D: DimsLike

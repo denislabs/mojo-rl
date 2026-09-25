@@ -143,6 +143,7 @@ from noeira.tasks.so101_tower_rig import (
     RIG_VISUAL_GROUP_MASK, RIG_DR_TARGET, TowerRenderer, make_tower_model,
     make_tower_renderer, tower_cameras, pack_camera_u8, rig_byte,
     So101TowerUnits, RIG_JOINT_ZERO_NONE, RIG_LOOK_CALIBRATED, apply_tower_look,
+    scale_tower_camera_dr, tower_camera_dr_describe,
     rig_visual_group_mask,
 )
 from noeira.tasks.spec import load_family, load_task
@@ -308,7 +309,10 @@ def main() raises:
         dr_cfg, so101_tower_surface_groups(), r.vis, m, labels, cams.copy(),
         r.background, DR_TARGET,
     )
+    scale_tower_camera_dr(dr, fmd)
     print("  dr     :", String(dr_cfg))
+    if dr_on:
+        print("  dr cams:", tower_camera_dr_describe())
 
     # the actuators' ctrlrange: the action map and the gripper's LeRobot unit
     var units = So101TowerUnits(joint_zero)
@@ -352,7 +356,8 @@ def main() raises:
             " qpos/action in LeRobot units (deg, gripper 0..100), "
             + units.describe() + "; look " + look + "; dr "
             + String(dr_cfg)
-            + (" (one draw per launch, see dr_draw)" if dr_on else ""),
+            + (" (one draw per launch, see dr_draw; " + tower_camera_dr_describe()
+               + ")" if dr_on else ""),
         deflate=deflate,
     )
     w.add_task(0, String(task.language))
@@ -493,6 +498,7 @@ def main() raises:
                                 mh, labels, cams.copy(), dr.base_background,
                                 DR_TARGET,
                             )
+                            scale_tower_camera_dr(dr_h, fmd)
                             bg_h = dr_h.apply(0, vis_h, mh)
                         var rgb = List[Scalar[DT]]()
                         var depth = List[Scalar[DT]]()

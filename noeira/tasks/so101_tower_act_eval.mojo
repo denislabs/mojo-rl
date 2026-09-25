@@ -67,7 +67,7 @@ from noeira.tasks.so101_tower_rig import (
     RIG_CAM_ELEMS, RIG_IMG_ELEMS, RIG_ACT, RIG_DR_TARGET, RIG_JOINT_ZERO_NONE,
     TowerRenderer, make_tower_model, make_tower_renderer, tower_cameras,
     pack_camera_u8, So101TowerUnits,
-    RIG_LOOK_CALIBRATED,
+    RIG_LOOK_CALIBRATED, scale_tower_camera_dr,
 )
 from noeira.tasks.so101_tower_xml import So101TowerModel
 from noeira.tasks.spec import load_family
@@ -331,6 +331,7 @@ struct TowerActEval[LANES: Int](Movable):
             dr_cfg, so101_tower_surface_groups(), self.r.vis, self.rm, labels,
             cams.copy(), self.r.background, RIG_DR_TARGET,
         )
+        scale_tower_camera_dr(self.dr, fmd)
         self.act = Self.T.make(ctx=Optional[DeviceContext](ctx))
         if cfg.use_act:
             self.act.load(cfg.ckpt_path)

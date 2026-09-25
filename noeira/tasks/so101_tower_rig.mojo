@@ -64,7 +64,7 @@ from noeira.physics3d.raytrace.visual_records import (
     VIS_GEOM_APPEARANCE, VIS_LIGHT_WORDS, APP_IDX_R, APP_IDX_G, APP_IDX_B,
     LIGHT_IDX_AMBIENT_R, LIGHT_IDX_DIFFUSE_R,
 )
-from noeira.physics3d.raytrace.randomize import geom_labels
+from noeira.physics3d.raytrace.randomize import geom_labels, VisualRandomizer
 from noeira.tasks.family_config import So101TowerConfig
 from noeira.tasks.so101_tower_xml import So101TowerModel
 from noeira.robot.so101.sim_map import tower_follower_zero_deg
@@ -148,6 +148,54 @@ def rig_background(look: String = RIG_LOOK_CALIBRATED) -> Vec3Generic[RIG_DT]:
     return Vec3Generic[RIG_DT](
         Scalar[RIG_DT](0.59), Scalar[RIG_DT](0.61), Scalar[RIG_DT](0.56),
     )
+
+
+comptime RIG_DR_OVERHEAD_CAM_SCALE = (0.4, 0.375, 0.25)
+"""The overhead camera's (position, rotation, fovy) multipliers on the DR
+preset's camera ranges: under `full`, +-4 mm / +-0.75 deg / +-0.75 deg. It is
+CALIBRATED (`so101_tower_stand.xml`, 62 marker captures, 2026-09-25):
+leave-one-out sd 2-3 mm, the fit's variants within 0.3-0.6 deg; the margin
+is for the tower being bumped between sessions."""
+comptime RIG_DR_WRIST_CAM_SCALE = (0.4, 1.0, 0.25)
+"""The wrist camera's: +-4 mm / +-2 deg / +-0.75 deg under `full`. Its
+position is the mount's STL plus the measured lens depth (19.0 +-2 mm, bake
+`PUPIL_ALONG_NORMAL_MM`); its ROTATION keeps the preset's +-2 deg because
+it rides the arm's FK, and the wrist_flex zero is not settled (the two
+captures fit +3.7 and +5.7 deg; `sim_map` keeps 0).
+
+FOVY, both: the real frames are undistorted to the sim's exact pinhole
+through a 0.18 px rms fisheye calibration, so the preset's +-3 deg is not a
+real uncertainty; +-0.75 deg is margin."""
+
+
+def tower_camera_dr_describe() -> String:
+    """The provenance words for the scales (a store drawn before 2026-09-25
+    has none: its cameras took the preset's ranges)."""
+    var o = RIG_DR_OVERHEAD_CAM_SCALE
+    var w = RIG_DR_WRIST_CAM_SCALE
+    return (
+        String("camera range scales (pos rot fovy) overhead ") + String(o[0])
+        + " " + String(o[1]) + " " + String(o[2]) + ", wrist " + String(w[0])
+        + " " + String(w[1]) + " " + String(w[2])
+    )
+
+
+def scale_tower_camera_dr[
+    DT: DType
+](mut dr: VisualRandomizer[DT], fmd: FlatModelDef) raises:
+    """Set the rig cameras' DR scales on a randomizer built over them — by
+    NAME, whatever order the caller listed them in. Every listed camera
+    must be one of the two."""
+    for k in range(len(dr.cams)):
+        var name = String(fmd.camera_names[dr.cams[k]])
+        if name.endswith("overhead_cam"):
+            var s = RIG_DR_OVERHEAD_CAM_SCALE
+            dr.scale_camera(k, s[0], s[1], s[2])
+        elif name.endswith("wrist_cam"):
+            var s = RIG_DR_WRIST_CAM_SCALE
+            dr.scale_camera(k, s[0], s[1], s[2])
+        else:
+            raise Error("scale_tower_camera_dr: '" + name + "' is not a rig camera")
 
 
 def make_tower_model(ctx: DeviceContext) raises -> Model[RIG_DT, TOWER_MD]:
