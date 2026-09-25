@@ -181,6 +181,14 @@ comptime CFG = So101TowerTeleopConfig
 comptime E = TowerExpertEnv
 """The planner's env (`tasks/so101_tower_expert_plan.mojo`): the teleop config,
 float64, host."""
+comptime CLEAR_PLAN_PINCH_OFFSET_MM: Float64 = 12.0
+"""`--clear-plan`'s aim along the pinch axis (`TowerGraspPlanner.pinch_offset_m`)
+unless `--pinch-offset-mm` is given. Measured, 300 draws (seeds 61000 + 62000,
+real-layout regions): 0 mm 140, 6 mm 177, 9 mm 171, 12 mm 179, 16 mm 164,
+19 mm 47/150 (the fixed finger lands on the brick). At 0 every grasp is the
+moving jaw sweeping the brick 18 mm across the desk into the fixed finger; the
+sim's brick-desk friction (1.5 — MuJoCo takes the larger of the two geoms')
+tips or jams it (slips 36 -> 18 of 149 at 12 mm)."""
 comptime NV = So101TowerModel.NV
 comptime NB = So101TowerModel.NBODY
 comptime TIP_CLOSE_MM_DEFAULT: Float64 = 8.0
@@ -306,6 +314,12 @@ struct Expert(Movable):
                               # so a half-open approach makes the close a short swing
     var frame_skip: Int
     var timestep: Float64
+    var dump_dir: String
+    """`--dump-close DIR`: per episode, the state at the close and every
+    control step of the close and the lift — `DIR/ep_<k>.txt`, the input of
+    `tools/soarm/replay_close_mujoco.py` (the same steps in MuJoCo 3.12)."""
+    var dump_rows: List[String]
+    var dumping: Bool
     var print_plan: Bool
     """`--print-plan`: print each episode's plan as the library's legs, in
     degrees — what a real-arm executor receives. ⚠ Its place legs are planned
@@ -349,6 +363,9 @@ struct Expert(Movable):
         self.frame_skip = CFG.FRAME_SKIP
         self.timestep = So101TowerModel.TIMESTEP
         self.print_plan = False
+        self.dump_dir = String("")
+        self.dump_rows = List[String]()
+        self.dumping = False
         self.q_cmd = List[Float64](length=ACT, fill=0.0)
         self.obs = List[Scalar[DT]](length=E.OBS_DIM, fill=Scalar[DT](0))
         self.prev_obs = List[Scalar[DT]](length=E.OBS_DIM, fill=Scalar[DT](0))
@@ -371,6 +388,20 @@ struct Expert(Movable):
         var out = env.step(action)
         for i in range(E.OBS_DIM):
             self.obs[i] = Scalar[DT](out[0].data[i])
+        if self.dumping:
+            # the ctrl the env applied (`actuation.mojo`: affine onto the
+            # ctrlrange, clamped), then the qpos it reached
+            var row = String("step")
+            for i in range(ACT):
+                var lo = self.planner.arm.lo[i]
+                var hi = self.planner.arm.hi[i]
+                var c = lo + (self.act_l[i] + 1.0) * 0.5 * (hi - lo)
+                c = min(max(c, lo), hi)
+                row += " " + String(c)
+            row += " |"
+            for i in range(NQ):
+                row += " " + String(Float64(env.d.qpos.data[i]))
+            self.dump_rows.append(row)
         self.steps += 1
         var rd = family_reward_host[CFG, DType.float64, E.MD, ACT](
             env.d, env.mf, self.act_l, self.steps, self.frame_skip,
@@ -834,6 +865,17 @@ def run_episode(
             print("  ep", ep, "at close: q - target deg", qerr, "| tip dz",
                   fixed(tz * 1000.0, 1), "mm | ncon", nc, "| bodies", pairs)
         var pbc = _body_pos(env, brick)
+        if ex.dump_dir.byte_length() > 0 and not handed:
+            ex.dump_rows.clear()
+            var r0 = String("qpos")
+            for i in range(NQ):
+                r0 += " " + String(Float64(env.d.qpos.data[i]))
+            var r1 = String("qvel")
+            for i in range(NV):
+                r1 += " " + String(Float64(env.d.qvel.data[i]))
+            ex.dump_rows.append(r0)
+            ex.dump_rows.append(r1)
+            ex.dumping = True
         done = ex.hold(env, False, ex.close_steps)
         if verbose and not handed:
             var pac = _body_pos(env, brick)
@@ -843,6 +885,13 @@ def run_episode(
                 fixed(Float64(env.d.qpos.data[5]), 3))
     if not done:
         done = ex.step_to(env, q3, False, N_LIFT)
+        if ex.dumping:
+            ex.dumping = False
+            var txt = String("")
+            for r in ex.dump_rows:
+                txt += r + "\n"
+            with open(ex.dump_dir + "/ep_" + String(ep) + ".txt", "w") as fh:
+                fh.write(txt)
         if verbose:
             var pl = _body_pos(env, brick)
             print("  ep", ep, "after lift: brick dz", fixed((pl[2] - pb[2]) * 1000.0, 1),
@@ -891,8 +940,9 @@ def _usage():
           "       [--handover-from STUDENT.demo [--handover-mm MM] [--handover-settled]]"
           "   # DAgger from a recorded (vision) student\n"
           "       [--posture expert|human [--tilt-range LO,HI] [--pinch-range LO,HI]"
-          " [--tip-close-mm MM] [--clear-plan [--desk-clear-mm MM]]] [--return-rest]\n"
-          "       [--print-plan] [--keep-failures] [--quiet]")
+          " [--tip-close-mm MM] [--clear-plan [--desk-clear-mm MM] [--pinch-offset-mm MM]"
+          " [--desk-jaw RAD]]] [--return-rest]\n"
+          "       [--print-plan] [--dump-close DIR] [--keep-failures] [--quiet]")
 
 
 def main() raises:
@@ -908,6 +958,10 @@ def main() raises:
     var z_grasp_set = False
     var clear_plan = False
     var print_plan = False
+    var dump_dir = String("")
+    var desk_jaw = -10.0
+    var pinch_offset_mm = 0.0
+    var pinch_offset_set = False
     var desk_clear_mm = 0.0
     var desk_clear_set = False
     var close_above_mm = Z_CLOSE_ABOVE_MM
@@ -955,6 +1009,16 @@ def main() raises:
             i += 1
         elif a == "--close-steps" and i + 1 < len(args):
             close_steps = Int(String(args[i + 1]))
+            i += 2
+        elif a == "--pinch-offset-mm" and i + 1 < len(args):
+            pinch_offset_mm = Float64(String(args[i + 1]))
+            pinch_offset_set = True
+            i += 2
+        elif a == "--desk-jaw" and i + 1 < len(args):
+            desk_jaw = Float64(String(args[i + 1]))
+            i += 2
+        elif a == "--dump-close" and i + 1 < len(args):
+            dump_dir = String(args[i + 1])
             i += 2
         elif a == "--print-plan":
             print_plan = True
@@ -1084,6 +1148,11 @@ def main() raises:
     ex.planner.posture.human = ex.human_posture
     ex.planner.clear_plan = clear_plan
     ex.print_plan = print_plan
+    ex.dump_dir = dump_dir
+    ex.planner.desk_jaw = desk_jaw
+    if clear_plan and not pinch_offset_set:
+        pinch_offset_mm = CLEAR_PLAN_PINCH_OFFSET_MM
+    ex.planner.pinch_offset_m = pinch_offset_mm / 1000.0
     if desk_clear_set:
         ex.planner.desk_clear_m = desk_clear_mm / 1000.0
     if clear_plan and not ex.human_posture:

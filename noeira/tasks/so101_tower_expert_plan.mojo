@@ -625,6 +625,21 @@ struct TowerGraspPlanner(Movable):
     var clear_plan: Bool
     """Plan a grasp the arm can physically reach (see `plan_grasp`)."""
     var desk_clear_m: Float64
+    var desk_jaw: Float64
+    """The jaw angle (rad) the desk check poses the gripper at; < -1 (the
+    default): the approach's `jaw_open`. The open jaw's tip is the gripper's
+    LOWEST point, and it closes UPWARD along its arc — see `plan_grasp`.
+    Measured at 0.13 and -0.17: 68 and 69 vs 63/150, within noise; kept as
+    an option, not a default."""
+    var pinch_offset_m: Float64
+    """The tilted grasp's aim along the pinch axis (m, gripper +x): the brick
+    ends this far on the FIXED finger's side of `grasp_center`. 0 (the
+    default): the brick at `grasp_center`, which is 31 mm from the fixed
+    finger's inner face — a 25 mm brick gripped against it has its centre
+    18.6 mm from there, so the moving jaw first SWEEPS the brick that far
+    across the desk (measured, 25 Sep, MuJoCo and ours alike). The recorder's
+    `--clear-plan` uses 12 mm (`CLEAR_PLAN_PINCH_OFFSET_MM` there: 47 -> 60 %
+    on 300 draws)."""
     var arm_bodies: List[Int]
     """The moving arm's bodies (upper arm to jaw) — the collision pass's one
     side."""
@@ -642,6 +657,8 @@ struct TowerGraspPlanner(Movable):
         self.z_grasp = Z_GRASP
         self.clear_plan = False
         self.desk_clear_m = DESK_CLEAR_M
+        self.desk_jaw = -10.0
+        self.pinch_offset_m = 0.0
         self.arm_bodies = List[Int]()
         self.obstacles = List[Int]()
         self.desk = List[Int]()
@@ -707,9 +724,10 @@ struct TowerGraspPlanner(Movable):
                     tl = self.posture.tilt
                     var raise_m = 0.0
                     e2 = _plan_tilted(self, env, pb, bearing, yaw, tl, rs, q, raise_m, plan.waypoints, plan.tip_goal)
+                    var dj = jaw_open if self.desk_jaw < -1.0 else self.desk_jaw
                     for _ in range(3):
                         var dp = _pose_penetration_mm(
-                            env, plan.waypoints[n_wp], jaw_open, self.arm_bodies, self.desk
+                            env, plan.waypoints[n_wp], dj, self.arm_bodies, self.desk
                         )
                         if dp <= 0.0:
                             break
@@ -770,8 +788,11 @@ def _plan_tilted(
     var fx = sin(tl) * cos(bearing)
     var fy = sin(tl) * sin(bearing)
     var fzv = -cos(tl)
-    tip_goal[0] = pb[0]
-    tip_goal[1] = pb[1]
+    # `pinch_offset_m`: the aim moves along the pinch axis (gripper +x, which
+    # the directed IK row points along `yaw`) so the brick lands BETWEEN the
+    # jaws rather than at `grasp_center` — see `TowerGraspPlanner`
+    tip_goal[0] = pb[0] + pl.pinch_offset_m * cos(yaw)
+    tip_goal[1] = pb[1] + pl.pinch_offset_m * sin(yaw)
     tip_goal[2] = pb[2] + pl.z_grasp - TIP_REACH + raise_m
     # the IK's tip mode aims `target - (0, 0, TIP_REACH)`: hand it the
     # tip point lifted by TIP_REACH
