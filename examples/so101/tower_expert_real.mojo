@@ -188,7 +188,7 @@ from noeira.tasks.so101_tower_expert_plan import (
 )
 from noeira.tasks.so101_tower_overhead import (
     OVERHEAD_CALIB, tower_overhead_pose, tower_desk_roi, printed_brick_hsv,
-    printed_bowl_hsv, pose_confident,
+    printed_bowl_hsv, pose_confident, TowerArmFK,
 )
 from noeira.tasks.so101_tower_xml import So101TowerModel
 from noeira.tasks.spec import load_family
@@ -198,10 +198,13 @@ from noeira.vision.camera_thread import CameraReader
 from noeira.vision.fisheye import FisheyeLens
 from noeira.vision.opencv import opencv_shim_available
 from noeira.vision.tabletop_pose import (
-    RigCamera, PrismModel, PoseEstimate, estimate_prism_pose,
+    RigCamera, PrismModel, PoseEstimate, DeskROI, estimate_prism_pose, model_silhouette,
 )
+from noeira.math3d import Mat3 as Mat3Generic, Vec3 as Vec3Generic
 
 comptime E = TowerExpertEnv
+comptime Vec3d = Vec3Generic[DType.float64]
+comptime Mat3d = Mat3Generic[DType.float64]
 comptime CFG = So101TowerTeleopConfig
 comptime NV = So101TowerModel.NV
 comptime FAMILY = "so101_tower"
@@ -279,6 +282,12 @@ comptime JAW_EMPTY_RAD: Float64 = 0.0
 """After the close, a jaw below this closed on nothing (or on a corner): the
 pick is abandoned. Measured (the gripper's measured line): holding the brick
 0.116-0.121 rad, empty -0.149, a corner grip -0.095 (dropped on the carry)."""
+comptime LOOK_TICKS = 8
+"""The wrist look's hold at the pre-grasp (~0.27 s at 30 Hz)."""
+comptime LOOK_ROI_M: Float64 = 0.08
+"""The wrist look searches within this of the planned brick: the camera
+also sees the blue tower stand."""
+comptime WRIST_CALIB = "projects/so101-tower/cameras/camera_wrist.txt"
 comptime SCENE_MOVED_MM: Float64 = 15.0
 """Before the arm moves, a bowl or a brick this far from where the plan was
 made means the scene changed: re-read and re-plan. Above the in-bowl read's
@@ -315,6 +324,27 @@ comptime MIN_SEP_M: Float64 = 0.088
 redraw rule): nearer, it is in or against the bowl."""
 comptime DROP_ABORT = 8
 """Consecutive ticks with a partial bus read before the episode aborts."""
+
+
+def _draw_outline(
+    mut img: List[UInt8], cam: RigCamera, model: PrismModel, plane_z: Float64,
+    x: Float64, y: Float64, yaw: Float64, r: UInt8, g: UInt8, b: UInt8,
+):
+    """The prism's silhouette, drawn into an RGB frame."""
+    var poly = model_silhouette(cam, model, plane_z, x, y, yaw)
+    for i in range(len(poly)):
+        var a = poly[i]
+        var c = poly[(i + 1) % len(poly)]
+        var n = Int(max(abs(c[0] - a[0]), abs(c[1] - a[1]))) + 1
+        for k in range(n + 1):
+            var t = Float64(k) / Float64(n)
+            var u = Int(a[0] + t * (c[0] - a[0]) + 0.5)
+            var v = Int(a[1] + t * (c[1] - a[1]) + 0.5)
+            if u >= 0 and v >= 0 and u < cam.width and v < cam.height:
+                var o = (v * cam.width + u) * 3
+                img[o] = r
+                img[o + 1] = g
+                img[o + 2] = b
 
 
 def _deg(r: Float64) -> String:
@@ -802,6 +832,82 @@ def read_scene(
         )
 
 
+struct WristLook(Movable):
+    """The wrist camera's read of the brick at the pre-grasp pose."""
+
+    var n_frames: Int
+    var n_conf: Int
+    var x: Float64
+    var y: Float64
+    var yaw: Float64
+    var frame: List[UInt8]
+    var cam_pos: Vec3d
+    var cam_rot: Mat3d
+
+    def __init__(out self):
+        self.n_frames = 0
+        self.n_conf = 0
+        self.x = 0.0
+        self.y = 0.0
+        self.yaw = 0.0
+        self.frame = List[UInt8]()
+        self.cam_pos = Vec3d(0.0, 0.0, 1.0)
+        self.cam_rot = Mat3d.identity()
+
+
+def wrist_look(
+    mut rig: Rig, mut env: E, mut afk: TowerArmFK, wci: Int, wlens: FisheyeLens,
+    pick_x: Float64, pick_y: Float64, pick_z: Float64, mut stdin: StdinReader,
+) raises -> WristLook:
+    """LOG ONLY: hold the arm still `LOOK_TICKS` ticks at the pre-grasp and
+    read the brick through the wrist camera — its pose from the arm's FK at
+    the measured joints (`TowerArmFK.camera_pose`), the estimator searching
+    within `LOOK_ROI_M` of where the plan puts the brick, on the plane the
+    brick rests on (the desk, or the bowl's floor). The plan is not changed:
+    this collects "arm still, ~10 cm away" data to decide whether a wrist
+    correction would help (offline, on teleop data, it did not beat the
+    overhead camera — but the arm never stops there)."""
+    var out = WristLook()
+    var plane = pick_z - 0.0125
+    var roi = DeskROI(plane, pick_x - LOOK_ROI_M, pick_x + LOOK_ROI_M, pick_y - LOOK_ROI_M, pick_y + LOOK_ROI_M)
+    var brick = PrismModel.tower_brick()
+    var xs = List[Float64]()
+    var ys = List[Float64]()
+    var yaws = List[Float64]()
+    var buf = List[UInt8](length=640 * 480 * 3, fill=UInt8(0))
+    rig.leg = String("look")
+    for _ in range(LOOK_TICKS):
+        rig.tick(env, stdin)
+        var got: Bool
+        if rig.recording_now:
+            buf = rig.frames[1].copy()
+            got = True
+        else:
+            got = rig.cams[1].take_latest(buf) > 0
+        if not got:
+            continue
+        afk.set_qpos(rig.q)
+        var cp = afk.camera_pose(wci)
+        var wcam = RigCamera(wlens, cp[0], cp[1])
+        out.n_frames += 1
+        var ew = estimate_prism_pose(buf, wcam, printed_brick_hsv(), brick, roi)
+        out.frame = buf.copy()
+        out.cam_pos = cp[0]
+        out.cam_rot = cp[1]
+        if pose_confident(ew):
+            xs.append(ew.x)
+            ys.append(ew.y)
+            yaws.append(ew.yaw)
+    out.n_conf = len(xs)
+    if out.n_conf > 0:
+        sort(xs)
+        sort(ys)
+        out.x = xs[len(xs) // 2]
+        out.y = ys[len(ys) // 2]
+        out.yaw = _circ_mean(yaws, brick.period)
+    return out^
+
+
 def scene_unchanged(
     mut reader: CameraReader, cam: RigCamera, mut frame: List[UInt8], sc: Scene,
 ) raises -> String:
@@ -992,6 +1098,10 @@ struct TaskPlan(Movable):
     """Where the brick is released (task 1: the bowl's centre; task 2: the
     drawn desk spot)."""
     var place_yaw: Float64
+    var pick_x: Float64
+    var pick_y: Float64
+    var pick_z: Float64
+    """Where the pick plan assumes the brick's centre (world m)."""
     var tilt_pick: Float64
     var tilt_place: Float64
     var seed: Int
@@ -1005,6 +1115,9 @@ struct TaskPlan(Movable):
         self.tx = 0.0
         self.ty = 0.0
         self.place_yaw = 0.0
+        self.pick_x = 0.0
+        self.pick_y = 0.0
+        self.pick_z = 0.0
         self.tilt_pick = 0.0
         self.tilt_place = 0.0
         self.seed = 0
@@ -1041,6 +1154,9 @@ def plan_task(
             tp.tip_goal[k] = pk.plan.tip_goal[k]
         tp.tx = sc.bowl_x
         tp.ty = sc.bowl_y
+        tp.pick_x = sc.brick_x
+        tp.pick_y = sc.brick_y
+        tp.pick_z = rest_z
         tp.place_yaw = pl.plan.yaw
         tp.tilt_pick = pk.plan.tilt
         tp.tilt_place = pl.plan.tilt
@@ -1125,6 +1241,9 @@ def plan_task(
     for k in range(3):
         tp.tip_goal[k] = pk.plan.tip_goal[k]
     tp.place_yaw = pl.plan.yaw
+    tp.pick_x = px
+    tp.pick_y = py
+    tp.pick_z = bz
     tp.tilt_pick = pk.plan.tilt
     tp.tilt_place = pl.plan.tilt
     tp.seed = pk.seed
@@ -1752,7 +1871,8 @@ def main() raises:
     print("  camera pose:", pose.source)
     var cams = List[CameraReader]()
     var specs: List[String] = [camera]
-    if recording:
+    if wrist != "":
+        # recorded (the dataset's second view) and/or the wrist look's source
         specs.append(wrist)
     for c in range(len(specs)):
         var reader = CameraReader.from_spec(specs[c], 640, 480, Float64(HZ), rgb=True)
@@ -1765,6 +1885,14 @@ def main() raises:
             raise Error("camera " + specs[c] + " negotiated " + fixed(fps, 1) + " fps, below the " + String(HZ) + " the dataset claims")
         cams.append(reader^)
     var frame = List[UInt8](length=640 * 480 * 3, fill=UInt8(0))
+    # the wrist look (LOG ONLY): the wrist camera's lens, and its pose from
+    # the arm's FK
+    var has_wrist = wrist != ""
+    var wcal = read_calib(String(WRIST_CALIB))
+    wcal.require_size(640, 480)
+    var wlens = FisheyeLens.from_calib(wcal)
+    var afk = TowerArmFK()
+    var wci = afk.camera_index("wrist_cam")
 
     # ── the arm ──────────────────────────────────────────────────────────
     var the_port = follower_port(port)
@@ -1828,7 +1956,8 @@ def main() raises:
     var summary = String(
         "ep\ttask\tseed\tbrick_x\tbrick_y\tbrick_yaw_deg\tbowl_x\tbowl_y\tin_bowl\ttarget_x\ttarget_y"
         "\ttilt_pick_deg\ttilt_place_deg\tdraws\tclose\ttip_at_close_mm\tjaw_after_close\toutcome"
-        "\tend_x\tend_y\tend_mm\tlate_ticks\tdropped\tdataset\n"
+        "\tend_x\tend_y\tend_mm\tlate_ticks\tdropped\tdataset"
+        "\tpick_x\tpick_y\tlook_conf\tlook_x\tlook_y\tlook_yaw_deg\n"
     )
     var n_run = 0
     var n_ok = 0
@@ -1896,6 +2025,10 @@ def main() raises:
             var legs = List[PlanLeg]()
             var jaws = List[Float64]()
             var tip_goal = List[Float64](length=3, fill=0.0)
+            var pick_x = sc.brick_x
+            var pick_y = sc.brick_y
+            var pick_z = q_scene[brick_adr + 2]
+            var pick_yaw = sc.brick_yaw
             var tx = sc.bowl_x
             var ty = sc.bowl_y
             var tilt_pick = 0.0
@@ -1945,6 +2078,9 @@ def main() raises:
                     for k in range(3):
                         tip_goal[k] = tp.tip_goal[k]
                     tx = tp.tx
+                    pick_x = tp.pick_x
+                    pick_y = tp.pick_y
+                    pick_z = tp.pick_z
                     ty = tp.ty
                     place_yaw = tp.place_yaw
                     tilt_pick = tp.tilt_pick
@@ -2007,6 +2143,11 @@ def main() raises:
             var jaw_after = -1.0
             var aborted = String("")
             var empty_close = False
+            var look_n = -1
+            var look_x = 0.0
+            var look_y = 0.0
+            var look_yaw = 0.0
+            var look_img = List[UInt8]()
             print("  running — press Enter to ABORT")
             stdin.discard_pending()
             var rec_index = -1
@@ -2025,6 +2166,28 @@ def main() raises:
                     rig.jaw_open = jaws[li]
                     var rep = rig.run_leg(env, legs[li], settle_steps, leg_settle, stdin)
                     print("   ", rep)
+                    if legs[li].name == "pre" and has_wrist:
+                        var lk = wrist_look(rig, env, afk, wci, wlens, pick_x, pick_y, pick_z, stdin)
+                        look_n = lk.n_conf
+                        if lk.n_conf > 0:
+                            look_x = lk.x
+                            look_y = lk.y
+                            look_yaw = lk.yaw
+                            print(
+                                "    look    wrist: brick (", fixed(lk.x * 1000.0, 1), ",", fixed(lk.y * 1000.0, 1),
+                                ") mm yaw", _deg(lk.yaw), "|", lk.n_conf, "/", lk.n_frames,
+                                "confident | vs the plan's brick dx", fixed((lk.x - pick_x) * 1000.0, 1),
+                                "dy", fixed((lk.y - pick_y) * 1000.0, 1), "mm (LOG ONLY, the plan is unchanged)",
+                            )
+                        else:
+                            print("    look    wrist: no confident brick in", lk.n_frames, "frames (LOG ONLY)")
+                        if len(lk.frame) > 0:
+                            var img = lk.frame.copy()
+                            var lcam = RigCamera(wlens, lk.cam_pos, lk.cam_rot)
+                            _draw_outline(img, lcam, PrismModel.tower_brick(), pick_z - 0.0125, pick_x, pick_y, pick_yaw, 0, 255, 0)
+                            if lk.n_conf > 0:
+                                _draw_outline(img, lcam, PrismModel.tower_brick(), pick_z - 0.0125, lk.x, lk.y, lk.yaw, 255, 0, 0)
+                            look_img = img^
                     if legs[li].close_on_tip:
                         tip_close = rig.tip_dist_mm()
                         close_how = String("trigger") if rep.find("TRIGGERED") >= 0 else String("timeout")
@@ -2094,6 +2257,8 @@ def main() raises:
             if aborted != "":
                 outcome = String("ABORTED")
             save_png(out_dir + "/ep" + String(ep + 1) + "_end.png", frame, 640, 480, 3)
+            if len(look_img) > 0:
+                save_png(out_dir + "/ep" + String(ep + 1) + "_wrist_look.png", look_img, 640, 480, 3)
             if outcome == "SUCCESS":
                 n_ok += 1
             buckets += " " + String(task_n) + ":" + outcome
@@ -2146,7 +2311,9 @@ def main() raises:
                 + fixed(tx, 4) + "\t" + fixed(ty, 4) + "\t" + _deg(tilt_pick) + "\t" + _deg(tilt_place) + "\t"
                 + String(n_draws) + "\t" + close_how + "\t" + fixed(tip_close, 1) + "\t" + fixed(jaw_after, 3)
                 + "\t" + outcome + "\t" + fixed(ex, 4) + "\t" + fixed(ey, 4) + "\t" + fixed(emm, 1) + "\t"
-                + String(rig.late) + "\t" + String(rig.drops) + "\t" + kept + "\n"
+                + String(rig.late) + "\t" + String(rig.drops) + "\t" + kept
+                + "\t" + fixed(pick_x, 4) + "\t" + fixed(pick_y, 4) + "\t" + String(look_n)
+                + "\t" + fixed(look_x, 4) + "\t" + fixed(look_y, 4) + "\t" + _deg(look_yaw) + "\n"
             )
             with open(out_dir + "/episodes.tsv", "w") as fh:
                 fh.write(summary)

@@ -13,6 +13,12 @@ the arm calibration's file round trip.
      the written file fails by > 5 mm (the check is not vacuous).
   4. A calibration file whose name is not `*_armcal` (the lens file's own
      stale extrinsics) is REFUSED.
+  5. `TowerArmFK.camera_pose` at the rest pose IS `tower_sim_camera`'s pose,
+     for the overhead camera (on the stand) and the wrist camera (on the
+     gripper); and at a bent arm the wrist camera moves WITH the gripper (its
+     pose in the gripper body's frame unchanged) while the overhead one does
+     not move. CONTROL: at the bent arm the wrist camera is > 50 mm from
+     its rest pose (the check sees the arm move).
 """
 
 from std.math import cos, sin, sqrt, pi
@@ -20,13 +26,17 @@ from std.sys import exit
 
 from noeira.math3d import Mat3 as Mat3Generic, Vec3 as Vec3Generic
 from noeira.tasks.so101_tower_camera_pose import tower_sim_camera
-from noeira.tasks.so101_tower_overhead import tower_overhead_pose, ARMCAL_SUFFIX, DESK_Z
+from noeira.tasks.so101_tower_overhead import tower_overhead_pose, ARMCAL_SUFFIX, DESK_Z, TowerArmFK
 from noeira.vision.calib_file import CameraCalib, write_calib
 from noeira.vision.fisheye import Pinhole
 from noeira.vision.tabletop_pose import RigCamera
 
 comptime Vec3d = Vec3Generic[DType.float64]
 comptime Mat3d = Mat3Generic[DType.float64]
+
+
+def fixed_mm(v: Float64) -> String:
+    return String(v)
 
 
 def check(mut fails: Int, name: String, ok: Bool, detail: String):
@@ -98,6 +108,44 @@ def main() raises:
     except:
         refused = True
     check(fails, "non-armcal extrinsics refused", refused, "")
+
+    # 5. camera poses through the arm's FK
+    var fk = TowerArmFK()
+    var rest: List[Float64] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    fk.set_qpos(rest)
+    for name in ["overhead_cam", "wrist_cam"]:
+        var sc = tower_sim_camera(name)
+        var ci = fk.camera_index(name)
+        var cp = fk.camera_pose(ci)
+        var dp = (cp[0] - sc.pos).length() * 1000.0
+        var dr = 0.0
+        for k in range(3):
+            dr = max(dr, (cp[1].col(k) - sc.rot.col(k)).length())
+        check(fails, String("camera_pose at rest = tower_sim_camera ") + name, dp < 1e-9 and dr < 1e-12,
+              fixed_mm(dp) + " mm, rot " + String(dr))
+    var wi = fk.camera_index("wrist_cam")
+    var oi = fk.camera_index("overhead_cam")
+    var w0 = fk.camera_pose(wi)
+    var o0 = fk.camera_pose(oi)
+    var gs = fk.site_index("grasp_center")
+    var g0p = fk.site_pos(gs)
+    var g0r = fk.site_body_rot(gs)
+    var bent: List[Float64] = [0.6, -0.4, 0.7, 0.5, 1.1, 0.3]
+    fk.set_qpos(bent)
+    var w1 = fk.camera_pose(wi)
+    var o1 = fk.camera_pose(oi)
+    var g1p = fk.site_pos(gs)
+    var g1r = fk.site_body_rot(gs)
+    # the wrist camera in the gripper body's frame, via `grasp_center` (on the
+    # same body): R^T (cam - site) must not change
+    var l0 = g0r.transpose() * (w0[0] - g0p)
+    var l1 = g1r.transpose() * (w1[0] - g1p)
+    var dl = (l1 - l0).length() * 1000.0
+    check(fails, "the wrist camera rides the gripper", dl < 1e-9, fixed_mm(dl) + " mm in the gripper frame")
+    var mo = (o1[0] - o0[0]).length() * 1000.0
+    check(fails, "the overhead camera does not move", mo < 1e-9, fixed_mm(mo) + " mm")
+    var mw = (w1[0] - w0[0]).length() * 1000.0
+    check(fails, "control: the bent arm moves the wrist camera", mw > 50.0, fixed_mm(mw) + " mm")
 
     if fails > 0:
         print("FAILED:", fails)

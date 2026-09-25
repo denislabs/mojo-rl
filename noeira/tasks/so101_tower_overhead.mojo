@@ -140,12 +140,19 @@ def tower_overhead_camera(
 
 struct TowerArmFK(Movable):
     """The tower scene's CPU FK: the arm's six model joint values -> a site's
-    world position (the props parked, free joints at unit quaternions)."""
+    world position, or a camera's world pose (the props parked, free joints
+    at unit quaternions)."""
 
     var m: Model[DType.float64, DynDims]
     var d: Data[DType.float64, DynDims, 1]
     var site_names: List[String]
     var site_body: List[Int]
+    var cam_names: List[String]
+    var cam_body: List[Int]
+    var cam_pos: List[Vec3d]
+    """Each camera's position in its body's frame."""
+    var cam_rot: List[Mat3d]
+    """Each camera's orientation in its body's frame, MuJoCo axes."""
     var lo: List[Float64]
     """The arm's six joint limits (the model's), for `SimJointMap`."""
     var hi: List[Float64]
@@ -172,10 +179,24 @@ struct TowerArmFK(Movable):
         for s in range(len(fmd.site_names)):
             names.append(String(fmd.site_names[s]))
             bodies.append(fmd.sites[s].body_id)
+        var cnames = List[String]()
+        var cbody = List[Int]()
+        var cpos = List[Vec3d]()
+        var crot = List[Mat3d]()
+        for c in range(len(fmd.camera_names)):
+            ref cc = fmd.cameras[c]
+            cnames.append(String(fmd.camera_names[c]))
+            cbody.append(cc.body_id)
+            cpos.append(Vec3d(cc.pos_x, cc.pos_y, cc.pos_z))
+            crot.append(Mat3d.from_quat(Quatd(cc.quat_w, cc.quat_x, cc.quat_y, cc.quat_z)))
         self.m = m^
         self.d = d^
         self.site_names = names^
         self.site_body = bodies^
+        self.cam_names = cnames^
+        self.cam_body = cbody^
+        self.cam_pos = cpos^
+        self.cam_rot = crot^
         var lo = List[Float64]()
         var hi = List[Float64]()
         for k in range(6):
@@ -203,6 +224,41 @@ struct TowerArmFK(Movable):
             Float64(self.d.site_xpos.data[s * 3 + 1]),
             Float64(self.d.site_xpos.data[s * 3 + 2]),
         )
+
+    def camera_index(self, suffix: String) raises -> Int:
+        for c in range(len(self.cam_names)):
+            if self.cam_names[c].endswith(suffix):
+                return c
+        raise Error("the tower scene has no camera '*" + suffix + "'")
+
+    def camera_pose(self, c: Int) -> Tuple[Vec3d, Mat3d]:
+        """Camera `c`'s world (position, orientation in MuJoCo axes) at the
+        last `set_qpos` — what `RigCamera` takes. `tower_sim_camera`'s
+        composition, at any arm pose: the wrist camera rides the gripper."""
+        var b = self.cam_body[c]
+        var br = Mat3d.from_quat(Quatd(
+            Float64(self.d.xquat.data[b * 4 + 3]), Float64(self.d.xquat.data[b * 4]),
+            Float64(self.d.xquat.data[b * 4 + 1]), Float64(self.d.xquat.data[b * 4 + 2]),
+        ))
+        var bp = Vec3d(
+            Float64(self.d.xpos.data[b * 3]), Float64(self.d.xpos.data[b * 3 + 1]),
+            Float64(self.d.xpos.data[b * 3 + 2]),
+        )
+        return (bp + br * self.cam_pos[c], br @ self.cam_rot[c])
+
+    def camera_body_pose(self, c: Int) -> Tuple[Vec3d, Mat3d]:
+        """Camera `c`'s parent body's world (position, rotation) at the last
+        `set_qpos` — to compose a corrected camera-in-body transform."""
+        var b = self.cam_body[c]
+        var br = Mat3d.from_quat(Quatd(
+            Float64(self.d.xquat.data[b * 4 + 3]), Float64(self.d.xquat.data[b * 4]),
+            Float64(self.d.xquat.data[b * 4 + 1]), Float64(self.d.xquat.data[b * 4 + 2]),
+        ))
+        var bp = Vec3d(
+            Float64(self.d.xpos.data[b * 3]), Float64(self.d.xpos.data[b * 3 + 1]),
+            Float64(self.d.xpos.data[b * 3 + 2]),
+        )
+        return (bp, br)
 
     def site_body_rot(self, s: Int) -> Mat3d:
         """The world rotation of the site's BODY (`Data.xquat` is packed
