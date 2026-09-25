@@ -54,6 +54,7 @@ simulator's state and cannot be recovered from it.
 from max.gpu import global_idx
 
 from noeira.nn.constants import DT
+from noeira.data.resident import IDX_DT
 from .unitree_g1_xml import UNITREE_G1_OBS_DIM, UNITREE_G1_STATE_DIM
 
 
@@ -238,3 +239,120 @@ def g1_hist_reset_kernel[LANES: Int](
         hist[unsafe_offset=lane * G1_HIST_DIM + (k - G1_N_ACT)] = Scalar[DT](0.0)
     if k == 0:
         live[unsafe_offset=lane] = Scalar[DT](0.0)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# The TRAINING side: derive the 401 from the ring instead of storing it
+# ══════════════════════════════════════════════════════════════════════
+#
+# The kernels above maintain the history incrementally during the ROLLOUT,
+# where the actor needs it at action-selection time. Training needs the same
+# 401 dims for a row sampled out of the replay ring — and they are already in
+# the ring, exactly as `next_obs` was before §12.23:
+#
+#     last_action(row r)      = scale_clip(r_act[r - LANES])
+#     history actions[j]      = scale_clip(r_act[r - (j+2)*LANES])
+#     history <state key>[j]  = r_obs[r - (j+1)*LANES] at that key's offset
+#
+# all lane-aligned, because `ring_store_kernel` advances `pos` by exactly
+# LANES per step. Storing them instead would cost 401 floats per row against
+# the ONE `r_age` float this needs (docs §12.36): 4860 B/row against 3260.
+#
+# ⚠ Unlike `next_obs` this looks BACKWARD, so no sampling bound changes — a
+# predecessor row is always already written. What it does need is the age.
+#
+# ⚠ THE AGE RULE, from the oracle's `if self.t >= 1: self._push(...)`:
+#
+#     last_action    valid iff age >= 1
+#     history[j]     valid iff age >= j + 2      (BOTH the action and the
+#                                                 state keys — a_0 exists at
+#                                                 the reset step, and the
+#                                                 reset observation is never
+#                                                 pushed, which cancel)
+#
+# `age` is steps since this lane's last reset, capped at 5 (j = 3 on the
+# action keys reaches 5 steps back). Everything above the cap is valid.
+
+
+comptime G1_HIST_MAX_AGE: Int = 5
+
+
+def g1_hist_gather_kernel[
+    ROWS: Int, CAP: Int, LANES: Int, ACT: Int
+](
+    r_obs: Pointer[Scalar[DT], MutAnyOrigin],   # CAP x 527
+    r_act: Pointer[Scalar[DT], MutAnyOrigin],   # CAP x ACT
+    r_age: Pointer[Scalar[DT], MutAnyOrigin],   # CAP
+    idx: Pointer[Scalar[IDX_DT], MutAnyOrigin],  # ROWS, the drawn rows
+    act_scale: Scalar[DT],                      # NORMALIZE_TO (5.0)
+    act_clip: Scalar[DT],                       # ACTION_CLIP (5.0)
+    dst: Pointer[Scalar[DT], MutAnyOrigin],     # ROWS x 401
+):
+    """`dst[i] = [last_action 29 | history 372]` for drawn row `idx[i]`.
+
+    One thread per output element. `dst` is the 401-wide TAIL only; the caller
+    writes `r_obs[idx]` into the 527-wide head separately (it is a plain
+    `gather_rows_kernel`), which keeps `[0, 527)` of the batch byte-identical
+    to what `b` and `discriminator` already consume.
+    """
+    var t = Int(global_idx.x)
+    if t >= ROWS * G1_ACTOR_EXTRA:
+        return
+    var i = t // G1_ACTOR_EXTRA
+    var k = t % G1_ACTOR_EXTRA
+    var row = Int(idx[unsafe_offset=i])
+    var age = Int(r_age[unsafe_offset=row])
+
+    # how many steps back, and which source — resolved first, read once. The
+    # helpers this replaced were nested `def`s, which a kernel cannot capture
+    # (`Could not infer capture convention`).
+    var steps = 0          # lane-aligned back-steps
+    var elem = 0           # element within the key
+    var from_action = False
+    var state_off = -1
+
+    if k < G1_LAST_ACTION_DIM:
+        if age < 1:
+            dst[unsafe_offset=t] = Scalar[DT](0.0)
+            return
+        steps = 1
+        elem = k
+        from_action = True
+    else:
+        var h = k - G1_LAST_ACTION_DIM      # 0 .. 371
+        var key = 0
+        var off = h
+        while key < 5:
+            var blk = g1_hist_key_dim(key) * G1_HIST_LEN
+            if off < blk:
+                break
+            off -= blk
+            key += 1
+        var d = g1_hist_key_dim(key)
+        var j = off // d                    # 0 = newest
+        elem = off % d
+        if age < j + 2:
+            dst[unsafe_offset=t] = Scalar[DT](0.0)
+            return
+        state_off = g1_hist_key_state_offset(key)
+        if state_off < 0:
+            from_action = True
+            steps = j + 2                   # actions lag the state by one push
+        else:
+            steps = j + 1
+
+    var r = row - steps * LANES
+    while r < 0:
+        r += CAP
+
+    if from_action:
+        var a = r_act[unsafe_offset=r * ACT + elem] * act_scale
+        if a > act_clip:
+            a = act_clip
+        if a < -act_clip:
+            a = -act_clip
+        dst[unsafe_offset=t] = a
+    else:
+        dst[unsafe_offset=t] = r_obs[
+            unsafe_offset=r * UNITREE_G1_OBS_DIM + state_off + elem
+        ]

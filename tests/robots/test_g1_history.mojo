@@ -34,10 +34,12 @@ from noeira.envs.robots.unitree_g1_xml import (
 )
 from noeira.envs.robots.unitree_g1_history import (
     G1_HIST_LEN, G1_HIST_DIM, G1_HIST_STEP, G1_N_ACT, G1_ACTOR_EXTRA,
-    UNITREE_G1_FULL_OBS_DIM,
+    UNITREE_G1_FULL_OBS_DIM, G1_LAST_ACTION_DIM,
     G1_S_DOFPOS, G1_S_DOFVEL, G1_S_GRAV, G1_S_ANGVEL,
     g1_hist_push_kernel, g1_hist_reset_kernel, g1_pack_full_obs_kernel,
+    g1_hist_gather_kernel,
 )
+from noeira.data.resident import IDX_DT
 
 comptime LANES = 2
 comptime NSTEP = 6
@@ -250,5 +252,129 @@ def main() raises:
         "reset must clear `live` for the reset lane ONLY — that is what makes"
         " the reset observation never pushed",
     )
+
+    # ── [6] DERIVE-FROM-RING == PUSH-INCREMENTALLY ───────────────────
+    # The training side reads the 401 out of the replay ring instead of
+    # storing it (L1, docs §12.36): 4 bytes per row instead of 1604. The only
+    # check that means anything is that it reproduces the incremental path
+    # BIT-FOR-BIT on the same rollout, including the age rule at the start of
+    # an episode — which is where an off-by-one hides.
+    print("[6] derive-from-ring == push-incrementally ...")
+    comptime RCAP = LANES * 12
+    var r_obs = c.enqueue_create_buffer[DT](RCAP * UNITREE_G1_OBS_DIM)
+    var r_act = c.enqueue_create_buffer[DT](RCAP * G1_N_ACT)
+    var r_age = c.enqueue_create_buffer[DT](RCAP)
+    var h_robs = c.enqueue_create_host_buffer[DT](RCAP * UNITREE_G1_OBS_DIM)
+    var h_ract = c.enqueue_create_host_buffer[DT](RCAP * G1_N_ACT)
+    var h_rage = c.enqueue_create_host_buffer[DT](RCAP)
+
+    # replay the SAME rollout, writing the ring exactly as `ring_store_kernel`
+    # would (lane l of step s at row (s*LANES + l) % RCAP), and keeping the
+    # incremental buffers in step beside it
+    d_hist.enqueue_fill(Scalar[DT](0.0))
+    d_act.enqueue_fill(Scalar[DT](0.0))
+    d_live.enqueue_fill(Scalar[DT](0.0))
+    var inc = c.enqueue_create_host_buffer[DT](LANES * G1_ACTOR_EXTRA)
+    var want = List[Float64]()
+    comptime NS2 = 10
+    for s in range(NS2):
+        for l in range(LANES):
+            for i in range(UNITREE_G1_OBS_DIM):
+                h_obs[l * UNITREE_G1_OBS_DIM + i] = Scalar[DT](_val(s, l, i))
+            for i in range(G1_N_ACT):
+                # the RAW action; the ring stores this and the derive scales it
+                h_act[l * G1_N_ACT + i] = Scalar[DT](_val(s, l, i) * 0.1)
+            var row = (s * LANES + l) % RCAP
+            for i in range(UNITREE_G1_OBS_DIM):
+                h_robs[row * UNITREE_G1_OBS_DIM + i] = h_obs[
+                    l * UNITREE_G1_OBS_DIM + i
+                ]
+            for i in range(G1_N_ACT):
+                h_ract[row * G1_N_ACT + i] = h_act[l * G1_N_ACT + i]
+            h_rage[row] = Scalar[DT](Float64(s if s < 5 else 5))
+        c.enqueue_copy(d_obs, h_obs)
+        c.synchronize()
+        c.enqueue_function[g1_hist_push_kernel[LANES]](
+            mptr(d_obs.unsafe_ptr()), mptr(d_act.unsafe_ptr()),
+            mptr(d_hist.unsafe_ptr()), mptr(d_live.unsafe_ptr()),
+            grid_dim=_blk(LANES * G1_HIST_STEP), block_dim=TPB,
+        )
+        c.synchronize()
+        # last_action is the SCALED CLIPPED action, as the PD chain consumed it
+        for l in range(LANES):
+            for i in range(G1_N_ACT):
+                var a = Float64(h_act[l * G1_N_ACT + i]) * 5.0
+                if a > 5.0:
+                    a = 5.0
+                if a < -5.0:
+                    a = -5.0
+                h_act[l * G1_N_ACT + i] = Scalar[DT](a)
+        c.enqueue_copy(d_act, h_act)
+        c.synchronize()
+        d_live.enqueue_fill(Scalar[DT](1.0))
+        # snapshot the incremental [last_action | history] AT THE NEXT step's
+        # read point, which is what the derive for row (s+1) must reproduce
+        var h_h = c.enqueue_create_host_buffer[DT](LANES * G1_HIST_DIM)
+        c.enqueue_copy(h_h, d_hist)
+        c.synchronize()
+        if s + 1 < NS2:
+            for l in range(LANES):
+                for i in range(G1_N_ACT):
+                    want.append(Float64(h_act[l * G1_N_ACT + i]))
+                for i in range(G1_HIST_DIM):
+                    want.append(Float64(h_h[l * G1_HIST_DIM + i]))
+
+    c.enqueue_copy(r_obs, h_robs)
+    c.enqueue_copy(r_act, h_ract)
+    c.enqueue_copy(r_age, h_rage)
+    c.synchronize()
+
+    # derive for every (step, lane) from step 1 on, and compare
+    comptime NDRAW = (NS2 - 1) * LANES
+    var d_idx = c.enqueue_create_buffer[IDX_DT](NDRAW)
+    var h_idx = c.enqueue_create_host_buffer[IDX_DT](NDRAW)
+    var q = 0
+    for s in range(1, NS2):
+        for l in range(LANES):
+            h_idx[q] = Scalar[IDX_DT]((s * LANES + l) % RCAP)
+            q += 1
+    c.enqueue_copy(d_idx, h_idx)
+    var d_tail = c.enqueue_create_buffer[DT](NDRAW * G1_ACTOR_EXTRA)
+    c.enqueue_function[g1_hist_gather_kernel[NDRAW, RCAP, LANES, G1_N_ACT]](
+        mptr(r_obs.unsafe_ptr()), mptr(r_act.unsafe_ptr()),
+        mptr(r_age.unsafe_ptr()), mptr(d_idx.unsafe_ptr()),
+        Scalar[DT](5.0), Scalar[DT](5.0), mptr(d_tail.unsafe_ptr()),
+        grid_dim=_blk(NDRAW * G1_ACTOR_EXTRA), block_dim=TPB,
+    )
+    var h_tail = c.enqueue_create_host_buffer[DT](NDRAW * G1_ACTOR_EXTRA)
+    c.enqueue_copy(h_tail, d_tail)
+    c.synchronize()
+    var wrong = 0
+    var nonzero = 0
+    var worst2 = 0.0
+    for i in range(NDRAW * G1_ACTOR_EXTRA):
+        var g = Float64(h_tail[i])
+        var w = want[i]
+        if abs(g - w) > 1e-5:
+            wrong += 1
+        if w != 0.0:
+            nonzero += 1
+        if abs(g - w) > worst2:
+            worst2 = abs(g - w)
+    print("      compared", NDRAW * G1_ACTOR_EXTRA, "elements over",
+          NS2 - 1, "steps x", LANES, "lanes   wrong", wrong,
+          "  worst", worst2)
+    assert_true(
+        wrong == 0,
+        "derive-from-ring disagrees with the incremental path at "
+        + String(wrong) + " elements (worst " + String(worst2) + ") — the"
+        " lane-aligned back-step or the age rule is off",
+    )
+    assert_true(
+        nonzero > NDRAW * G1_ACTOR_EXTRA // 3,
+        "vacuous: most of the expected tail is zero, so agreeing with it"
+        " proves little — the fixture must run past the age ramp",
+    )
+    print("      OK")
 
     print("G1_HISTORY OK")
