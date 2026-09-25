@@ -87,8 +87,8 @@ checkpointed after each episode (`--resume` continues one), both cameras
 `observation.images.wrist`, 640x480 at 30 Hz, the overhead camera pacing the
 tick), `observation.state` the follower's measured joints and `action` the
 commanded ones, in LeRobot units (degrees, the gripper 0..100, through the
-calibration — no follower zero), and the task string of the printed
-recording (`--task`). An episode runs from the first leg to the arm folded
+calibration — no follower zero), and `cube-in-bowl-printed`'s task string
+(`TASK_LANGUAGE`, `--task`). An episode runs from the first leg to the arm folded
 and still at home (`N_REST_HOLD`). The camera's verdict keeps a SUCCESS and
 rejects anything else (`meta/rejected_episodes.json`, skipped on import);
 the operator can flip it at the prompt. ⚠ The gripper's action when closed
@@ -180,9 +180,12 @@ at 31.25 before recording existed)."""
 comptime N_REST_HOLD = 15
 """Recording: frames held at rest after the ramp home (the sim recorder's
 `--return-rest` hold) — the episode ends folded and still."""
-comptime TASK_LANGUAGE = "Grab the cube and put it in the bowl"
-"""The printed recording's task string, byte for byte (`--task`): a policy
-is conditioned on it."""
+comptime TASK_LANGUAGE = "Grab the blue cube and put it in the yellow octogonal bowl"
+"""`cube-in-bowl-printed`'s task string, byte for byte, misspelling included
+(its `meta/tasks.parquet`; SmolVLA's token table for it, f61c6e2b1, is 15
+tokens): episodes merged with that set, or fine-tuned next to it, must carry
+the same instruction. NOT the sim task's `language=` ("Grab the cube and put
+it in the bowl"), which is the older `cube-in-bowl` set's. `--task` overrides."""
 comptime DEFAULT_PROJECT = "so101-tower"
 comptime MAX_STEP_TICKS = 80
 comptime TRACK_STEP_TICKS = 512
