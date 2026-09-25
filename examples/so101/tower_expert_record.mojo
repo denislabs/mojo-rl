@@ -6,6 +6,17 @@ CPU env, headless, writing `.demo` files the SAC driver loads with `--demos`.
     pixi run mojo run -I . examples/so101/tower_expert_record.mojo --episodes 30 --noise 0.05 --seed 7
     pixi run python tools/demo/demo_stats.py projects/so101-tower/demos/*.demo --episodes
 
+## ⚠ THE PLAN LIVES IN THE LIBRARY: `tasks/so101_tower_expert_plan.mojo`
+
+The posture draw, the IK and `--clear-plan`'s collision pass are
+`TowerGraspPlanner` there (a real-arm executor plans with the same code); this
+file is the SIM EXECUTOR — stepping, triggers, noise, the sag integral,
+recording, DAgger. `--print-plan` prints each episode's plan as the library's
+legs. Moved on 25 Sep with the same bytes for the default, the human posture
+and lift_brick (checked); `--clear-plan` now reads the brick's yaw once rather
+than after each redraw (the env's poses lag a substep and the collision pass
+refreshed them — 0.3 deg, 64 -> 63/150).
+
 ## WHY AN EXPERT
 
 Teleoperating the sim from a screen is hard for a reason no fix removes: a
@@ -153,6 +164,12 @@ from noeira.physics3d.collision.broadphase_sap import detect_contacts_auto
 from noeira.tasks.placement.so101_tower import So101TowerPlacement
 from noeira.tasks.posed_reset import posed_qpos, task_meta_words
 from noeira.tasks.so101_tower_xml import So101TowerModel
+from noeira.tasks.so101_tower_expert_plan import (
+    TowerExpertEnv, TowerGraspPlanner, TowerGraspPlan, ACT, N_ARM, NQ, GS,
+    GRIPPER_BODY, TIP_REACH, HUMAN_JAW_OPEN, HUMAN_Z_GRASP, CLEAR_PLAN_TILT,
+    Z_GRASP, N_PRE, N_DESCEND, N_CLOSE, N_LIFT, N_CARRY, N_PLACE, N_OPEN,
+    N_RETREAT, N_HOLD_MAX,
+)
 from noeira.tasks.spec import load_family
 from noeira.utils.fmt import fixed
 
@@ -161,61 +178,11 @@ comptime FAMILY_PATH = "noeira/tasks/families/so101_tower.family"
 comptime DEFAULT_TASK = "so101_tower_lift_brick"
 comptime DEMO_DIR = "projects/so101-tower/demos"
 comptime CFG = So101TowerTeleopConfig
-comptime E = Phyics3dEnv[So101TowerModel, CFG, DType.float64, False]
-comptime NQ = So101TowerModel.NQ
+comptime E = TowerExpertEnv
+"""The planner's env (`tasks/so101_tower_expert_plan.mojo`): the teleop config,
+float64, host."""
 comptime NV = So101TowerModel.NV
 comptime NB = So101TowerModel.NBODY
-comptime ACT = 6
-comptime N_ARM = 5
-comptime TIP_REACH: Float64 = 0.019
-"""`grasp_center` (gripper z -0.068) to the fingertip boxes' middle (z
--0.087), along the finger. A vertical grasp moves that offset straight up and
-`Z_GRASP` absorbs it; a grasp tilted by 35 deg moves the tips 11 mm sideways
-off the brick, which then meets one jaw and tips over (2/20, wrist view of
-the human-posture run, 2026-09-23). So a drawn tilt aims the tips."""
-comptime IK_ROWS = 7
-"""Position (3), the finger's horizontal components (2), the pinch axis's
-yaw (sin, 1) and its direction (1 - cos, 1; weighted only in `--posture
-human`, where the wrist roll's SIGN matters: the wrist camera turns with it,
-and an unweighted fold left a quarter of the grasps at roll -79 against the
-operator's +77)."""
-comptime HUMAN_JAW_OPEN: Float64 = 0.6
-comptime HUMAN_Z_GRASP: Float64 = 0.015
-comptime PLAN_TRIES = 12
-"""`--clear-plan`: postures drawn per episode before the least-colliding one
-is taken anyway."""
-comptime PLAN_PINCH_TRIES = 0
-"""`--clear-plan`: redraws that change only the PINCH and keep the drawn tilt.
-0: measured, it does not undo the low-tilt skew (successes' median tilt 23 ->
-26 deg) and cost 73 -> 62/150 on the same seeds; the skew is compensated in
-the tilt RANGE instead (see `CLEAR_PLAN_TILT`)."""
-comptime CLEAR_PLAN_TILT = "20,65"
-"""`--clear-plan`'s tilt DRAW (deg), unless `--tilt-range` is given: the
-collision redraws reject steep tilts more often, so the drawn range sits above
-the operator's for the KEPT episodes to match it. Measured (150 draws, seed
-61000): draw 10..55 -> successes' tilt median 23 (73/150); 20..65 -> median 35,
-p5..p95 22..58 (67/150; the operator: median 35, printed set 43); 25..70 -> 36
-(60/150); 30..70 -> 40 (56/150)."""
-comptime DESK_CLEAR_M: Float64 = -0.008
-"""`--clear-plan`: where the fingers' lowest point is planned relative to the
-desk at the grasp — NEGATIVE = pressed INTO it by that much (the finger boxes
-reach 17 mm past the aimed tip point, so a fixed grasp height put them 9-29
-mm into the desk and the close fired 20-40 mm off target). Measured on 150
-draws (seed 61000, real-layout regions): hovering 2 mm ABOVE 31/150 (tips on
-target, but the close shoves the hovering arm aside), pressed 3 mm 57, 8 mm
-73, 12 mm 67, 16 mm 60, 22 mm 57; the fixed height (no flag) 55. The press
-is what lets the moving jaw squeeze the brick against a fixed finger that
-does not yield. `--desk-clear-mm` overrides it."""
-comptime PLAN_PEN_OK_MM: Float64 = 1.0
-"""`--clear-plan`: a plan whose poses penetrate an obstacle by more is
-redrawn."""
-comptime APPROACH_D: Float64 = 0.07
-"""A tilted grasp's approach length (m): the pre-grasp pose puts the tips this
-far back ALONG THE FINGER AXIS from their grasp point (the vertical expert's
-`Z_PRE - Z_GRASP`), and the descent follows that line."""
-comptime APPROACH_WAYPOINTS = 3
-"""IK solutions along the approach line; the joints interpolate between them,
-so the tips stay near the line instead of cutting a chord."""
 comptime TIP_CLOSE_MM_DEFAULT: Float64 = 8.0
 """A tilted grasp closes when the tips are this close to their grasp point and
 the arm has settled (`--tip-close-mm`)."""
@@ -223,10 +190,6 @@ comptime SAG_KI: Float64 = 0.15
 """Integral gain on the arm's tracking error, per step (`Expert.integral`)."""
 comptime SAG_MAX: Float64 = 0.35
 """The bias's clamp (rad, 20 deg) — above the worst sag measured (16 deg)."""
-comptime ROLL_SEED_HUMAN: Float64 = 1.34
-"""wrist_roll's seed on the tangential pinch (rad, 77 deg): the operator's
-median grasp roll through the follower zero. The pinch axis is folded mod
-180 deg, so without it the IK picks either sign."""
 comptime GB = So101TowerConfig.OBS_GOAL_BASE
 """The goal words: obs[GB+3..GB+5] is the jaw-to-brick vector (the reach)."""
 
@@ -271,8 +234,6 @@ test (< 36 mm) fired 10 mm too high (1/40 clean, 0/12 DAgger)."""
 comptime SETTLED_VEL: Float64 = 0.15
 """rad/s, every arm joint: settled (the median over the 7 rows before the
 recorded close was 0.04-0.10; the descent runs at 0.39)."""
-comptime GS = CFG.GRIPPER_SITE
-comptime GRIPPER_BODY = CFG.GRIPPER_BODY
 comptime HOLD_STEPS: Int = 31
 """The goal held this many consecutive steps = success (the recorder's rule)."""
 comptime FB_MIN_STEP: Float64 = 0.02
@@ -283,295 +244,22 @@ comptime FB_VEL: Float64 = 0.05
 this, rad/s."""
 
 # The legs' step budgets at 31.25 Hz.
-comptime N_PRE = 40
-comptime N_DESCEND = 40
-comptime N_CLOSE = 1
-"""The close is a STEP: the jaw command goes to closed at once. It was a
-30-step ramp, then 15; a step labels the arrival state with the full-range
-jump the fitted policy needs (a ramp's first row is 1/30 of the range below
-open, next to the approach's "open" at the same state, and the policy's jaw
-never moved). A step only works with the jaw DEEP enough around the brick —
-see `Z_GRASP`: at the old 0.03 the tip brushed the brick's top edge (0.14 mm
-of overlap, in MuJoCo too) and a fast close missed it every time (0/20)."""
-comptime N_LIFT = 40
-comptime N_CARRY = 50
-comptime N_PLACE = 25
-comptime N_OPEN = 20
-comptime N_RETREAT = 20
 comptime N_RETURN_REST = 60
 """`--return-rest`: steps to fold from the retreat pose back to the start
 (~1.9 s; the real fold takes 1-3 s)."""
 comptime N_REST_HOLD = 15
 """Steps held at rest after the fold (0.5 s of the real ~3 s): enough to
 show "stay folded", short of teaching the idle."""
-comptime N_HOLD_MAX = 120
-"""Steps to wait for the predicate to hold after the last leg."""
 
-comptime Z_PRE = 0.08
-comptime Z_GRASP = 0.01
-"""The gripper site's height above the brick CENTRE at the grasp. It was
-0.03 — measured against the jaws' phantom hull, before the box jaws — and
-the tips only brushed the brick's top edge, so the grasp worked by the slow
-ramp sweeping the brick into the fixed jaw. Sweep on 20 placements, stiff
-jaws (close steps 15 / 1): 0.03 16/0, 0.025 16/0, 0.02 16/0, 0.015 16/13,
-0.01 16/16, 0.005 16/16. At 0.01 a one-step close grasps as well as the
-ramp (30/40 on other seeds; 25/40 with flat noise 0.02)."""
-comptime Z_LIFT = 0.15
-comptime Z_CARRY = 0.16
-comptime Z_PLACE = 0.10
-
-
-# ── kinematics on the env ────────────────────────────────────────────────
-
-
-struct Arm(Movable):
-    """The IK's view of the arm: FK through the env, joint limits, seeds."""
-
-    var lo: List[Float64]
-    var hi: List[Float64]
-    var seeds: List[List[Float64]]
-
-    def __init__(out self, mut env: E) raises:
-        var sf = So101TowerModel.make_spec_fields[DType.float64]()
-        var lo_col = actuator_column(sf, ACT_IDX_CTRL_MIN, ACT)
-        var hi_col = actuator_column(sf, ACT_IDX_CTRL_MAX, ACT)
-        self.lo = List[Float64]()
-        self.hi = List[Float64]()
-        for i in range(ACT):
-            self.lo.append(Float64(lo_col[i]))
-            self.hi.append(Float64(hi_col[i]))
-        self.seeds = List[List[Float64]]()
-        self.seeds.append([0.0, -0.5, 0.5, 0.5, 0.0])
-        self.seeds.append([0.0, 0.3, 0.8, 0.4, 0.0])
-        self.seeds.append([0.0, 0.8, 0.0, 0.0, 0.0])
-        self.seeds.append([0.0, -1.0, 1.2, 1.0, 0.0])
-        _ = env
-
-    def fk(
-        self, mut env: E, ref q: List[Float64],
-        mut p: List[Float64], mut fz: List[Float64], mut gx: List[Float64],
-    ):
-        """Site position, the finger axis (gripper -z) and the pinch axis
-        (gripper +x) in the world, at arm joints `q` — the env's FK."""
-        for i in range(N_ARM):
-            env.d.qpos.data[i] = q[i]
-        env._fields_fk()
-        for k in range(3):
-            p[k] = Float64(env.d.site_xpos.data[GS * 3 + k])
-        var o = GRIPPER_BODY * 4
-        # xquat is stored (x, y, z, w); Quat is (w, x, y, z)
-        var qw = Quat(
-            Float64(env.d.xquat.data[o + 3]), Float64(env.d.xquat.data[o]),
-            Float64(env.d.xquat.data[o + 1]), Float64(env.d.xquat.data[o + 2]),
-        )
-        var f = qw.rotate_vec(Vec3(0.0, 0.0, -1.0))
-        var g = qw.rotate_vec(Vec3(1.0, 0.0, 0.0))
-        fz[0] = f.x
-        fz[1] = f.y
-        fz[2] = f.z
-        gx[0] = g.x
-        gx[1] = g.y
-        gx[2] = g.z
-
-    def _feats(
-        self, mut env: E, ref q: List[Float64], yaw: Float64,
-        mut out: List[Float64], tip: Bool = False,
-    ):
-        """`tip`: the position feature is the FINGERTIP point, `TIP_REACH`
-        further along the finger than `grasp_center` (see `TIP_REACH`)."""
-        var p = List[Float64](length=3, fill=0.0)
-        var fz = List[Float64](length=3, fill=0.0)
-        var gx = List[Float64](length=3, fill=0.0)
-        self.fk(env, q, p, fz, gx)
-        var d = TIP_REACH if tip else 0.0
-        out[0] = p[0] + d * fz[0]
-        out[1] = p[1] + d * fz[1]
-        out[2] = p[2] + d * fz[2]
-        out[3] = fz[0]
-        out[4] = fz[1]
-        # sin of the yaw error between the pinch axis and the wanted axis
-        out[5] = gx[0] * sin(yaw) - gx[1] * cos(yaw)
-        # 1 - cos of it: zero only when the axis points the WANTED WAY, so
-        # it picks the wrist roll's sign (weighted only when `directed`)
-        out[6] = 1.0 - (gx[0] * cos(yaw) + gx[1] * sin(yaw))
-
-    def _ik_once(
-        self, mut env: E, ref target: List[Float64], ref q0: List[Float64],
-        yaw: Float64, w_tilt: Float64, w_yaw: Float64, iters: Int,
-        mut q_out: List[Float64], tilt: Float64 = 0.0, directed: Bool = False,
-    ) -> Float64:
-        """Damped least squares from `q0`; returns the position error.
-        `tilt` (rad): the finger's wanted angle from straight down, leaning
-        OUTWARD along the target's radial direction (0 = vertical)."""
-        var rad = atan2(target[1], target[0])
-        var fgoal_x = sin(tilt) * cos(rad)
-        var fgoal_y = sin(tilt) * sin(rad)
-        # a drawn tilt aims the FINGERTIPS, not `grasp_center`; the target
-        # moves down by the same `TIP_REACH`, so at tilt 0 it is the old one
-        var tip = tilt > 0.0
-        var tgt = List[Float64]()
-        tgt.append(target[0])
-        tgt.append(target[1])
-        tgt.append(target[2] - (TIP_REACH if tip else 0.0))
-        var q = List[Float64]()
-        for i in range(N_ARM):
-            q.append(q0[i])
-        var W = List[Float64]()
-        W.append(1.0)
-        W.append(1.0)
-        W.append(1.0)
-        W.append(w_tilt)
-        W.append(w_tilt)
-        W.append(w_yaw)
-        # the directed-pinch row: weight 0 unless `directed`, so the default
-        # expert's normal system is unchanged, bit for bit
-        W.append(w_yaw if directed else 0.0)
-        var f = List[Float64](length=IK_ROWS, fill=0.0)
-        var f2 = List[Float64](length=IK_ROWS, fill=0.0)
-        var e = List[Float64](length=IK_ROWS, fill=0.0)
-        var J = List[Float64](length=IK_ROWS * N_ARM, fill=0.0)
-        var H = List[Float64](length=N_ARM * N_ARM, fill=0.0)
-        var g = List[Float64](length=N_ARM, fill=0.0)
-        var perr = 1.0
-        for _ in range(iters):
-            self._feats(env, q, yaw, f, tip)
-            for r in range(IK_ROWS):
-                var goal = tgt[r] if r < 3 else (
-                    fgoal_x if r == 3 else (fgoal_y if r == 4 else 0.0)
-                )
-                e[r] = (goal - f[r]) * W[r]
-            perr = sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2])
-            var dfx = f[3] - fgoal_x
-            var dfy = f[4] - fgoal_y
-            if perr < 5e-4 and sqrt(dfx * dfx + dfy * dfy) < 0.05:
-                break
-            var eps = 1e-6
-            for j in range(N_ARM):
-                var dq = List[Float64]()
-                for i in range(N_ARM):
-                    dq.append(q[i])
-                dq[j] += eps
-                self._feats(env, dq, yaw, f2, tip)
-                for r in range(IK_ROWS):
-                    J[r * N_ARM + j] = (f2[r] - f[r]) * W[r] / eps
-            # H = J^T J + lambda I,  g = J^T e
-            for a in range(N_ARM):
-                g[a] = 0.0
-                for b in range(N_ARM):
-                    var s = 0.0
-                    for r in range(IK_ROWS):
-                        s += J[r * N_ARM + a] * J[r * N_ARM + b]
-                    H[a * N_ARM + b] = s + (1e-5 if a == b else 0.0)
-                for r in range(IK_ROWS):
-                    g[a] += J[r * N_ARM + a] * e[r]
-            var step = _solve5(H, g)
-            for i in range(N_ARM):
-                var s = step[i]
-                if s > 0.25:
-                    s = 0.25
-                if s < -0.25:
-                    s = -0.25
-                q[i] += s
-                if q[i] < self.lo[i]:
-                    q[i] = self.lo[i]
-                if q[i] > self.hi[i]:
-                    q[i] = self.hi[i]
-        for i in range(N_ARM):
-            q_out[i] = q[i]
-        return perr
-
-    def ik(
-        self, mut env: E, ref target: List[Float64], ref q0: List[Float64],
-        yaw: Float64, mut q_out: List[Float64], tilt: Float64 = 0.0,
-        roll_seed: Float64 = 0.0, use_roll_seed: Bool = False,
-    ) -> Float64:
-        """Restarts x a relaxing tilt weight; keeps the best position error.
-        Restores the env's arm qpos to what it was.
-
-        `tilt` > 0 targets a finger leaning outward by that angle (the human
-        posture, `--posture human`); its weights start 6x stronger, since a
-        drawn tilt is a TARGET and the vertical one was only a preference.
-        `use_roll_seed` starts every restart's wrist_roll at `roll_seed`:
-        the pinch axis is folded mod 180 deg, so the roll's SIGN is chosen by
-        the seed (the human's is always positive)."""
-        var saved = List[Float64]()
-        for i in range(NQ):
-            saved.append(Float64(env.d.qpos.data[i]))
-        var best = 1e9
-        var q_try = List[Float64](length=N_ARM, fill=0.0)
-        var weights: List[Float64] = [0.05, 0.02, 0.008, 0.003]
-        if tilt > 0.0:
-            weights = [0.3, 0.12, 0.05, 0.02]
-        var pan = atan2(target[1], target[0])
-        for wi in range(len(weights)):
-            for s in range(len(self.seeds) + 1):
-                var s0 = List[Float64]()
-                for i in range(N_ARM):
-                    s0.append(q0[i] if s == 0 else self.seeds[s - 1][i])
-                s0[0] = pan
-                if use_roll_seed and s > 0:
-                    s0[4] = roll_seed
-                var err = self._ik_once(
-                    env, target, s0, yaw, weights[wi], 0.02, 100, q_try, tilt,
-                    use_roll_seed,
-                )
-                if err < best - 1e-4:
-                    best = err
-                    for i in range(N_ARM):
-                        q_out[i] = q_try[i]
-            if best < 1e-3:
-                break
-        for i in range(NQ):
-            env.d.qpos.data[i] = saved[i]
-        env._fields_fk()
-        return best
-
-
-def _solve5(ref H: List[Float64], ref g: List[Float64]) -> List[Float64]:
-    """Gaussian elimination with partial pivoting on the 5x5 normal system."""
-    var n = N_ARM
-    var A = List[Float64]()
-    for i in range(n * n):
-        A.append(H[i])
-    var b = List[Float64]()
-    for i in range(n):
-        b.append(g[i])
-    for c in range(n):
-        var piv = c
-        for r in range(c + 1, n):
-            if abs(A[r * n + c]) > abs(A[piv * n + c]):
-                piv = r
-        if piv != c:
-            for k in range(n):
-                var t = A[c * n + k]
-                A[c * n + k] = A[piv * n + k]
-                A[piv * n + k] = t
-            var tb = b[c]
-            b[c] = b[piv]
-            b[piv] = tb
-        var d = A[c * n + c]
-        if abs(d) < 1e-14:
-            continue
-        for r in range(c + 1, n):
-            var f = A[r * n + c] / d
-            for k in range(c, n):
-                A[r * n + k] -= f * A[c * n + k]
-            b[r] -= f * b[c]
-    var x = List[Float64](length=n, fill=0.0)
-    for c in range(n - 1, -1, -1):
-        var s = b[c]
-        for k in range(c + 1, n):
-            s -= A[c * n + k] * x[k]
-        var d = A[c * n + c]
-        x[c] = s / d if abs(d) > 1e-14 else 0.0
-    return x^
 
 
 # ── the episode ──────────────────────────────────────────────────────────
 
 
 struct Expert(Movable):
-    var arm: Arm
+    var planner: TowerGraspPlanner
+    """The plan half (`tasks/so101_tower_expert_plan.mojo`): FK/IK, the drawn
+    posture, the collision pass. This struct is the EXECUTOR."""
     var ctrl: CtrlRange
     var rec: EpisodeRecorder
     """The episode bookkeeping (`deep_agents/demos`): rows, the HOLD_STEPS
@@ -583,15 +271,8 @@ struct Expert(Movable):
     """Rows recorded while True carry the INTERVENED flag (the expert
     driving after a `--policy` handover — HIL-SERL's human, scripted)."""
     var human_posture: Bool
-    """`--posture human`: per episode, a drawn tilt and a face-snapped pinch
-    that cover the operator's measured grasps (see `draw_posture`)."""
-    var tilt_lo: Float64
-    var tilt_hi: Float64
-    var tilt: Float64       # this episode's drawn tilt (rad), 0 = vertical
-    var tangential: Bool    # kept for the log: the snapped face is closer to tangential than radial
-    var pinch_lo: Float64
-    var pinch_hi: Float64
-    var pinch_target: Float64  # this episode's drawn pinch from radial (rad), before the snap
+    """`--posture human` (mirrors `planner.posture.human`): the executor's
+    own switches — the integral action, the tip trigger's defaults."""
     var integral: Bool
     """Integral action on the arm joints' tracking error (on with `--posture
     human`): the tilted poses load the shoulder, and the position servo rests
@@ -619,28 +300,17 @@ struct Expert(Movable):
     """The ramp's reference WITHOUT the bias — what `hold` holds, so the bias
     is not counted twice."""
     var close_steps: Int
-    var z_grasp: Float64      # `--z-grasp`: the site's height above the brick centre at the grasp
     var close_above_mm: Float64  # `--close-above-mm`: the close's height trigger; 0 = off (close at the ramp's end)
     var jaw_open: Float64     # `--jaw-open`: the jaw's OPEN target (rad) on the approach; the moving tip
                               # swings down in an arc as it closes (80 mm up at 1.75, ~40 at 0.9, 20 at 0.6),
                               # so a half-open approach makes the close a short swing
     var frame_skip: Int
     var timestep: Float64
-    var arm_bodies: List[Int]
-    """The moving arm's bodies (upper arm to jaw) — the planned-pose check's
-    one side (`_pose_penetration_mm`)."""
-    var obstacles: List[Int]
-    """What they must not pass through at all: base, shoulder, the tower
-    stand, the bowl, and the brick while the jaw is open."""
-    var desk: List[Int]
-    """The desk: the grasp height is RAISED until the fingers clear it."""
-    var clear_plan: Bool
-    var desk_clear_m: Float64
-    var plan_raise_mm: Float64
-    var plan_pen_mm: Float64
-    var plan_tries: Int
-    """`--clear-plan`: plan a grasp the arm can physically reach (see
-    `_plan_tilted`)."""
+    var print_plan: Bool
+    """`--print-plan`: print each episode's plan as the library's legs, in
+    degrees — what a real-arm executor receives. ⚠ Its place legs are planned
+    from the bowl's START pose, and that extra IK refreshes the env's FK (its
+    poses lag a substep), so demo bytes are NOT those of a run without it."""
     var q_cmd: List[Float64]
     var obs: List[Scalar[DT]]
     var prev_obs: List[Scalar[DT]]
@@ -649,11 +319,14 @@ struct Expert(Movable):
     var rung_rows: Int
 
     def __init__(
-        out self, mut env: E, noise: Float64, feedback: Bool = False,
-        out_path: String = "", keep_failures: Bool = False,
+        out self, mut env: E, ref body_names: List[String], noise: Float64,
+        feedback: Bool = False, out_path: String = "",
+        keep_failures: Bool = False,
     ) raises:
-        self.arm = Arm(env)
-        self.ctrl = CtrlRange(self.arm.lo.copy(), self.arm.hi.copy())
+        self.planner = TowerGraspPlanner(env, body_names)
+        self.ctrl = CtrlRange(
+            self.planner.arm.lo.copy(), self.planner.arm.hi.copy()
+        )
         self.rec = EpisodeRecorder(
             E.OBS_DIM, ACT, out_path, keep_failures, HOLD_STEPS
         )
@@ -662,13 +335,6 @@ struct Expert(Movable):
         self.flat_noise = False
         self.intervening = False
         self.human_posture = False
-        self.tilt_lo = 10.0 * pi / 180.0
-        self.tilt_hi = 55.0 * pi / 180.0
-        self.tilt = 0.0
-        self.tangential = False
-        self.pinch_lo = 35.0 * pi / 180.0
-        self.pinch_hi = 85.0 * pi / 180.0
-        self.pinch_target = 0.0
         self.integral = False
         self.sag_bias = List[Float64](length=N_ARM, fill=0.0)
         self.return_rest = False
@@ -678,66 +344,17 @@ struct Expert(Movable):
         self.tip_close_mm = TIP_CLOSE_MM_DEFAULT
         self.q_ref = List[Float64](length=N_ARM, fill=0.0)
         self.close_steps = N_CLOSE
-        self.z_grasp = Z_GRASP
         self.close_above_mm = Z_CLOSE_ABOVE_MM
         self.jaw_open = JAW_OPEN
         self.frame_skip = CFG.FRAME_SKIP
         self.timestep = So101TowerModel.TIMESTEP
-        self.arm_bodies = List[Int]()
-        self.obstacles = List[Int]()
-        self.desk = List[Int]()
-        self.clear_plan = False
-        self.desk_clear_m = DESK_CLEAR_M
-        self.plan_raise_mm = 0.0
-        self.plan_pen_mm = 0.0
-        self.plan_tries = 0
+        self.print_plan = False
         self.q_cmd = List[Float64](length=ACT, fill=0.0)
         self.obs = List[Scalar[DT]](length=E.OBS_DIM, fill=Scalar[DT](0))
         self.prev_obs = List[Scalar[DT]](length=E.OBS_DIM, fill=Scalar[DT](0))
         self.act_l = List[Float64](length=ACT, fill=0.0)
         self.steps = 0
         self.rung_rows = 0
-
-    def draw_posture(mut self):
-        """The operator's grasp, drawn — `--posture human`.
-
-        Measured on the 50 kept real cube-in-bowl episodes at the grasp frame
-        (`tools/soarm/grasp_posture.py`, 2026-09-23), in the expert's own IK
-        features: TILT, the finger's angle from straight down leaning
-        outward, p5..p95 = 9..60 deg, median 35; PINCH, the pinch axis from
-        radial folded to (-90, 90], 34..86, median 72 — always on the
-        positive side (wrist_roll 35..103, median 77). The vertical expert
-        was tilt 0.2 / pinch 0, and students trained on it ignored real
-        frames (40-47 deg mean action error on the real import).
-
-        Tilt ~ U(`tilt_lo`, `tilt_hi`); pinch target ~ U(`pinch_lo`,
-        `pinch_hi`), then SNAPPED to the brick's nearest face normal
-        (`pinch_yaw`): a pinch between two face normals closes on corners.
-        With the cube axis-aligned (today's tasks) the snap moves a 45-deg
-        world line to 0 or 90, so the realised pinch is mirrored (-65 median,
-        measured) — the operator's real Duplo lies at arbitrary yaw; the
-        task's opt-in brick yaw draw makes the snap reproduce it."""
-        self.tilt = random_float64(self.tilt_lo, self.tilt_hi)
-        self.pinch_target = random_float64(self.pinch_lo, self.pinch_hi)
-
-    def draw_pinch(mut self):
-        """Redraw the pinch only, keeping the drawn tilt (`--clear-plan`)."""
-        self.pinch_target = random_float64(self.pinch_lo, self.pinch_hi)
-
-    def pinch_yaw(mut self, bearing: Float64, brick_yaw: Float64) -> Float64:
-        """The pinch axis's world yaw for a brick at `bearing` whose own yaw
-        is `brick_yaw` (rad): the radial direction, or — in `--posture
-        human` — the brick face normal nearest `bearing + pinch_target`."""
-        if not self.human_posture:
-            return bearing
-        var want = bearing + self.pinch_target
-        var k = Float64(Int(floor((want - brick_yaw) / (pi / 2.0) + 0.5)))
-        var y = brick_yaw + k * (pi / 2.0)
-        var rel = y - bearing
-        # the log's "tangential": the snapped line is closer to 90 than to 0
-        var c = cos(rel)
-        self.tangential = c * c < 0.5
-        return y
 
     def _normalized(self, i: Int, q: Float64) -> Float64:
         return self.ctrl.normalize(i, q)
@@ -845,7 +462,7 @@ struct Expert(Movable):
         var q_start = List[Float64]()
         for i in range(ACT):
             q_start.append(self.q_cmd[i])
-        var g_target = self.jaw_open if grip_open else self.arm.lo[5]
+        var g_target = self.jaw_open if grip_open else self.planner.arm.lo[5]
         var dmax = List[Float64]()
         for i in range(N_ARM):
             var qi = Float64(env.d.qpos.data[i])
@@ -984,75 +601,6 @@ struct Expert(Movable):
         )
 
 
-def _plan_tilted(
-    mut ex: Expert, mut env: E, ref pb: List[Float64], bearing: Float64,
-    yaw: Float64, tl: Float64, rs: Float64, ref q: List[Float64],
-    raise_m: Float64, mut waypoints: List[List[Float64]],
-) -> Float64:
-    """The tilted grasp's approach ALONG THE FINGER: IK targets on the line
-    through the tips' grasp point (raised by `raise_m`), `APPROACH_D` back
-    along the finger axis, `APPROACH_WAYPOINTS` legs. Fills `waypoints`
-    (the first is the pre-grasp, the last the grasp) and sets `ex.tip_goal`;
-    returns the grasp pose's IK error."""
-    var fx = sin(tl) * cos(bearing)
-    var fy = sin(tl) * sin(bearing)
-    var fzv = -cos(tl)
-    ex.tip_goal[0] = pb[0]
-    ex.tip_goal[1] = pb[1]
-    ex.tip_goal[2] = pb[2] + ex.z_grasp - TIP_REACH + raise_m
-    # the IK's tip mode aims `target - (0, 0, TIP_REACH)`: hand it the
-    # tip point lifted by TIP_REACH
-    var n_wp = APPROACH_WAYPOINTS
-    var prev = q.copy()
-    var e = 0.0
-    waypoints.clear()
-    for j in range(n_wp + 1):
-        var sback = APPROACH_D * Float64(n_wp - j) / Float64(n_wp)
-        var t = List[Float64]()
-        t.append(ex.tip_goal[0] - sback * fx)
-        t.append(ex.tip_goal[1] - sback * fy)
-        t.append(ex.tip_goal[2] - sback * fzv + TIP_REACH)
-        var qj = List[Float64](length=N_ARM, fill=0.0)
-        e = ex.arm.ik(env, t, prev, yaw, qj, tl, rs, True)
-        prev = qj.copy()
-        waypoints.append(qj^)
-    return e
-
-
-def _pose_penetration_mm(
-    mut env: E, ref q: List[Float64], jaw: Float64,
-    ref arm_bodies: List[Int], ref obstacles: List[Int],
-) raises -> Float64:
-    """The deepest penetration (mm) between an ARM body and an OBSTACLE with
-    the arm at joints `q` and the jaw at `jaw` — a static collision check of
-    a planned pose. The env's qpos, FK and contact set are restored."""
-    var saved = List[Float64]()
-    for i in range(NQ):
-        saved.append(Float64(env.d.qpos.data[i]))
-    for i in range(N_ARM):
-        env.d.qpos.data[i] = q[i]
-    env.d.qpos.data[N_ARM] = jaw
-    env._fields_fk()
-    detect_contacts_auto["cpu", DType.float64, BATCH=1](env.d, env.mf, None)
-    var worst = 0.0
-    var nc = Int(env.d.meta.data[META_IDX_NUM_CONTACTS])
-    for c in range(nc):
-        var o = c * CONTACT_SIZE
-        var ba = Int(env.d.contacts.data[o + CONTACT_IDX_BODY_A])
-        var bb = Int(env.d.contacts.data[o + CONTACT_IDX_BODY_B])
-        var hit = (ba in arm_bodies and bb in obstacles) or (
-            bb in arm_bodies and ba in obstacles
-        )
-        var d = Float64(env.d.contacts.data[o + CONTACT_IDX_DIST])
-        if hit and -d > worst:
-            worst = -d
-    for i in range(NQ):
-        env.d.qpos.data[i] = saved[i]
-    env._fields_fk()
-    detect_contacts_auto["cpu", DType.float64, BATCH=1](env.d, env.mf, None)
-    return worst * 1000.0
-
-
 def _body_pos(mut env: E, b: Int) -> List[Float64]:
     var p = List[Float64]()
     for k in range(3):
@@ -1069,14 +617,6 @@ def _body_yaw(mut env: E, b: Int) -> Float64:
     var z = Float64(env.d.xquat.data[o + 2])
     var w = Float64(env.d.xquat.data[o + 3])
     return atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-
-
-def _above(ref p: List[Float64], dz: Float64) -> List[Float64]:
-    var t = List[Float64]()
-    t.append(p[0])
-    t.append(p[1])
-    t.append(p[2] + dz)
-    return t^
 
 
 def _row_reach_mm(ref d: DemoSet, r: Int) -> Float64:
@@ -1183,96 +723,46 @@ def run_episode(
         for i in range(N_ARM):
             ex.q_home[i] = Float64(env.d.qpos.data[i])
     var pb = _body_pos(env, brick)
-    var bearing = atan2(pb[1], pb[0])
-    if ex.human_posture:
-        ex.draw_posture()
-    var yaw = ex.pinch_yaw(bearing, _body_yaw(env, brick))
-    var tl = ex.tilt if ex.human_posture else 0.0
-    var rs = ROLL_SEED_HUMAN if ex.human_posture else 0.0
-    var use_rs = ex.human_posture
     var q = List[Float64]()
     for i in range(N_ARM):
         q.append(Float64(env.d.qpos.data[i]))
-    var q1 = List[Float64](length=N_ARM, fill=0.0)
-    var q2 = List[Float64](length=N_ARM, fill=0.0)
-    var e1 = 0.0
-    var e2 = 0.0
-    # a tilted grasp approaches ALONG THE FINGER: IK targets on the line
-    # through the tips' grasp point, `APPROACH_D` back along the finger axis
-    var waypoints = List[List[Float64]]()
-    ex.tip_trigger = tl > 0.0
-    if tl > 0.0:
-        var n_wp = APPROACH_WAYPOINTS
-        if not ex.clear_plan:
-            e2 = _plan_tilted(ex, env, pb, bearing, yaw, tl, rs, q, 0.0, waypoints)
-        else:
-            # ⚠ `--clear-plan`: a plan the arm can physically execute. Per
-            # drawn posture, the grasp height is raised until the fingers
-            # clear the desk by DESK_CLEAR_M (a fixed height put the finger
-            # boxes 9-29 mm INTO the desk: the descent stopped short and the
-            # close fired 20-40 mm off target), then every waypoint is
-            # checked against the base, shoulder, stand, bowl and brick with
-            # the jaw open; a colliding posture is redrawn, up to PLAN_TRIES,
-            # and the least-colliding one is kept if none is clear.
-            var best_pen = 1.0e9
-            var best_tilt = ex.tilt
-            var best_pinch = ex.pinch_target
-            for attempt in range(PLAN_TRIES + 1):
-                if attempt == PLAN_TRIES:
-                    # none was clear: re-plan the least-colliding posture
-                    ex.tilt = best_tilt
-                    ex.pinch_target = best_pinch
-                elif attempt > 0 and attempt <= PLAN_PINCH_TRIES:
-                    ex.draw_pinch()
-                elif attempt > 0:
-                    ex.draw_posture()
-                yaw = ex.pinch_yaw(bearing, _body_yaw(env, brick))
-                tl = ex.tilt
-                var raise_m = 0.0
-                e2 = _plan_tilted(ex, env, pb, bearing, yaw, tl, rs, q, raise_m, waypoints)
-                for _ in range(3):
-                    var dp = _pose_penetration_mm(
-                        env, waypoints[n_wp], ex.jaw_open, ex.arm_bodies, ex.desk
-                    )
-                    if dp <= 0.0:
-                        break
-                    raise_m += dp / 1000.0 + ex.desk_clear_m
-                    e2 = _plan_tilted(ex, env, pb, bearing, yaw, tl, rs, q, raise_m, waypoints)
-                var pen = 0.0
-                for j in range(n_wp + 1):
-                    pen = max(pen, _pose_penetration_mm(
-                        env, waypoints[j], ex.jaw_open, ex.arm_bodies, ex.obstacles
-                    ))
-                ex.plan_raise_mm = raise_m * 1000.0
-                ex.plan_pen_mm = pen
-                ex.plan_tries = attempt + 1
-                if pen <= PLAN_PEN_OK_MM or attempt == PLAN_TRIES:
-                    break
-                if pen < best_pen:
-                    best_pen = pen
-                    best_tilt = ex.tilt
-                    best_pinch = ex.pinch_target
-        e1 = 0.0
-        for i in range(N_ARM):
-            q1[i] = waypoints[0][i]
-            q2[i] = waypoints[n_wp][i]
-    else:
-        e1 = ex.arm.ik(env, _above(pb, Z_PRE), q, yaw, q1, tl, rs, use_rs)
-        e2 = ex.arm.ik(env, _above(pb, ex.z_grasp), q1, yaw, q2, tl, rs, use_rs)
-    var q3 = List[Float64](length=N_ARM, fill=0.0)
-    var e3 = ex.arm.ik(env, _above(pb, Z_LIFT), q2, yaw, q3, tl, rs, use_rs)
+    # THE PLAN (`tasks/so101_tower_expert_plan.mojo`): posture draw, IK,
+    # and with --clear-plan the collision pass; this function executes it
+    var plan = ex.planner.plan_grasp(env, pb, _body_yaw(env, brick), q, ex.jaw_open)
+    for k in range(3):
+        ex.tip_goal[k] = plan.tip_goal[k]
+    ex.tip_trigger = plan.close_on_tip
+    var q1 = plan.q_pre.copy()
+    var q2 = plan.q_grasp.copy()
+    var q3 = plan.q_lift.copy()
+    var waypoints = plan.waypoints.copy()
     if verbose and ex.human_posture:
-        print("  ep", ep, "posture: tilt", fixed(ex.tilt * 180.0 / pi, 1),
-              "deg | pinch pair", "tangential" if ex.tangential else "radial",
-              "| pinch from radial", fixed((yaw - bearing) * 180.0 / pi, 1), "deg")
-    if verbose and ex.clear_plan and len(waypoints) > 0:
-        print("  ep", ep, "clear plan: tries", ex.plan_tries, "| raised",
-              fixed(ex.plan_raise_mm, 1), "mm | obstacle penetration",
-              fixed(ex.plan_pen_mm, 1), "mm")
+        print("  ep", ep, "posture: tilt", fixed(plan.tilt * 180.0 / pi, 1),
+              "deg | pinch pair", "tangential" if plan.tangential else "radial",
+              "| pinch from radial", fixed((plan.yaw - plan.bearing) * 180.0 / pi, 1), "deg")
+    if verbose and ex.planner.clear_plan and len(waypoints) > 0:
+        print("  ep", ep, "clear plan: tries", plan.tries, "| raised",
+              fixed(plan.raise_mm, 1), "mm | obstacle penetration",
+              fixed(plan.pen_mm, 1), "mm")
     if verbose:
         print("  ep", ep, "brick", fixed(pb[0], 3), fixed(pb[1], 3),
-              " ik err mm: pre", fixed(e1 * 1000.0, 1), "grasp",
-              fixed(e2 * 1000.0, 1), "lift", fixed(e3 * 1000.0, 1))
+              " ik err mm: pre", fixed(plan.e_pre * 1000.0, 1), "grasp",
+              fixed(plan.e_grasp * 1000.0, 1), "lift", fixed(plan.e_lift * 1000.0, 1))
+    if ex.print_plan:
+        var shown = plan.copy()
+        ex.planner.plan_place(env, shown, _body_pos(env, bowl))
+        print("  ep", ep, "PLAN brick", fixed(pb[0], 3), fixed(pb[1], 3), "yaw",
+              fixed(_body_yaw(env, brick) * 180.0 / pi, 1), "| tip_goal",
+              fixed(plan.tip_goal[0], 3), fixed(plan.tip_goal[1], 3),
+              fixed(plan.tip_goal[2], 3), "| close_on_tip", plan.close_on_tip)
+        for leg in shown.legs(place, ex.close_steps):
+            var qs = String("")
+            for i in range(len(leg.q)):
+                qs += " " + fixed(leg.q[i] * 180.0 / pi, 1)
+            print("    leg", leg.name, "| steps", leg.steps, "| grip",
+                  "open" if leg.grip_open else "closed", "| close_on_tip",
+                  leg.close_on_tip, "| until_held", leg.until_held,
+                  "| q deg" + (qs if len(leg.q) > 0 else " (hold)"))
     if verbose and agent:
         print("  ep", ep, " policy drove", policy_steps_used, "steps ->",
               "handover at reach " + fixed(ex.reach_mm(), 1) + " mm" if handed
@@ -1358,15 +848,16 @@ def run_episode(
             print("  ep", ep, "after lift: brick dz", fixed((pl[2] - pb[2]) * 1000.0, 1),
                   "mm | jaw", fixed(Float64(env.d.qpos.data[5]), 3), "rad")
     if place and not done:
+        # the place is planned HERE, from the bowl where it is after the
+        # lift (a grasp can nudge it) — see the library's header
         var pw = _body_pos(env, bowl)
-        var q4 = List[Float64](length=N_ARM, fill=0.0)
-        var e4 = ex.arm.ik(env, _above(pw, Z_CARRY), q3, yaw, q4, tl, rs, use_rs)
-        var q5 = List[Float64](length=N_ARM, fill=0.0)
-        var e5 = ex.arm.ik(env, _above(pw, Z_PLACE), q4, yaw, q5, tl, rs, use_rs)
+        ex.planner.plan_place(env, plan, pw)
+        var q4 = plan.q_carry.copy()
+        var q5 = plan.q_place.copy()
         if verbose:
             print("  ep", ep, "bowl", fixed(pw[0], 3), fixed(pw[1], 3),
-                  " ik err mm: carry", fixed(e4 * 1000.0, 1), "place",
-                  fixed(e5 * 1000.0, 1))
+                  " ik err mm: carry", fixed(plan.e_carry * 1000.0, 1), "place",
+                  fixed(plan.e_place * 1000.0, 1))
         done = ex.step_to(env, q4, False, N_CARRY)
         if not done:
             done = ex.step_to(env, q5, False, N_PLACE)
@@ -1400,8 +891,8 @@ def _usage():
           "       [--handover-from STUDENT.demo [--handover-mm MM] [--handover-settled]]"
           "   # DAgger from a recorded (vision) student\n"
           "       [--posture expert|human [--tilt-range LO,HI] [--pinch-range LO,HI]"
-          " [--tip-close-mm MM]] [--return-rest]\n"
-          "       [--keep-failures] [--quiet]")
+          " [--tip-close-mm MM] [--clear-plan [--desk-clear-mm MM]]] [--return-rest]\n"
+          "       [--print-plan] [--keep-failures] [--quiet]")
 
 
 def main() raises:
@@ -1416,6 +907,7 @@ def main() raises:
     var z_grasp = Z_GRASP
     var z_grasp_set = False
     var clear_plan = False
+    var print_plan = False
     var desk_clear_mm = 0.0
     var desk_clear_set = False
     var close_above_mm = Z_CLOSE_ABOVE_MM
@@ -1464,6 +956,9 @@ def main() raises:
         elif a == "--close-steps" and i + 1 < len(args):
             close_steps = Int(String(args[i + 1]))
             i += 2
+        elif a == "--print-plan":
+            print_plan = True
+            i += 1
         elif a == "--clear-plan":
             clear_plan = True
             i += 1
@@ -1573,29 +1068,24 @@ def main() raises:
             names += " " + String(b) + "=" + String(fmd.body_names[b])
         print(names)
 
-    var ex = Expert(env, noise, feedback, out_path, keep_failures)
+    var body_names = List[String]()
     for b in range(len(fmd.body_names)):
-        var bn = String(fmd.body_names[b])
-        if bn in ["robot_upper_arm", "robot_lower_arm", "robot_wrist", "robot_gripper"] or bn.startswith("robot_moving_jaw"):
-            ex.arm_bodies.append(b)
-        elif bn in ["robot_base", "robot_shoulder", "tower_stand", "bowl_bowl", "brick_brick"]:
-            ex.obstacles.append(b)
-        elif bn == "desk_mat":
-            ex.desk.append(b)
-    if len(ex.arm_bodies) != 5 or len(ex.obstacles) != 5 or len(ex.desk) != 1:
-        raise Error("the planned-pose check did not find its 5 arm bodies, 5 obstacles and the desk")
+        body_names.append(String(fmd.body_names[b]))
+    var ex = Expert(env, body_names, noise, feedback, out_path, keep_failures)
     ex.flat_noise = flat_noise
     ex.close_steps = close_steps
-    ex.z_grasp = z_grasp
+    ex.planner.z_grasp = z_grasp
     ex.close_above_mm = close_above_mm
     if jaw_open > 0.0:
         ex.jaw_open = jaw_open
     if posture != "expert" and posture != "human":
         raise Error("--posture is expert or human, not " + posture)
     ex.human_posture = posture == "human"
-    ex.clear_plan = clear_plan
+    ex.planner.posture.human = ex.human_posture
+    ex.planner.clear_plan = clear_plan
+    ex.print_plan = print_plan
     if desk_clear_set:
-        ex.desk_clear_m = desk_clear_mm / 1000.0
+        ex.planner.desk_clear_m = desk_clear_mm / 1000.0
     if clear_plan and not ex.human_posture:
         raise Error("--clear-plan plans the TILTED grasp: it needs --posture human")
     ex.integral = ex.human_posture
@@ -1607,19 +1097,19 @@ def main() raises:
         if jaw_open <= 0.0:
             ex.jaw_open = HUMAN_JAW_OPEN
         if not z_grasp_set:
-            ex.z_grasp = HUMAN_Z_GRASP
+            ex.planner.z_grasp = HUMAN_Z_GRASP
     if clear_plan and not tilt_range_set:
         tilt_range = String(CLEAR_PLAN_TILT)
     var tr = tilt_range.split(",")
     if len(tr) != 2:
         raise Error("--tilt-range needs lo,hi in degrees, got " + tilt_range)
-    ex.tilt_lo = Float64(String(tr[0])) * pi / 180.0
-    ex.tilt_hi = Float64(String(tr[1])) * pi / 180.0
+    ex.planner.posture.tilt_lo = Float64(String(tr[0])) * pi / 180.0
+    ex.planner.posture.tilt_hi = Float64(String(tr[1])) * pi / 180.0
     var prr = pinch_range.split(",")
     if len(prr) != 2:
         raise Error("--pinch-range needs lo,hi in degrees, got " + pinch_range)
-    ex.pinch_lo = Float64(String(prr[0])) * pi / 180.0
-    ex.pinch_hi = Float64(String(prr[1])) * pi / 180.0
+    ex.planner.posture.pinch_lo = Float64(String(prr[0])) * pi / 180.0
+    ex.planner.posture.pinch_hi = Float64(String(prr[1])) * pi / 180.0
     ex.tip_close_mm = tip_close_mm
     ex.return_rest = return_rest
     if ex.human_posture:
