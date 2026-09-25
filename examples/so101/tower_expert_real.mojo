@@ -106,10 +106,15 @@ which task a scene calls for (the brick found in the bowl: task 2).
 - Task 1 RELEASES LOW at the bowl's centre instead of dropping from 10 cm:
   the place is a second grasp plan (a virtual brick there, the fingers 5 mm
   above the floor) run backwards — carried to 6 cm over its approach, down
-  it, opened, back up. The camera reads a half-hidden brick in the bowl
-  29-48 mm off, so task 2 takes it where task 1 released it (dead
-  reckoning, relative to the bowl); without a release to reckon from, the
-  camera's read pulled to within 20 mm of the centre.
+  it, opened, back up (the jaw opening only to 0.25 inside the bowl: at
+  0.35 the bowl was pushed 9-14 mm per release).
+- Task 2 takes the brick at the camera's in-bowl read minus its measured
+  bias (IN_BOWL_CAM_BIAS_*: the wall hides the brick's lower part), kept
+  within 30 mm of the centre; the release point cross-checks it and gives
+  the yaw when they agree. A close that ends below 0 rad (empty, or on the
+  bowl's wall) opens, backs out along the approach, and goes home.
+- Just before the arm moves the scene is re-checked: a bowl or brick moved
+  more than 15 mm since the plan means re-read and re-plan.
 - Task 2 picks with the bowl's FLOOR as the support (`set_support`, the walls
   stay in the collision veto), the jaw at `BOWL_JAW` (0.35 rad: 0.6 swings
   the moving jaw into the floor and walls), the tilt 5..35 deg, the aim 12
@@ -274,13 +279,23 @@ comptime JAW_EMPTY_RAD: Float64 = 0.0
 """After the close, a jaw below this closed on nothing (or on a corner): the
 pick is abandoned. Measured (the gripper's measured line): holding the brick
 0.116-0.121 rad, empty -0.149, a corner grip -0.095 (dropped on the carry)."""
-comptime DR_CAM_AGREE_M: Float64 = 0.04
-"""Task 2 picks at the last release only if the camera's rough in-bowl read
-is within this of it (the read is 29-48 mm off at worst on a centred brick)."""
-comptime BOWL_PICK_MAX_OFF_M: Float64 = 0.02
-"""Task 2 without a release to reckon from: the camera's in-bowl read,
-pulled to within this of the bowl's centre (the fit reads a half-hidden
-brick 29-48 mm off; picks 15 mm off the centre plan clean half as often)."""
+comptime SCENE_MOVED_MM: Float64 = 15.0
+"""Before the arm moves, a bowl or a brick this far from where the plan was
+made means the scene changed: re-read and re-plan. Above the in-bowl read's
+jitter (~10 mm between reads of a still brick)."""
+comptime IN_BOWL_CAM_BIAS_X: Float64 = -0.0059
+comptime IN_BOWL_CAM_BIAS_Y: Float64 = -0.0028
+"""The camera's read of a brick IN the bowl minus where it really is (m):
+the mean of (read - release point) over six undisturbed releases of the
+first two cycle runs, spread ~3 mm (the wall hides the brick's lower part,
+the fit shifts)."""
+comptime DR_YAW_AGREE_M: Float64 = 0.015
+"""Task 2 takes the last release's yaw when the corrected camera read is
+within this of it (the brick undisturbed); else the camera's."""
+comptime BOWL_PICK_MAX_OFF_M: Float64 = 0.03
+"""Task 2's pick point is kept within this of the bowl's centre (the inner
+floor leaves the brick's centre ~37 mm at most; nearer the wall the pick
+plans clean less often)."""
 comptime SPOT_TRIES = 12
 comptime PICK_DRAWS = 8
 """Postures drawn per plan (each with the planner's own collision redraws)
@@ -787,6 +802,52 @@ def read_scene(
         )
 
 
+def scene_unchanged(
+    mut reader: CameraReader, cam: RigCamera, mut frame: List[UInt8], sc: Scene,
+) raises -> String:
+    """Just before the arm moves: are the bowl and the brick still where the
+    plan was made? Empty if so, else why not. A plan made on a scene the
+    operator has since changed drags the bowl (cycle run 2, ep 10: the bowl
+    moved 159 mm)."""
+    var roi = tower_desk_roi()
+    var brick = PrismModel.tower_brick()
+    var bowl = PrismModel.tower_bowl()
+    var ox = List[Float64]()
+    var oy = List[Float64]()
+    var bx = List[Float64]()
+    var by = List[Float64]()
+    var n_frames = 0
+    var t0 = perf_counter_ns()
+    while n_frames < 8 and Float64(perf_counter_ns() - t0) * 1e-9 < 2.0:
+        if reader.take_latest(frame) == 0:
+            _ = sleep_us(2000)
+            continue
+        n_frames += 1
+        var eo = estimate_prism_pose(frame, cam, printed_bowl_hsv(), bowl, roi)
+        var eb = estimate_prism_pose(frame, cam, printed_brick_hsv(), brick, roi)
+        if pose_confident(eo):
+            ox.append(eo.x)
+            oy.append(eo.y)
+        if (sc.in_bowl and eb.found) or (not sc.in_bowl and pose_confident(eb)):
+            bx.append(eb.x)
+            by.append(eb.y)
+    if len(ox) * 2 < max(n_frames, 1):
+        return String("the bowl is not seen confidently")
+    sort(ox)
+    sort(oy)
+    var dbowl = sqrt((ox[len(ox) // 2] - sc.bowl_x) ** 2 + (oy[len(oy) // 2] - sc.bowl_y) ** 2) * 1000.0
+    if dbowl > SCENE_MOVED_MM:
+        return "the bowl moved " + fixed(dbowl, 1) + " mm"
+    if len(bx) * 2 < max(n_frames, 1):
+        return String("the brick is not seen")
+    sort(bx)
+    sort(by)
+    var dbrick = sqrt((bx[len(bx) // 2] - sc.brick_x) ** 2 + (by[len(by) // 2] - sc.brick_y) ** 2) * 1000.0
+    if dbrick > SCENE_MOVED_MM:
+        return "the brick moved " + fixed(dbrick, 1) + " mm"
+    return String("")
+
+
 def read_outcome(
     mut reader: CameraReader, cam: RigCamera, mut frame: List[UInt8],
     sc: Scene, in_bowl_mm: Float64,
@@ -960,9 +1021,9 @@ def plan_task(
 ) raises -> TaskPlan:
     """TASK 1: pick the brick from the desk and RELEASE IT LOW at the bowl's
     centre (a place plan for a virtual brick there, the fingers 5 mm above
-    the floor), so task 2 knows where it is. TASK 2: pick it in the bowl — at
-    the last release (`dr_*`, relative to the bowl) or, without one, at the
-    camera's read pulled to within `BOWL_PICK_MAX_OFF_M` of the centre — and
+    the floor). TASK 2: pick it in the bowl at the camera's bias-corrected
+    read (the last release `dr_*`, in the world, cross-checks it and gives
+    the yaw), kept within `BOWL_PICK_MAX_OFF_M` of the centre — and
     release it at a drawn desk spot clear of the bowl."""
     var tp = TaskPlan()
     var draw = 0
@@ -1002,32 +1063,36 @@ def plan_task(
     var py: Float64
     var pyaw: Float64
     var src: String
-    var dr_cam = sqrt((sc.brick_x - dr_x) ** 2 + (sc.brick_y - dr_y) ** 2)
-    if dr_valid and dr_cam <= DR_CAM_AGREE_M:
-        # the release point in the WORLD: the bowl is pushed 9-14 mm during a
-        # task 1 and the brick stays where it was let go (first cycle run,
-        # 2026-09-25 — two picks at the moved bowl's centre closed empty)
-        px = dr_x
-        py = dr_y
+    # THE CAMERA'S IN-BOWL READ, BIAS-CORRECTED, is the pick point: minus
+    # `IN_BOWL_CAM_BIAS_*` it matched the release point to ~5 mm on six
+    # undisturbed bricks, and it caught the one the release point did not
+    # (cycle run 2, ep 4: the brick 13 mm off the release along the pinch
+    # axis — it sat differently in the gripper — and three picks at the
+    # release point closed empty, the failed ones nudging it further). The
+    # release point is the cross-check, and gives the yaw when they agree.
+    var cx = sc.brick_x - IN_BOWL_CAM_BIAS_X
+    var cy = sc.brick_y - IN_BOWL_CAM_BIAS_Y
+    var dx = cx - sc.bowl_x
+    var dy = cy - sc.bowl_y
+    var dd = sqrt(dx * dx + dy * dy)
+    var k = min(1.0, BOWL_PICK_MAX_OFF_M / dd) if dd > 0.0 else 0.0
+    px = sc.bowl_x + dx * k
+    py = sc.bowl_y + dy * k
+    var dr_cam = sqrt((cx - dr_x) ** 2 + (cy - dr_y) ** 2)
+    if dr_valid and dr_cam <= DR_YAW_AGREE_M:
         pyaw = dr_yaw
         src = (
-            "the last release (" + fixed(sqrt((px - sc.bowl_x) ** 2 + (py - sc.bowl_y) ** 2) * 1000.0, 1)
-            + " mm off the bowl's centre, the camera " + fixed(dr_cam * 1000.0, 1) + " mm away)"
+            "the camera, bias-corrected (" + fixed(dd * 1000.0, 1) + " mm off the bowl's centre;"
+            + " the last release " + fixed(dr_cam * 1000.0, 1) + " mm away, its yaw)"
         )
     else:
-        if dr_valid:
-            print(
-                "  ⚠ the camera reads the brick", fixed(dr_cam * 1000.0, 1),
-                "mm from the last release: something moved it — taking the camera's read",
-            )
-        var dx = sc.brick_x - sc.bowl_x
-        var dy = sc.brick_y - sc.bowl_y
-        var dd = sqrt(dx * dx + dy * dy)
-        var k = min(1.0, BOWL_PICK_MAX_OFF_M / dd) if dd > 0.0 else 0.0
-        px = sc.bowl_x + dx * k
-        py = sc.bowl_y + dy * k
         pyaw = sc.brick_yaw
-        src = "the camera, pulled to within " + fixed(BOWL_PICK_MAX_OFF_M * 1000.0, 0) + " mm of the centre"
+        src = "the camera, bias-corrected (" + fixed(dd * 1000.0, 1) + " mm off the bowl's centre"
+        if dr_valid:
+            src += "; ⚠ " + fixed(dr_cam * 1000.0, 1) + " mm from the last release — the brick moved, the camera's yaw"
+        src += ")"
+        if k < 1.0:
+            src += " pulled to " + fixed(BOWL_PICK_MAX_OFF_M * 1000.0, 0) + " mm"
     var pb: List[Float64] = [px, py, bz]
     var qb = with_brick(qs, brick_adr, px, py, bz, pyaw)
     var pk = plan_clean(env, planner, body_names, qb, pb, pyaw, q5, cfg_bowl_pick, seed + draw, PICK_DRAWS)
@@ -1224,11 +1289,25 @@ def brick_in_bowl_z(
     ref lo: List[Float64], ref hi: List[Float64],
 ) raises -> Float64:
     """The brick's resting height IN the bowl (world m): dropped 2 cm above
-    the floor at the bowl's centre in the sim scene and settled."""
+    the floor at the bowl's centre and settled — with the bowl upright at a
+    fixed CLEAR spot (0.30, 0.10), not the scene's own pose: a bowl near the
+    base touches the held arm, is lifted during the settle, and the brick
+    then "rests" 10.8 mm below the bowl's origin instead of 16.5 (noeira-54,
+    MuJoCo agrees). The height does not depend on where the bowl is."""
     var qs = q_scene.copy()
+    qs[bowl_adr] = 0.30
+    qs[bowl_adr + 1] = 0.10
+    qs[bowl_adr + 3] = 1.0
+    qs[bowl_adr + 4] = 0.0
+    qs[bowl_adr + 5] = 0.0
+    qs[bowl_adr + 6] = 0.0
     qs[brick_adr] = qs[bowl_adr]
     qs[brick_adr + 1] = qs[bowl_adr + 1]
     qs[brick_adr + 2] = qs[bowl_adr + 2] + 0.045
+    qs[brick_adr + 3] = 1.0
+    qs[brick_adr + 4] = 0.0
+    qs[brick_adr + 5] = 0.0
+    qs[brick_adr + 6] = 0.0
     var v0 = List[Float64](length=NV, fill=0.0)
     env.set_state(qs, v0)
     var hold = ContAction[ACT]()
@@ -1906,6 +1985,10 @@ def main() raises:
                 continue
 
             # ── the episode, on the arm ──────────────────────────────────
+            var changed = scene_unchanged(rig.cams[0], cam, frame, sc)
+            if changed != "":
+                print("  ⚠ the scene changed since it was read (" + changed + ") — re-reading, re-planning")
+                continue
             if not rig.armed:
                 rig.arm_torque(step_ticks)
                 print("  follower torque ON")
