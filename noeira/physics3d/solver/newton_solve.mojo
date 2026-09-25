@@ -4646,7 +4646,10 @@ def _newton_blocked_fields_kernel[
     comptime M_SIZE = _max_one[NV * NV]()
     # ⚠ FROM `je_budget.newton_block_threads`, which the LAUNCH also reads —
     # the stride and `block_dim` must not drift apart.
-    comptime THREADS = newton_block_threads[MAX_CONTACTS]()
+    comptime THREADS = newton_block_threads[
+        DTYPE, NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM,
+        CONE_TYPE,
+    ]()
     # The cooperative STRIDE. Equals `THREADS` in production; see
     # `NEWTON_COOP_DIV`. `block_dim` is `THREADS` either way, so every
     # thread still reaches every `barrier()`.
@@ -7287,5 +7290,10 @@ def solve_newton_blocked[
             grid_dim=(BATCH,),
             # ⚠ SAME SOURCE AS THE KERNEL'S `THREADS`, not `MC`. They were
             # equal by coincidence of both spelling `_max_one[MAX_CONTACTS]`.
-            block_dim=(newton_block_threads[D.MAX_CONTACTS](),),
+            block_dim=(
+                newton_block_threads[
+                    DTYPE, D.NV, D.NJOINT, D.NTENDON, D.NEQUALITY,
+                    D.MAX_CONTACTS, MAX_CONDIM, CONE_TYPE,
+                ](),
+            ),
         )
