@@ -192,7 +192,7 @@ def _usage() -> String:
         " [--task NAME] [--episodes N] [--per-file a,b] [--all-episodes]"
         " [--deflate 0-9]"
         " [--no-host-check] [--dr off|light|full] [--dr-seed N]"
-        " [--dr-preview K] [--joint-zero none|follower]"
+        " [--dr-preview K] [--joint-zero none|follower|follower-v1]"
         " [--look calibrated|legacy]"
     )
 

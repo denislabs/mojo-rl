@@ -54,13 +54,16 @@ Per failed lane, from the brick's and bowl's body positions after the settle
     goal not held   the goal bit was set at some step but not HOLD_STEPS in a row
     held to end     lifted and still in the air when the steps ran out
 
-## `--joint-zero none|follower` — THE TRAINING STORE'S UNIT MAP
+## `--joint-zero none|follower|follower-v1` — THE TRAINING STORE'S UNIT MAP
 
 The joint zero the store was rendered with (`tower_demo_rerender.mojo
 --joint-zero`, recorded in the store manifest's provenance line; absent =
 `none`). The student's degrees mean nothing without it: evaluated under the
 other map, every commanded pan is ~10 degrees off and the rate collapses with
 nothing raising (`tasks/so101_tower_rig.mojo`).
+`follower-v1` is `follower` before 2026-09-25 (roll zero 0, not +5.0): a
+`follower` store from before then says so in its provenance degrees, whose
+fifth number reads 0.00.
 
 ## `--look calibrated|legacy` — THE TRAINING STORE'S LOOK
 
@@ -128,7 +131,7 @@ def _usage() -> String:
         " [--norm FILE] [--policy act|hold] [--episodes N] [--seed0 S]"
         " [--steps N] [--exec N] [--m M] [--task NAME]"
         " [--dr off|light|full] [--dr-seed N] [--dr-draw0 N]"
-        " [--record-demo FILE] [--snap DIR] [--joint-zero none|follower]"
+        " [--record-demo FILE] [--snap DIR] [--joint-zero none|follower|follower-v1]"
         " [--look calibrated|legacy]"
     )
 

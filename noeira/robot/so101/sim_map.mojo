@@ -57,7 +57,7 @@ in the sense `model_rad = deg2rad(lerobot_deg) + zero`:
     shoulder_lift    -3.2  (+-1.2)      -3.6 .. -4.6            -3.6
     elbow_flex       -7.3               -7.3                    -7.3
     wrist_flex       +7.6  (+-3.7)      not observable           0
-    wrist_roll       not observable     not observable           0
+    wrist_roll       +5.0 (see below)   not observable          +5.0
 
 The two fits share no data: (1) 30 marker captures of
 `calibrate_camera_extrinsics.mojo` with the camera HELD at the asset's pose
@@ -68,6 +68,16 @@ overhead frames (overlap 0.29 -> 0.62). The "used" column on a fresh draw of
 scene, so a camera yaw cannot be what the pan zero is absorbing (a yaw it
 could be would move the pan zero by <= 3 deg, not to 0).
 `tools/soarm/check_joint_zero.py` re-runs (2) on any dataset.
+
+THE ROLL (2026-09-25). Once a photo pinned the extrinsics marker at the centre
+of the wrist camera plate's back face (±1 mm; `bake_so_arm101_tower.py` step 8),
+the marker offset stopped being a free parameter, and the roll zero became
+observable: the marker sits 74 mm off the roll axis, where 1 deg is 1.3 mm
+sideways. With the camera free and the marker fixed, the two independent
+captures fit +4.6 deg (2026-09-22, 30 poses) and +5.9 deg (2026-09-25, 32
+poses), +5.0 deg together (rms 10.0 -> 9.4 mm). wrist_flex, freed with it,
+disagrees between the captures (+5.7 / +3.7) and stays 0. The free-offset fit
+had been putting the marker 6-7 mm sideways instead, in both captures.
 
 ⚠ Tied to THAT calibration: a `lerobot-calibrate` re-run moves every mid and
 voids these numbers. `tower_follower_zero_matches` compares the live mids
@@ -87,7 +97,7 @@ from noeira.utils.fmt import col, fixed, pad_left, pad_right
 def tower_follower_zero_deg(i: Int) -> Float64:
     """The so101-tower follower's measured zero, degrees, joint `i` (the
     gripper 0: it is fraction-mapped). See the module docstring."""
-    var v: List[Float64] = [-10.7, -3.6, -7.3, 0.0, 0.0, 0.0]
+    var v: List[Float64] = [-10.7, -3.6, -7.3, 0.0, 5.0, 0.0]
     return v[i]
 
 

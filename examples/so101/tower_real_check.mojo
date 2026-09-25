@@ -105,8 +105,8 @@ comptime DEFAULT_SPLIT_SEED = 7
 def _usage() -> String:
     return String(
         "usage: tower_real_check.mojo --ckpt RUN_ID|DIR|FILE [--ckpt-name best|last]"
-        " [--norm FILE] --student-zero none|follower --store FILE.h5"
-        " --store-zero none|follower [--split all|val] [--split-seed S]"
+        " [--norm FILE] --student-zero none|follower|follower-v1 --store FILE.h5"
+        " --store-zero none|follower|follower-v1 [--split all|val] [--split-seed S]"
         " [--episodes N] [--m M] [--dump FILE.csv] [--moving-only]"
         " [--mask-overhead x0,y0,x1,y1] [--mask-wrist x0,y0,x1,y1]"
         " [--mask-rgb r,g,b] [--mask-preview F.png]"

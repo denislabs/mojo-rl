@@ -92,13 +92,14 @@ def _oracle(p: Int, c: Int, k: Int) -> Vec3:
         return Vec3(-0.905517942, -0.423805332, -0.020646950)
     if c == 1:
         # the overhead camera is on a static body: the same at both poses
+        # (the calibrated pose of 2026-09-25, `so101_tower_stand.xml`)
         if k == 0:
-            return Vec3(0.035260000, -0.113500000, 0.535850000)
+            return Vec3(0.041670000, -0.116980000, 0.536660000)
         if k == 1:
-            return Vec3(0.000000000, -1.000000000, 0.000000000)
+            return Vec3(0.005899757, -0.999958793, 0.006899716)
         if k == 2:
-            return Vec3(0.905517775, 0.000000000, 0.424308329)
-        return Vec3(-0.424308329, 0.000000000, 0.905517775)
+            return Vec3(0.904211175, 0.008281183, 0.427005355)
+        return Vec3(-0.427044897, 0.003719572, 0.904222772)
     # moved, wrist
     if k == 0:
         return Vec3(0.207900746, -0.021464571, 0.248450029)

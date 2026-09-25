@@ -27,7 +27,7 @@ from std.testing import assert_almost_equal, assert_true, assert_false, TestSuit
 from noeira.robot.so101.sim_map import tower_follower_zero_deg
 from noeira.tasks.so101_tower_rig import (
     So101TowerUnits, RIG_ACT, RIG_GRIPPER, RIG_JOINT_ZERO_NONE,
-    RIG_JOINT_ZERO_FOLLOWER,
+    RIG_JOINT_ZERO_FOLLOWER, RIG_JOINT_ZERO_FOLLOWER_V1,
 )
 
 
@@ -54,7 +54,9 @@ def test_follower_puts_the_zero_at_the_measured_reading() raises:
 
 
 def test_both_choices_round_trip() raises:
-    var choices: List[String] = [RIG_JOINT_ZERO_NONE, RIG_JOINT_ZERO_FOLLOWER]
+    var choices: List[String] = [
+        RIG_JOINT_ZERO_NONE, RIG_JOINT_ZERO_FOLLOWER, RIG_JOINT_ZERO_FOLLOWER_V1
+    ]
     for c in choices:
         var u = So101TowerUnits(c)
         for k in range(RIG_ACT):
@@ -81,6 +83,20 @@ def test_the_choices_differ_by_the_zero_and_not_on_the_gripper() raises:
     assert_true(abs(tower_follower_zero_deg(0)) > 5.0)
 
 
+def test_follower_v1_is_follower_with_the_roll_at_zero() raises:
+    """The map before 2026-09-25, kept so the `follower` stores and students
+    of then (roll zero 0) still read in their own units."""
+    var f = So101TowerUnits(RIG_JOINT_ZERO_FOLLOWER)
+    var v = So101TowerUnits(RIG_JOINT_ZERO_FOLLOWER_V1)
+    for k in range(RIG_ACT):
+        if k == 4:
+            assert_almost_equal(v.zero_rad[k], 0.0, atol=1e-15)
+            assert_almost_equal(f.zero_rad[k], 5.0 * pi / 180.0, atol=1e-15)
+        else:
+            assert_almost_equal(v.zero_rad[k], f.zero_rad[k], atol=1e-15)
+    assert_true(v.describe().find("0.00 deg)") >= 0, v.describe())
+
+
 def test_unknown_choice_is_refused_and_describe_names_it() raises:
     var refused = False
     try:
@@ -91,7 +107,7 @@ def test_unknown_choice_is_refused_and_describe_names_it() raises:
     assert_true(So101TowerUnits().describe() == "joint zero none")
     var d = So101TowerUnits(RIG_JOINT_ZERO_FOLLOWER).describe()
     assert_true(d.startswith("joint zero follower ("), d)
-    assert_false(d.find("-10.70 -3.60 -7.30 0.00 0.00") < 0, d)
+    assert_false(d.find("-10.70 -3.60 -7.30 0.00 5.00") < 0, d)
 
 
 def main() raises:

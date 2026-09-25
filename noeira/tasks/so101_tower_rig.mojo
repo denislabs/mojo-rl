@@ -39,7 +39,9 @@ the gripper 0..100 by FRACTION of its range (`robot/so101/sim_map.mojo`, sign
 (`RIG_JOINT_ZERO_*`). `none`: body degrees = radians x 180/pi, the lerobot
 reference's map, what every store before 2026-09-23 was written with.
 `follower`: the so101-tower follower's MEASURED zero
-(`sim_map.tower_follower_zero_deg`: pan -10.7, lift -3.6, elbow -7.3 deg), so
+(`sim_map.tower_follower_zero_deg`: pan -10.7, lift -3.6, elbow -7.3, roll
++5.0 deg — the roll since 2026-09-25: a `follower` store written before that
+carries roll 0 and reads 5 deg of roll off under today's map), so
 a store's degrees are the ones the REAL arm reports at that pose and a
 student trained on it commands the real arm where the sim arm went. Either
 is self-consistent in the sim; a store written under one and evaluated under
@@ -303,6 +305,11 @@ def pack_camera_u8(
 
 comptime RIG_JOINT_ZERO_NONE = "none"
 comptime RIG_JOINT_ZERO_FOLLOWER = "follower"
+comptime RIG_JOINT_ZERO_FOLLOWER_V1 = "follower-v1"
+"""`follower` as it was until 2026-09-25: the same zero with the roll at 0
+(before the marker captures measured +5.0). Every `follower` store and
+checkpoint written before then (the 5cc24a9b / ce84f398 series among them)
+reads in these units — name it to reproduce their numbers."""
 
 
 struct So101TowerUnits(Copyable, Movable):
@@ -320,10 +327,15 @@ struct So101TowerUnits(Copyable, Movable):
     var joint_zero: String
 
     def __init__(out self, joint_zero: String = RIG_JOINT_ZERO_NONE) raises:
-        if joint_zero != RIG_JOINT_ZERO_NONE and joint_zero != RIG_JOINT_ZERO_FOLLOWER:
+        if (
+            joint_zero != RIG_JOINT_ZERO_NONE
+            and joint_zero != RIG_JOINT_ZERO_FOLLOWER
+            and joint_zero != RIG_JOINT_ZERO_FOLLOWER_V1
+        ):
             raise Error(
                 "So101TowerUnits: joint zero '" + joint_zero + "' — expected '"
-                + RIG_JOINT_ZERO_NONE + "' or '" + RIG_JOINT_ZERO_FOLLOWER + "'"
+                + RIG_JOINT_ZERO_NONE + "', '" + RIG_JOINT_ZERO_FOLLOWER
+                + "' or '" + RIG_JOINT_ZERO_FOLLOWER_V1 + "'"
             )
         var sf = So101TowerModel.make_spec_fields[DType.float64]()
         var lo_col = actuator_column(sf, ACT_IDX_CTRL_MIN, RIG_ACT)
@@ -336,8 +348,10 @@ struct So101TowerUnits(Copyable, Movable):
             self.lo.append(Float64(lo_col[k]))
             self.hi.append(Float64(hi_col[k]))
             var z = 0.0
-            if joint_zero == RIG_JOINT_ZERO_FOLLOWER and k != RIG_GRIPPER:
+            if joint_zero != RIG_JOINT_ZERO_NONE and k != RIG_GRIPPER:
                 z = tower_follower_zero_deg(k) * pi / 180.0
+                if joint_zero == RIG_JOINT_ZERO_FOLLOWER_V1 and k == 4:
+                    z = 0.0  # the roll, before 2026-09-25
             self.zero_rad.append(z)
 
     def describe(self) -> String:

@@ -427,8 +427,8 @@ def _tower_cal() raises -> SO101Calibration:
 def test_tower_follower_applies_the_measured_zero() raises:
     """At a body joint's calibrated mid the tower follower's map gives the
     measured zero, the gripper is untouched, and the map announces that it
-    departs from the reference. The pan zero is pinned by value: -10.7 deg is
-    the MEASUREMENT (two fits, `sim_map` module docstring), and a change to
+    departs from the reference. The pan and roll zeros are pinned by value:
+    -10.7 and +5.0 deg are the MEASUREMENTS (two fits, `sim_map` module docstring), and a change to
     it must be a visible edit here, not a drift."""
     var cal = _tower_cal()
     var ref_map = _map()
@@ -437,6 +437,7 @@ def test_tower_follower_applies_the_measured_zero() raises:
     )
     assert_true(m.differs_from_lerobot(), "a measured zero is a departure")
     assert_almost_equal(tower_follower_zero_deg(0), -10.7, atol=1e-12)
+    assert_almost_equal(tower_follower_zero_deg(4), 5.0, atol=1e-12)
     for i in range(SO101_N):
         var raw = Int32(Int(cal.mid(i)))
         var frac = cal.mid(i) - Float64(Int(cal.mid(i)))

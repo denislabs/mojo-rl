@@ -35,7 +35,7 @@ struct So101TowerPlacement(PlacementTable):
         if i == 3:
             return Scalar[DTYPE](1.342561)
         if i == 4:
-            return Scalar[DTYPE](1.17148)
+            return Scalar[DTYPE](1.258746)
         return Scalar[DTYPE](0.223285)
 
     @staticmethod
