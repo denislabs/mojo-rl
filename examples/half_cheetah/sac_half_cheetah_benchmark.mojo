@@ -19,6 +19,9 @@ Targets (comptime):
   -D SAC_GPU      — GPU trainer + `Phyics3dBatchedEnv` on the device
   -D SAC_N_ENVS=N — batched GPU envs (default 1); one update per transition
                     (`updates_per_step = N`)
+  -D SAC_ENV_GRAPH — replay the env's physics step from a CUDA graph
+                    (`USE_ENV_CUDA_GRAPH`; NVIDIA only, run through `pixi run`
+                    so the CUDA interceptor is preloaded)
 
 Args (positional): [seed=1] [env_steps=200000] [checkpoint_path=""]
 
@@ -51,6 +54,7 @@ from noeira.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 
 comptime GPU = is_defined["SAC_GPU"]()
 comptime N_ENVS = get_defined_int["SAC_N_ENVS", 1]()
+comptime ENV_GRAPH = is_defined["SAC_ENV_GRAPH"]()
 
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
 comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM  # 6
@@ -93,7 +97,10 @@ def main() raises:
         backend = String("GPU")
     print("=" * 70)
     print("SAC HalfCheetah — wall clock for", env_steps, "env steps")
-    print("  backend:", backend, "| n_envs:", N_ENVS, "| seed:", run_seed)
+    print(
+        "  backend:", backend, "| n_envs:", N_ENVS, "| env graph:", ENV_GRAPH,
+        "| seed:", run_seed,
+    )
     print("=" * 70)
 
     var wall_s: Float64 = 0.0
@@ -125,13 +132,14 @@ def main() raises:
         var env = BatchedEnvT(ctx)
         ctx.synchronize()
         var t0 = perf_counter_ns()
-        # USE_ENV_CUDA_GRAPH=False as in sac_half_cheetah_training_gpu.mojo
-        # (the blocked Newton contact kernel is not capture-safe).
+        # The env graph is off by default, as in sac_half_cheetah_training_gpu.mojo.
+        # On HalfCheetah the captured step replays bit-identically to eager
+        # (benchmarks/physics3d_gpu/bench_half_cheetah_batch.mojo checks it).
         _ = agent.train[
             BatchedEnvT,
             N_ENVS=N_ENVS,
             USE_TRAIN_CUDA_GRAPH=True,
-            USE_ENV_CUDA_GRAPH=False,
+            USE_ENV_CUDA_GRAPH=ENV_GRAPH,
         ](
             env,
             env_steps,
@@ -183,6 +191,7 @@ def main() raises:
     print(
         "RESULT backend=noeira-" + backend,
         "n_envs=" + String(N_ENVS),
+        "env_graph=" + String(ENV_GRAPH),
         "seed=" + String(run_seed),
         "env_steps=" + String(env_steps),
         "wall_s=" + String(wall_s),
