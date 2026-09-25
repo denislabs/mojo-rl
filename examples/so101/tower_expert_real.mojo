@@ -178,7 +178,8 @@ from noeira.tasks.posed_reset import posed_qpos, task_meta_words
 from noeira.tasks.so101_tower_expert_plan import (
     TowerExpertEnv, TowerGraspPlanner, TowerGraspPlan, PlanLeg, fingertip_point,
     ACT, N_ARM, NQ, HUMAN_JAW_OPEN, HUMAN_Z_GRASP, CLEAR_PLAN_TILT,
-    PLAN_PEN_OK_MM, N_CARRY, N_DESCEND, N_OPEN, APPROACH_D, ROLL_SEED_HUMAN, TIP_REACH,
+    PLAN_PEN_OK_MM, IK_OK_MM, PlanCfg, Planned, plan_clean, with_brick, pick_place_legs,
+    N_OPEN,
 )
 from noeira.tasks.so101_tower_overhead import (
     OVERHEAD_CALIB, tower_overhead_pose, tower_desk_roi, printed_brick_hsv,
@@ -264,14 +265,23 @@ comptime BOWL_JAW: Float64 = 0.35
 everything done INSIDE the bowl — the task-1 release and the task-2 pick:
 0.6 swings the moving jaw into the floor and the walls (planning, 340 picks:
 27 clean at 0.6 against 110 at 0.35 with the 12 mm aim offset)."""
+comptime BOWL_RELEASE_JAW: Float64 = 0.25
+"""Task 1's release INSIDE the bowl opens only this far (`--bowl-release-jaw`):
+at 0.35 the bowl was pushed 9-14 mm in every task 1 of the first cycle run
+(the moving jaw swinging out toward the wall as it opens); the 25 mm brick
+is free from ~0.14."""
+comptime JAW_EMPTY_RAD: Float64 = 0.0
+"""After the close, a jaw below this closed on nothing (or on a corner): the
+pick is abandoned. Measured (the gripper's measured line): holding the brick
+0.116-0.121 rad, empty -0.149, a corner grip -0.095 (dropped on the carry)."""
+comptime DR_CAM_AGREE_M: Float64 = 0.04
+"""Task 2 picks at the last release only if the camera's rough in-bowl read
+is within this of it (the read is 29-48 mm off at worst on a centred brick)."""
 comptime BOWL_PICK_MAX_OFF_M: Float64 = 0.02
 """Task 2 without a release to reckon from: the camera's in-bowl read,
 pulled to within this of the bowl's centre (the fit reads a half-hidden
 brick 29-48 mm off; picks 15 mm off the centre plan clean half as often)."""
 comptime SPOT_TRIES = 12
-comptime ABOVE_M: Float64 = 0.06
-"""A place's way in and out: this far above its pre-grasp tip point, so the
-held brick clears the bowl's 45 mm rim."""
 comptime PICK_DRAWS = 8
 """Postures drawn per plan (each with the planner's own collision redraws)
 before giving up: the planner does not redraw a posture the IK misses."""
@@ -283,8 +293,6 @@ run, 2026-09-25, 10 bricks in the bowl, single frames) — at 45 two of ten
 real successes were scored MOVED. A brick BESIDE the bowl is at least 68 mm
 away (the octagon's apothem 56 + half the brick); 60 is between."""
 comptime MISSED_MM: Float64 = 15.0
-comptime IK_OK_MM: Float64 = 10.0
-"""A plan whose IK misses a leg's target by more needs `force` to run."""
 comptime STILL_MM: Float64 = 1.5
 comptime SCENE_TIMEOUT_S: Float64 = 120.0
 comptime MIN_SEP_M: Float64 = 0.088
@@ -948,7 +956,7 @@ def plan_task(
     ref qs: List[Float64], ref q5: List[Float64], sc: Scene, ref q_scene: List[Float64],
     brick_adr: Int, bz: Float64, cfg_desk_pick: PlanCfg, cfg_desk_release: PlanCfg,
     cfg_bowl_pick: PlanCfg, cfg_bowl_release: PlanCfg, jaw_open: Float64, bowl_jaw: Float64,
-    dr_valid: Bool, dr_dx: Float64, dr_dy: Float64, dr_yaw: Float64, seed: Int, verbose: Bool,
+    dr_valid: Bool, dr_x: Float64, dr_y: Float64, dr_yaw: Float64, seed: Int, verbose: Bool,
 ) raises -> TaskPlan:
     """TASK 1: pick the brick from the desk and RELEASE IT LOW at the bowl's
     centre (a place plan for a virtual brick there, the fingers 5 mm above
@@ -967,7 +975,7 @@ def plan_task(
         var qv = with_brick(qs, brick_adr, sc.bowl_x, sc.bowl_y, bz, pk.plan.yaw)
         var pl = plan_clean(env, planner, body_names, qv, pc, pk.plan.yaw, pk.plan.q_lift, cfg_bowl_release, seed + draw, PICK_DRAWS)
         draw += pl.draws
-        tp.legs = pick_place_legs(env, planner, pk.plan, pl.plan, jaw_open, bowl_jaw, False, tp.jaws)
+        tp.legs = pick_place_legs(env, planner, pk.plan, pl.plan, jaw_open, cfg_bowl_release.jaw, False, tp.jaws)
         for k in range(3):
             tp.tip_goal[k] = pk.plan.tip_goal[k]
         tp.tx = sc.bowl_x
@@ -994,12 +1002,24 @@ def plan_task(
     var py: Float64
     var pyaw: Float64
     var src: String
-    if dr_valid:
-        px = sc.bowl_x + dr_dx
-        py = sc.bowl_y + dr_dy
+    var dr_cam = sqrt((sc.brick_x - dr_x) ** 2 + (sc.brick_y - dr_y) ** 2)
+    if dr_valid and dr_cam <= DR_CAM_AGREE_M:
+        # the release point in the WORLD: the bowl is pushed 9-14 mm during a
+        # task 1 and the brick stays where it was let go (first cycle run,
+        # 2026-09-25 — two picks at the moved bowl's centre closed empty)
+        px = dr_x
+        py = dr_y
         pyaw = dr_yaw
-        src = String("the last release")
+        src = (
+            "the last release (" + fixed(sqrt((px - sc.bowl_x) ** 2 + (py - sc.bowl_y) ** 2) * 1000.0, 1)
+            + " mm off the bowl's centre, the camera " + fixed(dr_cam * 1000.0, 1) + " mm away)"
+        )
     else:
+        if dr_valid:
+            print(
+                "  ⚠ the camera reads the brick", fixed(dr_cam * 1000.0, 1),
+                "mm from the last release: something moved it — taking the camera's read",
+            )
         var dx = sc.brick_x - sc.bowl_x
         var dy = sc.brick_y - sc.bowl_y
         var dd = sqrt(dx * dx + dy * dy)
@@ -1109,7 +1129,7 @@ def plan_cycles(
         var t2 = plan_task(
             2, env, planner, body_names, qs2, q5, sc2, q_scene, brick_adr, bz,
             cfg_desk_pick, cfg_desk_release, cfg_bowl_pick, cfg_bowl_release,
-            jaw_open, bowl_jaw, True, 0.0, 0.0, t1.place_yaw, seed0 + 100 * n + 50, n == 0,
+            jaw_open, bowl_jaw, True, sc.bowl_x, sc.bowl_y, t1.place_yaw, seed0 + 100 * n + 50, n == 0,
         )
         n += 1
         draws += t1.draws + t2.draws
@@ -1332,164 +1352,6 @@ def plan_bowl_picks(
     )
 
 
-@fieldwise_init
-struct PlanCfg(Copyable, Movable):
-    """One grasp plan's settings: the tilt draw, the jaw the collision pass
-    opens, the support surface and the fingers' height against it."""
-
-    var tilt_lo_deg: Float64
-    var tilt_hi_deg: Float64
-    var jaw: Float64
-    var support: String
-    """`desk_mat` (the desk, every contact) or `bowl_bowl` (its FLOOR, by the
-    contact normal: the walls stay in the veto — `set_support`)."""
-    var clear_m: Float64
-    """`desk_clear_m`: the fingers' lowest point against the support,
-    negative = pressed into it."""
-
-
-struct Planned(Movable):
-    var plan: TowerGraspPlan
-    var ok: Bool
-    var draws: Int
-    var seed: Int
-
-    def __init__(out self, var plan: TowerGraspPlan, ok: Bool, draws: Int, seed: Int):
-        self.plan = plan^
-        self.ok = ok
-        self.draws = draws
-        self.seed = seed
-
-
-def plan_is_clean(plan: TowerGraspPlan) -> Bool:
-    return (
-        plan.pen_mm <= PLAN_PEN_OK_MM and max(plan.e_grasp, plan.e_lift) * 1000.0 <= IK_OK_MM
-        and plan.close_on_tip
-    )
-
-
-def plan_clean(
-    mut env: E, mut planner: TowerGraspPlanner, ref body_names: List[String],
-    ref qs: List[Float64], ref pb: List[Float64], yaw: Float64,
-    ref q_seed: List[Float64], cfg: PlanCfg, seed: Int, draws: Int,
-) raises -> Planned:
-    """A grasp plan for a brick at `pb` in the scene `qs`, redrawn (up to
-    `draws` postures, seeds `seed`, `seed + 1`, ...) until clean: the planner
-    redraws a COLLIDING posture itself, not one the IK cannot reach. The
-    planner's settings are restored."""
-    var v0 = List[Float64](length=NV, fill=0.0)
-    var saved_clear = planner.desk_clear_m
-    var saved_lo = planner.posture.tilt_lo
-    var saved_hi = planner.posture.tilt_hi
-    planner.desk_clear_m = cfg.clear_m
-    planner.posture.tilt_lo = cfg.tilt_lo_deg * pi / 180.0
-    planner.posture.tilt_hi = cfg.tilt_hi_deg * pi / 180.0
-    var support: List[String] = [cfg.support]
-    planner.set_support(body_names, support, cfg.support != "desk_mat")
-    var plan = TowerGraspPlan()
-    var ok = False
-    var n = 0
-    for d in range(draws):
-        env.set_state(qs, v0)
-        seed_rng(seed + d)
-        plan = planner.plan_grasp(env, pb, yaw, q_seed, cfg.jaw)
-        n = d + 1
-        ok = plan_is_clean(plan)
-        if ok:
-            break
-    var desk: List[String] = ["desk_mat"]
-    planner.set_support(body_names, desk, False)
-    planner.desk_clear_m = saved_clear
-    planner.posture.tilt_lo = saved_lo
-    planner.posture.tilt_hi = saved_hi
-    env.set_state(qs, v0)
-    return Planned(plan^, ok, n, seed + n - 1)
-
-
-def with_brick(
-    ref qs: List[Float64], brick_adr: Int, x: Float64, y: Float64, z: Float64, yaw: Float64,
-) -> List[Float64]:
-    var q = qs.copy()
-    q[brick_adr] = x
-    q[brick_adr + 1] = y
-    q[brick_adr + 2] = z
-    q[brick_adr + 3] = cos(yaw / 2.0)
-    q[brick_adr + 4] = 0.0
-    q[brick_adr + 5] = 0.0
-    q[brick_adr + 6] = sin(yaw / 2.0)
-    return q^
-
-
-def above_pose(
-    mut env: E, mut planner: TowerGraspPlanner, plan: TowerGraspPlan, dz: Float64,
-) -> Tuple[List[Float64], Float64]:
-    """The joints that put the plan's pre-grasp tip point `dz` HIGHER, with
-    the plan's tilt and pinch (IK seeded from its pre-grasp): the way in and
-    out of the bowl passes over its rim, not through it. Returns (joints, IK
-    error in m)."""
-    var fx = sin(plan.tilt) * cos(plan.bearing)
-    var fy = sin(plan.tilt) * sin(plan.bearing)
-    var fz = -cos(plan.tilt)
-    var t = List[Float64]()
-    t.append(plan.tip_goal[0] - APPROACH_D * fx)
-    t.append(plan.tip_goal[1] - APPROACH_D * fy)
-    # the IK's tip mode aims `target - (0, 0, TIP_REACH)` (`_plan_tilted`)
-    t.append(plan.tip_goal[2] - APPROACH_D * fz + dz + TIP_REACH)
-    var q = List[Float64](length=N_ARM, fill=0.0)
-    var e = planner.arm.ik(env, t, plan.q_pre, plan.yaw, q, plan.tilt, ROLL_SEED_HUMAN, True)
-    return (q^, e)
-
-
-def pick_place_legs(
-    mut env: E, mut planner: TowerGraspPlanner,
-    pick: TowerGraspPlan, place: TowerGraspPlan, jaw_pick: Float64, jaw_place: Float64,
-    pick_in_bowl: Bool, mut jaws: List[Float64],
-) -> List[PlanLeg]:
-    """A pick and a PLACE made of a second grasp plan run backwards: the
-    pick's pre, descent and close; out of a bowl, back UP the approach
-    before the lift (a joint-space lift from its floor can sweep into the
-    wall); the lift; carried to `ABOVE_M` over the place plan's pre-grasp,
-    down to it, LOWERED along its approach (jaw closed), opened, retreated
-    back up the approach and to the pose above. `jaws`: each leg's open-jaw
-    target."""
-    var out = List[PlanLeg]()
-    jaws.clear()
-    var none = List[Float64]()
-    for leg in pick.legs(place=False, close_steps=1):
-        if leg.name == "hold":
-            continue
-        if leg.name == "lift" and pick_in_bowl:
-            var n_pw = len(pick.waypoints) - 1
-            for j in range(n_pw - 1, -1, -1):
-                out.append(PlanLeg("out", pick.waypoints[j].copy(), False, N_DESCEND // n_pw, False, False))
-                jaws.append(jaw_pick)
-        out.append(leg.copy())
-        jaws.append(jaw_pick)
-    var ab = above_pose(env, planner, place, ABOVE_M)
-    var above_ok = ab[1] * 1000.0 <= IK_OK_MM
-    if above_ok:
-        out.append(PlanLeg("carry", ab[0].copy(), False, N_CARRY, False, False))
-        jaws.append(jaw_place)
-        out.append(PlanLeg("down", place.q_pre.copy(), False, N_DESCEND // 2, False, False))
-        jaws.append(jaw_place)
-    else:
-        out.append(PlanLeg("carry", place.q_pre.copy(), False, N_CARRY, False, False))
-        jaws.append(jaw_place)
-    var n_wp = len(place.waypoints) - 1
-    for j in range(1, n_wp + 1):
-        out.append(PlanLeg("lower", place.waypoints[j].copy(), False, N_DESCEND // n_wp, False, False))
-        jaws.append(jaw_place)
-    out.append(PlanLeg("open", none.copy(), True, N_OPEN, False, False))
-    jaws.append(jaw_place)
-    for j in range(n_wp - 1, -1, -1):
-        out.append(PlanLeg("retreat", place.waypoints[j].copy(), True, N_DESCEND // n_wp, False, False))
-        jaws.append(jaw_place)
-    if above_ok:
-        out.append(PlanLeg("up", ab[0].copy(), True, N_DESCEND // 2, False, False))
-        jaws.append(jaw_place)
-    return out^
-
-
 def read_place_outcome(
     mut reader: CameraReader, cam: RigCamera, mut frame: List[UInt8],
     sc: Scene, tx: Float64, ty: Float64,
@@ -1541,7 +1403,7 @@ def _usage():
         "       [--settled-vel RAD_S] [--settle-steps N] [--leg-settle N] [--sag-ki K] [--pinch-offset-mm MM]\n"
         "       [--step TICKS] [--in-bowl-mm MM] [--calib FILE] [--port DEV] [--out DIR]\n"
         "       [--dataset NAME --wrist-camera DEV [--project P] [--task STR] [--resume]]\n"
-        "       [--cycle [--auto] [--task2 STR] [--bowl-jaw RAD]]\n"
+        "       [--cycle [--auto] [--task2 STR] [--bowl-jaw RAD] [--bowl-release-jaw RAD]]\n"
         "       tower_expert_real.mojo --plan-only START_POSES.csv [--seed S] [--tilt-range ..]"
     )
 
@@ -1574,6 +1436,7 @@ def main() raises:
     var auto = False
     var task2 = String(TASK2_LANGUAGE)
     var bowl_jaw = BOWL_JAW
+    var bowl_release_jaw = BOWL_RELEASE_JAW
     var project = String(DEFAULT_PROJECT)
     var dataset = String("")
     var wrist = String("")
@@ -1646,6 +1509,8 @@ def main() raises:
             task2 = v
         elif a == "--bowl-jaw":
             bowl_jaw = Float64(v)
+        elif a == "--bowl-release-jaw":
+            bowl_release_jaw = Float64(v)
         elif a == "--plan-cycle":
             plan_cycle = v
         elif a == "--plan-bowl-pick":
@@ -1780,7 +1645,7 @@ def main() raises:
     var cfg_desk_pick = PlanCfg(tlo, thi, jaw_open, String("desk_mat"), desk_clear_mm / 1000.0)
     var cfg_desk_release = PlanCfg(tlo, thi, jaw_open, String("desk_mat"), RELEASE_GAP_M)
     var cfg_bowl_pick = PlanCfg(5.0, 35.0, bowl_jaw, String("bowl_bowl"), 0.0)
-    var cfg_bowl_release = PlanCfg(5.0, 35.0, bowl_jaw, String("bowl_bowl"), RELEASE_GAP_M)
+    var cfg_bowl_release = PlanCfg(5.0, 35.0, bowl_release_jaw, String("bowl_bowl"), RELEASE_GAP_M)
     if plan_cycle != "":
         plan_cycles(
             plan_cycle, env, planner, body_names, q_scene, brick_adr, bowl_adr, seed0,
@@ -1895,11 +1760,12 @@ def main() raises:
     var bz = 0.0
     if cycle:
         bz = brick_in_bowl_z(env, q_scene, brick_adr, bowl_adr, planner.arm.lo, planner.arm.hi)
-    # dead reckoning: where the last task-1 release put the brick, relative
-    # to the bowl (the camera reads a brick in the bowl 29-48 mm off)
+    # dead reckoning: where the last task-1 release put the brick, in the
+    # WORLD (the camera reads a brick in the bowl 29-48 mm off; the bowl is
+    # pushed during task 1, the brick is not)
     var dr_valid = False
-    var dr_dx = 0.0
-    var dr_dy = 0.0
+    var dr_x = 0.0
+    var dr_y = 0.0
     var dr_yaw = 0.0
     try:
         var ep = 0
@@ -1992,7 +1858,7 @@ def main() raises:
                     var tp = plan_task(
                         task_n, env, planner, body_names, qs, q5, sc, q_scene, brick_adr, bz,
                         cfg_desk_pick, cfg_desk_release, cfg_bowl_pick, cfg_bowl_release,
-                        jaw_open, bowl_jaw, dr_valid, dr_dx, dr_dy, dr_yaw, seed0 + draw, True,
+                        jaw_open, bowl_jaw, dr_valid, dr_x, dr_y, dr_yaw, seed0 + draw, True,
                     )
                     draw += tp.draws
                     legs = tp.legs.copy()
@@ -2057,6 +1923,7 @@ def main() raises:
             var tip_close = -1.0
             var jaw_after = -1.0
             var aborted = String("")
+            var empty_close = False
             print("  running — press Enter to ABORT")
             stdin.discard_pending()
             var rec_index = -1
@@ -2080,6 +1947,27 @@ def main() raises:
                         close_how = String("trigger") if rep.find("TRIGGERED") >= 0 else String("timeout")
                     if legs[li].name == "close":
                         jaw_after = rig.q[5]
+                        if jaw_after < JAW_EMPTY_RAD:
+                            # holding the brick the jaw stalls at 0.116-0.121;
+                            # empty it closes to -0.149 (first cycle run)
+                            print(
+                                "  ⚠ EMPTY CLOSE (jaw", fixed(jaw_after, 3),
+                                "rad < " + fixed(JAW_EMPTY_RAD, 2) + "): the pick missed —"
+                                " opening, backing out along the approach, going home",
+                            )
+                            empty_close = True
+                            # OPEN FIRST, then back out with the jaw open: a
+                            # half-closed jaw may hold the bowl's wall, and a
+                            # ramp home with it closed dragged the bowl to
+                            # the arm's base (first cycle run, ep 5)
+                            var none = List[Float64]()
+                            print("   ", rig.run_leg(env, PlanLeg("open", none.copy(), True, N_OPEN, False, False), settle_steps, leg_settle, stdin))
+                            for bj in range(li - 1, -1, -1):
+                                if legs[bj].name == "descend" or legs[bj].name == "pre":
+                                    rig.jaw_open = jaws[bj]
+                                    var back = PlanLeg("back", legs[bj].q.copy(), True, legs[bj].steps, False, False)
+                                    print("   ", rig.run_leg(env, back, settle_steps, leg_settle, stdin))
+                            break
             except e:
                 aborted = String(e)
                 print("  ⚠", aborted)
@@ -2127,14 +2015,20 @@ def main() raises:
                 n_ok += 1
             buckets += " " + String(task_n) + ":" + outcome
             print(
-                "  -> TASK", task_n, outcome, "| late ticks", rig.late, "| dropped", rig.drops,
+                "  -> TASK", task_n, outcome, "(empty close)" if empty_close else "",
+                "| late ticks", rig.late, "| dropped", rig.drops,
             )
             # the dead reckoning for the next task 2
-            dr_valid = cycle and task_n == 1 and outcome == "SUCCESS"
-            if dr_valid:
-                dr_dx = tx - sc.bowl_x
-                dr_dy = ty - sc.bowl_y
-                dr_yaw = place_yaw
+            if cycle and task_n == 1:
+                dr_valid = outcome == "SUCCESS"
+                if dr_valid:
+                    dr_x = tx
+                    dr_y = ty
+                    dr_yaw = place_yaw
+            elif cycle and outcome != "MISSED":
+                # a MISSED pick left the brick in the bowl, most likely where
+                # it was (the next read checks the camera agrees)
+                dr_valid = False
             with open(out_dir + "/ep" + String(ep + 1) + ".tsv", "w") as fh:
                 fh.write(rig.trace)
             var kept = String("-")
