@@ -52,7 +52,7 @@ how hard it presses. Start here and measure.
 ## THE EXECUTION: the sim executor's ramps, with the servos' own waits
 
 Per leg the joint command ramps linearly from the last command to the target
-over the leg's step budget at 31.25 Hz (the plan's rate), as the sim
+over the leg's step budget at 30 Hz (the recordings' rate), as the sim
 executor's default demonstrator does. The real servos lag their goals where
 the sim's stiff actuators did not, so three things differ, all printed:
 1. after each moving leg the arm is given up to `--leg-settle` steps to settle
@@ -73,10 +73,30 @@ recorder's `--return-rest`), out of the camera's way, and the outcome is read.
 ## THE OUTCOME: the camera's brick-in-bowl
 
 Over ~1 s of frames with the arm home: the brick found (any coverage — the
-bowl's wall hides part of it) within `--in-bowl-mm` (45, the task's
-`Near(brick, bowl, 0.045)`) of the bowl. Otherwise the bucket: MISSED (the
+bowl's wall hides part of it) within `--in-bowl-mm` of the bowl on at least
+half the frames (60 mm horizontal, not the task's 45: see `IN_BOWL_MM`). Otherwise the bucket: MISSED (the
 brick within 15 mm of where it started), MOVED (elsewhere on the desk), or
 LOST (not seen).
+
+## `--dataset NAME`: the episodes as a LeRobot dataset (with `--arm`)
+
+The expert as a DATA ENGINE: every episode is recorded as `record_ui.mojo`
+records a teleoperated one — `projects/<--project, so101-tower>/datasets/NAME`,
+checkpointed after each episode (`--resume` continues one), both cameras
+(`--camera` -> `observation.images.overhead`, `--wrist-camera` ->
+`observation.images.wrist`, 640x480 at 30 Hz, the overhead camera pacing the
+tick), `observation.state` the follower's measured joints and `action` the
+commanded ones, in LeRobot units (degrees, the gripper 0..100, through the
+calibration — no follower zero), and the task string of the printed
+recording (`--task`). An episode runs from the first leg to the arm folded
+and still at home (`N_REST_HOLD`). The camera's verdict keeps a SUCCESS and
+rejects anything else (`meta/rejected_episodes.json`, skipped on import);
+the operator can flip it at the prompt. ⚠ The gripper's action when closed
+is 0 (the expert commands fully closed; an operator's leader rarely is).
+
+    pixi run -e jetson mojo run -I . examples/so101/tower_expert_real.mojo --arm \\
+        --camera /dev/soarm_cam_overhead --wrist-camera /dev/soarm_cam_wrist \\
+        --dataset cube-in-bowl-expert --episodes 50
 
 ## `--plan-only CSV`: the planning half alone
 
@@ -88,11 +108,13 @@ the sim's rest pose, and the plans that would need `force` are counted.
 
 `episodes.tsv` (one row per episode: estimates, plan, close, outcome),
 `epN.tsv` (every control tick: leg, commanded and measured joints in model
-rad, joint velocities, the FK fingertip and its distance to `tip_goal`), and
+rad, joint velocities, Present_Load in % of max torque, the FK fingertip and
+its distance to `tip_goal`), and
 `epN_start.png` / `epN_end.png` (the overhead frames the poses and the
 outcome were read from).
 """
 
+from std.builtin.sort import sort
 from std.math import atan2, cos, sin, sqrt, pi
 from std.os import makedirs
 from std.random import seed as seed_rng
@@ -103,12 +125,15 @@ from max.gpu.host import DeviceContext
 
 from noeira.core.concurrent.thread import sleep_us
 from noeira.core.cont_action import ContAction
+from noeira.core.project import project_dataset_dir
 from noeira.core.run import epoch_seconds, iso8601_utc
+from noeira.data.lerobot_rejected import reject_episode
+from noeira.data.lerobot_write import LeRobotWriter, open_recording
 from noeira.io.fileio import StdinReader, stdin_is_tty
 from noeira.io.png import save_png
 from noeira.physics3d.gpu.constants import MODEL_CURRICULUM_SIZE
 from noeira.physics3d.parser.runtime_load import parse_model_runtime
-from noeira.robot.so101 import SO101Arm, SO101_N
+from noeira.robot.so101 import SO101Arm, SO101_N, joint_name
 from noeira.robot.so101.deploy_shutdown import return_and_release
 from noeira.robot.so101.ports import follower_port, port_refusal
 from noeira.robot.so101.sim_map import SimJointMap
@@ -146,9 +171,19 @@ comptime FAMILY_PATH = "noeira/tasks/families/so101_tower.family"
 comptime TASK = "so101_tower_cube_in_bowl"
 comptime OUT_ROOT = "projects/so101-tower/rig_runs"
 
-comptime PERIOD_NS = 32_000_000
-"""31.25 Hz: the plans' step budgets are at the sim's control rate
-(`FRAME_SKIP x TIMESTEP` = 0.032 s)."""
+comptime HZ = 30
+comptime PERIOD_NS = 33_333_333
+"""30 Hz, the recorded datasets' rate (`record_ui.mojo`); recording, the
+overhead camera IS the clock. The plans' step budgets are at the sim's 31.25
+Hz, so each leg runs 4 % slower than in sim (the first rig run, 10/10, was
+at 31.25 before recording existed)."""
+comptime N_REST_HOLD = 15
+"""Recording: frames held at rest after the ramp home (the sim recorder's
+`--return-rest` hold) — the episode ends folded and still."""
+comptime TASK_LANGUAGE = "Grab the cube and put it in the bowl"
+"""The printed recording's task string, byte for byte (`--task`): a policy
+is conditioned on it."""
+comptime DEFAULT_PROJECT = "so101-tower"
 comptime MAX_STEP_TICKS = 80
 comptime TRACK_STEP_TICKS = 512
 """The two-phase clamp on the goal's lead over the present position
@@ -179,7 +214,13 @@ comptime N_HOME = 60
 comptime SAG_MAX: Float64 = 0.35
 """The sag integral's clamp (rad), the sim executor's."""
 comptime DESK_CLEAR_MM: Float64 = -3.0
-comptime IN_BOWL_MM: Float64 = 45.0
+comptime IN_BOWL_MM: Float64 = 60.0
+"""Brick centre to bowl centre, horizontal, for SUCCESS. Not the task's 45 mm
+(3D, body origins): in the bowl the camera sees only the brick's upper half
+over the wall, and the fit reads it 29-48 mm from the bowl's centre (first rig
+run, 2026-09-25, 10 bricks in the bowl, single frames) — at 45 two of ten
+real successes were scored MOVED. A brick BESIDE the bowl is at least 68 mm
+away (the octagon's apothem 56 + half the brick); 60 is between."""
 comptime MISSED_MM: Float64 = 15.0
 comptime IK_OK_MM: Float64 = 10.0
 """A plan whose IK misses a leg's target by more needs `force` to run."""
@@ -239,6 +280,10 @@ struct Rig(Movable):
     """Measured, model rad (unclamped), 6."""
     var v: List[Float64]
     """Measured, rad/s, 6."""
+    var load: List[Float64]
+    """Present_Load, % of the servo's maximum torque, signed, 6."""
+    var load_peak: List[Float64]
+    """This leg's largest |load| per joint."""
     var tip: List[Float64]
     var tip_goal: List[Float64]
     var jaw_open: Float64
@@ -252,6 +297,15 @@ struct Rig(Movable):
     var late: Int
     var leg: String
     var trace: String
+    var cams: List[CameraReader]
+    """The overhead camera, then (recording) the wrist camera."""
+    var writers: List[LeRobotWriter]
+    """Recording: the dataset writer (one), else empty."""
+    var frames: List[List[UInt8]]
+    var recording_now: Bool
+    """Inside a recorded episode: the cameras pace the tick and every tick is
+    a dataset row."""
+    var rec_rows: Int
 
     def __init__(out self, var arm: SO101Arm, var jmap: SimJointMap):
         self.arm = arm^
@@ -264,6 +318,8 @@ struct Rig(Movable):
         self.sag_ki = 0.0
         self.q = List[Float64](length=ACT, fill=0.0)
         self.v = List[Float64](length=ACT, fill=0.0)
+        self.load = List[Float64](length=ACT, fill=0.0)
+        self.load_peak = List[Float64](length=ACT, fill=0.0)
         self.tip = List[Float64](length=3, fill=0.0)
         self.tip_goal = List[Float64](length=3, fill=0.0)
         self.jaw_open = HUMAN_JAW_OPEN
@@ -277,6 +333,11 @@ struct Rig(Movable):
         self.late = 0
         self.leg = String("")
         self.trace = String("")
+        self.cams = List[CameraReader]()
+        self.writers = List[LeRobotWriter]()
+        self.frames = List[List[UInt8]]()
+        self.recording_now = False
+        self.rec_rows = 0
 
     def read_joints(mut self) raises -> Bool:
         """Positions only (torque off or on); False on a partial read."""
@@ -321,14 +382,19 @@ struct Rig(Movable):
         """Positions, velocities, and the FK fingertip (on the planner's env)."""
         var raw = List[Int32](length=SO101_N, fill=Int32(0))
         var vraw = List[Int32](length=SO101_N, fill=Int32(0))
+        var lraw = List[Int32](length=SO101_N, fill=Int32(0))
         if self.arm.read_positions(Span(raw)) != SO101_N:
             return False
         if self.arm.read_velocities(Span(vraw)) != SO101_N:
+            return False
+        if self.arm.read_loads(Span(lraw)) != SO101_N:
             return False
         for i in range(SO101_N):
             self.raw[i] = raw[i]
             self.q[i] = self.jmap.to_sim_unclamped(self.arm.cal, i, raw[i])
             self.v[i] = Float64(vraw[i]) * 2.0 * pi / 4096.0
+            self.load[i] = Float64(lraw[i]) / 10.0
+            self.load_peak[i] = max(self.load_peak[i], abs(self.load[i]))
         for i in range(ACT):
             env.d.qpos.data[i] = self.q[i]
         env._fields_fk()
@@ -338,20 +404,25 @@ struct Rig(Movable):
         return True
 
     def tick(mut self, mut env: E, mut stdin: StdinReader) raises:
-        """Write the command, wait out the period, measure; one trace row."""
+        """Wait for the period (recording: for the cameras' next frames),
+        measure, write the command; one trace row and, recording, one dataset
+        row (the frames, the state just measured, the command just written —
+        `record.mojo`'s order)."""
         if stdin.has_input():
             raise Error("ABORT: stopped by the operator")
-        var goals = List[Int32](length=SO101_N, fill=Int32(0))
-        for i in range(SO101_N):
-            goals[i] = self.jmap.from_sim(self.arm.cal, i, self.q_cmd[i])
-        self.arm.write_goals(Span(goals))
-        var now = Int(perf_counter_ns())
-        if now > self.t_next:
-            self.late += 1
-            self.t_next = now
-        while Int(perf_counter_ns()) < self.t_next:
-            pass
-        self.t_next += PERIOD_NS
+        if self.recording_now:
+            for c in range(len(self.cams)):
+                var got = self.cams[c].take_blocking(self.frames[c])
+                if not got:
+                    raise Error("a camera stopped delivering frames")
+        else:
+            var now = Int(perf_counter_ns())
+            if now > self.t_next:
+                self.late += 1
+                self.t_next = now
+            while Int(perf_counter_ns()) < self.t_next:
+                pass
+            self.t_next += PERIOD_NS
         self.tick_n += 1
         if self.sense(env):
             self.drops_run = 0
@@ -360,6 +431,21 @@ struct Rig(Movable):
             self.drops_run += 1
             if self.drops_run >= DROP_ABORT:
                 raise Error("ABORT: " + String(DROP_ABORT) + " partial bus reads in a row")
+        var goals = List[Int32](length=SO101_N, fill=Int32(0))
+        for i in range(SO101_N):
+            goals[i] = self.jmap.from_sim(self.arm.cal, i, self.q_cmd[i])
+        self.arm.write_goals(Span(goals))
+        if self.recording_now:
+            # LeRobot units, as `record.mojo` writes them: the follower's
+            # measured ticks and the commanded ticks, through the calibration
+            # (degrees; the gripper 0..100) — no follower zero
+            var state = List[Float64]()
+            var action = List[Float64]()
+            for i in range(SO101_N):
+                state.append(self.arm.cal.degrees(i, self.raw[i]))
+                action.append(self.arm.cal.degrees(i, goals[i]))
+            self.writers[0].add_frame(state, action, self.frames)
+            self.rec_rows += 1
         var row = String(self.tick_n) + "\t" + self.leg
         for i in range(ACT):
             row += "\t" + fixed(self.q_cmd[i], 4)
@@ -367,6 +453,8 @@ struct Rig(Movable):
             row += "\t" + fixed(self.q[i], 4)
         for i in range(ACT):
             row += "\t" + fixed(self.v[i], 3)
+        for i in range(ACT):
+            row += "\t" + fixed(self.load[i], 1)
         for k in range(3):
             row += "\t" + fixed(self.tip[k], 4)
         self.trace += row + "\t" + fixed(self.tip_dist_mm(), 1) + "\n"
@@ -407,6 +495,8 @@ struct Rig(Movable):
     ) raises -> String:
         """One plan leg; returns its report line."""
         self.leg = leg.name
+        for i in range(ACT):
+            self.load_peak[i] = 0.0
         var g_target = self.jaw_open if leg.grip_open else self.jaw_lo
         var target: List[Float64]
         if len(leg.q) > 0:
@@ -431,7 +521,7 @@ struct Rig(Movable):
             return (
                 "close   " + String(n) + " steps | jaw " + fixed(self.q[5], 3)
                 + " rad (commanded " + fixed(g_target, 3) + ") | tip "
-                + fixed(self.tip_dist_mm(), 1) + " mm from tip_goal"
+                + fixed(self.tip_dist_mm(), 1) + " mm from tip_goal" + self.load_report()
             )
         for k in range(leg.steps):
             var a = Float64(k + 1) / Float64(leg.steps)
@@ -451,6 +541,7 @@ struct Rig(Movable):
                 return (
                     pad8(leg.name) + String(k + 1) + " steps | CLOSE TRIGGERED on the ramp: tip "
                     + fixed(self.tip_dist_mm(), 1) + " mm | arm err " + fixed(self.arm_err_deg(target), 1) + " deg"
+                    + self.load_report()
                 )
         var extra = settle_steps if leg.close_on_tip else leg_settle
         var waited = 0
@@ -475,6 +566,13 @@ struct Rig(Movable):
         else:
             s += ("settled" if ok else "⚠ not settled")
         s += " | arm err " + fixed(self.arm_err_deg(target), 1) + " deg | jaw " + fixed(self.q[5], 3)
+        return s + self.load_report()
+
+    def load_report(self) -> String:
+        """This leg's peak |load| per joint and the load now, % of max torque."""
+        var s = String(" | load % peak/now")
+        for i in range(ACT):
+            s += " " + fixed(self.load_peak[i], 0) + "/" + fixed(self.load[i], 0)
         return s
 
     def ramp_to(
@@ -603,8 +701,9 @@ def read_outcome(
     mut reader: CameraReader, cam: RigCamera, mut frame: List[UInt8],
     sc: Scene, in_bowl_mm: Float64,
 ) raises -> Tuple[String, Float64, Float64, Float64, Float64]:
-    """(bucket, brick x, brick y, brick-to-bowl mm, bowl moved mm) over ~1 s
-    of frames. The brick is taken at ANY coverage: in the bowl its wall hides
+    """(bucket, brick x, brick y, median brick-to-bowl mm, bowl moved mm)
+    over ~1 s of frames; SUCCESS when at least half the frames see the brick
+    within `in_bowl_mm`. The brick is taken at ANY coverage: in the bowl its wall hides
     part of it."""
     var roi = tower_desk_roi()
     var brick = PrismModel.tower_brick()
@@ -613,7 +712,7 @@ def read_outcome(
     var n_in = 0
     var sx = 0.0
     var sy = 0.0
-    var sd = 0.0
+    var ds = List[Float64]()
     var sbm = 0.0
     var n_frames = 0
     var t0 = perf_counter_ns()
@@ -636,14 +735,17 @@ def read_outcome(
         var d = sqrt((eb.x - wx) ** 2 + (eb.y - wy) ** 2) * 1000.0
         sx += eb.x
         sy += eb.y
-        sd += d
+        ds.append(d)
         if d < in_bowl_mm:
             n_in += 1
     if n_seen * 2 < max(n_frames, 1):
         return (String("LOST"), 0.0, 0.0, -1.0, sbm / Float64(max(n_frames, 1)))
     var ex = sx / Float64(n_seen)
     var ey = sy / Float64(n_seen)
-    var d = sd / Float64(n_seen)
+    # the MEDIAN distance: a half-hidden brick's fit jumps on some frames
+    # (the first run's means were 12 mm above its last frames)
+    sort(ds)
+    var d = ds[len(ds) // 2]
     var bm = sbm / Float64(max(n_frames, 1))
     if n_in * 2 >= n_seen:
         return (String("SUCCESS"), ex, ey, d, bm)
@@ -785,6 +887,7 @@ def _usage():
         "       [--desk-clear-mm MM] [--tilt-range LO,HI] [--jaw-open RAD] [--tip-close-mm MM]\n"
         "       [--settled-vel RAD_S] [--settle-steps N] [--leg-settle N] [--sag-ki K]\n"
         "       [--step TICKS] [--in-bowl-mm MM] [--calib FILE] [--port DEV] [--out DIR]\n"
+        "       [--dataset NAME --wrist-camera DEV [--project P] [--task STR] [--resume]]\n"
         "       tower_expert_real.mojo --plan-only START_POSES.csv [--seed S] [--tilt-range ..]"
     )
 
@@ -809,11 +912,20 @@ def main() raises:
     var in_bowl_mm = IN_BOWL_MM
     var out_dir = String("")
     var plan_only = String("")
+    var project = String(DEFAULT_PROJECT)
+    var dataset = String("")
+    var wrist = String("")
+    var task = String(TASK_LANGUAGE)
+    var resume = False
     var i = 1
     while i < len(args):
         var a = String(args[i])
         if a == "--arm":
             live = True
+            i += 1
+            continue
+        if a == "--resume":
+            resume = True
             i += 1
             continue
         if a == "--help" or a == "-h":
@@ -857,6 +969,14 @@ def main() raises:
             out_dir = v
         elif a == "--plan-only":
             plan_only = v
+        elif a == "--project":
+            project = v
+        elif a == "--dataset":
+            dataset = v
+        elif a == "--wrist-camera":
+            wrist = v
+        elif a == "--task":
+            task = v
         else:
             _usage()
             raise Error("unknown flag " + a)
@@ -864,6 +984,17 @@ def main() raises:
     if camera == "" and plan_only == "":
         _usage()
         raise Error("--camera <index | /dev/... path> is required")
+    var recording = dataset != "" and plan_only == ""
+    var dataset_dir = String("")
+    if recording:
+        if not live:
+            raise Error("--dataset records the episodes the ARM runs: it needs --arm")
+        if wrist == "":
+            raise Error(
+                "--dataset needs --wrist-camera (the recordings have both views:"
+                " observation.images.overhead, observation.images.wrist)"
+            )
+        dataset_dir = project_dataset_dir(project, dataset)
     if plan_only == "" and not opencv_shim_available():
         raise Error("the OpenCV shim is not built: pixi run build-opencv")
     var tr = tilt_range.split(",")
@@ -961,11 +1092,21 @@ def main() raises:
     var pose = tower_overhead_pose()
     var cam = RigCamera(lens, pose.pos, pose.rot_mj)
     print("  camera pose:", pose.source)
-    var reader = CameraReader.from_spec(camera, 640, 480, 30.0, rgb=True)
-    reader.start()
-    if reader.frame_bytes() != 640 * 480 * 3:
-        raise Error("camera delivers " + String(reader.frame_bytes()) + " bytes, not 640x480x3")
-    var frame = List[UInt8](length=reader.frame_bytes(), fill=UInt8(0))
+    var cams = List[CameraReader]()
+    var specs: List[String] = [camera]
+    if recording:
+        specs.append(wrist)
+    for c in range(len(specs)):
+        var reader = CameraReader.from_spec(specs[c], 640, 480, Float64(HZ), rgb=True)
+        reader.start()
+        if reader.frame_bytes() != 640 * 480 * 3:
+            raise Error("camera " + specs[c] + " delivers " + String(reader.frame_bytes()) + " bytes, not 640x480x3")
+        var fps = reader.negotiated_fps()
+        print("  camera", specs[c], "->", reader.resolved_node(), fixed(fps, 1), "fps")
+        if recording and fps > 0.0 and fps < Float64(HZ) - 1.0:
+            raise Error("camera " + specs[c] + " negotiated " + fixed(fps, 1) + " fps, below the " + String(HZ) + " the dataset claims")
+        cams.append(reader^)
+    var frame = List[UInt8](length=640 * 480 * 3, fill=UInt8(0))
 
     # ── the arm ──────────────────────────────────────────────────────────
     var the_port = follower_port(port)
@@ -992,6 +1133,21 @@ def main() raises:
     if worst > 0.02:
         raise Error("to_sim/from_sim do not round-trip (worst " + fixed(worst, 4) + " rad) — not arming")
     var rig = Rig(arm^, jmap^)
+    for _ in range(len(cams)):
+        rig.frames.append(List[UInt8](length=640 * 480 * 3, fill=UInt8(0)))
+    rig.cams = cams^
+    if recording:
+        var names = List[String]()
+        for k in range(SO101_N):
+            names.append(joint_name(k) + ".pos")
+        var cam_names: List[String] = ["observation.images.overhead", "observation.images.wrist"]
+        rig.writers.append(open_recording(
+            dataset_dir.copy(), HZ, names.copy(), names.copy(), cam_names^, 480, 640, resume,
+        ))
+        print(
+            "  RECORDING ->", dataset_dir, "(" + String(rig.writers[0].n_episodes()),
+            "episodes already there) | task:", task,
+        )
     rig.jaw_open = jaw_open
     rig.jaw_lo = planner.arm.lo[5]
     rig.settled_vel = settled_vel
@@ -1014,17 +1170,19 @@ def main() raises:
     var summary = String(
         "ep\tseed\tbrick_x\tbrick_y\tbrick_yaw_deg\tbowl_x\tbowl_y\ttilt_deg\ttries\tpen_mm"
         "\tclose\ttip_at_close_mm\tjaw_after_close\toutcome\tend_x\tend_y\tbrick_bowl_mm"
-        "\tbowl_moved_mm\tlate_ticks\tdropped\n"
+        "\tbowl_moved_mm\tlate_ticks\tdropped\tdataset\n"
     )
     var n_run = 0
     var n_ok = 0
+    var n_kept = 0
+    var n_rejected = 0
     var buckets = String("")
     var draw = 0
     try:
         var ep = 0
         while ep < n_episodes:
             print("\n[episode", ep + 1, "/", n_episodes, "] brick and bowl on the desk, the arm at rest, hands off")
-            var sc_opt = read_scene(reader, cam, frame, stdin)
+            var sc_opt = read_scene(rig.cams[0], cam, frame, stdin)
             if not sc_opt:
                 print("  quit")
                 break
@@ -1102,7 +1260,7 @@ def main() raises:
             n_run += 1
             rig.trace = String(
                 "tick\tleg\tcmd0\tcmd1\tcmd2\tcmd3\tcmd4\tcmd5\tq0\tq1\tq2\tq3\tq4\tq5"
-                "\tv0\tv1\tv2\tv3\tv4\tv5\ttip_x\ttip_y\ttip_z\ttip_dist_mm\n"
+                "\tv0\tv1\tv2\tv3\tv4\tv5\tload0\tload1\tload2\tload3\tload4\tload5\ttip_x\ttip_y\ttip_z\ttip_dist_mm\n"
             )
             for k in range(3):
                 rig.tip_goal[k] = plan.tip_goal[k]
@@ -1115,6 +1273,14 @@ def main() raises:
             var aborted = String("")
             print("  running — press Enter to ABORT")
             stdin.discard_pending()
+            var rec_index = -1
+            if recording:
+                for c in range(len(rig.cams)):
+                    _ = rig.cams[c].drain()
+                rec_index = rig.writers[0].n_episodes()
+                rig.writers[0].begin_episode(task.copy())
+                rig.rec_rows = 0
+                rig.recording_now = True
             try:
                 rig.begin(env)
                 for leg in legs:
@@ -1135,10 +1301,15 @@ def main() raises:
                 if stdin.has_input():
                     _ = stdin.line()
                 rig.ramp_to(env, q_home, N_HOME, String("home"), stdin)
+                if recording:
+                    rig.leg = String("rest")
+                    for _ in range(N_REST_HOLD):
+                        rig.tick(env, stdin)
             except e:
                 print("  ⚠ the ramp home failed:", e, "— ending the run")
                 raise Error(String(e))
-            var oc = read_outcome(reader, cam, frame, sc, in_bowl_mm)
+            rig.recording_now = False
+            var oc = read_outcome(rig.cams[0], cam, frame, sc, in_bowl_mm)
             save_png(out_dir + "/ep" + String(ep + 1) + "_end.png", frame, 640, 480, 3)
             var outcome = String("ABORTED") if aborted != "" else oc[0]
             if outcome == "SUCCESS":
@@ -1151,6 +1322,30 @@ def main() raises:
             )
             with open(out_dir + "/ep" + String(ep + 1) + ".tsv", "w") as fh:
                 fh.write(rig.trace)
+            var kept = String("-")
+            if recording:
+                # the camera's verdict decides, the operator may flip it: a
+                # rejected episode stays in the files and the importer skips
+                # it (`record.mojo`'s discard)
+                var keep = outcome == "SUCCESS"
+                stdin.discard_pending()
+                print(
+                    "  dataset episode", rec_index, "(" + String(rig.rec_rows), "frames):",
+                    "KEEP" if keep else "REJECT", "— Enter = agree | k = keep | r = reject",
+                )
+                var v = stdin.line()
+                if v == "k":
+                    keep = True
+                elif v == "r":
+                    keep = False
+                rig.writers[0].end_episode()
+                if not keep:
+                    _ = reject_episode(dataset_dir, rec_index)
+                    n_rejected += 1
+                else:
+                    n_kept += 1
+                kept = String("kept") if keep else String("rejected")
+                print("  ", kept, "->", dataset_dir)
             summary += (
                 String(ep + 1) + "\t" + String(seed_used) + "\t" + fixed(sc.brick_x, 4) + "\t"
                 + fixed(sc.brick_y, 4) + "\t" + _deg(sc.brick_yaw) + "\t" + fixed(sc.bowl_x, 4)
@@ -1158,7 +1353,7 @@ def main() raises:
                 + "\t" + fixed(plan.pen_mm, 1) + "\t" + close_how + "\t" + fixed(tip_close, 1)
                 + "\t" + fixed(jaw_after, 3) + "\t" + outcome + "\t" + fixed(oc[1], 4) + "\t"
                 + fixed(oc[2], 4) + "\t" + fixed(oc[3], 1) + "\t" + fixed(oc[4], 1) + "\t"
-                + String(rig.late) + "\t" + String(rig.drops) + "\n"
+                + String(rig.late) + "\t" + String(rig.drops) + "\t" + kept + "\n"
             )
             with open(out_dir + "/episodes.tsv", "w") as fh:
                 fh.write(summary)
@@ -1167,10 +1362,32 @@ def main() raises:
         var released = return_and_release(rig.arm, start_pose, rig.armed, True, stdin, interactive)
         if not released:
             print("⚠ the follower is STILL ENERGISED — run `pixi run soarm-torque-off` once it is safe")
-        reader.stop()
+        if recording:
+            try:
+                if rig.recording_now:
+                    # the run died inside an episode: keep the files whole,
+                    # and the episode out of the dataset
+                    var idx = rig.writers[0].n_episodes()
+                    rig.recording_now = False
+                    if rig.rec_rows > 0:
+                        rig.writers[0].end_episode()
+                        _ = reject_episode(dataset_dir, idx)
+                        n_rejected += 1
+                if n_kept + n_rejected > 0:
+                    print("\nwriting the dataset ...")
+                    rig.writers[0].close()
+            except e:
+                print("⚠ closing the dataset failed:", e)
+        for c in range(len(rig.cams)):
+            try:
+                rig.cams[c].stop()
+            except:
+                pass
 
     print("=" * 70)
     if live:
         print("  episodes run", n_run, "| SUCCESS", n_ok, "| outcomes:" + buckets)
+    if recording:
+        print("  dataset", dataset_dir, ": kept", n_kept, "| rejected", n_rejected)
     print("  out:", out_dir)
     print("=" * 70)
