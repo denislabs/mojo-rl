@@ -1332,9 +1332,25 @@ def run_episode(
             var pairs = String("")
             for c in range(nc):
                 pairs += " " + String(Int(env.d.contacts.data[c * CONTACT_SIZE + CONTACT_IDX_BODY_A])) + "-" + String(Int(env.d.contacts.data[c * CONTACT_SIZE + CONTACT_IDX_BODY_B]))
+            # the brick in the GRIPPER's frame, from `grasp_center`: x is the
+            # pinch axis (fixed finger -> moving jaw), z along the finger
+            var gc = List[Float64]()
+            for k in range(3):
+                gc.append(Float64(env.d.site_xpos.data[GS * 3 + k]))
+            var inv = qw.conjugate()
+            var rel = inv.rotate_vec(Vec3(pc[0] - gc[0], pc[1] - gc[1], pc[2] - gc[2]))
+            print("  ep", ep, "at close: brick in gripper mm x", fixed(rel.x * 1000.0, 1),
+                  "y", fixed(rel.y * 1000.0, 1), "z", fixed(rel.z * 1000.0, 1))
             print("  ep", ep, "at close: q - target deg", qerr, "| tip dz",
                   fixed(tz * 1000.0, 1), "mm | ncon", nc, "| bodies", pairs)
+        var pbc = _body_pos(env, brick)
         done = ex.hold(env, False, ex.close_steps)
+        if verbose and not handed:
+            var pac = _body_pos(env, brick)
+            print("  ep", ep, "during close: brick moved", fixed(sqrt(
+                (pac[0] - pbc[0]) ** 2 + (pac[1] - pbc[1]) ** 2) * 1000.0, 1),
+                "mm xy", fixed((pac[2] - pbc[2]) * 1000.0, 1), "mm z | jaw",
+                fixed(Float64(env.d.qpos.data[5]), 3))
     if not done:
         done = ex.step_to(env, q3, False, N_LIFT)
         if verbose:
