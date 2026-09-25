@@ -134,11 +134,16 @@ struct SampleReport(Copyable, ImplicitlyCopyable, Movable):
     per-episode distribution that is a single point. `libero_spatial`'s top
     drawer is the case: a 3.5 cm bowl in a 3.0 x 7.6 cm interior."""
 
+    var sep_rejected: Int
+    """Clashes that ONLY a `:sep=` made (the radii alone would have accepted
+    the draw) — the separation's own anti-vacuity counter."""
+
     def __init__(out self):
         self.clamped = 0
         self.attempts = 0
         self.accepted = 0
         self.exempt = 0
+        self.sep_rejected = 0
 
     def rejected(self) -> Int:
         return self.attempts - self.accepted
@@ -251,6 +256,8 @@ def sample_placements(
     # hook builds the same four numbers), so the region index is kept beside it
     # rather than added to it.
     var of_region = List[Int]()
+    # `:sep=` of each accepted placement, parallel to `out` (metres; 0 = none)
+    var sep_of = List[Float64]()
     for i in range(len(t.inits)):
         var si = f.slot_index(t.inits[i].slot)
 
@@ -302,6 +309,7 @@ def sample_placements(
             )
             out.append(Placement(si, out[found].x, out[found].y, sz))
             of_region.append(-1)
+            sep_of.append(0.0)
             report.attempts += 1
             report.accepted += 1
             continue
@@ -460,6 +468,11 @@ def sample_placements(
                 ref sj = f.slots[out[j].slot]
                 var rad_j = sj.h_radius if sj.has_geom else radii[out[j].slot]
                 var rr = rad_i + rad_j
+                # `:sep=` — the larger of the radii's sum and either slot's
+                # separation (`InitSpec.sep_mm`); the device reads the same
+                # millimetres out of the init words
+                var r_geom = rr
+                rr = max(rr, max(t.inits[i].sep(), sep_of[j]))
                 if dx * dx + dy * dy < rr * rr:
                     # ⚠⚠ TWO OBJECTS IN DIFFERENT FIXTURE REGIONS DO NOT CLASH,
                     # AND THE HORIZONTAL TEST ALONE SAYS THEY DO. The drawer
@@ -509,6 +522,8 @@ def sample_placements(
                         ):
                             report.exempt += 1
                             continue
+                    if dx * dx + dy * dy >= r_geom * r_geom:
+                        report.sep_rejected += 1
                     clash = True
             if not clash:
                 # `:yaw` — its own axis, attempt 0: the clash test is by
@@ -519,6 +534,7 @@ def sample_placements(
                     yaw = (2.0 * uy - 1.0) * pi
                 out.append(Placement(si, x, y, z, yaw))
                 of_region.append(ri)
+                sep_of.append(t.inits[i].sep())
                 report.accepted += 1
                 placed = True
                 break

@@ -122,6 +122,22 @@ comptime INIT_WORD_YAW_BIAS: Int = 8192
 an init with `:yaw` — the slot's yaw is drawn on axis `YAW_AXIS_BASE + si`.
 Above every region word, exact in float32; a stack never carries it."""
 
+comptime INIT_WORD_SEP_UNIT: Int = 16384
+"""`:sep=` — the separation in WHOLE MILLIMETRES times this unit, added on top
+of a region word (with or without the `In` and `:yaw` biases, both below it).
+1..1023 mm keeps the word under 2^24, exact in float32. Decode: `sep_mm = w //
+INIT_WORD_SEP_UNIT` first, then the yaw and `In` biases from the remainder
+(`_init_word_split`)."""
+
+
+@always_inline
+def _init_word_split(w: Int) -> Tuple[Int, Int]:
+    """A REGION init word (w > 0) -> (the word without its separation, the
+    separation in mm)."""
+    var sep_mm = w // INIT_WORD_SEP_UNIT
+    return (w - sep_mm * INIT_WORD_SEP_UNIT, sep_mm)
+
+
 comptime YAW_AXIS_BASE: Int = 0xA000
 """Where a `:yaw` draw's Philox axis starts: family slot `si` draws on
 `YAW_AXIS_BASE + si`, attempt 0 — clear of the placement axes (`si * 2`,
@@ -374,6 +390,10 @@ def place_free_slots[
         var w = Int(rebind[Scalar[DTYPE]](meta[env, META_IDX_INIT_REGION_0 + j]))
         if w > 0:
             kind[j] = _KIND_REGION
+            # `:sep=` first (the highest field); it is re-read from the word
+            # in the clash test, like `:yaw` where the pose is written — a
+            # per-thread array here is the Metal miscompute shape
+            w = _init_word_split(w)[0]
             # `:yaw` is re-read from the word where the pose is written — a
             # per-thread flag array here is the Metal miscompute shape
             if w > INIT_WORD_YAW_BIAS:
@@ -518,10 +538,27 @@ def place_free_slots[
                 y = fy + y0 + v * (y1 - y0)
 
             var clash = False
+            var sep_i = _init_word_split(Int(
+                rebind[Scalar[DTYPE]](meta[env, META_IDX_INIT_REGION_0 + j])
+            ))[1]
             for k in range(n_placed):
                 var dx = px[k] - x
                 var dy = py[k] - y
                 var rr = rad_i + T.free_radius[DTYPE](pord[k])
+                # `:sep=` — `sampler.sample_placements`' rule: the larger of
+                # the radii's sum and either slot's separation. A stack's
+                # word is negative and carries none.
+                var wk = Int(
+                    rebind[Scalar[DTYPE]](meta[env, META_IDX_INIT_REGION_0 + pord[k]])
+                )
+                var sep_mm = sep_i
+                if wk > 0:
+                    sep_mm = max(sep_mm, _init_word_split(wk)[1])
+                # ⚠ IN DTYPE, NOT Float64: Metal has no double. A division
+                # rounds once, so this is the host's metres rounded to DTYPE.
+                var sep = Scalar[DTYPE](sep_mm) / Scalar[DTYPE](1000)
+                if sep > rr:
+                    rr = sep
                 if dx * dx + dy * dy < rr * rr:
                     var rk = preg[k]
                     if rk < 0:
@@ -533,9 +570,9 @@ def place_free_slots[
                 # `:yaw` — `sampler.sample_placements`' draw, its own axis
                 var cz = Scalar[DTYPE](1)
                 var sz_ = Scalar[DTYPE](0)
-                var wj = Int(
+                var wj = _init_word_split(Int(
                     rebind[Scalar[DTYPE]](meta[env, META_IDX_INIT_REGION_0 + j])
-                )
+                ))[0]
                 if wj > INIT_WORD_YAW_BIAS:
                     var ry = PhiloxRandom(
                         seed=UInt64(seed) ^ PLACEMENT_SALT,

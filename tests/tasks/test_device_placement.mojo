@@ -44,7 +44,7 @@ body-chain walk.
 8. the refusals, on corpus tasks changed one way each
 """
 
-from std.math import cos, sin
+from std.math import cos, sin, sqrt
 from std.os import listdir
 
 from noeira.envs.robots.so_arm101_xml import SO_ARM101_NMESH_VERTS
@@ -226,6 +226,11 @@ struct Stats(Copyable, ImplicitlyCopyable, Movable):
     var rejections: Int
     var clamped: Int
     var exempt: Int
+    var sep_rejected: Int
+    var sep_pairs: Int
+    var sep_margin: Float64
+    """`:sep=`: host draws only the separation refused, pairs with a
+    separation, and the smallest (distance - separation) among them (m)."""
 
     def __init__(out self):
         self.tasks = 0
@@ -256,6 +261,9 @@ struct Stats(Copyable, ImplicitlyCopyable, Movable):
         self.rejections = 0
         self.clamped = 0
         self.exempt = 0
+        self.sep_rejected = 0
+        self.sep_pairs = 0
+        self.sep_margin = 1.0e9
 
 
 struct LaneInputs(Copyable, Movable):
@@ -452,6 +460,24 @@ def _parity[T: PlacementTable](
         st.rejections += rep.attempts - rep.accepted
         st.clamped += rep.clamped
         st.exempt += rep.exempt
+        st.sep_rejected += rep.sep_rejected
+        # `:sep=`: every placed pair where either init carries one keeps it
+        for a in range(len(placed)):
+            for b in range(a + 1, len(placed)):
+                var sa = 0.0
+                var sb = 0.0
+                for q in range(len(t.inits)):
+                    var qs_ = f.slot_index(t.inits[q].slot)
+                    if qs_ == placed[a].slot:
+                        sa = t.inits[q].sep()
+                    if qs_ == placed[b].slot:
+                        sb = t.inits[q].sep()
+                var need = max(sa, sb)
+                if need > 0.0:
+                    var dxy = sqrt((placed[a].x - placed[b].x) ** 2
+                                   + (placed[a].y - placed[b].y) ** 2)
+                    st.sep_pairs += 1
+                    st.sep_margin = min(st.sep_margin, dxy - need)
         for j in range(T.N_FREE):
             var si = T.free_slot(j)
             var qa = T.free_qadr(j)
@@ -1261,6 +1287,41 @@ def main() raises:
     except:
         bad_order = True
     ta.check(bad_order, "':yaw:in' (suffixes out of order) is refused")
+
+    # ── 2d. `:sep=` — cube_in_bowl's bowl keeps 135 mm from the brick ────
+    #
+    # 2b ran cube_in_bowl AS WRITTEN (`init=bowl@desk_bowl:sep=0.135`), so its
+    # device-vs-host agreement above already covers the separation's word and
+    # the kernel's clash test; here: the rule holds on every host draw, and it
+    # is NOT VACUOUS — draws the radii alone would accept were refused.
+    print()
+    print("--- 2d. :sep= on the tower (cube_in_bowl as written) ---")
+    print("      pairs", stt.sep_pairs, " sep-only rejections", stt.sep_rejected,
+          " smallest margin", stt.sep_margin)
+    ta.check(
+        stt.sep_pairs >= BATCH and stt.sep_margin >= 0.0,
+        "so101_tower :sep=: every separated pair keeps its distance ("
+        + String(stt.sep_pairs) + " pairs, margin >= 0)",
+    )
+    ta.check(
+        stt.sep_rejected > 0,
+        "so101_tower :sep=: the separation refused draws the radii alone"
+        " accept (" + String(stt.sep_rejected) + ") — the rule is reached",
+    )
+    var ps = parse_init(String("bowl@desk_bowl:yaw:sep=0.135"))
+    ta.check(
+        ps.yaw and ps.sep_mm == 135
+        and ps.describe() == "bowl@desk_bowl:yaw:sep=0.135",
+        "':sep=' parses after ':yaw' and round-trips through describe",
+    )
+    var bad_sep = 0
+    for spec in [String("bowl@desk_bowl:sep=0.1355"), String("bowl@desk_bowl:sep=2.0"),
+                 String("bowl@desk_bowl:sep=0")]:
+        try:
+            _ = parse_init(spec)
+        except:
+            bad_sep += 1
+    ta.check(bad_sep == 3, "':sep=' refuses sub-millimetre, > 1.023 m and 0")
 
     # ── 3. an untouched meta writes nothing ───────────────────────────────
     #

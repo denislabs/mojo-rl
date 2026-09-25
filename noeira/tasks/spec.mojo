@@ -461,25 +461,45 @@ struct InitSpec(Copyable, ImplicitlyCopyable, Movable):
     allow. A region draw only: the clash test compares circles, so the yaw
     never changes WHERE a slot lands, and a STACK (no draw at all) refuses it.
     False writes nothing, so every older `.task` round-trips byte for byte."""
+    var sep_mm: Int
+    """`:sep=<metres>` — this slot's centre keeps at least this far from
+    every other placed slot's centre: the clash test's distance becomes
+    `max(h_radius_i + h_radius_j, sep_i, sep_j)` (the exemptions — another
+    fixture's region, a stack — still apply). Whole MILLIMETRES, 1..1023: it
+    travels to the device in the init word (`placement/table`,
+    `INIT_WORD_SEP_UNIT`), and host and device must compare the same number.
+
+    ⚠ OPT-IN, PER INIT: `cube_in_bowl`'s bowl, because the recorded layouts
+    never have the brick closer than 135 mm while the radii alone allow 79 —
+    and the expert grasps 1/14 of the draws under 100 mm. 0 writes nothing, so
+    every older `.task` round-trips byte for byte."""
 
     def __init__(out self, slot: String, region: String):
         self.slot = slot
         self.region = region
         self.inside = False
         self.yaw = False
+        self.sep_mm = 0
 
     def __init__(
-        out self, slot: String, region: String, inside: Bool, yaw: Bool = False
+        out self, slot: String, region: String, inside: Bool, yaw: Bool = False,
+        sep_mm: Int = 0,
     ):
         self.slot = slot
         self.region = region
         self.inside = inside
         self.yaw = yaw
+        self.sep_mm = sep_mm
+
+    def sep(self) -> Float64:
+        """The separation in metres (0: none)."""
+        return Float64(self.sep_mm) / 1000.0
 
     def describe(self) -> String:
         return (
             self.slot + "@" + self.region + (":in" if self.inside else "")
             + (":yaw" if self.yaw else "")
+            + ((":sep=" + _sep_text(self.sep_mm)) if self.sep_mm > 0 else "")
         )
 
 
@@ -1020,9 +1040,17 @@ def parse_region(spec: String) raises -> RegionSpec:
     return out^
 
 
+def _sep_text(mm: Int) -> String:
+    """`135` -> `0.135`: the metres a `.task` writes, exactly what it read."""
+    var frac = String(mm % 1000)
+    while frac.byte_length() < 3:
+        frac = "0" + frac
+    return String(mm // 1000) + "." + frac
+
+
 def parse_init(spec: String) raises -> InitSpec:
-    """`<slot>@<region>[:in|:on][:yaw]` — see `InitSpec.inside` and
-    `InitSpec.yaw` for the suffixes."""
+    """`<slot>@<region>[:in|:on][:yaw][:sep=<metres>]` — see `InitSpec.inside`,
+    `InitSpec.yaw` and `InitSpec.sep_mm` for the suffixes."""
     var parts = split_once(spec, String("@"))
     if len(parts) != 2:
         raise Error(
@@ -1033,6 +1061,20 @@ def parse_init(spec: String) raises -> InitSpec:
     var rest = String(String(parts[1]).strip())
     var inside = False
     var yaw = False
+    var sep_mm = 0
+    var sc = rest.rfind(":sep=")
+    if sc >= 0:
+        var txt = String(rest[byte = sc + 5 : rest.byte_length()])
+        var metres = Float64(txt)
+        var mm = Int(metres * 1000.0 + 0.5)
+        if mm < 1 or mm > 1023 or abs(metres * 1000.0 - Float64(mm)) > 1e-6:
+            raise Error(
+                "tasks: init '" + spec + "' — ':sep=' takes metres in whole"
+                " millimetres, 0.001..1.023 (it travels to the device as mm)"
+            )
+        sep_mm = mm
+        var head_s = String(rest[byte=0:sc])
+        rest = head_s^
     if rest.endswith(":yaw"):
         yaw = True
         var head0 = String(rest[byte=0 : rest.byte_length() - 4])
@@ -1053,7 +1095,8 @@ def parse_init(spec: String) raises -> InitSpec:
         else:
             raise Error(
                 "tasks: init '" + spec + "' ends in ':" + tail + "'; the only"
-                " suffixes are ':in' / ':on', then ':yaw' (see InitSpec)"
+                " suffixes are ':in' / ':on', then ':yaw', then ':sep=M'"
+                " (see InitSpec)"
             )
     if slot.byte_length() == 0 or rest.byte_length() == 0:
         raise Error("tasks: init has an empty slot or region: '" + spec + "'")
@@ -1062,7 +1105,7 @@ def parse_init(spec: String) raises -> InitSpec:
             "tasks: init '" + spec + "' — the suffixes go ':in' / ':on'"
             " first, then ':yaw'; a region name has no colon"
         )
-    return InitSpec(slot^, rest^, inside, yaw)
+    return InitSpec(slot^, rest^, inside, yaw, sep_mm)
 
 
 def parse_joint_init(spec: String) raises -> JointInitSpec:
