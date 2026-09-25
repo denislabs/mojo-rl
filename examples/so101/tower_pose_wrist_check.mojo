@@ -325,12 +325,15 @@ def _rms_mm(
 
 def _jz_residual(
     ref smp: Samples, i: Int, mut fk: TowerArmFK, wci: Int, lens: FisheyeLens,
-    ref p: List[Float64],
+    ref p: List[Float64], tilt_axis: Vec3d,
 ) raises -> Tuple[Float64, Float64]:
     """Sample i's (x, y) error (m) with joint-zero offsets p[0..2] (rad) on
     elbow_flex, wrist_flex, wrist_roll, the camera rolled p[3] (rad) about
-    its optical axis, and the reference shifted p[4..5] (the overhead's own
-    offset)."""
+    its optical axis, the reference shifted p[4..5] (the overhead's own
+    offset), and the camera TILTED p[6] (rad) about `tilt_axis` — the flex
+    axis's direction, FIXED in the gripper frame, the camera's position kept:
+    a plate-angle error, which moves the camera's view like a flex-zero error
+    but not its position (noeira-26's question)."""
     var qq = smp.q[i].copy()
     qq[2] += p[0]
     qq[3] += p[1]
@@ -343,7 +346,8 @@ def _jz_residual(
     var sn = sin(p[3])
     var rz = Mat3d.from_cols(Vec3d(c, sn, 0.0), Vec3d(-sn, c, 0.0), Vec3d(0.0, 0.0, 1.0))
     var pos = bpose[0] + bpose[1] * fk.cam_pos[wci]
-    var rot = bpose[1] @ (fk.cam_rot[wci] @ rz)
+    var rt = _rot_small(tilt_axis.x * p[6], tilt_axis.y * p[6], tilt_axis.z * p[6])
+    var rot = bpose[1] @ (rt @ (fk.cam_rot[wci] @ rz))
     var cam = RigCamera(lens, pos, rot)
     var pt = cam.plane_point(smp.u[i], smp.v[i], DESK_Z + 0.0125)
     if not pt[2]:
@@ -353,9 +357,16 @@ def _jz_residual(
 
 def _jz_free(model: Int) -> List[Int]:
     """0 shift; 1 + wrist_flex; 2 + wrist_roll; 3 + the camera's roll;
-    4 + elbow."""
+    4 + elbow; 5 shift + the camera's TILT (plate angle) instead of flex;
+    6 + wrist_roll; 7 flex AND tilt together."""
     if model == 0:
         return [4, 5]
+    if model == 5:
+        return [6, 4, 5]
+    if model == 6:
+        return [6, 2, 4, 5]
+    if model == 7:
+        return [1, 6, 4, 5]
     if model == 1:
         return [1, 4, 5]
     if model == 2:
@@ -367,18 +378,18 @@ def _jz_free(model: Int) -> List[Int]:
 
 def _jz_fit(
     ref smp: Samples, mut fk: TowerArmFK, wci: Int, lens: FisheyeLens, ref use: List[Bool],
-    model: Int,
+    model: Int, tilt_axis: Vec3d,
 ) raises -> List[Float64]:
     var free = _jz_free(model)
     var n_par = len(free)
-    var p = List[Float64](length=6, fill=0.0)
+    var p = List[Float64](length=7, fill=0.0)
     for _ in range(10):
         var H = List[Float64](length=36, fill=0.0)
         var g = List[Float64](length=6, fill=0.0)
         for i in range(len(smp.u)):
             if not use[i]:
                 continue
-            var r0 = _jz_residual(smp, i, fk, wci, lens, p)
+            var r0 = _jz_residual(smp, i, fk, wci, lens, p, tilt_axis)
             # a robust weight: residuals past 30 mm are the estimator's
             # misses, not the model's
             var rr = sqrt(r0[0] * r0[0] + r0[1] * r0[1])
@@ -388,7 +399,7 @@ def _jz_fit(
                 var pj = p.copy()
                 var h = 1e-5
                 pj[free[j]] += h
-                var r1 = _jz_residual(smp, i, fk, wci, lens, pj)
+                var r1 = _jz_residual(smp, i, fk, wci, lens, pj, tilt_axis)
                 J[j] = (r1[0] - r0[0]) / h
                 J[6 + j] = (r1[1] - r0[1]) / h
             for a in range(n_par):
@@ -427,7 +438,7 @@ def _jz_fit(
 
 def _jz_err(
     ref smp: Samples, mut fk: TowerArmFK, wci: Int, lens: FisheyeLens, ref use: List[Bool],
-    ref p: List[Float64],
+    ref p: List[Float64], tilt_axis: Vec3d,
 ) raises -> Tuple[Float64, Float64, Int]:
     """(median, rms clipped at 30 mm) of the used samples' errors, mm."""
     var es = List[Float64]()
@@ -435,7 +446,7 @@ def _jz_err(
     for i in range(len(smp.u)):
         if not use[i]:
             continue
-        var r = _jz_residual(smp, i, fk, wci, lens, p)
+        var r = _jz_residual(smp, i, fk, wci, lens, p, tilt_axis)
         var e = min(0.03, sqrt(r[0] * r[0] + r[1] * r[1]))
         es.append(e * 1000.0)
         s += e * e
@@ -748,16 +759,37 @@ def main() raises:
             slow.append(smp.speed[i] < SLOW_DEG)
             if smp.ep[i] not in eps2:
                 eps2.append(smp.ep[i])
-        var zero6 = List[Float64](length=6, fill=0.0)
-        var e0 = _jz_err(smp, fk, wcam_i, wlens, slow, zero6)
+        # the flex axis in the gripper frame (at the rest pose, roll 0):
+        # the rotation a small flex step makes, seen from the gripper
+        var z6 = List[Float64](length=6, fill=0.0)
+        fk.set_qpos(z6)
+        var R0 = fk.camera_body_pose(wcam_i)[1]
+        var z6b = z6.copy()
+        z6b[3] = 1e-4
+        fk.set_qpos(z6b)
+        var W = fk.camera_body_pose(wcam_i)[1] @ R0.transpose()
+        var aw = Vec3d(
+            (Float64(W.col(1).z) - Float64(W.col(2).y)) / 2e-4,
+            (Float64(W.col(2).x) - Float64(W.col(0).z)) / 2e-4,
+            (Float64(W.col(0).y) - Float64(W.col(1).x)) / 2e-4,
+        )
+        var tilt_axis = R0.transpose() * aw
+        tilt_axis = tilt_axis * (1.0 / tilt_axis.length())
+        print("  the flex axis in the gripper frame:", fixed(tilt_axis.x, 3), fixed(tilt_axis.y, 3), fixed(tilt_axis.z, 3))
+        var zero6 = List[Float64](length=7, fill=0.0)
+        var e0 = _jz_err(smp, fk, wcam_i, wlens, slow, zero6, tilt_axis)
         print(
             "JOINT-ZERO FIT on", e0[2], "slow frames (<", SLOW_DEG, "deg/frame): before median",
             fixed(e0[0], 1), "mm, rms(clip 30)", fixed(e0[1], 1), "mm",
         )
-        var mnames: List[String] = ["shift", "+ wrist_flex", "+ wrist_roll", "+ camera roll", "+ elbow"]
-        for model in range(5):
-            var pf = _jz_fit(smp, fk, wcam_i, wlens, slow, model)
-            var ef = _jz_err(smp, fk, wcam_i, wlens, slow, pf)
+        var mnames: List[String] = [
+            "shift", "+ wrist_flex", "+ wrist_roll", "+ camera roll", "+ elbow",
+            "shift + camera TILT (not flex)", "shift + camera TILT + wrist_roll", "shift + flex + camera TILT",
+        ]
+        var models: List[Int] = [0, 1, 2, 5, 6, 7]
+        for model in models:
+            var pf = _jz_fit(smp, fk, wcam_i, wlens, slow, model, tilt_axis)
+            var ef = _jz_err(smp, fk, wcam_i, wlens, slow, pf, tilt_axis)
             # leave one episode out: fit on the others, score the held-out one
             var lo = List[Float64]()
             for ek in eps2:
@@ -766,8 +798,8 @@ def main() raises:
                 for i in range(len(smp.u)):
                     tr_use.append(slow[i] and smp.ep[i] != ek)
                     te_use.append(slow[i] and smp.ep[i] == ek)
-                var pl = _jz_fit(smp, fk, wcam_i, wlens, tr_use, model)
-                var el = _jz_err(smp, fk, wcam_i, wlens, te_use, pl)
+                var pl = _jz_fit(smp, fk, wcam_i, wlens, tr_use, model, tilt_axis)
+                var el = _jz_err(smp, fk, wcam_i, wlens, te_use, pl, tilt_axis)
                 if el[2] > 0:
                     lo.append(el[0])
             print(
@@ -775,6 +807,7 @@ def main() raises:
                 "| leave-one-episode-out median of episode medians", fixed(_pct(lo, 0.5), 1),
                 "mm | elbow", fixed(pf[0] * 180.0 / pi, 2), "flex", fixed(pf[1] * 180.0 / pi, 2),
                 "roll", fixed(pf[2] * 180.0 / pi, 2), "cam roll", fixed(pf[3] * 180.0 / pi, 2),
+                "cam tilt", fixed(pf[6] * 180.0 / pi, 2),
                 "deg | shift", fixed(pf[4] * 1000.0, 1), fixed(pf[5] * 1000.0, 1), "mm",
             )
 

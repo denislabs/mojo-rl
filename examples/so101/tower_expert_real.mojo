@@ -284,6 +284,13 @@ pick is abandoned. Measured (the gripper's measured line): holding the brick
 0.116-0.121 rad, empty -0.149, a corner grip -0.095 (dropped on the carry)."""
 comptime LOOK_TICKS = 8
 """The wrist look's hold at the pre-grasp (~0.27 s at 30 Hz)."""
+comptime LOOK_MIN_CONF = 4
+comptime LOOK_MAX_CORR_MM: Float64 = 25.0
+"""The wrist correction acts (task 2) when at least LOOK_MIN_CONF of the
+look's frames read the brick confidently and it moves the aim by at most
+this. Cycle run 3: the two in-bowl misses were the wrist's two largest
+offsets from the aim (12.7, 13.6 mm, the yaw 20-44 deg off), the two
+successes 7.7 and 3.7."""
 comptime LOOK_ROI_M: Float64 = 0.08
 """The wrist look searches within this of the planned brick: the camera
 also sees the blue tower stand."""
@@ -345,6 +352,16 @@ def _draw_outline(
                 img[o] = r
                 img[o + 1] = g
                 img[o + 2] = b
+
+
+def _yaw90_deg(a: Float64, b: Float64) -> Float64:
+    """|a - b| on the cube's 90-degree circle, degrees."""
+    var d = (a - b) * 180.0 / pi
+    while d > 45.0:
+        d -= 90.0
+    while d < -45.0:
+        d += 90.0
+    return abs(d)
 
 
 def _deg(r: Float64) -> String:
@@ -1102,6 +1119,11 @@ struct TaskPlan(Movable):
     var pick_y: Float64
     var pick_z: Float64
     """Where the pick plan assumes the brick's centre (world m)."""
+    var pick_plan: TowerGraspPlan
+    var place_plan: TowerGraspPlan
+    var pick_seed0: Int
+    """The first seed the pick was planned from: a re-plan from the wrist
+    look starts there too, so it draws the same posture."""
     var tilt_pick: Float64
     var tilt_place: Float64
     var seed: Int
@@ -1118,6 +1140,9 @@ struct TaskPlan(Movable):
         self.pick_x = 0.0
         self.pick_y = 0.0
         self.pick_z = 0.0
+        self.pick_plan = TowerGraspPlan()
+        self.place_plan = TowerGraspPlan()
+        self.pick_seed0 = 0
         self.tilt_pick = 0.0
         self.tilt_place = 0.0
         self.seed = 0
@@ -1211,6 +1236,7 @@ def plan_task(
             src += " pulled to " + fixed(BOWL_PICK_MAX_OFF_M * 1000.0, 0) + " mm"
     var pb: List[Float64] = [px, py, bz]
     var qb = with_brick(qs, brick_adr, px, py, bz, pyaw)
+    tp.pick_seed0 = seed + draw
     var pk = plan_clean(env, planner, body_names, qb, pb, pyaw, q5, cfg_bowl_pick, seed + draw, PICK_DRAWS)
     draw += pk.draws
     # the spot: drawn in the brick's region, clear of the bowl, with a clean
@@ -1238,6 +1264,8 @@ def plan_task(
         if pl.ok:
             break
     tp.legs = pick_place_legs(env, planner, pk.plan, pl.plan, bowl_jaw, jaw_open, True, tp.jaws)
+    tp.pick_plan = pk.plan.copy()
+    tp.place_plan = pl.plan.copy()
     for k in range(3):
         tp.tip_goal[k] = pk.plan.tip_goal[k]
     tp.place_yaw = pl.plan.yaw
@@ -1601,7 +1629,7 @@ def _usage():
         "       [--settled-vel RAD_S] [--settle-steps N] [--leg-settle N] [--sag-ki K] [--pinch-offset-mm MM]\n"
         "       [--step TICKS] [--in-bowl-mm MM] [--calib FILE] [--port DEV] [--out DIR]\n"
         "       [--dataset NAME --wrist-camera DEV [--project P] [--task STR] [--resume]]\n"
-        "       [--cycle [--auto] [--task2 STR] [--bowl-jaw RAD] [--bowl-release-jaw RAD]]\n"
+        "       [--cycle [--auto] [--task2 STR] [--bowl-jaw RAD] [--bowl-release-jaw RAD] [--no-wrist-correct]]\n"
         "       tower_expert_real.mojo --plan-only START_POSES.csv [--seed S] [--tilt-range ..]"
     )
 
@@ -1635,6 +1663,7 @@ def main() raises:
     var task2 = String(TASK2_LANGUAGE)
     var bowl_jaw = BOWL_JAW
     var bowl_release_jaw = BOWL_RELEASE_JAW
+    var wrist_correct = True
     var project = String(DEFAULT_PROJECT)
     var dataset = String("")
     var wrist = String("")
@@ -1657,6 +1686,10 @@ def main() raises:
             continue
         if a == "--auto":
             auto = True
+            i += 1
+            continue
+        if a == "--no-wrist-correct":
+            wrist_correct = False
             i += 1
             continue
         if a == "--help" or a == "-h":
@@ -1957,7 +1990,7 @@ def main() raises:
         "ep\ttask\tseed\tbrick_x\tbrick_y\tbrick_yaw_deg\tbowl_x\tbowl_y\tin_bowl\ttarget_x\ttarget_y"
         "\ttilt_pick_deg\ttilt_place_deg\tdraws\tclose\ttip_at_close_mm\tjaw_after_close\toutcome"
         "\tend_x\tend_y\tend_mm\tlate_ticks\tdropped\tdataset"
-        "\tpick_x\tpick_y\tlook_conf\tlook_x\tlook_y\tlook_yaw_deg\n"
+        "\tpick_x\tpick_y\tlook_conf\tlook_x\tlook_y\tlook_yaw_deg\tlook_used\n"
     )
     var n_run = 0
     var n_ok = 0
@@ -2029,6 +2062,8 @@ def main() raises:
             var pick_y = sc.brick_y
             var pick_z = q_scene[brick_adr + 2]
             var pick_yaw = sc.brick_yaw
+            var place_plan = TowerGraspPlan()
+            var pick_seed0 = 0
             var tx = sc.bowl_x
             var ty = sc.bowl_y
             var tilt_pick = 0.0
@@ -2078,6 +2113,8 @@ def main() raises:
                     for k in range(3):
                         tip_goal[k] = tp.tip_goal[k]
                     tx = tp.tx
+                    place_plan = tp.place_plan.copy()
+                    pick_seed0 = tp.pick_seed0
                     pick_x = tp.pick_x
                     pick_y = tp.pick_y
                     pick_z = tp.pick_z
@@ -2148,6 +2185,7 @@ def main() raises:
             var look_y = 0.0
             var look_yaw = 0.0
             var look_img = List[UInt8]()
+            var look_used = False
             print("  running — press Enter to ABORT")
             stdin.discard_pending()
             var rec_index = -1
@@ -2160,25 +2198,65 @@ def main() raises:
                 rig.recording_now = True
             try:
                 rig.begin(env)
-                for li in range(len(legs)):
+                var li = -1
+                var looked = False
+                while li + 1 < len(legs):
+                    li += 1
                     if legs[li].name == "hold":
                         continue
                     rig.jaw_open = jaws[li]
                     var rep = rig.run_leg(env, legs[li], settle_steps, leg_settle, stdin)
                     print("   ", rep)
-                    if legs[li].name == "pre" and has_wrist:
+                    if legs[li].name == "pre" and has_wrist and not looked:
+                        looked = True
                         var lk = wrist_look(rig, env, afk, wci, wlens, pick_x, pick_y, pick_z, stdin)
                         look_n = lk.n_conf
                         if lk.n_conf > 0:
                             look_x = lk.x
                             look_y = lk.y
                             look_yaw = lk.yaw
+                            var corr = sqrt((lk.x - pick_x) ** 2 + (lk.y - pick_y) ** 2) * 1000.0
+                            var use = (
+                                wrist_correct and task_n == 2 and cycle and lk.n_conf >= LOOK_MIN_CONF
+                                and corr <= LOOK_MAX_CORR_MM
+                            )
                             print(
                                 "    look    wrist: brick (", fixed(lk.x * 1000.0, 1), ",", fixed(lk.y * 1000.0, 1),
                                 ") mm yaw", _deg(lk.yaw), "|", lk.n_conf, "/", lk.n_frames,
                                 "confident | vs the plan's brick dx", fixed((lk.x - pick_x) * 1000.0, 1),
-                                "dy", fixed((lk.y - pick_y) * 1000.0, 1), "mm (LOG ONLY, the plan is unchanged)",
+                                "dy", fixed((lk.y - pick_y) * 1000.0, 1), "mm, yaw",
+                                fixed(_yaw90_deg(lk.yaw, pick_yaw), 1), "deg",
+                                "-> CORRECTING" if use else "(LOG ONLY)",
                             )
+                            if use:
+                                # THE WRIST CORRECTION (task 2, in the bowl):
+                                # the brick where the wrist camera sees it,
+                                # the pick re-planned from the same seed (the
+                                # same posture draw), the place kept. The
+                                # wrist read and the plan's brick go through
+                                # the SAME FK camera pose, so the arm's model
+                                # error mostly cancels over the 7 cm left.
+                                var pb2: List[Float64] = [lk.x, lk.y, pick_z]
+                                var qb2 = with_brick(qs, brick_adr, lk.x, lk.y, pick_z, lk.yaw)
+                                var pk2 = plan_clean(env, planner, body_names, qb2, pb2, lk.yaw, q5, cfg_bowl_pick, pick_seed0, PICK_DRAWS)
+                                if pk2.ok:
+                                    var jaws2 = List[Float64]()
+                                    var legs2 = pick_place_legs(env, planner, pk2.plan, place_plan, bowl_jaw, jaw_open, True, jaws2)
+                                    legs = legs2^
+                                    jaws = jaws2^
+                                    for k in range(3):
+                                        rig.tip_goal[k] = pk2.plan.tip_goal[k]
+                                    li = -1
+                                    look_used = True
+                                    print(
+                                        "    look    re-planned: tilt", _deg(pk2.plan.tilt), "| pinch",
+                                        fixed((pk2.plan.yaw - pk2.plan.bearing) * 180.0 / pi, 1),
+                                        "deg from radial | tip_goal moved",
+                                        fixed(sqrt((pk2.plan.tip_goal[0] - tip_goal[0]) ** 2 + (pk2.plan.tip_goal[1] - tip_goal[1]) ** 2) * 1000.0, 1),
+                                        "mm — back to its pre-grasp, then down",
+                                    )
+                                else:
+                                    print("    look    no clean re-plan at the wrist's brick — keeping the plan")
                         else:
                             print("    look    wrist: no confident brick in", lk.n_frames, "frames (LOG ONLY)")
                         if len(lk.frame) > 0:
@@ -2313,7 +2391,8 @@ def main() raises:
                 + "\t" + outcome + "\t" + fixed(ex, 4) + "\t" + fixed(ey, 4) + "\t" + fixed(emm, 1) + "\t"
                 + String(rig.late) + "\t" + String(rig.drops) + "\t" + kept
                 + "\t" + fixed(pick_x, 4) + "\t" + fixed(pick_y, 4) + "\t" + String(look_n)
-                + "\t" + fixed(look_x, 4) + "\t" + fixed(look_y, 4) + "\t" + _deg(look_yaw) + "\n"
+                + "\t" + fixed(look_x, 4) + "\t" + fixed(look_y, 4) + "\t" + _deg(look_yaw)
+                + "\t" + String(Int(look_used)) + "\n"
             )
             with open(out_dir + "/episodes.tsv", "w") as fh:
                 fh.write(summary)
