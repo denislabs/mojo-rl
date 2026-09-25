@@ -121,6 +121,12 @@
                 <camera name="wrist_cam" pos="0.0025 -0.065449 -0.00996637" xyaxes="-1 0 0 0 -0.905518 -0.424308" fovy="73.7398"/>
                 <!-- RIG ADDITION: the pinch centre — see bake_so_arm101_tower.py step 4c -->
                 <site group="3" name="grasp_center" pos="0.0221 0.0012 -0.0681" size="0.004"/>
+                <!-- RIG ADDITION: the ArUco marker (DICT_4X4_50 id 7, 30 mm) on the back of the camera plate, visual only, group 5 — bake_so_arm101_tower.py step 8 -->
+                <geom type="box" name="aruco_black" group="5" contype="0" conaffinity="0" pos="0.0025 -0.07385031 0.007962881" quat="0.6902025 0.1536898 -0.1536898 0.6902025" size="0.015 0.015 0.0002" material="aruco_black"/>
+                <geom type="box" name="aruco_white_0" group="5" contype="0" conaffinity="0" pos="-0.005 -0.07850519 0.006112994" quat="0.6902025 0.1536898 -0.1536898 0.6902025" size="0.005 0.0025 0.0001" material="aruco_white"/>
+                <geom type="box" name="aruco_white_1" group="5" contype="0" conaffinity="0" pos="8.326673e-17 -0.0762414 0.007173765" quat="0.6902025 0.1536898 -0.1536898 0.6902025" size="0.0025 0.0025 0.0001" material="aruco_white"/>
+                <geom type="box" name="aruco_white_2" group="5" contype="0" conaffinity="0" pos="0.005 -0.0739776 0.008234536" quat="0.6902025 0.1536898 -0.1536898 0.6902025" size="0.01 0.0025 0.0001" material="aruco_white"/>
+                <geom type="box" name="aruco_white_3" group="5" contype="0" conaffinity="0" pos="0.01 -0.07171381 0.009295307" quat="0.6902025 0.1536898 -0.1536898 0.6902025" size="0.0025 0.0025 0.0001" material="aruco_white"/>
                 <!-- Link moving_jaw_so101_v1 -->
                 <body name="moving_jaw_so101_v1" pos="0.0202 0.0188 -0.0234" quat="0.707107 0.707107 -1.85362e-08 1.85362e-08">
                   <!-- Joint from gripper to moving_jaw_so101_v1 -->
@@ -172,7 +178,9 @@
     <material name="sts3215_03a_no_horn_v1_material" rgba="0.1 0.1 0.1 1.0"/>
     <material name="wrist_roll_pitch_so101_v2_material" rgba="0.78 0.78 0.76 1"/>
     <material name="wrist_roll_follower_so101_v1_material" rgba="0.78 0.78 0.76 1"/>
-    <material name="wrist_cam_mount_32x32_uvc_module_so101_material" rgba="0.92 0.92 0.92 1"/>
+    <material name="wrist_cam_mount_32x32_uvc_module_so101_material" rgba="0.78 0.78 0.78 1"/>
+    <material name="aruco_black" rgba="0.1 0.1 0.1 1"/>
+    <material name="aruco_white" rgba="0.85 0.85 0.85 1"/>
     <material name="moving_jaw_so101_v1_material" rgba="0.78 0.78 0.76 1"/>
   </asset>
   <actuator>

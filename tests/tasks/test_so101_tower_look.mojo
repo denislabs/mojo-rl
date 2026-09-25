@@ -7,11 +7,13 @@ The tracer's tables for the composed tower scene, built on the host:
 1. `calibrated` leaves them exactly as built (it IS the composed scene);
 2. `legacy` puts back the pre-2026-09-24 look: the headlight .45 ambient /
    .3 diffuse, the floor's sun .7, the desk .93, every calibrated-white arm
-   geom .92, the props' filament colours — and touches no other word
+   geom .92, the camera mount's grey .92, the props' filament colours — and
+   touches no other word
    (geometry, materials, the other geoms' colours);
 3. an unknown look is refused;
 4. the desk asset's BACKDROP (group 4: floor, desk skin, +y floor strip, -y
-   clutter extension, wall) and the room-grey background belong to the
+   clutter extension, wall), the gripper's ArUco MARKER (group 5: the black
+   square + 4 white runs) and the room-grey background belong to the
    calibrated look only.
 
 The end-to-end check is a render: `tower_demo_rerender --look legacy` of a
@@ -96,6 +98,7 @@ def main() raises:
     var bowl_ok = True
     var brick_ok = True
     var white = 0
+    var mount = 0
     var others_same = True
     for k in range(vl.ngeom):
         var lab = labels[vl.src_geom[k]]
@@ -109,6 +112,9 @@ def main() raises:
             bowl_ok = bowl_ok and near(r, 0.996) and near(g, 0.776) and near(b, 0.0)
         elif lab.startswith("brick_"):
             brick_ok = brick_ok and near(r, 0.0) and near(g, 0.471) and near(b, 0.749)
+        elif lab.startswith("robot_") and near(app0[o + APP_IDX_R], 0.78) and near(app0[o + APP_IDX_B], 0.78):
+            if near(r, 0.92) and near(g, 0.92) and near(b, 0.92):
+                mount += 1
         elif lab.startswith("robot_") and near(app0[o + APP_IDX_R], 0.78):
             if near(r, 0.92) and near(b, 0.90):
                 white += 1
@@ -118,6 +124,7 @@ def main() raises:
                     others_same = False
     check(fails, "2b desk .93, bowl and brick back to the filament", desk_ok and bowl_ok and brick_ok)
     check(fails, "2c every calibrated-white arm geom back to .92", white > 0, String(white) + " geoms")
+    check(fails, "2c' the camera mount (calibrated .78 neutral) back to .92 grey", mount == 1, String(mount) + " geoms")
     check(fails, "2d no other geom's colour moves", others_same)
     var mats_same = True
     for i in range(len(mat0)):
@@ -125,7 +132,7 @@ def main() raises:
             mats_same = False
     check(fails, "2e the material rows are not touched (the shader colours from the appearance row)", mats_same)
 
-    # 4. the backdrop (group 4) is the calibrated look's only
+    # 4. the backdrop (group 4) and the marker (group 5) are the calibrated look's only
     var vcal = build_visual_model[DT, DynDims](
         fmd, m, group_mask=rig_visual_group_mask(String(RIG_LOOK_CALIBRATED))
     )
@@ -133,13 +140,17 @@ def main() raises:
         fmd, m, group_mask=rig_visual_group_mask(String(RIG_LOOK_LEGACY))
     )
     var backdrop = 0
+    var marker = 0
     for k in range(vcal.ngeom):
         var lab = labels[vcal.src_geom[k]]
         if lab.find("floor_cover") >= 0 or lab.find("desk_skin") >= 0 or lab.find("floor_strip") >= 0 or lab.find("desk_ext") >= 0 or lab.find("desk_wall") >= 0:
             backdrop += 1
-    check(fails, "4 the calibrated look draws the 5 backdrop geoms, legacy none",
-          backdrop == 5 and vcal.ngeom == vleg.ngeom + 5 and vleg.ngeom == vl.ngeom,
-          String(vcal.ngeom) + " vs " + String(vleg.ngeom) + " visual geoms")
+        if lab.find("/robot_aruco_") >= 0:
+            marker += 1
+    check(fails, "4 the calibrated look draws the 5 backdrop + 5 marker geoms, legacy none",
+          backdrop == 5 and marker == 5 and vcal.ngeom == vleg.ngeom + 10 and vleg.ngeom == vl.ngeom,
+          String(backdrop) + " + " + String(marker) + "; " + String(vcal.ngeom) + " vs "
+          + String(vleg.ngeom) + " visual geoms")
     var bg_c = rig_background(String(RIG_LOOK_CALIBRATED))
     var bg_l = rig_background(String(RIG_LOOK_LEGACY))
     check(fails, "4b the background: calibrated room grey, legacy blue-grey",

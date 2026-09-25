@@ -117,15 +117,21 @@ comptime RIG_BACKDROP_GROUP: Int = 4
 """The desk asset's BACKDROP geoms (visual only: the floor past the real
 desk's +y edge, the desk's -y extension, the wall — `desk_mat.xml`). Drawn by
 the calibrated look only."""
+comptime RIG_MARKER_GROUP: Int = 5
+"""The ArUco marker taped on the back of the wrist camera's plate (DICT_4X4_50
+id 7, 30 mm — `bake_so_arm101_tower.py` step 8): the extrinsics target, which
+stays on the rig and is in the overhead view whenever the jaw points down.
+Visual only. Drawn by the calibrated look only."""
 
 
 def rig_visual_group_mask(look: String) -> Int:
     """Groups 0+2 (props, the arm's and stand's visual meshes), plus the
-    backdrop (group 4) under the calibrated look. `legacy` keeps the pre-
-    calibration set, so its stores stay byte-identical."""
+    backdrop (group 4) and the gripper's ArUco marker (group 5) under the
+    calibrated look. `legacy` keeps the pre-calibration set, so its stores
+    stay byte-identical."""
     if look == RIG_LOOK_LEGACY:
         return RIG_VISUAL_GROUP_MASK
-    return RIG_VISUAL_GROUP_MASK | (1 << RIG_BACKDROP_GROUP)
+    return RIG_VISUAL_GROUP_MASK | (1 << RIG_BACKDROP_GROUP) | (1 << RIG_MARKER_GROUP)
 
 
 def rig_background(look: String = RIG_LOOK_CALIBRATED) -> Vec3Generic[RIG_DT]:
@@ -163,7 +169,8 @@ def apply_tower_look[
     fitted to the rig's recorded frames (`so101_tower.family`, 2026-09-24).
     `legacy` puts back what every store before that was rendered with — the
     headlight at .45 ambient / .3 diffuse, the floor light's .7 sun, the desk
-    at .93, the white arm parts at .92 and the props' filament colours — so a
+    at .93, the white arm parts at .92 (the camera mount's grey .92), the
+    props' filament colours, and no backdrop or marker (the group mask) — so a
     student can be compared on the SAME demos under both looks, the arms
     differing in the look alone. It rewrites the tracer's tables only (no
     physics), and must run BEFORE a `VisualRandomizer` takes its base copy, so
@@ -196,6 +203,7 @@ def apply_tower_look[
     var labels = geom_labels(fmd)
     var desk = 0
     var white = 0
+    var mount = 0
     var bowl = 0
     var brick = 0
     for k in range(vis.ngeom):
@@ -211,6 +219,11 @@ def apply_tower_look[
         elif lab.startswith("robot_") and _near(r, 0.78) and _near(g, 0.78) and _near(b, 0.76):
             rgb = [0.92, 0.92, 0.90]
             white += 1
+        elif lab.startswith("robot_") and _near(r, 0.78) and _near(g, 0.78) and _near(b, 0.78):
+            # the wrist camera mount (bake step 6b): neutral 0.78 calibrated,
+            # 0.92 grey before
+            rgb = [0.92, 0.92, 0.92]
+            mount += 1
         elif lab.startswith("bowl_") and _near(r, 1.0) and _near(g, 0.66) and _near(b, 0.09):
             rgb = [0.996, 0.776, 0.0]
             bowl += 1
@@ -221,10 +234,11 @@ def apply_tower_look[
             vis.appearance.data[o + APP_IDX_R] = Scalar[DTYPE](rgb[0])
             vis.appearance.data[o + APP_IDX_G] = Scalar[DTYPE](rgb[1])
             vis.appearance.data[o + APP_IDX_B] = Scalar[DTYPE](rgb[2])
-    if desk == 0 or white == 0 or bowl == 0 or brick == 0:
+    if desk == 0 or white == 0 or mount != 1 or bowl == 0 or brick == 0:
         raise Error(
             "so101 tower rig: the legacy look found desk " + String(desk)
-            + ", white arm " + String(white) + ", bowl " + String(bowl)
+            + ", white arm " + String(white) + ", camera mount " + String(mount)
+            + ", bowl " + String(bowl)
             + ", brick " + String(brick) + " geoms — the calibrated scene"
             " changed under it"
         )

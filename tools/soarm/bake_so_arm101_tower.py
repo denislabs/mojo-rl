@@ -92,6 +92,23 @@ PLATE_NORMAL = np.array([0.0, -0.4243, 0.9055])
 PUPIL_ALONG_NORMAL_MM = 15.6
 PLATE_THICKNESS_MM = 4.0
 
+# THE ARUCO MARKER taped on the back of the wrist camera's plate (step 8).
+# DICT_4X4_50 id 7, the black square 30 mm (`calibrate_camera_extrinsics
+# --marker-mm 30`); the 6x6 cells, border included, row 0 = the marker's +y
+# edge, column 0 its -x edge — `cv2.aruco.generateImageMarker(DICT_4X4_50, 7,
+# 6)`, asserted in `check`. 1 = white.
+ARUCO_ID = 7
+ARUCO_MM = 30.0
+ARUCO_BITS = ["000000", "011000", "001000", "011110", "000100", "000000"]
+# Albedos from the printed recording's overhead frames (40 detections, marker
+# ~20 px): black cells 31, white cells up to 209, against the desk's 183 at
+# albedo 0.81 — the marker faces up like the desk. Blur lifts the black.
+ARUCO_BLACK_RGBA = "0.1 0.1 0.1 1"
+ARUCO_WHITE_RGBA = "0.85 0.85 0.85 1"
+ARUCO_GROUP = 5
+"""Its own geom group, so the tracer's `legacy` look (groups 0 + 2) keeps
+rendering the pre-marker scene byte for byte (`so101_tower_rig`)."""
+
 # The virtual pinhole (see INTRINSICS above).
 FOVY_DEG = 2.0 * math.degrees(math.atan(240.0 / 320.0))
 
@@ -255,6 +272,76 @@ def camera_in_gripper_body():
     y_cam /= np.linalg.norm(y_cam)
     x_cam = np.cross(y_cam, z_cam)
     return pos, np.concatenate([x_cam, y_cam])
+
+
+def _mat_to_quat(R):
+    """(w, x, y, z) of a proper rotation matrix."""
+    w = math.sqrt(max(0.0, 1.0 + R[0, 0] + R[1, 1] + R[2, 2])) / 2.0
+    x = math.copysign(math.sqrt(max(0.0, 1.0 + R[0, 0] - R[1, 1] - R[2, 2])) / 2.0, R[2, 1] - R[1, 2])
+    y = math.copysign(math.sqrt(max(0.0, 1.0 - R[0, 0] + R[1, 1] - R[2, 2])) / 2.0, R[0, 2] - R[2, 0])
+    z = math.copysign(math.sqrt(max(0.0, 1.0 - R[0, 0] - R[1, 1] + R[2, 2])) / 2.0, R[1, 0] - R[0, 1])
+    return np.array([w, x, y, z])
+
+
+def marker_in_gripper_body():
+    """(centre [m], R [3x3]) of the ArUco marker in the `gripper` body frame:
+    its columns are the marker's +x, +y and its normal (+z, out of the print).
+
+    ON THE BACK FACE OF THE CAMERA PLATE, CENTRED — the front face's centre
+    (where the lens is: the mount's 27 x 27 hole pattern is centred on it to
+    0.0 mm) pushed `PLATE_THICKNESS_MM` back. Fitted independently from the 30
+    extrinsics captures (`camera_overhead.txt.poses.txt`: marker corners
+    solvePnP'd, gripper FK from the raw ticks through the measured zero, camera
+    and offset solved together, rms 9.9 mm): normal (0.046, -0.399, 0.916),
+    2.3 deg from the plate's; in-plane +x (-0.02, 0.92, 0.40) — the print's
+    +y along body -x, the fixed jaw's side (orientation scatter 4.3 deg
+    median); centre 6 mm from this one in-plane (inside the fit's noise, which
+    trades with the camera's own xy), 2.5 mm into the plate.
+    """
+    n = PLATE_NORMAL / np.linalg.norm(PLATE_NORMAL)
+    back_mm = PLATE_FACE_MM - PLATE_THICKNESS_MM * n
+    R = _quat_to_mat([float(v) for v in STOCK_GEOM_QUAT.split()])
+    p0 = np.array([float(v) for v in STOCK_GEOM_POS.split()])
+    centre = R @ (back_mm / 1000.0) + p0
+    ez = R @ (-n)
+    ey = np.array([-1.0, 0.0, 0.0])
+    ex = np.cross(ey, ez)
+    return centre, np.stack([ex, ey, ez], axis=1)
+
+
+def marker_geoms():
+    """The marker as boxes: the black square, then each row's white runs
+    0.2 mm proud of it. Visual only (group `ARUCO_GROUP`, no contacts)."""
+    c, R = marker_in_gripper_body()
+    q = _fmt(_mat_to_quat(R), 7)
+    cell = ARUCO_MM / 6000.0
+    out = []
+
+    def box(name, u, v, hu, hv, lift, hz, mat):
+        p = c + R @ np.array([u, v, lift])
+        out.append(
+            '                <geom type="box" name="%s" group="%d" contype="0"'
+            ' conaffinity="0" pos="%s" quat="%s" size="%s" material="%s"/>'
+            % (name, ARUCO_GROUP, _fmt(p, 7), q, _fmt([hu, hv, hz], 6), mat)
+        )
+
+    box("aruco_black", 0.0, 0.0, 3 * cell, 3 * cell, 0.0002, 0.0002, "aruco_black")
+    k = 0
+    for r, row in enumerate(ARUCO_BITS):
+        col = 0
+        while col < 6:
+            if row[col] != "1":
+                col += 1
+                continue
+            end = col
+            while end < 6 and row[end] == "1":
+                end += 1
+            u = ((col + end) / 2.0 - 3.0) * cell
+            v = (3.0 - (r + 0.5)) * cell
+            box("aruco_white_%d" % k, u, v, (end - col) * cell / 2, cell / 2, 0.0005, 0.0001, "aruco_white")
+            k += 1
+            col = end
+    return out
 
 
 def _fmt(v, nd=6):
@@ -456,6 +543,20 @@ def bake():
     n = src.count('rgba="1 0.82 0.12 1"')
     assert n == 11, "expected 11 orange materials, found %d" % n
     src = src.replace('rgba="1 0.82 0.12 1"', 'rgba="0.78 0.78 0.76 1"')
+    # 6b. THE CAMERA MOUNT TOO — it is not one of the 11 orange parts (the
+    #    bake adds it above at 0.92), and step 6 missed it until 2026-09-25:
+    #    the mount, which carries the fixed jaw, rendered 151 on the wrist
+    #    camera against the real 124 and 169 overhead against 146 (printed
+    #    recording, MuJoCo segmentation at the recorded states). Albedo
+    #    0.92 x real / sim = 0.755 wrist, 0.795 overhead: 0.78. Neutral
+    #    (0.78, not 0.76, in blue) so `so101_tower_rig`'s legacy look can put
+    #    this one part back to its old 0.92 grey exactly.
+    mount_old = '    <material name="%s_material" rgba="0.92 0.92 0.92 1"/>' % MOUNT_MESH
+    src = sub(
+        mount_old,
+        '    <material name="%s_material" rgba="0.78 0.78 0.78 1"/>' % MOUNT_MESH,
+        "mount material",
+    )
     # 7. SHOULDER_LIFT REACHES THE REAL ARM'S REST. Folded at rest the real
     #    follower sits on its lift hard stop at -106.0 LeRobot deg, which with
     #    the measured zero (`robot/so101/sim_map.tower_follower_zero_deg`,
@@ -474,6 +575,32 @@ def bake():
         '          <joint axis="0 0 1" name="shoulder_lift" type="hinge"'
         ' range="%.16g 1.7453292519943366" class="sts3215"/>' % LIFT_REST_STOP,
         "shoulder_lift joint",
+    )
+    # 8. THE ARUCO MARKER STAYS ON THE RIG — the extrinsics target, taped on
+    #    the back of the wrist camera's plate and in every frame the printed
+    #    recording has of the gripper (the overhead camera sees it whenever
+    #    the jaw points down). Deployment keeps it, so the sim draws it:
+    #    `marker_in_gripper_body` for where, `ARUCO_*` for what.
+    grasp = (
+        '                <site group="3" name="grasp_center"'
+        ' pos="0.0221 0.0012 -0.0681" size="0.004"/>'
+    )
+    src = sub(
+        grasp,
+        grasp + "\n"
+        "                <!-- RIG ADDITION: the ArUco marker (DICT_4X4_50 id %d,"
+        " %g mm) on the back of the camera plate, visual only, group %d —"
+        " bake_so_arm101_tower.py step 8 -->\n" % (ARUCO_ID, ARUCO_MM, ARUCO_GROUP)
+        + "\n".join(marker_geoms()),
+        "grasp_center site (marker anchor)",
+    )
+    mount_mat = '    <material name="%s_material" rgba="0.78 0.78 0.78 1"/>' % MOUNT_MESH
+    src = sub(
+        mount_mat,
+        mount_mat + "\n"
+        '    <material name="aruco_black" rgba="%s"/>\n'
+        '    <material name="aruco_white" rgba="%s"/>' % (ARUCO_BLACK_RGBA, ARUCO_WHITE_RGBA),
+        "mount material (marker anchor)",
     )
     return src
 
@@ -495,8 +622,25 @@ def check(text):
     # the groundplane material gone and the mount's added
     # +5 geoms: the two jaw collision MESHES became 4 + 3 boxes (the camera-arm
     # box was already counted against the stock's follower collision mesh).
-    assert m.ngeom == ref.ngeom + 5 and m.nmesh == ref.nmesh + 1, (m.ngeom, m.nmesh)
-    assert m.nlight == ref.nlight - 1 and m.ntex == 0 and m.nmat == ref.nmat
+    # step 8: the marker's boxes (the black square + the white runs) and its
+    # two materials.
+    n_marker = len(marker_geoms())
+    assert m.ngeom == ref.ngeom + 5 + n_marker and m.nmesh == ref.nmesh + 1, (m.ngeom, m.nmesh)
+    assert m.nlight == ref.nlight - 1 and m.ntex == 0 and m.nmat == ref.nmat + 2
+    mk = [i for i in range(m.ngeom) if (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, i) or "").startswith("aruco_")]
+    assert len(mk) == n_marker, mk
+    for i in mk:
+        assert m.geom_group[i] == ARUCO_GROUP and m.geom_contype[i] == 0 and m.geom_conaffinity[i] == 0
+    try:
+        import cv2
+
+        want = cv2.aruco.generateImageMarker(
+            cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), ARUCO_ID, 6
+        )
+        got = np.array([[255 * int(ch) for ch in row] for row in ARUCO_BITS])
+        assert np.array_equal(want, got), "ARUCO_BITS is not id %d:\n%s" % (ARUCO_ID, want // 255)
+    except ImportError:
+        pass
     # step 4a: the gripper body sits GRIPPER_STACK_EXTRA_M further out
     gb = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "gripper")
     rb = mujoco.mj_name2id(ref, mujoco.mjtObj.mjOBJ_BODY, "gripper")
