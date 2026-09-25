@@ -145,6 +145,11 @@ from noeira.tasks.family import scene_path
 from noeira.tasks.family_config import So101TowerConfig, So101TowerTeleopConfig
 from noeira.tasks.gpu_eval import region_table_words
 from noeira.tasks.host_reward import family_reward_host
+from noeira.physics3d.gpu.constants import (
+    META_IDX_NUM_CONTACTS, CONTACT_SIZE, CONTACT_IDX_BODY_A, CONTACT_IDX_BODY_B,
+    CONTACT_IDX_DIST,
+)
+from noeira.physics3d.collision.broadphase_sap import detect_contacts_auto
 from noeira.tasks.placement.so101_tower import So101TowerPlacement
 from noeira.tasks.posed_reset import posed_qpos, task_meta_words
 from noeira.tasks.so101_tower_xml import So101TowerModel
@@ -176,6 +181,22 @@ and an unweighted fold left a quarter of the grasps at roll -79 against the
 operator's +77)."""
 comptime HUMAN_JAW_OPEN: Float64 = 0.6
 comptime HUMAN_Z_GRASP: Float64 = 0.015
+comptime PLAN_TRIES = 12
+"""`--clear-plan`: postures drawn per episode before the least-colliding one
+is taken anyway."""
+comptime DESK_CLEAR_M: Float64 = -0.008
+"""`--clear-plan`: where the fingers' lowest point is planned relative to the
+desk at the grasp — NEGATIVE = pressed INTO it by that much (the finger boxes
+reach 17 mm past the aimed tip point, so a fixed grasp height put them 9-29
+mm into the desk and the close fired 20-40 mm off target). Measured on 150
+draws (seed 61000, real-layout regions): hovering 2 mm ABOVE 31/150 (tips on
+target, but the close shoves the hovering arm aside), pressed 3 mm 57, 8 mm
+73, 12 mm 67, 16 mm 60, 22 mm 57; the fixed height (no flag) 55. The press
+is what lets the moving jaw squeeze the brick against a fixed finger that
+does not yield. `--desk-clear-mm` overrides it."""
+comptime PLAN_PEN_OK_MM: Float64 = 1.0
+"""`--clear-plan`: a plan whose poses penetrate an obstacle by more is
+redrawn."""
 comptime APPROACH_D: Float64 = 0.07
 """A tilted grasp's approach length (m): the pre-grasp pose puts the tips this
 far back ALONG THE FINGER AXIS from their grasp point (the vertical expert's
@@ -593,6 +614,21 @@ struct Expert(Movable):
                               # so a half-open approach makes the close a short swing
     var frame_skip: Int
     var timestep: Float64
+    var arm_bodies: List[Int]
+    """The moving arm's bodies (upper arm to jaw) — the planned-pose check's
+    one side (`_pose_penetration_mm`)."""
+    var obstacles: List[Int]
+    """What they must not pass through at all: base, shoulder, the tower
+    stand, the bowl, and the brick while the jaw is open."""
+    var desk: List[Int]
+    """The desk: the grasp height is RAISED until the fingers clear it."""
+    var clear_plan: Bool
+    var desk_clear_m: Float64
+    var plan_raise_mm: Float64
+    var plan_pen_mm: Float64
+    var plan_tries: Int
+    """`--clear-plan`: plan a grasp the arm can physically reach (see
+    `_plan_tilted`)."""
     var q_cmd: List[Float64]
     var obs: List[Scalar[DT]]
     var prev_obs: List[Scalar[DT]]
@@ -635,6 +671,14 @@ struct Expert(Movable):
         self.jaw_open = JAW_OPEN
         self.frame_skip = CFG.FRAME_SKIP
         self.timestep = So101TowerModel.TIMESTEP
+        self.arm_bodies = List[Int]()
+        self.obstacles = List[Int]()
+        self.desk = List[Int]()
+        self.clear_plan = False
+        self.desk_clear_m = DESK_CLEAR_M
+        self.plan_raise_mm = 0.0
+        self.plan_pen_mm = 0.0
+        self.plan_tries = 0
         self.q_cmd = List[Float64](length=ACT, fill=0.0)
         self.obs = List[Scalar[DT]](length=E.OBS_DIM, fill=Scalar[DT](0))
         self.prev_obs = List[Scalar[DT]](length=E.OBS_DIM, fill=Scalar[DT](0))
@@ -924,6 +968,75 @@ struct Expert(Movable):
         )
 
 
+def _plan_tilted(
+    mut ex: Expert, mut env: E, ref pb: List[Float64], bearing: Float64,
+    yaw: Float64, tl: Float64, rs: Float64, ref q: List[Float64],
+    raise_m: Float64, mut waypoints: List[List[Float64]],
+) -> Float64:
+    """The tilted grasp's approach ALONG THE FINGER: IK targets on the line
+    through the tips' grasp point (raised by `raise_m`), `APPROACH_D` back
+    along the finger axis, `APPROACH_WAYPOINTS` legs. Fills `waypoints`
+    (the first is the pre-grasp, the last the grasp) and sets `ex.tip_goal`;
+    returns the grasp pose's IK error."""
+    var fx = sin(tl) * cos(bearing)
+    var fy = sin(tl) * sin(bearing)
+    var fzv = -cos(tl)
+    ex.tip_goal[0] = pb[0]
+    ex.tip_goal[1] = pb[1]
+    ex.tip_goal[2] = pb[2] + ex.z_grasp - TIP_REACH + raise_m
+    # the IK's tip mode aims `target - (0, 0, TIP_REACH)`: hand it the
+    # tip point lifted by TIP_REACH
+    var n_wp = APPROACH_WAYPOINTS
+    var prev = q.copy()
+    var e = 0.0
+    waypoints.clear()
+    for j in range(n_wp + 1):
+        var sback = APPROACH_D * Float64(n_wp - j) / Float64(n_wp)
+        var t = List[Float64]()
+        t.append(ex.tip_goal[0] - sback * fx)
+        t.append(ex.tip_goal[1] - sback * fy)
+        t.append(ex.tip_goal[2] - sback * fzv + TIP_REACH)
+        var qj = List[Float64](length=N_ARM, fill=0.0)
+        e = ex.arm.ik(env, t, prev, yaw, qj, tl, rs, True)
+        prev = qj.copy()
+        waypoints.append(qj^)
+    return e
+
+
+def _pose_penetration_mm(
+    mut env: E, ref q: List[Float64], jaw: Float64,
+    ref arm_bodies: List[Int], ref obstacles: List[Int],
+) raises -> Float64:
+    """The deepest penetration (mm) between an ARM body and an OBSTACLE with
+    the arm at joints `q` and the jaw at `jaw` — a static collision check of
+    a planned pose. The env's qpos, FK and contact set are restored."""
+    var saved = List[Float64]()
+    for i in range(NQ):
+        saved.append(Float64(env.d.qpos.data[i]))
+    for i in range(N_ARM):
+        env.d.qpos.data[i] = q[i]
+    env.d.qpos.data[N_ARM] = jaw
+    env._fields_fk()
+    detect_contacts_auto["cpu", DType.float64, BATCH=1](env.d, env.mf, None)
+    var worst = 0.0
+    var nc = Int(env.d.meta.data[META_IDX_NUM_CONTACTS])
+    for c in range(nc):
+        var o = c * CONTACT_SIZE
+        var ba = Int(env.d.contacts.data[o + CONTACT_IDX_BODY_A])
+        var bb = Int(env.d.contacts.data[o + CONTACT_IDX_BODY_B])
+        var hit = (ba in arm_bodies and bb in obstacles) or (
+            bb in arm_bodies and ba in obstacles
+        )
+        var d = Float64(env.d.contacts.data[o + CONTACT_IDX_DIST])
+        if hit and -d > worst:
+            worst = -d
+    for i in range(NQ):
+        env.d.qpos.data[i] = saved[i]
+    env._fields_fk()
+    detect_contacts_auto["cpu", DType.float64, BATCH=1](env.d, env.mf, None)
+    return worst * 1000.0
+
+
 def _body_pos(mut env: E, b: Int) -> List[Float64]:
     var p = List[Float64]()
     for k in range(3):
@@ -1066,38 +1179,62 @@ def run_episode(
         q.append(Float64(env.d.qpos.data[i]))
     var q1 = List[Float64](length=N_ARM, fill=0.0)
     var q2 = List[Float64](length=N_ARM, fill=0.0)
-    var e1: Float64
-    var e2: Float64
+    var e1 = 0.0
+    var e2 = 0.0
     # a tilted grasp approaches ALONG THE FINGER: IK targets on the line
     # through the tips' grasp point, `APPROACH_D` back along the finger axis
     var waypoints = List[List[Float64]]()
     ex.tip_trigger = tl > 0.0
     if tl > 0.0:
-        var fx = sin(tl) * cos(bearing)
-        var fy = sin(tl) * sin(bearing)
-        var fzv = -cos(tl)
-        ex.tip_goal[0] = pb[0]
-        ex.tip_goal[1] = pb[1]
-        ex.tip_goal[2] = pb[2] + ex.z_grasp - TIP_REACH
-        # the IK's tip mode aims `target - (0, 0, TIP_REACH)`: hand it the
-        # tip point lifted by TIP_REACH
         var n_wp = APPROACH_WAYPOINTS
-        var prev = q.copy()
+        if not ex.clear_plan:
+            e2 = _plan_tilted(ex, env, pb, bearing, yaw, tl, rs, q, 0.0, waypoints)
+        else:
+            # ⚠ `--clear-plan`: a plan the arm can physically execute. Per
+            # drawn posture, the grasp height is raised until the fingers
+            # clear the desk by DESK_CLEAR_M (a fixed height put the finger
+            # boxes 9-29 mm INTO the desk: the descent stopped short and the
+            # close fired 20-40 mm off target), then every waypoint is
+            # checked against the base, shoulder, stand, bowl and brick with
+            # the jaw open; a colliding posture is redrawn, up to PLAN_TRIES,
+            # and the least-colliding one is kept if none is clear.
+            var best_pen = 1.0e9
+            var best_tilt = ex.tilt
+            var best_pinch = ex.pinch_target
+            for attempt in range(PLAN_TRIES + 1):
+                if attempt == PLAN_TRIES:
+                    # none was clear: re-plan the least-colliding posture
+                    ex.tilt = best_tilt
+                    ex.pinch_target = best_pinch
+                elif attempt > 0:
+                    ex.draw_posture()
+                yaw = ex.pinch_yaw(bearing, _body_yaw(env, brick))
+                tl = ex.tilt
+                var raise_m = 0.0
+                e2 = _plan_tilted(ex, env, pb, bearing, yaw, tl, rs, q, raise_m, waypoints)
+                for _ in range(3):
+                    var dp = _pose_penetration_mm(
+                        env, waypoints[n_wp], ex.jaw_open, ex.arm_bodies, ex.desk
+                    )
+                    if dp <= 0.0:
+                        break
+                    raise_m += dp / 1000.0 + ex.desk_clear_m
+                    e2 = _plan_tilted(ex, env, pb, bearing, yaw, tl, rs, q, raise_m, waypoints)
+                var pen = 0.0
+                for j in range(n_wp + 1):
+                    pen = max(pen, _pose_penetration_mm(
+                        env, waypoints[j], ex.jaw_open, ex.arm_bodies, ex.obstacles
+                    ))
+                ex.plan_raise_mm = raise_m * 1000.0
+                ex.plan_pen_mm = pen
+                ex.plan_tries = attempt + 1
+                if pen <= PLAN_PEN_OK_MM or attempt == PLAN_TRIES:
+                    break
+                if pen < best_pen:
+                    best_pen = pen
+                    best_tilt = ex.tilt
+                    best_pinch = ex.pinch_target
         e1 = 0.0
-        e2 = 0.0
-        for j in range(n_wp + 1):
-            var sback = APPROACH_D * Float64(n_wp - j) / Float64(n_wp)
-            var t = List[Float64]()
-            t.append(ex.tip_goal[0] - sback * fx)
-            t.append(ex.tip_goal[1] - sback * fy)
-            t.append(ex.tip_goal[2] - sback * fzv + TIP_REACH)
-            var qj = List[Float64](length=N_ARM, fill=0.0)
-            var ej = ex.arm.ik(env, t, prev, yaw, qj, tl, rs, use_rs)
-            if j == 0:
-                e1 = ej
-            e2 = ej      # the last waypoint IS the grasp target
-            prev = qj.copy()
-            waypoints.append(qj^)
         for i in range(N_ARM):
             q1[i] = waypoints[0][i]
             q2[i] = waypoints[n_wp][i]
@@ -1110,6 +1247,10 @@ def run_episode(
         print("  ep", ep, "posture: tilt", fixed(ex.tilt * 180.0 / pi, 1),
               "deg | pinch pair", "tangential" if ex.tangential else "radial",
               "| pinch from radial", fixed((yaw - bearing) * 180.0 / pi, 1), "deg")
+    if verbose and ex.clear_plan and len(waypoints) > 0:
+        print("  ep", ep, "clear plan: tries", ex.plan_tries, "| raised",
+              fixed(ex.plan_raise_mm, 1), "mm | obstacle penetration",
+              fixed(ex.plan_pen_mm, 1), "mm")
     if verbose:
         print("  ep", ep, "brick", fixed(pb[0], 3), fixed(pb[1], 3),
               " ik err mm: pre", fixed(e1 * 1000.0, 1), "grasp",
@@ -1148,9 +1289,40 @@ def run_episode(
         # recording from step 90 on). Measured on 20 placements: 30 steps
         # 18/20, 15 steps 18/20, 8 steps 14/20, 4 steps 0/20, 1 step 13/20 —
         # the fast closes knock the cube. Fifteen doubles the label.
+        if verbose and not handed:
+            # the close's starting point: how far the tips are from their
+            # goal, and whether the descent already pushed the brick
+            var pc = _body_pos(env, brick)
+            print("  ep", ep, "at close: tip", fixed(ex.tip_dist_mm(env), 1),
+                  "mm | brick moved", fixed(sqrt((pc[0] - pb[0]) ** 2
+                  + (pc[1] - pb[1]) ** 2) * 1000.0, 1), "mm xy",
+                  fixed((pc[2] - pb[2]) * 1000.0, 1), "mm z")
+            var qerr = String("")
+            for i in range(N_ARM):
+                qerr += " " + fixed(
+                    (Float64(env.d.qpos.data[i]) - waypoints[len(waypoints) - 1][i]
+                     if len(waypoints) > 0 else Float64(env.d.qpos.data[i]) - q2[i])
+                    * 180.0 / pi, 1)
+            var o = GRIPPER_BODY * 4
+            var qw = Quat(
+                Float64(env.d.xquat.data[o + 3]), Float64(env.d.xquat.data[o]),
+                Float64(env.d.xquat.data[o + 1]), Float64(env.d.xquat.data[o + 2]),
+            )
+            var f = qw.rotate_vec(Vec3(0.0, 0.0, -1.0))
+            var tz = Float64(env.d.site_xpos.data[GS * 3 + 2]) + TIP_REACH * f.z - ex.tip_goal[2]
+            var nc = Int(env.d.meta.data[META_IDX_NUM_CONTACTS])
+            var pairs = String("")
+            for c in range(nc):
+                pairs += " " + String(Int(env.d.contacts.data[c * CONTACT_SIZE + CONTACT_IDX_BODY_A])) + "-" + String(Int(env.d.contacts.data[c * CONTACT_SIZE + CONTACT_IDX_BODY_B]))
+            print("  ep", ep, "at close: q - target deg", qerr, "| tip dz",
+                  fixed(tz * 1000.0, 1), "mm | ncon", nc, "| bodies", pairs)
         done = ex.hold(env, False, ex.close_steps)
     if not done:
         done = ex.step_to(env, q3, False, N_LIFT)
+        if verbose:
+            var pl = _body_pos(env, brick)
+            print("  ep", ep, "after lift: brick dz", fixed((pl[2] - pb[2]) * 1000.0, 1),
+                  "mm | jaw", fixed(Float64(env.d.qpos.data[5]), 3), "rad")
     if place and not done:
         var pw = _body_pos(env, bowl)
         var q4 = List[Float64](length=N_ARM, fill=0.0)
@@ -1209,6 +1381,9 @@ def main() raises:
     var close_steps = N_CLOSE
     var z_grasp = Z_GRASP
     var z_grasp_set = False
+    var clear_plan = False
+    var desk_clear_mm = 0.0
+    var desk_clear_set = False
     var close_above_mm = Z_CLOSE_ABOVE_MM
     var jaw_open = -1.0
     var policy_ckpt = String("")
@@ -1253,6 +1428,13 @@ def main() raises:
             i += 1
         elif a == "--close-steps" and i + 1 < len(args):
             close_steps = Int(String(args[i + 1]))
+            i += 2
+        elif a == "--clear-plan":
+            clear_plan = True
+            i += 1
+        elif a == "--desk-clear-mm" and i + 1 < len(args):
+            desk_clear_mm = Float64(String(args[i + 1]))
+            desk_clear_set = True
             i += 2
         elif a == "--z-grasp" and i + 1 < len(args):
             z_grasp = Float64(String(args[i + 1]))
@@ -1349,8 +1531,23 @@ def main() raises:
             bowl = b
     if brick < 0 or bowl < 0:
         raise Error("brick_brick / bowl_bowl not found in the composed scene")
+    if verbose:
+        var names = String("  bodies:")
+        for b in range(len(fmd.body_names)):
+            names += " " + String(b) + "=" + String(fmd.body_names[b])
+        print(names)
 
     var ex = Expert(env, noise, feedback, out_path, keep_failures)
+    for b in range(len(fmd.body_names)):
+        var bn = String(fmd.body_names[b])
+        if bn in ["robot_upper_arm", "robot_lower_arm", "robot_wrist", "robot_gripper"] or bn.startswith("robot_moving_jaw"):
+            ex.arm_bodies.append(b)
+        elif bn in ["robot_base", "robot_shoulder", "tower_stand", "bowl_bowl", "brick_brick"]:
+            ex.obstacles.append(b)
+        elif bn == "desk_mat":
+            ex.desk.append(b)
+    if len(ex.arm_bodies) != 5 or len(ex.obstacles) != 5 or len(ex.desk) != 1:
+        raise Error("the planned-pose check did not find its 5 arm bodies, 5 obstacles and the desk")
     ex.flat_noise = flat_noise
     ex.close_steps = close_steps
     ex.z_grasp = z_grasp
@@ -1360,6 +1557,11 @@ def main() raises:
     if posture != "expert" and posture != "human":
         raise Error("--posture is expert or human, not " + posture)
     ex.human_posture = posture == "human"
+    ex.clear_plan = clear_plan
+    if desk_clear_set:
+        ex.desk_clear_m = desk_clear_mm / 1000.0
+    if clear_plan and not ex.human_posture:
+        raise Error("--clear-plan plans the TILTED grasp: it needs --posture human")
     ex.integral = ex.human_posture
     if ex.human_posture:
         # the tilted grasp's own defaults (60-episode runs, seed 21000):
