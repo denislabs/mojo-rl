@@ -82,6 +82,12 @@ The MESH SHARE (`rl128-nomesh`, M1 Pro, not yet on the 5090): 0.68-0.70
 meshes, 319 922 triangles — while the jaws cover ~6 % of the wrist image. The
 levers are read in `noeira-docs/SO101_RENDER_SPEED.md`.
 
+**After 07d5a165a + 65ecd9a5d (5090, same binary, new vs old):** 128² wrist
+38.5k fps at 1024 lanes (2.28x), overhead 17.7k (2.16x), the rig pair 502/s
+(2.27x); the screen cull alone +11 % wrist, -9 % overhead; mesh share still
+0.73-0.83; 64x64x1 wrist 144k fps. Physics unchanged (153k / 354k physics
+steps/s at 1024 / 4096).
+
 ⚠ THE POSE IS HOST FK OF THE ENV'S `qpos`, AS IN THE EVAL
 (`so101_tower_rig.mojo`'s header): the env leaves `SYNC_FK_AFTER_STEP` off, so
 its device `xpos` is one substep stale. A pixel-RL loop would need a device FK
