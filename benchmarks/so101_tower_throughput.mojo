@@ -77,6 +77,11 @@ said 335 ms, against 107 ms of physics: the eval was render-bound.
 Pixel RL at 1024 lanes with the 128² wrist camera: 105 + 59 = 164 ms per
 step, ~6.2k control steps/s before the learner; 4096 lanes ~9.5k/s.
 
+The MESH SHARE (`rl128-nomesh`, M1 Pro, not yet on the 5090): 0.68-0.70
+(wrist) and 0.77-0.79 (overhead) at 32 and 256 lanes, with 35 visual geoms, 18
+meshes, 319 922 triangles — while the jaws cover ~6 % of the wrist image. The
+levers are read in `noeira-docs/SO101_RENDER_SPEED.md`.
+
 ⚠ THE POSE IS HOST FK OF THE ENV'S `qpos`, AS IN THE EVAL
 (`so101_tower_rig.mojo`'s header): the env leaves `SYNC_FK_AFTER_STEP` off, so
 its device `xpos` is one substep stale. A pixel-RL loop would need a device FK
@@ -98,6 +103,7 @@ from noeira.physics3d.fields import Data, Model
 from noeira.physics3d.gpu.constants import (
     METADATA_SIZE, MODEL_CURRICULUM_SIZE,
     META_IDX_SOLVER_ACC_NCON, META_IDX_SOLVER_ACC_ITER,
+    MODEL_MESH_META_SIZE, MESH_META_IDX_TRINUM,
 )
 from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
 from noeira.physics3d.parser.flat_model import FlatModelDef
@@ -513,6 +519,38 @@ def bench_camera[
         "overhead_ms=" + _r2(ms_o), "overhead_fps=" + String(Int(Float64(N) / (ms_o / 1000.0))),
         "overhead_hit=" + _r2(hit_o),
         "brick_sd_mm=" + sd,
+        "vis_geoms=" + String(r128.vis.ngeom) + "+" + String(r128.vis.ncond),
+    )
+
+    # ── rl128 with every mesh's triangles removed: the mesh share ────────
+    # `TRINUM = 0` makes the mesh test return NO HIT without touching a geom,
+    # a pose or the kernel (`camera_tracer_lane_sweep.mojo`'s control), so
+    # the time left is the per-ray geom loop, the primitives and the shading.
+    # ⚠⚠ THE RENDERER'S OWN TABLE, `vis.mesh_meta`, NOT `rm.mesh_meta`: the
+    # kernel reads the VisualModel's copy (built from the parse by
+    # `set_visual`), and zeroing the Model's changed nothing — the first run of
+    # this leg printed a mesh share of 0.00 and was a no-op.
+    # ⚠ The arm is INVISIBLE in this leg; its pictures are not written.
+    var nmesh = r128.vis.nmesh
+    var tri_backup = List[Scalar[RIG_DT]]()
+    for mi in range(nmesh):
+        tri_backup.append(r128.vis.mesh_meta.data[mi * MODEL_MESH_META_SIZE + MESH_META_IDX_TRINUM])
+        r128.vis.mesh_meta.data[mi * MODEL_MESH_META_SIZE + MESH_META_IDX_TRINUM] = Scalar[RIG_DT](0)
+    r128.vis.mesh_meta.upload(ctx)
+    ctx.synchronize()
+    var nm_w = _time_cam[N, RL_W, RL_H, 1](ctx, r128, rd, rm, cam_wrist)
+    var nm_o = _time_cam[N, RL_W, RL_H, 1](ctx, r128, rd, rm, cam_over)
+    var nm_hit = _hits_and_png[N, RL_W, RL_H, 1](ctx, r128, rd, rm, cam_wrist, String(""), String(""))
+    for mi in range(nmesh):
+        r128.vis.mesh_meta.data[mi * MODEL_MESH_META_SIZE + MESH_META_IDX_TRINUM] = tri_backup[mi]
+    r128.vis.mesh_meta.upload(ctx)
+    ctx.synchronize()
+    print(
+        "RESULT leg=camera cfg=rl128-nomesh n_envs=" + String(N),
+        "wrist_ms=" + _r2(nm_w), "wrist_mesh_share=" + _r2(1.0 - nm_w / ms_w),
+        "overhead_ms=" + _r2(nm_o), "overhead_mesh_share=" + _r2(1.0 - nm_o / ms_o),
+        "wrist_hit=" + _r2(nm_hit) + "(arm gone)",
+        "meshes=" + String(nmesh), "tris=" + String(r128.vis.ntri),
     )
 
     # ── rig: the store's / the eval's pixels (skipped at 4096: ~6 GB) ────
