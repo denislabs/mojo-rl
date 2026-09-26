@@ -63,6 +63,7 @@ from noeira.physics3d.raytrace import BatchedCameraRenderer
 from noeira.physics3d.raytrace.visual import build_visual_model, VisualModel
 from noeira.physics3d.raytrace.visual_records import (
     VIS_GEOM_APPEARANCE, VIS_LIGHT_WORDS, APP_IDX_R, APP_IDX_G, APP_IDX_B,
+    APP_IDX_REFLECT,
     LIGHT_IDX_AMBIENT_R, LIGHT_IDX_DIFFUSE_R,
 )
 from noeira.physics3d.raytrace.randomize import geom_labels, VisualRandomizer
@@ -100,11 +101,21 @@ comptime RIG_DR_TARGET = (0.32, 0.0, 0.0)
 (`scenes/so101_tower.xml`, the `desk_mat` frame)."""
 
 comptime TowerRendererSized[
-    LANES: Int, W: Int, H: Int, SAMPLES: Int
-] = BatchedCameraRenderer[RIG_DT, TOWER_MD, LANES, W, H, False, True, SAMPLES]
+    LANES: Int, W: Int, H: Int, SAMPLES: Int, REFLECT: Bool = False
+] = BatchedCameraRenderer[
+    RIG_DT, TOWER_MD, LANES, W, H, False, REFLECT, SAMPLES
+]
 """The rig's renderer at another resolution / sample count — what a pixel-RL
 observation would be (e.g. 128x128, one sample). The store and the eval use
-`TowerRenderer`, the rig's own pixels."""
+`TowerRenderer`, the rig's own pixels.
+
+⚠ `REFLECT=False` BY DEFAULT: the tower scene has no reflective geom, so the
+reflection pass never runs, but as `True` its code — a second full trace per
+pixel — is still compiled into the kernel and holds registers. The pictures
+are the same bytes either way; `make_tower_renderer` REFUSES a visual set with
+a reflective geom when it is compiled out (the DR never writes reflectance,
+`randomize.mojo`'s NEVER list), so a mirror added to the scene later fails at
+construction instead of silently rendering as matte."""
 
 comptime TowerRenderer[LANES: Int] = TowerRendererSized[
     LANES, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES
@@ -321,18 +332,32 @@ def make_tower_renderer[
     W: Int = RIG_CAM_W,
     H: Int = RIG_CAM_H,
     SAMPLES: Int = RIG_SAMPLES,
+    REFLECT: Bool = False,
 ](
     ctx: DeviceContext, fmd: FlatModelDef, mut m: Model[RIG_DT, TOWER_MD],
     look: String = RIG_LOOK_CALIBRATED,
-) raises -> TowerRendererSized[LANES, W, H, SAMPLES]:
+    bvh_sah: Bool = True,
+) raises -> TowerRendererSized[LANES, W, H, SAMPLES, REFLECT]:
     """The renderer with the rig's visual set, look and background, camera
-    slot 0. The defaults are the rig's pixels (`TowerRenderer`)."""
+    slot 0. The defaults are the rig's pixels (`TowerRenderer`).
+
+    `bvh_sah=False` builds the mesh trees with the reference's median split
+    instead of SAH — the same pictures, slower; for a benchmark's A/B."""
     var cams = tower_cameras(fmd)
-    var r = TowerRendererSized[LANES, W, H, SAMPLES](ctx, m, cams[0])
+    var r = TowerRendererSized[LANES, W, H, SAMPLES, REFLECT](ctx, m, cams[0])
     var vis = build_visual_model[RIG_DT, TOWER_MD](
-        fmd, m, group_mask=rig_visual_group_mask(look)
+        fmd, m, group_mask=rig_visual_group_mask(look), bvh_sah=bvh_sah
     )
     apply_tower_look(vis, fmd, look)
+    comptime if not REFLECT:
+        for g in range(vis.ngeom + vis.ncond):
+            if vis.appearance.data[g * VIS_GEOM_APPEARANCE + APP_IDX_REFLECT] != 0:
+                raise Error(
+                    "make_tower_renderer: visual geom " + String(g)
+                    + " is reflective and this renderer has the reflection"
+                    " pass compiled out (REFLECT=False) — it would render"
+                    " matte. Build it with REFLECT=True."
+                )
     r.set_visual(ctx, vis^)
     r.background = rig_background(look)
     return r^

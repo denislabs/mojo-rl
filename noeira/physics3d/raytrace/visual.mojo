@@ -317,6 +317,7 @@ def build_visual_model[
     group_mask: Int = 0b111,
     verbose: Bool = False,
     conditions: List[SiteCondition] = List[SiteCondition](),
+    bvh_sah: Bool = True,
 ) raises -> VisualModel[DTYPE]:
     """Everything a camera needs, from the parse and the built `Model`.
 
@@ -451,7 +452,11 @@ def build_visual_model[
     var bvhadr = List[Int]()
     var bvhnum = List[Int]()
     if vis.ntri > 0:
-        build_mesh_bvh[DTYPE](tri, triadr, trinum, bvh, bvhadr, bvhnum)
+        # `bvh_sah=False` is the reference's median-split tree — the same
+        # pictures, only slower; kept so a benchmark can time both.
+        build_mesh_bvh[DTYPE](
+            tri, triadr, trinum, bvh, bvhadr, bvhnum, sah=bvh_sah
+        )
     else:
         for _ in range(vis.nmesh):
             bvhadr.append(0)

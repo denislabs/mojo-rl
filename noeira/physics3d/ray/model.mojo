@@ -284,6 +284,10 @@ def ray_model[
                         bvhnum,
                         pnt,
                         vec,
+                        # The best hit so far: a mesh BEHIND it is not walked
+                        # (a tie keeps the earlier geom, as the comparison
+                        # below does, so the answer cannot move).
+                        best,
                     )
                     t = rb.t
                     n = rb.normal

@@ -405,9 +405,9 @@ def _posed_rig_data[
 
 
 def _time_cam[
-    N: Int, W: Int, H: Int, S: Int
+    N: Int, W: Int, H: Int, S: Int, R: Bool = False
 ](
-    ctx: DeviceContext, mut r: TowerRendererSized[N, W, H, S],
+    ctx: DeviceContext, mut r: TowerRendererSized[N, W, H, S, R],
     mut rd: Data[RIG_DT, TOWER_MD, N], mut rm: Model[RIG_DT, TOWER_MD],
     cam: Int,
 ) raises -> Float64:
@@ -426,9 +426,9 @@ def _time_cam[
 
 
 def _hits_and_png[
-    N: Int, W: Int, H: Int, S: Int
+    N: Int, W: Int, H: Int, S: Int, R: Bool = False
 ](
-    ctx: DeviceContext, mut r: TowerRendererSized[N, W, H, S],
+    ctx: DeviceContext, mut r: TowerRendererSized[N, W, H, S, R],
     mut rd: Data[RIG_DT, TOWER_MD, N], mut rm: Model[RIG_DT, TOWER_MD],
     cam: Int, png: String, name: String,
 ) raises -> Float64:
@@ -522,6 +522,37 @@ def bench_camera[
         "vis_geoms=" + String(r128.vis.ngeom) + "+" + String(r128.vis.ncond),
     )
 
+    # ── rl128, the OLD configuration: REFLECT compiled in, median trees ──
+    # ⚠ The best-hit cut and the tie rule are in both legs (not switchable):
+    # compare against the ffbc16d94 rows for their share.
+    # `tests/tasks/test_so101_tower_render_variants.mojo` holds the two
+    # configurations to the same bytes.
+    var r128o = make_tower_renderer[N, RL_W, RL_H, 1, True](ctx, fmd, rm, bvh_sah=False)
+    var ow = _time_cam[N, RL_W, RL_H, 1, True](ctx, r128o, rd, rm, cam_wrist)
+    var oo = _time_cam[N, RL_W, RL_H, 1, True](ctx, r128o, rd, rm, cam_over)
+    print(
+        "RESULT leg=camera cfg=rl128-old(reflect+median) n_envs=" + String(N),
+        "wrist_ms=" + _r2(ow), "overhead_ms=" + _r2(oo),
+        "speedup_wrist=" + _r2(ow / ms_w), "speedup_overhead=" + _r2(oo / ms_o),
+    )
+
+    # ── cheaper RL pixels: fewer rays for the same anti-aliased 16x16 ────
+    var r64 = make_tower_renderer[N, 64, 64, 1](ctx, fmd, rm)
+    var w64 = _time_cam[N, 64, 64, 1](ctx, r64, rd, rm, cam_wrist)
+    var o64 = _time_cam[N, 64, 64, 1](ctx, r64, rd, rm, cam_over)
+    _ = _hits_and_png[N, 64, 64, 1](ctx, r64, rd, rm, cam_wrist, png, "rl64_wrist")
+    var r32 = make_tower_renderer[N, 32, 32, 4](ctx, fmd, rm)
+    var w32 = _time_cam[N, 32, 32, 4](ctx, r32, rd, rm, cam_wrist)
+    var o32 = _time_cam[N, 32, 32, 4](ctx, r32, rd, rm, cam_over)
+    _ = _hits_and_png[N, 32, 32, 4](ctx, r32, rd, rm, cam_wrist, png, "rl32x4_wrist")
+    print(
+        "RESULT leg=camera cfg=rl-lowres n_envs=" + String(N),
+        "64x64x1_wrist_fps=" + String(Int(Float64(N) / (w64 / 1000.0))),
+        "64x64x1_overhead_fps=" + String(Int(Float64(N) / (o64 / 1000.0))),
+        "32x32x4_wrist_fps=" + String(Int(Float64(N) / (w32 / 1000.0))),
+        "32x32x4_overhead_fps=" + String(Int(Float64(N) / (o32 / 1000.0))),
+    )
+
     # ── rl128 with every mesh's triangles removed: the mesh share ────────
     # `TRINUM = 0` makes the mesh test return NO HIT without touching a geom,
     # a pose or the kernel (`camera_tracer_lane_sweep.mojo`'s control), so
@@ -560,6 +591,16 @@ def bench_camera[
         var mw = _time_cam[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES](ctx, rr, rd, rm, cam_wrist)
         var hw = _hits_and_png[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES](ctx, rr, rd, rm, cam_wrist, png, "rig_wrist")
         _ = _hits_and_png[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES](ctx, rr, rd, rm, cam_over, png, "rig_overhead")
+        var rro = make_tower_renderer[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES, True](
+            ctx, fmd, rm, bvh_sah=False
+        )
+        var omo = _time_cam[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES, True](ctx, rro, rd, rm, cam_over)
+        var omw = _time_cam[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES, True](ctx, rro, rd, rm, cam_wrist)
+        print(
+            "RESULT leg=camera cfg=rig-old(reflect+median) n_envs=" + String(N),
+            "overhead_ms=" + _r2(omo), "wrist_ms=" + _r2(omw),
+            "speedup_pair=" + _r2((omo + omw) / (mo + mw)),
+        )
         print(
             "RESULT leg=camera cfg=rig n_envs=" + String(N),
             "res=" + String(RIG_CAM_W) + "x" + String(RIG_CAM_H),
