@@ -88,6 +88,25 @@ levers are read in `noeira-docs/SO101_RENDER_SPEED.md`.
 0.73-0.83; 64x64x1 wrist 144k fps. Physics unchanged (153k / 354k physics
 steps/s at 1024 / 4096).
 
+**MuJoCo Warp on the same scene** (`so101_tower_throughput_mjwarp.py`, same
+5090, MuJoCo 3.14 / Warp 1.17, same protocol, CUDA graph per control step;
+9-10 contacts and 1.7 solver iterations per world against our 9 and 1.9):
+
+    physics steps/s     32      256     1024    4096
+    noeira             8.9k    50.6k   153k    354k
+    MuJoCo Warp       28.5k   136.5k   428k    1.21M
+    ratio              0.31    0.37    0.36    0.29
+
+    frames/s (1024)   wrist 128²  overhead 128²  wrist 64²  overhead 64²
+    noeira              38.5k       17.7k         144k        59k
+    MuJoCo Warp         76.2k       38.2k         231k       105k
+    ratio               0.51        0.46          0.62       0.56
+
+(MuJoCo Warp rendered groups 0/2/4/5 — the calibrated look's set — and hit
+0.64-0.68 of the wrist pixels against our 0.66-0.69.) nsys on our physics at
+4096 lanes: the Newton solver kernels ~58 % of GPU time, the collision
+kernels ~38 %, the rest ~3 %.
+
 ⚠ THE POSE IS HOST FK OF THE ENV'S `qpos`, AS IN THE EVAL
 (`so101_tower_rig.mojo`'s header): the env leaves `SYNC_FK_AFTER_STEP` off, so
 its device `xpos` is one substep stale. A pixel-RL loop would need a device FK
