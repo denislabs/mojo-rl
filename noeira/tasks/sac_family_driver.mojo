@@ -201,6 +201,7 @@ learning.
 """
 
 from std.pathlib import Path
+from std.sys import is_defined
 from std.random import seed as seed_rng
 from std.time import perf_counter_ns
 
@@ -261,7 +262,18 @@ from noeira.tasks.critic_health import critic_health
 # parameters and the greedy eval's lane count. `--updates-per-step` is the
 # flag, and it is what varies the tracking rate WITHOUT changing how much
 # data an iteration collects.
-comptime N_ENVS = 32
+#
+# ⚠ `-D TASK_SAC_LANES_256` / `-D TASK_SAC_LANES_1024` select a wider batch
+# at BUILD time (Mojo has no integer define here), for the Squint-scale runs
+# of `noeira-docs/SO101_PIXEL_RL_PLAN.md` step 0. The default stays 32. A
+# wide run MUST pass `--updates-per-step` and `--tau` explicitly: the default
+# `updates_per_step = N_ENVS` would be 1024 updates per iteration, and the
+# target's tracking rate is `1 - (1 - tau)^updates_per_step` (below) — at 256
+# updates, `--tau 0.0003` is the ~7.4 % the 32-lane history found stable.
+comptime N_ENVS = (
+    1024 if is_defined["TASK_SAC_LANES_1024"]()
+    else (256 if is_defined["TASK_SAC_LANES_256"]() else 32)
+)
 # ⚠⚠ `lift`, NOT `reach`. `reach` and `reach_clear` are both
 # `AtRegion(robot_gripperframe, table_top)` and
 # `examples/tasks/task_null_action.mojo` measured what that is worth: a
