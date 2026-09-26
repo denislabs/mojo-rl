@@ -298,6 +298,11 @@ comptime REAIM_DEG_PER_STEP: Float64 = 1.0
 """The move to the re-aimed pre-grasp: this many degrees per step at most
 (the descent runs ~0.8), at least REAIM_MIN_STEPS."""
 comptime N_PRE_FULL = 40
+comptime LOOK_COV_MIN: Float64 = 0.7
+comptime LOOK_COV_MAX: Float64 = 1.7
+comptime LOOK_RES_MAX: Float64 = 0.5
+"""`look_confident`'s bounds (the overhead's: coverage 0.75..1.3, residual
+< 0.35)."""
 comptime LOOK_MIN_CONF = 3
 comptime LOOK_MAX_CORR_MM: Float64 = 25.0
 """The wrist correction acts (both tasks) when at least LOOK_MIN_CONF of the
@@ -891,6 +896,21 @@ struct WristLook(Movable):
         self.cam_rot = Mat3d.identity()
 
 
+def look_confident(e: PoseEstimate) -> Bool:
+    """The wrist look's own confidence, looser than `pose_confident` (tuned
+    on the overhead camera 45 cm away): 10-15 cm away the arm's sag puts the
+    real camera LOWER than its FK, so the brick looks bigger than the model
+    predicts — cycle run 6, ep 1: the brick plainly in view, found 3.6 mm
+    from the plan's, but coverage 1.40 and residual 0.40 rejected every
+    frame, and the uncorrected pick (at 38 cm reach) closed empty. The
+    correction stays guarded by the median over the frames and its 25 mm
+    cap."""
+    return (
+        e.found and e.coverage >= LOOK_COV_MIN and e.coverage <= LOOK_COV_MAX
+        and e.residual < LOOK_RES_MAX
+    )
+
+
 def wrist_look(
     mut rig: Rig, mut env: E, mut afk: TowerArmFK, wci: Int, wlens: FisheyeLens,
     pick_x: Float64, pick_y: Float64, pick_z: Float64, mut stdin: StdinReader,
@@ -926,11 +946,11 @@ def wrist_look(
         var cp = afk.camera_pose(wci)
         var wcam = RigCamera(wlens, cp[0], cp[1])
         out.n_frames += 1
-        var ew = estimate_prism_pose(buf, wcam, printed_brick_hsv(), brick, roi)
+        var ew = estimate_prism_pose(buf, wcam, printed_brick_hsv(), brick, roi, max_coverage=3.0)
         out.frame = buf.copy()
         out.cam_pos = cp[0]
         out.cam_rot = cp[1]
-        if pose_confident(ew):
+        if look_confident(ew):
             xs.append(ew.x)
             ys.append(ew.y)
             yaws.append(ew.yaw)
