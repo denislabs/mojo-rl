@@ -528,10 +528,22 @@ def bench_camera[
     # `tests/tasks/test_so101_tower_render_variants.mojo` holds the two
     # configurations to the same bytes.
     var r128o = make_tower_renderer[N, RL_W, RL_H, 1, True](ctx, fmd, rm, bvh_sah=False)
+    r128o.cull_enabled = False
     var ow = _time_cam[N, RL_W, RL_H, 1, True](ctx, r128o, rd, rm, cam_wrist)
     var oo = _time_cam[N, RL_W, RL_H, 1, True](ctx, r128o, rd, rm, cam_over)
+    # The screen-rectangle cull alone: the new renderer with it switched off.
+    r128.cull_enabled = False
+    var cw = _time_cam[N, RL_W, RL_H, 1](ctx, r128, rd, rm, cam_wrist)
+    var co = _time_cam[N, RL_W, RL_H, 1](ctx, r128, rd, rm, cam_over)
+    r128.cull_enabled = True
     print(
-        "RESULT leg=camera cfg=rl128-old(reflect+median) n_envs=" + String(N),
+        "RESULT leg=camera cfg=rl128-nocull n_envs=" + String(N),
+        "wrist_ms=" + _r2(cw), "overhead_ms=" + _r2(co),
+        "cull_speedup_wrist=" + _r2(cw / ms_w),
+        "cull_speedup_overhead=" + _r2(co / ms_o),
+    )
+    print(
+        "RESULT leg=camera cfg=rl128-old(reflect+median+nocull) n_envs=" + String(N),
         "wrist_ms=" + _r2(ow), "overhead_ms=" + _r2(oo),
         "speedup_wrist=" + _r2(ow / ms_w), "speedup_overhead=" + _r2(oo / ms_o),
     )
@@ -594,10 +606,11 @@ def bench_camera[
         var rro = make_tower_renderer[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES, True](
             ctx, fmd, rm, bvh_sah=False
         )
+        rro.cull_enabled = False
         var omo = _time_cam[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES, True](ctx, rro, rd, rm, cam_over)
         var omw = _time_cam[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES, True](ctx, rro, rd, rm, cam_wrist)
         print(
-            "RESULT leg=camera cfg=rig-old(reflect+median) n_envs=" + String(N),
+            "RESULT leg=camera cfg=rig-old(reflect+median+nocull) n_envs=" + String(N),
             "overhead_ms=" + _r2(omo), "wrist_ms=" + _r2(omw),
             "speedup_pair=" + _r2((omo + omw) / (mo + mw)),
         )

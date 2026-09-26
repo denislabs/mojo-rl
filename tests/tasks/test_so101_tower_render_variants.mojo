@@ -2,15 +2,18 @@
 
     pixi run -e apple mojo run -I . tests/tasks/test_so101_tower_render_variants.mojo
 
-Two changes made the rig's tracer faster without being meant to change its
-pictures (`noeira-docs/SO101_RENDER_SPEED.md`, levers 1 and 4):
+Three changes made the rig's tracer faster without being meant to change its
+pictures (`noeira-docs/SO101_RENDER_SPEED.md`, levers 1, 3 and 4):
 
 - `make_tower_renderer` compiles the REFLECTION pass out by default (the tower
   scene has no reflective geom, and the factory refuses one that does);
 - the mesh trees are built by a binned SAH instead of the reference's median
-  split (`bvh_sah`).
+  split (`bvh_sah`);
+- the primary rays skip geoms whose SCREEN RECTANGLE misses the pixel
+  (`raytrace/cull.mojo`, `cull_enabled`).
 
-So the old configuration (REFLECT on, median trees) and the new default are
+So the old configuration (REFLECT on, median trees, no cull) and the new
+default are
 rendered here on the same posed lanes — the cube-in-bowl placements the eval
 draws, the arm at varied joint angles — and compared EXACTLY: colour, planar
 depth and the geom id, both cameras, at the store's pixels (320x240, 4
@@ -118,11 +121,50 @@ def _compare[W: Int, H: Int, S: Int](
     var fmd = parse_model_runtime(fmd_path)
     var cams = tower_cameras(fmd)
     var old = make_tower_renderer[L, W, H, S, True](ctx, fmd, rm, bvh_sah=False)
+    old.cull_enabled = False
     var new = make_tower_renderer[L, W, H, S](ctx, fmd, rm)
+    var nocull = make_tower_renderer[L, W, H, S](ctx, fmd, rm)
+    nocull.cull_enabled = False
     for ci in range(2):
         var name = label + (" overhead" if ci == 0 else " wrist")
         var a = _grab[W, H, S, True](ctx, old, rd, rm, cams[ci])
         var b = _grab[W, H, S, False](ctx, new, rd, rm, cams[ci])
+        var c = _grab[W, H, S, False](ctx, nocull, rd, rm, cams[ci])
+        var dcull = 0
+        for i in range(L * W * H):
+            if Int(b[2][i]) != Int(c[2][i]) or b[1][i] != c[1][i]:
+                dcull += 1
+            else:
+                for k in range(3):
+                    if b[0][i * 3 + k] != c[0][i * 3 + k]:
+                        dcull += 1
+                        break
+        check(fails, name + ": same bytes (cull on vs off)", dcull == 0,
+              String(dcull) + " pixels differ")
+        # ⚠ THE CULL MUST CULL, or "same bytes" is vacuous: the rectangles
+        # `new` just used, for this camera — most geoms must cover less than
+        # a quarter of the image.
+        var nvg = new.vis.ngeom
+        var hc = ctx.enqueue_create_host_buffer[RIG_DT](L * nvg * 4)
+        ctx.enqueue_copy(hc, new.cull.create_sub_buffer[RIG_DT](0, L * nvg * 4))
+        ctx.synchronize()
+        var small = 0
+        var empty = 0
+        var full = 0
+        for q in range(L * nvg):
+            var x0 = Float64(hc[q * 4 + 0])
+            var x1 = Float64(hc[q * 4 + 1])
+            var y0 = Float64(hc[q * 4 + 2])
+            var y1 = Float64(hc[q * 4 + 3])
+            if x1 < x0 or y1 < y0:
+                empty += 1  # behind the camera: never tested
+            elif x1 - x0 > 1.0e8:
+                full += 1
+            elif (x1 - x0) * (y1 - y0) < 0.25 * Float64(W * H):
+                small += 1
+        check(fails, name + ": the cull skips geoms", (small + empty) * 3 > L * nvg,
+              String(empty) + " empty, " + String(small) + " small (< 1/4),"
+              + String(full) + " full, of " + String(L * nvg) + " (lane, geom) rects")
         var n = L * W * H
         var ds = 0
         var dd = 0
@@ -147,7 +189,7 @@ def _compare[W: Int, H: Int, S: Int](
               String(hit) + " / " + String(n))
         check(fails, name + ": meshes are in frame", arm > n // 200,
               String(arm) + " mesh pixels")
-        check(fails, name + ": same bytes (REFLECT on + median vs default)",
+        check(fails, name + ": same bytes (REFLECT on + median + no cull vs default)",
               ds == 0 and dd == 0 and dc == 0,
               "seg " + String(ds) + ", depth " + String(dd) + ", colour "
               + String(dc) + " differ")
