@@ -63,6 +63,8 @@ from noeira.physics3d.gpu.constants import (
     JOINT_IDX_QPOS_ADR,
     META_IDX_NUM_CONTACTS,
     META_IDX_SIM_TIME,
+    META_IDX_PHI_PREV,
+    META_IDX_EPISODE_FLAGS,
     META_IDX_TASK_PARAM_0,
     META_IDX_TASK_PARAM_6,
 )
@@ -332,6 +334,9 @@ struct Phyics3dEnv[
         # first step of every episode after the first would be clamped to
         # `slewmax*dt` around a stale command.
         self.d.meta.data[META_IDX_SIM_TIME] = Scalar[Self.DTYPE](0)
+        # The reward's per-episode state, as `Phyics3dBatchedEnv._reset_env_lane`.
+        self.d.meta.data[META_IDX_PHI_PREV] = Scalar[Self.DTYPE](0)
+        self.d.meta.data[META_IDX_EPISODE_FLAGS] = Scalar[Self.DTYPE](0)
         Self.MODEL_DEF.reset_data(self.sf, self.d)
         var noise_scale = Self.CONFIG.get_reset_noise()
         if noise_scale > 0.0:

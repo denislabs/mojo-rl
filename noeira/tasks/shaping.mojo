@@ -92,6 +92,40 @@ def shaping_words(
     return out^
 
 
+comptime REWARD_MODE_WORDS: Int = 2
+"""How many `meta` words `reward_mode_words` returns, starting at
+`META_IDX_REWARD_MODE`: the mode and the success bonus. (The block's other
+two words, `META_IDX_PHI_PREV` / `META_IDX_EPISODE_FLAGS`, are episode state the
+hook and the reset own — a driver never writes them.)"""
+
+
+def reward_mode_words(
+    potential: Bool, success_bonus: Float64 = 0.0
+) raises -> List[Float64]:
+    """`[mode, success_bonus]` for `meta[META_IDX_REWARD_MODE ..]`.
+
+    `potential=False` is the LEGACY reward (every shaped term a raw per-step
+    value) — also what an untouched `meta` gives. `potential=True` pays the
+    change of the staged potential and the full budget while the goal holds
+    (`family_config.compute_reward_and_done_gpu`, the potential-based mode).
+
+    ⚠ A SUCCESS BONUS WITHOUT THE POTENTIAL MODE IS REFUSED: the legacy hook
+    never reads the word, so the bonus would be silently absent from a run
+    that asked for it.
+    """
+    if success_bonus < 0.0:
+        raise Error("tasks: negative success bonus " + String(success_bonus))
+    if success_bonus > 0.0 and not potential:
+        raise Error(
+            "tasks: a success bonus (" + String(success_bonus) + ") needs the"
+            " potential-based reward mode; the legacy hook never reads it."
+        )
+    var out = List[Float64]()
+    out.append(1.0 if potential else 0.0)
+    out.append(success_bonus)
+    return out^
+
+
 comptime OPTIMAL_MARGIN_PER_METRE: Float64 = 1.5174271293851465
 """`margin / shortfall` at which a `tolerance` term's gradient is greatest.
 

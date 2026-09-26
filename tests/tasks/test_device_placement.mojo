@@ -141,6 +141,7 @@ from noeira.envs.libero.placement.libero_study_scene4 import (
 )
 from noeira.physics3d.gpu.constants import (
     META_IDX_NEWTON_ITER, META_SOLVER_WORDS,
+    META_IDX_REWARD_MODE, META_REWARD_WORDS,
     METADATA_SIZE, META_IDX_INIT_REGION_0, META_INIT_SLOTS, META_IDX_LS_EVAL,
     META_IDX_JINIT_0, META_JINIT_SLOTS, META_JINIT_WORDS,
     MODEL_JOINT_SIZE, MODEL_BODY_SIZE, MODEL_GEOM_SIZE,
@@ -1144,9 +1145,10 @@ def main() raises:
         META_IDX_INIT_REGION_0 + META_INIT_SLOTS == META_IDX_JINIT_0
         and META_IDX_JINIT_0 + META_JINIT_SLOTS * META_JINIT_WORDS
         == META_IDX_NEWTON_ITER
-        and META_IDX_NEWTON_ITER + META_SOLVER_WORDS == METADATA_SIZE,
-        "the init block, the jinit block and the solver counters are"
-        " contiguous and END `meta` ("
+        and META_IDX_NEWTON_ITER + META_SOLVER_WORDS == META_IDX_REWARD_MODE
+        and META_IDX_REWARD_MODE + META_REWARD_WORDS == METADATA_SIZE,
+        "the init block, the jinit block, the solver counters and the reward"
+        " block are contiguous and END `meta` ("
         + String(META_IDX_INIT_REGION_0) + ".." + String(METADATA_SIZE - 1)
         + "), so widening moved no other word",
     )
