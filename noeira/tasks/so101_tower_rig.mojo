@@ -99,8 +99,15 @@ comptime RIG_DR_TARGET = (0.32, 0.0, 0.0)
 """What `--dr`'s extra spot lights aim at: the desk mat's centre
 (`scenes/so101_tower.xml`, the `desk_mat` frame)."""
 
-comptime TowerRenderer[LANES: Int] = BatchedCameraRenderer[
-    RIG_DT, TOWER_MD, LANES, RIG_CAM_W, RIG_CAM_H, False, True, RIG_SAMPLES
+comptime TowerRendererSized[
+    LANES: Int, W: Int, H: Int, SAMPLES: Int
+] = BatchedCameraRenderer[RIG_DT, TOWER_MD, LANES, W, H, False, True, SAMPLES]
+"""The rig's renderer at another resolution / sample count — what a pixel-RL
+observation would be (e.g. 128x128, one sample). The store and the eval use
+`TowerRenderer`, the rig's own pixels."""
+
+comptime TowerRenderer[LANES: Int] = TowerRendererSized[
+    LANES, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES
 ]
 
 
@@ -310,15 +317,18 @@ def _near(x: Float64, y: Float64) -> Bool:
 
 
 def make_tower_renderer[
-    LANES: Int
+    LANES: Int,
+    W: Int = RIG_CAM_W,
+    H: Int = RIG_CAM_H,
+    SAMPLES: Int = RIG_SAMPLES,
 ](
     ctx: DeviceContext, fmd: FlatModelDef, mut m: Model[RIG_DT, TOWER_MD],
     look: String = RIG_LOOK_CALIBRATED,
-) raises -> TowerRenderer[LANES]:
+) raises -> TowerRendererSized[LANES, W, H, SAMPLES]:
     """The renderer with the rig's visual set, look and background, camera
-    slot 0."""
+    slot 0. The defaults are the rig's pixels (`TowerRenderer`)."""
     var cams = tower_cameras(fmd)
-    var r = TowerRenderer[LANES](ctx, m, cams[0])
+    var r = TowerRendererSized[LANES, W, H, SAMPLES](ctx, m, cams[0])
     var vis = build_visual_model[RIG_DT, TOWER_MD](
         fmd, m, group_mask=rig_visual_group_mask(look)
     )

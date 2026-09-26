@@ -1,0 +1,554 @@
+"""What the so101_tower scene costs per env step — physics and cameras — at RL lane counts.
+
+    pixi run -e nvidia mojo build -I . benchmarks/so101_tower_throughput.mojo -o bench_tower
+    pixi run -e nvidia ./bench_tower [--only physics|camera] [--warmup 50] [--steps 600] [--png DIR]
+
+The question it answers: could pixel RL (SAC / PPO from a camera, the Squint
+recipe: ~1024 lanes, one small wrist image) run on this scene at a useful
+rate? Two halves, each at 32 (the sim eval's width), 256, 1024 and 4096 lanes.
+
+## PHYSICS — `bench_half_cheetah_batch.mojo`'s protocol
+
+WARMUP untimed steps, STEPS timed between two synchronisations, the action
+upload and the selective reset inside the loop, EAGER and GRAPH (the physics
+`step_batch` captured once and replayed — run it through `pixi run` so the
+CUDA interceptor is preloaded), so the rows line up with half cheetah's.
+
+⚠⚠ ONE STEP HERE IS A CONTROL STEP: FRAME_SKIP (16) PHYSICS STEPS. Set the
+`physics_steps_per_s` column beside half cheetah's (5 per env step) and
+MuJoCo Warp's. The series-3 sim eval's "physics 257 s" was 76 800 control
+steps = 1.23M physics steps at 32 lanes, EAGER, with three downloads and a
+synchronise per step — a correctness loop, not this number.
+
+⚠⚠ THE ARM MOVES AND THE PROPS ARE PLACED, OR THIS MEASURES AN EMPTY DESK. A
+constant action parks the arm in the air and the solve sees only the props
+resting on the mat. Every lane draws uniform joint targets over the whole
+`ctrlrange` (gripper included) and holds each HOLD steps — an exploring
+policy's motion: the arm sweeps the desk, hits the brick and the bowl. The
+task's `meta` words and region table go in before the reset (the eval's own
+set-up), so the device reset places the props per lane as training would; the
+row prints the brick's spread across lanes to prove it, and the contacts and
+Newton iterations per solve over the timed window
+(`META_IDX_SOLVER_ACC_NCON` / `_ITER`, differenced) — this scene's cost is
+contacts, and a row near the props-only contact floor is a parked arm.
+
+## CAMERAS — the rig's tracer, three ways
+
+- `rig`    320x240, 4 samples, overhead + wrist: what the store and the sim
+           eval render (`TowerRenderer`). Kernel only.
+- `rl128`  128x128, 1 sample, wrist, then overhead: a pixel-RL observation
+           (Squint renders 128x128 and downsamples to 16x16). Kernel only.
+- `evalpath` (32 lanes only) the sim eval's whole `_render`: host FK of every
+           lane, three uploads, and per camera the launch, the copy of `rgb`
+           to the host, a synchronise and the uint8 pack. Its gap to `rig` is
+           what the eval spends outside the tracer.
+
+The lanes hold DIFFERENT poses (the props placed per lane, then 40 steps of
+the random policy above), not one pose copied — `camera_tracer_lane_sweep.mojo`
+explains why identical lanes are a best case. Each camera row prints the
+fraction of pixels that hit geometry; `--png DIR` writes lane 0 of every leg.
+
+⚠ THE POSE IS HOST FK OF THE ENV'S `qpos`, AS IN THE EVAL
+(`so101_tower_rig.mojo`'s header): the env leaves `SYNC_FK_AFTER_STEP` off, so
+its device `xpos` is one substep stale. A pixel-RL loop would need a device FK
+after the step (`forward_kinematics["gpu", ...]`) — not timed here.
+"""
+
+from std.os import makedirs
+from std.random import random_float64, seed as seed_rng
+from std.sys import argv
+from std.time import perf_counter_ns
+
+from max.gpu.host import DeviceBuffer, DeviceContext, HostBuffer
+
+from noeira.cuda import CUDAGraph, maybe_capture_replay
+from noeira.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from noeira.io.png import save_png
+from noeira.nn.core.ptr import mptr
+from noeira.physics3d.fields import Data, Model
+from noeira.physics3d.gpu.constants import (
+    METADATA_SIZE, MODEL_CURRICULUM_SIZE,
+    META_IDX_SOLVER_ACC_NCON, META_IDX_SOLVER_ACC_ITER,
+)
+from noeira.physics3d.kinematics.forward_kinematics import forward_kinematics
+from noeira.physics3d.parser.flat_model import FlatModelDef
+from noeira.physics3d.parser.runtime_load import parse_model_runtime
+from noeira.tasks.eval import region_sites, region_rects, region_half_heights
+from noeira.tasks.family import scene_path
+from noeira.tasks.family_config import So101TowerConfig
+from noeira.tasks.gpu_eval import region_table_words
+from noeira.tasks.posed_reset import task_meta_words
+from noeira.tasks.so101_tower_rig import (
+    RIG_DT, TOWER_MD, RIG_CAM_W, RIG_CAM_H, RIG_N_CAMS, RIG_NPIX,
+    RIG_CAM_ELEMS, RIG_IMG_ELEMS, RIG_SAMPLES, TowerRendererSized,
+    make_tower_model, make_tower_renderer, tower_cameras, pack_camera_u8,
+    rig_byte,
+)
+from noeira.tasks.so101_tower_xml import So101TowerModel
+from noeira.tasks.spec import load_family
+
+
+comptime DT = RIG_DT
+comptime CFG = So101TowerConfig
+comptime FRAME_SKIP = CFG.FRAME_SKIP
+comptime NQ = So101TowerModel.NQ
+comptime NB = So101TowerModel.NBODY
+comptime TASK = "so101_tower_cube_in_bowl"
+comptime FAMILY = "so101_tower"
+comptime FAMILY_PATH = "noeira/tasks/families/so101_tower.family"
+comptime HOLD = 16
+"""Control steps a random target is held (~0.5 s at 31.25 Hz)."""
+comptime N_TABLES = 8
+"""Pre-drawn action tables, cycled — no host RNG inside the timed loop."""
+comptime POSE_STEPS = 40
+"""Random-policy steps before the camera legs, so the lanes' arms differ."""
+comptime RL_W = 128
+comptime RL_H = 128
+
+# ⚠ SET FALSE ON A SMALL BOARD: 4 096 lanes allocate the tower's whole `Data`
+# (contact buffers included) 4 096 times, and the camera half a second one.
+comptime LANES_4096: Bool = True
+
+# Every timed camera leg gets the same wall-clock window, not the same rep
+# count — `camera_tracer_lane_sweep.mojo`'s `_reps_for`, for its reason.
+comptime MIN_WINDOW_MS = 300.0
+comptime MIN_REPS = 3
+comptime MAX_REPS = 2000
+
+
+struct TaskWords(Copyable, Movable):
+    """The region table and the task's `meta` words — the eval's set-up."""
+
+    var curriculum: List[Float64]
+    var meta_idx: List[Int]
+    var meta_val: List[Float64]
+    var brick: Int
+
+    def __init__(out self, fmd: FlatModelDef) raises:
+        var f = load_family(String(FAMILY_PATH))
+        var rsites = region_sites(f, fmd.site_names)
+        var rects = region_rects(f)
+        var rheights = region_half_heights(f)
+        var cw = region_table_words(
+            rsites[0], rects[0][0], rects[0][1], rects[0][2], rects[0][3],
+            rheights[0],
+        )
+        self.curriculum = List[Float64]()
+        for k in range(MODEL_CURRICULUM_SIZE):
+            self.curriculum.append(Float64(cw[k]))
+        var mw = task_meta_words(
+            String(TASK), String(FAMILY), CFG.SHAPE_W_GOAL,
+            CFG.SHAPE_W_REACH, CFG.GOAL_MARGIN, CFG.REACH_MARGIN,
+        )
+        self.meta_idx = mw[0].copy()
+        self.meta_val = List[Float64]()
+        for k in range(len(mw[1])):
+            self.meta_val.append(Float64(mw[1][k]))
+        self.brick = -1
+        for b in range(len(fmd.body_names)):
+            if String(fmd.body_names[b]) == "brick_brick":
+                self.brick = b
+        if self.brick < 0:
+            raise Error("brick_brick not found in the composed scene")
+
+
+struct Opts(Copyable, Movable):
+    var physics: Bool
+    var camera: Bool
+    var warmup: Int
+    var steps: Int
+    var png: String
+
+    def __init__(out self) raises:
+        self.physics = True
+        self.camera = True
+        self.warmup = 50
+        self.steps = 600
+        self.png = String("")
+        var a = argv()
+        var i = 1
+        while i < len(a):
+            var k = String(a[i])
+            if i + 1 >= len(a):
+                raise Error("missing value after " + k)
+            var v = String(a[i + 1])
+            if k == "--only":
+                self.physics = v == "physics"
+                self.camera = v == "camera"
+                if not (self.physics or self.camera):
+                    raise Error("--only physics|camera")
+            elif k == "--warmup":
+                self.warmup = Int(v)
+            elif k == "--steps":
+                self.steps = Int(v)
+            elif k == "--png":
+                self.png = v
+            else:
+                raise Error("unknown flag " + k)
+            i += 2
+
+
+comptime TowerEnv[N: Int] = Phyics3dBatchedEnv[So101TowerModel, CFG, N]
+
+
+def _install_task_and_reset[
+    N: Int
+](ctx: DeviceContext, mut env: TowerEnv[N], tw: TaskWords) raises:
+    """The task's words, then the device reset — which places the props."""
+    for k in range(MODEL_CURRICULUM_SIZE):
+        env.mf.curriculum.data[k] = Scalar[DT](tw.curriculum[k])
+    env.mf.curriculum.upload(ctx)
+    for e in range(N):
+        var mb = e * METADATA_SIZE
+        for k in range(METADATA_SIZE):
+            env.d.meta.data[mb + k] = Scalar[DT](0)
+        for k in range(len(tw.meta_idx)):
+            env.d.meta.data[mb + tw.meta_idx[k]] = Scalar[DT](tw.meta_val[k])
+    env.d.meta.upload(ctx)
+    ctx.synchronize()
+    env.reset_batch[N](ctx=ctx, rng_seed=UInt64(7))
+    ctx.synchronize()
+
+
+def _brick_sd_mm[
+    N: Int
+](ctx: DeviceContext, mut env: TowerEnv[N], brick: Int) raises -> String:
+    """The brick's xy standard deviation across lanes, in mm. 0,0 = every lane
+    got the same pose = the reset did not place."""
+    env.d.xpos.download(ctx)
+    ctx.synchronize()
+    var s = List[Float64](length=4, fill=0.0)
+    for e in range(N):
+        var x = Float64(env.d.xpos.data[e * NB * 3 + brick * 3])
+        var y = Float64(env.d.xpos.data[e * NB * 3 + brick * 3 + 1])
+        s[0] += x
+        s[1] += x * x
+        s[2] += y
+        s[3] += y * y
+    var nf = Float64(N)
+    var vx = s[1] / nf - (s[0] / nf) * (s[0] / nf)
+    var vy = s[3] / nf - (s[2] / nf) * (s[2] / nf)
+    var sx = vx ** 0.5 if vx > 0.0 else 0.0
+    var sy = vy ** 0.5 if vy > 0.0 else 0.0
+    return String(Int(sx * 1000.0)) + "," + String(Int(sy * 1000.0))
+
+
+def _action_tables[
+    N: Int
+](ctx: DeviceContext) raises -> List[HostBuffer[DT]]:
+    comptime ACT = TowerEnv[N].ACT_DIM
+    seed_rng(11)
+    var tables = List[HostBuffer[DT]]()
+    for _t in range(N_TABLES):
+        var hb = ctx.enqueue_create_host_buffer[DT](N * ACT)
+        tables.append(hb^)
+    ctx.synchronize()
+    for t in range(N_TABLES):
+        var p = tables[t].unsafe_ptr()
+        for k in range(N * ACT):
+            p[unsafe_offset=k] = Scalar[DT](random_float64(-1.0, 1.0))
+    return tables^
+
+
+def _solver_sums[
+    N: Int
+](ctx: DeviceContext, mut env: TowerEnv[N]) raises -> Tuple[Float64, Float64]:
+    """Summed over lanes: contacts handed to the solve, Newton iterations."""
+    env.d.meta.download(ctx)
+    ctx.synchronize()
+    var ncon = 0.0
+    var iters = 0.0
+    for e in range(N):
+        ncon += Float64(env.d.meta.data[e * METADATA_SIZE + META_IDX_SOLVER_ACC_NCON])
+        iters += Float64(env.d.meta.data[e * METADATA_SIZE + META_IDX_SOLVER_ACC_ITER])
+    return (ncon, iters)
+
+
+# ═══ PHYSICS ═════════════════════════════════════════════════════════════
+
+
+def bench_physics[
+    N: Int, USE_GRAPH: Bool
+](ctx: DeviceContext, tw: TaskWords, warmup: Int, steps: Int) raises:
+    comptime ACT = TowerEnv[N].ACT_DIM
+    var env = TowerEnv[N](ctx)
+    _install_task_and_reset[N](ctx, env, tw)
+    var sd = _brick_sd_mm[N](ctx, env, tw.brick)
+    var tables = _action_tables[N](ctx)
+    var act_dev = DeviceBuffer[DT](ctx, env.action_ptr(), N * ACT, owning=False)
+
+    var graph: Optional[CUDAGraph] = None
+
+    @always_inline
+    @parameter
+    def physics() raises capturing:
+        env.step_batch[N](ctx=ctx, rng_seed=UInt64(1))
+
+    @always_inline
+    def one_step(it: Int) raises capturing:
+        ctx.enqueue_copy(act_dev, tables[(it // HOLD) % N_TABLES])
+        comptime if USE_GRAPH:
+            maybe_capture_replay[physics](graph, ctx)
+        else:
+            physics()
+        env.selective_reset_batch[N](ctx=ctx, rng_seed=UInt64(it + 1) * 7)
+
+    for it in range(warmup):
+        one_step(it)
+    ctx.synchronize()
+    var s0 = _solver_sums[N](ctx, env)
+    var t0 = perf_counter_ns()
+    for it in range(steps):
+        one_step(warmup + it)
+    ctx.synchronize()
+    var dt = Float64(perf_counter_ns() - t0) / 1e9
+    var s1 = _solver_sums[N](ctx, env)
+    var env_sps = Float64(N * steps) / dt
+    var solves = Float64(N * steps * FRAME_SKIP)
+
+    var mode = String("graph") if USE_GRAPH else String("eager")
+    if USE_GRAPH and graph and graph.value().is_disabled():
+        mode = String("graph-DISABLED(ran eager)")
+    print(
+        "RESULT side=noeira-gpu leg=physics mode=" + mode,
+        "model=so101_tower_cube_in_bowl n_envs=" + String(N),
+        "steps=" + String(steps),
+        "wall_s=" + String(dt),
+        "us_per_batch_step=" + String(dt / Float64(steps) * 1e6),
+        "env_steps_per_s=" + String(Int(env_sps)),
+        "physics_steps_per_s=" + String(Int(env_sps * Float64(FRAME_SKIP))),
+        "contacts_per_solve=" + String((s1[0] - s0[0]) / solves),
+        "newton_iters_per_solve=" + String((s1[1] - s0[1]) / solves),
+        "brick_sd_mm=" + sd,
+    )
+
+
+# ═══ CAMERAS ═════════════════════════════════════════════════════════════
+
+
+def _reps_for(probe_ms: Float64) -> Int:
+    if probe_ms <= 0.0:
+        return MAX_REPS
+    var n = Int(MIN_WINDOW_MS / probe_ms) + 1
+    if n < MIN_REPS:
+        return MIN_REPS
+    if n > MAX_REPS:
+        return MAX_REPS
+    return n
+
+
+def _posed_rig_data[
+    N: Int
+](
+    ctx: DeviceContext, tw: TaskWords, mut rm: Model[RIG_DT, TOWER_MD],
+    mut rd: Data[RIG_DT, TOWER_MD, N],
+) raises -> String:
+    """Place the props per lane, run the random policy POSE_STEPS steps, and
+    write host FK of every lane's `qpos` into `rd` (the eval's pose path).
+    The env is local: it is gone before the camera legs allocate."""
+    comptime ACT = TowerEnv[N].ACT_DIM
+    var env = TowerEnv[N](ctx)
+    _install_task_and_reset[N](ctx, env, tw)
+    var tables = _action_tables[N](ctx)
+    var act_dev = DeviceBuffer[DT](ctx, env.action_ptr(), N * ACT, owning=False)
+    for it in range(POSE_STEPS):
+        ctx.enqueue_copy(act_dev, tables[(it // HOLD) % N_TABLES])
+        env.step_batch[N](ctx=ctx, rng_seed=UInt64(1))
+    ctx.synchronize()
+    var sd = _brick_sd_mm[N](ctx, env, tw.brick)
+    env.d.qpos.download(ctx)
+    ctx.synchronize()
+    for e in range(N):
+        for k in range(NQ):
+            rd.qpos.data[e * NQ + k] = env.d.qpos.data[e * NQ + k]
+    forward_kinematics["cpu", RIG_DT, TOWER_MD, N](rd, rm)
+    rd.qpos.upload_resident(ctx)
+    rd.xpos.upload_resident(ctx)
+    rd.xquat.upload_resident(ctx)
+    ctx.synchronize()
+    return sd
+
+
+def _time_cam[
+    N: Int, W: Int, H: Int, S: Int
+](
+    ctx: DeviceContext, mut r: TowerRendererSized[N, W, H, S],
+    mut rd: Data[RIG_DT, TOWER_MD, N], mut rm: Model[RIG_DT, TOWER_MD],
+    cam: Int,
+) raises -> Float64:
+    """ms per launch (every lane, one camera), over a MIN_WINDOW_MS window."""
+    r.render(ctx, rd, rm, cam)
+    ctx.synchronize()
+    var t = perf_counter_ns()
+    r.render(ctx, rd, rm, cam)
+    ctx.synchronize()
+    var n = _reps_for(Float64(perf_counter_ns() - t) / 1.0e6)
+    t = perf_counter_ns()
+    for _i in range(n):
+        r.render(ctx, rd, rm, cam)
+    ctx.synchronize()
+    return Float64(perf_counter_ns() - t) / Float64(n) / 1.0e6
+
+
+def _hits_and_png[
+    N: Int, W: Int, H: Int, S: Int
+](
+    ctx: DeviceContext, mut r: TowerRendererSized[N, W, H, S],
+    mut rd: Data[RIG_DT, TOWER_MD, N], mut rm: Model[RIG_DT, TOWER_MD],
+    cam: Int, png: String, name: String,
+) raises -> Float64:
+    """Render once; the fraction of pixels (all lanes) that hit geometry, and
+    lane 0 as a PNG when `png` is set. A camera looking at nothing renders
+    fast and measures nothing — the fraction is printed beside the time."""
+    comptime NPIX = W * H
+    r.render(ctx, rd, rm, cam)
+    var seg = ctx.enqueue_create_host_buffer[RIG_DT](N * NPIX)
+    ctx.enqueue_copy(seg, r.seg)
+    var rgb = ctx.enqueue_create_host_buffer[RIG_DT](NPIX * 3)
+    ctx.enqueue_copy(rgb, r.rgb.create_sub_buffer[RIG_DT](0, NPIX * 3))
+    ctx.synchronize()
+    var hit = 0
+    var sp = seg.unsafe_ptr()
+    for i in range(N * NPIX):
+        if Int(sp[unsafe_offset=i]) >= 0:
+            hit += 1
+    if png.byte_length() > 0:
+        makedirs(png, exist_ok=True)
+        var hwc = List[UInt8](length=NPIX * 3, fill=UInt8(0))
+        var p = rgb.unsafe_ptr()
+        for q in range(NPIX * 3):
+            hwc[q] = rig_byte(Float64(p[unsafe_offset=q]))
+        save_png(png + "/" + name + "_lanes" + String(N) + ".png", hwc, W, H, 3)
+    return Float64(hit) / Float64(N * NPIX)
+
+
+def _eval_render[
+    N: Int
+](
+    ctx: DeviceContext,
+    mut rr: TowerRendererSized[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES],
+    mut rd: Data[RIG_DT, TOWER_MD, N], mut rm: Model[RIG_DT, TOWER_MD],
+    cams: List[Int], host_q: List[Scalar[RIG_DT]],
+    mut h_rgb: HostBuffer[RIG_DT], mut img_u8: List[Scalar[DType.uint8]],
+) raises:
+    """`so101_tower_act_eval.TowerActEval._render`, step for step: host FK of
+    every lane, three uploads, and per camera the launch, the copy to the
+    host, a synchronise and the uint8 pack."""
+    for k in range(N * NQ):
+        rd.qpos.data[k] = host_q[k]
+    forward_kinematics["cpu", RIG_DT, TOWER_MD, N](rd, rm)
+    rd.qpos.upload_resident(ctx)
+    rd.xpos.upload_resident(ctx)
+    rd.xquat.upload_resident(ctx)
+    for slot in range(RIG_N_CAMS):
+        rr.render(ctx, rd, rm, cams[slot])
+        ctx.enqueue_copy(h_rgb, rr.rgb)
+        ctx.synchronize()
+        for e in range(N):
+            _ = pack_camera_u8(
+                mptr(h_rgb.unsafe_ptr()), e, mptr(img_u8),
+                e * RIG_IMG_ELEMS + slot * RIG_CAM_ELEMS,
+            )
+
+
+def _r2(x: Float64) -> String:
+    return String(Float64(Int(x * 100.0 + 0.5)) / 100.0)
+
+
+def bench_camera[
+    N: Int
+](ctx: DeviceContext, fmd: FlatModelDef, tw: TaskWords, png: String) raises:
+    var cams = tower_cameras(fmd)
+    var cam_over = cams[0]
+    var cam_wrist = cams[1]
+    var rm = make_tower_model(ctx)
+    var rd = Data[RIG_DT, TOWER_MD, N]()
+    rd.upload_all(ctx)
+    var sd = _posed_rig_data[N](ctx, tw, rm, rd)
+
+    # ── rl128: the pixel-RL observation ──────────────────────────────────
+    var hit_w = 0.0
+    var hit_o = 0.0
+    var ms_w = 0.0
+    var ms_o = 0.0
+    var r128 = make_tower_renderer[N, RL_W, RL_H, 1](ctx, fmd, rm)
+    ms_w = _time_cam[N, RL_W, RL_H, 1](ctx, r128, rd, rm, cam_wrist)
+    ms_o = _time_cam[N, RL_W, RL_H, 1](ctx, r128, rd, rm, cam_over)
+    hit_w = _hits_and_png[N, RL_W, RL_H, 1](ctx, r128, rd, rm, cam_wrist, png, "rl128_wrist")
+    hit_o = _hits_and_png[N, RL_W, RL_H, 1](ctx, r128, rd, rm, cam_over, png, "rl128_overhead")
+    print(
+        "RESULT leg=camera cfg=rl128 n_envs=" + String(N),
+        "res=" + String(RL_W) + "x" + String(RL_H), "samples=1",
+        "wrist_ms=" + _r2(ms_w), "wrist_fps=" + String(Int(Float64(N) / (ms_w / 1000.0))),
+        "wrist_hit=" + _r2(hit_w),
+        "overhead_ms=" + _r2(ms_o), "overhead_fps=" + String(Int(Float64(N) / (ms_o / 1000.0))),
+        "overhead_hit=" + _r2(hit_o),
+        "brick_sd_mm=" + sd,
+    )
+
+    # ── rig: the store's / the eval's pixels (skipped at 4096: ~6 GB) ────
+    comptime if N <= 1024:
+        var rr = make_tower_renderer[N](ctx, fmd, rm)
+        var mo = _time_cam[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES](ctx, rr, rd, rm, cam_over)
+        var mw = _time_cam[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES](ctx, rr, rd, rm, cam_wrist)
+        var hw = _hits_and_png[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES](ctx, rr, rd, rm, cam_wrist, png, "rig_wrist")
+        _ = _hits_and_png[N, RIG_CAM_W, RIG_CAM_H, RIG_SAMPLES](ctx, rr, rd, rm, cam_over, png, "rig_overhead")
+        print(
+            "RESULT leg=camera cfg=rig n_envs=" + String(N),
+            "res=" + String(RIG_CAM_W) + "x" + String(RIG_CAM_H),
+            "samples=" + String(RIG_SAMPLES),
+            "overhead_ms=" + _r2(mo), "wrist_ms=" + _r2(mw),
+            "pair_fps=" + String(Int(Float64(N) / ((mo + mw) / 1000.0))),
+            "wrist_hit=" + _r2(hw),
+        )
+
+        # ── evalpath: the eval's whole `_render`, at the eval's width ────
+        comptime if N == 32:
+            var h_rgb = ctx.enqueue_create_host_buffer[RIG_DT](N * RIG_NPIX * 3)
+            var img_u8 = List[Scalar[DType.uint8]](length=N * RIG_IMG_ELEMS, fill=0)
+            var host_q = List[Scalar[RIG_DT]](length=N * NQ, fill=0)
+            for k in range(N * NQ):
+                host_q[k] = rd.qpos.data[k]
+            ctx.synchronize()
+
+            _eval_render[N](ctx, rr, rd, rm, cams, host_q, h_rgb, img_u8)
+            var t = perf_counter_ns()
+            _eval_render[N](ctx, rr, rd, rm, cams, host_q, h_rgb, img_u8)
+            var n = _reps_for(Float64(perf_counter_ns() - t) / 1.0e6)
+            t = perf_counter_ns()
+            for _i in range(n):
+                _eval_render[N](ctx, rr, rd, rm, cams, host_q, h_rgb, img_u8)
+            var ms = Float64(perf_counter_ns() - t) / Float64(n) / 1.0e6
+            print(
+                "RESULT leg=camera cfg=evalpath n_envs=" + String(N),
+                "ms_per_step=" + _r2(ms),
+                "kernels_ms=" + _r2(mo + mw),
+                "outside_tracer_ms=" + _r2(ms - mo - mw),
+                "(eval log: 803 s / 2400 steps = 334.6 ms)",
+            )
+
+
+def main() raises:
+    var o = Opts()
+    var f = load_family(String(FAMILY_PATH))
+    var fmd = parse_model_runtime(scene_path(f))
+    var tw = TaskWords(fmd)
+    var ctx = DeviceContext()
+    print("device:", ctx.name(), "| warmup", o.warmup, "| steps", o.steps,
+          "| frame skip", FRAME_SKIP, "| hold", HOLD)
+    if o.physics:
+        bench_physics[32, False](ctx, tw, o.warmup, o.steps)
+        bench_physics[32, True](ctx, tw, o.warmup, o.steps)
+        bench_physics[256, False](ctx, tw, o.warmup, o.steps)
+        bench_physics[256, True](ctx, tw, o.warmup, o.steps)
+        bench_physics[1024, False](ctx, tw, o.warmup, o.steps)
+        bench_physics[1024, True](ctx, tw, o.warmup, o.steps)
+        comptime if LANES_4096:
+            bench_physics[4096, False](ctx, tw, o.warmup, o.steps)
+            bench_physics[4096, True](ctx, tw, o.warmup, o.steps)
+    if o.camera:
+        bench_camera[32](ctx, fmd, tw, o.png)
+        bench_camera[256](ctx, fmd, tw, o.png)
+        bench_camera[1024](ctx, fmd, tw, o.png)
+        comptime if LANES_4096:
+            bench_camera[4096](ctx, fmd, tw, o.png)
