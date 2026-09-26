@@ -11,6 +11,8 @@ one model is built:
     -D VIDEO_ENV=dm_walker_walk   dm_control walker     hidden 256, scale 1.0
     -D VIDEO_ENV=dm_walker_run    dm_control walker     hidden 256, scale 1.0
     -D VIDEO_ENV=dm_dog_walk      dm_control dog        hidden 1024, scale 1.0
+    -D VIDEO_ENV=dm_dog_trot      dm_control dog        hidden 1024, scale 1.0
+    -D VIDEO_ENV=dm_dog_run       dm_control dog        hidden 1024, scale 1.0
     -D VIDEO_HIDDEN=H             override the width (must match training)
 
 The rollout is greedy (the actor's mean, no sampling) on the CPU env, rendered
@@ -49,7 +51,7 @@ from noeira.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 from noeira.envs.humanoid.humanoid_xml import HumanoidModel
 from noeira.envs.humanoid.humanoid_config import HumanoidConfig
 from noeira.envs.dm_control.walker import DMWalkerWalk, DMWalkerRun
-from noeira.envs.dm_control.dog import DMDogWalk
+from noeira.envs.dm_control.dog import DMDogWalk, DMDogTrot, DMDogRun
 
 
 comptime VIDEO_ENV = get_defined_string["VIDEO_ENV", "half_cheetah"]()
@@ -190,8 +192,18 @@ def main() raises:
         record[HIDDEN=get_defined_int["VIDEO_HIDDEN", 1024]()](
             env, Scalar[DT](1.0), 1
         )
+    elif VIDEO_ENV == "dm_dog_trot":
+        var env = DMDogTrot[DT]()
+        record[HIDDEN=get_defined_int["VIDEO_HIDDEN", 1024]()](
+            env, Scalar[DT](1.0), 1
+        )
+    elif VIDEO_ENV == "dm_dog_run":
+        var env = DMDogRun[DT]()
+        record[HIDDEN=get_defined_int["VIDEO_HIDDEN", 1024]()](
+            env, Scalar[DT](1.0), 1
+        )
     else:
         comptime assert False, (
             "VIDEO_ENV must be half_cheetah | humanoid | dm_walker_walk |"
-            " dm_walker_run | dm_dog_walk"
+            " dm_walker_run | dm_dog_walk | dm_dog_trot | dm_dog_run"
         )
