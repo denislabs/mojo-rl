@@ -69,6 +69,7 @@ from ..training.driver_offpolicy import OffPolicyAgentGpu
 from .online import FBOnlineAgent
 from .cpr import FBCPRHead
 from .kernels import (
+    gather_rows_into_kernel,
     gather_rows_kernel,
     gather_idx_kernel,
     expand_windows_kernel,
@@ -100,6 +101,8 @@ struct FBCPROnlineAgent[
 ](OffPolicyAgentGpu):
     comptime AGENT_TRAIN_TARGET: StaticString = "gpu"
     comptime AGENT_OBS_DIM: Int = Self.OBS
+    # what the expert table and the ring actually store; `OBS - DERIVED_TAIL`
+    comptime STORE_OBS: Int = Self.OBS - Self.DERIVED_TAIL
     comptime AGENT_ACT_DIM: Int = Self.ACT
     comptime Base = FBOnlineAgent[
         Self.FNET, Self.BNET, Self.ANET, Self.OBS, Self.ACT, Self.D,
@@ -260,6 +263,13 @@ struct FBCPROnlineAgent[
             raise Error("attach_expert_windows: obs must be uploaded to device")
         var c = self.ctx.value()
         self.exp_obs = obs^
+        # the gathers above write only the stored head of `es` / `esn`; zero
+        # their derived tails ONCE so `b` and D are never handed whatever the
+        # allocator left there (both filter it out, which is exactly the kind
+        # of "harmless" that stops being harmless when a filter widens)
+        comptime if Self.DERIVED_TAIL > 0:
+            self.head.es.dev.value().enqueue_fill(Scalar[DT](0.0))
+            self.head.esn.dev.value().enqueue_fill(Scalar[DT](0.0))
         self.starts_dev = starts^
         var nb = c.enqueue_create_buffer[DType.int32](1)
         nb.enqueue_fill(Int32(n_starts))
@@ -300,17 +310,30 @@ struct FBCPROnlineAgent[
             mptr(self.idx_en.value().unsafe_ptr()),
             grid_dim=_blocks(Self.BATCH), block_dim=TPB,
         )
-        c.enqueue_function[gather_rows_kernel[Self.OBS, Self.BATCH]](
+        # ⚠ THE EXPERT TABLE IS `STORE_OBS` WIDE, NOT `OBS`. Its only readers
+        # are `b` (the window encoding) and the discriminator, whose reference
+        # filters are both `state + privileged_state` — so it carries no
+        # derived tail (§12.37). Gathering it at `OBS` stride misaligns every
+        # row after the first and reads PAST THE BUFFER on the last ones: on
+        # the box that produced garbage -> NaN in `es` / `esn` -> NaN through
+        # D and B and, one optimizer step later, NaN weights everywhere
+        # (§12.38). The destination rows stay `OBS` wide; their tails were
+        # zeroed once at attach.
+        c.enqueue_function[
+            gather_rows_into_kernel[Self.STORE_OBS, Self.OBS, Self.BATCH]
+        ](
             mptr(self.exp_obs.dev.value().unsafe_ptr()),
             mptr(self.idx_e.value().unsafe_ptr()),
             mptr(self.head.es.dev.value().unsafe_ptr()),
-            grid_dim=_blocks(Self.BATCH * Self.OBS), block_dim=TPB,
+            grid_dim=_blocks(Self.BATCH * Self.STORE_OBS), block_dim=TPB,
         )
-        c.enqueue_function[gather_rows_kernel[Self.OBS, Self.BATCH]](
+        c.enqueue_function[
+            gather_rows_into_kernel[Self.STORE_OBS, Self.OBS, Self.BATCH]
+        ](
             mptr(self.exp_obs.dev.value().unsafe_ptr()),
             mptr(self.idx_en.value().unsafe_ptr()),
             mptr(self.head.esn.dev.value().unsafe_ptr()),
-            grid_dim=_blocks(Self.BATCH * Self.OBS), block_dim=TPB,
+            grid_dim=_blocks(Self.BATCH * Self.STORE_OBS), block_dim=TPB,
         )
 
     def _relabel_z3(mut self) raises:

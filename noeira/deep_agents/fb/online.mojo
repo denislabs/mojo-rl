@@ -954,7 +954,24 @@ struct FBOnlineAgent[
 
     def _gather_expert(mut self) raises:
         """Batch rows `[0, EXPERT_ROWS)` of `s`, `a`, `s'`, `s+` from the
-        expert store. `z` is left for the relabel to draw."""
+        expert store. `z` is left for the relabel to draw.
+
+        ⚠ NOT COMPATIBLE WITH `DERIVED_TAIL > 0`, and this refuses rather than
+        producing something plausible. The derived tail is lane-strided — row
+        `r - k * LANES` is the same lane `k` steps earlier — and an expert
+        store is CONTIGUOUS, so the same arithmetic reads unrelated rows. A
+        store also has no actions, so `last_action` and the history's
+        `actions` key have no source at all. The G1 run uses
+        `EXPERT_ROWS = 0` (its expert data reaches the losses through the
+        window encoding and the discriminator, both of which filter to the
+        stored head), so this combination has never been needed.
+        """
+        comptime assert Self.DERIVED_TAIL == 0, (
+            "FBOnlineAgent: EXPERT_ROWS > 0 with DERIVED_TAIL > 0 is not"
+            " supported — the tail's back-steps are lane-strided and an"
+            " expert store is contiguous, and a store carries no actions."
+            " See `_gather_expert`."
+        )
         comptime E = Self.EXPERT_ROWS
         var c = self.ctx.value()
         var size_lt = LayoutTensor[DType.int32, Layout.row_major(1)](
