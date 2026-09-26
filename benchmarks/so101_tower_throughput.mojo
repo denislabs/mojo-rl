@@ -48,6 +48,35 @@ the random policy above), not one pose copied — `camera_tracer_lane_sweep.mojo
 explains why identical lanes are a best case. Each camera row prints the
 fraction of pixels that hit geometry; `--png DIR` writes lane 0 of every leg.
 
+## RESULTS — RTX 5090, 2026-09-26 (ffbc16d94)
+
+    envs   control steps/s   physics steps/s   ms / control step   graph
+      32         604               9.7k               53            = eager
+     256       3 075              49k                83            = eager
+    1024       9 752             156k               105            = eager
+    4096      21 647             346k               189            = eager
+
+~9 contacts and 1.9 Newton iterations per solve at every width: the solve is
+light, and the CUDA graph buys nothing (357 nodes per control step) — this is
+not launch-bound. Per physics step it is 16x (32 envs) to 22-25x (1024-4096)
+half cheetah's; whether that is the scene or the engine needs MuJoCo Warp on
+THIS scene beside it.
+
+    frames/s        32      256     1024    4096
+    wrist 128²    13.3k   16.9k   17.4k   17.0k
+    overhead 128²  4.9k    7.2k    7.2k    7.4k
+    rig pair        172     199     198      -     (320x240x4, both cameras)
+
+The tracer saturates by 256 lanes. The arm's visual meshes are ~343k
+triangles over 14 distinct STLs (dm_control's Jaco: 8k), and per pixel this
+is ~3x (wrist) to ~7.5x (overhead) slower than `camera_tracer_lane_sweep`'s
+lift_brick without shadows. The eval's render at 32 lanes: 289 ms per step,
+186 ms in the tracer, 103 ms on the host (FK, copies, uint8 pack) — its log
+said 335 ms, against 107 ms of physics: the eval was render-bound.
+
+Pixel RL at 1024 lanes with the 128² wrist camera: 105 + 59 = 164 ms per
+step, ~6.2k control steps/s before the learner; 4096 lanes ~9.5k/s.
+
 ⚠ THE POSE IS HOST FK OF THE ENV'S `qpos`, AS IN THE EVAL
 (`so101_tower_rig.mojo`'s header): the env leaves `SYNC_FK_AFTER_STEP` off, so
 its device `xpos` is one substep stale. A pixel-RL loop would need a device FK
