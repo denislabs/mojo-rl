@@ -23,15 +23,16 @@
 #       ACT_AUGMENT=default
 # Each arm x seed: ACT on the host data path, then
 #   sim   tower_act_eval, 128 held-out placements, the arm's own look
-#   real  tower_real_check --moving-only on BOTH real sets (printed props,
-#         lime Duplo), and on the printed set with BOTH images blanked — the
-#         student's real skill without vision (the DR session's ablation: most
-#         of series 2's lead came from the joints)
+#   real  tower_real_check --moving-only on the printed-props recording
+#         (cube-in-bowl-printed: the blue cube and the yellow octagonal bowl,
+#         the sim's own props), and on it with BOTH images blanked — the
+#         student's real skill without vision. The lime-Duplo set is no longer
+#         scored (26 Sep, the user: the printed set is the test).
 #
-# NEEDS on the box: the two recordings' raw datasets under
-# projects/so101-tower/datasets/{cube-in-bowl-printed,cube-in-bowl} (rsync
-# from the laptop, ~310 MB) and the camera calibration (project-pull); the
-# `real` stage imports them undistorted. The demos are generated on the
+# NEEDS on the box: the printed recording's raw dataset under
+# projects/so101-tower/datasets/cube-in-bowl-printed (rsync from the laptop,
+# ~140 MB) and the camera calibration (project-pull); the `real` stage imports
+# it undistorted (7.2 GB). The demos are generated on the
 # laptop (CPU) and rsync'ed to projects/so101-tower/demos/; the `demos` stage
 # regenerates any that are missing.
 #
@@ -46,13 +47,12 @@ SEEDS="${SEEDS:-1}"
 STAGES="${STAGES:-build real demos render train}"
 CACHE=$HOME/.cache/noeira/act_so101
 REAL_P=$CACHE/so101-tower__cube-in-bowl-printed_240x320_undist.h5
-REAL_D=$CACHE/so101-tower__cube-in-bowl_240x320_undist.h5
 D=projects/so101-tower/demos
 B=build/so101_vision/series3
 BIN=build/so101_vision/bin
 mkdir -p "$B" "$BIN"
 RES=$B/results.tsv
-[[ -s $RES ]] || printf 'arm\tseed\trun\tbest_val_l1\tsim_success\tsim_no_grasp\tprinted_all\tprinted_roll\tprinted_hold\tprinted_blind\tduplo_all\tduplo_hold\n' > "$RES"
+[[ -s $RES ]] || printf 'arm\tseed\trun\tbest_val_l1\tsim_success\tsim_no_grasp\tprinted_all\tprinted_roll\tprinted_hold\tprinted_blind\n' > "$RES"
 log() { printf '\n=== %s  %s\n' "$(date +%H:%M:%S)" "$*"; }
 has() { [[ " $STAGES " == *" $1 "* ]]; }
 # ⚠ A CONTAINER'S LIMIT IS ITS CGROUP'S, not /proc/meminfo (24 Sep: `free`
@@ -89,8 +89,8 @@ if has build; then
 fi
 
 if has real; then
-    log "the real stores (undistorted, 240x320)"
-    for ds in cube-in-bowl-printed cube-in-bowl; do
+    log "the real store (undistorted, 240x320)"
+    for ds in cube-in-bowl-printed; do
         out=$CACHE/so101-tower__${ds}_240x320_undist.h5
         [[ -s $out ]] && continue
         [[ -d projects/so101-tower/datasets/$ds ]] || { echo "missing projects/so101-tower/datasets/$ds (rsync it from the laptop)"; exit 1; }
@@ -168,15 +168,13 @@ score_one() {
         > "$B/eval_$tag.log" 2>&1 &
     local pe=$!
     real_one "$ck" "$REAL_P" "$B/real_p_$tag.log"
-    real_one "$ck" "$REAL_D" "$B/real_d_$tag.log"
     real_one "$ck" "$REAL_P" "$B/real_pblind_$tag.log" --mask-overhead 0,0,320,240 --mask-wrist 0,0,320,240
     wait $pe || { echo "eval $tag FAILED"; tail -20 "$B/eval_$tag.log"; return 1; }
     local ok ng; ok=$(grep -m1 'SUCCESS' "$B/eval_$tag.log" | awk '{print $2}')
     ng=$(grep -m1 'no grasp' "$B/eval_$tag.log" | awk '{print $3}')
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$a" "$s" "$run" "$val" "$ok" "$ng" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$a" "$s" "$run" "$val" "$ok" "$ng" \
         "$(field "$B/real_p_$tag.log" l1_all)" "$(roll "$B/real_p_$tag.log")" \
-        "$(field "$B/real_p_$tag.log" hold_ens)" "$(field "$B/real_pblind_$tag.log" l1_all)" \
-        "$(field "$B/real_d_$tag.log" l1_all)" "$(field "$B/real_d_$tag.log" hold_ens)" >> "$RES"
+        "$(field "$B/real_p_$tag.log" hold_ens)" "$(field "$B/real_pblind_$tag.log" l1_all)" >> "$RES"
     log "$tag: sim $ok/128 | printed $(field "$B/real_p_$tag.log" l1_all) (hold $(field "$B/real_p_$tag.log" hold_ens), blind $(field "$B/real_pblind_$tag.log" l1_all)) | $run"
 }
 run_one() { train_one "$1" "$2" && score_one "$1" "$2"; }
